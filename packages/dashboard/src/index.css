@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+@theme {
+  --color-apex-bg: #07080d;
+  --color-apex-surface: #0d1117;
+  --color-apex-card: #111827;
+  --color-apex-border: rgba(0, 229, 255, 0.12);
+  --color-apex-border-hover: rgba(0, 229, 255, 0.35);
+  --color-apex-cyan: #00e5ff;
+  --color-apex-cyan-dim: rgba(0, 229, 255, 0.6);
+  --color-apex-purple: #b84cff;
+  --color-apex-green: #00ff88;
+  --color-apex-orange: #ff8c00;
+  --color-apex-red: #ff3b5c;
+  --color-apex-yellow: #ffd60a;
+  --color-apex-text: #e2e8f0;
+  --color-apex-muted: #64748b;
+  --color-apex-subtle: #1e2936;
+  
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-apex-bg);
+  color: var(--color-apex-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--color-apex-surface); }
+::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.3); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-apex-cyan); }
+
+/* Glassmorphism card */
+.glass-card {
+  background: rgba(13, 17, 23, 0.8);
+  border: 1px solid var(--color-apex-border);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 12px;
+  transition: border-color 0.2s ease;
+}
+
+.glass-card:hover {
+  border-color: var(--color-apex-border-hover);
+}
+
+/* Neon glow */
+.glow-cyan {
+  box-shadow: 0 0 20px rgba(0, 229, 255, 0.15), 0 0 60px rgba(0, 229, 255, 0.05);
+}
+
+.glow-text-cyan {
+  text-shadow: 0 0 20px rgba(0, 229, 255, 0.5);
+}
+
+/* Status colors */
+.status-idle { color: var(--color-apex-muted); }
+.status-thinking { color: var(--color-apex-cyan); }
+.status-acting { color: var(--color-apex-purple); }
+.status-blocked { color: var(--color-apex-orange); }
+.status-error { color: var(--color-apex-red); }
+.status-done { color: var(--color-apex-green); }
+
+/* Pulse animation */
+@keyframes pulse-cyan {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.animate-pulse-cyan { animation: pulse-cyan 2s ease-in-out infinite; }
+.animate-float { animation: float 4s ease-in-out infinite; }
+
+/* Log level colors */
+.log-debug { color: var(--color-apex-muted); }
+.log-info { color: var(--color-apex-text); }
+.log-warn { color: var(--color-apex-yellow); }
+.log-error { color: var(--color-apex-red); }
+.log-thinking { color: var(--color-apex-cyan); }
+.log-acting { color: var(--color-apex-purple); }
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, var(--color-apex-cyan) 0%, var(--color-apex-purple) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Button styles */
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-apex-cyan), #0099cc);
+  color: #000;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: var(--font-sans);
+}
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.4);
+}
+.btn-primary:active { transform: translateY(0); }
+
+.btn-secondary {
+  background: transparent;
+  color: var(--color-apex-cyan);
+  font-weight: 500;
+  border: 1px solid var(--color-apex-border);
+  border-radius: 8px;
+  padding: 9px 19px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: var(--font-sans);
+}
+.btn-secondary:hover {
+  border-color: var(--color-apex-cyan);
+  background: rgba(0, 229, 255, 0.05);
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--color-apex-red);
+  border: 1px solid rgba(255, 59, 92, 0.3);
+  border-radius: 8px;
+  padding: 9px 19px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: var(--font-sans);
+}
+.btn-danger:hover {
+  background: rgba(255, 59, 92, 0.1);
+  border-color: var(--color-apex-red);
+}
+
+/* Input */
+.apex-input {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--color-apex-border);
+  border-radius: 8px;
+  color: var(--color-apex-text);
+  padding: 10px 14px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.apex-input:focus {
+  border-color: var(--color-apex-cyan);
+  box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.1);
+}
+.apex-input::placeholder { color: var(--color-apex-muted); }
+
+/* Textarea */
+.apex-textarea {
+  resize: vertical;
+  min-height: 100px;
+}

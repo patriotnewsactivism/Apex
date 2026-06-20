@@ -1,0 +1,19 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./packages/**\" --filter \"./scripts\" --if-present run typecheck",
+    "dev:api": "pnpm --filter @workspace/api-server run dev",
+    "dev:dashboard": "pnpm --filter @workspace/dashboard run dev",
+    "dev": "concurrently \"pnpm run dev:api\" \"pnpm run dev:dashboard\""
+  },
+  "private": true,
+  "devDependencies": {
+    "concurrently": "catalog:",
+    "prettier": "^3.8.3",
+    "typescript": "~5.9.3"
+  }
+}

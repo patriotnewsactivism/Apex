@@ -1,0 +1,31 @@
+{
+  "name": "@workspace/api-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@workspace/agents": "workspace:*",
+    "@workspace/core": "workspace:*",
+    "@workspace/db": "workspace:*",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "drizzle-orm": "catalog:",
+    "express": "^5.1.0",
+    "ws": "^8.18.2",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "catalog:",
+    "@types/ws": "^8.18.1",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

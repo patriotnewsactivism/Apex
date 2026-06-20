@@ -1,0 +1,315 @@
+import { randomUUID } from 'crypto';
+import { EventEmitter } from 'events';
+import { db, agents, approvals, messages } from '@workspace/db';
+import { eq } from 'drizzle-orm';
+import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-client.js';
+import { getToolRegistry } from './tool-registry.js';
+import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
+import { TaskQueue } from './task-queue.js';
+import type {
+  AgentConfig,
+  AgentStatus,
+  ApexEvent,
+  LLMMessage,
+  TaskInput,
+  TaskResult,
+  ToolContext,
+} from './types.js';
+
+// ─── Global Event Bus ─────────────────────────────────────────────────────────
+
+export const apexEventBus = new EventEmitter();
+apexEventBus.setMaxListeners(100);
+
+export function emitApexEvent(event: ApexEvent) {
+  apexEventBus.emit('event', event);
+}
+
+// ─── Base Agent ───────────────────────────────────────────────────────────────
+
+export abstract class BaseAgent {
+  protected config: AgentConfig;
+  protected llm: LLMClient;
+  protected memory: MemoryManager;
+  protected logger: AgentLogger;
+  protected taskQueue: TaskQueue;
+  protected status: AgentStatus = 'idle';
+  protected currentTaskId?: string;
+  private running = false;
+
+  constructor(config: AgentConfig) {
+    this.config = config;
+    const llmConfig = {
+      ...getDefaultLLMConfig(config.role),
+      ...config.llm,
+    };
+    this.llm = createLLMClient(llmConfig);
+    this.memory = new MemoryManager(config.id);
+    this.logger = new AgentLogger(config.id, (level: LogLevel, message: string) => {
+      emitApexEvent({
+        type: 'log',
+        agentId: config.id,
+        taskId: this.currentTaskId,
+        level,
+        message,
+        timestamp: Date.now(),
+      });
+    });
+    this.taskQueue = new TaskQueue(config.id);
+  }
+
+  get id() { return this.config.id; }
+  get name() { return this.config.name; }
+  get role() { return this.config.role; }
+
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
+
+  async initialize(): Promise<void> {
+    // Upsert agent record
+    await db.insert(agents).values({
+      id: this.config.id,
+      name: this.config.name,
+      role: this.config.role,
+      tier: this.config.tier,
+      parentId: this.config.parentId ?? null,
+      status: 'idle',
+      systemPrompt: this.config.systemPrompt,
+      model: this.config.llm.model,
+      provider: this.config.llm.provider,
+      createdAt: new Date(),
+    }).onConflictDoUpdate({
+      target: agents.id,
+      set: {
+        status: 'idle',
+        lastActiveAt: new Date(),
+      },
+    });
+
+    await this.logger.info(`Agent ${this.name} (${this.role}) initialized`);
+    this.setStatus('idle');
+  }
+
+  /** Start the autonomous execution loop */
+  async start(): Promise<void> {
+    this.running = true;
+    await this.logger.info(`${this.name} starting autonomous loop`);
+    this.setStatus('idle');
+
+    while (this.running) {
+      const task = await this.taskQueue.dequeue();
+      if (!task) {
+        await new Promise((r) => setTimeout(r, 2000)); // Poll every 2s
+        continue;
+      }
+
+      this.currentTaskId = task.id;
+      await this.executeTask(task.id, task.title, task.description, task.context ?? {});
+      this.currentTaskId = undefined;
+    }
+  }
+
+  stop() {
+    this.running = false;
+    this.setStatus('idle');
+  }
+
+  // ── Core Reasoning ─────────────────────────────────────────────────────────
+
+  protected async executeTask(
+    taskId: string,
+    title: string,
+    description: string,
+    context: Record<string, unknown>,
+  ): Promise<TaskResult> {
+    const maxIter = this.config.maxIterations ?? 20;
+    let iterations = 0;
+
+    try {
+      await this.logger.thinking(`Starting task: ${title}`, taskId);
+      this.setStatus('thinking');
+
+      // Build initial message history
+      const memContext = await this.memory.buildMemoryContext(description);
+      const systemPrompt = this.config.systemPrompt + memContext;
+
+      const history: LLMMessage[] = [
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content: `## Task: ${title}\n\n${description}\n\nContext: ${JSON.stringify(context, null, 2)}`,
+        },
+      ];
+
+      const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+      const tools = registry.getLLMToolSchemas(this.config.tools);
+
+      // Agentic loop
+      while (iterations < maxIter) {
+        iterations++;
+
+        const response = await this.llm.complete(history, tools);
+
+        // Add assistant response to history
+        history.push({ role: 'assistant', content: response.content });
+
+        if (response.content) {
+          await this.logger.thinking(response.content.slice(0, 200), taskId);
+        }
+
+        // No tool calls → task is done
+        if (response.toolCalls.length === 0) {
+          const result = response.content;
+          await this.taskQueue.complete(taskId, result);
+          await this.memory.remember(`task:${taskId}:result`, result.slice(0, 500), { importance: 0.6 });
+          await this.logger.info(`Task completed: ${title}`, taskId);
+          this.setStatus('idle');
+          return { success: true, output: result };
+        }
+
+        // Execute tool calls
+        this.setStatus('acting');
+        const toolResults: LLMMessage[] = [];
+
+        for (const tc of response.toolCalls) {
+          await this.logger.acting(`Calling tool: ${tc.name}(${JSON.stringify(tc.args).slice(0, 100)})`, taskId);
+
+          const toolContext: ToolContext = {
+            agentId: this.config.id,
+            taskId,
+            workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
+            requestApproval: async (toolName, args, reason) => {
+              return this.requestHumanApproval(taskId, toolName, args, reason);
+            },
+          };
+
+          const result = await registry.execute(tc.name, tc.args, toolContext);
+
+          toolResults.push({
+            role: 'tool',
+            toolCallId: tc.id,
+            name: tc.name,
+            content: JSON.stringify(result),
+          });
+        }
+
+        history.push(...toolResults);
+        this.setStatus('thinking');
+      }
+
+      // Hit iteration limit
+      await this.taskQueue.fail(taskId, `Exceeded max iterations (${maxIter})`);
+      return { success: false, error: 'Max iterations exceeded' };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await this.logger.error(`Task failed: ${title}`, err, taskId);
+      await this.taskQueue.fail(taskId, msg);
+      this.setStatus('error');
+      return { success: false, error: msg };
+    }
+  }
+
+  // ── Delegation ─────────────────────────────────────────────────────────────
+
+  async delegate(
+    targetAgentId: string,
+    input: TaskInput,
+  ): Promise<string> {
+    // Create task assigned to target agent
+    const now = new Date();
+    const { randomUUID } = await import('crypto');
+    const taskId = randomUUID();
+
+    const { tasks } = await import('@workspace/db');
+    await db.insert(tasks).values({
+      id: taskId,
+      goalId: input.goalId ?? null,
+      parentTaskId: input.parentTaskId ?? null,
+      title: input.title,
+      description: input.description,
+      status: 'pending',
+      priority: input.priority ?? 5,
+      assignedAgentId: targetAgentId,
+      createdByAgentId: this.config.id,
+      createdAt: now,
+      updatedAt: now,
+      retryCount: 0,
+      maxRetries: 3,
+      context: input.context ?? null,
+    });
+
+    emitApexEvent({ type: 'task:created', taskId, title: input.title, assignedAgentId: targetAgentId });
+    await this.logger.info(`Delegated task "${input.title}" to agent ${targetAgentId}`, input.parentTaskId);
+
+    return taskId;
+  }
+
+  // ── Human Approval Gate ────────────────────────────────────────────────────
+
+  async requestHumanApproval(
+    taskId: string,
+    toolName: string,
+    args: unknown,
+    reason: string,
+  ): Promise<boolean> {
+    // If approval not required, auto-approve
+    if (!this.config.approvalRequired) return true;
+
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      taskId,
+      agentId: this.config.id,
+      toolName,
+      toolArgs: args as Record<string, unknown>,
+      reason,
+      status: 'pending',
+      createdAt: new Date(),
+    });
+
+    await this.taskQueue.awaitApproval(taskId);
+    emitApexEvent({ type: 'approval:requested', approvalId, agentId: this.config.id, toolName, reason });
+
+    // Poll for approval decision (max 5 min)
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId)).limit(1);
+      if (row?.status === 'approved') {
+        await this.taskQueue.resume(taskId);
+        return true;
+      }
+      if (row?.status === 'rejected') {
+        await this.taskQueue.resume(taskId);
+        return false;
+      }
+    }
+
+    return false; // Timeout = reject
+  }
+
+  // ── Memory shortcuts ───────────────────────────────────────────────────────
+
+  async remember(key: string, value: string, importance = 0.5) {
+    await this.memory.remember(key, value, { importance });
+    emitApexEvent({ type: 'memory:updated', agentId: this.config.id, key });
+  }
+
+  async recall(query: string) {
+    return this.memory.recall(query);
+  }
+
+  // ── Status ─────────────────────────────────────────────────────────────────
+
+  protected setStatus(status: AgentStatus, message?: string) {
+    this.status = status;
+    db.update(agents)
+      .set({ status, lastActiveAt: new Date() })
+      .where(eq(agents.id, this.config.id))
+      .then(() => {});
+    emitApexEvent({ type: 'agent:status', agentId: this.config.id, status, message });
+  }
+
+  getStatus(): AgentStatus {
+    return this.status;
+  }
+}
