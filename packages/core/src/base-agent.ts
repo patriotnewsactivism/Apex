@@ -150,7 +150,11 @@ export abstract class BaseAgent {
         const response = await this.llm.complete(history, tools);
 
         // Add assistant response to history
-        history.push({ role: 'assistant', content: response.content });
+        history.push({
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+        });
 
         if (response.content) {
           await this.logger.thinking(response.content.slice(0, 200), taskId);

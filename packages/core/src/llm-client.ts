@@ -40,6 +40,22 @@ class OpenRouterClient {
           tool_call_id: m.toolCallId ?? '',
         };
       }
+      if (m.role === 'assistant') {
+        return {
+          role: 'assistant' as const,
+          content: m.content || null,
+          tool_calls: m.toolCalls && m.toolCalls.length > 0
+            ? m.toolCalls.map((tc) => ({
+                id: tc.id,
+                type: 'function' as const,
+                function: {
+                  name: tc.name,
+                  arguments: JSON.stringify(tc.args),
+                },
+              }))
+            : undefined,
+        };
+      }
       return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
     });
 
@@ -53,7 +69,7 @@ class OpenRouterClient {
       messages: openaiMessages,
       tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
       temperature: this.config.temperature ?? 0.7,
-      max_tokens: this.config.maxTokens ?? 8192,
+      max_tokens: this.config.maxTokens ?? 400,
     });
 
     const choice = res.choices[0];
@@ -97,13 +113,13 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const envKey = `APEX_MODEL_${role}`;
   const envOverride = process.env[envKey];
   if (envOverride) {
-    return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens: 8192 };
+    return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens: 400 };
   }
 
   // Global model override — use one model for everything
   const globalModel = process.env.APEX_MODEL;
   if (globalModel) {
-    return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens: 8192 };
+    return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens: 400 };
   }
 
   // Tiered defaults: senior agents → Claude Sonnet; specialists → fast model
@@ -122,7 +138,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   };
 
   const model = tierMap[role] ?? 'openai/gpt-4o-mini';
-  return { provider: 'openrouter', model, temperature: 0.7, maxTokens: 8192 };
+  return { provider: 'openrouter', model, temperature: 0.7, maxTokens: 400 };
 }
 
 // ─── Embedding Generation ─────────────────────────────────────────────────────

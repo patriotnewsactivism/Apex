@@ -1,0 +1,4 @@
+{
+  "title": "Audit Monorepo Environment and Configurations",
+  "description": "Scan the root and packages for .env files, list their keys (safely masking any actual values), identify missing required properties, and write a summary report file called audit_report.md in the root directory."
+}
