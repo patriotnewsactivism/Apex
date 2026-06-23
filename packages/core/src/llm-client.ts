@@ -124,3 +124,54 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model = tierMap[role] ?? 'openai/gpt-4o-mini';
   return { provider: 'openrouter', model, temperature: 0.7, maxTokens: 8192 };
 }
+
+// ─── Embedding Generation ─────────────────────────────────────────────────────
+
+let localPipeline: any = null;
+
+async function getLocalPipeline() {
+  if (!localPipeline) {
+    const { pipeline } = await import('@xenova/transformers');
+    localPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+  }
+  return localPipeline;
+}
+
+export async function createEmbedding(text: string): Promise<number[]> {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const openrouterKey = process.env.OPENROUTER_API_KEY;
+  const useLocal = process.env.APEX_EMBEDDING_PROVIDER === 'local' || (!openaiKey && !openrouterKey);
+
+  if (useLocal) {
+    try {
+      const extractor = await getLocalPipeline();
+      const output = await extractor(text, { pooling: 'mean', normalize: true });
+      return Array.from(output.data);
+    } catch (localErr) {
+      console.warn('Local embedding generation failed, trying API fallback...', localErr);
+    }
+  }
+
+  const OpenAI = (await import('openai')).default;
+  
+  let apiKey = openaiKey || openrouterKey || '';
+  let baseURL = openaiKey ? undefined : OPENROUTER_BASE_URL;
+  let model = openaiKey ? 'text-embedding-3-small' : 'openai/text-embedding-3-small';
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL,
+    defaultHeaders: {
+      'HTTP-Referer': 'https://github.com/apex-agent',
+      'X-Title': 'APEX Autonomous AI Workforce',
+    },
+  });
+
+  const response = await client.embeddings.create({
+    model,
+    input: text.replace(/\n/g, ' '), // recommended replacement for embedding tasks
+  });
+
+  return response.data[0].embedding;
+}
+

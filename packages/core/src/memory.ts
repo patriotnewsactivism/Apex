@@ -3,6 +3,22 @@ import { db, memories, logs } from '@workspace/db';
 import { eq, and, desc, like, or } from 'drizzle-orm';
 import type { Memory } from '@workspace/db';
 
+// ─── Cosine Similarity helper ──────────────────────────────────────────────────
+
+function cosineSimilarity(vecA: number[], vecB: number[]): number {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  const len = Math.min(vecA.length, vecB.length);
+  for (let i = 0; i < len; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 // ─── Memory Manager ───────────────────────────────────────────────────────────
 
 export class MemoryManager {
@@ -45,6 +61,14 @@ export class MemoryManager {
     const now = new Date();
     const expiresAt = options?.ttlMs ? new Date(Date.now() + options.ttlMs) : undefined;
 
+    let embedding: number[] | null = null;
+    try {
+      const { createEmbedding } = await import('./llm-client.js');
+      embedding = await createEmbedding(`${key}: ${value}`);
+    } catch (err) {
+      console.warn('Failed to generate embedding for memory:', err);
+    }
+
     // Upsert: update if key already exists for this agent
     const existing = await db
       .select()
@@ -57,6 +81,7 @@ export class MemoryManager {
         .update(memories)
         .set({
           value,
+          embedding: embedding || existing[0].embedding,
           importance: options?.importance ?? existing[0].importance,
           tags: options?.tags ?? existing[0].tags,
           updatedAt: now,
@@ -70,6 +95,7 @@ export class MemoryManager {
         scope: options?.scope ?? 'agent',
         key,
         value,
+        embedding,
         importance: options?.importance ?? 0.5,
         tags: options?.tags ?? [],
         createdAt: now,
@@ -81,21 +107,60 @@ export class MemoryManager {
 
   async recall(query: string, limit = 10): Promise<Memory[]> {
     const now = new Date();
-    // Simple keyword recall (no vector embeddings required)
-    const results = await db
-      .select()
-      .from(memories)
-      .where(
-        and(
-          eq(memories.agentId, this.agentId),
-          or(like(memories.key, `%${query}%`), like(memories.value, `%${query}%`)),
-        ),
-      )
-      .orderBy(desc(memories.importance))
-      .limit(limit);
+    
+    try {
+      const { createEmbedding } = await import('./llm-client.js');
+      const queryEmbedding = await createEmbedding(query);
+      
+      const rows = await db
+        .select()
+        .from(memories)
+        .where(
+          or(
+            eq(memories.agentId, this.agentId),
+            eq(memories.scope, 'global'),
+            eq(memories.scope, 'project')
+          )
+        );
 
-    // Filter out expired memories
-    return results.filter((m) => !m.expiresAt || m.expiresAt > now);
+      const activeRows = rows.filter((m) => !m.expiresAt || m.expiresAt > now);
+
+      // Rank by cosine similarity + importance weight
+      const scored = activeRows.map((m) => {
+        let similarity = 0;
+        if (m.embedding && Array.isArray(m.embedding)) {
+          similarity = cosineSimilarity(queryEmbedding, m.embedding);
+        }
+        // Score is similarity * 0.8 + (importance * 0.2)
+        const finalScore = similarity * 0.8 + (m.importance * 0.2);
+        return { memory: m, score: finalScore };
+      });
+
+      // Sort descending and limit
+      const results = scored
+        .filter((s) => s.score > 0.1) // threshold
+        .sort((a, b) => b.score - a.score)
+        .map((s) => s.memory);
+
+      return results.slice(0, limit);
+    } catch (err) {
+      console.warn('Vector recall failed, falling back to keyword search:', err);
+      // Fallback: Simple keyword recall
+      const results = await db
+        .select()
+        .from(memories)
+        .where(
+          and(
+            eq(memories.agentId, this.agentId),
+            or(like(memories.key, `%${query}%`), like(memories.value, `%${query}%`)),
+          ),
+        )
+        .orderBy(desc(memories.importance))
+        .limit(limit);
+
+      // Filter out expired memories
+      return results.filter((m) => !m.expiresAt || m.expiresAt > now);
+    }
   }
 
   async getAll(scope?: Memory['scope']): Promise<Memory[]> {

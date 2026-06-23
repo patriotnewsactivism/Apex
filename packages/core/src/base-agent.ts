@@ -180,6 +180,17 @@ export abstract class BaseAgent {
             requestApproval: async (toolName, args, reason) => {
               return this.requestHumanApproval(taskId, toolName, args, reason);
             },
+            delegateToRole: async (targetRole, input) => {
+              const { db, tasks } = await import('@workspace/db');
+              const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+              return this.delegateToRole(targetRole, {
+                title: input.title,
+                description: input.description,
+                parentTaskId: input.parentTaskId ?? taskId,
+                goalId: task?.goalId ?? undefined,
+                context: input.context ?? undefined,
+              });
+            },
           };
 
           const result = await registry.execute(tc.name, tc.args, toolContext);
@@ -241,6 +252,24 @@ export abstract class BaseAgent {
     await this.logger.info(`Delegated task "${input.title}" to agent ${targetAgentId}`, input.parentTaskId);
 
     return taskId;
+  }
+
+  async findAgentIdByRole(role: string): Promise<string | null> {
+    const { eq } = await import('drizzle-orm');
+    const { db, agents } = await import('@workspace/db');
+    const [row] = await db.select({ id: agents.id }).from(agents).where(eq(agents.role, role)).limit(1);
+    return row?.id ?? null;
+  }
+
+  async delegateToRole(
+    targetRole: string,
+    input: TaskInput,
+  ): Promise<string> {
+    const agentId = await this.findAgentIdByRole(targetRole);
+    if (!agentId) {
+      throw new Error(`No active agent found with role: ${targetRole}`);
+    }
+    return this.delegate(agentId, input);
   }
 
   // ── Human Approval Gate ────────────────────────────────────────────────────

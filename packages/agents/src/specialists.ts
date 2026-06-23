@@ -35,7 +35,7 @@ performant user interfaces with React, Vite, TypeScript, and TailwindCSS.
 When given a UI task, implement it completely — don't leave placeholders.
 Always write production-ready code.`,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['readFile', 'writeFile', 'listDir', 'fetchUrl'],
+      tools: ['readFile', 'writeFile', 'listDir', 'fetchUrl', 'requestPeerReview'],
       maxIterations: 40,
       approvalRequired: true,
       ...overrides,
@@ -77,7 +77,7 @@ scalable APIs and server-side systems with Node.js, TypeScript, and Express.
 When given an API task, implement it completely including error handling, 
 validation, and database operations. Write production-ready code.`,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['readFile', 'writeFile', 'listDir', 'runShell'],
+      tools: ['readFile', 'writeFile', 'listDir', 'runShell', 'requestPeerReview', 'runInSandbox'],
       maxIterations: 40,
       approvalRequired: true,
       ...overrides,
@@ -117,7 +117,7 @@ CI/CD pipelines, containerization, and deployment automation.
 
 When given a DevOps task, implement it completely with documentation.`,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['readFile', 'writeFile', 'listDir', 'runShell'],
+      tools: ['readFile', 'writeFile', 'listDir', 'runShell', 'requestPeerReview', 'runInSandbox'],
       maxIterations: 30,
       approvalRequired: true,
       ...overrides,
@@ -164,7 +164,7 @@ code review, and ensuring quality across the codebase.
 
 When reviewing code, be thorough and produce a complete report.`,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['readFile', 'writeFile', 'listDir', 'runShell'],
+      tools: ['readFile', 'writeFile', 'listDir', 'runShell', 'requestPeerReview', 'runInSandbox'],
       maxIterations: 30,
       approvalRequired: true,
       ...overrides,
@@ -208,7 +208,7 @@ Always produce a structured report with:
 - Confidence Assessment
 - Recommended Next Steps`,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['webSearch', 'fetchUrl', 'writeFile'],
+      tools: ['webSearch', 'fetchUrl', 'writeFile', 'requestPeerReview'],
       maxIterations: 25,
       approvalRequired: false,
       ...overrides,
@@ -248,7 +248,7 @@ documentation for software projects and business processes.
 
 Always read the code/system you're documenting before writing.`,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['readFile', 'writeFile', 'listDir'],
+      tools: ['readFile', 'writeFile', 'listDir', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: true,
       ...overrides,
@@ -284,7 +284,7 @@ reporting, process optimization, and administrative tasks.
 
 Always be data-driven and concise in your reports.`,
       llm: { provider: 'openrouter', model: 'gpt-4o-mini' },
-      tools: ['readFile', 'writeFile', 'listDir'],
+      tools: ['readFile', 'writeFile', 'listDir', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: false,
       ...overrides,

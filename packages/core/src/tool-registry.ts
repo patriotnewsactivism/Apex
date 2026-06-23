@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, resolve, relative, dirname } from 'path';
 import { exec } from 'child_process';
@@ -251,6 +251,101 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ toAgentId, subject, body }, ctx) {
         // Messages are persisted by the agent's dispatch mechanism
         return { sent: true, fromAgentId: ctx.agentId, toAgentId, subject };
+      },
+    },
+
+    // Request peer review from another specialized role
+    {
+      name: 'requestPeerReview',
+      description: 'Request another specialized agent role (e.g. QA, DEVOPS, BACKEND) to review code, features, or design and create a subtask for them.',
+      schema: z.object({
+        targetRole: z.enum(['CEO', 'CTO', 'COO', 'LEAD_DEV', 'FRONTEND', 'BACKEND', 'DEVOPS', 'QA', 'RESEARCH', 'DOCS', 'OPS']).describe('The specialized role requested for peer review'),
+        reviewObjective: z.string().describe('Clear objective and instructions explaining what they should review'),
+        contextData: z.record(z.any()).optional().describe('Any context variables, directories, or files that the reviewer should know about'),
+      }),
+      requiresApproval: false,
+      async execute({ targetRole, reviewObjective, contextData }, ctx) {
+        if (!ctx.delegateToRole) {
+          throw new Error('delegateToRole is not supported in this context');
+        }
+        const taskId = await ctx.delegateToRole(targetRole, {
+          title: `Peer Review Request`,
+          description: reviewObjective,
+          parentTaskId: ctx.taskId,
+          context: contextData,
+        });
+        return { success: true, taskId, targetRole, message: `Review request dispatched to ${targetRole}` };
+      },
+    },
+
+    // Run Code in Sandbox
+    {
+      name: 'runInSandbox',
+      description: 'Execute TypeScript, JavaScript, Python, or Shell code in an isolated temporary sandbox directory with a strict timeout and automatic cleanup.',
+      schema: z.object({
+        code: z.string().describe('The code or script content to execute'),
+        language: z.enum(['typescript', 'javascript', 'python', 'shell']).describe('The programming language or script type'),
+        timeoutMs: z.number().optional().describe('Strict timeout in milliseconds (default: 10000)'),
+      }),
+      requiresApproval: true,
+      async execute({ code, language, timeoutMs }) {
+        const { randomUUID } = await import('crypto');
+        const uuid = randomUUID();
+        const sandboxDir = resolve(workspaceRoot, '.local', 'sandboxes', uuid);
+        await mkdir(sandboxDir, { recursive: true });
+
+        let fileName = 'script';
+        let command = '';
+
+        if (language === 'typescript') {
+          fileName = 'index.ts';
+          command = 'npx tsx index.ts';
+        } else if (language === 'javascript') {
+          fileName = 'index.js';
+          command = 'node index.js';
+        } else if (language === 'python') {
+          fileName = 'index.py';
+          command = 'python index.py';
+        } else if (language === 'shell') {
+          fileName = process.platform === 'win32' ? 'index.bat' : 'index.sh';
+          command = process.platform === 'win32' ? 'index.bat' : 'bash index.sh';
+        }
+
+        const filePath = join(sandboxDir, fileName);
+        await writeFile(filePath, code, 'utf8');
+
+        try {
+          const { exec } = await import('child_process');
+          const { promisify } = await import('util');
+          const execAsync = promisify(exec);
+
+          const { stdout, stderr } = await execAsync(command, {
+            cwd: sandboxDir,
+            timeout: timeoutMs ?? 10000,
+          });
+
+          return {
+            success: true,
+            stdout: stdout.slice(0, 5000),
+            stderr: stderr.slice(0, 5000),
+            exitCode: 0,
+            sandboxDir: uuid,
+          };
+        } catch (err: any) {
+          return {
+            success: false,
+            stdout: err.stdout?.slice(0, 5000) ?? '',
+            stderr: err.stderr?.slice(0, 5000) ?? err.message,
+            exitCode: err.code ?? 1,
+            sandboxDir: uuid,
+          };
+        } finally {
+          try {
+            await rm(sandboxDir, { recursive: true, force: true });
+          } catch (cleanErr) {
+            console.error('Failed to clean up sandbox directory:', cleanErr);
+          }
+        }
       },
     },
   ];

@@ -79,6 +79,7 @@ export const memories = sqliteTable('memories', {
   scope: text('scope').notNull().default('agent'), // agent | project | global
   key: text('key').notNull(),
   value: text('value').notNull(),
+  embedding: text('embedding', { mode: 'json' }).$type<number[]>(),
   importance: real('importance').notNull().default(0.5), // 0.0 – 1.0
   tags: text('tags', { mode: 'json' }).$type<string[]>(),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
