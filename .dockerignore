@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+.local
+*.db
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+packages/dashboard/node_modules
