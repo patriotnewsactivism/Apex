@@ -1,42 +1,26 @@
-const API_BASE = 'https://apex-production-731c.up.railway.app/api';
-
-function getToken(): string | null {
-  return localStorage.getItem('apex_token');
-}
+const API = '/api';
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options?.headers,
-    },
+  const token = localStorage.getItem('apex_token');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...options?.headers as Record<string, string>,
+  };
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${API}${path}`, {
+    headers,
     ...options,
   });
-  if (res.status === 401) {
-    // Token expired or invalid — clear and force re-login
-    localStorage.removeItem('apex_token');
-    window.location.reload();
-  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string };
     throw new Error(err.error ?? `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
-
-// ─── Auth ─────────────────────────────────────────────────────────────────────
-
-export const auth = {
-  login: (password: string) =>
-    apiFetch<{ token: string }>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ password }),
-    }),
-  logout: () => localStorage.removeItem('apex_token'),
-  isAuthed: () => !!localStorage.getItem('apex_token'),
-};
 
 // ─── Goals ────────────────────────────────────────────────────────────────────
 
