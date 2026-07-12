@@ -30,9 +30,13 @@ const WSContext = createContext<WSContextValue>({
   agentStatuses: {},
 });
 
-const WS_URL = typeof window !== 'undefined'
-  ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.hostname}:5000/ws`
-  : 'ws://localhost:5000/ws';
+const RAILWAY_WS_HOST = 'apex-production-731c.up.railway.app';
+
+function getWsUrl(): string {
+  const token = localStorage.getItem('apex_token');
+  const base = `wss://${RAILWAY_WS_HOST}/ws`;
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+}
 
 export function WebSocketProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
@@ -45,7 +49,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const connect = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(getWsUrl());
     wsRef.current = ws;
 
     ws.onopen = () => {
