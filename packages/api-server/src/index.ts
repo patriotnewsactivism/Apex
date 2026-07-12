@@ -18,6 +18,8 @@ import { createLogsRouter } from './routes/logs.js';
 import { createApprovalsRouter } from './routes/approvals.js';
 import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
+import { createAuthRouter } from './routes/auth.js';
+import { requireAdminAuth } from './middleware/auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
 const __filename = fileURLToPath(import.meta.url);
@@ -46,6 +48,12 @@ async function main() {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', agents: workforce.size, timestamp: Date.now() });
   });
+
+  // Login is the front door — not behind requireAdminAuth.
+  app.use('/api/auth', createAuthRouter());
+
+  // Everything else under /api is locked down behind a bearer token.
+  app.use('/api', requireAdminAuth);
 
   // API Routes
   app.use('/api/goals', createGoalsRouter(ceo));
