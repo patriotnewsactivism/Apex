@@ -6,7 +6,7 @@ RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 WORKDIR /app
 
 # Copy workspace config (layer caching)
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json .npmrc ./
 
 # Copy all package manifests
 COPY lib/db/package.json ./lib/db/
@@ -37,7 +37,7 @@ RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json .npmrc ./
 COPY lib/db/package.json ./lib/db/
 COPY lib/db/tsconfig.json ./lib/db/
 COPY packages/core/package.json ./packages/core/
