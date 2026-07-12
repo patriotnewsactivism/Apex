@@ -64,7 +64,7 @@ function TaskCard({ task }: { task: Task }) {
             color: 'var(--color-apex-muted)',
           }}
         >
-          {new Date(task.createdAt).toLocaleDateString()}
+          {new Date(task.createdAt).toLocaleDateString('en-US', { timeZone: 'America/Chicago' })}
         </span>
       </div>
       {expanded && (
