@@ -23,7 +23,7 @@ WORKSPACE_ROOT=/path/to/project # Directory agents can read/write
 PORT=5000
 ```
 
-## Agent Hierarchy
+## Agent Hierarchy (12-role org, revised 2026-07-12)
 
 ```
 APEX CEO (Tier 0)
@@ -34,10 +34,18 @@ APEX CEO (Tier 0)
 │       ├── DevOps Agent (Tier 3)    — Docker, CI/CD
 │       └── QA Agent (Tier 3)        — Testing, audits
 └── COO (Tier 1)
-    ├── Research Agent (Tier 3)       — Web research & synthesis
-    ├── Documentation Agent (Tier 3)  — READMEs, wikis, docs
-    └── Operations Agent (Tier 3)     — Reports, scheduling
+    ├── Lead Researcher (Tier 3)              — real outbound lead-gen, ICP-grounded (Tavily + LLM qualification)
+    ├── Sales & Business Development (Tier 3) — pipeline mgmt; honest that live calling/SMS isn't wired yet
+    ├── Marketing & Social Media (Tier 3)     — draft-only; no live publish API wired yet
+    └── Customer Success & Support (Tier 3)   — grounded in BUSINESS_PROFILE.md ground truth
 ```
+
+The 4 COO-side roles are business-specific to BuildMyBot.app and are grounded in
+`BUSINESS_PROFILE.md` (repo root) — the canonical source of what's actually real vs. marketed on
+the live pricing page. Every business-facing agent is instructed to check that file before making
+any claim about what BuildMyBot can do. The generic Research/Documentation/Operations agents from
+the original scaffold are still exported (`packages/agents/src/specialists.ts`) for ad-hoc use but
+are not part of the standing 12-person workforce.
 
 ## Stack
 

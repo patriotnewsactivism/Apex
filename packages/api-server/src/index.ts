@@ -1,6 +1,10 @@
 import { config } from 'dotenv';
-import { resolve } from 'path';
-config({ path: resolve(process.cwd(), '../../.env') }); // Load from monorepo root
+import { resolve, join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
+
+config({ path: resolve(process.cwd(), '../../.env') });
+
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
@@ -16,24 +20,22 @@ import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 async function main() {
   console.log('🚀 APEX starting up...');
 
-  // ── 1. Initialize Database ─────────────────────────────────────────────────
   await migrate();
   console.log('✅ Database initialized');
 
-  // ── 2. Boot Agent Workforce ────────────────────────────────────────────────
   const approvalRequired = process.env.APEX_APPROVAL_MODE !== 'off';
   const workforce = createWorkforce({ approvalRequired });
   await initializeWorkforce(workforce);
   console.log(`✅ Workforce initialized (${workforce.size} agents)`);
 
-  // Get CEO reference for goal submission
   const ceo = workforce.get('apex-ceo-001') as ApexCEO;
 
-  // ── 3. Start Express ───────────────────────────────────────────────────────
   const app = express();
   const server = createServer(app);
 
@@ -54,16 +56,27 @@ async function main() {
   app.use('/api/memory', createMemoryRouter());
   app.use('/api/tools', createToolsRouter());
 
-  // ── 4. WebSocket ──────────────────────────────────────────────────────────
+  // WebSocket
   setupWebSocket(server);
 
-  // ── 5. Start Server ───────────────────────────────────────────────────────
+  // Serve dashboard static files if built
+  const dashboardDist = resolve(__dirname, '../../../dashboard/dist');
+  if (existsSync(dashboardDist)) {
+    app.use(express.static(dashboardDist));
+    app.get('*', (_req, res) => {
+      res.sendFile(join(dashboardDist, 'index.html'));
+    });
+    console.log('✅ Dashboard static files served from:', dashboardDist);
+  } else {
+    console.log('ℹ️  No dashboard build found — API-only mode');
+  }
+
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ APEX API server running on http://0.0.0.0:${PORT}`);
+    console.log(`✅ APEX running on http://0.0.0.0:${PORT}`);
     console.log(`✅ WebSocket ready at ws://0.0.0.0:${PORT}/ws`);
+    console.log(`🤖 Approval mode: ${approvalRequired ? 'HUMAN APPROVAL REQUIRED' : 'FULLY AUTONOMOUS'}`);
   });
 
-  // ── 6. Start Autonomous Loops (non-blocking) ──────────────────────────────
   console.log('🤖 Starting autonomous agent loops...');
   for (const agent of workforce.values()) {
     agent.start().catch((err: Error) => {
@@ -71,7 +84,6 @@ async function main() {
     });
   }
 
-  // ── Graceful shutdown ──────────────────────────────────────────────────────
   const shutdown = (signal: string) => {
     console.log(`\n${signal} received. Shutting down APEX...`);
     for (const agent of workforce.values()) {

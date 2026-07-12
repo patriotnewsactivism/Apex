@@ -11,6 +11,12 @@ import {
   DocumentationAgent,
   OperationsAgent,
 } from './specialists.js';
+import {
+  LeadResearchAgent,
+  SalesAgent,
+  MarketingAgent,
+  CustomerSuccessAgent,
+} from './business.js';
 import type { BaseAgent } from '@workspace/core';
 
 export * from './apex-ceo.js';
@@ -18,8 +24,28 @@ export * from './cto.js';
 export * from './coo.js';
 export * from './lead-developer.js';
 export * from './specialists.js';
+export * from './business.js';
 
 // ─── Workforce Registry ───────────────────────────────────────────────────────
+//
+// 12-role org chart (2026-07-12 revision):
+//
+// APEX CEO (Tier 0)
+// ├── CTO (Tier 1)
+// │   └── Lead Developer (Tier 2)
+// │       ├── Frontend Agent (Tier 3)
+// │       ├── Backend Agent (Tier 3)
+// │       ├── DevOps Agent (Tier 3)
+// │       └── QA Agent (Tier 3)
+// └── COO (Tier 1)
+//     ├── Lead Researcher (Tier 3)           — real outbound lead-gen, ICP-grounded
+//     ├── Sales & Business Development (Tier 3) — pipeline mgmt, honest re: no live calling yet
+//     ├── Marketing & Social Media (Tier 3)  — draft-only, honest re: no publish API yet
+//     └── Customer Success & Support (Tier 3) — grounded in BUSINESS_PROFILE.md truth
+//
+// The generic Research/Documentation/Operations trio is kept exported for reuse
+// (e.g. ad-hoc internal research/doc tasks) but is NOT part of the standing
+// 12-person workforce — the business-specific roles replace them operationally.
 
 export type WorkforceOptions = {
   approvalRequired?: boolean;
@@ -39,9 +65,10 @@ export function createWorkforce(options: WorkforceOptions = {}): Map<string, Bas
     BackendAgent,
     DevOpsAgent,
     QAAgent,
-    ResearchAgent,
-    DocumentationAgent,
-    OperationsAgent,
+    LeadResearchAgent,
+    SalesAgent,
+    MarketingAgent,
+    CustomerSuccessAgent,
   ];
 
   for (const AgentClass of agentClasses) {
@@ -65,4 +92,12 @@ export async function startWorkforce(workforce: Map<string, BaseAgent>): Promise
   await Promise.all([...workforce.values()].map((a) => a.start()));
 }
 
-export { ApexCEO, CTOAgent, COOAgent, LeadDeveloperAgent };
+export {
+  ApexCEO,
+  CTOAgent,
+  COOAgent,
+  LeadDeveloperAgent,
+  ResearchAgent,
+  DocumentationAgent,
+  OperationsAgent,
+};

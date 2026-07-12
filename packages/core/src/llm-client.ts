@@ -135,6 +135,10 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     RESEARCH: 'google/gemini-2.5-flash',
     DOCS:     'openai/gpt-4o-mini',
     OPS:      'openai/gpt-4o-mini',
+    LEAD_RESEARCH:    'google/gemini-2.5-flash',
+    SALES:            'openai/gpt-4o',
+    MARKETING:        'openai/gpt-4o-mini',
+    CUSTOMER_SUCCESS: 'openai/gpt-4o-mini',
   };
 
   const model = tierMap[role] ?? 'openai/gpt-4o-mini';

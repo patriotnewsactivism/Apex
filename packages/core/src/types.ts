@@ -80,7 +80,11 @@ export type AgentRole =
   | 'QA'
   | 'RESEARCH'
   | 'DOCS'
-  | 'OPS';
+  | 'OPS'
+  | 'LEAD_RESEARCH'
+  | 'SALES'
+  | 'MARKETING'
+  | 'CUSTOMER_SUCCESS';
 
 export type AgentStatus = 'idle' | 'thinking' | 'acting' | 'blocked' | 'done' | 'error';
 
