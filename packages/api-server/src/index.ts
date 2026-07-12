@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
-import { resolve, join } from 'path';
+import { resolve, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { dirname, existsSync } from 'fs';
+import { existsSync } from 'fs';
 
 config({ path: resolve(process.cwd(), '../../.env') });
 
