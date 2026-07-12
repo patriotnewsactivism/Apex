@@ -8,7 +8,7 @@ import { sql } from 'drizzle-orm';
  */
 export async function migrate() {
   // Use raw SQL for SQLite CREATE TABLE IF NOT EXISTS
-  db.run(sql`
+  await db.run(sql`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -25,7 +25,7 @@ export async function migrate() {
     )
   `);
 
-  db.run(sql`
+  await db.run(sql`
     CREATE TABLE IF NOT EXISTS goals (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -39,7 +39,7 @@ export async function migrate() {
     )
   `);
 
-  db.run(sql`
+  await db.run(sql`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
       goal_id TEXT,
@@ -63,7 +63,7 @@ export async function migrate() {
     )
   `);
 
-  db.run(sql`
+  await db.run(sql`
     CREATE TABLE IF NOT EXISTS approvals (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -78,7 +78,7 @@ export async function migrate() {
     )
   `);
 
-  db.run(sql`
+  await db.run(sql`
     CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
@@ -93,7 +93,7 @@ export async function migrate() {
     )
   `);
 
-  db.run(sql`
+  await db.run(sql`
     CREATE TABLE IF NOT EXISTS logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       agent_id TEXT,
@@ -106,7 +106,7 @@ export async function migrate() {
     )
   `);
 
-  db.run(sql`
+  await db.run(sql`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       from_agent_id TEXT NOT NULL,
@@ -120,11 +120,11 @@ export async function migrate() {
   `);
 
   // Indexes for fast lookups
-  db.run(sql`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
-  db.run(sql`CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id)`);
-  db.run(sql`CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC)`);
-  db.run(sql`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id)`);
-  db.run(sql`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id)`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC)`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id)`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)`);
 }
 
 export { db, schema };
