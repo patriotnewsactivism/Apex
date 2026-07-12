@@ -1,16 +1,42 @@
-const API = '/api';
+const API_BASE = 'https://apex-production-731c.up.railway.app/api';
+
+function getToken(): string | null {
+  return localStorage.getItem('apex_token');
+}
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options?.headers,
+    },
     ...options,
   });
+  if (res.status === 401) {
+    // Token expired or invalid — clear and force re-login
+    localStorage.removeItem('apex_token');
+    window.location.reload();
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string };
     throw new Error(err.error ?? `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+export const auth = {
+  login: (password: string) =>
+    apiFetch<{ token: string }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+  logout: () => localStorage.removeItem('apex_token'),
+  isAuthed: () => !!localStorage.getItem('apex_token'),
+};
 
 // ─── Goals ────────────────────────────────────────────────────────────────────
 
