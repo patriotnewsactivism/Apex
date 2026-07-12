@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 
 /**
  * Locks down every /api/* route behind a bearer token.
@@ -36,7 +37,6 @@ export function requireAdminAuth(req: Request, res: Response, next: NextFunction
   }
 
   // constant-time compare
-  const crypto = require('crypto') as typeof import('crypto');
   const a = Buffer.from(token);
   const b = Buffer.from(configuredToken);
   if (!crypto.timingSafeEqual(a, b)) {
