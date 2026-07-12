@@ -139,6 +139,9 @@ importers:
       express:
         specifier: ^5.1.0
         version: 5.2.1
+      tsx:
+        specifier: 'catalog:'
+        version: 4.21.0
       ws:
         specifier: ^8.18.2
         version: 8.21.0
@@ -158,9 +161,6 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
-      tsx:
-        specifier: 'catalog:'
-        version: 4.21.0
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

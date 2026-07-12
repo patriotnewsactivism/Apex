@@ -18,14 +18,14 @@
     "drizzle-orm": "catalog:",
     "express": "^5.1.0",
     "ws": "^8.18.2",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "tsx": "catalog:"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "catalog:",
     "@types/ws": "^8.18.1",
-    "tsx": "catalog:",
     "typescript": "catalog:"
   }
 }
