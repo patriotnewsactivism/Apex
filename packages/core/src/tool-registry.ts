@@ -5,6 +5,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
+import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 
 const execAsync = promisify(exec);
 
@@ -360,7 +361,14 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     _registry = new ToolRegistry();
     const root = workspaceRoot ?? process.cwd();
     for (const tool of createBuiltinTools(root)) {
-      _registry.register(tool);
+     _registry.register(tool);
+    }
+    // Portfolio connectors register only when their env is configured, so a
+    // bare APEX install never exposes half-working tools to the agents.
+    if (buildMyBotConfigured()) {
+      for (const tool of createBuildMyBotTools()) {
+        _registry.register(tool);
+      }
     }
   }
   return _registry;
