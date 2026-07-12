@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type ReactNode, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api.js';
@@ -9,6 +9,7 @@ import { AgentNetwork } from './components/AgentNetwork.js';
 import { TaskBoard } from './components/TaskBoard.js';
 import { LogStream } from './components/LogStream.js';
 import { ApprovalQueue } from './components/ApprovalQueue.js';
+import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
   Network,
@@ -18,6 +19,7 @@ import {
   Brain,
   Wifi,
   WifiOff,
+  LogOut,
 } from 'lucide-react';
 
 const queryClient = new QueryClient({
@@ -36,9 +38,11 @@ type NavItem = {
 function Sidebar({
   active,
   onNavigate,
+  onLogout,
 }: {
   active: string;
   onNavigate: (id: string) => void;
+  onLogout: () => void;
 }) {
   const { connected, events } = useWebSocket();
   const pendingApprovals = events.filter((e) => e.type === 'approval:requested').length;
@@ -163,10 +167,40 @@ function Sidebar({
         })}
       </nav>
 
-      {/* Footer */}
-      <div style={{ padding: '14px 20px', borderTop: '1px solid rgba(0,229,255,0.08)', fontSize: 10, color: 'var(--color-apex-muted)' }}>
-        <div style={{ fontFamily: 'var(--font-mono)' }}>APEX v1.0.0</div>
-        <div style={{ marginTop: 2 }}>Autonomous AI Workforce</div>
+      {/* Footer / Logout */}
+      <div style={{ padding: '14px 20px', borderTop: '1px solid rgba(0,229,255,0.08)', fontSize: 10, color: 'var(--color-apex-muted)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontFamily: 'var(--font-mono)' }}>APEX v1.0.0</div>
+            <div style={{ marginTop: 2 }}>Autonomous AI Workforce</div>
+          </div>
+          <button
+            onClick={onLogout}
+            title="Log Out"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--color-apex-muted)',
+              padding: '6px',
+              borderRadius: '6px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(255,59,92,0.1)';
+              e.currentTarget.style.color = '#ff3b5c';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = 'var(--color-apex-muted)';
+            }}
+          >
+            <LogOut size={16} />
+          </button>
+        </div>
       </div>
     </aside>
   );
@@ -174,7 +208,7 @@ function Sidebar({
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
-function AppContent() {
+function AppContent({ onLogout }: { onLogout: () => void }) {
   const [activePage, setActivePage] = useState('mission');
   const { data: agents = [] } = useQuery({
     queryKey: ['agents'],
@@ -205,7 +239,7 @@ function AppContent() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--color-apex-bg)' }}>
       {/* Sidebar */}
-      <Sidebar active={activePage} onNavigate={setActivePage} />
+      <Sidebar active={activePage} onNavigate={setActivePage} onLogout={onLogout} />
 
       {/* Main Content */}
       <main style={{ flex: 1, overflow: 'auto' }}>
@@ -241,7 +275,7 @@ function AppContent() {
               fontFamily: 'var(--font-mono)',
             }}
           >
-            {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/Chicago' })}
+            {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
           </div>
         </div>
 
@@ -265,10 +299,38 @@ function AppContent() {
 }
 
 export default function App() {
+  const [authed, setAuthed] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    const token = localStorage.getItem('apex_token');
+    if (token) {
+      setAuthed(true);
+    }
+    setLoading(false);
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('apex_token');
+    setAuthed(false);
+  };
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#07080d', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ color: '#00e5ff', fontFamily: 'var(--font-mono)', fontSize: '14px' }}>INITIALIZING APEX COMMAND CENTER...</div>
+      </div>
+    );
+  }
+
+  if (!authed) {
+    return <LoginScreen onLogin={() => setAuthed(true)} />;
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <WebSocketProvider>
-        <AppContent />
+        <AppContent onLogout={handleLogout} />
       </WebSocketProvider>
     </QueryClientProvider>
   );
