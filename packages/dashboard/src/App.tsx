@@ -241,7 +241,7 @@ function AppContent() {
               fontFamily: 'var(--font-mono)',
             }}
           >
-            {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+            {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/Chicago' })}
           </div>
         </div>
 
