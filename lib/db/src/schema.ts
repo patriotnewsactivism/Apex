@@ -1,9 +1,9 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
-export const agents = sqliteTable('agents', {
+export const agents = pgTable('agents', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   role: text('role').notNull(), // CEO | CTO | COO | LEAD_DEV | FRONTEND | BACKEND | DEVOPS | QA | RESEARCH | DOCS | OPS
@@ -13,28 +13,28 @@ export const agents = sqliteTable('agents', {
   systemPrompt: text('system_prompt').notNull(),
   model: text('model').notNull().default('gpt-4o'),
   provider: text('provider').notNull().default('openai'),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
-  lastActiveAt: integer('last_active_at', { mode: 'timestamp_ms' }),
-  metadata: text('metadata', { mode: 'json' }).$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  lastActiveAt: timestamp('last_active_at', { withTimezone: true, mode: 'date' }),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
 });
 
 // ─── Goals ───────────────────────────────────────────────────────────────────
 
-export const goals = sqliteTable('goals', {
+export const goals = pgTable('goals', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
   description: text('description').notNull(),
   status: text('status').notNull().default('active'), // active | paused | completed | cancelled
   priority: integer('priority').notNull().default(5), // 1 (highest) – 10 (lowest)
   assignedAgentId: text('assigned_agent_id'), // always CEO
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
-  completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
   result: text('result'),
 });
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 
-export const tasks = sqliteTable('tasks', {
+export const tasks = pgTable('tasks', {
   id: text('id').primaryKey(),
   goalId: text('goal_id'),
   parentTaskId: text('parent_task_id'),
@@ -44,73 +44,73 @@ export const tasks = sqliteTable('tasks', {
   priority: integer('priority').notNull().default(5),
   assignedAgentId: text('assigned_agent_id'),
   createdByAgentId: text('created_by_agent_id'),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
-  startedAt: integer('started_at', { mode: 'timestamp_ms' }),
-  completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
-  dueAt: integer('due_at', { mode: 'timestamp_ms' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+  dueAt: timestamp('due_at', { withTimezone: true, mode: 'date' }),
   retryCount: integer('retry_count').notNull().default(0),
   maxRetries: integer('max_retries').notNull().default(3),
   result: text('result'),
   errorMessage: text('error_message'),
-  context: text('context', { mode: 'json' }).$type<Record<string, unknown>>(),
+  context: jsonb('context').$type<Record<string, unknown>>(),
 });
 
 // ─── Approvals ────────────────────────────────────────────────────────────────
 
-export const approvals = sqliteTable('approvals', {
+export const approvals = pgTable('approvals', {
   id: text('id').primaryKey(),
   taskId: text('task_id').notNull(),
   agentId: text('agent_id').notNull(),
   toolName: text('tool_name').notNull(),
-  toolArgs: text('tool_args', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
+  toolArgs: jsonb('tool_args').$type<Record<string, unknown>>().notNull(),
   reason: text('reason').notNull(), // why agent wants to run this tool
   status: text('status').notNull().default('pending'), // pending | approved | rejected
-  reviewedAt: integer('reviewed_at', { mode: 'timestamp_ms' }),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true, mode: 'date' }),
   reviewerNote: text('reviewer_note'),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 // ─── Memory ───────────────────────────────────────────────────────────────────
 
-export const memories = sqliteTable('memories', {
+export const memories = pgTable('memories', {
   id: text('id').primaryKey(),
   agentId: text('agent_id').notNull(),
   scope: text('scope').notNull().default('agent'), // agent | project | global
   key: text('key').notNull(),
   value: text('value').notNull(),
-  embedding: text('embedding', { mode: 'json' }).$type<number[]>(),
+  embedding: jsonb('embedding').$type<number[]>(),
   importance: real('importance').notNull().default(0.5), // 0.0 – 1.0
-  tags: text('tags', { mode: 'json' }).$type<string[]>(),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
-  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
-  expiresAt: integer('expires_at', { mode: 'timestamp_ms' }),
+  tags: jsonb('tags').$type<string[]>(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
 });
 
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 
-export const logs = sqliteTable('logs', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
+export const logs = pgTable('logs', {
+  id: serial('id').primaryKey(),
   agentId: text('agent_id'),
   taskId: text('task_id'),
   goalId: text('goal_id'),
   level: text('level').notNull().default('info'), // debug | info | warn | error | thinking | acting
   message: text('message').notNull(),
-  data: text('data', { mode: 'json' }).$type<Record<string, unknown>>(),
-  timestamp: integer('timestamp', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
+  data: jsonb('data').$type<Record<string, unknown>>(),
+  timestamp: timestamp('timestamp', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 // ─── Messages (inter-agent) ───────────────────────────────────────────────────
 
-export const messages = sqliteTable('messages', {
+export const messages = pgTable('messages', {
   id: text('id').primaryKey(),
   fromAgentId: text('from_agent_id').notNull(),
   toAgentId: text('to_agent_id').notNull(),
   subject: text('subject').notNull(),
   body: text('body').notNull(),
   replyToId: text('reply_to_id'),
-  read: integer('read', { mode: 'boolean' }).notNull().default(false),
-  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().$defaultFn(() => new Date()),
+  read: boolean('read').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 // ─── Relations ────────────────────────────────────────────────────────────────
