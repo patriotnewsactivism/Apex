@@ -71,7 +71,7 @@ async function main() {
   const dashboardDist = resolve(__dirname, '../../dashboard/dist');
   if (existsSync(dashboardDist)) {
     app.use(express.static(dashboardDist));
-    app.get('*', (_req, res) => {
+    app.get('/{*splat}', (_req, res) => {
       res.sendFile(join(dashboardDist, 'index.html'));
     });
     console.log('✅ Dashboard static files served from:', dashboardDist);
