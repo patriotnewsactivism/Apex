@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
+import { getBrowserSessionManager } from './browser-session.js';
 
 const execAsync = promisify(exec);
 
@@ -305,6 +306,282 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           context: contextData,
         });
         return { success: true, taskId, targetRole, message: `Review request dispatched to ${targetRole}` };
+      },
+    },
+
+    // ─── Browser Automation (Playwright) ────────────────────────────────────
+    //
+    // Session-based browser tools for real interaction testing. Agents launch
+    // a headless browser, navigate, click, type, screenshot, and close.
+    // Sessions are isolated (own cookies/storage) and auto-close after idle.
+
+    {
+      name: 'browserLaunch',
+      description: 'Launch a new headless browser session for interactive testing. Returns a sessionId to use with other browser tools. Optionally navigates to a URL immediately.',
+      schema: z.object({
+        url: z.string().url().optional().describe('URL to navigate to immediately after launch'),
+        viewport: z.object({
+          width: z.number().default(1280),
+          height: z.number().default(720),
+        }).optional().describe('Browser viewport size'),
+      }),
+      requiresApproval: false,
+      async execute({ url, viewport }) {
+        const manager = getBrowserSessionManager();
+
+        let sessionId: string;
+        try {
+          sessionId = await manager.createSession({ viewport });
+        } catch (err: any) {
+          if (err.message?.includes("Cannot find module 'playwright'") ||
+              err.message?.includes('playwright')) {
+            return {
+              success: false,
+              error: 'Playwright is not installed. Run: pnpm add -D playwright && npx playwright install chromium',
+            };
+          }
+          throw err;
+        }
+
+        let pageContent = '';
+        let pageTitle = '';
+        let pageUrl = '';
+
+        if (url) {
+          const session = manager.getSession(sessionId)!;
+          try {
+            const response = await session.page.goto(url, { waitUntil: 'networkidle' });
+            pageTitle = await session.page.title();
+            pageUrl = session.page.url();
+            pageContent = await session.page.evaluate(() => {
+              return document.body?.innerText?.slice(0, 8000) ?? '';
+            });
+          } catch (err: any) {
+            return {
+              success: true,
+              sessionId,
+              navigationError: err.message,
+              hint: 'Session is open but navigation failed. Try browserNavigate with a different URL.',
+            };
+          }
+        }
+
+        return {
+          success: true,
+          sessionId,
+          activeSessions: manager.activeCount,
+          ...(url ? { navigatedTo: pageUrl, title: pageTitle, content: pageContent } : {}),
+        };
+      },
+    },
+
+    {
+      name: 'browserNavigate',
+      description: 'Navigate the browser to a URL. Returns the page text content and title.',
+      schema: z.object({
+        sessionId: z.string().describe('Browser session ID from browserLaunch'),
+        url: z.string().url().describe('URL to navigate to'),
+        waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle']).optional().describe('When to consider navigation complete (default: networkidle)'),
+      }),
+      requiresApproval: false,
+      async execute({ sessionId, url, waitUntil }) {
+        const session = getBrowserSessionManager().getSession(sessionId);
+        if (!session) return { success: false, error: `No session found: ${sessionId}` };
+
+        try {
+          const response = await session.page.goto(url, {
+            waitUntil: waitUntil ?? 'networkidle',
+          });
+
+          const title = await session.page.title();
+          const currentUrl = session.page.url();
+          const status = response?.status() ?? null;
+
+          const content = await session.page.evaluate(() => {
+            return document.body?.innerText?.slice(0, 8000) ?? '';
+          });
+
+          // Collect interactive elements for the agent to know what's clickable
+          const interactiveElements = await session.page.evaluate(() => {
+            const elements: Array<{ tag: string; type?: string; text: string; selector: string; name?: string; placeholder?: string }> = [];
+            const selectors = 'a, button, input, select, textarea, [role="button"], [onclick]';
+
+            document.querySelectorAll(selectors).forEach((el, i) => {
+              const tag = el.tagName.toLowerCase();
+              const text = (el as HTMLElement).innerText?.trim().slice(0, 80) || '';
+              const type = el.getAttribute('type') || undefined;
+              const name = el.getAttribute('name') || el.getAttribute('id') || undefined;
+              const placeholder = el.getAttribute('placeholder') || undefined;
+              const ariaLabel = el.getAttribute('aria-label') || '';
+
+              // Build a reliable selector
+              let selector = '';
+              if (el.id) {
+                selector = `#${el.id}`;
+              } else if (name) {
+                selector = `${tag}[name="${name}"]`;
+              } else if (text) {
+                selector = `${tag}:has-text("${text.slice(0, 40)}")`;
+              } else if (ariaLabel) {
+                selector = `${tag}[aria-label="${ariaLabel}"]`;
+              } else {
+                selector = `${tag}:nth-of-type(${i + 1})`;
+              }
+
+              elements.push({ tag, type, text: text || ariaLabel, selector, name, placeholder });
+            });
+
+            return elements.slice(0, 50); // Cap at 50 elements
+          });
+
+          return { success: true, url: currentUrl, title, status, content, interactiveElements };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    {
+      name: 'browserClick',
+      description: 'Click an element on the current page. Accepts a CSS selector or Playwright text selector. Returns updated page content after the click.',
+      schema: z.object({
+        sessionId: z.string().describe('Browser session ID'),
+        selector: z.string().describe('CSS selector, or Playwright text selector like "text=Sign Up" or "button:has-text(\\"Submit\\")"'),
+        waitAfterMs: z.number().optional().describe('Milliseconds to wait after click for page updates (default: 1000)'),
+      }),
+      requiresApproval: false,
+      async execute({ sessionId, selector, waitAfterMs }) {
+        const session = getBrowserSessionManager().getSession(sessionId);
+        if (!session) return { success: false, error: `No session found: ${sessionId}` };
+
+        try {
+          // Wait for the element to be visible before clicking
+          await session.page.waitForSelector(selector, { state: 'visible', timeout: 10_000 });
+          await session.page.click(selector);
+
+          // Wait for any navigation or dynamic updates
+          await session.page.waitForTimeout(waitAfterMs ?? 1000);
+
+          // Try to wait for network to settle (but don't fail if it times out)
+          try {
+            await session.page.waitForLoadState('networkidle', { timeout: 5000 });
+          } catch {
+            // Page may not have navigated — that's fine
+          }
+
+          const currentUrl = session.page.url();
+          const title = await session.page.title();
+          const content = await session.page.evaluate(() => {
+            return document.body?.innerText?.slice(0, 8000) ?? '';
+          });
+
+          return { success: true, clicked: selector, url: currentUrl, title, content };
+        } catch (err: any) {
+          return { success: false, error: err.message, hint: 'Element may not exist, not be visible, or selector may be wrong. Use browserNavigate to re-inspect interactive elements.' };
+        }
+      },
+    },
+
+    {
+      name: 'browserType',
+      description: 'Type text into an input field. Optionally clear the field first.',
+      schema: z.object({
+        sessionId: z.string().describe('Browser session ID'),
+        selector: z.string().describe('CSS selector for the input/textarea element'),
+        text: z.string().describe('Text to type'),
+        clearFirst: z.boolean().optional().describe('Clear the field before typing (default: true)'),
+        pressEnter: z.boolean().optional().describe('Press Enter after typing (default: false)'),
+      }),
+      requiresApproval: false,
+      async execute({ sessionId, selector, text, clearFirst, pressEnter }) {
+        const session = getBrowserSessionManager().getSession(sessionId);
+        if (!session) return { success: false, error: `No session found: ${sessionId}` };
+
+        try {
+          await session.page.waitForSelector(selector, { state: 'visible', timeout: 10_000 });
+
+          if (clearFirst !== false) {
+            await session.page.fill(selector, '');
+          }
+
+          await session.page.fill(selector, text);
+
+          if (pressEnter) {
+            await session.page.press(selector, 'Enter');
+            await session.page.waitForTimeout(1000);
+            try {
+              await session.page.waitForLoadState('networkidle', { timeout: 5000 });
+            } catch { /* may not navigate */ }
+          }
+
+          const content = await session.page.evaluate(() => {
+            return document.body?.innerText?.slice(0, 8000) ?? '';
+          });
+
+          return { success: true, typed: text, selector, url: session.page.url(), content };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    {
+      name: 'browserScreenshot',
+      description: 'Take a screenshot of the current page. Returns a base64-encoded PNG. Use for visual verification of layout, styling, and rendering issues.',
+      schema: z.object({
+        sessionId: z.string().describe('Browser session ID'),
+        fullPage: z.boolean().optional().describe('Capture entire scrollable page (default: false, captures viewport only)'),
+        selector: z.string().optional().describe('CSS selector to screenshot a specific element instead of the full page'),
+      }),
+      requiresApproval: false,
+      async execute({ sessionId, fullPage, selector }) {
+        const session = getBrowserSessionManager().getSession(sessionId);
+        if (!session) return { success: false, error: `No session found: ${sessionId}` };
+
+        try {
+          let buffer: Buffer;
+
+          if (selector) {
+            const element = await session.page.waitForSelector(selector, { timeout: 10_000 });
+            if (!element) return { success: false, error: `Element not found: ${selector}` };
+            buffer = await element.screenshot() as Buffer;
+          } else {
+            buffer = await session.page.screenshot({
+              fullPage: fullPage ?? false,
+            }) as Buffer;
+          }
+
+          const base64 = buffer.toString('base64');
+          const url = session.page.url();
+          const title = await session.page.title();
+
+          return {
+            success: true,
+            url,
+            title,
+            screenshot: `data:image/png;base64,${base64}`,
+            sizeBytes: buffer.length,
+          };
+        } catch (err: any) {
+          return { success: false, error: err.message };
+        }
+      },
+    },
+
+    {
+      name: 'browserClose',
+      description: 'Close a browser session and free resources. Always call this when done testing.',
+      schema: z.object({
+        sessionId: z.string().describe('Browser session ID to close'),
+      }),
+      requiresApproval: false,
+      async execute({ sessionId }) {
+        const closed = await getBrowserSessionManager().closeSession(sessionId);
+        return {
+          success: closed,
+          ...(closed ? {} : { error: `No session found: ${sessionId}` }),
+          remainingSessions: getBrowserSessionManager().activeCount,
+        };
       },
     },
 
