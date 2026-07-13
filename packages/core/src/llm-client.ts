@@ -1,18 +1,26 @@
 import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } from './types.js';
 
-// ─── OpenRouter Client ────────────────────────────────────────────────────────
+// ─── Multi-Provider Fallback Client ───────────────────────────────────────────
 //
-// OpenRouter exposes a fully OpenAI-compatible API at https://openrouter.ai/api/v1
-// This means we use the standard `openai` npm package but point it at OpenRouter.
-// One key gives access to OpenAI, Anthropic, Google, Meta, Mistral, and more.
-//
-// Model name format: "provider/model-name"
-//   e.g. "openai/gpt-4o", "anthropic/claude-opus-4-5",
-//        "google/gemini-2.5-pro", "meta-llama/llama-3.3-70b-instruct"
+// Tries OpenRouter first (best model selection), then falls back through free
+// providers in order if OpenRouter is unavailable (e.g. out of credits) or a
+// provider errors/rate-limits: Groq -> Gemini. Each provider uses the standard
+// OpenAI-compatible chat completions shape, so the same request/response
+// mapping logic is reused across all of them.
 
-const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const PROVIDERS: Array<{
+  name: string;
+  baseURL: string;
+  apiKeyEnv: string;
+  // Free providers only support specific model IDs — remap on fallback.
+  fallbackModel?: string;
+}> = [
+  { name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
+  { name: 'gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-2.0-flash' },
+];
 
-class OpenRouterClient {
+class MultiProviderClient {
   private config: LLMClientConfig;
 
   constructor(config: LLMClientConfig) {
@@ -22,23 +30,9 @@ class OpenRouterClient {
   async complete(messages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
     const OpenAI = (await import('openai')).default;
 
-    const client = new OpenAI({
-      apiKey: this.config.apiKey ?? process.env.OPENROUTER_API_KEY ?? '',
-      baseURL: this.config.baseUrl ?? OPENROUTER_BASE_URL,
-      defaultHeaders: {
-        'HTTP-Referer': 'https://github.com/apex-agent',
-        'X-Title': 'APEX Autonomous AI Workforce',
-      },
-    });
-
-    // Map our unified message format → OpenAI format (OpenRouter accepts the same)
     const openaiMessages = messages.map((m) => {
       if (m.role === 'tool') {
-        return {
-          role: 'tool' as const,
-          content: m.content,
-          tool_call_id: m.toolCallId ?? '',
-        };
+        return { role: 'tool' as const, content: m.content, tool_call_id: m.toolCallId ?? '' };
       }
       if (m.role === 'assistant') {
         return {
@@ -48,10 +42,7 @@ class OpenRouterClient {
             ? m.toolCalls.map((tc) => ({
                 id: tc.id,
                 type: 'function' as const,
-                function: {
-                  name: tc.name,
-                  arguments: JSON.stringify(tc.args),
-                },
+                function: { name: tc.name, arguments: JSON.stringify(tc.args) },
               }))
             : undefined,
         };
@@ -64,65 +55,81 @@ class OpenRouterClient {
       function: { name: t.name, description: t.description, parameters: t.parameters },
     }));
 
-    const res = await client.chat.completions.create({
-      model: this.config.model,
-      messages: openaiMessages,
-      tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
-      temperature: this.config.temperature ?? 0.7,
-      max_tokens: this.config.maxTokens ?? 400,
-    });
+    let lastError: unknown;
 
-    const choice = res.choices[0];
-    const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).flatMap((tc) => {
-      if (tc.type !== 'function') return [];
-      return [{
-        id: tc.id,
-        name: tc.function.name,
-        args: JSON.parse(tc.function.arguments) as Record<string, unknown>,
-      }];
-    });
+    for (const provider of PROVIDERS) {
+      const apiKey = process.env[provider.apiKeyEnv];
+      if (!apiKey) continue; // skip providers with no key configured
 
-    return {
-      content: choice.message.content ?? '',
-      toolCalls,
-      usage: {
-        promptTokens: res.usage?.prompt_tokens ?? 0,
-        completionTokens: res.usage?.completion_tokens ?? 0,
-      },
-      model: res.model,
-    };
+      try {
+        const client = new OpenAI({
+          apiKey,
+          baseURL: this.config.baseUrl && provider.name === 'openrouter' ? this.config.baseUrl : provider.baseURL,
+          defaultHeaders: provider.name === 'openrouter'
+            ? { 'HTTP-Referer': 'https://github.com/apex-agent', 'X-Title': 'APEX Autonomous AI Workforce' }
+            : undefined,
+        });
+
+        const model = provider.name === 'openrouter' ? this.config.model : (provider.fallbackModel ?? this.config.model);
+
+        const res = await client.chat.completions.create({
+          model,
+          messages: openaiMessages,
+          tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
+          temperature: this.config.temperature ?? 0.7,
+          max_tokens: this.config.maxTokens ?? 400,
+        });
+
+        const choice = res.choices[0];
+        const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).flatMap((tc) => {
+          if (tc.type !== 'function') return [];
+          return [{ id: tc.id, name: tc.function.name, args: JSON.parse(tc.function.arguments) as Record<string, unknown> }];
+        });
+
+        return {
+          content: choice.message.content ?? '',
+          toolCalls,
+          usage: {
+            promptTokens: res.usage?.prompt_tokens ?? 0,
+            completionTokens: res.usage?.completion_tokens ?? 0,
+          },
+          model: `${provider.name}/${res.model}`,
+        };
+      } catch (err) {
+        lastError = err;
+        continue; // try next provider in the chain
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('All LLM providers failed or are unconfigured');
   }
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-export function createLLMClient(config: LLMClientConfig): OpenRouterClient {
-  // All providers route through OpenRouter — model name selects the backend
-  return new OpenRouterClient(config);
+export function createLLMClient(config: LLMClientConfig): MultiProviderClient {
+  return new MultiProviderClient(config);
 }
 
-export type LLMClient = OpenRouterClient;
+export type LLMClient = MultiProviderClient;
 
 // ─── Default model configs per agent tier ────────────────────────────────────
 //
-// OpenRouter model IDs: https://openrouter.ai/models
-// Senior agents get high-capability models; specialists get fast/cheap ones.
+// Primary model IDs are OpenRouter-style; if OpenRouter fails, the client
+// automatically retries with Groq/Gemini using their own model IDs.
 
 export function getDefaultLLMConfig(role: string): LLMClientConfig {
-  // Allow per-role model override via env, e.g. APEX_MODEL_CEO=anthropic/claude-opus-4-5
   const envKey = `APEX_MODEL_${role}`;
   const envOverride = process.env[envKey];
   if (envOverride) {
     return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens: 400 };
   }
 
-  // Global model override — use one model for everything
   const globalModel = process.env.APEX_MODEL;
   if (globalModel) {
     return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens: 400 };
   }
 
-  // Tiered defaults: senior agents → Claude Sonnet; specialists → fast model
   const tierMap: Record<string, string> = {
     CEO:      'anthropic/claude-sonnet-4-5',
     CTO:      'anthropic/claude-sonnet-4-5',
@@ -139,6 +146,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     SALES:            'openai/gpt-4o',
     MARKETING:        'openai/gpt-4o-mini',
     CUSTOMER_SUCCESS: 'openai/gpt-4o-mini',
+    QA_DIRECTOR:      'openai/gpt-4o',
   };
 
   const model = tierMap[role] ?? 'openai/gpt-4o-mini';
@@ -173,9 +181,9 @@ export async function createEmbedding(text: string): Promise<number[]> {
   }
 
   const OpenAI = (await import('openai')).default;
-  
+
   let apiKey = openaiKey || openrouterKey || '';
-  let baseURL = openaiKey ? undefined : OPENROUTER_BASE_URL;
+  let baseURL = openaiKey ? undefined : 'https://openrouter.ai/api/v1';
   let model = openaiKey ? 'text-embedding-3-small' : 'openai/text-embedding-3-small';
 
   const client = new OpenAI({
@@ -189,9 +197,8 @@ export async function createEmbedding(text: string): Promise<number[]> {
 
   const response = await client.embeddings.create({
     model,
-    input: text.replace(/\n/g, ' '), // recommended replacement for embedding tasks
+    input: text.replace(/\n/g, ' '),
   });
 
   return response.data[0].embedding;
 }
-
