@@ -195,6 +195,17 @@ export abstract class BaseAgent {
                 context: input.context ?? undefined,
               });
             },
+            delegateToAgent: async (targetAgentId, input) => {
+              const { db, tasks } = await import('@workspace/db');
+              const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+              return this.delegate(targetAgentId, {
+                title: input.title,
+                description: input.description,
+                parentTaskId: input.parentTaskId ?? taskId,
+                goalId: input.goalId ?? task?.goalId ?? undefined,
+                context: input.context ?? undefined,
+              });
+            },
           };
 
           const result = await registry.execute(tc.name, tc.args, toolContext);

@@ -239,19 +239,48 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
-    // Send message to another agent
+    // Send message to another agent — creates a real delegated task so the
+    // target agent actually picks up the work, and persists the message for
+    // audit/dashboard visibility.
     {
       name: 'sendMessage',
-      description: 'Send a message to another agent for coordination.',
+      description: 'Send a message to another agent, delegating a task to them. The message body becomes the task description the target agent will execute.',
       schema: z.object({
-        toAgentId: z.string().describe('ID of the target agent'),
-        subject: z.string().describe('Message subject'),
-        body: z.string().describe('Message body'),
+        toAgentId: z.string().describe('ID of the target agent (e.g. "apex-cto-001")'),
+        subject: z.string().describe('Message subject — becomes the delegated task title'),
+        body: z.string().describe('Message body — becomes the delegated task description'),
       }),
       requiresApproval: false,
       async execute({ toAgentId, subject, body }, ctx) {
-        // Messages are persisted by the agent's dispatch mechanism
-        return { sent: true, fromAgentId: ctx.agentId, toAgentId, subject };
+        // 1. Persist the inter-agent message for audit trail
+        const { randomUUID } = await import('crypto');
+        const { db, messages: messagesTable } = await import('@workspace/db');
+
+        const messageId = randomUUID();
+        await db.insert(messagesTable).values({
+          id: messageId,
+          fromAgentId: ctx.agentId,
+          toAgentId,
+          subject,
+          body,
+          read: false,
+          createdAt: new Date(),
+        });
+
+        // 2. Actually delegate a task to the target agent so it gets executed
+        if (!ctx.delegateToAgent) {
+          throw new Error('delegateToAgent is not available in this context');
+        }
+
+        const taskId = await ctx.delegateToAgent(toAgentId, {
+          title: subject,
+          description: body,
+          parentTaskId: ctx.taskId,
+          goalId: ctx.goalId,
+          context: { messageId, fromAgentId: ctx.agentId },
+        });
+
+        return { sent: true, taskId, messageId, fromAgentId: ctx.agentId, toAgentId, subject };
       },
     },
 
@@ -260,7 +289,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       name: 'requestPeerReview',
       description: 'Request another specialized agent role (e.g. QA, DEVOPS, BACKEND) to review code, features, or design and create a subtask for them.',
       schema: z.object({
-        targetRole: z.enum(['CEO', 'CTO', 'COO', 'LEAD_DEV', 'FRONTEND', 'BACKEND', 'DEVOPS', 'QA', 'RESEARCH', 'DOCS', 'OPS']).describe('The specialized role requested for peer review'),
+        targetRole: z.enum(['CEO', 'CTO', 'COO', 'LEAD_DEV', 'FRONTEND', 'BACKEND', 'DEVOPS', 'QA', 'RESEARCH', 'DOCS', 'OPS', 'QA_DIRECTOR', 'LEAD_RESEARCH', 'SALES', 'MARKETING', 'CUSTOMER_SUCCESS']).describe('The specialized role requested for peer review'),
         reviewObjective: z.string().describe('Clear objective and instructions explaining what they should review'),
         contextData: z.record(z.any()).optional().describe('Any context variables, directories, or files that the reviewer should know about'),
       }),
