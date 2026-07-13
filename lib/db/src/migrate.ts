@@ -85,6 +85,7 @@ export async function migrate() {
       scope TEXT NOT NULL DEFAULT 'agent',
       key TEXT NOT NULL,
       value TEXT NOT NULL,
+      embedding TEXT,
       importance REAL NOT NULL DEFAULT 0.5,
       tags TEXT,
       created_at INTEGER NOT NULL,
@@ -92,6 +93,19 @@ export async function migrate() {
       expires_at INTEGER
     )
   `);
+
+  // Backfill for databases created before the embedding column existed --
+  // CREATE TABLE IF NOT EXISTS above is a no-op on an already-existing table,
+  // so already-deployed DBs (like production) still need this column added
+  // explicitly. SQLite has no "ADD COLUMN IF NOT EXISTS", so check pragma
+  // table_info first and only ALTER if it's genuinely missing.
+  const memoriesColumns = await db.all(sql`PRAGMA table_info(memories)`);
+  const hasEmbeddingColumn = (memoriesColumns as any[]).some(
+    (col) => col.name === 'embedding',
+  );
+  if (!hasEmbeddingColumn) {
+    await db.run(sql`ALTER TABLE memories ADD COLUMN embedding TEXT`);
+  }
 
   await db.run(sql`
     CREATE TABLE IF NOT EXISTS logs (
