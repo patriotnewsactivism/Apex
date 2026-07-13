@@ -17,6 +17,7 @@ import {
   MarketingAgent,
   CustomerSuccessAgent,
 } from './business.js';
+import { QADirectorAgent } from './qa-director.js';
 import type { BaseAgent } from '@workspace/core';
 
 export * from './apex-ceo.js';
@@ -25,6 +26,7 @@ export * from './coo.js';
 export * from './lead-developer.js';
 export * from './specialists.js';
 export * from './business.js';
+export * from './qa-director.js';
 
 // ─── Workforce Registry ───────────────────────────────────────────────────────
 //
@@ -42,6 +44,11 @@ export * from './business.js';
 //     ├── Sales & Business Development (Tier 3) — pipeline mgmt, honest re: no live calling yet
 //     ├── Marketing & Social Media (Tier 3)  — draft-only, honest re: no publish API yet
 //     └── Customer Success & Support (Tier 3) — grounded in BUSINESS_PROFILE.md truth
+//
+// QA Director (Tier 1) — Beta Tester Division. Reasons through named personas
+// (novice, security-minded power user, accessibility, buyer, UX reviewer)
+// against REAL fetched content from live BuildMyBot surfaces. v1 is
+// content-reasoning based, not full browser-interaction automation.
 //
 // The generic Research/Documentation/Operations trio is kept exported for reuse
 // (e.g. ad-hoc internal research/doc tasks) but is NOT part of the standing
@@ -69,6 +76,7 @@ export function createWorkforce(options: WorkforceOptions = {}): Map<string, Bas
     SalesAgent,
     MarketingAgent,
     CustomerSuccessAgent,
+    QADirectorAgent,
   ];
 
   for (const AgentClass of agentClasses) {
@@ -100,4 +108,5 @@ export {
   ResearchAgent,
   DocumentationAgent,
   OperationsAgent,
+  QADirectorAgent,
 };
