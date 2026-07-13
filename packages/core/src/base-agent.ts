@@ -96,15 +96,31 @@ export abstract class BaseAgent {
     this.setStatus('idle');
 
     while (this.running) {
-      const task = await this.taskQueue.dequeue();
-      if (!task) {
-        await new Promise((r) => setTimeout(r, 2000)); // Poll every 2s
-        continue;
+      try {
+        const task = await this.taskQueue.dequeue();
+        if (!task) {
+          await new Promise((r) => setTimeout(r, 2000)); // Poll every 2s
+          continue;
+        }
+
+        this.currentTaskId = task.id;
+        await this.executeTask(task.id, task.title, task.description, task.context ?? {});
+        this.currentTaskId = undefined;
+      } catch (loopErr) {
+        // Protect the loop from transient DB errors, dequeue failures, etc.
+        // Without this, a single DB hiccup silently kills the entire agent.
+        const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
+        await this.logger.error(`Agent loop error: ${msg}`, loopErr);
+        this.currentTaskId = undefined;
+        await new Promise((r) => setTimeout(r, 5000)); // Back off before retrying
       }
 
-      this.currentTaskId = task.id;
-      await this.executeTask(task.id, task.title, task.description, task.context ?? {});
-      this.currentTaskId = undefined;
+      // executeTask sets status to 'error' on task failure, but the agent loop
+      // is still alive and polling. Reset to idle so the dashboard shows the
+      // agent as available — not permanently stuck in ERROR.
+      if (this.status === 'error') {
+        this.setStatus('idle');
+      }
     }
   }
 
