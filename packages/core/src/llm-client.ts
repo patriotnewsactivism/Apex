@@ -55,11 +55,16 @@ class MultiProviderClient {
       function: { name: t.name, description: t.description, parameters: t.parameters },
     }));
 
-    let lastError: unknown;
+    const providerErrors: Array<{ provider: string; model: string; status?: number; message: string }> = [];
 
     for (const provider of PROVIDERS) {
       const apiKey = process.env[provider.apiKeyEnv];
-      if (!apiKey) continue; // skip providers with no key configured
+      if (!apiKey) {
+        console.warn(`[LLM] Skipping ${provider.name}: no ${provider.apiKeyEnv} configured`);
+        continue;
+      }
+
+      const model = provider.name === 'openrouter' ? this.config.model : (provider.fallbackModel ?? this.config.model);
 
       try {
         const client = new OpenAI({
@@ -69,8 +74,6 @@ class MultiProviderClient {
             ? { 'HTTP-Referer': 'https://github.com/apex-agent', 'X-Title': 'APEX Autonomous AI Workforce' }
             : undefined,
         });
-
-        const model = provider.name === 'openrouter' ? this.config.model : (provider.fallbackModel ?? this.config.model);
 
         const res = await client.chat.completions.create({
           model,
@@ -86,6 +89,11 @@ class MultiProviderClient {
           return [{ id: tc.id, name: tc.function.name, args: JSON.parse(tc.function.arguments) as Record<string, unknown> }];
         });
 
+        // Log success so it's visible which provider actually served the request
+        if (providerErrors.length > 0) {
+          console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
+        }
+
         return {
           content: choice.message.content ?? '',
           toolCalls,
@@ -96,12 +104,29 @@ class MultiProviderClient {
           model: `${provider.name}/${res.model}`,
         };
       } catch (err) {
-        lastError = err;
+        // Extract status code and message for clear diagnostics
+        const status = (err as any)?.status ?? (err as any)?.response?.status ?? (err as any)?.code;
+        const errMessage = err instanceof Error ? err.message : String(err);
+        const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
+
+        console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
+
+        providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
         continue; // try next provider in the chain
       }
     }
 
-    throw lastError instanceof Error ? lastError : new Error('All LLM providers failed or are unconfigured');
+    // All providers failed — build a detailed error showing every attempt
+    const errorSummary = providerErrors.length > 0
+      ? providerErrors.map((e) => `  • ${e.provider} (model: ${e.model}, status: ${e.status ?? 'N/A'}): ${e.message}`).join('\n')
+      : '  (no providers were configured or had API keys)';
+
+    const finalError = new Error(
+      `All LLM providers failed.\n${errorSummary}`
+    );
+
+    console.error(`[LLM] All providers exhausted:\n${errorSummary}`);
+    throw finalError;
   }
 }
 

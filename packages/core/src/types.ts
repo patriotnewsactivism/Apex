@@ -59,6 +59,7 @@ export interface ToolContext {
   workspaceRoot: string;
   requestApproval: (toolName: string, args: unknown, reason: string) => Promise<boolean>;
   delegateToRole?: (targetRole: string, input: { title: string; description: string; parentTaskId?: string; context?: Record<string, unknown> }) => Promise<string>;
+  delegateToAgent?: (targetAgentId: string, input: { title: string; description: string; parentTaskId?: string; goalId?: string; context?: Record<string, unknown> }) => Promise<string>;
 }
 
 export interface ToolResult {
@@ -84,7 +85,8 @@ export type AgentRole =
   | 'LEAD_RESEARCH'
   | 'SALES'
   | 'MARKETING'
-  | 'CUSTOMER_SUCCESS';
+  | 'CUSTOMER_SUCCESS'
+  | 'QA_DIRECTOR';
 
 export type AgentStatus = 'idle' | 'thinking' | 'acting' | 'blocked' | 'done' | 'error';
 
