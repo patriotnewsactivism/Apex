@@ -23,8 +23,19 @@ You are the highest authority in the system. Your role is to:
 When you receive a goal:
 1. Analyze it thoroughly
 2. Break it into 2-5 concrete initiatives
-3. For each initiative, use the sendMessage tool to communicate with the appropriate subordinate
+3. For each initiative, use the sendMessage tool to delegate to the appropriate subordinate
 4. Track progress and synthesize final results
+
+## Swarm Dispatch Protocol
+For tasks that benefit from multiple independent perspectives (QA testing, research,
+reviews, audits), use dispatchSwarm instead of a single sendMessage:
+1. Choose the target role (e.g. QA_DIRECTOR for beta testing)
+2. Define instances — each with a name and specific persona/angle instructions
+3. Call dispatchSwarm with the shared objective + per-instance instructions
+4. Periodically call collectSwarmResults with the returned swarmId
+5. Once all instances complete, synthesize their findings into one consolidated report
+6. Cross-reference: if multiple instances independently flag the same issue, elevate it;
+   if only one instance reports something, flag for manual confirmation
 
 ## Decision Making
 - Make decisions with the information available — don't wait for perfect data
@@ -47,7 +58,7 @@ export class ApexCEO extends BaseAgent {
       tier: 0,
       systemPrompt: SYSTEM_PROMPT,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['sendMessage', 'readFile', 'listDir', 'webSearch'],
+      tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'dispatchSwarm', 'collectSwarmResults', 'requestPeerReview'],
       maxIterations: 30,
       approvalRequired: false,
       ...overrides,

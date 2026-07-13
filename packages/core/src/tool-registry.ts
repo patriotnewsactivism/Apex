@@ -308,6 +308,138 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    // ─── Swarm dispatch: fan-out N independent tasks to a target role ──────
+    //
+    // Generic pattern for parallel task execution. CEO dispatches a swarm of
+    // tasks (e.g. beta-tester personas, research angles, review perspectives),
+    // each one becoming an independent task row. The target agent processes
+    // them via its normal task queue. If multiple agent instances run the same
+    // role, tasks execute truly concurrently; with a single instance they run
+    // sequentially — the data model supports both.
+    {
+      name: 'dispatchSwarm',
+      description: 'Fan out a shared objective to N independent instances/personas of a target role. Creates one real task per instance, each parameterized with its own context. Returns a swarmId for later collection via collectSwarmResults.',
+      schema: z.object({
+        targetRole: z.enum(['CEO', 'CTO', 'COO', 'LEAD_DEV', 'FRONTEND', 'BACKEND', 'DEVOPS', 'QA', 'RESEARCH', 'DOCS', 'OPS', 'QA_DIRECTOR', 'LEAD_RESEARCH', 'SALES', 'MARKETING', 'CUSTOMER_SUCCESS']).describe('The role to dispatch tasks to'),
+        objective: z.string().describe('Shared objective/instructions all instances will work on'),
+        instances: z.array(z.object({
+          name: z.string().describe('Human-readable instance name (e.g. "Susan-novice", "Marcus-security")'),
+          instructions: z.string().describe('Instance-specific instructions, persona description, or parameters that differentiate this task from the others'),
+          context: z.record(z.any()).optional().describe('Additional context data specific to this instance'),
+        })).min(1).describe('List of instances to dispatch — one task per instance'),
+        sharedContext: z.record(z.any()).optional().describe('Context data shared across all instances (e.g. URLs to test, feature to review)'),
+        priority: z.number().optional().describe('Task priority (1=highest, 10=lowest, default 5)'),
+      }),
+      requiresApproval: false,
+      async execute({ targetRole, objective, instances, sharedContext, priority }, ctx) {
+        if (!ctx.delegateToRole) {
+          throw new Error('delegateToRole is not available in this context');
+        }
+
+        const { randomUUID } = await import('crypto');
+        const swarmId = randomUUID();
+
+        const taskIds: Array<{ name: string; taskId: string }> = [];
+
+        for (const instance of instances) {
+          const taskId = await ctx.delegateToRole(targetRole, {
+            title: `[Swarm: ${instance.name}] ${objective.slice(0, 100)}`,
+            description: `## Swarm Objective\n${objective}\n\n## Your Instance\nYou are executing as: **${instance.name}**\n\n${instance.instructions}`,
+            parentTaskId: ctx.taskId,
+            context: {
+              swarmId,
+              instanceName: instance.name,
+              ...(sharedContext ?? {}),
+              ...(instance.context ?? {}),
+            },
+          });
+
+          taskIds.push({ name: instance.name, taskId });
+        }
+
+        return {
+          success: true,
+          swarmId,
+          targetRole,
+          totalDispatched: instances.length,
+          tasks: taskIds,
+          message: `Swarm dispatched: ${instances.length} tasks to ${targetRole} (swarmId: ${swarmId})`,
+        };
+      },
+    },
+
+    // Collect results from a previously dispatched swarm
+    {
+      name: 'collectSwarmResults',
+      description: 'Check the status of a previously dispatched swarm and collect results from completed tasks. Use after dispatchSwarm to gather and synthesize findings.',
+      schema: z.object({
+        swarmId: z.string().describe('The swarmId returned by dispatchSwarm'),
+      }),
+      requiresApproval: false,
+      async execute({ swarmId }) {
+        const { db, tasks: tasksTable } = await import('@workspace/db');
+        const { sql } = await import('drizzle-orm');
+
+        // Query all tasks with this swarmId in their context
+        const swarmTasks = await db
+          .select()
+          .from(tasksTable)
+          .where(sql`${tasksTable.context}->>'swarmId' = ${swarmId}`);
+
+        if (swarmTasks.length === 0) {
+          return { success: false, error: `No tasks found for swarmId: ${swarmId}` };
+        }
+
+        const summary = {
+          swarmId,
+          total: swarmTasks.length,
+          done: 0,
+          failed: 0,
+          pending: 0,
+          inProgress: 0,
+          other: 0,
+        };
+
+        const results: Array<{
+          instanceName: string;
+          taskId: string;
+          status: string;
+          result?: string;
+          error?: string;
+        }> = [];
+
+        for (const task of swarmTasks) {
+          const ctx = task.context as Record<string, unknown> | null;
+          const instanceName = (ctx?.instanceName as string) ?? task.title;
+
+          switch (task.status) {
+            case 'done': summary.done++; break;
+            case 'failed': summary.failed++; break;
+            case 'pending': summary.pending++; break;
+            case 'in_progress': summary.inProgress++; break;
+            default: summary.other++; break;
+          }
+
+          results.push({
+            instanceName,
+            taskId: task.id,
+            status: task.status,
+            result: task.result ?? undefined,
+            error: task.errorMessage ?? undefined,
+          });
+        }
+
+        const allComplete = summary.pending === 0 && summary.inProgress === 0;
+
+        return {
+          success: true,
+          allComplete,
+          summary,
+          results,
+        };
+      },
+    },
+
     // Run Code in Sandbox
     {
       name: 'runInSandbox',
