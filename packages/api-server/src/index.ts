@@ -68,7 +68,7 @@ async function main() {
   setupWebSocket(server);
 
   // Serve dashboard static files if built
-  const dashboardDist = resolve(__dirname, '../../../dashboard/dist');
+  const dashboardDist = resolve(__dirname, '../../dashboard/dist');
   if (existsSync(dashboardDist)) {
     app.use(express.static(dashboardDist));
     app.get('*', (_req, res) => {
