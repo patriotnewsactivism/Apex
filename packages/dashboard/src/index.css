@@ -190,3 +190,49 @@ body {
   resize: vertical;
   min-height: 100px;
 }
+
+/* ─── Mobile ─────────────────────────────────────────────────────────────── */
+
+@media (max-width: 767px) {
+  /* Prevent horizontal overflow */
+  html, body, #root {
+    overflow-x: hidden;
+    width: 100%;
+  }
+
+  /* Larger touch targets */
+  .apex-input {
+    padding: 12px 14px;
+    font-size: 16px; /* prevents iOS zoom on focus */
+  }
+
+  .apex-textarea {
+    min-height: 80px;
+  }
+
+  .btn-primary {
+    padding: 12px 20px;
+    font-size: 15px;
+  }
+
+  .btn-secondary, .btn-danger {
+    padding: 11px 18px;
+  }
+
+  /* Glass cards: slightly less border-radius on mobile */
+  .glass-card {
+    border-radius: 10px;
+  }
+
+  /* Better scrollbar on mobile */
+  ::-webkit-scrollbar {
+    width: 3px;
+    height: 3px;
+  }
+
+  /* Safe area padding for notched phones */
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
