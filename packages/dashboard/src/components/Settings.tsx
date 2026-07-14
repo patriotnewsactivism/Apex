@@ -53,13 +53,13 @@ const INTEGRATIONS: IntegrationConfig[] = [
     docsUrl: 'https://cloud.cerebras.ai',
   },
   {
-    id: 'gemini',
-    name: 'Google Gemini',
-    description: 'Gemini 2.5 Flash (free tier)',
+    id: 'mistral',
+    name: 'Mistral',
+    description: 'La Plateforme (free tier, 1B tokens/month)',
     icon: <Cpu size={18} />,
     category: 'ai',
-    envVars: [{ key: 'GEMINI_API_KEY', label: 'API Key', placeholder: 'AIza...', secret: true }],
-    docsUrl: 'https://aistudio.google.com/apikey',
+    envVars: [{ key: 'MISTRAL_API_KEY', label: 'API Key', placeholder: 'Bearer token from console.mistral.ai', secret: true }],
+    docsUrl: 'https://console.mistral.ai',
   },
   {
     id: 'cohere',
