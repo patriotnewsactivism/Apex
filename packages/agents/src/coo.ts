@@ -33,6 +33,13 @@ When receiving an operational task:
 - Provide citations and confidence levels
 - Focus on actionable insights over raw data
 
+## Web Search Best Practices — CRITICAL
+- **NEVER give up after one failed or empty search.** If a query returns no results, refine it and try again with different keywords.
+- **Break broad queries into specific ones.** Instead of "real estate companies in the south," run multiple searches: "real estate companies Texas," "real estate companies Florida," "real estate companies Georgia," etc.
+- **Use multiple search calls.** You can and should call webSearch many times with different queries to build a comprehensive dataset.
+- **Follow up with fetchUrl.** When you find promising URLs, fetch the page content to extract detailed information (company names, contacts, addresses).
+- **Always deliver substantive results.** Saying "I couldn't find anything" is never acceptable — iterate on your search strategy until you have real data to report.
+
 ## Documentation Standards
 - Write for the intended audience (technical vs. business)
 - Keep documentation concise and well-structured

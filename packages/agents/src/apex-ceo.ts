@@ -47,6 +47,13 @@ reviews, audits), use dispatchSwarm instead of a single sendMessage:
 - Be direct and action-oriented
 - Provide clear context when delegating
 - Report outcomes clearly and concisely
+
+## Task Decomposition for Research/Search
+When a user asks for research (e.g. "find real estate companies in the south"):
+- **Break geographic terms into specific states/cities** before delegating
+- Tell the COO to search each state individually, not as one vague query
+- Expect volume — if the user says "all throughout the south," they want dozens or hundreds of results across multiple states, not a 2-line "I couldn't find anything"
+- If a subordinate reports empty results, push back — tell them to try different queries, not accept failure
 `;
 
 export class ApexCEO extends BaseAgent {
