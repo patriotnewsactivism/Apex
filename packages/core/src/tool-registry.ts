@@ -190,34 +190,157 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
-    // Web Search
+    // Web Search — multi-strategy: Brave Search API (free tier) → DuckDuckGo
+    // HTML scrape → DuckDuckGo Instant Answer API fallback
     {
       name: 'webSearch',
-      description: 'Search the web for information. Returns a summary of results.',
+      description: 'Search the web for information. Returns real search results with titles, URLs, and snippets. For broad topics, use specific queries (e.g. "real estate companies Texas" instead of "real estate companies in the south"). Call multiple times with different queries to build comprehensive results.',
       schema: z.object({
-        query: z.string().describe('Search query'),
-        maxResults: z.number().optional().describe('Maximum results to return (default 5)'),
+        query: z.string().describe('Search query — be specific for best results'),
+        maxResults: z.number().optional().describe('Maximum results to return (default 10)'),
       }),
       requiresApproval: false,
       async execute({ query, maxResults }) {
-        const n = maxResults ?? 5;
-        // Use DuckDuckGo Instant Answer API (no key needed)
-        const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`;
-        const res = await fetch(url);
-        const data = await res.json() as Record<string, unknown>;
+        const n = maxResults ?? 10;
         const results: Array<{ title: string; url: string; snippet: string }> = [];
-        
-        if (data.AbstractText) {
-          results.push({ title: String(data.AbstractSource ?? 'Result'), url: String(data.AbstractURL ?? ''), snippet: String(data.AbstractText ?? '') });
-        }
-        const relatedTopics = data.RelatedTopics as Array<{ Text?: string; FirstURL?: string }> ?? [];
-        for (const topic of relatedTopics.slice(0, n - 1)) {
-          if (topic.Text) {
-            results.push({ title: topic.Text.slice(0, 80), url: topic.FirstURL ?? '', snippet: topic.Text });
+
+        // ── Strategy 0: Tavily Search API (best quality, AI-optimized) ──
+        const tavilyKey = process.env.TAVILY_API_KEY;
+        if (tavilyKey) {
+          try {
+            const tavilyRes = await fetch('https://api.tavily.com/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                api_key: tavilyKey,
+                query,
+                max_results: n,
+                search_depth: 'advanced',
+                include_answer: true,
+              }),
+            });
+            if (tavilyRes.ok) {
+              const tavilyData = await tavilyRes.json() as {
+                answer?: string;
+                results?: Array<{ title: string; url: string; content: string }>;
+              };
+              // Include the AI-generated answer as the first result if present
+              if (tavilyData.answer) {
+                results.push({ title: 'Tavily AI Summary', url: '', snippet: tavilyData.answer });
+              }
+              for (const r of tavilyData.results ?? []) {
+                results.push({ title: r.title, url: r.url, snippet: r.content });
+              }
+              if (results.length > 0) return { query, provider: 'tavily', results: results.slice(0, n + 1) };
+            }
+          } catch (e) {
+            console.warn(`[webSearch] Tavily failed for "${query}": ${e}`);
           }
         }
 
-        return { query, results: results.slice(0, n) };
+        // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
+        const braveKey = process.env.BRAVE_SEARCH_API_KEY;
+        if (braveKey) {
+          try {
+            const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
+            const braveRes = await fetch(braveUrl, {
+              headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
+            });
+            if (braveRes.ok) {
+              const braveData = await braveRes.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
+              for (const r of braveData.web?.results ?? []) {
+                results.push({ title: r.title, url: r.url, snippet: r.description });
+              }
+              if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n) };
+            }
+          } catch (e) {
+            console.warn(`[webSearch] Brave failed for "${query}": ${e}`);
+          }
+        }
+
+        // ── Strategy 2: DuckDuckGo HTML search (lite version) ──
+        try {
+          const ddgUrl = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
+          const ddgRes = await fetch(ddgUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html',
+            },
+          });
+          const html = await ddgRes.text();
+          
+          // Parse results from DDG lite HTML — results are in <a> tags with
+          // class="result-link" followed by <td> with snippet text
+          const linkRegex = /<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi;
+          const snippetRegex = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
+          
+          const links: Array<{ url: string; title: string }> = [];
+          let linkMatch;
+          while ((linkMatch = linkRegex.exec(html)) !== null) {
+            links.push({ url: linkMatch[1], title: linkMatch[2].trim() });
+          }
+          
+          const snippets: string[] = [];
+          let snippetMatch;
+          while ((snippetMatch = snippetRegex.exec(html)) !== null) {
+            snippets.push(snippetMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim());
+          }
+
+          for (let i = 0; i < links.length && i < n; i++) {
+            results.push({
+              title: links[i].title,
+              url: links[i].url,
+              snippet: snippets[i] ?? '',
+            });
+          }
+
+          if (results.length > 0) return { query, provider: 'duckduckgo-html', results: results.slice(0, n) };
+
+          // DDG lite format may vary — try a more general link extraction
+          const generalLinkRegex = /<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+          let generalMatch;
+          while ((generalMatch = generalLinkRegex.exec(html)) !== null) {
+            const href = generalMatch[1];
+            const text = generalMatch[2].replace(/<[^>]+>/g, '').trim();
+            if (href.startsWith('http') && text.length > 5 && !href.includes('duckduckgo.com')) {
+              results.push({ title: text, url: href, snippet: '' });
+            }
+          }
+
+          if (results.length > 0) return { query, provider: 'duckduckgo-html-fallback', results: results.slice(0, n) };
+        } catch (e) {
+          console.warn(`[webSearch] DuckDuckGo HTML failed for "${query}": ${e}`);
+        }
+
+        // ── Strategy 3: DuckDuckGo Instant Answer API (limited but reliable) ──
+        try {
+          const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`;
+          const res = await fetch(url);
+          const data = await res.json() as Record<string, unknown>;
+          
+          if (data.AbstractText) {
+            results.push({ title: String(data.AbstractSource ?? 'Result'), url: String(data.AbstractURL ?? ''), snippet: String(data.AbstractText ?? '') });
+          }
+          const relatedTopics = data.RelatedTopics as Array<{ Text?: string; FirstURL?: string }> ?? [];
+          for (const topic of relatedTopics.slice(0, n)) {
+            if (topic.Text) {
+              results.push({ title: topic.Text.slice(0, 80), url: topic.FirstURL ?? '', snippet: topic.Text });
+            }
+          }
+        } catch (e) {
+          console.warn(`[webSearch] DuckDuckGo API also failed for "${query}": ${e}`);
+        }
+
+        if (results.length === 0) {
+          return {
+            query,
+            provider: 'none',
+            results: [],
+            suggestion: 'No results found. Try a more specific query — for example, search by specific state, city, or industry keyword instead of broad regional terms.',
+          };
+        }
+
+        return { query, provider: 'duckduckgo-api', results: results.slice(0, n) };
       },
     },
 

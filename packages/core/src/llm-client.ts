@@ -159,17 +159,42 @@ export type LLMClient = MultiProviderClient;
 // automatically retries with Groq/Gemini/Cohere/Poolside using their own model IDs.
 
 export function getDefaultLLMConfig(role: string): LLMClientConfig {
+  // Per-role token budgets — each turn in the agentic loop gets this budget,
+  // and agents iterate up to maxIterations (20-25), so total output per task
+  // can be much larger than these per-turn numbers.
+  const tokenBudgets: Record<string, number> = {
+    CEO: 16384,
+    CTO: 16384,
+    COO: 16384,
+    LEAD_DEV: 16384,
+    RESEARCH: 16384,
+    LEAD_RESEARCH: 16384,
+    SALES: 16384,
+    QA_DIRECTOR: 16384,
+    FRONTEND: 8192,
+    BACKEND: 8192,
+    DEVOPS: 8192,
+    QA: 8192,
+    MARKETING: 8192,
+    CUSTOMER_SUCCESS: 8192,
+    DOCS: 8192,
+    OPS: 8192,
+  };
+  const maxTokens = tokenBudgets[role] ?? 8192;
+
   const envKey = `APEX_MODEL_${role}`;
   const envOverride = process.env[envKey];
   if (envOverride) {
-    return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens: 400 };
+    return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens };
   }
 
   const globalModel = process.env.APEX_MODEL;
   if (globalModel) {
-    return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens: 400 };
+    return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens };
   }
 
+  // Default model tier — free-friendly: Groq/Gemini fallback chain catches these
+  // when OpenRouter credits run out
   const tierMap: Record<string, string> = {
     CEO:      'anthropic/claude-sonnet-4-5',
     CTO:      'anthropic/claude-sonnet-4-5',
@@ -190,7 +215,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   };
 
   const model = tierMap[role] ?? 'openai/gpt-4o-mini';
-  return { provider: 'openrouter', model, temperature: 0.7, maxTokens: 400 };
+  return { provider: 'openrouter', model, temperature: 0.7, maxTokens };
 }
 
 // ─── Embedding Generation ─────────────────────────────────────────────────────

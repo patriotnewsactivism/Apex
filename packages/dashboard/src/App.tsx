@@ -11,6 +11,7 @@ import { LogStream } from './components/LogStream.js';
 import { ApprovalQueue } from './components/ApprovalQueue.js';
 import { QuickChat } from './components/QuickChat.js';
 import { Settings } from './components/Settings.js';
+import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
   Network,
