@@ -6,7 +6,18 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 // providers in order if OpenRouter is unavailable (e.g. out of credits) or a
 // provider errors/rate-limits:
 //
-//   OpenRouter → Groq → Gemini → Cohere (trial) → Cohere (prod) → Poolside
+//   OpenRouter → Cerebras → Mistral → Groq → Cohere (trial) →
+//   Cohere (prod) → OpenRouter-Free (Poolside :free model)
+//
+// Direct Gemini fallback was removed 2026-07-14 (permanently dead key, zero
+// quota grant — not a rate limit). See NOTE above the cohere-trial entry.
+//
+// NOTE on Poolside: direct calls to inference.poolside.ai fail (DNS/connection
+// errors — that endpoint doesn't accept direct API access on this plan).
+// Poolside models ARE reachable via OpenRouter's `:free`-suffixed model IDs,
+// which are confirmed to bypass OpenRouter's paid credit balance (cost: 0
+// even at $0 balance) — so this last-resort tier still works when the
+// primary OpenRouter (paid model) tier hits a 402.
 //
 // Each provider uses the standard OpenAI-compatible chat completions shape,
 // so the same request/response mapping logic is reused across all of them.
@@ -21,11 +32,38 @@ const PROVIDERS: Array<{
   extraHeaders?: Record<string, string>;
 }> = [
   { name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  // Cerebras — verified live 2026-07-14. Available models on this account:
+  // gemma-4-31b, zai-glm-4.7, gpt-oss-120b. Using gpt-oss-120b (best quality/speed).
+  { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
+  // Mistral La Plateforme — free tier, 1B tokens/month. Skips automatically
+  // until MISTRAL_API_KEY is configured (same pattern as every other provider).
+  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
-  { name: 'gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-2.0-flash' },
+  // NOTE: direct Gemini fallback (GEMINI_API_KEY -> generativelanguage.googleapis.com)
+  // was REMOVED 2026-07-14 — confirmed permanently dead: this Google Cloud
+  // project/key returns a 429 with `limit: 0` for gemini-2.0-flash free tier,
+  // which is a zero quota GRANT, not a transient rate limit. Re-add only if a
+  // fresh key from a NEW Google AI Studio project (or billing enabled) is
+  // provided and verified live first. Gemini is still reachable via OpenRouter
+  // (see business.ts / APEX_CHARTER.md `google/gemini-2.5-flash` model refs) —
+  // that path goes through OpenRouter's own billing, not this dead key, and is
+  // unaffected by this removal.
   { name: 'cohere-trial', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_TRIAL_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
+  // NOTE: despite the name, COHERE_API_KEY is NOT an actual Cohere production
+  // (paid) key — confirmed live 2026-07-14: Cohere's API itself returns
+  // "You are using a Trial key, which is limited to 1000 API calls / month"
+  // for both COHERE_API_KEY and COHERE_TRIAL_API_KEY. Whoever issued this key
+  // mislabeled it, or it was downgraded. Needs a REAL production key from
+  // https://dashboard.cohere.com/api-keys (Production tab, not Trial) to
+  // actually get higher rate limits — until then this tier will keep 429ing
+  // once the shared trial quota is exhausted.
   { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
-  { name: 'poolside', baseURL: 'https://inference.poolside.ai/v1', apiKeyEnv: 'POOLSIDE_API_KEY', fallbackModel: 'laguna-m.1' },
+  // Poolside — replaces the old direct inference.poolside.ai entry (dead
+  // endpoint, DNS/connection failures). Routed through OpenRouter's free
+  // model tier instead, which is confirmed to work at cost:0 regardless of
+  // OpenRouter's paid credit balance. Reuses OPENROUTER_API_KEY, not
+  // POOLSIDE_API_KEY (direct Poolside API access is not viable on this plan).
+  { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'poolside/laguna-m.1:free' },
 ];
 
 class MultiProviderClient {
@@ -75,8 +113,9 @@ class MultiProviderClient {
       const model = provider.name === 'openrouter' ? this.config.model : (provider.fallbackModel ?? this.config.model);
 
       try {
+        const isOpenRouterFamily = provider.name === 'openrouter' || provider.name === 'openrouter-free';
         const defaultHeaders: Record<string, string> = {};
-        if (provider.name === 'openrouter') {
+        if (isOpenRouterFamily) {
           defaultHeaders['HTTP-Referer'] = 'https://github.com/apex-agent';
           defaultHeaders['X-Title'] = 'APEX Autonomous AI Workforce';
         }
