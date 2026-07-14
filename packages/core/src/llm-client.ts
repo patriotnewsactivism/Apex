@@ -4,9 +4,12 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 //
 // Tries OpenRouter first (best model selection), then falls back through free
 // providers in order if OpenRouter is unavailable (e.g. out of credits) or a
-// provider errors/rate-limits: Groq -> Gemini. Each provider uses the standard
-// OpenAI-compatible chat completions shape, so the same request/response
-// mapping logic is reused across all of them.
+// provider errors/rate-limits:
+//
+//   OpenRouter → Groq → Gemini → Cohere (trial) → Cohere (prod) → Poolside
+//
+// Each provider uses the standard OpenAI-compatible chat completions shape,
+// so the same request/response mapping logic is reused across all of them.
 
 const PROVIDERS: Array<{
   name: string;
@@ -14,10 +17,15 @@ const PROVIDERS: Array<{
   apiKeyEnv: string;
   // Free providers only support specific model IDs — remap on fallback.
   fallbackModel?: string;
+  // Some providers need specific headers
+  extraHeaders?: Record<string, string>;
 }> = [
   { name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY' },
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
   { name: 'gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-2.0-flash' },
+  { name: 'cohere-trial', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_TRIAL_API_KEY', fallbackModel: 'command-r-plus' },
+  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus' },
+  { name: 'poolside', baseURL: 'https://inference.poolside.ai/v1', apiKeyEnv: 'POOLSIDE_API_KEY', fallbackModel: 'poolside/laguna-m.1' },
 ];
 
 class MultiProviderClient {
@@ -67,12 +75,19 @@ class MultiProviderClient {
       const model = provider.name === 'openrouter' ? this.config.model : (provider.fallbackModel ?? this.config.model);
 
       try {
+        const defaultHeaders: Record<string, string> = {};
+        if (provider.name === 'openrouter') {
+          defaultHeaders['HTTP-Referer'] = 'https://github.com/apex-agent';
+          defaultHeaders['X-Title'] = 'APEX Autonomous AI Workforce';
+        }
+        if (provider.extraHeaders) {
+          Object.assign(defaultHeaders, provider.extraHeaders);
+        }
+
         const client = new OpenAI({
           apiKey,
           baseURL: this.config.baseUrl && provider.name === 'openrouter' ? this.config.baseUrl : provider.baseURL,
-          defaultHeaders: provider.name === 'openrouter'
-            ? { 'HTTP-Referer': 'https://github.com/apex-agent', 'X-Title': 'APEX Autonomous AI Workforce' }
-            : undefined,
+          defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
         });
 
         const res = await client.chat.completions.create({
@@ -141,7 +156,7 @@ export type LLMClient = MultiProviderClient;
 // ─── Default model configs per agent tier ────────────────────────────────────
 //
 // Primary model IDs are OpenRouter-style; if OpenRouter fails, the client
-// automatically retries with Groq/Gemini using their own model IDs.
+// automatically retries with Groq/Gemini/Cohere/Poolside using their own model IDs.
 
 export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const envKey = `APEX_MODEL_${role}`;

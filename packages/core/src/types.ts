@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 // All LLM calls are routed through OpenRouter (openrouter.ai).
 // The "provider" field is kept for future extensibility but defaults to 'openrouter'.
-export type LLMProvider = 'openrouter' | 'openai' | 'anthropic' | 'google';
+export type LLMProvider = 'openrouter' | 'openai' | 'anthropic' | 'google' | 'cohere' | 'poolside';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
