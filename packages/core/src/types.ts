@@ -40,6 +40,10 @@ export interface LLMClientConfig {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+  // Agent role (e.g. 'LEAD_DEV', 'QA') — used to pick role-appropriate models
+  // when falling back to a provider that doesn't support the primary
+  // OpenRouter model ID (e.g. routing coding roles to Mistral's Devstral/Codestral).
+  role?: string;
 }
 
 // ─── Tools ────────────────────────────────────────────────────────────────────

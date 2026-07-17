@@ -110,7 +110,23 @@ class MultiProviderClient {
         continue;
       }
 
-      const model = provider.name === 'openrouter' ? this.config.model : (provider.fallbackModel ?? this.config.model);
+      // Role-aware model selection for Mistral: route coding-heavy roles to
+      // Devstral (agentic coding) / Codestral (code review), everything else
+      // to the high-throughput mistral-small-2506 (5 RPS vs mistral-large's 0.07 RPS).
+      // Model IDs confirmed live on this Mistral org account 2026-07-16.
+      const CODING_ROLES = ['LEAD_DEV', 'BACKEND', 'DEVOPS', 'FRONTEND'];
+      const QA_ROLES = ['QA', 'QA_DIRECTOR'];
+      let model: string;
+      if (provider.name === 'openrouter') {
+        model = this.config.model;
+      } else if (provider.name === 'mistral') {
+        const role = this.config.role;
+        if (role && QA_ROLES.includes(role)) model = 'codestral-2508';
+        else if (role && CODING_ROLES.includes(role)) model = 'devstral-2512';
+        else model = 'mistral-small-2506';
+      } else {
+        model = provider.fallbackModel ?? this.config.model;
+      }
 
       try {
         const isOpenRouterFamily = provider.name === 'openrouter' || provider.name === 'openrouter-free';
@@ -224,12 +240,12 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const envKey = `APEX_MODEL_${role}`;
   const envOverride = process.env[envKey];
   if (envOverride) {
-    return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens };
+    return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens, role };
   }
 
   const globalModel = process.env.APEX_MODEL;
   if (globalModel) {
-    return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens };
+    return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens, role };
   }
 
   // Default model tier — free-friendly: Groq/Gemini fallback chain catches these
@@ -254,7 +270,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   };
 
   const model = tierMap[role] ?? 'openai/gpt-4o-mini';
-  return { provider: 'openrouter', model, temperature: 0.7, maxTokens };
+  return { provider: 'openrouter', model, temperature: 0.7, maxTokens, role };
 }
 
 // ─── Embedding Generation ─────────────────────────────────────────────────────
@@ -306,3 +322,4 @@ export async function createEmbedding(text: string): Promise<number[]> {
 
   return response.data[0].embedding;
 }
+
