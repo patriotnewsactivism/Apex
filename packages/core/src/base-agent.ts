@@ -95,16 +95,32 @@ export abstract class BaseAgent {
     await this.logger.info(`${this.name} starting autonomous loop`);
     this.setStatus('idle');
 
-    while (this.running) {
-      const task = await this.taskQueue.dequeue();
-      if (!task) {
-        await new Promise((r) => setTimeout(r, 2000)); // Poll every 2s
-        continue;
-      }
+    let consecutiveErrors = 0;
 
-      this.currentTaskId = task.id;
-      await this.executeTask(task.id, task.title, task.description, task.context ?? {});
-      this.currentTaskId = undefined;
+    while (this.running) {
+      try {
+        const task = await this.taskQueue.dequeue();
+        if (!task) {
+          await new Promise((r) => setTimeout(r, 2000)); // Poll every 2s
+          continue;
+        }
+
+        consecutiveErrors = 0;
+        this.currentTaskId = task.id;
+        await this.executeTask(task.id, task.title, task.description, task.context ?? {});
+        this.currentTaskId = undefined;
+      } catch (err) {
+        // NEVER let a transient error (DB blip, pooler hiccup, etc.) kill this agent's
+        // loop permanently. Log it, back off, and keep polling. Previously an uncaught
+        // error here would reject start()'s promise, the caller would only log it
+        // (agent.start().catch(...)), and this agent's queue would stall forever.
+        consecutiveErrors++;
+        const msg = err instanceof Error ? err.message : String(err);
+        await this.logger.error(`Polling loop error (will retry): ${msg}`, err).catch(() => {});
+        this.currentTaskId = undefined;
+        const backoff = Math.min(2000 * Math.pow(2, consecutiveErrors), 30000);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
     }
   }
 
