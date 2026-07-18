@@ -113,6 +113,21 @@ export const messages = pgTable('messages', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+// ─── Researched Leads (Lead Research Agent output) ────────────────────────────
+
+export const researchedLeads = pgTable('researched_leads', {
+  id: text('id').primaryKey(),
+  companyName: text('company_name').notNull(),
+  website: text('website'), // used for de-dup checks
+  industry: text('industry'),
+  city: text('city'),
+  fitReason: text('fit_reason').notNull(), // why it matches the ICP pain point
+  outreachAngle: text('outreach_angle'),
+  status: text('status').notNull().default('new'), // new | contacted | qualified | rejected
+  researchedByAgentId: text('researched_by_agent_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const agentRelations = relations(agents, ({ one, many }) => ({
@@ -158,6 +173,10 @@ export const messageRelations = relations(messages, ({ one }) => ({
   to: one(agents, { fields: [messages.toAgentId], references: [agents.id], relationName: 'receivedMessages' }),
 }));
 
+export const researchedLeadRelations = relations(researchedLeads, ({ one }) => ({
+  researchedByAgent: one(agents, { fields: [researchedLeads.researchedByAgentId], references: [agents.id] }),
+}));
+
 // ─── Type Exports ─────────────────────────────────────────────────────────────
 
 export type Agent = typeof agents.$inferSelect;
@@ -171,3 +190,5 @@ export type NewMemory = typeof memories.$inferInsert;
 export type Log = typeof logs.$inferSelect;
 export type Approval = typeof approvals.$inferSelect;
 export type Message = typeof messages.$inferSelect;
+export type ResearchedLead = typeof researchedLeads.$inferSelect;
+export type NewResearchedLead = typeof researchedLeads.$inferInsert;

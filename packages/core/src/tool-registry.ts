@@ -407,6 +407,77 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    // Persist a qualified outbound lead found by the Lead Research Agent
+    {
+      name: 'saveResearchedLead',
+      description:
+        "Save a qualified outbound lead to the researched_leads table. Call this once per qualifying company found via web search — do NOT just describe leads in your final answer, they must be persisted here to count as pipeline output. Checks for an existing row with the same website first and skips the insert if found (returns duplicate: true) so the team never double-works a company.",
+      schema: z.object({
+        companyName: z.string().describe('Real company name as found in search results'),
+        website: z.string().optional().describe('Company website URL, used for de-dup'),
+        industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa, Real Estate'),
+        city: z.string().optional(),
+        fitReason: z.string().describe('Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)'),
+        outreachAngle: z.string().optional().describe('Suggested angle for the first outreach message'),
+      }),
+      requiresApproval: false,
+      async execute({ companyName, website, industry, city, fitReason, outreachAngle }, ctx) {
+        const { randomUUID } = await import('crypto');
+        const { db, researchedLeads } = await import('@workspace/db');
+        const { eq } = await import('drizzle-orm');
+
+        if (website) {
+          const existing = await db
+            .select()
+            .from(researchedLeads)
+            .where(eq(researchedLeads.website, website))
+            .limit(1);
+          if (existing.length > 0) {
+            return { duplicate: true, existingLeadId: existing[0].id, companyName };
+          }
+        }
+
+        const id = randomUUID();
+        await db.insert(researchedLeads).values({
+          id,
+          companyName,
+          website,
+          industry,
+          city,
+          fitReason,
+          outreachAngle,
+          status: 'new',
+          researchedByAgentId: ctx.agentId,
+          createdAt: new Date(),
+        });
+
+        return { saved: true, leadId: id, companyName };
+      },
+    },
+
+    // Read the researched leads pipeline (for Sales/BizDev review, status reporting)
+    {
+      name: 'listResearchedLeads',
+      description:
+        'List researched/qualified outbound leads from the researched_leads table, most recent first. Use to review pipeline status honestly instead of guessing counts.',
+      schema: z.object({
+        status: z.string().optional().describe('Filter by status: new | contacted | qualified | rejected'),
+        limit: z.number().optional().describe('Max rows (default 25)'),
+      }),
+      requiresApproval: false,
+      async execute({ status, limit }) {
+        const { db, researchedLeads } = await import('@workspace/db');
+        const { eq, desc } = await import('drizzle-orm');
+
+        const query = db.select().from(researchedLeads);
+        const rows = status
+          ? await query.where(eq(researchedLeads.status, status)).orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25)
+          : await query.orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25);
+
+        return rows;
+      },
+    },
+
     // Request peer review from another specialized role
     {
       name: 'requestPeerReview',
