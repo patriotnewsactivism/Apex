@@ -143,15 +143,31 @@ class MultiProviderClient {
           apiKey,
           baseURL: this.config.baseUrl && provider.name === 'openrouter' ? this.config.baseUrl : provider.baseURL,
           defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
+          timeout: 75_000, // hard cap: a hung provider must not freeze the whole agent forever
+          maxRetries: 0, // we handle fallback across providers ourselves; don't double-retry inside one provider
         });
 
-        const res = await client.chat.completions.create({
-          model,
-          messages: openaiMessages,
-          tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
-          temperature: this.config.temperature ?? 0.7,
-          max_tokens: this.config.maxTokens ?? 400,
-        });
+        // Belt-and-suspenders timeout: the client-level `timeout` above should abort
+        // the underlying HTTP request, but wrap the call in our own race too so a
+        // provider that hangs somewhere the SDK's own timeout doesn't cover (e.g. a
+        // stalled stream, a hung DNS lookup) can never block this agent's loop forever.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 75_000);
+        let res;
+        try {
+          res = await client.chat.completions.create(
+            {
+              model,
+              messages: openaiMessages,
+              tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
+              temperature: this.config.temperature ?? 0.7,
+              max_tokens: this.config.maxTokens ?? 400,
+            },
+            { signal: controller.signal },
+          );
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         const choice = res.choices[0];
         const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).flatMap((tc) => {
