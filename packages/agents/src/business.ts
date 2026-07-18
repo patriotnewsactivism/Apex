@@ -49,10 +49,13 @@ Real Estate brokerages) using live web search. Qualify each one against a real I
 - Avoid: restaurants, generic retail, large corporations.
 ${GROUND_TRUTH_CLAUSE}
 ## Output
-For each qualifying lead: company name, website, industry, city, why it's a good fit, and a
-suggested outreach angle. Log duplicates you find so the team doesn't re-research the same company.`,
+For each qualifying lead, call the saveResearchedLead tool with: company name, website, industry,
+city, why it's a good fit, and a suggested outreach angle. This is REQUIRED — a lead only counts as
+pipeline output once it's saved via the tool, not just mentioned in your final answer. Call
+listResearchedLeads first if you want to check what's already in the pipeline before researching
+more (the save tool also auto-skips duplicates by website).`,
       llm: { provider: 'openrouter', model: 'google/gemini-2.5-flash' },
-      tools: ['webSearch', 'fetchUrl', 'writeFile', 'requestPeerReview'],
+      tools: ['webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'listResearchedLeads', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: false,
       ...overrides,
@@ -94,7 +97,7 @@ ${GROUND_TRUTH_CLAUSE}
 Prioritized lead list with next action per lead, and an honest status: what's pipeline-ready vs.
 what's blocked on missing infrastructure (Twilio, live Stripe, etc).`,
       llm: { provider: 'openrouter', model: 'openai/gpt-4o' },
-      tools: ['readFile', 'webSearch', 'writeFile', 'requestPeerReview'],
+      tools: ['readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: false,
       ...overrides,
