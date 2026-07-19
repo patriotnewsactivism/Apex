@@ -139,7 +139,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         content: z.string().describe('File content to write'),
         append: z.boolean().optional().describe('Append instead of overwrite'),
       }),
-      requiresApproval: true,
+      // Reversible via git (working-tree edit only, no execution/push/deploy) — auto-approved
+      // to cut approval-fatigue. runShell/runInSandbox (actual command execution) and any
+      // push/deploy/production action remain gated. See tool-registry.ts approval split, 2026-07-19.
+      requiresApproval: false,
       async execute({ path, content, append }, ctx) {
         const abs = resolve(workspaceRoot, path);
         if (!abs.startsWith(workspaceRoot)) throw new Error('Path outside workspace');
