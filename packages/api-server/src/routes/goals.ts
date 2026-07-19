@@ -8,6 +8,7 @@ const submitGoalSchema = z.object({
   title: z.string().min(3).max(200),
   description: z.string().min(10),
   priority: z.number().int().min(1).max(10).optional().default(5),
+  projectId: z.string().min(2).max(60).optional(), // scopes this goal to a project in the registry (GET /api/projects)
 });
 
 export function createGoalsRouter(ceo: ApexCEO) {
@@ -33,8 +34,8 @@ export function createGoalsRouter(ceo: ApexCEO) {
       return res.status(400).json({ error: parsed.error.flatten() });
     }
 
-    const { title, description, priority } = parsed.data;
-    const goalId = await ceo.submitGoal(title, description, priority);
+    const { title, description, priority, projectId } = parsed.data;
+    const goalId = await ceo.submitGoal(title, description, priority, projectId);
     return res.status(201).json({ goalId, message: 'Goal submitted to APEX CEO' });
   });
 

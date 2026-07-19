@@ -72,11 +72,15 @@ export class ApexCEO extends BaseAgent {
     });
   }
 
-  /** Submit a new top-level goal to APEX */
-  async submitGoal(title: string, description: string, priority = 5): Promise<string> {
+  /** Submit a new top-level goal to APEX.
+   * projectId (optional, added 2026-07-18) scopes this goal to a project in
+   * the registry (see lib/db/src/schema.ts `projects` table) -- omit for
+   * legacy/ungrouped goals, matching the nullable column. */
+  async submitGoal(title: string, description: string, priority = 5, projectId?: string): Promise<string> {
     const goalId = randomUUID();
     await db.insert(goals).values({
       id: goalId,
+      projectId: projectId ?? null,
       title,
       description,
       status: 'active',
