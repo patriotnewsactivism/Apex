@@ -344,6 +344,16 @@ export abstract class BaseAgent {
       }
     }
 
+    // Timeout: previously this just returned false, leaving the task's
+    // status permanently stuck at 'awaiting_approval' (getPending() only
+    // ever queries 'pending'/'in_progress' -- a timed-out approval meant
+    // the task silently vanished from the queue forever, requiring a human
+    // to be watching and clicking within 5 minutes or the work was lost).
+    // Fixed 2026-07-18: mark the approval row rejected and resume the task
+    // so the agent's own loop sees the rejection and can react (retry,
+    // report back, try a different approach) instead of the run just dying.
+    await db.update(approvals).set({ status: 'rejected' }).where(eq(approvals.id, approvalId));
+    await this.taskQueue.resume(taskId);
     return false; // Timeout = reject
   }
 
