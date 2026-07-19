@@ -58,6 +58,10 @@ more (the save tool also auto-skips duplicates by website).`,
       tools: ['webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'listResearchedLeads', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: false,
+      // CEO's task-decomposition instructions have it dispatchSwarm one
+      // instance per state/city for broad research asks -- run several at
+      // once instead of one state at a time.
+      concurrency: 4,
       ...overrides,
     });
   }

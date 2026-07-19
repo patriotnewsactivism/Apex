@@ -114,6 +114,12 @@ export interface AgentConfig {
   tools: string[]; // tool names this agent is allowed to use
   maxIterations?: number; // safety limit for autonomous loops
   approvalRequired?: boolean; // gate all actions through human approval
+  // Max tasks this agent instance will run concurrently from its own queue.
+  // Default 1 preserves existing strictly-sequential behavior. Bump this for
+  // roles that receive dispatchSwarm fan-outs (e.g. QA_DIRECTOR, LEAD_RESEARCH)
+  // so N independent swarm instances actually execute in parallel instead of
+  // queuing up behind one another.
+  concurrency?: number;
 }
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────

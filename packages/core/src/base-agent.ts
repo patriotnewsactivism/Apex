@@ -34,8 +34,16 @@ export abstract class BaseAgent {
   protected logger: AgentLogger;
   protected taskQueue: TaskQueue;
   protected status: AgentStatus = 'idle';
-  protected currentTaskId?: string;
+  // Task IDs this instance currently has in flight. Plural because with
+  // concurrency > 1 this agent may be executing several swarm-dispatched
+  // tasks at once. Only used as a best-effort tag for log lines that don't
+  // pass an explicit taskId (executeTask itself always threads the real
+  // taskId through explicitly, so this is a fallback only).
+  protected currentTaskIds: Set<string> = new Set();
   private running = false;
+  // How many tasks this instance will pull off its own queue and run at
+  // once. Default 1 = old strictly-sequential behavior.
+  private concurrency: number;
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -49,13 +57,18 @@ export abstract class BaseAgent {
       emitApexEvent({
         type: 'log',
         agentId: config.id,
-        taskId: this.currentTaskId,
+        // Best-effort: with concurrency > 1 there can be several in-flight
+        // tasks. Real log lines from executeTask pass their own taskId
+        // explicitly (see logger.info(msg, taskId) calls) and aren't
+        // affected by this fallback.
+        taskId: [...this.currentTaskIds][0],
         level,
         message,
         timestamp: Date.now(),
       });
     });
     this.taskQueue = new TaskQueue(config.id);
+    this.concurrency = Math.max(1, config.concurrency ?? 1);
   }
 
   get id() { return this.config.id; }
@@ -89,26 +102,58 @@ export abstract class BaseAgent {
     this.setStatus('idle');
   }
 
-  /** Start the autonomous execution loop */
+  /** Start the autonomous execution loop.
+   *
+   * Runs up to `this.concurrency` tasks from this agent's own queue at once.
+   * This is what makes dispatchSwarm's fan-out actually parallel: a swarm
+   * dispatched to a role creates N independent task rows, but previously
+   * this loop dequeued and fully awaited one task before ever looking at the
+   * next, so N swarm instances for the same role just queued up behind each
+   * other. Concurrency=1 (the default for most roles) preserves that old
+   * behavior exactly; roles that receive swarms set a higher concurrency. */
   async start(): Promise<void> {
     this.running = true;
-    await this.logger.info(`${this.name} starting autonomous loop`);
+    await this.logger.info(
+      `${this.name} starting autonomous loop (concurrency=${this.concurrency})`,
+    );
     this.setStatus('idle');
 
     let consecutiveErrors = 0;
+    const inFlight = new Map<string, Promise<void>>();
 
     while (this.running) {
       try {
-        const task = await this.taskQueue.dequeue();
-        if (!task) {
+        // Top up in-flight work up to the concurrency limit.
+        while (this.running && inFlight.size < this.concurrency) {
+          const task = await this.taskQueue.dequeue();
+          if (!task) break;
+
+          consecutiveErrors = 0;
+          this.currentTaskIds.add(task.id);
+          const p = this.executeTask(task.id, task.title, task.description, task.context ?? {})
+            .catch(async (err) => {
+              // executeTask already catches+logs+fails its own errors; this is
+              // just a last-resort guard so a truly unexpected throw can never
+              // take down the whole worker-pool loop.
+              const msg = err instanceof Error ? err.message : String(err);
+              await this.logger.error(`Unhandled task error: ${msg}`, err, task.id).catch(() => {});
+            })
+            .finally(() => {
+              this.currentTaskIds.delete(task.id);
+              inFlight.delete(task.id);
+            });
+          inFlight.set(task.id, p);
+        }
+
+        if (inFlight.size === 0) {
           await new Promise((r) => setTimeout(r, 2000)); // Poll every 2s
           continue;
         }
 
-        consecutiveErrors = 0;
-        this.currentTaskId = task.id;
-        await this.executeTask(task.id, task.title, task.description, task.context ?? {});
-        this.currentTaskId = undefined;
+        // Wait for at least one running task to free up a slot, then loop
+        // back around to top up again (rather than waiting for ALL of them,
+        // which would collapse back to sequential-ish batching).
+        await Promise.race(inFlight.values());
       } catch (err) {
         // NEVER let a transient error (DB blip, pooler hiccup, etc.) kill this agent's
         // loop permanently. Log it, back off, and keep polling. Previously an uncaught
@@ -117,7 +162,6 @@ export abstract class BaseAgent {
         consecutiveErrors++;
         const msg = err instanceof Error ? err.message : String(err);
         await this.logger.error(`Polling loop error (will retry): ${msg}`, err).catch(() => {});
-        this.currentTaskId = undefined;
         const backoff = Math.min(2000 * Math.pow(2, consecutiveErrors), 30000);
         await new Promise((r) => setTimeout(r, backoff));
       }

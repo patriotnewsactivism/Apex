@@ -66,6 +66,10 @@ say so plainly. A short, honest report beats a padded one.`,
       tools: ['fetchUrl', 'sendMessage'],
       maxIterations: 20,
       approvalRequired: false,
+      // dispatchSwarm's primary use case (per ApexCEO's system prompt) is
+      // fanning out beta-tester personas to QA_DIRECTOR — run several
+      // swarm-dispatched instances at once instead of one at a time.
+      concurrency: 4,
       ...overrides,
     });
   }
