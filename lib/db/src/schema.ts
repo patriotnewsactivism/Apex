@@ -18,10 +18,32 @@ export const agents = pgTable('agents', {
   metadata: jsonb('metadata').$type<Record<string, unknown>>(),
 });
 
+// ─── Projects (registry) ───────────────────────────────────────────────────
+//
+// Added 2026-07-18 as part of the Apex reframe: Apex is the autonomous
+// operating system for ALL of Don's ventures, not just BuildMyBot. Every
+// project Apex can operate on gets a row here. goals.projectId (nullable,
+// added below) scopes a goal to one of these — null means "not yet scoped"
+// (legacy/ungrouped goals), not "global/none".
+
+export const projects = pgTable('projects', {
+  id: text('id').primaryKey(), // slug, e.g. 'buildmybot', 'aria', 'codeforge-v2'
+  name: text('name').notNull(),
+  repository: text('repository'), // e.g. 'patriotnewsactivism/buildmybot2'
+  purpose: text('purpose').notNull(),
+  priority: text('priority').notNull().default('normal'), // critical | high | normal | low
+  status: text('status').notNull().default('active'), // active | paused | archived
+  autonomyLevel: text('autonomy_level').notNull().default('supervisor'), // manual | assisted | supervisor | full_autonomous | experimental
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 // ─── Goals ───────────────────────────────────────────────────────────────────
 
 export const goals = pgTable('goals', {
   id: text('id').primaryKey(),
+  projectId: text('project_id'), // FK -> projects.id, nullable for legacy/ungrouped goals
   title: text('title').notNull(),
   description: text('description').notNull(),
   status: text('status').notNull().default('active'), // active | paused | completed | cancelled
@@ -140,9 +162,14 @@ export const agentRelations = relations(agents, ({ one, many }) => ({
   receivedMessages: many(messages, { relationName: 'receivedMessages' }),
 }));
 
+export const projectRelations = relations(projects, ({ many }) => ({
+  goals: many(goals),
+}));
+
 export const goalRelations = relations(goals, ({ many, one }) => ({
   tasks: many(tasks),
   assignedAgent: one(agents, { fields: [goals.assignedAgentId], references: [agents.id] }),
+  project: one(projects, { fields: [goals.projectId], references: [projects.id] }),
 }));
 
 export const taskRelations = relations(tasks, ({ one, many }) => ({

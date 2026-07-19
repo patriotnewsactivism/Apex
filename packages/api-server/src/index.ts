@@ -12,6 +12,7 @@ import { migrate } from '@workspace/db';
 import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
 import { setupWebSocket } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
+import { createProjectsRouter } from './routes/projects.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { createAgentsRouter } from './routes/agents.js';
 import { createLogsRouter } from './routes/logs.js';
@@ -57,6 +58,7 @@ async function main() {
 
   // API Routes
   app.use('/api/goals', createGoalsRouter(ceo));
+  app.use('/api/projects', createProjectsRouter());
   app.use('/api/tasks', createTasksRouter());
   app.use('/api/agents', createAgentsRouter(workforce));
   app.use('/api/logs', createLogsRouter());
