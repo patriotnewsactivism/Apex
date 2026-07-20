@@ -12,7 +12,7 @@ export function createAuthRouter() {
   const router = Router();
 
   router.post('/login', (req, res): void => {
-    const configuredPassword = process.env.APEX_ADMIN_PASSWORD || 'apex123';
+    const configuredPassword = process.env.APEX_ADMIN_PASSWORD || 'Mr03241987$';
     const configuredToken = process.env.APEX_ADMIN_TOKEN || 'apex-admin-secret-token';
 
     const parsed = z.object({ password: z.string() }).safeParse(req.body);
