@@ -225,16 +225,20 @@ export class AgentLogger {
     };
     console.log(`${prefix[level]} [${this.agentId}] ${message}`);
 
-    // Persist to DB
-    await db.insert(logs).values({
-      agentId: this.agentId,
-      taskId,
-      goalId,
-      level,
-      message,
-      data,
-      timestamp: now,
-    });
+    // Persist to DB (safe against offline DB)
+    try {
+      await db.insert(logs).values({
+        agentId: this.agentId,
+        taskId,
+        goalId,
+        level,
+        message,
+        data,
+        timestamp: now,
+      });
+    } catch (err) {
+      // Ignore DB log insert errors in memory mode
+    }
 
     // Fire callback for WebSocket broadcast
     this.onLog?.(level, message, data);
