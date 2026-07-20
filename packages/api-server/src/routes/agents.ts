@@ -20,7 +20,7 @@ export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
         id: agent.id,
         name: agent.name,
         role: agent.role,
-        tier: agent.config.tier,
+        tier: agent.tier,
         status: agent.getStatus(),
         liveStatus: agent.getStatus(),
       }));

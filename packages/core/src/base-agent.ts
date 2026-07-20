@@ -75,6 +75,7 @@ export abstract class BaseAgent {
   get id() { return this.config.id; }
   get name() { return this.config.name; }
   get role() { return this.config.role; }
+  get tier() { return this.config.tier; }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
