@@ -181,3 +181,16 @@ trigger (higher risk, needs Don present per No Unilateral Actions), lint
 learning-system, multiapp, predictive. Still a real gap: no GITHUB_TOKEN
 env var on Apex's live Railway service, so `create_feature_branch`/
 `create_pull_request` tools will fail if invoked.
+
+## Update — 2026-07-20, later same day: MultiApp smoke-test attempt and route correction
+Target application selected: `buildmybot2` / BuildMyBot (`https://github.com/patriotnewsactivism/buildmybot2`) because it is an existing portfolio app and the planned smoke path is read-only after registration.
+
+What was corrected before retesting: the multiapp router is mounted at `/api/applications`, but its child routes were also prefixed with `/applications`, making the dashboard's intended route shape (`GET/POST /api/applications`, `GET /api/applications/:id/health`, `GET /api/applications/shared-insights`) miss the actual handlers. Fixed `packages/api-server/src/routes/multiapp.ts` so the mounted router now exposes the intended route names and removed stale unused imports from that route file.
+
+Smoke-test status:
+- Intended register path/tool: `POST /api/tools/register_application` with `register_application` for `buildmybot2` (approval-marked in the tool registry; manual tools route currently auto-approves). Not completed from this sandbox because outbound HTTPS CONNECT to `apex.donmatthews.live` is blocked by the environment proxy before reaching Apex.
+- Intended health path/tool: `POST /api/tools/app_health_check` with `{ id: "buildmybot2" }`, plus direct route `GET /api/applications/buildmybot2/health` after deployment. Not completed for the same proxy block, so no claim is made that real application status was returned.
+- Intended read-only insights path/tool: `POST /api/tools/shared_insights` with `{ limit: 5 }`, plus direct route `GET /api/applications/shared-insights`. Not completed for the same proxy block, so no claim is made that real shared insights were returned.
+- Delegation/write behavior: deliberately not tested; `delegate_to_application` remains approval-marked and requires approval requirements to be confirmed first.
+
+Remaining limitation: MultiApp is still not functionally verified live. After this route correction is committed/deployed, retest from an environment that can reach the live Apex domain, or use Railway GraphQL/deployment logs plus an allowed internal execution path, then record the real register/health/shared-insights response summaries here before signing off Phase 4 runtime behavior.
