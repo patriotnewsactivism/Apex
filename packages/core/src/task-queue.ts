@@ -173,4 +173,45 @@ export class TaskQueue {
       memTask.errorMessage = null;
     }
   }
+
+  /**
+   * Mark a task awaiting human approval for a gated tool call. Distinct from
+   * block() -- 'awaiting_approval' means a human decision is pending, not
+   * that the task hit an error. Restored 2026-07-20: the "vector-based
+   * memory management and persistent task queue" rewrite (7bfdf3b) dropped
+   * this method (and resume()) while base-agent.ts's requestApproval() still
+   * called them -- a real TS2339 compile break, not a phantom one.
+   */
+  async awaitApproval(taskId: string): Promise<void> {
+    try {
+      await db.update(tasks).set({
+        status: 'awaiting_approval',
+        updatedAt: new Date(),
+      }).where(eq(tasks.id, taskId));
+    } catch (err) {
+      // DB offline: update in memory
+    }
+
+    const memTask = this.memoryQueue.find((t) => t.id === taskId);
+    if (memTask) {
+      memTask.status = 'awaiting_approval';
+    }
+  }
+
+  /** Resume a task after an approval decision (approved or rejected) -- back to pending so dequeue() can pick it up again */
+  async resume(taskId: string): Promise<void> {
+    try {
+      await db.update(tasks).set({
+        status: 'pending',
+        updatedAt: new Date(),
+      }).where(eq(tasks.id, taskId));
+    } catch (err) {
+      // DB offline: update in memory
+    }
+
+    const memTask = this.memoryQueue.find((t) => t.id === taskId);
+    if (memTask) {
+      memTask.status = 'pending';
+    }
+  }
 }
