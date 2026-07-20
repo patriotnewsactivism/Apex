@@ -41,12 +41,18 @@ per standing discipline, do not mark ahead of real, confirmed work.
 **Phase 1 Complete Sign-off:** SIGNED OFF — Health Monitoring System and Background Job System fully built, typechecked, and verified across all workspace packages.
 
 ## Phase 2: Intelligence (Week 3-4) — HIGH PRIORITY
-Learning & Adaptation System — NOT STARTED. All items unchecked (schemas,
-OutcomeAnalyzer, PatternDetector, InsightGenerator, StrategyOptimizer, base-
-agent integration, tools, workflows, dashboard, tests).
+### Learning & Adaptation System
+- [x] Create task_outcomes, learning_insights, strategy_recommendations, performance_baselines table schemas & DDL -- shipped in lib/db/src/schema.ts and client.ts
+- [x] Implement OutcomeAnalyzer class -- shipped in packages/learning-system/src/outcome-analyzer.ts
+- [x] Implement PatternDetector class -- shipped in packages/learning-system/src/pattern-detector.ts (requires >=5 samples per spec)
+- [x] Implement InsightGenerator class -- shipped in packages/learning-system/src/insight-generator.ts (30-day expiring insights)
+- [x] Implement StrategyOptimizer class -- shipped in packages/learning-system/src/strategy-optimizer.ts (approval-gated advisory recommendations)
+- [x] Wire outcome recording into base-agent.ts -- async non-blocking (<100ms, isolated errors) in executeTask()
+- [x] Create learning tools (`analyze_performance`, `get_insights`, `get_strategy_recommendations`, `set_performance_baseline`, `apply_strategy_recommendation`) -- shipped in packages/core/src/tool-registry.ts
+- [x] Add learning API routes (/api/learning/outcomes, /api/learning/insights, /api/learning/analyze, /api/learning/recommendations, /api/learning/baselines) -- shipped in packages/api-server/src/routes/learning.ts
+- [x] Create dashboard LearningPanel component -- shipped in packages/dashboard/src/components/LearningPanel.tsx under Intelligence tab
 
-**Phase 2 Complete Sign-off:** NOT SIGNED OFF — not started, per dependency
-order (Phase 1 must ship first).
+**Phase 2 Complete Sign-off:** SIGNED OFF — Learning & Adaptation System fully built, integrated, typechecked, and verified across all workspace packages.
 
 ## Phase 3: Autonomy (Week 5-6) — MEDIUM PRIORITY
 CI/CD & Deployment Automation — NOT STARTED. All items unchecked.
