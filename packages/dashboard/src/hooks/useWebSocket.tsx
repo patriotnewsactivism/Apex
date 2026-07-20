@@ -30,11 +30,11 @@ const WSContext = createContext<WSContextValue>({
   agentStatuses: {},
 });
 
-const RAILWAY_WS_HOST = 'apex-production-731c.up.railway.app';
-
 function getWsUrl(): string {
   const token = localStorage.getItem('apex_token');
-  const base = `wss://${RAILWAY_WS_HOST}/ws`;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.hostname === 'localhost' ? 'localhost:5000' : window.location.host;
+  const base = `${protocol}//${host}/ws`;
   return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 

@@ -6,13 +6,17 @@ export function createLogsRouter() {
   const router = Router();
 
   router.get('/', async (req, res) => {
-    const { agentId, taskId, level, since, limit = '100' } = req.query;
-    
-    const rows = await db.select().from(logs)
-      .orderBy(desc(logs.timestamp))
-      .limit(parseInt(String(limit), 10));
+    try {
+      const { agentId, taskId, level, since, limit = '100' } = req.query;
+      
+      const rows = await db.select().from(logs)
+        .orderBy(desc(logs.timestamp))
+        .limit(parseInt(String(limit), 10));
 
-    res.json({ logs: rows.reverse() }); // oldest first for display
+      res.json({ logs: rows.reverse() }); // oldest first for display
+    } catch (err) {
+      res.json({ logs: [] });
+    }
   });
 
   return router;

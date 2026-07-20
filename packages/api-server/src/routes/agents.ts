@@ -8,13 +8,24 @@ export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
 
   // GET /api/agents — list all agents with live status
   router.get('/', async (_req, res) => {
-    const dbAgents = await db.select().from(agents);
-    // Merge live status from in-memory agents
-    const agentsWithStatus = dbAgents.map((a) => {
-      const live = workforce.get(a.id);
-      return { ...a, liveStatus: live?.getStatus() ?? a.status };
-    });
-    res.json({ agents: agentsWithStatus });
+    try {
+      const dbAgents = await db.select().from(agents);
+      const agentsWithStatus = dbAgents.map((a) => {
+        const live = workforce.get(a.id);
+        return { ...a, liveStatus: live?.getStatus() ?? a.status };
+      });
+      res.json({ agents: agentsWithStatus });
+    } catch (err) {
+      const memoryAgents = Array.from(workforce.values()).map((agent) => ({
+        id: agent.getId(),
+        name: agent.getName(),
+        role: agent.getRole(),
+        tier: agent.getTier(),
+        status: agent.getStatus(),
+        liveStatus: agent.getStatus(),
+      }));
+      res.json({ agents: memoryAgents });
+    }
   });
 
   // GET /api/agents/:id

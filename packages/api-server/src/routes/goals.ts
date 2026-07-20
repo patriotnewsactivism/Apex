@@ -16,8 +16,12 @@ export function createGoalsRouter(ceo: ApexCEO) {
 
   // GET /api/goals — list all goals
   router.get('/', async (_req, res) => {
-    const allGoals = await db.select().from(goals).orderBy(desc(goals.createdAt));
-    res.json({ goals: allGoals });
+    try {
+      const allGoals = await db.select().from(goals).orderBy(desc(goals.createdAt));
+      res.json({ goals: allGoals });
+    } catch (err) {
+      res.json({ goals: [] });
+    }
   });
 
   // GET /api/goals/:id — get goal by id

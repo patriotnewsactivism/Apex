@@ -8,22 +8,26 @@ export function createTasksRouter() {
 
   // GET /api/tasks
   router.get('/', async (req, res) => {
-    const { status, agentId, goalId, limit = '50' } = req.query;
+    try {
+      const { status, agentId, goalId, limit = '50' } = req.query;
 
-    const conditions = [];
-    if (status) conditions.push(eq(tasks.status, String(status)));
-    if (agentId) conditions.push(eq(tasks.assignedAgentId, String(agentId)));
-    if (goalId) conditions.push(eq(tasks.goalId, String(goalId)));
+      const conditions = [];
+      if (status) conditions.push(eq(tasks.status, String(status)));
+      if (agentId) conditions.push(eq(tasks.assignedAgentId, String(agentId)));
+      if (goalId) conditions.push(eq(tasks.goalId, String(goalId)));
 
-    // BUG FIX 2026-07-18: `conditions` was built above but never applied — this
-    // previously always returned the N most recent tasks system-wide regardless
-    // of status/agentId/goalId filters. Now actually filters when any are given.
-    let query = db.select().from(tasks).$dynamic();
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions));
+      // BUG FIX 2026-07-18: `conditions` was built above but never applied — this
+      // previously always returned the N most recent tasks system-wide regardless
+      // of status/agentId/goalId filters. Now actually filters when any are given.
+      let query = db.select().from(tasks).$dynamic();
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions));
+      }
+      const allTasks = await query.orderBy(desc(tasks.createdAt)).limit(parseInt(String(limit), 10));
+      res.json({ tasks: allTasks });
+    } catch (err) {
+      res.json({ tasks: [] });
     }
-    const allTasks = await query.orderBy(desc(tasks.createdAt)).limit(parseInt(String(limit), 10));
-    res.json({ tasks: allTasks });
   });
 
   // GET /api/tasks/:id
