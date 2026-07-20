@@ -27,6 +27,8 @@ import { createHealthRouter } from './routes/health.js';
 import { createJobsRouter } from './routes/jobs.js';
 import { createLearningRouter } from './routes/learning.js';
 import { createCicdRouter } from './routes/cicd.js';
+import { createMultiappRouter } from './routes/multiapp.js';
+import { createPredictiveRouter } from './routes/predictive.js';
 import { requireAdminAuth } from './middleware/auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
@@ -89,6 +91,8 @@ async function main() {
   app.use('/api/jobs', createJobsRouter());
   app.use('/api/learning', createLearningRouter());
   app.use('/api/cicd', createCicdRouter());
+  app.use('/api/applications', createMultiappRouter());
+  app.use('/api/predictive', createPredictiveRouter());
 
   // WebSocket
   setupWebSocket(server);

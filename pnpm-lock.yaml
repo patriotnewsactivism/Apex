@@ -209,6 +209,12 @@ importers:
       '@workspace/learning-system':
         specifier: workspace:*
         version: link:../learning-system
+      '@workspace/multiapp':
+        specifier: workspace:*
+        version: link:../multiapp
+      '@workspace/predictive':
+        specifier: workspace:*
+        version: link:../predictive
       cors:
         specifier: ^2.8.5
         version: 2.8.6
@@ -302,6 +308,12 @@ importers:
       '@workspace/learning-system':
         specifier: workspace:*
         version: link:../learning-system
+      '@workspace/multiapp':
+        specifier: workspace:*
+        version: link:../multiapp
+      '@workspace/predictive':
+        specifier: workspace:*
+        version: link:../predictive
       '@xenova/transformers':
         specifier: ^2.17.2
         version: 2.17.2
@@ -388,6 +400,44 @@ importers:
         version: 5.9.3
 
   packages/learning-system:
+    dependencies:
+      '@workspace/db':
+        specifier: workspace:*
+        version: link:../../lib/db
+      drizzle-orm:
+        specifier: 'catalog:'
+        version: 0.45.2(postgres@3.4.9)
+      zod:
+        specifier: 'catalog:'
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.6.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  packages/multiapp:
+    dependencies:
+      '@workspace/db':
+        specifier: workspace:*
+        version: link:../../lib/db
+      drizzle-orm:
+        specifier: 'catalog:'
+        version: 0.45.2(postgres@3.4.9)
+      zod:
+        specifier: 'catalog:'
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.6.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
+  packages/predictive:
     dependencies:
       '@workspace/db':
         specifier: workspace:*

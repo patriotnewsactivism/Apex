@@ -19,6 +19,10 @@ COPY packages/learning-system/package.json ./packages/learning-system/
 COPY packages/learning-system/tsconfig.json ./packages/learning-system/
 COPY packages/cicd-automation/package.json ./packages/cicd-automation/
 COPY packages/cicd-automation/tsconfig.json ./packages/cicd-automation/
+COPY packages/multiapp/package.json ./packages/multiapp/
+COPY packages/multiapp/tsconfig.json ./packages/multiapp/
+COPY packages/predictive/package.json ./packages/predictive/
+COPY packages/predictive/tsconfig.json ./packages/predictive/
 COPY packages/core/package.json ./packages/core/
 COPY packages/core/tsconfig.json ./packages/core/
 COPY packages/agents/package.json ./packages/agents/
@@ -56,6 +60,10 @@ COPY packages/learning-system/package.json ./packages/learning-system/
 COPY packages/learning-system/tsconfig.json ./packages/learning-system/
 COPY packages/cicd-automation/package.json ./packages/cicd-automation/
 COPY packages/cicd-automation/tsconfig.json ./packages/cicd-automation/
+COPY packages/multiapp/package.json ./packages/multiapp/
+COPY packages/multiapp/tsconfig.json ./packages/multiapp/
+COPY packages/predictive/package.json ./packages/predictive/
+COPY packages/predictive/tsconfig.json ./packages/predictive/
 COPY packages/core/package.json ./packages/core/
 COPY packages/core/tsconfig.json ./packages/core/
 COPY packages/agents/package.json ./packages/agents/
@@ -72,6 +80,8 @@ COPY --from=builder /app/packages/health-monitor ./packages/health-monitor
 COPY --from=builder /app/packages/background-jobs ./packages/background-jobs
 COPY --from=builder /app/packages/learning-system ./packages/learning-system
 COPY --from=builder /app/packages/cicd-automation ./packages/cicd-automation
+COPY --from=builder /app/packages/multiapp ./packages/multiapp
+COPY --from=builder /app/packages/predictive ./packages/predictive
 COPY --from=builder /app/packages/core ./packages/core
 COPY --from=builder /app/packages/agents ./packages/agents
 COPY --from=builder /app/packages/api-server ./packages/api-server
