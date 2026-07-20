@@ -45,6 +45,11 @@ RUN pnpm --filter @workspace/dashboard run build
 # ─── Stage 2: Production Runtime ──────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
+# git is needed at runtime by @workspace/cicd-automation's ci-workspace.ts,
+# which maintains a separate scratch checkout (with devDependencies) to run
+# real typecheck/build verification -- isolated from this --prod-only image.
+RUN apk add --no-cache git
+
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 
 WORKDIR /app
