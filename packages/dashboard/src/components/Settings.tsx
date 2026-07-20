@@ -101,6 +101,15 @@ const INTEGRATIONS: IntegrationConfig[] = [
     docsUrl: 'https://github.com/marketplace/models',
   },
   {
+    id: 'qwen',
+    name: 'Qwen Cloud',
+    description: 'Alibaba Model Studio -- qwen3-coder-plus (pay-as-you-go)',
+    icon: <Cpu size={18} />,
+    category: 'ai',
+    envVars: [{ key: 'QWENCLOUD_API_KEY', label: 'API Key', placeholder: 'sk-ws-...', secret: true }],
+    docsUrl: 'https://modelstudio.console.alibabacloud.com',
+  },
+  {
     id: 'slack',
     name: 'Slack Webhook',
     description: 'Send notifications to Slack',
