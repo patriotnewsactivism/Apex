@@ -181,3 +181,17 @@ trigger (higher risk, needs Don present per No Unilateral Actions), lint
 learning-system, multiapp, predictive. Still a real gap: no GITHUB_TOKEN
 env var on Apex's live Railway service, so `create_feature_branch`/
 `create_pull_request` tools will fail if invoked.
+
+## Update — 2026-07-20: Background jobs smoke-test attempt blocked by sandbox/network access
+Attempted the requested background-jobs functional smoke test using the existing authenticated API route path from `packages/api-server/src/routes/jobs.ts` rather than adding new code:
+
+1. `POST /api/auth/login` against `https://apex.donmatthews.live` and `https://apex-production-731c.up.railway.app` — **not completed** from this sandbox. Node `fetch` failed DNS resolution with `EAI_AGAIN`; direct `curl` attempts reached the sandbox proxy but were blocked with `CONNECT tunnel failed, response 403`. No bearer token was obtained and no secret values were written to this checklist.
+2. Intended safe success job route: `POST /api/jobs` with `jobType: "health_check"`, one-time `scheduledAt`, low priority, and a smoke-test payload. This would exercise the persisted `scheduled_jobs` row and the scheduler/executor path without creating external side effects.
+3. Intended persistence check: `GET /api/jobs?limit=10` and/or a direct read of `scheduled_jobs`. **Not completed** because the live route was unreachable and the expected cached production DB URL file (`/tmp/apex_db_url.txt`) was absent in this sandbox.
+4. Intended execution check: wait across the scheduler's 60s poll interval, then call `GET /api/jobs/:id/history?limit=10` to verify a `job_execution_log` row with `status: "completed"`. **Not completed** for the same network/DB-access reason.
+5. Intended safe failure/retry check: `POST /api/jobs` with `jobType: "task_delegation"` while deliberately omitting `targetAgentId`; `TaskDelegationJob` is coded to throw `TaskDelegationJob requires targetAgentId`, which should log failed executions and advance retry backoff until `maxRetries` marks the scheduled job failed. **Not completed live** because the route was unreachable.
+6. Dashboard visibility check: dashboard API helpers/types expose `api.jobs.list/create/toggle/remove/history`, but `packages/dashboard/src/App.tsx` has no Jobs nav item/page in the active `navItems`, `pages`, or `pageTitles` maps. Result: job data is wired at the client API layer but no visible dashboard jobs panel is currently exposed.
+
+**Result:** background-jobs runtime behavior remains unverified live as of 2026-07-20. The code paths inspected still indicate the correct route/tool/scheduler pieces exist, but no new rows were created in `scheduled_jobs` or `job_execution_log` during this attempt.
+
+**What remains unverified:** successful one-time job execution, persisted execution history, actual retry/backoff state transitions, final failed status after max retries, and any live dashboard presentation once a Jobs panel is added or exposed.
