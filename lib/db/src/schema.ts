@@ -373,31 +373,6 @@ export const riskAssessments = pgTable('risk_assessments', {
 
 // ─── Relations ────────────────────────────────────────────────────────────────
 
-// ─── Health Metrics & Component Health (Phase 1 observability) ────────────
-//
-// Backing store for HealthMonitor (packages/health-monitor) so health
-// snapshots persist across restarts and a future AlertManager can look at
-// trends, not just the current instant. Written by a future scheduled
-// HealthCheckJob (not built yet) -- these tables exist now so that job has
-// somewhere real to write to, and so the /api/health routes (not built yet)
-// have somewhere real to read from.
-
-export const healthMetrics = pgTable('health_metrics', {
-  id: serial('id').primaryKey(),
-  overall: text('overall').notNull(), // healthy | degraded | critical
-  checks: jsonb('checks').$type<Record<string, { status: string; detail: string; ms?: number }>>().notNull(),
-  recordedAt: timestamp('recorded_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
-
-export const componentHealth = pgTable('component_health', {
-  id: serial('id').primaryKey(),
-  component: text('component').notNull(), // database | llmProviders | memorySystem | toolRegistry | taskBacklog | webSocket
-  status: text('status').notNull(), // healthy | degraded | critical
-  detail: text('detail').notNull(),
-  latencyMs: integer('latency_ms'),
-  checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
-
 export const agentRelations = relations(agents, ({ one, many }) => ({
   parent: one(agents, { fields: [agents.parentId], references: [agents.id] }),
   children: many(agents),
