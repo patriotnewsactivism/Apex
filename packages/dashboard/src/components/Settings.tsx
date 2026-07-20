@@ -92,6 +92,15 @@ const INTEGRATIONS: IntegrationConfig[] = [
     docsUrl: 'https://openrouter.ai/keys',
   },
   {
+    id: 'github-models',
+    name: 'GitHub Models',
+    description: 'Free tier via GitHub PAT (openai/gpt-4.1, codestral, llama-4-maverick)',
+    icon: <GitBranch size={18} />,
+    category: 'ai',
+    envVars: [{ key: 'GITHUB_TOKEN_4', label: 'GitHub PAT', placeholder: 'ghp_...', secret: true }],
+    docsUrl: 'https://github.com/marketplace/models',
+  },
+  {
     id: 'slack',
     name: 'Slack Webhook',
     description: 'Send notifications to Slack',
