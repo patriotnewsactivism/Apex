@@ -3,7 +3,7 @@ import { resolve, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
 
-config({ path: resolve(process.cwd(), '../../.env') });
+config({ path: resolve(process.cwd(), '.env') });
 
 import express from 'express';
 import cors from 'cors';
@@ -48,8 +48,12 @@ async function main() {
   const mode = process.env.APEX_APPROVAL_MODE;
   const approvalRequired = mode === 'strict' ? true : mode === 'off' ? false : undefined;
   const workforce = createWorkforce({ approvalRequired });
-  await initializeWorkforce(workforce);
-  console.log(`✅ Workforce initialized (${workforce.size} agents)`);
+  try {
+    await initializeWorkforce(workforce);
+    console.log(`✅ Workforce initialized (${workforce.size} agents)`);
+  } catch (err) {
+    console.warn('⚠️  Workforce DB state sync skipped:', err instanceof Error ? err.message : String(err));
+  }
   console.log(`   Approval mode: ${mode === 'strict' ? 'STRICT (all agents gated)' : mode === 'off' ? 'FULLY AUTONOMOUS (no gating)' : 'PER-ROLE DEFAULT (dev/infra gated, business/orchestration autonomous)'}`);
 
   const ceo = workforce.get('apex-ceo-001') as ApexCEO;
@@ -108,7 +112,7 @@ async function main() {
 
   if (dashboardDist) {
     app.use(express.static(dashboardDist));
-    app.get('*', (req, res, next) => {
+    app.use((req, res, next) => {
       if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
         return next();
       }
