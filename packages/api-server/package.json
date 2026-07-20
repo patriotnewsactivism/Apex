@@ -17,6 +17,8 @@
     "@workspace/db": "workspace:*",
     "@workspace/health-monitor": "workspace:*",
     "@workspace/learning-system": "workspace:*",
+    "@workspace/multiapp": "workspace:*",
+    "@workspace/predictive": "workspace:*",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "drizzle-orm": "catalog:",

@@ -14,6 +14,7 @@ import { Settings } from './components/Settings.js';
 import { HealthPanel } from './components/HealthPanel.js';
 import { LearningPanel } from './components/LearningPanel.js';
 import { PipelinePanel } from './components/PipelinePanel.js';
+import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
@@ -29,6 +30,7 @@ import {
   Settings as SettingsIcon,
   Activity,
   GitBranch,
+  FolderGit2,
   Menu,
   X,
 } from 'lucide-react';
@@ -84,6 +86,7 @@ function Sidebar({
     { id: 'health', label: 'Health System', icon: <Activity size={18} /> },
     { id: 'learning', label: 'Intelligence', icon: <Brain size={18} /> },
     { id: 'pipeline', label: 'CI/CD Pipeline', icon: <GitBranch size={18} /> },
+    { id: 'multiapp', label: 'Portfolio Orchestration', icon: <FolderGit2 size={18} /> },
     { id: 'settings', label: 'Settings', icon: <SettingsIcon size={18} /> },
   ];
 
@@ -430,6 +433,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     health: <HealthPanel />,
     learning: <LearningPanel />,
     pipeline: <PipelinePanel />,
+    multiapp: <MultiAppPanel />,
     settings: <Settings />,
   };
 
@@ -443,6 +447,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     health: '🩺 System Health & Observability',
     learning: '🧠 Learning & Adaptation System',
     pipeline: '🚀 CI/CD & Deployment Pipeline',
+    multiapp: '📂 Portfolio & Multi-App Orchestration',
     settings: '⚙️ Settings & Integrations',
   };
 

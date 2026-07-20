@@ -120,6 +120,21 @@ export const api = {
       apiFetch<{ success: boolean; rolledBackId: string }>('/cicd/rollback', { method: 'POST', body: JSON.stringify({ deploymentId }) }),
     history: () => apiFetch<PipelineRunRow[]>('/cicd/history'),
   },
+
+  multiapp: {
+    list: () => apiFetch<ApplicationRow[]>('/applications'),
+    register: (id: string, name: string, repoUrl: string) =>
+      apiFetch<{ success: boolean }>('/applications', { method: 'POST', body: JSON.stringify({ id, name, repoUrl }) }),
+    health: (id: string) => apiFetch<{ status: string; healthScore: number }>(`/applications/${id}/health`),
+    delegate: (id: string, taskName: string) =>
+      apiFetch<{ taskId: number; appId: string }>(`/applications/${id}/delegate`, { method: 'POST', body: JSON.stringify({ taskName }) }),
+    sharedInsights: () => apiFetch<Array<{ id: string; key: string; value: string }>>('/applications/shared-insights'),
+  },
+
+  predictive: {
+    forecast: () => apiFetch<PredictiveForecastRow>('/predictive/tasks-forecast'),
+    risks: () => apiFetch<{ latestAssessment: RiskAssessmentRow; riskHistory: RiskAssessmentRow[] }>('/predictive/risks'),
+  },
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -383,6 +398,36 @@ export interface CicdStatusSummary {
   latestLint: LintRunReportRow | null;
   deployments: DeploymentRow[];
 }
+
+// ─── MultiApp & Predictive Types ──────────────────────────────────────────────
+
+export interface ApplicationRow {
+  id: string;
+  name: string;
+  repoUrl: string;
+  status: string;
+  healthScore: number;
+  lastSyncAt: string;
+  createdAt: string;
+}
+
+export interface PredictiveForecastRow {
+  id: string;
+  metricName: string;
+  forecastValue: number;
+  confidence: number;
+  window: string;
+  createdAt: string;
+}
+
+export interface RiskAssessmentRow {
+  id: string;
+  target: string;
+  riskLevel: string;
+  details: string;
+  createdAt: string;
+}
+
 
 
 

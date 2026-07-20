@@ -1161,6 +1161,106 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         };
       },
     },
+
+    // ─── MultiApp: Register application ──────────────────────────────────
+    {
+      name: 'register_application',
+      description: 'Register a new portfolio application repository for multi-application orchestration. Requires approval.',
+      schema: z.object({
+        id: z.string().describe('Application identifier (e.g. "buildmybot2", "aria")'),
+        name: z.string().describe('Display name'),
+        repoUrl: z.string().describe('GitHub repository URL'),
+      }),
+      requiresApproval: true,
+      async execute({ id, name, repoUrl }) {
+        const { ApplicationManager } = await import('@workspace/multiapp');
+        const manager = new ApplicationManager();
+        const success = await manager.registerApplication(id, name, repoUrl);
+        return { success, id, name };
+      },
+    },
+
+    // ─── MultiApp: Check application health ──────────────────────────────
+    {
+      name: 'app_health_check',
+      description: 'Check health status and sync reachability of a registered portfolio application.',
+      schema: z.object({
+        id: z.string().describe('Application identifier'),
+      }),
+      requiresApproval: false,
+      async execute({ id }) {
+        const { ApplicationManager } = await import('@workspace/multiapp');
+        const manager = new ApplicationManager();
+        const health = await manager.checkHealth(id);
+        return health;
+      },
+    },
+
+    // ─── MultiApp: Delegate to application ───────────────────────────────
+    {
+      name: 'delegate_to_application',
+      description: 'Delegate a task to a registered target application repository. Requires approval.',
+      schema: z.object({
+        appId: z.string().describe('Target application ID'),
+        taskName: z.string().describe('Task name / specification'),
+      }),
+      requiresApproval: true,
+      async execute({ appId, taskName }) {
+        const { OrchestrationEngine } = await import('@workspace/multiapp');
+        const engine = new OrchestrationEngine();
+        const result = await engine.delegateToApplication(appId, taskName);
+        return result;
+      },
+    },
+
+    // ─── MultiApp: Read shared insights ─────────────────────────────────
+    {
+      name: 'shared_insights',
+      description: 'Get read-only cross-application shared insights and global learnings.',
+      schema: z.object({
+        limit: z.number().optional().describe('Max rows (default 20)'),
+      }),
+      requiresApproval: false,
+      async execute({ limit }) {
+        const { KnowledgeBridge } = await import('@workspace/multiapp');
+        const bridge = new KnowledgeBridge();
+        const insights = await bridge.getSharedInsights(limit);
+        return insights;
+      },
+    },
+
+    // ─── Predictive: Forecast tasks ──────────────────────────────────────
+    {
+      name: 'forecast_tasks',
+      description: 'Compute predictive task completion velocity and success rate forecasts with confidence intervals.',
+      schema: z.object({
+        metricName: z.string().optional().describe('Metric name (default "task_completion_rate")'),
+        window: z.string().optional().describe('Time window (default "7d")'),
+      }),
+      requiresApproval: false,
+      async execute({ metricName, window }) {
+        const { Forecaster } = await import('@workspace/predictive');
+        const forecaster = new Forecaster();
+        const result = await forecaster.forecastTasks(metricName, window);
+        return result;
+      },
+    },
+
+    // ─── Predictive: Risk assessment ─────────────────────────────────────
+    {
+      name: 'risk_assessment',
+      description: 'Run automated risk detection across portfolio applications and systemic performance trends.',
+      schema: z.object({
+        target: z.string().optional().describe('Risk assessment target (default "global")'),
+      }),
+      requiresApproval: false,
+      async execute({ target }) {
+        const { RiskDetector } = await import('@workspace/predictive');
+        const detector = new RiskDetector();
+        const result = await detector.riskAssessment(target);
+        return result;
+      },
+    },
   ];
 }
 
