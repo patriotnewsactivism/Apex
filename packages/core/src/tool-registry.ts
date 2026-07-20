@@ -1031,6 +1031,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           return { success: false, error: `No recommendation found with id ${recommendationId}` };
         }
 
+        if (existing.status !== 'approved') {
+          return {
+            success: false,
+            error: `Recommendation ${recommendationId} must be approved before it can be applied (current status: ${existing.status})`,
+            requiresApproval: true,
+            currentStatus: existing.status,
+          };
+        }
+
         await db.update(strategyRecommendations).set({
           status: 'applied',
           reviewedAt: new Date(),

@@ -51,6 +51,8 @@ per standing discipline, do not mark ahead of real, confirmed work.
 - [x] Create learning tools (`analyze_performance`, `get_insights`, `get_strategy_recommendations`, `set_performance_baseline`, `apply_strategy_recommendation`) -- shipped in packages/core/src/tool-registry.ts
 - [x] Add learning API routes (/api/learning/outcomes, /api/learning/insights, /api/learning/analyze, /api/learning/recommendations, /api/learning/baselines) -- shipped in packages/api-server/src/routes/learning.ts
 - [x] Create dashboard LearningPanel component -- shipped in packages/dashboard/src/components/LearningPanel.tsx under Intelligence tab
+- [x] 2026-07-20 learning verification hardening: `/api/learning/analyze` now uses the documented PatternDetector minimum sample size of 5, not the previous manual-route override of 3; `apply_strategy_recommendation` remains approval-gated and now refuses to apply recommendations unless their DB status is already `approved`.
+- [ ] 2026-07-20 live learning smoke test pending: this sandbox has no `DATABASE_URL`, no `/tmp/apex_db_url.txt`, and no `APEX_ADMIN_PASSWORD`, so I could not identify/trigger production task executions or call the protected live `/api/learning/analyze` route. Exact live sample size verified from this sandbox: 0. Generated live insight IDs verified from this sandbox: none. Required follow-up with live secrets: confirm >=5 similar real `task_outcomes` rows for one role/error cohort, call `/api/learning/analyze`, record the returned `patterns[].sampleSize`, new `learning_insights.id` values, and new pending `strategy_recommendations.id` values here.
 
 **Phase 2 Complete Sign-off:** SIGNED OFF — Learning & Adaptation System fully built, integrated, typechecked, and verified across all workspace packages.
 
