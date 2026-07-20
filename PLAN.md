@@ -33,3 +33,13 @@ ones are done.
 ## Open questions for Don (not yet decided)
 - `packages/dashboard` vs `packages/frontend` — which is canonical?
 - Should the stale `Apex-Agent` repo (if it still exists) be archived?
+
+---
+
+## 2026-07-20 update: this file is superseded
+Everything in "Next" above is now built: dashboard (`packages/dashboard`,
+builds clean, `HealthPanel`/`LearningPanel`/`PipelinePanel`/`MultiAppPanel`),
+login (`/api/auth/login` + bearer middleware), live view (REST routes +
+WebSocket), command/override input (goals/approvals routes). See
+`ROADMAP.md` + `CHECKLIST.md` for current status — this file is now
+historical context only, not an active plan.

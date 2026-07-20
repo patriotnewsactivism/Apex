@@ -97,13 +97,59 @@ estimates; it will get built incrementally, one verified deliverable at a
 time, starting from the top of Phase 1 (health_metrics/component_health
 schema + the standalone HealthMonitor class next).
 
-## Honest status note (2026-07-20 - Final Update)
-ALL PHASES 1, 2, 3, & 4 COMPLETE AND SIGNED OFF! Shipped and verified:
-1. Phase 1 (Foundation): `health_metrics`, `component_health`, `scheduled_jobs`, `job_execution_log` DB schemas, `@workspace/health-monitor`, `@workspace/background-jobs`, health & job tools, API routes, `HealthPanel` UI, 60s background polling loop.
-2. Phase 2 (Intelligence): `task_outcomes`, `learning_insights`, `strategy_recommendations`, `performance_baselines` DB schemas, `@workspace/learning-system`, non-blocking outcome recording, learning tools, API routes, `LearningPanel` UI.
-3. Phase 3 (Autonomy): `pipeline_runs`, `test_results`, `lint_results`, `deployments` DB schemas, `@workspace/cicd-automation`, CI/CD agent tools, API routes, `PipelinePanel` UI.
-4. Phase 4 (Scale & Multi-App): `applications`, `application_tasks`, `predictive_forecasts`, `risk_assessments` DB schemas, `@workspace/multiapp`, `@workspace/predictive`, portfolio & predictive agent tools, API routes, `MultiAppPanel` UI.
-5. Monorepo Quality: 100% clean typecheck (`pnpm run typecheck`) and build (`pnpm run build`) across all 12 workspace packages!
+## Honest status note (2026-07-20 - Final Update) -- CORRECTED, see below
+~~ALL PHASES 1, 2, 3, & 4 COMPLETE AND SIGNED OFF!~~ This claim was written
+into the same push that broke the build (see next section) -- "100% clean
+typecheck" was NOT actually true at the moment this was written. Leaving the
+original text struck through rather than deleted, per honest-reporting
+discipline: don't erase an inflated claim, correct it in place.
+
+## Honest status note (2026-07-20, later same day -- verification pass)
+Real, independently-verified status, not self-reported:
+
+**What's actually built:** all 4 phases of scaffolding genuinely exist --
+12 packages, ~20 DB tables, dozens of tool-registry entries, API routes,
+dashboard panels. This is a massive amount of real code, built directly by
+Don outside this agent, across ~30 commits in one extended session.
+
+**What broke it:** `packages/core` failed to compile -- `base-agent.ts`'s
+approval-gate flow called `taskQueue.awaitApproval()`/`taskQueue.resume()`,
+but the same push's "vector-based memory + persistent task queue" commit
+(7bfdf3b) had replaced `task-queue.ts` with `block()`/`unblock()` instead,
+and the caller was never updated. Real TS2339 compile errors, not a
+phantom/self-reported pass. Fixed by restoring the two missing methods
+(commit a7a8224) -- NOT by repurposing block/unblock, because `tasks.status`
+has both `'blocked'` and `'awaiting_approval'` as distinct enum values and
+squashing them would've silently corrupted status semantics used elsewhere.
+
+**Independently verified after the fix (2026-07-20):**
+- `pnpm run typecheck` — clean, all 12 packages, genuinely re-run.
+- `pnpm run build` — clean, dashboard builds (446KB bundle).
+- Deployed live on Railway, commit a7a8224, status SUCCESS.
+- **Functional smoke test (not just compile):** `curl https://apex.donmatthews.live/api/health`
+  with a real admin token returned live data: `database: healthy (122ms)`,
+  `llmProviders: all 7 providers ok`, `memorySystem: healthy`,
+  `toolRegistry: 44 tools registered`, `webSocket: running, 2 clients
+  connected`, `taskBacklog: 10 pending/in_progress tasks`. Phase 1's health
+  monitoring is genuinely live and reporting real system state, not a stub.
+
+**What's NOT verified (compiles ≠ works):** Phases 2-4's actual runtime
+behavior (learning system producing real insights from >=5 samples,
+CI/CD automation actually running tests/lint/deploys, multi-app
+orchestration actually reaching other repos, predictive forecasts
+producing sane output) has NOT been functionally tested — only confirmed
+to typecheck/build. Background jobs (Phase 1's second half) also untested
+live — only health monitoring got a real smoke test this pass.
+
+**Real next step (not yet started):** this is exactly the "Integration &
+Testing" gate the original checklist calls out as blocking everything below
+Phase 4 (Performance/Load, Security/Governance, Production Deployment,
+Ongoing Ops, Success Validation, Risk Mitigation, Documentation) — none of
+that has been attempted, correctly. Recommend: functionally smoke-test one
+Phase-2-4 feature per session the same way health_check was just verified
+(hit the real route/tool with real data, don't just trust that it compiles),
+starting with background jobs (Phase 1, since it's foundation-adjacent and
+untested) then learning system.
 
 
 
