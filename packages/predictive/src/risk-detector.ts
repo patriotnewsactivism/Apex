@@ -3,7 +3,7 @@
 // Detects systemic portfolio risks, performance bottlenecks, and degradation trends.
 
 import { db, riskAssessments, taskOutcomes } from '@workspace/db';
-import { desc, gte } from 'drizzle-orm';
+import { gte } from 'drizzle-orm';
 import crypto from 'crypto';
 
 export class RiskDetector {
@@ -18,6 +18,7 @@ export class RiskDetector {
     const total = outcomes.length;
     const failures = outcomes.filter((o) => !o.success).length;
     const failureRate = total > 0 ? failures / total : 0;
+    const confidence = total > 0 ? Math.min(0.95, 0.65 + total * 0.025) : 0.3;
 
     let riskLevel = 'low';
     let details = 'All portfolio systems operating within normal parameters.';
@@ -31,7 +32,7 @@ export class RiskDetector {
     }
 
     const riskId = `risk-${crypto.randomUUID().slice(0, 8)}`;
-    const record = {
+    const persistedRecord = {
       id: riskId,
       target,
       riskLevel,
@@ -39,8 +40,15 @@ export class RiskDetector {
       createdAt: new Date(),
     };
 
-    await db.insert(riskAssessments).values(record).catch(() => {});
+    await db.insert(riskAssessments).values(persistedRecord).catch(() => {});
 
-    return record;
+    return {
+      ...persistedRecord,
+      sampleSize: total,
+      failureRate,
+      confidence,
+      advisoryOnly: true,
+      actionsTriggered: [],
+    };
   }
 }

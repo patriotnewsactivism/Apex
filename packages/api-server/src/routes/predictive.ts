@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, predictiveForecasts, riskAssessments } from '@workspace/db';
+import { db, riskAssessments } from '@workspace/db';
 import { Forecaster, RiskDetector } from '@workspace/predictive';
 import { desc } from 'drizzle-orm';
 

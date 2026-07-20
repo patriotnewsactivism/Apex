@@ -181,3 +181,16 @@ trigger (higher risk, needs Don present per No Unilateral Actions), lint
 learning-system, multiapp, predictive. Still a real gap: no GITHUB_TOKEN
 env var on Apex's live Railway service, so `create_feature_branch`/
 `create_pull_request` tools will fail if invoked.
+
+## Update — 2026-07-20: Predictive intelligence smoke-test and guardrail review
+Known input selected for this pass: recent `task_outcomes` rows from the same 7-day window used by `forecast_tasks` and `risk_assessment`, compared against the already-documented 2026-07-20 CI/CD incident where the live pipeline failed immediately because production dependencies omitted TypeScript before the isolated CI workspace fix. That trend should show up as task failures if those outcomes were recorded; if not, the prediction is only measuring agent task outcomes and can miss operational incidents documented elsewhere.
+
+What was changed after review: `forecast_tasks` now returns `sampleSize`, `observedSuccessRate`, a Wilson-style `confidenceInterval`, explicit `advisoryOnly: true`, and `actionsTriggered: []` in addition to the persisted forecast value/confidence. `risk_assessment` now returns `sampleSize`, `failureRate`, `confidence`, explicit `advisoryOnly: true`, and `actionsTriggered: []` in addition to the persisted risk record. The DB insert payload remains limited to columns that actually exist in `predictive_forecasts` and `risk_assessments`.
+
+Useful prediction example: if recent task outcomes include the CI/CD failure rows, a failure rate above 15% should produce at least `medium` risk and above 30% should produce `high` risk, which is directionally consistent with the known broken-pipeline incident. The task forecast's success percentage is useful as a simple recent reliability indicator when `sampleSize` is non-trivial.
+
+Weak prediction example: a tiny or empty sample still produces a forecast, but confidence is intentionally low for empty data and the confidence interval spans 0-100%, so it should be treated as a data-availability warning rather than a real capacity forecast.
+
+Potentially misleading prediction example: the model only reads `task_outcomes`; it does not currently join health metrics, pipeline runs, deployment statuses, or incident notes. A green/low-risk result can therefore be misleading after an operational incident if no corresponding failed task outcomes were recorded.
+
+Runtime verification status: local package and workspace typecheck/build passed after the guardrail additions. A direct live API smoke test against `https://apex.donmatthews.live/api/predictive/*` could not be completed from this sandbox because `/api/auth/login` returned HTTP 403 before a bearer token could be obtained, so the predictive feature is still not fully live-verified with production data in this pass.
