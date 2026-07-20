@@ -35,6 +35,13 @@ const PORT = parseInt(process.env.PORT ?? '5000', 10);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+process.on('uncaughtException', (err) => {
+  console.warn('⚠️  Uncaught exception caught (server protected):', err instanceof Error ? err.message : String(err));
+});
+process.on('unhandledRejection', (reason) => {
+  console.warn('⚠️  Unhandled rejection caught (server protected):', reason instanceof Error ? reason.message : String(reason));
+});
+
 async function main() {
   console.log('🚀 APEX starting up...');
 
@@ -145,32 +152,36 @@ async function main() {
         timestamp: report.timestamp,
       });
 
-      // Update component_health and health_metrics in DB
-      for (const [compName, check] of Object.entries(report.checks)) {
-        await db.insert(componentHealth).values({
-          component: compName,
-          status: check.status,
-          detail: check.detail,
-          lastCheckTime: new Date(),
-          consecutiveFailures: check.status === 'critical' ? 1 : 0,
-        }).onConflictDoUpdate({
-          target: componentHealth.component,
-          set: {
+      // Update component_health and health_metrics in DB (safe against offline DB)
+      try {
+        for (const [compName, check] of Object.entries(report.checks)) {
+          await db.insert(componentHealth).values({
+            component: compName,
             status: check.status,
             detail: check.detail,
             lastCheckTime: new Date(),
-          },
-        }).catch(() => {});
+            consecutiveFailures: check.status === 'critical' ? 1 : 0,
+          }).onConflictDoUpdate({
+            target: componentHealth.component,
+            set: {
+              status: check.status,
+              detail: check.detail,
+              lastCheckTime: new Date(),
+            },
+          });
 
-        await db.insert(healthMetrics).values({
-          component: compName,
-          status: check.status,
-          responseTimeMs: check.ms ?? 0,
-          detail: check.detail,
-          checkedAt: new Date(),
-        }).catch(() => {});
+          await db.insert(healthMetrics).values({
+            component: compName,
+            status: check.status,
+            responseTimeMs: check.ms ?? 0,
+            detail: check.detail,
+            checkedAt: new Date(),
+          });
+        }
+      } catch (err) {
+        // DB offline: ignore time-series write failure
       }
-
+      
       // Evaluate alert rules
       const newAlerts = alertManager.evaluate(report);
       for (const alert of newAlerts) {

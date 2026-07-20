@@ -80,25 +80,29 @@ export abstract class BaseAgent {
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
-    // Upsert agent record
-    await db.insert(agents).values({
-      id: this.config.id,
-      name: this.config.name,
-      role: this.config.role,
-      tier: this.config.tier,
-      parentId: this.config.parentId ?? null,
-      status: 'idle',
-      systemPrompt: this.config.systemPrompt,
-      model: this.config.llm.model,
-      provider: this.config.llm.provider,
-      createdAt: new Date(),
-    }).onConflictDoUpdate({
-      target: agents.id,
-      set: {
+    // Upsert agent record (safe against offline DB)
+    try {
+      await db.insert(agents).values({
+        id: this.config.id,
+        name: this.config.name,
+        role: this.config.role,
+        tier: this.config.tier,
+        parentId: this.config.parentId ?? null,
         status: 'idle',
-        lastActiveAt: new Date(),
-      },
-    });
+        systemPrompt: this.config.systemPrompt,
+        model: this.config.llm.model,
+        provider: this.config.llm.provider,
+        createdAt: new Date(),
+      }).onConflictDoUpdate({
+        target: agents.id,
+        set: {
+          status: 'idle',
+          lastActiveAt: new Date(),
+        },
+      });
+    } catch (err) {
+      // DB offline: initialization in memory mode
+    }
 
     await this.logger.info(`Agent ${this.name} (${this.role}) initialized`);
     this.setStatus('idle');

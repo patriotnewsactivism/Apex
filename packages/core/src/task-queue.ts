@@ -173,4 +173,38 @@ export class TaskQueue {
       memTask.errorMessage = null;
     }
   }
+
+  /** Put a task into awaiting_approval state */
+  async awaitApproval(taskId: string): Promise<void> {
+    try {
+      await db.update(tasks).set({
+        status: 'awaiting_approval',
+        updatedAt: new Date(),
+      }).where(eq(tasks.id, taskId));
+    } catch (err) {
+      // DB offline
+    }
+
+    const memTask = this.memoryQueue.find((t) => t.id === taskId);
+    if (memTask) {
+      memTask.status = 'awaiting_approval';
+    }
+  }
+
+  /** Resume a task from awaiting_approval to in_progress */
+  async resume(taskId: string): Promise<void> {
+    try {
+      await db.update(tasks).set({
+        status: 'in_progress',
+        updatedAt: new Date(),
+      }).where(eq(tasks.id, taskId));
+    } catch (err) {
+      // DB offline
+    }
+
+    const memTask = this.memoryQueue.find((t) => t.id === taskId);
+    if (memTask) {
+      memTask.status = 'in_progress';
+    }
+  }
 }
