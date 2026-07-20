@@ -45,6 +45,15 @@ const PROVIDERS: Array<{
   // Tight per-request token caps on GitHub's side, so placed after the faster
   // free tiers (Cerebras/Mistral/Groq) rather than first.
   { name: 'github-models', baseURL: 'https://models.github.ai/inference', apiKeyEnv: 'GITHUB_TOKEN_4', fallbackModel: 'openai/gpt-4.1' },
+  // Qwen Cloud (Alibaba Cloud Model Studio, international dashscope-intl
+  // endpoint -- NOT the mainland Bailian console, separate account/URL).
+  // PAID pay-as-you-go, NOT free -- placed after every free tier above
+  // (Cerebras/Mistral/Groq/GitHub Models) and before Cohere's trial-limited
+  // tier, since it's cheap and has no shared-quota risk. Live-verified
+  // 2026-07-20 against the real endpoint (qwen-max, qwen3-coder-plus both
+  // returned real completions). Pricing confirmed official 2026-07-20:
+  // qwen3-coder-plus $1.00/$5.00 per 1M (base tier), qwen-max $1.60/$6.40.
+  { name: 'qwen-cloud', baseURL: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3-coder-plus' },
   // NOTE: direct Gemini fallback (GEMINI_API_KEY -> generativelanguage.googleapis.com)
   // was REMOVED 2026-07-14 — confirmed permanently dead: this Google Cloud
   // project/key returns a 429 with `limit: 0` for gemini-2.0-flash free tier,
