@@ -184,16 +184,15 @@ learning-system, multiapp, predictive. Still a real gap: no GITHUB_TOKEN
 env var on Apex's live Railway service, so `create_feature_branch`/
 `create_pull_request` tools will fail if invoked.
 
-## Update — 2026-07-20: Background jobs smoke-test attempt blocked by sandbox/network access
-Attempted the requested background-jobs functional smoke test using the existing authenticated API route path from `packages/api-server/src/routes/jobs.ts` rather than adding new code:
+## Update — 2026-07-20, later same day: MultiApp smoke-test attempt and route correction
+Target application selected: `buildmybot2` / BuildMyBot (`https://github.com/patriotnewsactivism/buildmybot2`) because it is an existing portfolio app and the planned smoke path is read-only after registration.
 
-1. `POST /api/auth/login` against `https://apex.donmatthews.live` and `https://apex-production-731c.up.railway.app` — **not completed** from this sandbox. Node `fetch` failed DNS resolution with `EAI_AGAIN`; direct `curl` attempts reached the sandbox proxy but were blocked with `CONNECT tunnel failed, response 403`. No bearer token was obtained and no secret values were written to this checklist.
-2. Intended safe success job route: `POST /api/jobs` with `jobType: "health_check"`, one-time `scheduledAt`, low priority, and a smoke-test payload. This would exercise the persisted `scheduled_jobs` row and the scheduler/executor path without creating external side effects.
-3. Intended persistence check: `GET /api/jobs?limit=10` and/or a direct read of `scheduled_jobs`. **Not completed** because the live route was unreachable and the expected cached production DB URL file (`/tmp/apex_db_url.txt`) was absent in this sandbox.
-4. Intended execution check: wait across the scheduler's 60s poll interval, then call `GET /api/jobs/:id/history?limit=10` to verify a `job_execution_log` row with `status: "completed"`. **Not completed** for the same network/DB-access reason.
-5. Intended safe failure/retry check: `POST /api/jobs` with `jobType: "task_delegation"` while deliberately omitting `targetAgentId`; `TaskDelegationJob` is coded to throw `TaskDelegationJob requires targetAgentId`, which should log failed executions and advance retry backoff until `maxRetries` marks the scheduled job failed. **Not completed live** because the route was unreachable.
-6. Dashboard visibility check: dashboard API helpers/types expose `api.jobs.list/create/toggle/remove/history`, but `packages/dashboard/src/App.tsx` has no Jobs nav item/page in the active `navItems`, `pages`, or `pageTitles` maps. Result: job data is wired at the client API layer but no visible dashboard jobs panel is currently exposed.
+What was corrected before retesting: the multiapp router is mounted at `/api/applications`, but its child routes were also prefixed with `/applications`, making the dashboard's intended route shape (`GET/POST /api/applications`, `GET /api/applications/:id/health`, `GET /api/applications/shared-insights`) miss the actual handlers. Fixed `packages/api-server/src/routes/multiapp.ts` so the mounted router now exposes the intended route names and removed stale unused imports from that route file.
 
-**Result:** background-jobs runtime behavior remains unverified live as of 2026-07-20. The code paths inspected still indicate the correct route/tool/scheduler pieces exist, but no new rows were created in `scheduled_jobs` or `job_execution_log` during this attempt.
+Smoke-test status:
+- Intended register path/tool: `POST /api/tools/register_application` with `register_application` for `buildmybot2` (approval-marked in the tool registry; manual tools route currently auto-approves). Not completed from this sandbox because outbound HTTPS CONNECT to `apex.donmatthews.live` is blocked by the environment proxy before reaching Apex.
+- Intended health path/tool: `POST /api/tools/app_health_check` with `{ id: "buildmybot2" }`, plus direct route `GET /api/applications/buildmybot2/health` after deployment. Not completed for the same proxy block, so no claim is made that real application status was returned.
+- Intended read-only insights path/tool: `POST /api/tools/shared_insights` with `{ limit: 5 }`, plus direct route `GET /api/applications/shared-insights`. Not completed for the same proxy block, so no claim is made that real shared insights were returned.
+- Delegation/write behavior: deliberately not tested; `delegate_to_application` remains approval-marked and requires approval requirements to be confirmed first.
 
-**What remains unverified:** successful one-time job execution, persisted execution history, actual retry/backoff state transitions, final failed status after max retries, and any live dashboard presentation once a Jobs panel is added or exposed.
+Remaining limitation: MultiApp is still not functionally verified live. After this route correction is committed/deployed, retest from an environment that can reach the live Apex domain, or use Railway GraphQL/deployment logs plus an allowed internal execution path, then record the real register/health/shared-insights response summaries here before signing off Phase 4 runtime behavior.
