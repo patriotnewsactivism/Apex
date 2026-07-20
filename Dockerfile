@@ -11,6 +11,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig
 # Copy all package manifests
 COPY lib/db/package.json ./lib/db/
 COPY lib/db/tsconfig.json ./lib/db/
+COPY packages/health-monitor/package.json ./packages/health-monitor/
+COPY packages/health-monitor/tsconfig.json ./packages/health-monitor/
 COPY packages/core/package.json ./packages/core/
 COPY packages/core/tsconfig.json ./packages/core/
 COPY packages/agents/package.json ./packages/agents/
@@ -40,6 +42,8 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json .npmrc ./
 COPY lib/db/package.json ./lib/db/
 COPY lib/db/tsconfig.json ./lib/db/
+COPY packages/health-monitor/package.json ./packages/health-monitor/
+COPY packages/health-monitor/tsconfig.json ./packages/health-monitor/
 COPY packages/core/package.json ./packages/core/
 COPY packages/core/tsconfig.json ./packages/core/
 COPY packages/agents/package.json ./packages/agents/
@@ -52,6 +56,7 @@ RUN pnpm install --no-frozen-lockfile --ignore-scripts --prod
 
 # Copy built source
 COPY --from=builder /app/lib ./lib
+COPY --from=builder /app/packages/health-monitor ./packages/health-monitor
 COPY --from=builder /app/packages/core ./packages/core
 COPY --from=builder /app/packages/agents ./packages/agents
 COPY --from=builder /app/packages/api-server ./packages/api-server
