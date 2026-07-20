@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import { db, pipelineRuns } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
+import { ensureCiWorkspace } from './ci-workspace.js';
 
 const execAsync = promisify(exec);
 
@@ -22,8 +23,11 @@ export interface BuildResult {
 export class BuildManager {
   private workspaceRoot: string;
 
-  constructor(workspaceRoot: string = process.cwd()) {
-    this.workspaceRoot = workspaceRoot;
+  private explicitRoot: boolean;
+
+  constructor(workspaceRoot?: string) {
+    this.explicitRoot = workspaceRoot !== undefined;
+    this.workspaceRoot = workspaceRoot ?? process.cwd();
   }
 
   async buildProject(runId?: string): Promise<BuildResult> {
@@ -31,8 +35,9 @@ export class BuildManager {
     const startTime = Date.now();
 
     try {
+      const cwd = this.explicitRoot ? this.workspaceRoot : await ensureCiWorkspace();
       const { stdout, stderr } = await execAsync('pnpm run build', {
-        cwd: this.workspaceRoot,
+        cwd,
         timeout: 180_000,
       });
 
@@ -52,7 +57,7 @@ export class BuildManager {
           durationMs,
         })
         .where(eq(pipelineRuns.id, activeRunId))
-        .catch(() => {});
+        .catch((err) => console.error('[BuildManager] pipelineRuns success update failed:', err));
 
       return result;
     } catch (err: any) {
@@ -77,7 +82,7 @@ export class BuildManager {
           error: errorMsg,
         })
         .where(eq(pipelineRuns.id, activeRunId))
-        .catch(() => {});
+        .catch((err) => console.error('[BuildManager] pipelineRuns failure update failed:', err));
 
       return result;
     }

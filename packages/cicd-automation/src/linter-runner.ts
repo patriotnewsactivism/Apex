@@ -7,6 +7,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { db, lintResults } from '@workspace/db';
 import crypto from 'crypto';
+import { ensureCiWorkspace } from './ci-workspace.js';
 
 const execAsync = promisify(exec);
 
@@ -22,16 +23,20 @@ export interface LintRunReport {
 export class LinterRunner {
   private workspaceRoot: string;
 
-  constructor(workspaceRoot: string = process.cwd()) {
-    this.workspaceRoot = workspaceRoot;
+  private explicitRoot: boolean;
+
+  constructor(workspaceRoot?: string) {
+    this.explicitRoot = workspaceRoot !== undefined;
+    this.workspaceRoot = workspaceRoot ?? process.cwd();
   }
 
   async runLint(runId?: string): Promise<LintRunReport> {
     const activeRunId = runId ?? `lint-${crypto.randomUUID().slice(0, 8)}`;
 
     try {
+      const cwd = this.explicitRoot ? this.workspaceRoot : await ensureCiWorkspace();
       const { stdout, stderr } = await execAsync('pnpm run typecheck', {
-        cwd: this.workspaceRoot,
+        cwd,
         timeout: 120_000,
       });
 

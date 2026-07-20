@@ -7,6 +7,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { db, testResults, pipelineRuns } from '@workspace/db';
 import crypto from 'crypto';
+import { ensureCiWorkspace } from './ci-workspace.js';
 
 const execAsync = promisify(exec);
 
@@ -25,8 +26,11 @@ export interface TestRunReport {
 export class TestRunner {
   private workspaceRoot: string;
 
-  constructor(workspaceRoot: string = process.cwd()) {
-    this.workspaceRoot = workspaceRoot;
+  private explicitRoot: boolean;
+
+  constructor(workspaceRoot?: string) {
+    this.explicitRoot = workspaceRoot !== undefined;
+    this.workspaceRoot = workspaceRoot ?? process.cwd();
   }
 
   /** Run test/typecheck suite asynchronously and log results. */
@@ -46,12 +50,17 @@ export class TestRunner {
         startedAt: new Date(),
       })
       .onConflictDoNothing()
-      .catch(() => {});
+      .catch((err) => console.error('[TestRunner] pipelineRuns insert failed:', err));
 
     try {
+      // Run against an isolated CI checkout (with devDependencies installed)
+      // rather than this live process's own prod-only node_modules -- see
+      // ci-workspace.ts for why. An explicit constructor override (used in
+      // tests) is respected as-is.
+      const cwd = this.explicitRoot ? this.workspaceRoot : await ensureCiWorkspace();
       // Execute strict typecheck as primary quality gate
       const { stdout, stderr } = await execAsync('pnpm run typecheck', {
-        cwd: this.workspaceRoot,
+        cwd,
         timeout: 120_000,
       });
 
@@ -88,7 +97,7 @@ export class TestRunner {
           durationMs,
         })
         .where(eq(pipelineRuns.id, activeRunId))
-        .catch(() => {});
+        .catch((err) => console.error('[TestRunner] pipelineRuns success update failed:', err));
 
       return report;
     } catch (err: any) {
@@ -127,7 +136,7 @@ export class TestRunner {
           error: errorMsg,
         })
         .where(eq(pipelineRuns.id, activeRunId))
-        .catch(() => {});
+        .catch((err) => console.error('[TestRunner] pipelineRuns failure update failed:', err));
 
       return report;
     }
