@@ -52,7 +52,7 @@ export function createLearningRouter(): Router {
   // POST /api/learning/analyze — trigger manual pattern detection & insight generation
   router.post('/analyze', async (_req, res) => {
     try {
-      const detector = new PatternDetector(3); // Min 3 for manual trigger
+      const detector = new PatternDetector(5); // Match documented >=5 sample threshold
       const patterns = await detector.detectPatterns(30);
 
       const insightGen = new InsightGenerator();

@@ -51,6 +51,8 @@ per standing discipline, do not mark ahead of real, confirmed work.
 - [x] Create learning tools (`analyze_performance`, `get_insights`, `get_strategy_recommendations`, `set_performance_baseline`, `apply_strategy_recommendation`) -- shipped in packages/core/src/tool-registry.ts
 - [x] Add learning API routes (/api/learning/outcomes, /api/learning/insights, /api/learning/analyze, /api/learning/recommendations, /api/learning/baselines) -- shipped in packages/api-server/src/routes/learning.ts
 - [x] Create dashboard LearningPanel component -- shipped in packages/dashboard/src/components/LearningPanel.tsx under Intelligence tab
+- [x] 2026-07-20 learning verification hardening: `/api/learning/analyze` now uses the documented PatternDetector minimum sample size of 5, not the previous manual-route override of 3; `apply_strategy_recommendation` remains approval-gated and now refuses to apply recommendations unless their DB status is already `approved`.
+- [ ] 2026-07-20 live learning smoke test pending: this sandbox has no `DATABASE_URL`, no `/tmp/apex_db_url.txt`, and no `APEX_ADMIN_PASSWORD`, so I could not identify/trigger production task executions or call the protected live `/api/learning/analyze` route. Exact live sample size verified from this sandbox: 0. Generated live insight IDs verified from this sandbox: none. Required follow-up with live secrets: confirm >=5 similar real `task_outcomes` rows for one role/error cohort, call `/api/learning/analyze`, record the returned `patterns[].sampleSize`, new `learning_insights.id` values, and new pending `strategy_recommendations.id` values here.
 
 **Phase 2 Complete Sign-off:** SIGNED OFF — Learning & Adaptation System fully built, integrated, typechecked, and verified across all workspace packages.
 
@@ -181,3 +183,16 @@ trigger (higher risk, needs Don present per No Unilateral Actions), lint
 learning-system, multiapp, predictive. Still a real gap: no GITHUB_TOKEN
 env var on Apex's live Railway service, so `create_feature_branch`/
 `create_pull_request` tools will fail if invoked.
+
+## Update — 2026-07-20, later same day: MultiApp smoke-test attempt and route correction
+Target application selected: `buildmybot2` / BuildMyBot (`https://github.com/patriotnewsactivism/buildmybot2`) because it is an existing portfolio app and the planned smoke path is read-only after registration.
+
+What was corrected before retesting: the multiapp router is mounted at `/api/applications`, but its child routes were also prefixed with `/applications`, making the dashboard's intended route shape (`GET/POST /api/applications`, `GET /api/applications/:id/health`, `GET /api/applications/shared-insights`) miss the actual handlers. Fixed `packages/api-server/src/routes/multiapp.ts` so the mounted router now exposes the intended route names and removed stale unused imports from that route file.
+
+Smoke-test status:
+- Intended register path/tool: `POST /api/tools/register_application` with `register_application` for `buildmybot2` (approval-marked in the tool registry; manual tools route currently auto-approves). Not completed from this sandbox because outbound HTTPS CONNECT to `apex.donmatthews.live` is blocked by the environment proxy before reaching Apex.
+- Intended health path/tool: `POST /api/tools/app_health_check` with `{ id: "buildmybot2" }`, plus direct route `GET /api/applications/buildmybot2/health` after deployment. Not completed for the same proxy block, so no claim is made that real application status was returned.
+- Intended read-only insights path/tool: `POST /api/tools/shared_insights` with `{ limit: 5 }`, plus direct route `GET /api/applications/shared-insights`. Not completed for the same proxy block, so no claim is made that real shared insights were returned.
+- Delegation/write behavior: deliberately not tested; `delegate_to_application` remains approval-marked and requires approval requirements to be confirmed first.
+
+Remaining limitation: MultiApp is still not functionally verified live. After this route correction is committed/deployed, retest from an environment that can reach the live Apex domain, or use Railway GraphQL/deployment logs plus an allowed internal execution path, then record the real register/health/shared-insights response summaries here before signing off Phase 4 runtime behavior.
