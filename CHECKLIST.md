@@ -83,14 +83,15 @@ estimates; it will get built incrementally, one verified deliverable at a
 time, starting from the top of Phase 1 (health_metrics/component_health
 schema + the standalone HealthMonitor class next).
 
-## Honest status note (2026-07-20)
-Phase 1 Foundation complete! Shipped and verified:
-1. `health_metrics` & `component_health` DB schemas and DDL in `lib/db/src/schema.ts` and `client.ts`.
-2. `AlertManager` class in `packages/health-monitor/src/alert-manager.ts` with 4 alert rules & auto-resolution.
-3. Health & job tools (`get_system_status`, `get_active_alerts`, `schedule_task`, `list_scheduled_tasks`, `cancel_scheduled_task`, `get_job_history`) in `packages/core/src/tool-registry.ts`.
-4. Health API routes (`/api/health/*`) and Job API routes (`/api/jobs/*`) in `packages/api-server/src/routes/`.
-5. `packages/background-jobs` package with `CronParser`, `JobExecutor`, `JobScheduler`, and 4 handlers (`TaskDelegationJob`, `HealthCheckJob`, `ReportGenerationJob`, `MaintenanceJob`).
-6. Dashboard `HealthPanel` component in `packages/dashboard/src/components/HealthPanel.tsx` with overall banner, component status grid, and active alerts UI.
-7. Main server integration: 60s background health polling loop, DB metrics persistence, alert evaluation, WebSocket event broadcasting (`health:updated`, `health:alert`), and graceful shutdown.
-8. Full monorepo strict typecheck (`pnpm run typecheck`) and build (`pnpm run build`) passing 100% clean.
+## Honest status note (2026-07-20 - Update 2)
+Phase 2 Intelligence complete! Shipped and verified:
+1. `task_outcomes`, `learning_insights`, `strategy_recommendations`, and `performance_baselines` DB schemas & DDL in `lib/db/src/schema.ts` and `client.ts`.
+2. `@workspace/learning-system` package with `OutcomeAnalyzer`, `PatternDetector` (requiring >=5 samples), `InsightGenerator` (30-day expiring insights), and `StrategyOptimizer` (approval-gated recommendations).
+3. `base-agent.ts` non-blocking async outcome recording in `executeTask()` (<100ms, isolated errors).
+4. Learning tools (`analyze_performance`, `get_insights`, `get_strategy_recommendations`, `set_performance_baseline`, `apply_strategy_recommendation`) in `packages/core/src/tool-registry.ts`.
+5. Learning API routes (`/api/learning/*`) in `packages/api-server/src/routes/learning.ts`.
+6. Dashboard `LearningPanel` component in `packages/dashboard/src/components/LearningPanel.tsx` under the Intelligence tab with KPI cards, learning insights feed, and approval-gated strategy recommendations queue.
+7. `Dockerfile` updated to copy and build `@workspace/learning-system`.
+8. Full monorepo strict typecheck (`pnpm run typecheck`) and build (`pnpm run build`) passing 100% clean across all 9 workspace packages!
+
 
