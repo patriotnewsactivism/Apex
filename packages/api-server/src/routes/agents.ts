@@ -17,10 +17,10 @@ export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
       res.json({ agents: agentsWithStatus });
     } catch (err) {
       const memoryAgents = Array.from(workforce.values()).map((agent) => ({
-        id: agent.getId(),
-        name: agent.getName(),
-        role: agent.getRole(),
-        tier: agent.getTier(),
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        tier: agent.config.tier,
         status: agent.getStatus(),
         liveStatus: agent.getStatus(),
       }));
