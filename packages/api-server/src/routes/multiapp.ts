@@ -1,7 +1,5 @@
 import { Router } from 'express';
-import { db, applications, applicationTasks } from '@workspace/db';
 import { ApplicationManager, OrchestrationEngine, KnowledgeBridge } from '@workspace/multiapp';
-import { eq, desc } from 'drizzle-orm';
 
 // ─── MultiApp API Routes ───────────────────────────────────────────────────────
 //
@@ -11,7 +9,7 @@ export function createMultiappRouter(): Router {
   const router = Router();
 
   // GET /api/applications — list registered portfolio applications
-  router.get('/applications', async (_req, res) => {
+  router.get('/', async (_req, res) => {
     try {
       const manager = new ApplicationManager();
       const apps = await manager.getApplications();
@@ -22,7 +20,7 @@ export function createMultiappRouter(): Router {
   });
 
   // POST /api/applications — register a new portfolio application
-  router.post('/applications', async (req, res) => {
+  router.post('/', async (req, res) => {
     try {
       const { id, name, repoUrl } = req.body as { id: string; name: string; repoUrl: string };
       if (!id || !name || !repoUrl) {
@@ -39,7 +37,7 @@ export function createMultiappRouter(): Router {
   });
 
   // GET /api/applications/:id/health — check health of specific application
-  router.get('/applications/:id/health', async (req, res) => {
+  router.get('/:id/health', async (req, res) => {
     try {
       const manager = new ApplicationManager();
       const health = await manager.checkHealth(req.params.id);
@@ -50,7 +48,7 @@ export function createMultiappRouter(): Router {
   });
 
   // POST /api/applications/:id/delegate — delegate a task to an application
-  router.post('/applications/:id/delegate', async (req, res) => {
+  router.post('/:id/delegate', async (req, res) => {
     try {
       const { taskName } = req.body as { taskName: string };
       if (!taskName) {
@@ -67,7 +65,7 @@ export function createMultiappRouter(): Router {
   });
 
   // GET /api/applications/shared-insights — read-only global cross-app learnings
-  router.get('/applications/shared-insights', async (req, res) => {
+  router.get('/shared-insights', async (req, res) => {
     try {
       const bridge = new KnowledgeBridge();
       const insights = await bridge.getSharedInsights();
