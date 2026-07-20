@@ -2,11 +2,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema.js';
 
-const connectionString = process.env.DATABASE_URL;
-
-if (!connectionString) {
-  throw new Error('DATABASE_URL is required (Postgres connection string) — set it in the environment.');
-}
+const connectionString = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/apex';
 
 // Supabase's transaction pooler (pgbouncer) does not support prepared statements.
 const client = postgres(connectionString, { prepare: false });

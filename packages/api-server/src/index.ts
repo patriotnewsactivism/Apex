@@ -38,8 +38,12 @@ const __dirname = dirname(__filename);
 async function main() {
   console.log('🚀 APEX starting up...');
 
-  await migrate();
-  console.log('✅ Database initialized');
+  try {
+    await migrate();
+    console.log('✅ Database initialized');
+  } catch (err) {
+    console.warn('⚠️  Database migration skipped or deferred:', err instanceof Error ? err.message : String(err));
+  }
 
   const mode = process.env.APEX_APPROVAL_MODE;
   const approvalRequired = mode === 'strict' ? true : mode === 'off' ? false : undefined;
