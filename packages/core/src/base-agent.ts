@@ -119,7 +119,10 @@ export abstract class BaseAgent {
     this.setStatus('idle');
 
     let consecutiveErrors = 0;
-    const inFlight = new Map<string, Promise<void>>();
+    // Promise<unknown> (not Promise<void>): executeTask resolves TaskResult on
+    // success and the .catch handler resolves void on failure -- the union
+    // type doesn't matter here, only Promise.race()'s settle timing is used.
+    const inFlight = new Map<string, Promise<unknown>>();
 
     while (this.running) {
       try {
