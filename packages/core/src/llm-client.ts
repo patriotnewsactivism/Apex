@@ -301,6 +301,13 @@ async function getLocalPipeline() {
   return localPipeline;
 }
 
+/** Which LLM fallback providers currently have an API key configured.
+ * Read-only, no network calls — used by health_check to report LLM
+ * connectivity config without burning real API requests on every check. */
+export function getConfiguredProviders(): Array<{ name: string; configured: boolean }> {
+  return PROVIDERS.map((p) => ({ name: p.name, configured: Boolean(process.env[p.apiKeyEnv]) }));
+}
+
 export async function createEmbedding(text: string): Promise<number[]> {
   const openaiKey = process.env.OPENAI_API_KEY;
   const openrouterKey = process.env.OPENROUTER_API_KEY;
