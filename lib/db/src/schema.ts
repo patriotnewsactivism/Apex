@@ -270,6 +270,62 @@ export const performanceBaselines = pgTable('performance_baselines', {
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+// ─── Pipeline Runs ─────────────────────────────────────────────────────────────
+
+export const pipelineRuns = pgTable('pipeline_runs', {
+  id: text('id').primaryKey(),
+  repo: text('repo').notNull().default('Apex'),
+  branch: text('branch').notNull().default('main'),
+  commitSha: text('commit_sha'),
+  status: text('status').notNull().default('running'), // running | success | failed | cancelled
+  triggerType: text('trigger_type').notNull().default('manual'), // manual | scheduled | webhook
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+  durationMs: integer('duration_ms'),
+  error: text('error'),
+});
+
+// ─── Test Results ─────────────────────────────────────────────────────────────
+
+export const testResults = pgTable('test_results', {
+  id: serial('id').primaryKey(),
+  runId: text('run_id').notNull(),
+  totalTests: integer('total_tests').notNull().default(0),
+  passed: integer('passed').notNull().default(0),
+  failed: integer('failed').notNull().default(0),
+  skipped: integer('skipped').notNull().default(0),
+  durationMs: integer('duration_ms').notNull().default(0),
+  coveragePct: real('coverage_pct'),
+  testReport: jsonb('test_report').$type<Record<string, unknown>>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Lint Results ─────────────────────────────────────────────────────────────
+
+export const lintResults = pgTable('lint_results', {
+  id: serial('id').primaryKey(),
+  runId: text('run_id').notNull(),
+  totalFiles: integer('total_files').notNull().default(0),
+  errors: integer('errors').notNull().default(0),
+  warnings: integer('warnings').notNull().default(0),
+  lintReport: jsonb('lint_report').$type<Record<string, unknown>>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Deployments ──────────────────────────────────────────────────────────────
+
+export const deployments = pgTable('deployments', {
+  id: text('id').primaryKey(),
+  runId: text('run_id'),
+  environment: text('environment').notNull().default('production'), // staging | production
+  platform: text('platform').notNull().default('railway'), // railway | vercel | local
+  deploymentUrl: text('deployment_url'),
+  status: text('status').notNull().default('pending'), // pending | deploying | healthy | degraded | failed | rolled_back
+  rolledBack: boolean('rolled_back').notNull().default(false),
+  error: text('error'),
+  deployedAt: timestamp('deployed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const agentRelations = relations(agents, ({ one, many }) => ({
@@ -360,4 +416,12 @@ export type StrategyRecommendation = typeof strategyRecommendations.$inferSelect
 export type NewStrategyRecommendation = typeof strategyRecommendations.$inferInsert;
 export type PerformanceBaseline = typeof performanceBaselines.$inferSelect;
 export type NewPerformanceBaseline = typeof performanceBaselines.$inferInsert;
+export type PipelineRun = typeof pipelineRuns.$inferSelect;
+export type NewPipelineRun = typeof pipelineRuns.$inferInsert;
+export type TestResultRow = typeof testResults.$inferSelect;
+export type NewTestResultRow = typeof testResults.$inferInsert;
+export type LintResultRow = typeof lintResults.$inferSelect;
+export type NewLintResultRow = typeof lintResults.$inferInsert;
+export type DeploymentRow = typeof deployments.$inferSelect;
+export type NewDeploymentRow = typeof deployments.$inferInsert;
 

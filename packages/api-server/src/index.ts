@@ -26,6 +26,7 @@ import { createAuthRouter } from './routes/auth.js';
 import { createHealthRouter } from './routes/health.js';
 import { createJobsRouter } from './routes/jobs.js';
 import { createLearningRouter } from './routes/learning.js';
+import { createCicdRouter } from './routes/cicd.js';
 import { requireAdminAuth } from './middleware/auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
@@ -87,6 +88,7 @@ async function main() {
   app.use('/api/health', createHealthRouter(healthMonitor, alertManager));
   app.use('/api/jobs', createJobsRouter());
   app.use('/api/learning', createLearningRouter());
+  app.use('/api/cicd', createCicdRouter());
 
   // WebSocket
   setupWebSocket(server);

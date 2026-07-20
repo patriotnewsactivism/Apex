@@ -12,6 +12,7 @@
   "dependencies": {
     "@workspace/agents": "workspace:*",
     "@workspace/background-jobs": "workspace:*",
+    "@workspace/cicd-automation": "workspace:*",
     "@workspace/core": "workspace:*",
     "@workspace/db": "workspace:*",
     "@workspace/health-monitor": "workspace:*",

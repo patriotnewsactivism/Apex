@@ -237,6 +237,58 @@ export async function migrate() {
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+  await client`
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+      id text PRIMARY KEY,
+      repo text NOT NULL DEFAULT 'Apex',
+      branch text NOT NULL DEFAULT 'main',
+      commit_sha text,
+      status text NOT NULL DEFAULT 'running',
+      trigger_type text NOT NULL DEFAULT 'manual',
+      started_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz,
+      duration_ms integer,
+      error text
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS test_results (
+      id serial PRIMARY KEY,
+      run_id text NOT NULL,
+      total_tests integer NOT NULL DEFAULT 0,
+      passed integer NOT NULL DEFAULT 0,
+      failed integer NOT NULL DEFAULT 0,
+      skipped integer NOT NULL DEFAULT 0,
+      duration_ms integer NOT NULL DEFAULT 0,
+      coverage_pct real,
+      test_report jsonb,
+      recorded_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS lint_results (
+      id serial PRIMARY KEY,
+      run_id text NOT NULL,
+      total_files integer NOT NULL DEFAULT 0,
+      errors integer NOT NULL DEFAULT 0,
+      warnings integer NOT NULL DEFAULT 0,
+      lint_report jsonb,
+      recorded_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS deployments (
+      id text PRIMARY KEY,
+      run_id text,
+      environment text NOT NULL DEFAULT 'production',
+      platform text NOT NULL DEFAULT 'railway',
+      deployment_url text,
+      status text NOT NULL DEFAULT 'pending',
+      rolled_back boolean NOT NULL DEFAULT false,
+      error text,
+      deployed_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
 }
 
 export { schema };

@@ -108,6 +108,18 @@ export const api = {
     analyze: () => apiFetch<{ success: boolean; patternsCreated: number }>('/learning/analyze', { method: 'POST' }),
     baselines: () => apiFetch<PerformanceBaselineRow[]>('/learning/baselines'),
   },
+
+  cicd: {
+    status: () => apiFetch<CicdStatusSummary>('/cicd/status'),
+    runTest: () => apiFetch<TestRunReportRow>('/cicd/test', { method: 'POST' }),
+    runLint: () => apiFetch<LintRunReportRow>('/cicd/lint', { method: 'POST' }),
+    build: () => apiFetch<BuildResultRow>('/cicd/build', { method: 'POST' }),
+    deploy: (environment?: string, platform?: string) =>
+      apiFetch<DeploymentRow>('/cicd/deploy', { method: 'POST', body: JSON.stringify({ environment, platform }) }),
+    rollback: (deploymentId: string) =>
+      apiFetch<{ success: boolean; rolledBackId: string }>('/cicd/rollback', { method: 'POST', body: JSON.stringify({ deploymentId }) }),
+    history: () => apiFetch<PipelineRunRow[]>('/cicd/history'),
+  },
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -306,5 +318,71 @@ export interface PerformanceBaselineRow {
   validUntil: string | null;
   updatedAt: string;
 }
+
+// ─── CI/CD Types ──────────────────────────────────────────────────────────────
+
+export interface PipelineRunRow {
+  id: string;
+  repo: string;
+  branch: string;
+  commitSha: string | null;
+  status: string;
+  triggerType: string;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  error: string | null;
+}
+
+export interface TestRunReportRow {
+  id: number;
+  runId: string;
+  totalTests: number;
+  passed: number;
+  failed: number;
+  skipped: number;
+  durationMs: number;
+  coveragePct: number | null;
+  testReport: Record<string, unknown> | null;
+  recordedAt: string;
+}
+
+export interface LintRunReportRow {
+  id: number;
+  runId: string;
+  totalFiles: number;
+  errors: number;
+  warnings: number;
+  lintReport: Record<string, unknown> | null;
+  recordedAt: string;
+}
+
+export interface DeploymentRow {
+  id: string;
+  runId: string | null;
+  environment: string;
+  platform: string;
+  deploymentUrl: string | null;
+  status: string;
+  rolledBack: boolean;
+  error: string | null;
+  deployedAt: string;
+}
+
+export interface BuildResultRow {
+  runId: string;
+  success: boolean;
+  durationMs: number;
+  output: string;
+  error?: string;
+}
+
+export interface CicdStatusSummary {
+  latestRun: PipelineRunRow | null;
+  latestTest: TestRunReportRow | null;
+  latestLint: LintRunReportRow | null;
+  deployments: DeploymentRow[];
+}
+
 
 

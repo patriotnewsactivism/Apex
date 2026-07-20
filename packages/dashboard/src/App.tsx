@@ -13,6 +13,7 @@ import { QuickChat } from './components/QuickChat.js';
 import { Settings } from './components/Settings.js';
 import { HealthPanel } from './components/HealthPanel.js';
 import { LearningPanel } from './components/LearningPanel.js';
+import { PipelinePanel } from './components/PipelinePanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
@@ -27,6 +28,7 @@ import {
   MessageSquare,
   Settings as SettingsIcon,
   Activity,
+  GitBranch,
   Menu,
   X,
 } from 'lucide-react';
@@ -81,6 +83,7 @@ function Sidebar({
     { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={18} /> },
     { id: 'health', label: 'Health System', icon: <Activity size={18} /> },
     { id: 'learning', label: 'Intelligence', icon: <Brain size={18} /> },
+    { id: 'pipeline', label: 'CI/CD Pipeline', icon: <GitBranch size={18} /> },
     { id: 'settings', label: 'Settings', icon: <SettingsIcon size={18} /> },
   ];
 
@@ -426,6 +429,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     approvals: <ApprovalQueue />,
     health: <HealthPanel />,
     learning: <LearningPanel />,
+    pipeline: <PipelinePanel />,
     settings: <Settings />,
   };
 
@@ -438,6 +442,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     approvals: '🛡 Approval Queue',
     health: '🩺 System Health & Observability',
     learning: '🧠 Learning & Adaptation System',
+    pipeline: '🚀 CI/CD & Deployment Pipeline',
     settings: '⚙️ Settings & Integrations',
   };
 

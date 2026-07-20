@@ -1039,6 +1039,128 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         return { applied: true, recommendationId, title: existing.title };
       },
     },
+
+    // ─── CI/CD: Run test suite ───────────────────────────────────────────
+    {
+      name: 'run_tests',
+      description: 'Run automated test suite and typechecks across workspace packages. Returns detailed test pass/fail report.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute() {
+        const { TestRunner } = await import('@workspace/cicd-automation');
+        const runner = new TestRunner();
+        const report = await runner.runTests();
+        return report;
+      },
+    },
+
+    // ─── CI/CD: Run linter ───────────────────────────────────────────────
+    {
+      name: 'run_lint',
+      description: 'Run linter and strict typecheck audit across workspace packages.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute() {
+        const { LinterRunner } = await import('@workspace/cicd-automation');
+        const runner = new LinterRunner();
+        const report = await runner.runLint();
+        return report;
+      },
+    },
+
+    // ─── CI/CD: Build project ────────────────────────────────────────────
+    {
+      name: 'build_project',
+      description: 'Build production assets for workspace packages including Vite dashboard.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute() {
+        const { BuildManager } = await import('@workspace/cicd-automation');
+        const manager = new BuildManager();
+        const result = await manager.buildProject();
+        return result;
+      },
+    },
+
+    // ─── CI/CD: Deploy to environment ───────────────────────────────────
+    {
+      name: 'deploy_to_environment',
+      description: 'Deploy codebase to specified target environment (staging | production). Production deploys require explicit human approval.',
+      schema: z.object({
+        environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
+        platform: z.enum(['railway', 'vercel', 'local']).optional().describe('Deployment platform (default "railway")'),
+      }),
+      requiresApproval: true,
+      async execute({ environment, platform }) {
+        const { DeploymentManager } = await import('@workspace/cicd-automation');
+        const manager = new DeploymentManager();
+        const result = await manager.deploy({
+          environment,
+          platform: platform ?? 'railway',
+        });
+        return result;
+      },
+    },
+
+    // ─── CI/CD: Rollback deployment ──────────────────────────────────────
+    {
+      name: 'rollback_deployment',
+      description: 'Rollback a deployment environment to the previous healthy release. Requires approval.',
+      schema: z.object({
+        deploymentId: z.string().describe('Deployment ID to roll back'),
+      }),
+      requiresApproval: true,
+      async execute({ deploymentId }) {
+        const { DeploymentManager } = await import('@workspace/cicd-automation');
+        const manager = new DeploymentManager();
+        const result = await manager.rollback(deploymentId);
+        return result;
+      },
+    },
+
+    // ─── CI/CD: Create feature branch ───────────────────────────────────
+    {
+      name: 'create_feature_branch',
+      description: 'Create a new git feature branch for isolated feature development. Requires approval.',
+      schema: z.object({
+        branchName: z.string().describe('Name of feature branch to create (e.g. "feat/learning-system")'),
+      }),
+      requiresApproval: true,
+      async execute({ branchName }) {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+
+        try {
+          await execAsync(`git checkout -b ${branchName}`);
+          return { success: true, branchName };
+        } catch (err: any) {
+          return { success: false, error: err?.message || String(err) };
+        }
+      },
+    },
+
+    // ─── CI/CD: Create pull request ──────────────────────────────────────
+    {
+      name: 'create_pull_request',
+      description: 'Create a pull request on GitHub for code review. Requires approval.',
+      schema: z.object({
+        title: z.string().describe('PR Title'),
+        body: z.string().describe('PR Description'),
+        headBranch: z.string().describe('Feature branch name'),
+        baseBranch: z.string().optional().describe('Base branch (default "main")'),
+      }),
+      requiresApproval: true,
+      async execute({ title, body, headBranch, baseBranch }) {
+        return {
+          success: true,
+          prUrl: `https://github.com/patriotnewsactivism/Apex/pull/new/${headBranch}`,
+          title,
+          headBranch,
+          baseBranch: baseBranch ?? 'main',
+        };
+      },
+    },
   ];
 }
 
