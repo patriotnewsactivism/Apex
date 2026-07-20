@@ -96,13 +96,17 @@ export class ApexCEO extends BaseAgent {
     emitApexEvent({ type: 'goal:created', goalId, title });
 
     // Create a task for the CEO to process this goal
-    await this.taskQueue.enqueue({
-      title: `Process Goal: ${title}`,
-      description: `A new goal has been submitted. Analyze, strategize, and begin execution.\n\n## Goal\n${title}\n\n## Details\n${description}`,
-      goalId,
-      priority,
-      context: { goalId, goalTitle: title },
-    });
+    try {
+      await this.taskQueue.enqueue({
+        title: `Process Goal: ${title}`,
+        description: `A new goal has been submitted. Analyze, strategize, and begin execution.\n\n## Goal\n${title}\n\n## Details\n${description}`,
+        goalId,
+        priority,
+        context: { goalId, goalTitle: title },
+      });
+    } catch (err) {
+      console.warn('⚠️ Goal task enqueue skipped (in-memory mode):', err instanceof Error ? err.message : String(err));
+    }
 
     await this.logger.info(`New goal submitted: "${title}" (ID: ${goalId})`);
     return goalId;
