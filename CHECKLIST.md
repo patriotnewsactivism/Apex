@@ -153,3 +153,31 @@ untested) then learning system.
 
 
 
+## Update — 2026-07-20, later same day: Phase 3 CI/CD, first real functional pass
+The above "not yet started" note is now partially outdated. What happened:
+the live CI/CD pipeline was triggered (by Don, via the dashboard) and
+FAILED in 0.5s with a production auto-rollback. Root cause found: TestRunner/
+LinterRunner/BuildManager ran `pnpm run typecheck`/`build` against
+`process.cwd()` -- the live prod container's own checkout, built via
+`npm ci --omit=dev`. TypeScript is a devDependency, never installed there --
+this pipeline was structurally incapable of ever passing, regardless of
+code quality. Not a regression, a day-one design gap.
+
+Fixed with an isolated CI scratch checkout (`packages/cicd-automation/src/
+ci-workspace.ts`, `/tmp/apex-ci-workspace`, full `pnpm install` incl. dev
+deps, synced via git fetch+reset -- Apex is public, no auth needed) plus
+`apk add git` in the Dockerfile runtime stage (alpine had no git binary).
+Commits 55bbb7a, 5e9ad99, both deployed SUCCESS.
+
+**Functionally verified live, not just typechecked:** `POST /api/cicd/test`
+-> 9/9 passed, 48.8s, real tsc output across all 10 typecheck'd packages.
+`POST /api/cicd/build` -> success, 20.3s, real vite build output. This is
+the first genuine functional (not just compile) pass for any Phase 2-4
+feature -- CI/CD test+build are now confirmed real.
+
+Still not functionally tested: DeploymentManager's actual deploy/rollback
+trigger (higher risk, needs Don present per No Unilateral Actions), lint
+(shares the same fix but wasn't separately re-triggered), background-jobs,
+learning-system, multiapp, predictive. Still a real gap: no GITHUB_TOKEN
+env var on Apex's live Railway service, so `create_feature_branch`/
+`create_pull_request` tools will fail if invoked.
