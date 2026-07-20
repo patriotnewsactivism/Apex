@@ -790,6 +790,92 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    // ─── Metrics view (tasks/agents/approvals/logs snapshot) ──────────────
+    {
+      name: 'get_metrics_view',
+      description: 'Get a live metrics snapshot: task counts by status, agent counts by status, pending approval backlog, and log volume by level over the last 24h. Complements get_active_alerts (thresholds) and health_check (component diagnostics) with raw counts for trend-spotting.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute(): Promise<ToolResult> {
+        const { db, tasks, agents, approvals, logs } = await import('@workspace/db');
+        const { sql, eq, gte } = await import('drizzle-orm');
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+        const [taskRows, agentRows, pendingApprovalRows, recentLogRows] = await Promise.all([
+          db.select({ status: tasks.status, count: sql<number>`count(*)::int` }).from(tasks).groupBy(tasks.status),
+          db.select({ status: agents.status, count: sql<number>`count(*)::int` }).from(agents).groupBy(agents.status),
+          db.select({ count: sql<number>`count(*)::int` }).from(approvals).where(eq(approvals.status, 'pending')),
+          db.select({ level: logs.level, count: sql<number>`count(*)::int` }).from(logs).where(gte(logs.timestamp, since)).groupBy(logs.level),
+        ]);
+
+        const tasksByStatus = Object.fromEntries(taskRows.map((r) => [r.status, r.count]));
+        const agentsByStatus = Object.fromEntries(agentRows.map((r) => [r.status, r.count]));
+        const logsByLevel24h = Object.fromEntries(recentLogRows.map((r) => [r.level, r.count]));
+        const totalLogs24h = recentLogRows.reduce((s, r) => s + r.count, 0);
+        const errorCount24h = logsByLevel24h.error ?? 0;
+
+        return {
+          success: true,
+          data: {
+            tasksByStatus,
+            agentsByStatus,
+            pendingApprovals: pendingApprovalRows[0]?.count ?? 0,
+            logsByLevel24h,
+            errorRate24h: totalLogs24h > 0 ? errorCount24h / totalLogs24h : 0,
+            generatedAt: new Date().toISOString(),
+          },
+        };
+      },
+    },
+
+    // ─── Error summary (grouped recent error logs) ─────────────────────────
+    {
+      name: 'get_error_summary',
+      description: 'Get recent error-level logs grouped by message pattern (IDs redacted) with counts and last-seen times, to spot systemic/recurring failures vs one-offs.',
+      schema: z.object({
+        hours: z.number().optional().describe('Look-back window in hours (default 24)'),
+        limit: z.number().optional().describe('Max distinct error patterns to return (default 20)'),
+      }),
+      requiresApproval: false,
+      async execute({ hours, limit }): Promise<ToolResult> {
+        const { db, logs } = await import('@workspace/db');
+        const { and, eq, gte, desc } = await import('drizzle-orm');
+        const since = new Date(Date.now() - (hours ?? 24) * 60 * 60 * 1000);
+
+        const rows = await db.select().from(logs)
+          .where(and(eq(logs.level, 'error'), gte(logs.timestamp, since)))
+          .orderBy(desc(logs.timestamp))
+          .limit(500);
+
+        const grouped = new Map<string, { count: number; lastSeen: Date; agentId: string | null; taskId: string | null }>();
+        for (const row of rows) {
+          const key = row.message.replace(/[0-9a-f-]{8,}/gi, '<id>').slice(0, 120);
+          const existing = grouped.get(key);
+          if (existing) {
+            existing.count += 1;
+            if (row.timestamp > existing.lastSeen) existing.lastSeen = row.timestamp;
+          } else {
+            grouped.set(key, { count: 1, lastSeen: row.timestamp, agentId: row.agentId, taskId: row.taskId });
+          }
+        }
+
+        const summary = Array.from(grouped.entries())
+          .map(([pattern, v]) => ({ pattern, count: v.count, lastSeen: v.lastSeen, agentId: v.agentId, taskId: v.taskId }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, limit ?? 20);
+
+        return {
+          success: true,
+          data: {
+            totalErrors: rows.length,
+            windowHours: hours ?? 24,
+            distinctPatterns: grouped.size,
+            topErrors: summary,
+          },
+        };
+      },
+    },
+
     // ─── Schedule a background job ────────────────────────────────────────
     {
       name: 'schedule_task',
@@ -936,6 +1022,53 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           totalToolExecutions: totalTools,
           outcomes: rows,
         };
+      },
+    },
+
+    // ─── Learning: Record task outcome ────────────────────────────────────
+    {
+      name: 'record_outcome',
+      description: 'Record the outcome of a completed task execution (success/failure, duration, quality) so the learning system has real data to analyze. Call this automatically whenever a task finishes.',
+      schema: z.object({
+        taskId: z.string().describe('ID of the completed task'),
+        agentId: z.string().describe('ID of the agent that executed the task'),
+        role: z.string().describe('Role of the executing agent'),
+        durationMs: z.number().describe('Total execution duration in milliseconds'),
+        success: z.boolean().describe('Whether the task completed successfully'),
+        qualityScore: z.number().optional().describe('Self-assessed quality score 0.0-1.0 (default 1.0)'),
+        toolExecutions: z.number().optional().describe('Number of tool calls made (default 0)'),
+        llmCalls: z.number().optional().describe('Number of LLM calls made (default 0)'),
+        iterations: z.number().optional().describe('Number of reasoning iterations (default 1)'),
+        requiredApprovals: z.number().optional().describe('Number of human approvals required (default 0)'),
+        errorType: z.string().optional().describe('Error category if the task failed'),
+        complexity: z.number().optional().describe('Estimated task complexity 0.0-1.0 (default 0.5)'),
+        satisfactionMetric: z.number().optional().describe('Downstream satisfaction signal 0.0-1.0 (default 1.0)'),
+        tags: z.array(z.string()).optional().describe('Free-form tags for later filtering'),
+      }),
+      requiresApproval: false,
+      async execute({
+        taskId, agentId, role, durationMs, success, qualityScore,
+        toolExecutions, llmCalls, iterations, requiredApprovals,
+        errorType, complexity, satisfactionMetric, tags,
+      }) {
+        const { db, taskOutcomes } = await import('@workspace/db');
+        const [row] = await db.insert(taskOutcomes).values({
+          taskId,
+          agentId,
+          role,
+          durationMs,
+          success,
+          qualityScore: qualityScore ?? 1.0,
+          toolExecutions: toolExecutions ?? 0,
+          llmCalls: llmCalls ?? 0,
+          iterations: iterations ?? 1,
+          requiredApprovals: requiredApprovals ?? 0,
+          errorType: errorType ?? null,
+          complexity: complexity ?? 0.5,
+          satisfactionMetric: satisfactionMetric ?? 1.0,
+          tags: tags ?? null,
+        }).returning();
+        return { recorded: true, id: row.id };
       },
     },
 
@@ -1149,25 +1282,90 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    // ─── CI/CD: Git status (read-only) ───────────────────────────────────
+    {
+      name: 'git_status',
+      description: 'Get current git status: branch, uncommitted changes, and last commit. Read-only, no side effects.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute() {
+        try {
+          const [branch, status, lastCommit] = await Promise.all([
+            execAsync('git rev-parse --abbrev-ref HEAD'),
+            execAsync('git status --short'),
+            execAsync('git log -1 --format=%H%n%an%n%s'),
+          ]);
+          const [hash, author, subject] = lastCommit.stdout.trim().split('\n');
+          return {
+            branch: branch.stdout.trim(),
+            uncommittedChanges: status.stdout.trim().split('\n').filter(Boolean),
+            lastCommit: { hash, author, subject },
+          };
+        } catch (err: any) {
+          return { error: err?.message || String(err) };
+        }
+      },
+    },
+
+    // ─── CI/CD: Push to remote ───────────────────────────────────────────
+    {
+      name: 'push_to_remote',
+      description: 'Push committed changes on a branch to the GitHub remote. Requires approval and a GITHUB_TOKEN configured in this environment.',
+      schema: z.object({
+        branch: z.string().optional().describe('Branch to push (default: current branch)'),
+        remote: z.string().optional().describe('Remote name (default "origin")'),
+      }),
+      requiresApproval: true,
+      async execute({ branch, remote }) {
+        const token = process.env.GITHUB_TOKEN;
+        if (!token) {
+          return { success: false, error: 'GITHUB_TOKEN is not configured in this environment' };
+        }
+        try {
+          const targetBranch = branch ?? (await execAsync('git rev-parse --abbrev-ref HEAD')).stdout.trim();
+          const remoteName = remote ?? 'origin';
+          const { stdout: remoteUrlRaw } = await execAsync(`git remote get-url ${remoteName}`);
+          const authedUrl = remoteUrlRaw.trim().replace('https://github.com/', `https://x-access-token:${token}@github.com/`);
+          const { stdout, stderr } = await execAsync(`git push ${authedUrl} ${targetBranch}`);
+          return { success: true, branch: targetBranch, remote: remoteName, output: (stdout || stderr).slice(0, 4000) };
+        } catch (err: any) {
+          return { success: false, error: err?.message || String(err) };
+        }
+      },
+    },
+
     // ─── CI/CD: Create pull request ──────────────────────────────────────
     {
       name: 'create_pull_request',
-      description: 'Create a pull request on GitHub for code review. Requires approval.',
+      description: 'Create a real pull request on GitHub via the GitHub API for code review. Requires approval and a GITHUB_TOKEN configured in this environment.',
       schema: z.object({
         title: z.string().describe('PR Title'),
         body: z.string().describe('PR Description'),
         headBranch: z.string().describe('Feature branch name'),
         baseBranch: z.string().optional().describe('Base branch (default "main")'),
+        repo: z.string().optional().describe('owner/repo (default "patriotnewsactivism/Apex")'),
       }),
       requiresApproval: true,
-      async execute({ title, body, headBranch, baseBranch }) {
-        return {
-          success: true,
-          prUrl: `https://github.com/patriotnewsactivism/Apex/pull/new/${headBranch}`,
-          title,
-          headBranch,
-          baseBranch: baseBranch ?? 'main',
-        };
+      async execute({ title, body, headBranch, baseBranch, repo }) {
+        const token = process.env.GITHUB_TOKEN;
+        if (!token) {
+          return { success: false, error: 'GITHUB_TOKEN is not configured in this environment' };
+        }
+        const targetRepo = repo ?? 'patriotnewsactivism/Apex';
+        const res = await fetch(`https://api.github.com/repos/${targetRepo}/pulls`, {
+          method: 'POST',
+          headers: {
+            Authorization: `token ${token}`,
+            Accept: 'application/vnd.github+json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ title, body, head: headBranch, base: baseBranch ?? 'main' }),
+        });
+        const data: any = await res.json();
+        if (!res.ok) {
+          return { success: false, error: data?.message || `GitHub API error ${res.status}`, details: data };
+        }
+        return { success: true, prUrl: data.html_url, number: data.number, title, headBranch, baseBranch: baseBranch ?? 'main' };
       },
     },
 
