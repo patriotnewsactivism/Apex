@@ -11,6 +11,7 @@ import { LogStream } from './components/LogStream.js';
 import { ApprovalQueue } from './components/ApprovalQueue.js';
 import { QuickChat } from './components/QuickChat.js';
 import { Settings } from './components/Settings.js';
+import { HealthPanel } from './components/HealthPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
@@ -24,6 +25,7 @@ import {
   LogOut,
   MessageSquare,
   Settings as SettingsIcon,
+  Activity,
   Menu,
   X,
 } from 'lucide-react';
@@ -76,6 +78,7 @@ function Sidebar({
     { id: 'tasks', label: 'Task Board', icon: <Kanban size={18} /> },
     { id: 'logs', label: 'Log Stream', icon: <Terminal size={18} /> },
     { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={18} /> },
+    { id: 'health', label: 'Health System', icon: <Activity size={18} /> },
     { id: 'settings', label: 'Settings', icon: <SettingsIcon size={18} /> },
   ];
 
@@ -419,6 +422,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
       </div>
     ),
     approvals: <ApprovalQueue />,
+    health: <HealthPanel />,
     settings: <Settings />,
   };
 
@@ -429,6 +433,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     tasks: '📋 Task Board',
     logs: '🖥 Live Log Stream',
     approvals: '🛡 Approval Queue',
+    health: '🩺 System Health & Observability',
     settings: '⚙️ Settings & Integrations',
   };
 

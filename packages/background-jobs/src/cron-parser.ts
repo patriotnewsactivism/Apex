@@ -23,7 +23,7 @@ const FIELD_RANGES: Array<{ name: string; min: number; max: number }> = [
 ];
 
 /**
- * Parse a single cron field (e.g. "1-5", "*/10", "1,3,5") into an array of
+ * Parse a single cron field (e.g. "1-5", "* /10", "1,3,5") into an array of
  * matching values within [min, max].
  */
 function parseField(field: string, min: number, max: number, fieldName: string): number[] {

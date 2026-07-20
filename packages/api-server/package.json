@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@workspace/agents": "workspace:*",
+    "@workspace/background-jobs": "workspace:*",
     "@workspace/core": "workspace:*",
     "@workspace/db": "workspace:*",
+    "@workspace/health-monitor": "workspace:*",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "drizzle-orm": "catalog:",

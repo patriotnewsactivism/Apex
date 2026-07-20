@@ -8,9 +8,12 @@ config({ path: resolve(process.cwd(), '../../.env') });
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
-import { migrate } from '@workspace/db';
+import { db, migrate, componentHealth, healthMetrics } from '@workspace/db';
 import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
-import { setupWebSocket } from './websocket.js';
+import { HealthMonitor } from '@workspace/health-monitor';
+import { JobScheduler } from '@workspace/background-jobs';
+import { getConfiguredProviders, getToolRegistry, getSharedAlertManager, emitApexEvent } from '@workspace/core';
+import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createTasksRouter } from './routes/tasks.js';
@@ -20,6 +23,8 @@ import { createApprovalsRouter } from './routes/approvals.js';
 import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createHealthRouter } from './routes/health.js';
+import { createJobsRouter } from './routes/jobs.js';
 import { requireAdminAuth } from './middleware/auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
@@ -32,24 +37,6 @@ async function main() {
   await migrate();
   console.log('✅ Database initialized');
 
-  // APEX_APPROVAL_MODE controls the GLOBAL override only:
-  //   'strict' -> force approvalRequired=true on every agent (lockdown mode)
-  //   'off'    -> force approvalRequired=false on every agent (fully autonomous, use with care)
-  //   unset/anything else -> DON'T override -- each agent uses its own
-  //     class-level default (see packages/agents/src/*.ts). This is the
-  //     sane default: dev-branch agents (Frontend/Backend/DevOps/QA) that
-  //     write code/run shell/deploy stay gated per Don's standing
-  //     "no unilateral irreversible actions" rule, while CEO/CTO/COO and
-  //     the business agents (Lead Research/Sales/Customer Success) that
-  //     only do safe read/research/save-data actions run autonomously,
-  //     as they were originally designed to. Marketing stays gated
-  //     (drafts before publish).
-  //
-  // Fixed 2026-07-18: this used to unconditionally force EVERY agent to
-  // approvalRequired=true whenever APEX_APPROVAL_MODE wasn't literally
-  // 'off', silently overriding business agents' own approvalRequired:false
-  // and inflating Don's manual-approval click volume for actions that were
-  // never meant to need a human in the loop.
   const mode = process.env.APEX_APPROVAL_MODE;
   const approvalRequired = mode === 'strict' ? true : mode === 'off' ? false : undefined;
   const workforce = createWorkforce({ approvalRequired });
@@ -70,6 +57,17 @@ async function main() {
     res.json({ status: 'ok', agents: workforce.size, timestamp: Date.now() });
   });
 
+  // Health Monitor & Alert Manager setup
+  const healthMonitor = new HealthMonitor({
+    getConfiguredProviders,
+    getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
+    wsChecker: () => ({ serverRunning: server.listening, connectedClients: getConnectedClientCount() }),
+  });
+  const alertManager = getSharedAlertManager();
+
+  // Background Job Scheduler setup
+  const scheduler = new JobScheduler();
+
   // Login is the front door — not behind requireAdminAuth.
   app.use('/api/auth', createAuthRouter());
 
@@ -85,6 +83,8 @@ async function main() {
   app.use('/api/approvals', createApprovalsRouter());
   app.use('/api/memory', createMemoryRouter());
   app.use('/api/tools', createToolsRouter());
+  app.use('/api/health', createHealthRouter(healthMonitor, alertManager));
+  app.use('/api/jobs', createJobsRouter());
 
   // WebSocket
   setupWebSocket(server);
@@ -107,6 +107,68 @@ async function main() {
     console.log(`🤖 Approval mode: ${mode === 'strict' ? 'HUMAN APPROVAL REQUIRED (strict)' : mode === 'off' ? 'FULLY AUTONOMOUS' : 'PER-ROLE DEFAULT'}`);
   });
 
+  // Start background job scheduler
+  scheduler.start();
+
+  // 60s Background Health Monitoring Loop
+  const runHealthPoll = async () => {
+    try {
+      const report = await healthMonitor.runAll();
+
+      // Emit health update event
+      emitApexEvent({
+        type: 'health:updated',
+        overall: report.overall,
+        checks: report.checks,
+        timestamp: report.timestamp,
+      });
+
+      // Update component_health and health_metrics in DB
+      for (const [compName, check] of Object.entries(report.checks)) {
+        await db.insert(componentHealth).values({
+          component: compName,
+          status: check.status,
+          detail: check.detail,
+          lastCheckTime: new Date(),
+          consecutiveFailures: check.status === 'critical' ? 1 : 0,
+        }).onConflictDoUpdate({
+          target: componentHealth.component,
+          set: {
+            status: check.status,
+            detail: check.detail,
+            lastCheckTime: new Date(),
+          },
+        }).catch(() => {});
+
+        await db.insert(healthMetrics).values({
+          component: compName,
+          status: check.status,
+          responseTimeMs: check.ms ?? 0,
+          detail: check.detail,
+          checkedAt: new Date(),
+        }).catch(() => {});
+      }
+
+      // Evaluate alert rules
+      const newAlerts = alertManager.evaluate(report);
+      for (const alert of newAlerts) {
+        emitApexEvent({
+          type: 'health:alert',
+          alertId: alert.id,
+          severity: alert.severity,
+          message: alert.message,
+          component: alert.component,
+        });
+      }
+    } catch (err) {
+      console.error('[HealthMonitor] Polling cycle failed:', err);
+    }
+  };
+
+  const healthInterval = setInterval(runHealthPoll, 60_000);
+  // Run an immediate initial health check after 5s
+  setTimeout(runHealthPoll, 5_000);
+
   console.log('🤖 Starting autonomous agent loops...');
   for (const agent of workforce.values()) {
     agent.start().catch((err: Error) => {
@@ -116,6 +178,8 @@ async function main() {
 
   const shutdown = (signal: string) => {
     console.log(`\n${signal} received. Shutting down APEX...`);
+    clearInterval(healthInterval);
+    scheduler.stop();
     for (const agent of workforce.values()) {
       agent.stop();
     }

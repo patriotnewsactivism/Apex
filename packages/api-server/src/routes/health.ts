@@ -43,15 +43,11 @@ export function createHealthRouter(monitor: HealthMonitor, alertManager: AlertMa
       const limit = parseInt(String(req.query.limit ?? '100'), 10);
       const component = req.query.component as string | undefined;
 
-      let query = db.select().from(healthMetrics).orderBy(desc(healthMetrics.checkedAt)).limit(limit);
-      if (component) {
-        const { eq } = await import('drizzle-orm');
-        query = db.select().from(healthMetrics)
-          .where(eq(healthMetrics.component, component))
-          .orderBy(desc(healthMetrics.checkedAt))
-          .limit(limit);
-      }
-      const rows = await query;
+      const { eq } = await import('drizzle-orm');
+      const baseQuery = db.select().from(healthMetrics);
+      const rows = component
+        ? await baseQuery.where(eq(healthMetrics.component, component)).orderBy(desc(healthMetrics.checkedAt)).limit(limit)
+        : await baseQuery.orderBy(desc(healthMetrics.checkedAt)).limit(limit);
       res.json(rows);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
