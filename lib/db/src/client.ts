@@ -125,6 +125,61 @@ export async function migrate() {
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+  await client`
+    CREATE TABLE IF NOT EXISTS health_metrics (
+      id serial PRIMARY KEY,
+      component text NOT NULL,
+      status text NOT NULL,
+      response_time_ms integer,
+      detail text,
+      error_message text,
+      checked_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS component_health (
+      component text PRIMARY KEY,
+      status text NOT NULL DEFAULT 'healthy',
+      detail text,
+      last_check_time timestamptz NOT NULL DEFAULT now(),
+      consecutive_failures integer NOT NULL DEFAULT 0,
+      metadata jsonb
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS scheduled_jobs (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      job_type text NOT NULL,
+      cron_expression text,
+      scheduled_at timestamptz,
+      enabled boolean NOT NULL DEFAULT true,
+      target_agent_id text,
+      payload jsonb,
+      priority integer NOT NULL DEFAULT 5,
+      status text NOT NULL DEFAULT 'active',
+      retry_count integer NOT NULL DEFAULT 0,
+      max_retries integer NOT NULL DEFAULT 3,
+      error text,
+      next_run_at timestamptz,
+      last_run_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS job_execution_log (
+      id serial PRIMARY KEY,
+      job_id text NOT NULL,
+      execution_id text NOT NULL,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz,
+      duration_ms integer,
+      status text NOT NULL DEFAULT 'running',
+      output text,
+      error text
+    )
+  `;
 }
 
 export { schema };

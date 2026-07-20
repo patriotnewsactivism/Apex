@@ -81,6 +81,23 @@ export const api = {
     invoke: (name: string, args: Record<string, unknown>) =>
       apiFetch<unknown>(`/tools/${name}`, { method: 'POST', body: JSON.stringify(args) }),
   },
+
+  health: {
+    report: () => apiFetch<HealthReport>('/health'),
+    components: () => apiFetch<ComponentHealthRow[]>('/health/components'),
+    alerts: () => apiFetch<{ alerts: HealthAlert[]; summary: AlertSummary }>('/health/alerts'),
+    acknowledge: (alertId: string) =>
+      apiFetch(`/health/alerts/${alertId}/acknowledge`, { method: 'POST' }),
+  },
+
+  jobs: {
+    list: () => apiFetch<ScheduledJobRow[]>('/jobs'),
+    create: (data: { name: string; jobType: string; cronExpression?: string; scheduledAt?: string; targetAgentId?: string; payload?: Record<string, unknown>; priority?: number }) =>
+      apiFetch<ScheduledJobRow>('/jobs', { method: 'POST', body: JSON.stringify(data) }),
+    toggle: (id: string) => apiFetch<ScheduledJobRow>(`/jobs/${id}/toggle`, { method: 'POST' }),
+    remove: (id: string) => apiFetch(`/jobs/${id}`, { method: 'DELETE' }),
+    history: (id: string) => apiFetch<JobExecutionRow[]>(`/jobs/${id}/history`),
+  },
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -151,3 +168,77 @@ export interface ToolInfo {
   description: string;
   requiresApproval: boolean;
 }
+
+// ─── Health Types ─────────────────────────────────────────────────────────────
+
+export interface ComponentCheck {
+  status: 'healthy' | 'degraded' | 'critical';
+  detail: string;
+  ms?: number;
+}
+
+export interface HealthReport {
+  overall: 'healthy' | 'degraded' | 'critical';
+  checks: Record<string, ComponentCheck>;
+  timestamp: string;
+}
+
+export interface ComponentHealthRow {
+  component: string;
+  status: string;
+  detail: string | null;
+  lastCheckTime: string;
+  consecutiveFailures: number;
+}
+
+export interface HealthAlert {
+  id: string;
+  rule: string;
+  severity: 'warning' | 'critical';
+  message: string;
+  component: string;
+  firedAt: string;
+  acknowledgedAt?: string;
+}
+
+export interface AlertSummary {
+  total: number;
+  critical: number;
+  warning: number;
+  acknowledged: number;
+}
+
+// ─── Job Types ────────────────────────────────────────────────────────────────
+
+export interface ScheduledJobRow {
+  id: string;
+  name: string;
+  jobType: string;
+  cronExpression: string | null;
+  scheduledAt: string | null;
+  enabled: boolean;
+  targetAgentId: string | null;
+  payload: Record<string, unknown> | null;
+  priority: number;
+  status: string;
+  retryCount: number;
+  maxRetries: number;
+  error: string | null;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JobExecutionRow {
+  id: number;
+  jobId: string;
+  executionId: string;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  status: string;
+  output: string | null;
+  error: string | null;
+}
+

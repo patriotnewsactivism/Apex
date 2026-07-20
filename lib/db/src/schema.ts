@@ -150,6 +150,65 @@ export const researchedLeads = pgTable('researched_leads', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+// ─── Health Metrics (time-series) ─────────────────────────────────────────────
+
+export const healthMetrics = pgTable('health_metrics', {
+  id: serial('id').primaryKey(),
+  component: text('component').notNull(),          // 'database' | 'llmProviders' | 'memorySystem' | 'toolRegistry' | 'webSocket' | 'taskBacklog'
+  status: text('status').notNull(),                 // 'healthy' | 'degraded' | 'critical'
+  responseTimeMs: integer('response_time_ms'),
+  detail: text('detail'),
+  errorMessage: text('error_message'),
+  checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Component Health (real-time per-component snapshot) ──────────────────────
+
+export const componentHealth = pgTable('component_health', {
+  component: text('component').primaryKey(),        // same keys as healthMetrics.component
+  status: text('status').notNull().default('healthy'),
+  detail: text('detail'),
+  lastCheckTime: timestamp('last_check_time', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+});
+
+// ─── Scheduled Jobs ───────────────────────────────────────────────────────────
+
+export const scheduledJobs = pgTable('scheduled_jobs', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  jobType: text('job_type').notNull(),              // 'task_delegation' | 'health_check' | 'report_generation' | 'maintenance'
+  cronExpression: text('cron_expression'),           // standard 5-part cron, null = one-time
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true, mode: 'date' }),  // for one-time jobs
+  enabled: boolean('enabled').notNull().default(true),
+  targetAgentId: text('target_agent_id'),
+  payload: jsonb('payload').$type<Record<string, unknown>>(),
+  priority: integer('priority').notNull().default(5),
+  status: text('status').notNull().default('active'), // active | paused | completed | failed
+  retryCount: integer('retry_count').notNull().default(0),
+  maxRetries: integer('max_retries').notNull().default(3),
+  error: text('error'),
+  nextRunAt: timestamp('next_run_at', { withTimezone: true, mode: 'date' }),
+  lastRunAt: timestamp('last_run_at', { withTimezone: true, mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Job Execution Log ────────────────────────────────────────────────────────
+
+export const jobExecutionLog = pgTable('job_execution_log', {
+  id: serial('id').primaryKey(),
+  jobId: text('job_id').notNull(),
+  executionId: text('execution_id').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+  durationMs: integer('duration_ms'),
+  status: text('status').notNull().default('running'), // running | completed | failed | timeout
+  output: text('output'),
+  error: text('error'),
+});
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const agentRelations = relations(agents, ({ one, many }) => ({
@@ -204,6 +263,14 @@ export const researchedLeadRelations = relations(researchedLeads, ({ one }) => (
   researchedByAgent: one(agents, { fields: [researchedLeads.researchedByAgentId], references: [agents.id] }),
 }));
 
+export const jobExecutionLogRelations = relations(jobExecutionLog, ({ one }) => ({
+  job: one(scheduledJobs, { fields: [jobExecutionLog.jobId], references: [scheduledJobs.id] }),
+}));
+
+export const scheduledJobRelations = relations(scheduledJobs, ({ many }) => ({
+  executions: many(jobExecutionLog),
+}));
+
 // ─── Type Exports ─────────────────────────────────────────────────────────────
 
 export type Agent = typeof agents.$inferSelect;
@@ -219,3 +286,9 @@ export type Approval = typeof approvals.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type ResearchedLead = typeof researchedLeads.$inferSelect;
 export type NewResearchedLead = typeof researchedLeads.$inferInsert;
+export type HealthMetric = typeof healthMetrics.$inferSelect;
+export type ComponentHealthRow = typeof componentHealth.$inferSelect;
+export type ScheduledJob = typeof scheduledJobs.$inferSelect;
+export type NewScheduledJob = typeof scheduledJobs.$inferInsert;
+export type JobExecutionLogEntry = typeof jobExecutionLog.$inferSelect;
+

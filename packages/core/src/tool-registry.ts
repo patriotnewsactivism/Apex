@@ -7,7 +7,7 @@ import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
-import { HealthMonitor } from '@workspace/health-monitor';
+import { HealthMonitor, AlertManager } from '@workspace/health-monitor';
 
 const execAsync = promisify(exec);
 
@@ -742,6 +742,167 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         return { success: true, data: report };
       },
     },
+
+    // ─── System status: health + component_health table context ────────────
+    {
+      name: 'get_system_status',
+      description: 'Get comprehensive system status including live health checks, per-component historical status from the database, and alert summary. More detailed than health_check — includes component_health table data and active alert counts.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute(): Promise<ToolResult> {
+        const monitor = new HealthMonitor({
+          getConfiguredProviders,
+          getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
+        });
+        const report = await monitor.runAll();
+
+        // Read component_health table for historical context
+        const { db, componentHealth } = await import('@workspace/db');
+        const components = await db.select().from(componentHealth);
+
+        // Get alert summary from the shared singleton
+        const alertSummary = getSharedAlertManager().getSummary();
+
+        return {
+          success: true,
+          data: {
+            live: report,
+            storedComponents: components,
+            alerts: alertSummary,
+          },
+        };
+      },
+    },
+
+    // ─── Active alerts ────────────────────────────────────────────────────
+    {
+      name: 'get_active_alerts',
+      description: 'Get all currently active alerts from the AlertManager. Alerts fire when health thresholds are breached (component critical, task backlog > 50, approval backlog > 10, 3+ components degraded). Includes severity, component, and when the alert fired.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute(): Promise<ToolResult> {
+        const alerts = getSharedAlertManager().getActiveAlerts();
+        const summary = getSharedAlertManager().getSummary();
+        return {
+          success: true,
+          data: { alerts, summary },
+        };
+      },
+    },
+
+    // ─── Schedule a background job ────────────────────────────────────────
+    {
+      name: 'schedule_task',
+      description: 'Create a scheduled background job (cron recurring or one-time). Job types: task_delegation (delegates a task to an agent), health_check (runs health diagnostics), report_generation (generates daily summary), maintenance (cleans old logs/expired data).',
+      schema: z.object({
+        name: z.string().describe('Human-readable job name'),
+        jobType: z.enum(['task_delegation', 'health_check', 'report_generation', 'maintenance']).describe('Type of job to schedule'),
+        cronExpression: z.string().optional().describe('Standard 5-part cron expression for recurring jobs (e.g. "0 */6 * * *" for every 6 hours)'),
+        scheduledAt: z.string().optional().describe('ISO timestamp for one-time jobs (mutually exclusive with cronExpression)'),
+        targetAgentId: z.string().optional().describe('Agent to delegate to (for task_delegation jobs)'),
+        payload: z.record(z.any()).optional().describe('Job-specific payload data'),
+        priority: z.number().optional().describe('Priority 1-10 (default 5)'),
+      }),
+      requiresApproval: true,
+      async execute({ name, jobType, cronExpression, scheduledAt, targetAgentId, payload, priority }) {
+        const { randomUUID } = await import('crypto');
+        const { db, scheduledJobs } = await import('@workspace/db');
+
+        const id = randomUUID();
+        const now = new Date();
+
+        await db.insert(scheduledJobs).values({
+          id,
+          name,
+          jobType,
+          cronExpression: cronExpression ?? null,
+          scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
+          enabled: true,
+          targetAgentId: targetAgentId ?? null,
+          payload: payload ?? null,
+          priority: priority ?? 5,
+          status: 'active',
+          retryCount: 0,
+          maxRetries: 3,
+          nextRunAt: scheduledAt ? new Date(scheduledAt) : now,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        return { created: true, jobId: id, name, jobType };
+      },
+    },
+
+    // ─── List scheduled jobs ──────────────────────────────────────────────
+    {
+      name: 'list_scheduled_tasks',
+      description: 'List all scheduled background jobs with their status, next run time, and last execution result.',
+      schema: z.object({
+        status: z.string().optional().describe('Filter by status: active | paused | completed | failed'),
+        limit: z.number().optional().describe('Max rows (default 25)'),
+      }),
+      requiresApproval: false,
+      async execute({ status, limit }) {
+        const { db, scheduledJobs } = await import('@workspace/db');
+        const { eq, desc } = await import('drizzle-orm');
+
+        const query = db.select().from(scheduledJobs);
+        const rows = status
+          ? await query.where(eq(scheduledJobs.status, status)).orderBy(desc(scheduledJobs.createdAt)).limit(limit ?? 25)
+          : await query.orderBy(desc(scheduledJobs.createdAt)).limit(limit ?? 25);
+
+        return rows;
+      },
+    },
+
+    // ─── Cancel/disable a scheduled job ───────────────────────────────────
+    {
+      name: 'cancel_scheduled_task',
+      description: 'Cancel or disable a scheduled background job by ID. The job will stop executing but its history is preserved.',
+      schema: z.object({
+        jobId: z.string().describe('The scheduled job ID to cancel'),
+      }),
+      requiresApproval: true,
+      async execute({ jobId }) {
+        const { db, scheduledJobs } = await import('@workspace/db');
+        const { eq } = await import('drizzle-orm');
+
+        const [existing] = await db.select().from(scheduledJobs).where(eq(scheduledJobs.id, jobId)).limit(1);
+        if (!existing) {
+          return { success: false, error: `No scheduled job with id ${jobId}` };
+        }
+
+        await db.update(scheduledJobs).set({
+          enabled: false,
+          status: 'paused',
+          updatedAt: new Date(),
+        }).where(eq(scheduledJobs.id, jobId));
+
+        return { cancelled: true, jobId, name: existing.name };
+      },
+    },
+
+    // ─── Job execution history ────────────────────────────────────────────
+    {
+      name: 'get_job_history',
+      description: 'Get the execution history for a specific scheduled job, including run times, duration, status, and any errors.',
+      schema: z.object({
+        jobId: z.string().describe('The scheduled job ID'),
+        limit: z.number().optional().describe('Max rows (default 20)'),
+      }),
+      requiresApproval: false,
+      async execute({ jobId, limit }) {
+        const { db, jobExecutionLog } = await import('@workspace/db');
+        const { eq, desc } = await import('drizzle-orm');
+
+        const rows = await db.select().from(jobExecutionLog)
+          .where(eq(jobExecutionLog.jobId, jobId))
+          .orderBy(desc(jobExecutionLog.startedAt))
+          .limit(limit ?? 20);
+
+        return rows;
+      },
+    },
   ];
 }
 
@@ -767,4 +928,19 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
   return _registry;
 }
 
+// ─── Shared AlertManager singleton ────────────────────────────────────────────
+// Used by the get_system_status/get_active_alerts tools and by the api-server's
+// health polling loop. Single instance so tool calls and the polling loop see
+// the same alert state.
+
+let _alertManager: AlertManager | null = null;
+
+export function getSharedAlertManager(): AlertManager {
+  if (!_alertManager) {
+    _alertManager = new AlertManager();
+  }
+  return _alertManager;
+}
+
 export { ToolRegistry };
+

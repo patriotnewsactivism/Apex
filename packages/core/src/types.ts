@@ -153,4 +153,7 @@ export type ApexEvent =
   | { type: 'approval:requested'; approvalId: string; agentId: string; toolName: string; reason: string }
   | { type: 'approval:resolved'; approvalId: string; status: 'approved' | 'rejected' }
   | { type: 'memory:updated'; agentId: string; key: string }
-  | { type: 'message:sent'; messageId: string; fromAgentId: string; toAgentId: string; subject: string };
+  | { type: 'message:sent'; messageId: string; fromAgentId: string; toAgentId: string; subject: string }
+  | { type: 'health:updated'; overall: string; checks: Record<string, unknown>; timestamp: string }
+  | { type: 'health:alert'; alertId: string; severity: string; message: string; component: string };
+

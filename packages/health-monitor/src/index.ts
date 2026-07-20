@@ -174,3 +174,8 @@ export class HealthMonitor {
     return { overall, checks, timestamp: new Date().toISOString() };
   }
 }
+
+// Re-export AlertManager
+export { AlertManager } from './alert-manager.js';
+export type { Alert, AlertSeverity, AlertRule } from './alert-manager.js';
+
