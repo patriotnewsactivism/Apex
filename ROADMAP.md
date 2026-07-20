@@ -150,3 +150,21 @@ repo-romance-46.
 (Forecaster, ScenarioRunner, RiskDetector); tools `forecast_tasks`,
 `risk_assessment`; routes `/api/predictive/tasks-forecast`,
 `/api/predictive/risks`; all forecasts advisory with confidence intervals.
+
+---
+
+## Status update — 2026-07-20 (verification pass, not self-reported)
+All 4 phases' scaffolding now exists (~30 commits, built directly by Don).
+Verified independently this pass: `pnpm run typecheck` and `pnpm run build`
+genuinely clean across all 12 packages (one real compile break found+fixed:
+`TaskQueue.awaitApproval()/resume()` dropped by the task-queue rewrite,
+commit a7a8224), deployed live on Railway, and Phase 1's `/api/health`
+route functionally smoke-tested with a real admin token — returns live
+data (44 tools, real WebSocket client count, real task backlog count), not
+a stub. Phases 2-4 are unverified beyond compiling — see CHECKLIST.md's
+"verification pass" note for the honest breakdown of what's tested vs. what
+just builds. The actual next gate is functional testing of each phase's
+runtime behavior, then the previously-deferred Integration & Testing /
+Performance / Security / Production Deployment / Ongoing Ops sections —
+none of those have been started, correctly, since they're gated on the
+phases above being real.

@@ -174,7 +174,7 @@ export class TaskQueue {
     }
   }
 
-  /** Put a task into awaiting_approval state */
+  /** Mark a task awaiting human approval for a gated tool call. */
   async awaitApproval(taskId: string): Promise<void> {
     try {
       await db.update(tasks).set({
@@ -182,7 +182,7 @@ export class TaskQueue {
         updatedAt: new Date(),
       }).where(eq(tasks.id, taskId));
     } catch (err) {
-      // DB offline
+      // DB offline: update in memory
     }
 
     const memTask = this.memoryQueue.find((t) => t.id === taskId);
@@ -191,20 +191,20 @@ export class TaskQueue {
     }
   }
 
-  /** Resume a task from awaiting_approval to in_progress */
+  /** Resume a task after an approval decision back to pending/in_progress */
   async resume(taskId: string): Promise<void> {
     try {
       await db.update(tasks).set({
-        status: 'in_progress',
+        status: 'pending',
         updatedAt: new Date(),
       }).where(eq(tasks.id, taskId));
     } catch (err) {
-      // DB offline
+      // DB offline: update in memory
     }
 
     const memTask = this.memoryQueue.find((t) => t.id === taskId);
     if (memTask) {
-      memTask.status = 'in_progress';
+      memTask.status = 'pending';
     }
   }
 }
