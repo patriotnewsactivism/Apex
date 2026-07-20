@@ -33,14 +33,19 @@ export function createGoalsRouter(ceo: ApexCEO) {
 
   // POST /api/goals — submit new goal
   router.post('/', async (req, res) => {
-    const parsed = submitGoalSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.flatten() });
-    }
+    try {
+      const parsed = submitGoalSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.flatten() });
+      }
 
-    const { title, description, priority, projectId } = parsed.data;
-    const goalId = await ceo.submitGoal(title, description, priority, projectId);
-    return res.status(201).json({ goalId, message: 'Goal submitted to APEX CEO' });
+      const { title, description, priority, projectId } = parsed.data;
+      const goalId = await ceo.submitGoal(title, description, priority, projectId);
+      return res.status(201).json({ goalId, message: 'Goal submitted to APEX CEO' });
+    } catch (err) {
+      console.error('[goals] POST / error:', err);
+      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // PATCH /api/goals/:id — update status

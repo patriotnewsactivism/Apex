@@ -78,16 +78,20 @@ export class ApexCEO extends BaseAgent {
    * legacy/ungrouped goals, matching the nullable column. */
   async submitGoal(title: string, description: string, priority = 5, projectId?: string): Promise<string> {
     const goalId = randomUUID();
-    await db.insert(goals).values({
-      id: goalId,
-      projectId: projectId ?? null,
-      title,
-      description,
-      status: 'active',
-      priority,
-      assignedAgentId: APEX_CEO_ID,
-      createdAt: new Date(),
-    });
+    try {
+      await db.insert(goals).values({
+        id: goalId,
+        projectId: projectId ?? null,
+        title,
+        description,
+        status: 'active',
+        priority,
+        assignedAgentId: APEX_CEO_ID,
+        createdAt: new Date(),
+      });
+    } catch (err) {
+      console.warn('⚠️ Goal DB insert skipped (in-memory mode):', err instanceof Error ? err.message : String(err));
+    }
 
     emitApexEvent({ type: 'goal:created', goalId, title });
 
