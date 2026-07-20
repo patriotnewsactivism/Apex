@@ -9,16 +9,16 @@ per standing discipline, do not mark ahead of real, confirmed work.
 ### Health Monitoring System
 - [ ] Create health_metrics table schema
 - [ ] Create component_health table schema
-- [ ] Implement HealthMonitor class (as its own module in packages/health-monitor/)
-- [x] Implement database health check — folded into the `health_check` tool (546ae3d), not yet its own HealthMonitor.checkDatabase() method
-- [x] Implement LLM providers check — folded into `health_check` tool via getConfiguredProviders() (config presence only, not live connectivity)
-- [ ] Implement memory system check
-- [x] Implement tool registry check — folded into `health_check` tool (confirms registry populated)
-- [ ] Implement WebSocket check
+- [x] Implement HealthMonitor class -- shipped in packages/health-monitor/ (2ab5eb3/126a292), decoupled from @workspace/core via dependency injection (no cyclic workspace dep)
+- [x] Implement database health check — now HealthMonitor.checkDatabase(), tool is a thin wrapper
+- [x] Implement LLM providers check — now HealthMonitor.checkLLMProviders() (injected getConfiguredProviders), config presence only, not live connectivity
+- [x] Implement memory system check — HealthMonitor.checkMemorySystem(), read-only reachability ping against memories table (deliberately not a real embedding-based recall(), which would cost a real API call every check)
+- [x] Implement tool registry check — now HealthMonitor.checkToolRegistry() (injected getRegisteredToolCount)
+- [~] Implement WebSocket check — HealthMonitor.checkWebSocket() exists and takes an injectable checker; honestly reports 'degraded: no checker injected' until the api-server process wires in a real one via /api/health routes (not yet built)
 - [ ] Create AlertManager class
 - [ ] Define alert rules (thresholds already specced in ROADMAP.md: error rate >5%, task backlog >50, approval backlog >10 — not yet wired to an actual AlertManager)
 - [ ] Implement alert evaluation logic
-- [x] Create health tools — `health_check` shipped (546ae3d, requiresApproval:false, wired into ApexCEO); `get_system_status` and `get_active_alerts` NOT built
+- [x] Create health tools — `health_check` shipped, now backed by HealthMonitor (546ae3d -> 2ab5eb3/126a292, requiresApproval:false, wired into ApexCEO); `get_system_status` and `get_active_alerts` NOT built
 - [ ] Add health API routes (/api/health, /api/health/components, /api/health/alerts)
 - [ ] Update dashboard with health indicators
 - [ ] Start health monitoring in main server (60s background polling loop)
@@ -89,3 +89,20 @@ unbuilt. This is roughly 8 weeks of scoped engineering work per Don's own
 estimates; it will get built incrementally, one verified deliverable at a
 time, starting from the top of Phase 1 (health_metrics/component_health
 schema + the standalone HealthMonitor class next).
+
+## Honest status note (2026-07-19, session end, update 2)
+Additional real progress: `packages/health-monitor/` shipped with a genuine
+HealthMonitor class (checkDatabase, checkLLMProviders, checkMemorySystem,
+checkToolRegistry, checkTaskBacklog, checkWebSocket, runAll) -- the
+`health_check` tool is now a thin wrapper around it, not duplicated logic.
+Caught and fixed two real bugs in the process: (1) a genuine TS type error
+in the earlier dispatchSwarm concurrency commit that `typecheck:libs` had
+silently hidden (it only checks lib/db, not any packages/* -- corrected
+process: always run `pnpm run typecheck`, the full command, going forward);
+(2) a Docker build failure because the Dockerfile explicitly lists every
+package's COPY paths and doesn't auto-discover new packages/* directories --
+fixed by adding packages/health-monitor to both build stages. Confirmed
+live on Railway at commit 126a292. Still nothing built: health_metrics/
+component_health DB tables, AlertManager, /api/health routes, dashboard
+widgets, 60s background polling loop, or any tests -- those remain the
+next real slices, in that order.
