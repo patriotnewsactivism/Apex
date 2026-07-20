@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
+import { HealthMonitor } from '@workspace/health-monitor';
 
 const execAsync = promisify(exec);
 
@@ -721,93 +722,24 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // primitive exists and is verified.
     {
       name: 'health_check',
-      description: 'Run fast, read-only diagnostics across Apex core components (database, tool registry, configured LLM fallback providers, task backlog) and return a health summary. No side effects, no live LLM calls — safe to call anytime.',
+      description: 'Run fast, read-only diagnostics across Apex core components (database, tool registry, configured LLM fallback providers, memory system, task backlog, WebSocket liveness) and return a health summary. No side effects, no live LLM calls -- safe to call anytime.',
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
-        const checks: Record<string, { status: 'healthy' | 'degraded' | 'critical'; detail: string; ms?: number }> = {};
-
-        // Database connectivity — cheapest real query against a real table.
-        const dbStart = Date.now();
-        try {
-          const { db, agents } = await import('@workspace/db');
-          await db.select().from(agents).limit(1);
-          checks.database = { status: 'healthy', detail: 'query succeeded', ms: Date.now() - dbStart };
-        } catch (err) {
-          checks.database = {
-            status: 'critical',
-            detail: err instanceof Error ? err.message : String(err),
-            ms: Date.now() - dbStart,
-          };
-        }
-
-        // Tool registry — confirm it's populated (a zero count would mean the
-        // registry failed to initialize, which would silently strand every agent).
-        try {
-          const registry = getToolRegistry();
-          const toolCount = registry.getLLMToolSchemas().length;
-          checks.toolRegistry = {
-            status: toolCount > 0 ? 'healthy' : 'critical',
-            detail: `${toolCount} tools registered`,
-          };
-        } catch (err) {
-          checks.toolRegistry = {
-            status: 'critical',
-            detail: err instanceof Error ? err.message : String(err),
-          };
-        }
-
-        // LLM fallback providers — which of the configured chain have keys
-        // set. No live calls (checking connectivity live would be slow and
-        // burn real requests every time this runs); config presence is the
-        // fast, honest proxy for "can this provider even be attempted."
-        try {
-          const providers = getConfiguredProviders();
-          const configuredCount = providers.filter((p) => p.configured).length;
-          checks.llmProviders = {
-            status: configuredCount === 0 ? 'critical' : configuredCount < providers.length ? 'degraded' : 'healthy',
-            detail: providers.map((p) => `${p.name}:${p.configured ? 'ok' : 'missing'}`).join(', '),
-          };
-        } catch (err) {
-          checks.llmProviders = {
-            status: 'critical',
-            detail: err instanceof Error ? err.message : String(err),
-          };
-        }
-
-        // Task backlog — cheap proxy for whether agents are keeping up.
-        // Thresholds match the AlertManager rules already specced in
-        // ROADMAP.md (backlog > 50 = degraded) so this check won't need to
-        // change when AlertManager is built on top of it.
-        try {
-          const { db, tasks: tasksTable } = await import('@workspace/db');
-          const { sql, inArray } = await import('drizzle-orm');
-          const [{ count }] = await db
-            .select({ count: sql<number>`count(*)::int` })
-            .from(tasksTable)
-            .where(inArray(tasksTable.status, ['pending', 'in_progress']));
-          checks.taskBacklog = {
-            status: count > 50 ? 'degraded' : 'healthy',
-            detail: `${count} pending/in_progress tasks`,
-          };
-        } catch (err) {
-          checks.taskBacklog = {
-            status: 'critical',
-            detail: err instanceof Error ? err.message : String(err),
-          };
-        }
-
-        const statuses = Object.values(checks).map((c) => c.status);
-        const overall: 'healthy' | 'degraded' | 'critical' = statuses.includes('critical')
-          ? 'critical'
-          : statuses.includes('degraded')
-            ? 'degraded'
-            : 'healthy';
-
-        return {
-          success: true,
-          data: { overall, checks, timestamp: new Date().toISOString() },
-        };
+        // Thin wrapper: all real check logic lives in @workspace/health-monitor
+        // (packages/health-monitor/src/index.ts) so this tool, a future
+        // scheduled HealthCheckJob, and a future AlertManager all share one
+        // implementation instead of drifting apart. No WebSocket checker is
+        // injected here (this runs inside an agent's tool call, not the
+        // api-server request/response cycle) -- that check honestly reports
+        // 'degraded: no checker injected'; the api-server's own health
+        // routes (not yet built) will inject the real one.
+        const monitor = new HealthMonitor({
+          getConfiguredProviders,
+          getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
+        });
+        const report = await monitor.runAll();
+        return { success: true, data: report };
       },
     },
   ];
