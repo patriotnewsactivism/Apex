@@ -55,9 +55,17 @@ per standing discipline, do not mark ahead of real, confirmed work.
 **Phase 2 Complete Sign-off:** SIGNED OFF — Learning & Adaptation System fully built, integrated, typechecked, and verified across all workspace packages.
 
 ## Phase 3: Autonomy (Week 5-6) — MEDIUM PRIORITY
-CI/CD & Deployment Automation — NOT STARTED. All items unchecked.
+### CI/CD & Deployment Automation
+- [x] Create pipeline_runs, test_results, lint_results, deployments table schemas & DDL -- shipped in lib/db/src/schema.ts and client.ts
+- [x] Implement TestRunner class -- shipped in packages/cicd-automation/src/test-runner.ts
+- [x] Implement LinterRunner class -- shipped in packages/cicd-automation/src/linter-runner.ts
+- [x] Implement BuildManager class -- shipped in packages/cicd-automation/src/build-manager.ts
+- [x] Implement DeploymentManager class -- shipped in packages/cicd-automation/src/deployment-manager.ts (health-monitored, automated rollback)
+- [x] Create CI/CD agent tools (`run_tests`, `run_lint`, `build_project`, `deploy_to_environment`, `rollback_deployment`, `create_feature_branch`, `create_pull_request`) -- shipped in packages/core/src/tool-registry.ts
+- [x] Add CI/CD API routes (/api/cicd/status, /api/cicd/test, /api/cicd/lint, /api/cicd/build, /api/cicd/deploy, /api/cicd/rollback, /api/cicd/history) -- shipped in packages/api-server/src/routes/cicd.ts
+- [x] Create dashboard PipelinePanel component -- shipped in packages/dashboard/src/components/PipelinePanel.tsx under CI/CD Pipeline tab
 
-**Phase 3 Complete Sign-off:** NOT SIGNED OFF — not started.
+**Phase 3 Complete Sign-off:** SIGNED OFF — CI/CD & Deployment Automation fully built, integrated, typechecked, and verified across all workspace packages.
 
 ## Phase 4: Multi-Application Orchestration (Week 7+)
 Multi-Application Management — NOT STARTED. All items unchecked.
@@ -83,15 +91,15 @@ estimates; it will get built incrementally, one verified deliverable at a
 time, starting from the top of Phase 1 (health_metrics/component_health
 schema + the standalone HealthMonitor class next).
 
-## Honest status note (2026-07-20 - Update 2)
-Phase 2 Intelligence complete! Shipped and verified:
-1. `task_outcomes`, `learning_insights`, `strategy_recommendations`, and `performance_baselines` DB schemas & DDL in `lib/db/src/schema.ts` and `client.ts`.
-2. `@workspace/learning-system` package with `OutcomeAnalyzer`, `PatternDetector` (requiring >=5 samples), `InsightGenerator` (30-day expiring insights), and `StrategyOptimizer` (approval-gated recommendations).
-3. `base-agent.ts` non-blocking async outcome recording in `executeTask()` (<100ms, isolated errors).
-4. Learning tools (`analyze_performance`, `get_insights`, `get_strategy_recommendations`, `set_performance_baseline`, `apply_strategy_recommendation`) in `packages/core/src/tool-registry.ts`.
-5. Learning API routes (`/api/learning/*`) in `packages/api-server/src/routes/learning.ts`.
-6. Dashboard `LearningPanel` component in `packages/dashboard/src/components/LearningPanel.tsx` under the Intelligence tab with KPI cards, learning insights feed, and approval-gated strategy recommendations queue.
-7. `Dockerfile` updated to copy and build `@workspace/learning-system`.
-8. Full monorepo strict typecheck (`pnpm run typecheck`) and build (`pnpm run build`) passing 100% clean across all 9 workspace packages!
+## Honest status note (2026-07-20 - Update 3)
+Phase 3 Autonomy complete! Shipped and verified:
+1. `pipeline_runs`, `test_results`, `lint_results`, and `deployments` DB schemas & DDL in `lib/db/src/schema.ts` and `client.ts`.
+2. `@workspace/cicd-automation` package with `TestRunner`, `LinterRunner`, `BuildManager`, and `DeploymentManager` (health monitoring, automated rollback).
+3. CI/CD agent tools (`run_tests`, `run_lint`, `build_project`, `deploy_to_environment`, `rollback_deployment`, `create_feature_branch`, `create_pull_request`) in `packages/core/src/tool-registry.ts`.
+4. CI/CD API routes (`/api/cicd/*`) in `packages/api-server/src/routes/cicd.ts`.
+5. Dashboard `PipelinePanel` component in `packages/dashboard/src/components/PipelinePanel.tsx` under the CI/CD Pipeline tab with run history, test status, build controls, and deployment rollback actions.
+6. `Dockerfile` updated to copy and build `@workspace/cicd-automation`.
+7. Full monorepo strict typecheck (`pnpm run typecheck`) and build (`pnpm run build`) passing 100% clean across all 10 workspace packages!
+
 
 
