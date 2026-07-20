@@ -6,7 +6,7 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 // providers in order if OpenRouter is unavailable (e.g. out of credits) or a
 // provider errors/rate-limits:
 //
-//   OpenRouter → Cerebras → Mistral → Groq → Cohere (trial) →
+//   OpenRouter → Cerebras → Mistral → Groq → GitHub Models → Cohere (trial) →
 //   Cohere (prod) → OpenRouter-Free (Poolside :free model)
 //
 // Direct Gemini fallback was removed 2026-07-14 (permanently dead key, zero
@@ -39,6 +39,12 @@ const PROVIDERS: Array<{
   // until MISTRAL_API_KEY is configured (same pattern as every other provider).
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
+  // GitHub Models -- free via the existing GITHUB_TOKEN_4 PAT (already used
+  // for repo writes elsewhere in this ecosystem), no separate signup. Live-
+  // verified 2026-07-20: openai/gpt-4.1 responds correctly with this token.
+  // Tight per-request token caps on GitHub's side, so placed after the faster
+  // free tiers (Cerebras/Mistral/Groq) rather than first.
+  { name: 'github-models', baseURL: 'https://models.github.ai/inference', apiKeyEnv: 'GITHUB_TOKEN_4', fallbackModel: 'openai/gpt-4.1' },
   // NOTE: direct Gemini fallback (GEMINI_API_KEY -> generativelanguage.googleapis.com)
   // was REMOVED 2026-07-14 — confirmed permanently dead: this Google Cloud
   // project/key returns a 429 with `limit: 0` for gemini-2.0-flash free tier,
