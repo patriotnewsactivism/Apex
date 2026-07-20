@@ -289,6 +289,47 @@ export async function migrate() {
       deployed_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+  await client`
+    CREATE TABLE IF NOT EXISTS applications (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      repo_url text NOT NULL,
+      status text NOT NULL DEFAULT 'active',
+      health_score real NOT NULL DEFAULT 1.0,
+      last_sync_at timestamptz NOT NULL DEFAULT now(),
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS application_tasks (
+      id serial PRIMARY KEY,
+      app_id text NOT NULL,
+      task_name text NOT NULL,
+      status text NOT NULL DEFAULT 'pending',
+      error text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS predictive_forecasts (
+      id text PRIMARY KEY,
+      metric_name text NOT NULL,
+      forecast_value real NOT NULL,
+      confidence real NOT NULL DEFAULT 0.8,
+      window text NOT NULL DEFAULT '7d',
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS risk_assessments (
+      id text PRIMARY KEY,
+      target text NOT NULL,
+      risk_level text NOT NULL,
+      details text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
 }
 
 export { schema };

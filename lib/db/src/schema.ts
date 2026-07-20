@@ -326,6 +326,51 @@ export const deployments = pgTable('deployments', {
   deployedAt: timestamp('deployed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+// ─── Portfolio Applications ───────────────────────────────────────────────────
+
+export const applications = pgTable('applications', {
+  id: text('id').primaryKey(), // e.g. 'buildmybot2', 'aria', 'autonomous-coder'
+  name: text('name').notNull(),
+  repoUrl: text('repo_url').notNull(),
+  status: text('status').notNull().default('active'), // active | degraded | inactive
+  healthScore: real('health_score').notNull().default(1.0),
+  lastSyncAt: timestamp('last_sync_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Application Tasks ────────────────────────────────────────────────────────
+
+export const applicationTasks = pgTable('application_tasks', {
+  id: serial('id').primaryKey(),
+  appId: text('app_id').notNull(),
+  taskName: text('task_name').notNull(),
+  status: text('status').notNull().default('pending'), // pending | in_progress | completed | failed
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+});
+
+// ─── Predictive Forecasts ─────────────────────────────────────────────────────
+
+export const predictiveForecasts = pgTable('predictive_forecasts', {
+  id: text('id').primaryKey(),
+  metricName: text('metric_name').notNull(),
+  forecastValue: real('forecast_value').notNull(),
+  confidence: real('confidence').notNull().default(0.8),
+  window: text('window').notNull().default('7d'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Risk Assessments ─────────────────────────────────────────────────────────
+
+export const riskAssessments = pgTable('risk_assessments', {
+  id: text('id').primaryKey(),
+  target: text('target').notNull(),
+  riskLevel: text('risk_level').notNull(), // low | medium | high | critical
+  details: text('details').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const agentRelations = relations(agents, ({ one, many }) => ({
@@ -424,4 +469,12 @@ export type LintResultRow = typeof lintResults.$inferSelect;
 export type NewLintResultRow = typeof lintResults.$inferInsert;
 export type DeploymentRow = typeof deployments.$inferSelect;
 export type NewDeploymentRow = typeof deployments.$inferInsert;
+export type ApplicationRow = typeof applications.$inferSelect;
+export type NewApplicationRow = typeof applications.$inferInsert;
+export type ApplicationTaskRow = typeof applicationTasks.$inferSelect;
+export type NewApplicationTaskRow = typeof applicationTasks.$inferInsert;
+export type PredictiveForecastRow = typeof predictiveForecasts.$inferSelect;
+export type NewPredictiveForecastRow = typeof predictiveForecasts.$inferInsert;
+export type RiskAssessmentRow = typeof riskAssessments.$inferSelect;
+export type NewRiskAssessmentRow = typeof riskAssessments.$inferInsert;
 
