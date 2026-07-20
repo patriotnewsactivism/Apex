@@ -59,10 +59,11 @@ export class OutcomeAnalyzer {
   }
 
   /** Generate descriptive tags for indexing outcomes. */
-  static generateOutcomeTags(taskTitle: string = '', role: string, success: boolean, errorType?: string | null): string[] {
-    const tags: string[] = [role.toLowerCase(), success ? 'status:success' : 'status:failure'];
+  static generateOutcomeTags(taskTitle: string = '', role: string = 'unknown', success: boolean, errorType?: string | null): string[] {
+    const safeRole = (role || 'unknown').toLowerCase();
+    const tags: string[] = [safeRole, success ? 'status:success' : 'status:failure'];
     if (errorType) tags.push(`error:${errorType}`);
-    const lowerTitle = taskTitle.toLowerCase();
+    const lowerTitle = (taskTitle || '').toLowerCase();
     if (lowerTitle.includes('swarm')) tags.push('feature:swarm');
     if (lowerTitle.includes('refactor') || lowerTitle.includes('build')) tags.push('type:dev');
     if (lowerTitle.includes('review') || lowerTitle.includes('test')) tags.push('type:qa');

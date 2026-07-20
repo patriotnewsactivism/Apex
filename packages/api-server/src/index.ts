@@ -98,10 +98,16 @@ async function main() {
   setupWebSocket(server);
 
   // Serve dashboard static files if built
-  const dashboardDist = resolve(__dirname, '../../dashboard/dist');
-  if (existsSync(dashboardDist)) {
+  const primaryDist = resolve(__dirname, '../../dashboard/dist');
+  const fallbackDist = resolve(process.cwd(), 'packages/dashboard/dist');
+  const dashboardDist = existsSync(primaryDist) ? primaryDist : existsSync(fallbackDist) ? fallbackDist : null;
+
+  if (dashboardDist) {
     app.use(express.static(dashboardDist));
-    app.get('/{*splat}', (_req, res) => {
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
+        return next();
+      }
       res.sendFile(join(dashboardDist, 'index.html'));
     });
     console.log('✅ Dashboard static files served from:', dashboardDist);
