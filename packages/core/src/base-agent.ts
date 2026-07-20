@@ -6,6 +6,7 @@ import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-clie
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { TaskQueue } from './task-queue.js';
+import { OutcomeAnalyzer } from '@workspace/learning-system';
 import type {
   AgentConfig,
   AgentStatus,
@@ -186,6 +187,29 @@ export abstract class BaseAgent {
   ): Promise<TaskResult> {
     const maxIter = this.config.maxIterations ?? 20;
     let iterations = 0;
+    let toolExecutions = 0;
+    let requiredApprovals = 0;
+    const startTime = Date.now();
+    const analyzer = new OutcomeAnalyzer();
+
+    const recordMetricsAsync = (success: boolean, errorMsg?: string) => {
+      const durationMs = Date.now() - startTime;
+      // Fire-and-forget async execution so task completion is never delayed (<100ms guaranteed)
+      void analyzer.recordOutcome({
+        taskId,
+        agentId: this.config.id,
+        role: this.config.role,
+        durationMs,
+        success,
+        toolExecutions,
+        llmCalls: iterations,
+        iterations,
+        requiredApprovals,
+        errorMessage: errorMsg,
+        taskTitle: title,
+        description,
+      }).catch(() => {});
+    };
 
     try {
       await this.logger.thinking(`Starting task: ${title}`, taskId);
@@ -230,6 +254,7 @@ export abstract class BaseAgent {
           await this.memory.remember(`task:${taskId}:result`, result.slice(0, 500), { importance: 0.6 });
           await this.logger.info(`Task completed: ${title}`, taskId);
           this.setStatus('idle');
+          recordMetricsAsync(true);
           return { success: true, output: result };
         }
 
@@ -238,6 +263,7 @@ export abstract class BaseAgent {
         const toolResults: LLMMessage[] = [];
 
         for (const tc of response.toolCalls) {
+          toolExecutions++;
           await this.logger.acting(`Calling tool: ${tc.name}(${JSON.stringify(tc.args).slice(0, 100)})`, taskId);
 
           const toolContext: ToolContext = {
@@ -245,6 +271,7 @@ export abstract class BaseAgent {
             taskId,
             workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
             requestApproval: async (toolName, args, reason) => {
+              requiredApprovals++;
               return this.requestHumanApproval(taskId, toolName, args, reason);
             },
             delegateToRole: async (targetRole, input) => {
@@ -286,13 +313,16 @@ export abstract class BaseAgent {
       }
 
       // Hit iteration limit
-      await this.taskQueue.fail(taskId, `Exceeded max iterations (${maxIter})`);
+      const failMsg = `Exceeded max iterations (${maxIter})`;
+      await this.taskQueue.fail(taskId, failMsg);
+      recordMetricsAsync(false, failMsg);
       return { success: false, error: 'Max iterations exceeded' };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await this.logger.error(`Task failed: ${title}`, err, taskId);
       await this.taskQueue.fail(taskId, msg);
       this.setStatus('error');
+      recordMetricsAsync(false, msg);
       return { success: false, error: msg };
     }
   }

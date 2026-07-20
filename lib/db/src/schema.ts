@@ -209,6 +209,67 @@ export const jobExecutionLog = pgTable('job_execution_log', {
   error: text('error'),
 });
 
+// ─── Task Outcomes (learning & analytics) ──────────────────────────────────────
+
+export const taskOutcomes = pgTable('task_outcomes', {
+  id: serial('id').primaryKey(),
+  taskId: text('task_id').notNull(),
+  agentId: text('agent_id').notNull(),
+  role: text('role').notNull(),
+  durationMs: integer('duration_ms').notNull(),
+  success: boolean('success').notNull(),
+  qualityScore: real('quality_score').notNull().default(1.0),
+  toolExecutions: integer('tool_executions').notNull().default(0),
+  llmCalls: integer('llm_calls').notNull().default(0),
+  iterations: integer('iterations').notNull().default(1),
+  requiredApprovals: integer('required_approvals').notNull().default(0),
+  errorType: text('error_type'),
+  complexity: real('complexity').notNull().default(0.5),
+  satisfactionMetric: real('satisfaction_metric').notNull().default(1.0),
+  tags: jsonb('tags').$type<string[]>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Learning Insights ────────────────────────────────────────────────────────
+
+export const learningInsights = pgTable('learning_insights', {
+  id: text('id').primaryKey(),
+  insightType: text('insight_type').notNull(), // 'pattern' | 'improvement' | 'warning'
+  title: text('title').notNull(),
+  description: text('description').notNull(),
+  confidence: real('confidence').notNull().default(0.8), // 0.0 – 1.0
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+  applied: boolean('applied').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+});
+
+// ─── Strategy Recommendations ─────────────────────────────────────────────────
+
+export const strategyRecommendations = pgTable('strategy_recommendations', {
+  id: text('id').primaryKey(),
+  recommendationType: text('recommendation_type').notNull(), // 'tool_optimization' | 'delegation_improvement' | 'error_mitigation'
+  title: text('title').notNull(),
+  text: text('text').notNull(),
+  expectedImpact: text('expected_impact').notNull(),
+  confidence: real('confidence').notNull().default(0.8),
+  status: text('status').notNull().default('pending'), // pending | approved | rejected | applied
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true, mode: 'date' }),
+  reviewerNote: text('reviewer_note'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+// ─── Performance Baselines ───────────────────────────────────────────────────
+
+export const performanceBaselines = pgTable('performance_baselines', {
+  metricName: text('metric_name').primaryKey(), // e.g. 'avg_task_duration_ms', 'overall_success_rate'
+  baselineValue: real('baseline_value').notNull(),
+  measurementWindow: text('measurement_window').notNull().default('30d'),
+  sampleSize: integer('sample_size').notNull().default(0),
+  validUntil: timestamp('valid_until', { withTimezone: true, mode: 'date' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const agentRelations = relations(agents, ({ one, many }) => ({
@@ -291,4 +352,12 @@ export type ComponentHealthRow = typeof componentHealth.$inferSelect;
 export type ScheduledJob = typeof scheduledJobs.$inferSelect;
 export type NewScheduledJob = typeof scheduledJobs.$inferInsert;
 export type JobExecutionLogEntry = typeof jobExecutionLog.$inferSelect;
+export type TaskOutcome = typeof taskOutcomes.$inferSelect;
+export type NewTaskOutcome = typeof taskOutcomes.$inferInsert;
+export type LearningInsight = typeof learningInsights.$inferSelect;
+export type NewLearningInsight = typeof learningInsights.$inferInsert;
+export type StrategyRecommendation = typeof strategyRecommendations.$inferSelect;
+export type NewStrategyRecommendation = typeof strategyRecommendations.$inferInsert;
+export type PerformanceBaseline = typeof performanceBaselines.$inferSelect;
+export type NewPerformanceBaseline = typeof performanceBaselines.$inferInsert;
 

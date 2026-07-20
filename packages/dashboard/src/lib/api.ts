@@ -98,6 +98,16 @@ export const api = {
     remove: (id: string) => apiFetch(`/jobs/${id}`, { method: 'DELETE' }),
     history: (id: string) => apiFetch<JobExecutionRow[]>(`/jobs/${id}/history`),
   },
+
+  learning: {
+    outcomes: (role?: string) => apiFetch<TaskOutcomeRow[]>(`/learning/outcomes${role ? `?role=${role}` : ''}`),
+    insights: () => apiFetch<LearningInsightRow[]>('/learning/insights'),
+    recommendations: (status?: string) => apiFetch<StrategyRecommendationRow[]>(`/learning/recommendations${status ? `?status=${status}` : ''}`),
+    respondRecommendation: (id: string, action: 'approve' | 'reject') =>
+      apiFetch(`/learning/recommendations/${id}/respond`, { method: 'POST', body: JSON.stringify({ action }) }),
+    analyze: () => apiFetch<{ success: boolean; patternsCreated: number }>('/learning/analyze', { method: 'POST' }),
+    baselines: () => apiFetch<PerformanceBaselineRow[]>('/learning/baselines'),
+  },
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -241,4 +251,60 @@ export interface JobExecutionRow {
   output: string | null;
   error: string | null;
 }
+
+// ─── Learning Types ───────────────────────────────────────────────────────────
+
+export interface TaskOutcomeRow {
+  id: number;
+  taskId: string;
+  agentId: string;
+  role: string;
+  durationMs: number;
+  success: boolean;
+  qualityScore: number;
+  toolExecutions: number;
+  llmCalls: number;
+  iterations: number;
+  requiredApprovals: number;
+  errorType: string | null;
+  complexity: number;
+  satisfactionMetric: number;
+  tags: string[] | null;
+  recordedAt: string;
+}
+
+export interface LearningInsightRow {
+  id: string;
+  insightType: 'pattern' | 'improvement' | 'warning';
+  title: string;
+  description: string;
+  confidence: number;
+  evidence: Record<string, unknown> | null;
+  applied: boolean;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+export interface StrategyRecommendationRow {
+  id: string;
+  recommendationType: string;
+  title: string;
+  text: string;
+  expectedImpact: string;
+  confidence: number;
+  status: 'pending' | 'approved' | 'rejected' | 'applied';
+  reviewedAt: string | null;
+  reviewerNote: string | null;
+  createdAt: string;
+}
+
+export interface PerformanceBaselineRow {
+  metricName: string;
+  baselineValue: number;
+  measurementWindow: string;
+  sampleSize: number;
+  validUntil: string | null;
+  updatedAt: string;
+}
+
 

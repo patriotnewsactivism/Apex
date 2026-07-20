@@ -180,6 +180,63 @@ export async function migrate() {
       error text
     )
   `;
+  await client`
+    CREATE TABLE IF NOT EXISTS task_outcomes (
+      id serial PRIMARY KEY,
+      task_id text NOT NULL,
+      agent_id text NOT NULL,
+      role text NOT NULL,
+      duration_ms integer NOT NULL,
+      success boolean NOT NULL,
+      quality_score real NOT NULL DEFAULT 1.0,
+      tool_executions integer NOT NULL DEFAULT 0,
+      llm_calls integer NOT NULL DEFAULT 0,
+      iterations integer NOT NULL DEFAULT 1,
+      required_approvals integer NOT NULL DEFAULT 0,
+      error_type text,
+      complexity real NOT NULL DEFAULT 0.5,
+      satisfaction_metric real NOT NULL DEFAULT 1.0,
+      tags jsonb,
+      recorded_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS learning_insights (
+      id text PRIMARY KEY,
+      insight_type text NOT NULL,
+      title text NOT NULL,
+      description text NOT NULL,
+      confidence real NOT NULL DEFAULT 0.8,
+      evidence jsonb,
+      applied boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS strategy_recommendations (
+      id text PRIMARY KEY,
+      recommendation_type text NOT NULL,
+      title text NOT NULL,
+      text text NOT NULL,
+      expected_impact text NOT NULL,
+      confidence real NOT NULL DEFAULT 0.8,
+      status text NOT NULL DEFAULT 'pending',
+      reviewed_at timestamptz,
+      reviewer_note text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS performance_baselines (
+      metric_name text PRIMARY KEY,
+      baseline_value real NOT NULL,
+      measurement_window text NOT NULL DEFAULT '30d',
+      sample_size integer NOT NULL DEFAULT 0,
+      valid_until timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
 }
 
 export { schema };

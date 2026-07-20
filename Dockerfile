@@ -15,6 +15,8 @@ COPY packages/health-monitor/package.json ./packages/health-monitor/
 COPY packages/health-monitor/tsconfig.json ./packages/health-monitor/
 COPY packages/background-jobs/package.json ./packages/background-jobs/
 COPY packages/background-jobs/tsconfig.json ./packages/background-jobs/
+COPY packages/learning-system/package.json ./packages/learning-system/
+COPY packages/learning-system/tsconfig.json ./packages/learning-system/
 COPY packages/core/package.json ./packages/core/
 COPY packages/core/tsconfig.json ./packages/core/
 COPY packages/agents/package.json ./packages/agents/
@@ -48,6 +50,8 @@ COPY packages/health-monitor/package.json ./packages/health-monitor/
 COPY packages/health-monitor/tsconfig.json ./packages/health-monitor/
 COPY packages/background-jobs/package.json ./packages/background-jobs/
 COPY packages/background-jobs/tsconfig.json ./packages/background-jobs/
+COPY packages/learning-system/package.json ./packages/learning-system/
+COPY packages/learning-system/tsconfig.json ./packages/learning-system/
 COPY packages/core/package.json ./packages/core/
 COPY packages/core/tsconfig.json ./packages/core/
 COPY packages/agents/package.json ./packages/agents/
@@ -62,6 +66,7 @@ RUN pnpm install --no-frozen-lockfile --ignore-scripts --prod
 COPY --from=builder /app/lib ./lib
 COPY --from=builder /app/packages/health-monitor ./packages/health-monitor
 COPY --from=builder /app/packages/background-jobs ./packages/background-jobs
+COPY --from=builder /app/packages/learning-system ./packages/learning-system
 COPY --from=builder /app/packages/core ./packages/core
 COPY --from=builder /app/packages/agents ./packages/agents
 COPY --from=builder /app/packages/api-server ./packages/api-server

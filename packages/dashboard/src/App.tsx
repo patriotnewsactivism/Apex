@@ -12,6 +12,7 @@ import { ApprovalQueue } from './components/ApprovalQueue.js';
 import { QuickChat } from './components/QuickChat.js';
 import { Settings } from './components/Settings.js';
 import { HealthPanel } from './components/HealthPanel.js';
+import { LearningPanel } from './components/LearningPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
@@ -79,6 +80,7 @@ function Sidebar({
     { id: 'logs', label: 'Log Stream', icon: <Terminal size={18} /> },
     { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={18} /> },
     { id: 'health', label: 'Health System', icon: <Activity size={18} /> },
+    { id: 'learning', label: 'Intelligence', icon: <Brain size={18} /> },
     { id: 'settings', label: 'Settings', icon: <SettingsIcon size={18} /> },
   ];
 
@@ -423,6 +425,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     ),
     approvals: <ApprovalQueue />,
     health: <HealthPanel />,
+    learning: <LearningPanel />,
     settings: <Settings />,
   };
 
@@ -434,6 +437,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     logs: '🖥 Live Log Stream',
     approvals: '🛡 Approval Queue',
     health: '🩺 System Health & Observability',
+    learning: '🧠 Learning & Adaptation System',
     settings: '⚙️ Settings & Integrations',
   };
 

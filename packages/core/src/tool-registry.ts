@@ -903,6 +903,142 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         return rows;
       },
     },
+
+    // ─── Learning: Analyze performance ───────────────────────────────────
+    {
+      name: 'analyze_performance',
+      description: 'Analyze task execution outcomes, success rates, avg durations, and tool execution counts across agents and roles.',
+      schema: z.object({
+        role: z.string().optional().describe('Filter metrics by agent role'),
+        limit: z.number().optional().describe('Max outcomes to analyze (default 50)'),
+      }),
+      requiresApproval: false,
+      async execute({ role, limit }) {
+        const { db, taskOutcomes } = await import('@workspace/db');
+        const { eq, desc } = await import('drizzle-orm');
+
+        const query = db.select().from(taskOutcomes);
+        const rows = role
+          ? await query.where(eq(taskOutcomes.role, role)).orderBy(desc(taskOutcomes.recordedAt)).limit(limit ?? 50)
+          : await query.orderBy(desc(taskOutcomes.recordedAt)).limit(limit ?? 50);
+
+        const total = rows.length;
+        const successCount = rows.filter((r) => r.success).length;
+        const avgDurationMs = total > 0 ? rows.reduce((sum, r) => sum + r.durationMs, 0) / total : 0;
+        const totalTools = rows.reduce((sum, r) => sum + r.toolExecutions, 0);
+
+        return {
+          totalTasks: total,
+          successCount,
+          failedCount: total - successCount,
+          successRate: total > 0 ? successCount / total : 1.0,
+          avgDurationMs,
+          totalToolExecutions: totalTools,
+          outcomes: rows,
+        };
+      },
+    },
+
+    // ─── Learning: Get insights ───────────────────────────────────────────
+    {
+      name: 'get_insights',
+      description: 'Get active learning insights and detected patterns across task executions.',
+      schema: z.object({
+        limit: z.number().optional().describe('Max insights (default 20)'),
+      }),
+      requiresApproval: false,
+      async execute({ limit }) {
+        const { db, learningInsights } = await import('@workspace/db');
+        const { desc } = await import('drizzle-orm');
+
+        const rows = await db.select().from(learningInsights)
+          .orderBy(desc(learningInsights.createdAt))
+          .limit(limit ?? 20);
+
+        return rows;
+      },
+    },
+
+    // ─── Learning: Get strategy recommendations ──────────────────────────
+    {
+      name: 'get_strategy_recommendations',
+      description: 'Get active strategy recommendations queue. All recommendations are advisory and await human review/approval.',
+      schema: z.object({
+        status: z.string().optional().describe('Filter by status: pending | approved | rejected | applied'),
+      }),
+      requiresApproval: false,
+      async execute({ status }) {
+        const { db, strategyRecommendations } = await import('@workspace/db');
+        const { eq, desc } = await import('drizzle-orm');
+
+        const query = db.select().from(strategyRecommendations);
+        const rows = status
+          ? await query.where(eq(strategyRecommendations.status, status)).orderBy(desc(strategyRecommendations.createdAt))
+          : await query.orderBy(desc(strategyRecommendations.createdAt));
+
+        return rows;
+      },
+    },
+
+    // ─── Learning: Set performance baseline ─────────────────────────────
+    {
+      name: 'set_performance_baseline',
+      description: 'Set or update a target performance baseline metric (e.g. avg_task_duration_ms, overall_success_rate). Requires approval.',
+      schema: z.object({
+        metricName: z.string().describe('Metric identifier name'),
+        baselineValue: z.number().describe('Target numeric baseline value'),
+        measurementWindow: z.string().optional().describe('Time window (default "30d")'),
+        sampleSize: z.number().optional().describe('Number of samples benchmarked'),
+      }),
+      requiresApproval: true,
+      async execute({ metricName, baselineValue, measurementWindow, sampleSize }) {
+        const { db, performanceBaselines } = await import('@workspace/db');
+
+        await db.insert(performanceBaselines).values({
+          metricName,
+          baselineValue,
+          measurementWindow: measurementWindow ?? '30d',
+          sampleSize: sampleSize ?? 0,
+          updatedAt: new Date(),
+        }).onConflictDoUpdate({
+          target: performanceBaselines.metricName,
+          set: {
+            baselineValue,
+            measurementWindow: measurementWindow ?? '30d',
+            sampleSize: sampleSize ?? 0,
+            updatedAt: new Date(),
+          },
+        });
+
+        return { updated: true, metricName, baselineValue };
+      },
+    },
+
+    // ─── Learning: Apply strategy recommendation ─────────────────────────
+    {
+      name: 'apply_strategy_recommendation',
+      description: 'Mark an approved strategy recommendation as applied. Requires human approval.',
+      schema: z.object({
+        recommendationId: z.string().describe('ID of the strategy recommendation to apply'),
+      }),
+      requiresApproval: true,
+      async execute({ recommendationId }) {
+        const { db, strategyRecommendations } = await import('@workspace/db');
+        const { eq } = await import('drizzle-orm');
+
+        const [existing] = await db.select().from(strategyRecommendations).where(eq(strategyRecommendations.id, recommendationId)).limit(1);
+        if (!existing) {
+          return { success: false, error: `No recommendation found with id ${recommendationId}` };
+        }
+
+        await db.update(strategyRecommendations).set({
+          status: 'applied',
+          reviewedAt: new Date(),
+        }).where(eq(strategyRecommendations.id, recommendationId));
+
+        return { applied: true, recommendationId, title: existing.title };
+      },
+    },
   ];
 }
 
