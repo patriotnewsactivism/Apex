@@ -452,6 +452,24 @@ export abstract class BaseAgent {
 
   // ── Status ─────────────────────────────────────────────────────────────────
 
+  /** Best-effort, fire-and-forget: updates the agent's DB row with the
+   * provider/model that actually served the most recent LLM call. Never
+   * awaited by the caller and never throws -- a DB hiccup here must not
+   * interrupt the agent's task loop. */
+  private persistActualProvider(servedModel: string): void {
+    const slashIdx = servedModel.indexOf('/');
+    if (slashIdx <= 0) return; // unexpected format, skip rather than guess
+    const provider = servedModel.slice(0, slashIdx);
+    const model = servedModel.slice(slashIdx + 1);
+    db.update(agents)
+      .set({ provider, model, lastActiveAt: new Date() })
+      .where(eq(agents.id, this.config.id))
+      .then(() => {})
+      .catch(() => {
+        // DB offline / not yet initialized -- fine, next successful call retries
+      });
+  }
+
   protected setStatus(status: AgentStatus, message?: string) {
     this.status = status;
     db.update(agents)
