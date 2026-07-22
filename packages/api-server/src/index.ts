@@ -10,6 +10,8 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { db, migrate, componentHealth, healthMetrics } from '@workspace/db';
 import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
+import { loadSettingsIntoEnv } from './settingsLoader.js';
+import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler } from '@workspace/background-jobs';
 import { getConfiguredProviders, getToolRegistry, getSharedAlertManager, emitApexEvent } from '@workspace/core';
@@ -51,6 +53,11 @@ async function main() {
   } catch (err) {
     console.warn('⚠️  Database migration skipped or deferred:', err instanceof Error ? err.message : String(err));
   }
+
+  // Apply any DB-persisted integration API keys into process.env BEFORE the
+  // workforce (and its LLM clients) are created, so a key saved via the
+  // dashboard's Settings panel is live from the very first LLM call.
+  await loadSettingsIntoEnv();
 
   const mode = process.env.APEX_APPROVAL_MODE;
   const approvalRequired = mode === 'strict' ? true : mode === 'off' ? false : undefined;
@@ -108,6 +115,7 @@ async function main() {
   app.use('/api/cicd', createCicdRouter());
   app.use('/api/applications', createMultiappRouter());
   app.use('/api/predictive', createPredictiveRouter());
+  app.use('/api/settings', createSettingsRouter());
 
   // WebSocket
   setupWebSocket(server);

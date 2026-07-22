@@ -82,6 +82,21 @@ export const api = {
       apiFetch<unknown>(`/tools/${name}`, { method: 'POST', body: JSON.stringify(args) }),
   },
 
+  settings: {
+    // Never returns plaintext values — status only (configured: boolean).
+    listIntegrations: () =>
+      apiFetch<{ integrations: { key: string; configured: boolean }[] }>('/settings/integrations').then((r) => r.integrations),
+    saveIntegration: (key: string, value: string) =>
+      apiFetch<{ ok: boolean; key: string; configured: boolean }>('/settings/integrations', {
+        method: 'POST',
+        body: JSON.stringify({ key, value }),
+      }),
+    clearIntegration: (key: string) =>
+      apiFetch<{ ok: boolean; key: string; configured: boolean }>(`/settings/integrations/${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+      }),
+  },
+
   health: {
     report: () => apiFetch<HealthReport>('/health'),
     components: () => apiFetch<ComponentHealthRow[]>('/health/components'),

@@ -323,6 +323,14 @@ export function getConfiguredProviders(): Array<{ name: string; configured: bool
   return PROVIDERS.map((p) => ({ name: p.name, configured: Boolean(process.env[p.apiKeyEnv]) }));
 }
 
+/** The full set of env var names this LLM client will ever read an API key
+ * from. Used by the Settings API as a strict allowlist so a client can only
+ * ever set/clear a key this client actually consumes — never an arbitrary
+ * environment variable. */
+export function getKnownApiKeyEnvs(): string[] {
+  return PROVIDERS.map((p) => p.apiKeyEnv);
+}
+
 export async function createEmbedding(text: string): Promise<number[]> {
   const openaiKey = process.env.OPENAI_API_KEY;
   const openrouterKey = process.env.OPENROUTER_API_KEY;

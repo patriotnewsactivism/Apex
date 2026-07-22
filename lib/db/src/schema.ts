@@ -373,6 +373,24 @@ export const riskAssessments = pgTable('risk_assessments', {
 
 // ─── Relations ────────────────────────────────────────────────────────────────
 
+// ─── Integration Settings (server-side persisted API keys) ────────────────────
+//
+// Backs the dashboard's Settings/Integrations panel. Previously this panel
+// only wrote to browser localStorage with a comment admitting "in production
+// these would go to env vars via API" — meaning Save never actually did
+// anything. This table is that real persistence: values written here are
+// loaded into process.env at boot AND applied live on save, so the LLM
+// fallback chain (llm-client.ts, which reads process.env[provider.apiKeyEnv])
+// picks them up with no further code changes. Values are write-only from the
+// API's perspective — GET endpoints only ever return configured:boolean,
+// never the plaintext value.
+export const integrationSettings = pgTable('integration_settings', {
+  key: text('key').primaryKey(), // env var name, e.g. 'GROQ_API_KEY'
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedBy: text('updated_by'),
+});
+
 export const agentRelations = relations(agents, ({ one, many }) => ({
   parent: one(agents, { fields: [agents.parentId], references: [agents.id] }),
   children: many(agents),

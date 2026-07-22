@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import {
   Settings as SettingsIcon,
@@ -159,25 +159,48 @@ const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   data: { label: 'Data & Storage', color: '#ffd60a' },
 };
 
-function IntegrationCard({ integration }: { integration: IntegrationConfig }) {
+function IntegrationCard({
+  integration,
+  configuredKeys,
+  onChanged,
+}: {
+  integration: IntegrationConfig;
+  configuredKeys: Set<string>;
+  onChanged: () => void;
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const cat = CATEGORY_LABELS[integration.category];
 
-  const handleSave = () => {
-    // Save to localStorage for now — in production these would go to env vars via API
-    for (const [key, val] of Object.entries(values)) {
-      if (val) localStorage.setItem(`apex_env_${key}`, val);
-    }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      // Real server-side persistence — writes to the DB-backed
+      // integration_settings table AND applies live to the running
+      // server's process.env (see settingsLoader.ts). Replaces the
+      // previous localStorage-only no-op.
+      const entries = Object.entries(values).filter(([, v]) => v);
+      for (const [key, val] of entries) {
+        await api.settings.saveIntegration(key, val);
+      }
+    },
+    onSuccess: () => {
+      setSaveError(null);
+      setSaved(true);
+      setValues({});
+      onChanged();
+      setTimeout(() => setSaved(false), 2000);
+    },
+    onError: (err: Error) => setSaveError(err.message),
+  });
+
+  const handleSave = () => saveMutation.mutate();
 
   const hasValues = integration.envVars.some(
-    (v) => values[v.key] || localStorage.getItem(`apex_env_${v.key}`)
+    (v) => values[v.key] || configuredKeys.has(v.key)
   );
 
   return (
@@ -262,7 +285,7 @@ function IntegrationCard({ integration }: { integration: IntegrationConfig }) {
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
             {integration.envVars.map((envVar) => {
-              const storedVal = localStorage.getItem(`apex_env_${envVar.key}`);
+              const storedVal = configuredKeys.has(envVar.key) ? '(configured)' : null;
               const isSecret = envVar.secret;
               const show = showSecrets[envVar.key];
 
@@ -318,12 +341,23 @@ function IntegrationCard({ integration }: { integration: IntegrationConfig }) {
               );
             })}
 
-            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-              <button className="btn-primary" onClick={handleSave} style={{ fontSize: 12, padding: '8px 16px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+            {saveError && (
+              <div style={{ fontSize: 11, color: '#ff3b5c' }}>⚠ Save failed: {saveError}</div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn-primary"
+                onClick={handleSave}
+                disabled={saveMutation.isPending}
+                style={{ fontSize: 12, padding: '8px 16px', opacity: saveMutation.isPending ? 0.6 : 1 }}
+              >
                 {saved ? (
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <Check size={14} /> Saved
                   </span>
+                ) : saveMutation.isPending ? (
+                  'Saving…'
                 ) : (
                   'Save'
                 )}
@@ -347,6 +381,7 @@ function IntegrationCard({ integration }: { integration: IntegrationConfig }) {
                 </a>
               )}
             </div>
+            </div>
           </div>
         </motion.div>
       )}
@@ -355,6 +390,8 @@ function IntegrationCard({ integration }: { integration: IntegrationConfig }) {
 }
 
 export function Settings() {
+  const queryClient = useQueryClient();
+
   const { data: agents = [] } = useQuery({
     queryKey: ['agents'],
     queryFn: () => api.agents.list(),
@@ -364,6 +401,14 @@ export function Settings() {
     queryKey: ['tools'],
     queryFn: () => api.tools.list(),
   });
+
+  // Real server-side configured status — never the plaintext values.
+  const { data: integrationStatus = [] } = useQuery({
+    queryKey: ['settings', 'integrations'],
+    queryFn: () => api.settings.listIntegrations(),
+  });
+  const configuredKeys = new Set(integrationStatus.filter((s) => s.configured).map((s) => s.key));
+  const refetchIntegrations = () => queryClient.invalidateQueries({ queryKey: ['settings', 'integrations'] });
 
   const categories = ['ai', 'comms', 'dev', 'data'] as const;
 
@@ -377,7 +422,7 @@ export function Settings() {
           {
             label: 'Configured',
             value: INTEGRATIONS.filter((i) =>
-              i.envVars.some((v) => localStorage.getItem(`apex_env_${v.key}`))
+              i.envVars.some((v) => configuredKeys.has(v.key))
             ).length,
             color: '#00ff88',
             icon: <Check size={14} />,
@@ -387,7 +432,7 @@ export function Settings() {
             value:
               INTEGRATIONS.length -
               INTEGRATIONS.filter((i) =>
-                i.envVars.some((v) => localStorage.getItem(`apex_env_${v.key}`))
+                i.envVars.some((v) => configuredKeys.has(v.key))
               ).length,
             color: '#ff3b5c',
             icon: <Shield size={14} />,
@@ -529,7 +574,12 @@ export function Settings() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {catIntegrations.map((integration) => (
-                <IntegrationCard key={integration.id} integration={integration} />
+                <IntegrationCard
+                  key={integration.id}
+                  integration={integration}
+                  configuredKeys={configuredKeys}
+                  onChanged={refetchIntegrations}
+                />
               ))}
             </div>
           </div>
