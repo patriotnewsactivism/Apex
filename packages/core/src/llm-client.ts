@@ -65,8 +65,16 @@ const PROVIDERS: Array<{
   // actually get higher rate limits — until then this tier will keep 429ing
   // once the shared trial quota is exhausted.
   { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
-  // Poolside/OpenRouter-free tier removed 2026-07-22 along with the rest of
-  // OpenRouter -- it shared OPENROUTER_API_KEY, which is being fully retired.
+  // OpenRouter FREE tier re-added 2026-07-22 (last-resort only) -- Don confirmed
+  // the paid OpenRouter balance stays retired, but OpenRouter's :free-suffixed
+  // models cost nothing and just add more distinct rate-limit buckets to this
+  // chain. Re-verified live against openrouter.ai/api/v1/models 2026-07-22 --
+  // OpenRouter's free catalog has changed since this was last used: the old
+  // devstral/qwen-coder/llama-3.3-70b :free ids are gone, replaced by
+  // gpt-oss-20b and nvidia/nemotron variants. Placed LAST since it's the
+  // provider most likely to already be exhausted portfolio-wide.
+  { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
 
 class MultiProviderClient {
