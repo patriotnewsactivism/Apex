@@ -48,7 +48,14 @@ FROM node:20-alpine AS runtime
 # git is needed at runtime by @workspace/cicd-automation's ci-workspace.ts,
 # which maintains a separate scratch checkout (with devDependencies) to run
 # real typecheck/build verification -- isolated from this --prod-only image.
-RUN apk add --no-cache git
+#
+# chromium + its runtime libs are for QA Director's new browserCheck tool
+# (real headless-browser QA, added 2026-07-22). This is Alpine, and
+# Playwright's own bundled Chromium build needs glibc (doesn't work here) --
+# and the existing `pnpm install --ignore-scripts` already skips Playwright's
+# postinstall browser download anyway. So we use Alpine's native musl-built
+# chromium package instead and point Playwright at it via executablePath.
+RUN apk add --no-cache git chromium nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont
 
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 

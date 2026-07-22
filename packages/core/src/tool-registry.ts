@@ -367,6 +367,78 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    // Real browser-level QA check (Playwright + Chromium) — phase 2 of QA
+    // Director's capability: fetchUrl only ever saw fetched HTML/text; this
+    // actually renders the page in a real browser, executes its JS, and
+    // reports real console errors + real page-load status, not a guess.
+    {
+      name: 'browserCheck',
+      description: 'Load a URL in a real headless Chromium browser and report whether it rendered successfully: HTTP status, page title, any JavaScript console errors, and any uncaught page exceptions. Use this for real browser-level QA, not just raw HTML fetching.',
+      schema: z.object({
+        url: z.string().url().describe('URL to load in the browser'),
+        maxConsoleMessages: z.number().optional().describe('Max console messages to return (default 20)'),
+      }),
+      requiresApproval: false,
+      async execute({ url, maxConsoleMessages }) {
+        const { chromium } = await import('playwright');
+        const { existsSync } = await import('fs');
+        // This image is Alpine (musl) -- Playwright's own bundled Chromium
+        // needs glibc and was never downloaded anyway (repo installs with
+        // --ignore-scripts). Use Alpine's native chromium apk package
+        // instead via executablePath. Check both common install paths.
+        const candidatePaths = ['/usr/bin/chromium-browser', '/usr/bin/chromium'];
+        const executablePath = candidatePaths.find((p) => existsSync(p));
+        if (!executablePath) {
+          throw new Error(
+            `No system Chromium binary found at ${candidatePaths.join(' or ')}. ` +
+            `browserCheck requires the 'chromium' apk package to be installed in this image.`
+          );
+        }
+        const browser = await chromium.launch({
+          headless: true,
+          executablePath,
+          args: ['--no-sandbox', '--disable-dev-shm-usage'],
+        });
+        try {
+          const page = await browser.newPage();
+          const consoleMessages: { type: string; text: string }[] = [];
+          const pageErrors: string[] = [];
+          page.on('console', (msg) => {
+            if (msg.type() === 'error' || msg.type() === 'warning') {
+              consoleMessages.push({ type: msg.type(), text: msg.text().slice(0, 300) });
+            }
+          });
+          page.on('pageerror', (err) => {
+            pageErrors.push(String(err?.message || err).slice(0, 300));
+          });
+
+          let status: number | null = null;
+          let loadError: string | null = null;
+          try {
+            const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 });
+            status = response ? response.status() : null;
+          } catch (e: any) {
+            loadError = String(e?.message || e).slice(0, 300);
+          }
+
+          const title = loadError ? null : await page.title().catch(() => null);
+          const limit = maxConsoleMessages ?? 20;
+
+          return {
+            url,
+            status,
+            loadError,
+            title,
+            consoleErrors: consoleMessages.slice(0, limit),
+            pageErrors: pageErrors.slice(0, limit),
+            renderedSuccessfully: !loadError && status !== null && status < 400,
+          };
+        } finally {
+          await browser.close();
+        }
+      },
+    },
+
     // Send message to another agent — creates a real delegated task so the
     // target agent actually picks up the work, and persists the message for
     // audit/dashboard visibility.

@@ -9,10 +9,10 @@ import type { AgentConfig } from '@workspace/core';
 // fetchUrl tool to pull REAL rendered page content (not hallucinated) and
 // produces a structured, severity-ranked findings report per persona.
 //
-// Honest scope for v1: this reasons over fetched HTML/text content of live
-// pages — it does not yet drive a real browser to click/submit forms. That
-// (actual interaction-level testing + cross-agent bug triangulation) is a
-// phase 2 capability, not yet built.
+// Phase 2 (2026-07-22): now also has browserCheck — a real headless
+// Chromium load per persona, reporting true render status, JS console
+// errors, and uncaught page exceptions. Still does not click/submit forms
+// or triangulate bugs across agents; that remains a future phase.
 
 export class QADirectorAgent extends BaseAgent {
   constructor(overrides?: Partial<AgentConfig>) {
@@ -48,6 +48,10 @@ reasoning as a roster of distinct beta-tester personas, not just checking "does 
 - Use fetchUrl to pull REAL content from the target URL(s) given in your task. Never invent
   page content you haven't actually fetched — if fetchUrl fails or a page 404s, report that
   as a finding, don't fabricate what "should" be there.
+- ALSO use browserCheck on each target URL to catch real render failures and JavaScript
+  console/page errors that plain HTML fetching cannot see. If browserCheck reports
+  renderedSuccessfully: false, or any consoleErrors/pageErrors, that is itself always at
+  least a Medium severity finding — real browser errors are never cosmetic.
 - Fetch multiple relevant pages when the task gives you more than one URL.
 - Go through each persona above against the real fetched content.
 
@@ -63,7 +67,7 @@ End with a one-paragraph honest summary: what's genuinely solid, and what's the 
 urgent fix. Do not inflate findings to seem thorough — if a persona finds nothing wrong,
 say so plainly. A short, honest report beats a padded one.`,
       llm: { provider: 'openrouter', model: 'gpt-4o' },
-      tools: ['fetchUrl', 'sendMessage'],
+      tools: ['fetchUrl', 'browserCheck', 'sendMessage'],
       maxIterations: 20,
       approvalRequired: false,
       // dispatchSwarm's primary use case (per ApexCEO's system prompt) is
