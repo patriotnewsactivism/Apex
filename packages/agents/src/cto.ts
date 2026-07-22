@@ -49,7 +49,7 @@ export class CTOAgent extends BaseAgent {
       tier: 1,
       parentId: 'apex-ceo-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter', model: 'gpt-4o' },
+      llm: { provider: 'cerebras', model: 'gpt-4o' },
       tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'fetchUrl'],
       maxIterations: 25,
       approvalRequired: false,

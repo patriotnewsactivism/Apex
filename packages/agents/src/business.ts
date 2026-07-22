@@ -54,7 +54,7 @@ city, why it's a good fit, and a suggested outreach angle. This is REQUIRED — 
 pipeline output once it's saved via the tool, not just mentioned in your final answer. Call
 listResearchedLeads first if you want to check what's already in the pipeline before researching
 more (the save tool also auto-skips duplicates by website).`,
-      llm: { provider: 'openrouter', model: 'google/gemini-2.5-flash' },
+      llm: { provider: 'cerebras', model: 'google/gemini-2.5-flash' },
       tools: ['webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'listResearchedLeads', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: false,
@@ -100,7 +100,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Prioritized lead list with next action per lead, and an honest status: what's pipeline-ready vs.
 what's blocked on missing infrastructure (Twilio, live Stripe, etc).`,
-      llm: { provider: 'openrouter', model: 'openai/gpt-4o' },
+      llm: { provider: 'cerebras', model: 'openai/gpt-4o' },
       tools: ['readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: false,
@@ -138,7 +138,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clean, ready-to-post drafts labeled by platform, plus a short rationale for why this angle will
 land with the ICP (Home Services, Legal, Medical/Esthetics, Real Estate).`,
-      llm: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+      llm: { provider: 'cerebras', model: 'openai/gpt-4o-mini' },
       tools: ['readFile', 'writeFile', 'webSearch', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: true,
@@ -175,7 +175,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clear, honest customer-facing responses. When escalating a gap between marketing and reality,
 flag it explicitly as a "sold but not built" item for the CEO/engineering team to prioritize.`,
-      llm: { provider: 'openrouter', model: 'openai/gpt-4o-mini' },
+      llm: { provider: 'cerebras', model: 'openai/gpt-4o-mini' },
       tools: ['readFile', 'writeFile', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: false,

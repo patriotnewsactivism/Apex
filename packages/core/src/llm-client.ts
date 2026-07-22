@@ -2,22 +2,15 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 
 // ─── Multi-Provider Fallback Client ───────────────────────────────────────────
 //
-// Tries OpenRouter first (best model selection), then falls back through free
-// providers in order if OpenRouter is unavailable (e.g. out of credits) or a
-// provider errors/rate-limits:
+// OpenRouter REMOVED entirely 2026-07-22 per Don's decision (not renewing
+// OpenRouter credits — dropping it portfolio-wide, not just letting it
+// silently 402). Falls back through free providers in order:
 //
-//   OpenRouter → Cerebras → Mistral → Groq → GitHub Models → Cohere (trial) →
-//   Cohere (prod) → OpenRouter-Free (Poolside :free model)
+//   Cerebras → Mistral → Groq → GitHub Models → Qwen Cloud → Cohere (trial) →
+//   Cohere (prod)
 //
 // Direct Gemini fallback was removed 2026-07-14 (permanently dead key, zero
 // quota grant — not a rate limit). See NOTE above the cohere-trial entry.
-//
-// NOTE on Poolside: direct calls to inference.poolside.ai fail (DNS/connection
-// errors — that endpoint doesn't accept direct API access on this plan).
-// Poolside models ARE reachable via OpenRouter's `:free`-suffixed model IDs,
-// which are confirmed to bypass OpenRouter's paid credit balance (cost: 0
-// even at $0 balance) — so this last-resort tier still works when the
-// primary OpenRouter (paid model) tier hits a 402.
 //
 // Each provider uses the standard OpenAI-compatible chat completions shape,
 // so the same request/response mapping logic is reused across all of them.
@@ -31,7 +24,6 @@ const PROVIDERS: Array<{
   // Some providers need specific headers
   extraHeaders?: Record<string, string>;
 }> = [
-  { name: 'openrouter', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY' },
   // Cerebras — verified live 2026-07-14. Available models on this account:
   // gemma-4-31b, zai-glm-4.7, gpt-oss-120b. Using gpt-oss-120b (best quality/speed).
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
@@ -73,12 +65,8 @@ const PROVIDERS: Array<{
   // actually get higher rate limits — until then this tier will keep 429ing
   // once the shared trial quota is exhausted.
   { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
-  // Poolside — replaces the old direct inference.poolside.ai entry (dead
-  // endpoint, DNS/connection failures). Routed through OpenRouter's free
-  // model tier instead, which is confirmed to work at cost:0 regardless of
-  // OpenRouter's paid credit balance. Reuses OPENROUTER_API_KEY, not
-  // POOLSIDE_API_KEY (direct Poolside API access is not viable on this plan).
-  { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'poolside/laguna-m.1:free' },
+  // Poolside/OpenRouter-free tier removed 2026-07-22 along with the rest of
+  // OpenRouter -- it shared OPENROUTER_API_KEY, which is being fully retired.
 ];
 
 class MultiProviderClient {
@@ -132,9 +120,7 @@ class MultiProviderClient {
       const CODING_ROLES = ['LEAD_DEV', 'BACKEND', 'DEVOPS', 'FRONTEND'];
       const QA_ROLES = ['QA', 'QA_DIRECTOR'];
       let model: string;
-      if (provider.name === 'openrouter') {
-        model = this.config.model;
-      } else if (provider.name === 'mistral') {
+      if (provider.name === 'mistral') {
         const role = this.config.role;
         if (role && QA_ROLES.includes(role)) model = 'codestral-2508';
         else if (role && CODING_ROLES.includes(role)) model = 'devstral-2512';
@@ -144,19 +130,14 @@ class MultiProviderClient {
       }
 
       try {
-        const isOpenRouterFamily = provider.name === 'openrouter' || provider.name === 'openrouter-free';
         const defaultHeaders: Record<string, string> = {};
-        if (isOpenRouterFamily) {
-          defaultHeaders['HTTP-Referer'] = 'https://github.com/apex-agent';
-          defaultHeaders['X-Title'] = 'APEX Autonomous AI Workforce';
-        }
         if (provider.extraHeaders) {
           Object.assign(defaultHeaders, provider.extraHeaders);
         }
 
         const client = new OpenAI({
           apiKey,
-          baseURL: this.config.baseUrl && provider.name === 'openrouter' ? this.config.baseUrl : provider.baseURL,
+          baseURL: provider.baseURL,
           defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
           timeout: 75_000, // hard cap: a hung provider must not freeze the whole agent forever
           maxRetries: 0, // we handle fallback across providers ourselves; don't double-retry inside one provider
@@ -271,16 +252,17 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const envKey = `APEX_MODEL_${role}`;
   const envOverride = process.env[envKey];
   if (envOverride) {
-    return { provider: 'openrouter', model: envOverride, temperature: 0.7, maxTokens, role };
+    return { provider: 'cerebras', model: envOverride, temperature: 0.7, maxTokens, role };
   }
 
   const globalModel = process.env.APEX_MODEL;
   if (globalModel) {
-    return { provider: 'openrouter', model: globalModel, temperature: 0.7, maxTokens, role };
+    return { provider: 'cerebras', model: globalModel, temperature: 0.7, maxTokens, role };
   }
 
-  // Default model tier — free-friendly: Groq/Gemini fallback chain catches these
-  // when OpenRouter credits run out
+  // Default model tier — these `model` strings are now cosmetic/legacy since
+  // OpenRouter (the only provider that honored this.config.model) was removed
+  // 2026-07-22; every remaining provider uses its own fixed fallbackModel.
   const tierMap: Record<string, string> = {
     CEO:      'anthropic/claude-sonnet-4-5',
     CTO:      'anthropic/claude-sonnet-4-5',
@@ -301,7 +283,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   };
 
   const model = tierMap[role] ?? 'openai/gpt-4o-mini';
-  return { provider: 'openrouter', model, temperature: 0.7, maxTokens, role };
+  return { provider: 'cerebras', model, temperature: 0.7, maxTokens, role };
 }
 
 // ─── Embedding Generation ─────────────────────────────────────────────────────
@@ -333,8 +315,9 @@ export function getKnownApiKeyEnvs(): string[] {
 
 export async function createEmbedding(text: string): Promise<number[]> {
   const openaiKey = process.env.OPENAI_API_KEY;
-  const openrouterKey = process.env.OPENROUTER_API_KEY;
-  const useLocal = process.env.APEX_EMBEDDING_PROVIDER === 'local' || (!openaiKey && !openrouterKey);
+  // OpenRouter fallback removed 2026-07-22 along with the rest of OpenRouter --
+  // local embeddings are now the default whenever OPENAI_API_KEY isn't set.
+  const useLocal = process.env.APEX_EMBEDDING_PROVIDER === 'local' || !openaiKey;
 
   if (useLocal) {
     try {
@@ -348,9 +331,9 @@ export async function createEmbedding(text: string): Promise<number[]> {
 
   const OpenAI = (await import('openai')).default;
 
-  let apiKey = openaiKey || openrouterKey || '';
-  let baseURL = openaiKey ? undefined : 'https://openrouter.ai/api/v1';
-  let model = openaiKey ? 'text-embedding-3-small' : 'openai/text-embedding-3-small';
+  let apiKey = openaiKey || '';
+  let baseURL: string | undefined = undefined;
+  let model = 'text-embedding-3-small';
 
   const client = new OpenAI({
     apiKey,

@@ -64,7 +64,7 @@ export class ApexCEO extends BaseAgent {
       role: 'CEO',
       tier: 0,
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter', model: 'gpt-4o' },
+      llm: { provider: 'cerebras', model: 'gpt-4o' },
       tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'dispatchSwarm', 'collectSwarmResults', 'requestPeerReview', 'health_check'],
       maxIterations: 30,
       approvalRequired: false,

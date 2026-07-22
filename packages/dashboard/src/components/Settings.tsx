@@ -83,15 +83,6 @@ const INTEGRATIONS: IntegrationConfig[] = [
     docsUrl: 'https://platform.poolside.ai',
   },
   {
-    id: 'openrouter',
-    name: 'OpenRouter',
-    description: 'Multi-model routing (primary)',
-    icon: <Globe size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'OPENROUTER_API_KEY', label: 'API Key', placeholder: 'sk-or-...', secret: true }],
-    docsUrl: 'https://openrouter.ai/keys',
-  },
-  {
     id: 'github-models',
     name: 'GitHub Models',
     description: 'Free tier via GitHub PAT (openai/gpt-4.1, codestral, llama-4-maverick)',

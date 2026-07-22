@@ -66,7 +66,7 @@ Produce ONE structured report as your final task result, in this exact shape per
 End with a one-paragraph honest summary: what's genuinely solid, and what's the single most
 urgent fix. Do not inflate findings to seem thorough — if a persona finds nothing wrong,
 say so plainly. A short, honest report beats a padded one.`,
-      llm: { provider: 'openrouter', model: 'gpt-4o' },
+      llm: { provider: 'cerebras', model: 'gpt-4o' },
       tools: ['fetchUrl', 'browserCheck', 'sendMessage'],
       maxIterations: 20,
       approvalRequired: false,

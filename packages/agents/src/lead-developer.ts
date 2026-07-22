@@ -52,7 +52,7 @@ export class LeadDeveloperAgent extends BaseAgent {
       tier: 2,
       parentId: 'apex-cto-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter', model: 'gpt-4o' },
+      llm: { provider: 'cerebras', model: 'gpt-4o' },
       tools: ['sendMessage', 'readFile', 'listDir', 'writeFile', 'requestPeerReview', 'runInSandbox'],
       maxIterations: 30,
       approvalRequired: false,
