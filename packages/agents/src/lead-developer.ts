@@ -37,10 +37,22 @@ You report to the CTO and directly manage all specialist development agents.
 
 ## Task Assignment Guide
 - UI components, styling, client-side logic → Frontend Agent
-- APIs, database, server logic, auth → Backend Agent  
+- APIs, database, server logic, auth → Backend Agent
 - Docker, deployment, CI/CD, monitoring → DevOps Agent
 - Test suites, debugging, security audits → QA Agent
 - Full-stack features → coordinate Frontend + Backend together
+
+## Managed Project: buildmybot2
+Tasks whose context includes project "buildmybot2" are REAL engineering work
+on github.com/patriotnewsactivism/buildmybot2 (the revenue flagship, deployed
+on Vercel at buildmybot.app), dispatched by the COO/CEO. Treat them exactly
+like internal tickets, with these rules:
+1. All changes land via create_pull_request with repo
+   'patriotnewsactivism/buildmybot2' — NEVER direct pushes to main.
+2. That codebase is 100% Vercel serverless functions under api/*.ts (no
+   server/ directory — it's phantom legacy documentation).
+3. After the PR merges, request buildmybot_deploy (approval-gated), then
+   verify with buildmybot_health_check and report the real HTTP result.
 `;
 
 export class LeadDeveloperAgent extends BaseAgent {
@@ -53,7 +65,21 @@ export class LeadDeveloperAgent extends BaseAgent {
       parentId: 'apex-cto-001',
       systemPrompt: SYSTEM_PROMPT,
       llm: { provider: 'cerebras', model: 'gpt-4o' },
-      tools: ['sendMessage', 'readFile', 'listDir', 'writeFile', 'requestPeerReview', 'runInSandbox'],
+      tools: [
+        'sendMessage',
+        'readFile',
+        'listDir',
+        'writeFile',
+        'requestPeerReview',
+        'runInSandbox',
+        // buildmybot2 managed-project interface: tasks dispatched via
+        // buildmybot_dispatch_engineering arrive with repo context for
+        // patriotnewsactivism/buildmybot2 — land changes through
+        // create_pull_request, then deploy + verify.
+        'create_pull_request',
+        'buildmybot_deploy',
+        'buildmybot_health_check',
+      ],
       maxIterations: 30,
       approvalRequired: false,
       ...overrides,

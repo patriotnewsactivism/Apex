@@ -23,10 +23,19 @@ import type { ToolDefinition } from './types.js';
 //                                    committed; APEX runs on the owner's machine)
 //   BUILDMYBOT_APP_URL               default https://www.buildmybot.app
 //   BUILDMYBOT_CRON_SECRET           same value as Vercel's CRON_SECRET
+//   BUILDMYBOT_VERCEL_DEPLOY_HOOK    Vercel deploy-hook URL for the
+//                                    buildmybot2 project (managed-project
+//                                    deploy authority; approval-gated tool)
 //
-// Security posture: APEX gets NO GitHub write access and NO deploy authority
-// over BuildMyBot. It commands via data (briefings), reads telemetry, and can
-// trigger a run — nothing else. Deployment stays behind branch-protected PRs.
+// Security posture (updated 2026-07-23 — buildmybot2 promoted from monitored
+// to MANAGED project): APEX's COO/Lead-Dev branch can now dispatch real
+// engineering tasks into the buildmybot2 codebase (buildmybot_dispatch_
+// engineering → Lead Developer, who lands changes via the existing
+// approval-gated create_pull_request tool with repo
+// 'patriotnewsactivism/buildmybot2'), trigger deploys via the Vercel deploy
+// hook (approval-gated), and run live health checks against buildmybot.app.
+// Direct pushes to main remain off the table — code still lands through
+// branch-protected PRs; the deploy hook only rebuilds what's merged.
 
 const SUPABASE_URL = () => process.env.BUILDMYBOT_SUPABASE_URL ?? '';
 const SERVICE_KEY = () => process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY ?? '';
@@ -210,6 +219,132 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           body: JSON.stringify({ status: 'resolved', context }),
         });
         return { resolved: true, errorId };
+      },
+    },
+
+    // ── Manage: dispatch real engineering work into buildmybot2 ────────────
+    //
+    // This is what makes buildmybot2 a MANAGED project instead of a monitored
+    // one: the COO/CEO can file a real engineering ticket that lands in the
+    // same task queue the Lead Developer already works from, with full repo
+    // context attached so the Lead Dev branch knows exactly which repo to
+    // change, how to open the PR, and how to verify the deploy afterward.
+    {
+      name: 'buildmybot_dispatch_engineering',
+      description:
+        "Dispatch a real engineering task into the buildmybot2 codebase (github.com/patriotnewsactivism/buildmybot2). Creates a task assigned to the Lead Developer with full repo/deploy/health-check context attached — exactly like an internal Apex engineering ticket, not just a status read. The Lead Dev lands changes via the approval-gated create_pull_request tool; use buildmybot_deploy after merge and buildmybot_health_check to verify.",
+      schema: z.object({
+        title: z.string().describe('Short imperative ticket title'),
+        spec: z
+          .string()
+          .describe(
+            'Full engineering spec: what to change, where, acceptance criteria, and how to verify',
+          ),
+        priority: z
+          .number()
+          .min(1)
+          .max(10)
+          .optional()
+          .describe('1 (highest) – 10 (lowest); default 4'),
+      }),
+      requiresApproval: false,
+      async execute({ title, spec, priority }) {
+        const { randomUUID } = await import('crypto');
+        const { db, tasks } = await import('@workspace/db');
+        const now = new Date();
+        const taskId = randomUUID();
+        await db.insert(tasks).values({
+          id: taskId,
+          title,
+          description: spec,
+          status: 'pending',
+          priority: priority ?? 4,
+          assignedAgentId: 'apex-lead-dev-001',
+          createdByAgentId: 'apex-coo-001',
+          createdAt: now,
+          updatedAt: now,
+          retryCount: 0,
+          maxRetries: 3,
+          context: {
+            project: 'buildmybot2',
+            repo: 'patriotnewsactivism/buildmybot2',
+            repoUrl: 'https://github.com/patriotnewsactivism/buildmybot2',
+            prInstructions:
+              "Land changes via create_pull_request with repo 'patriotnewsactivism/buildmybot2' — never direct pushes to main",
+            deployInstructions:
+              'After merge, request buildmybot_deploy (approval-gated Vercel deploy hook)',
+            healthCheckUrl: `${APP_URL()}/api/health`,
+          },
+        });
+        return {
+          success: true,
+          taskId,
+          assignedTo: 'apex-lead-dev-001',
+          project: 'buildmybot2',
+          message: `Engineering task dispatched into buildmybot2: ${title}`,
+        };
+      },
+    },
+
+    // ── Manage: trigger a production deploy via Vercel deploy hook ─────────
+    {
+      name: 'buildmybot_deploy',
+      description:
+        'Trigger a production rebuild+deploy of buildmybot2 via its Vercel deploy hook. Only rebuilds what is already merged to the production branch — this is NOT a way around PR review. Requires BUILDMYBOT_VERCEL_DEPLOY_HOOK and approval.',
+      schema: z.object({
+        reason: z
+          .string()
+          .describe('Why this deploy is being triggered (audit trail)'),
+      }),
+      requiresApproval: true,
+      async execute({ reason }) {
+        const hook = process.env.BUILDMYBOT_VERCEL_DEPLOY_HOOK;
+        if (!hook) throw new Error('BUILDMYBOT_VERCEL_DEPLOY_HOOK is not configured');
+        const res = await fetch(hook, { method: 'POST' });
+        const body = await res.text();
+        if (!res.ok) {
+          throw new Error(`Deploy hook returned ${res.status}: ${body.slice(0, 300)}`);
+        }
+        return { success: true, reason, response: body.slice(0, 500) };
+      },
+    },
+
+    // ── Manage: live health check against the deployed product ─────────────
+    {
+      name: 'buildmybot_health_check',
+      description:
+        'Live HTTP health check against the deployed buildmybot.app API (/api/health). Use after a deploy, and as the buildmybot2 leg of any portfolio health sweep. Reports real HTTP status and latency — never a guess.',
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute() {
+        const url = `${APP_URL()}/api/health`;
+        const started = Date.now();
+        try {
+          const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+          const ms = Date.now() - started;
+          const text = await res.text();
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            /* non-JSON body — report raw */
+          }
+          return {
+            healthy: res.ok && parsed?.status === 'ok',
+            httpStatus: res.status,
+            latencyMs: ms,
+            url,
+            body: parsed ?? text.slice(0, 300),
+          };
+        } catch (err: any) {
+          return {
+            healthy: false,
+            httpStatus: 0,
+            latencyMs: Date.now() - started,
+            url,
+            error: err?.message ?? String(err),
+          };
+        }
       },
     },
 

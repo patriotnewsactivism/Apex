@@ -70,6 +70,50 @@ async function main() {
   }
   console.log(`   Approval mode: ${mode === 'strict' ? 'STRICT (all agents gated)' : mode === 'off' ? 'FULLY AUTONOMOUS (no gating)' : 'PER-ROLE DEFAULT (dev/infra gated, business/orchestration autonomous)'}`);
 
+  // buildmybot2 as a registered MANAGED project (2026-07-23): idempotent
+  // upsert so the registration survives fresh databases instead of relying
+  // on someone remembering to call the register_application tool. This is
+  // the registry half of the managed-project interface; the adapter half
+  // (repo dispatch / deploy hook / health check) lives in
+  // @workspace/core/buildmybot-connector.
+  try {
+    const { db, projects, applications } = await import('@workspace/db');
+    const now = new Date();
+    await db
+      .insert(projects)
+      .values({
+        id: 'buildmybot2',
+        name: 'BuildMyBot2',
+        repository: 'patriotnewsactivism/buildmybot2',
+        purpose:
+          'Revenue flagship — AI chatbot SaaS at buildmybot.app. Managed project: COO dispatches engineering via buildmybot_dispatch_engineering; deploys via Vercel hook; health target https://www.buildmybot.app/api/health.',
+        priority: 'critical',
+        status: 'active',
+        autonomyLevel: 'supervisor',
+      })
+      .onConflictDoUpdate({
+        target: projects.id,
+        set: { repository: 'patriotnewsactivism/buildmybot2', priority: 'critical', status: 'active' },
+      });
+    await db
+      .insert(applications)
+      .values({
+        id: 'buildmybot2',
+        name: 'BuildMyBot2',
+        repoUrl: 'https://github.com/patriotnewsactivism/buildmybot2',
+        status: 'active',
+        healthScore: 1.0,
+        lastSyncAt: now,
+      })
+      .onConflictDoUpdate({
+        target: applications.id,
+        set: { repoUrl: 'https://github.com/patriotnewsactivism/buildmybot2', lastSyncAt: now },
+      });
+    console.log('✅ buildmybot2 registered as managed project');
+  } catch (err) {
+    console.warn('⚠️  buildmybot2 project registration skipped:', err instanceof Error ? err.message : String(err));
+  }
+
   const ceo = workforce.get('apex-ceo-001') as ApexCEO;
 
   const app = express();

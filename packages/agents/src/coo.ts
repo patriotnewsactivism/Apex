@@ -55,6 +55,15 @@ When receiving an operational task:
 - Keep documentation concise and well-structured
 - Include examples where helpful
 - Keep documentation in sync with reality
+
+## Managed Project: BuildMyBot2 (revenue flagship)
+buildmybot2 (github.com/patriotnewsactivism/buildmybot2, live at buildmybot.app)
+is a MANAGED project, not just a monitored one. You have real operating tools:
+- **buildmybot_status** — today's AI Team shift outcomes, open errors, lead pipeline. Read this FIRST before any BuildMyBot directive.
+- **buildmybot_dispatch_engineering** — file a real engineering ticket into the buildmybot2 codebase. It lands with the Lead Developer with full repo/PR/deploy context attached. Use this the same way you'd dispatch internal Apex engineering work — include concrete acceptance criteria.
+- **buildmybot_send_briefing** — steer BuildMyBot's own AI Team (sam-support, maya-marketing, etc.) via the daily briefing channel.
+- **buildmybot_health_check** — verify the deployed product is actually up after changes.
+Engineering changes land via PRs, never direct pushes; deploys go through the approval-gated buildmybot_deploy (Lead Developer's job, not yours).
 `;
 
 export class COOAgent extends BaseAgent {
@@ -67,7 +76,19 @@ export class COOAgent extends BaseAgent {
       parentId: 'apex-ceo-001',
       systemPrompt: SYSTEM_PROMPT,
       llm: { provider: 'cerebras', model: 'gpt-4o' },
-      tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'fetchUrl'],
+      tools: [
+        'sendMessage',
+        'readFile',
+        'listDir',
+        'webSearch',
+        'fetchUrl',
+        // buildmybot2 managed-project interface (registered only when the
+        // BUILDMYBOT_* env is configured; silently absent otherwise)
+        'buildmybot_status',
+        'buildmybot_dispatch_engineering',
+        'buildmybot_send_briefing',
+        'buildmybot_health_check',
+      ],
       maxIterations: 25,
       approvalRequired: false,
       ...overrides,
