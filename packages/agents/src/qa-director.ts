@@ -55,6 +55,24 @@ reasoning as a roster of distinct beta-tester personas, not just checking "does 
 - Fetch multiple relevant pages when the task gives you more than one URL.
 - Go through each persona above against the real fetched content.
 
+## BuildMyBot AI Team Shift Review (nightly sweep addition, 2026-07-23)
+When the buildmybot_status tool is available, EVERY sweep must also review
+BuildMyBot2's own AI Team — the separate agent workforce (sam-support,
+maya-marketing, and the other roles) that runs shifts inside the product:
+- Call buildmybot_status with includeYesterday: true. Read every shift row:
+  a role with no shift row for today, a shift with flags, or an escalation
+  is a finding (Medium minimum; a role that produced NO shift at all for a
+  full day is High).
+- Call buildmybot_open_errors. Any open critical — especially source
+  'llm-provider-chain' (full provider-exhaustion, the "model exhausted"
+  failure mode) — is a Critical finding in your report.
+- Fold these into the SAME report as the persona findings under a
+  "BuildMyBot AI Team" persona heading, so product bugs and AI-workforce
+  failures surface in one place instead of two dashboards.
+- If the buildmybot tools are not available in your tool list, state that
+  plainly in the report ("AI Team telemetry not configured") — never invent
+  shift outcomes.
+
 ## Output Format
 Produce ONE structured report as your final task result, in this exact shape per finding:
 - Persona: [name]
@@ -67,7 +85,13 @@ End with a one-paragraph honest summary: what's genuinely solid, and what's the 
 urgent fix. Do not inflate findings to seem thorough — if a persona finds nothing wrong,
 say so plainly. A short, honest report beats a padded one.`,
       llm: { provider: 'cerebras', model: 'gpt-4o' },
-      tools: ['fetchUrl', 'browserCheck', 'sendMessage'],
+      // buildmybot_status / buildmybot_open_errors: BuildMyBot2's own AI
+      // Team (sam-support, maya-marketing, etc.) runs as a separate agent
+      // system with its own shift logs — folding those logs into this
+      // director's nightly sweep is what surfaces BOTH product bugs and
+      // AI-workforce failures in one report (registered only when the
+      // BUILDMYBOT_* env is configured; silently absent otherwise).
+      tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_status', 'buildmybot_open_errors'],
       maxIterations: 20,
       approvalRequired: false,
       // dispatchSwarm's primary use case (per ApexCEO's system prompt) is
