@@ -103,12 +103,65 @@ export class ReportGenerationJob implements JobHandler {
       .from(logs)
       .where(gte(logs.timestamp, yesterday));
 
+    // ── Portfolio legs: BuildMyBot2 AI Team shift outcomes + ARIA dispatch
+    // volume, so the daily summary is ONE view of the whole business instead
+    // of three dashboards. Both are best-effort: a missing env or an
+    // unreachable Supabase yields an honest note, never a crashed report.
+    let buildMyBotAITeam: unknown;
+    {
+      const url = process.env.BUILDMYBOT_SUPABASE_URL;
+      const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY;
+      if (!url || !key) {
+        buildMyBotAITeam = { note: 'BUILDMYBOT_SUPABASE_URL / _SERVICE_KEY not configured' };
+      } else {
+        try {
+          const headers = { apikey: key, Authorization: `Bearer ${key}` };
+          const today = new Date().toISOString().slice(0, 10);
+          const [shiftsRes, criticalsRes] = await Promise.all([
+            fetch(
+              `${url}/rest/v1/ai_team_log?shift_date=eq.${today}&select=role_name,summary,flags,escalated_to&limit=100`,
+              { headers, signal: AbortSignal.timeout(8_000) },
+            ),
+            fetch(
+              `${url}/rest/v1/error_logs?status=eq.open&level=eq.critical&select=source,message&limit=25`,
+              { headers, signal: AbortSignal.timeout(8_000) },
+            ),
+          ]);
+          const shifts: Array<{ role_name: string; flags?: unknown; escalated_to?: unknown }> =
+            shiftsRes.ok ? await shiftsRes.json() : [];
+          const criticals: Array<{ source: string; message: string }> = criticalsRes.ok
+            ? await criticalsRes.json()
+            : [];
+          buildMyBotAITeam = {
+            shiftsToday: shifts.length,
+            rolesReported: [...new Set(shifts.map((s) => s.role_name))],
+            flaggedOrEscalated: shifts.filter((s) => s.flags || s.escalated_to).length,
+            openCriticals: criticals.length,
+            providerChainExhaustions: criticals.filter((c) => c.source === 'llm-provider-chain').length,
+          };
+        } catch (err) {
+          buildMyBotAITeam = { note: `unreachable: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }
+    }
+
+    // ARIA dispatches work into the swarm as goals (POST /api/goals via the
+    // control room), so 24h goal-creation volume is the dispatch volume.
+    const [ariaDispatch] = await db
+      .select({
+        goalsDispatched24h: sql<number>`count(*)::int`,
+      })
+      .from(goals)
+      .where(gte(goals.createdAt, yesterday));
+
     const report = {
       period: '24h',
       generatedAt: new Date().toISOString(),
       tasks: taskCounts,
       goals: goalCounts,
       errors: errorCounts,
+      buildMyBotAITeam,
+      ariaDispatch,
     };
 
     // Store the report as a memory for the CEO to reference

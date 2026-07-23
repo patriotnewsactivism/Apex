@@ -152,18 +152,100 @@ export class HealthMonitor {
     });
   }
 
+  /** BuildMyBot2 AI Team shift outcomes — the portfolio leg of the health
+   * view. Reads the buildmybot2 Supabase directly via env (NOT via
+   * @workspace/core's connector, which would create the cyclic dependency
+   * this package deliberately avoids). Read-only, fast, never throws
+   * (safeCheck). Not configured → honest 'degraded', same convention as the
+   * injected-dependency checks above. */
+  async checkBuildMyBotAITeam(): Promise<ComponentCheckResult> {
+    return safeCheck(async () => {
+      const start = Date.now();
+      const url = process.env.BUILDMYBOT_SUPABASE_URL;
+      const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY;
+      if (!url || !key) {
+        return {
+          status: 'degraded',
+          detail: 'BUILDMYBOT_SUPABASE_URL / BUILDMYBOT_SUPABASE_SERVICE_KEY not configured',
+        };
+      }
+      const headers = { apikey: key, Authorization: `Bearer ${key}` };
+      const today = new Date().toISOString().slice(0, 10);
+      const [shiftsRes, criticalsRes] = await Promise.all([
+        fetch(
+          `${url}/rest/v1/ai_team_log?shift_date=eq.${today}&select=role_name,flags,escalated_to&limit=100`,
+          { headers, signal: AbortSignal.timeout(4_500) },
+        ),
+        fetch(
+          `${url}/rest/v1/error_logs?status=eq.open&level=eq.critical&select=source&limit=50`,
+          { headers, signal: AbortSignal.timeout(4_500) },
+        ),
+      ]);
+      if (!shiftsRes.ok || !criticalsRes.ok) {
+        return {
+          status: 'critical',
+          detail: `buildmybot2 Supabase unreachable (ai_team_log ${shiftsRes.status}, error_logs ${criticalsRes.status})`,
+          ms: Date.now() - start,
+        };
+      }
+      const shifts: Array<{ role_name: string; flags?: unknown; escalated_to?: unknown }> =
+        await shiftsRes.json();
+      const criticals: Array<{ source: string }> = await criticalsRes.json();
+      const flagged = shifts.filter((s) => s.flags || s.escalated_to).length;
+      const chainExhaustions = criticals.filter((c) => c.source === 'llm-provider-chain').length;
+      const status: ComponentStatus =
+        criticals.length > 0
+          ? 'critical'
+          : flagged > 0
+            ? 'degraded'
+            : 'healthy';
+      return {
+        status,
+        detail:
+          `${shifts.length} AI Team shift(s) today, ${flagged} flagged/escalated, ` +
+          `${criticals.length} open critical(s)` +
+          (chainExhaustions ? ` (${chainExhaustions} provider-chain exhaustion!)` : ''),
+        ms: Date.now() - start,
+      };
+    });
+  }
+
+  /** ARIA dispatch volume — goals submitted to the swarm in the last 24h.
+   * ARIA's control room submits work via POST /api/goals, so goal-creation
+   * volume IS the dispatch volume. Informational: only ever 'healthy' or
+   * (via safeCheck) 'critical' if the query itself fails. */
+  async checkAriaDispatch(): Promise<ComponentCheckResult> {
+    return safeCheck(async () => {
+      const start = Date.now();
+      const { db, goals, tasks } = await import('@workspace/db');
+      const { sql, gte } = await import('drizzle-orm');
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const [[goalRow], [taskRow]] = await Promise.all([
+        db.select({ count: sql<number>`count(*)::int` }).from(goals).where(gte(goals.createdAt, yesterday)),
+        db.select({ count: sql<number>`count(*)::int` }).from(tasks).where(gte(tasks.createdAt, yesterday)),
+      ]);
+      return {
+        status: 'healthy',
+        detail: `${goalRow.count} goal(s) dispatched, ${taskRow.count} task(s) created in last 24h`,
+        ms: Date.now() - start,
+      };
+    });
+  }
+
   /** Run every check and roll them up into one report. */
   async runAll(): Promise<HealthReport> {
-    const [database, llmProviders, memorySystem, toolRegistry, webSocket, taskBacklog] = await Promise.all([
+    const [database, llmProviders, memorySystem, toolRegistry, webSocket, taskBacklog, buildMyBotAITeam, ariaDispatch] = await Promise.all([
       this.checkDatabase(),
       this.checkLLMProviders(),
       this.checkMemorySystem(),
       this.checkToolRegistry(),
       this.checkWebSocket(),
       this.checkTaskBacklog(),
+      this.checkBuildMyBotAITeam(),
+      this.checkAriaDispatch(),
     ]);
 
-    const checks = { database, llmProviders, memorySystem, toolRegistry, webSocket, taskBacklog };
+    const checks = { database, llmProviders, memorySystem, toolRegistry, webSocket, taskBacklog, buildMyBotAITeam, ariaDispatch };
     const statuses = Object.values(checks).map((c) => c.status);
     const overall: ComponentStatus = statuses.includes('critical')
       ? 'critical'
