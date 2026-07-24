@@ -33,7 +33,19 @@ const SERVICE_KEY = () => process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY ?? '';
 const APP_URL = () => process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app';
 
 export function buildMyBotConfigured(): boolean {
-  return Boolean(SUPABASE_URL() && SERVICE_KEY());
+  const url = SUPABASE_URL();
+  const key = SERVICE_KEY();
+  if (!url || !key) return false;
+  // Guard against a common Railway misconfiguration: if the "URL" starts with
+  // eyJ it's a base64-encoded JWT (i.e. the env vars are swapped — the service
+  // key ended up in BUILDMYBOT_SUPABASE_URL). Fail-safe here so the broken
+  // tools are never registered rather than surfacing a cryptic fetch error.
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 /** Thin Supabase REST helper (PostgREST). Throws on non-2xx. */
@@ -42,7 +54,19 @@ async function sbFetch(
   query: string,
   init?: RequestInit,
 ): Promise<any> {
-  const url = `${SUPABASE_URL()}/rest/v1/${table}${query ? `?${query}` : ''}`;
+  const baseUrl = SUPABASE_URL();
+  // Fail early with a clear message instead of "Failed to parse URL from eyJ…"
+  // which happens when BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY
+  // are swapped in the environment — the service-role JWT token ends up as the
+  // URL, and Node's fetch can't parse it.
+  if (!baseUrl.startsWith('https://')) {
+    throw new Error(
+      `BUILDMYBOT_SUPABASE_URL must be an https:// project URL ` +
+      `(e.g. https://xyz.supabase.co). Got: "${baseUrl.slice(0, 30)}…". ` +
+      `BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY may be swapped in your env.`,
+    );
+  }
+  const url = `${baseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`;
   const res = await fetch(url, {
     ...init,
     headers: {
