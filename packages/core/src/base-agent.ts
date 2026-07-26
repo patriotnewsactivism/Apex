@@ -104,17 +104,10 @@ export abstract class BaseAgent {
       // DB offline: initialization in memory mode
     }
 
-    // Recover any tasks that were left in_progress from a previous crashed run.
-    // These will never be picked up again by dequeue() (which only selects
-    // 'pending'), so we reset them to 'pending' here, once at startup, before
-    // the polling loop begins.
-    await db
-      .update(tasksTable)
-      .set({ status: 'pending', updatedAt: new Date() })
-      .where(and(
-        eq(tasksTable.assignedAgentId, this.config.id),
-        eq(tasksTable.status, 'in_progress'),
-      ));
+    // NOTE: crash recovery (in_progress → pending) was formerly done per-agent here.
+    // It is now centralized in api-server/src/index.ts as lease-expiry recovery so
+    // retryCount is properly incremented and maxRetries is respected. Do NOT add it
+    // back here.
 
     await this.logger.info(`Agent ${this.name} (${this.role}) initialized`);
     this.setStatus('idle');
@@ -293,8 +286,7 @@ export abstract class BaseAgent {
               return this.requestHumanApproval(taskId, toolName, args, reason);
             },
             delegateToRole: async (targetRole, input) => {
-              const { db, tasks } = await import('@workspace/db');
-              const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+              const [task] = await db.select().from(tasksTable).where(eq(tasksTable.id, taskId)).limit(1);
               return this.delegateToRole(targetRole, {
                 title: input.title,
                 description: input.description,
@@ -304,8 +296,7 @@ export abstract class BaseAgent {
               });
             },
             delegateToAgent: async (targetAgentId, input) => {
-              const { db, tasks } = await import('@workspace/db');
-              const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+              const [task] = await db.select().from(tasksTable).where(eq(tasksTable.id, taskId)).limit(1);
               return this.delegate(targetAgentId, {
                 title: input.title,
                 description: input.description,
