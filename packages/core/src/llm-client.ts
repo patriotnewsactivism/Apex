@@ -54,7 +54,10 @@ const PROVIDERS: Array<{
   // dashscope-intl endpoint, which 401s a Token Plan key — the likely cause of
   // the "API-key is blocked" failures that removed it in 85bc100. No-op while
   // QWENCLOUD_API_KEY is unset on the service (the client skips missing keys).
-  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3-coder-plus' },
+  // Model note: qwen3-coder-plus returned 404 "Model not exist" on the Token
+  // Plan (Lite) endpoint (auth succeeded, so the endpoint/key wiring is right);
+  // qwen-plus is the standard model used here instead.
+  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen-plus' },
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.
