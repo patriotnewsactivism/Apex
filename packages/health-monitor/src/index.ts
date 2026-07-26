@@ -169,6 +169,29 @@ export class HealthMonitor {
           detail: 'BUILDMYBOT_SUPABASE_URL / BUILDMYBOT_SUPABASE_SERVICE_KEY not configured',
         };
       }
+      // Guard a Railway misconfiguration: if the "URL" isn't a valid https://
+      // URL it's usually a secret/JWT pasted into BUILDMYBOT_SUPABASE_URL (vars
+      // swapped, or an encrypted value copied verbatim). Fail with a redacted
+      // message so fetch can't throw "Failed to parse URL from eyJ…" and echo
+      // the secret back out through this health response. Mirrors sbFetch in
+      // buildmybot-connector.ts; duplicated here because this package must not
+      // import @workspace/core (cyclic dependency).
+      let protocol = '';
+      try {
+        protocol = new URL(url).protocol;
+      } catch {
+        protocol = '';
+      }
+      if (protocol !== 'https:') {
+        return {
+          status: 'critical',
+          detail:
+            `BUILDMYBOT_SUPABASE_URL is not a valid https:// project URL ` +
+            `(got "${url.slice(0, 30)}…"). It may hold a secret/JWT — check that ` +
+            `BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY are not ` +
+            `swapped, and that the value is a plaintext URL (e.g. https://xyz.supabase.co).`,
+        };
+      }
       const headers = { apikey: key, Authorization: `Bearer ${key}` };
       const today = new Date().toISOString().slice(0, 10);
       const [shiftsRes, criticalsRes] = await Promise.all([
