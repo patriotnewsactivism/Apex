@@ -45,11 +45,16 @@ const PROVIDERS: Array<{
   // live via direct completion call (real "Ok!" response) before re-adding.
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
   // Still removed 2026-07-26 per Don's explicit instruction ("remove models
-  // that keep returning errors, get them out"): qwen-cloud (401/"API-key is
-  // blocked" on every cached key), github-models (no_access on every model
-  // tried), cohere-trial (429, monthly cap hit), xai (403, team credits
-  // exhausted), kilocode (402, negative balance). Re-add only once a fresh
-  // key is confirmed live with a real completion call first.
+  // that keep returning errors, get them out"): github-models (no_access on
+  // every model tried), cohere-trial (429, monthly cap hit), xai (403, team
+  // credits exhausted), kilocode (402, negative balance). Re-add only once a
+  // fresh key is confirmed live with a real completion call first.
+  // Qwen Cloud RE-ADDED 2026-07-26 with the Token Plan endpoint (Don's active
+  // sk-sp-… Token Plan key). The removed entry used the Pay-As-You-Go
+  // dashscope-intl endpoint, which 401s a Token Plan key — the likely cause of
+  // the "API-key is blocked" failures that removed it in 85bc100. No-op while
+  // QWENCLOUD_API_KEY is unset on the service (the client skips missing keys).
+  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3-coder-plus' },
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.
