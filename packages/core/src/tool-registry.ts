@@ -3,11 +3,13 @@ import { existsSync } from 'fs';
 import { join, resolve, relative, dirname } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
 import { HealthMonitor, AlertManager } from '@workspace/health-monitor';
+import { db, messages } from '@workspace/db';
 
 const execAsync = promisify(exec);
 
@@ -453,11 +455,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: false,
       async execute({ toAgentId, subject, body }, ctx) {
         // 1. Persist the inter-agent message for audit trail
-        const { randomUUID } = await import('crypto');
-        const { db, messages: messagesTable } = await import('@workspace/db');
-
         const messageId = randomUUID();
-        await db.insert(messagesTable).values({
+        await db.insert(messages).values({
           id: messageId,
           fromAgentId: ctx.agentId,
           toAgentId,

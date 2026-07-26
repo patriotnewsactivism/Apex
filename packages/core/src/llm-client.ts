@@ -134,7 +134,7 @@ class MultiProviderClient {
               messages: openaiMessages,
               tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
               temperature: this.config.temperature ?? 0.7,
-              max_tokens: this.config.maxTokens ?? 400,
+              max_tokens: this.config.maxTokens ?? 4096,
             },
             { signal: controller.signal },
           );
