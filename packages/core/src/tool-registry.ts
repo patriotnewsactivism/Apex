@@ -457,19 +457,43 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ toAgentId, subject, body }, ctx) {
-        // 1. Persist the inter-agent message for audit trail
+        // 1. Persist the inter-agent message for audit trail with idempotency.
+        // Derive the key from the sending context so retries (agent crash after
+        // insert but before ack) produce DO NOTHING instead of a duplicate row.
+        const idempotencyKey = ctx.taskId
+          ? `${ctx.agentId}:${toAgentId}:${subject}:${ctx.taskId}`
+          : null;
+
         const messageId = randomUUID();
-        await db.insert(messages).values({
+        const { eq: eqLocal } = await import('drizzle-orm');
+
+        const insertedRows = await db.insert(messages).values({
           id: messageId,
           fromAgentId: ctx.agentId,
           toAgentId,
           subject,
           body,
           read: false,
+          idempotencyKey,
           createdAt: new Date(),
-        });
+        }).onConflictDoNothing().returning();
 
-        // 2. Actually delegate a task to the target agent so it gets executed
+        // If DO NOTHING fired, the message already exists — find it by idempotency key.
+        let finalMessageId: string;
+        if (insertedRows.length > 0) {
+          finalMessageId = insertedRows[0].id;
+        } else if (idempotencyKey) {
+          const [existing] = await db
+            .select({ id: messages.id })
+            .from(messages)
+            .where(eqLocal(messages.idempotencyKey, idempotencyKey))
+            .limit(1);
+          finalMessageId = existing?.id ?? messageId;
+        } else {
+          finalMessageId = messageId;
+        }
+
+        // 2. Actually delegate a task to the target agent so it gets executed.
         if (!ctx.delegateToAgent) {
           throw new Error('delegateToAgent is not available in this context');
         }
@@ -479,10 +503,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           description: body,
           parentTaskId: ctx.taskId,
           goalId: ctx.goalId,
-          context: { messageId, fromAgentId: ctx.agentId },
+          context: { messageId: finalMessageId, fromAgentId: ctx.agentId },
         });
 
-        return { sent: true, taskId, messageId, fromAgentId: ctx.agentId, toAgentId, subject };
+        return { sent: true, taskId, messageId: finalMessageId, fromAgentId: ctx.agentId, toAgentId, subject };
       },
     },
 
