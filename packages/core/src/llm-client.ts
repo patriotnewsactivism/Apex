@@ -34,74 +34,23 @@ const PROVIDERS: Array<{
   // Some providers need specific headers
   extraHeaders?: Record<string, string>;
 }> = [
-  // Cerebras — re-verified live 2026-07-26. Available models on this account:
-  // gemma-4-31b, zai-glm-4.7, gpt-oss-120b. Using gpt-oss-120b (best quality/speed).
+  // Cerebras — re-verified live 2026-07-26.
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
-  // Groq — re-verified live 2026-07-26. Promoted to #2 (both confirmed-live
-  // free tiers now lead the chain, ahead of the currently-dead paid/limited
-  // entries below).
+  // Groq — re-verified live 2026-07-26.
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
-  // Cohere (production) — CORRECTED 2026-07-26: the old note below this
-  // entry (dated 2026-07-14) claiming COHERE_API_KEY was actually a
-  // mislabeled trial key is now confirmed OUT OF DATE. Live test today
-  // returns a clean completion with zero trial-limit warning (unlike
-  // COHERE_TRIAL_API_KEY below, which does still show the trial-cap
-  // message) — this is a genuine production-tier key now, either rotated
-  // since or the labeling was fixed. Promoted up from its old position
-  // near the bottom of the chain to right after the two confirmed-live free
-  // tiers, since it has real headroom and no shared-quota risk.
+  // Cohere (production) — re-verified live 2026-07-26, genuine production tier
+  // (clean completion, no trial-cap warning).
   { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
-  // Mistral La Plateforme -- CONFIRMED DEAD 2026-07-26 (401 Unauthorized,
-  // direct curl against api.mistral.ai/v1/chat/completions with this exact
-  // key). No working replacement in the credential pool. Kept as a no-op;
-  // needs a fresh key from console.mistral.ai to actually serve requests.
-  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
-  // Qwen Cloud (Alibaba Cloud Model Studio, international dashscope-intl
-  // endpoint) -- CONFIRMED DEAD 2026-07-26 ("Incorrect API key provided").
-  // No working replacement anywhere in the credential pool as of this audit.
-  // Kept as a no-op; needs Don to generate a fresh key from a paid Model
-  // Studio workspace and confirm the account itself isn't suspended/flagged.
-  { name: 'qwen-cloud', baseURL: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3-coder-plus' },
-  // GitHub Models -- CONFIRMED BLOCKED 2026-07-26: every model tried
-  // ("no_access") on this token, an account/tier-level gate rather than a
-  // scope problem (the token itself authenticates fine for repo ops). Kept
-  // as a no-op; needs a token that's actually been granted Models catalog
-  // access (or the org's Models feature enabled) to serve requests.
-  { name: 'github-models', baseURL: 'https://models.github.ai/inference', apiKeyEnv: 'GITHUB_TOKEN_4', fallbackModel: 'openai/gpt-4.1' },
-  // NOTE: direct Gemini fallback (GEMINI_API_KEY -> generativelanguage.googleapis.com)
-  // was REMOVED 2026-07-14 — confirmed permanently dead: this Google Cloud
-  // project/key returns a 429 with `limit: 0` for gemini-2.0-flash free tier,
-  // which is a zero quota GRANT, not a transient rate limit. Re-add only if a
-  // fresh key from a NEW Google AI Studio project (or billing enabled) is
-  // provided and verified live first. Gemini is still reachable via OpenRouter
-  // (see business.ts / APEX_CHARTER.md `google/gemini-2.5-flash` model refs) —
-  // that path goes through OpenRouter's own billing, not this dead key, and is
-  // unaffected by this removal.
-  // Cohere trial -- CONFIRMED at its 1000-call/month cap 2026-07-26 (429,
-  // "You are using a Trial key"). Kept below the production Cohere entry
-  // above; this tier only matters again once the monthly window resets or
-  // Don upgrades it to production too.
-  { name: 'cohere-trial', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_TRIAL_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
-  // xAI (Grok) -- added 2026-07-26. Confirmed the key itself is VALID but
-  // this team's credits/spending limit is currently exhausted
-  // (permission-denied, not an auth failure). Harmless no-op until Don tops
-  // up billing at console.x.ai -- will start serving requests immediately
-  // once that happens, zero code change needed.
-  { name: 'xai', baseURL: 'https://api.x.ai/v1', apiKeyEnv: 'XAI_API_KEY', fallbackModel: 'grok-3-fast' },
-  // Kilo Code Gateway (kilo.ai) -- added 2026-07-26. Confirmed the key is
-  // valid but the account balance is negative (-$0.0036, "Low Credit
-  // Warning"). Harmless no-op until Don adds credits at app.kilo.ai/profile.
-  { name: 'kilocode', baseURL: 'https://kilo.ai/api/openrouter/v1', apiKeyEnv: 'KILOCODE_API_KEY', fallbackModel: 'deepseek/deepseek-chat' },
-  // OpenRouter FREE tier re-added 2026-07-22 (last-resort only) -- Don confirmed
-  // the paid OpenRouter balance stays retired, but OpenRouter's :free-suffixed
-  // models cost nothing and just add more distinct rate-limit buckets to this
-  // chain. Re-verified live against openrouter.ai/api/v1/models 2026-07-22 --
-  // OpenRouter's free catalog has changed since this was last used: the old
-  // devstral/qwen-coder/llama-3.3-70b :free ids are gone, replaced by
-  // gpt-oss-20b and nvidia/nemotron variants. Placed LAST since it's the
-  // provider most likely to already be exhausted portfolio-wide (confirmed
-  // 429 daily-quota-exhausted 2026-07-26 -- shared account-wide cap, self-
-  // resets daily, not a dead key).
+  // REMOVED 2026-07-26 per Don's explicit instruction ("remove models that keep
+  // returning errors, get them out"): mistral (401 invalid key), qwen-cloud
+  // (401/"API-key is blocked" on every cached key), github-models (no_access
+  // on every model tried), cohere-trial (429, monthly cap hit), xai (403,
+  // team credits exhausted), kilocode (402, negative balance). All confirmed
+  // erroring via live direct-API test the same day. Re-add only once a fresh
+  // key is confirmed live with a real completion call first.
+  // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
+  // rate limit (not a dead/invalid key), genuinely serves requests once the
+  // daily window resets.
   { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
   { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
@@ -150,21 +99,10 @@ class MultiProviderClient {
         continue;
       }
 
-      // Role-aware model selection for Mistral: route coding-heavy roles to
-      // Devstral (agentic coding) / Codestral (code review), everything else
-      // to the high-throughput mistral-small-2506 (5 RPS vs mistral-large's 0.07 RPS).
-      // Model IDs confirmed live on this Mistral org account 2026-07-16.
-      const CODING_ROLES = ['LEAD_DEV', 'BACKEND', 'DEVOPS', 'FRONTEND'];
-      const QA_ROLES = ['QA', 'QA_DIRECTOR'];
-      let model: string;
-      if (provider.name === 'mistral') {
-        const role = this.config.role;
-        if (role && QA_ROLES.includes(role)) model = 'codestral-2508';
-        else if (role && CODING_ROLES.includes(role)) model = 'devstral-2512';
-        else model = 'mistral-small-2506';
-      } else {
-        model = provider.fallbackModel ?? this.config.model;
-      }
+      // Mistral's role-aware model routing was removed 2026-07-26 along with
+      // the Mistral provider entry itself (confirmed 401 invalid key, see
+      // PROVIDERS above). Every remaining provider uses its plain fallbackModel.
+      const model: string = provider.fallbackModel ?? this.config.model;
 
       try {
         const defaultHeaders: Record<string, string> = {};
