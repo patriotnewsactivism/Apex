@@ -188,9 +188,12 @@ export class HealthMonitor {
           ms: Date.now() - start,
         };
       }
-      const shifts: Array<{ role_name: string; flags?: unknown; escalated_to?: unknown }> =
-        await shiftsRes.json();
-      const criticals: Array<{ source: string }> = await criticalsRes.json();
+      const shifts = (await shiftsRes.json()) as Array<{
+        role_name: string;
+        flags?: unknown;
+        escalated_to?: unknown;
+      }>;
+      const criticals = (await criticalsRes.json()) as Array<{ source: string }>;
       const flagged = shifts.filter((s) => s.flags || s.escalated_to).length;
       const chainExhaustions = criticals.filter((c) => c.source === 'llm-provider-chain').length;
       const status: ComponentStatus =

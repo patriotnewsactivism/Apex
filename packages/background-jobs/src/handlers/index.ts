@@ -127,11 +127,15 @@ export class ReportGenerationJob implements JobHandler {
               { headers, signal: AbortSignal.timeout(8_000) },
             ),
           ]);
-          const shifts: Array<{ role_name: string; flags?: unknown; escalated_to?: unknown }> =
-            shiftsRes.ok ? await shiftsRes.json() : [];
-          const criticals: Array<{ source: string; message: string }> = criticalsRes.ok
-            ? await criticalsRes.json()
-            : [];
+          const shifts = (shiftsRes.ok ? await shiftsRes.json() : []) as Array<{
+            role_name: string;
+            flags?: unknown;
+            escalated_to?: unknown;
+          }>;
+          const criticals = (criticalsRes.ok ? await criticalsRes.json() : []) as Array<{
+            source: string;
+            message: string;
+          }>;
           buildMyBotAITeam = {
             shiftsToday: shifts.length,
             rolesReported: [...new Set(shifts.map((s) => s.role_name))],
