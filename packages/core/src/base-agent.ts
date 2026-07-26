@@ -388,36 +388,15 @@ export abstract class BaseAgent {
     targetAgentId: string,
     input: TaskInput,
   ): Promise<string> {
-    // Idempotency: if a task with the same goalId + title already exists for this
-    // agent (even if it failed or is in any other state), return the existing
-    // task ID rather than creating a duplicate. This prevents the CEO
-    // "Process Goal" retry loop from spawning fresh retryCount=0 child tasks on
-    // every re-run, which bypasses maxRetries and causes the crash-loop.
-    if (input.goalId) {
-      const existing = await db
-        .select({ id: tasksTable.id })
-        .from(tasksTable)
-        .where(and(
-          eq(tasksTable.goalId, input.goalId),
-          eq(tasksTable.title, input.title),
-          eq(tasksTable.assignedAgentId, targetAgentId),
-        ))
-        .limit(1);
-
-      if (existing.length > 0) {
-        await this.logger.info(
-          `Skipping duplicate task "${input.title}" for goal ${input.goalId} — already exists (${existing[0].id})`,
-          input.parentTaskId,
-        );
-        return existing[0].id;
-      }
-    }
-
-    // Create task assigned to target agent
     const now = new Date();
     const taskId = randomUUID();
 
-    await db.insert(tasksTable).values({
+    // DB-level idempotency: ON CONFLICT (goal_id, title, assigned_agent_id) DO NOTHING.
+    // The unique partial index (WHERE goal_id IS NOT NULL) in the migration ensures two
+    // concurrent workers racing to delegate the same (goal, title, agent) task both
+    // complete without duplicating the row. The old application-level SELECT-then-INSERT
+    // had a TOCTOU window: both workers could query, find no duplicate, then both insert.
+    const rows = await db.insert(tasksTable).values({
       id: taskId,
       goalId: input.goalId ?? null,
       parentTaskId: input.parentTaskId ?? null,
@@ -432,12 +411,34 @@ export abstract class BaseAgent {
       retryCount: 0,
       maxRetries: 3,
       context: input.context ?? null,
-    });
+    }).onConflictDoNothing().returning();
 
-    emitApexEvent({ type: 'task:created', taskId, title: input.title, assignedAgentId: targetAgentId });
+    if (rows.length === 0 && input.goalId) {
+      // Constraint fired: task already exists for this (goalId, title, agent) tuple.
+      // Fetch the existing row id and return it.
+      const [existing] = await db
+        .select({ id: tasksTable.id })
+        .from(tasksTable)
+        .where(and(
+          eq(tasksTable.goalId, input.goalId),
+          eq(tasksTable.title, input.title),
+          eq(tasksTable.assignedAgentId, targetAgentId),
+        ))
+        .limit(1);
+
+      const existingId = existing?.id ?? taskId;
+      await this.logger.info(
+        `Skipping duplicate task "${input.title}" for goal ${input.goalId} — already exists (${existingId})`,
+        input.parentTaskId,
+      );
+      return existingId;
+    }
+
+    const createdId = rows[0]?.id ?? taskId;
+    emitApexEvent({ type: 'task:created', taskId: createdId, title: input.title, assignedAgentId: targetAgentId });
     await this.logger.info(`Delegated task "${input.title}" to agent ${targetAgentId}`, input.parentTaskId);
 
-    return taskId;
+    return createdId;
   }
 
   async findAgentIdByRole(role: string): Promise<string | null> {
