@@ -41,12 +41,14 @@ const PROVIDERS: Array<{
   // Cohere (production) — re-verified live 2026-07-26, genuine production tier
   // (clean completion, no trial-cap warning).
   { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
-  // REMOVED 2026-07-26 per Don's explicit instruction ("remove models that keep
-  // returning errors, get them out"): mistral (401 invalid key), qwen-cloud
-  // (401/"API-key is blocked" on every cached key), github-models (no_access
-  // on every model tried), cohere-trial (429, monthly cap hit), xai (403,
-  // team credits exhausted), kilocode (402, negative balance). All confirmed
-  // erroring via live direct-API test the same day. Re-add only once a fresh
+  // Mistral RE-ADDED 2026-07-26: Don rotated a fresh key same-day, confirmed
+  // live via direct completion call (real "Ok!" response) before re-adding.
+  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
+  // Still removed 2026-07-26 per Don's explicit instruction ("remove models
+  // that keep returning errors, get them out"): qwen-cloud (401/"API-key is
+  // blocked" on every cached key), github-models (no_access on every model
+  // tried), cohere-trial (429, monthly cap hit), xai (403, team credits
+  // exhausted), kilocode (402, negative balance). Re-add only once a fresh
   // key is confirmed live with a real completion call first.
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
