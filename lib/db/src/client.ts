@@ -68,6 +68,10 @@ export async function migrate() {
       context jsonb
     )
   `;
+  // Add next_retry_at column if it doesn't exist (idempotent backfill migration)
+  await client`
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS next_retry_at timestamptz
+  `;
   await client`
     CREATE TABLE IF NOT EXISTS approvals (
       id text PRIMARY KEY,
