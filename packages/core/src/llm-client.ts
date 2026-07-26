@@ -2,15 +2,25 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 
 // ─── Multi-Provider Fallback Client ───────────────────────────────────────────
 //
-// OpenRouter REMOVED entirely 2026-07-22 per Don's decision (not renewing
-// OpenRouter credits — dropping it portfolio-wide, not just letting it
-// silently 402). Falls back through free providers in order:
+// Reordered 2026-07-26 after a full live-key audit (direct curl against every
+// configured key, with proper User-Agent — api.cerebras.ai/api.groq.com were
+// throwing Cloudflare 403 error 1010 on bare urllib requests with no UA,
+// which looked like dead keys but were a false alarm once a real UA was
+// sent). Confirmed live: Cerebras, Groq, Cohere (COHERE_API_KEY — see
+// corrected note below, this is NOT the old mislabeled-trial situation
+// anymore). Confirmed dead/blocked: Mistral (401 invalid key), Qwen Cloud
+// (401 invalid key), Cohere-trial (429, monthly 1000-call cap hit),
+// GitHub Models (no_access on every model tried), xAI (403 permission-denied
+// — team credits/spending limit exhausted, key itself is valid), Kilo Code
+// (402 — negative account balance). Chain order now:
 //
-//   Cerebras → Mistral → Groq → GitHub Models → Qwen Cloud → Cohere (trial) →
-//   Cohere (prod)
+//   Cerebras → Groq → Cohere (prod) → Mistral → Qwen Cloud → GitHub Models →
+//   Cohere (trial) → xAI → Kilo Code → OpenRouter (free) x2
 //
-// Direct Gemini fallback was removed 2026-07-14 (permanently dead key, zero
-// quota grant — not a rate limit). See NOTE above the cohere-trial entry.
+// Dead/blocked entries kept in the chain rather than removed — harmless
+// no-ops today, zero-code-change recovery the moment Don rotates a key or
+// tops up billing (xAI/Kilo Code specifically just need a credits top-up,
+// not a new key).
 //
 // Each provider uses the standard OpenAI-compatible chat completions shape,
 // so the same request/response mapping logic is reused across all of them.
@@ -24,28 +34,40 @@ const PROVIDERS: Array<{
   // Some providers need specific headers
   extraHeaders?: Record<string, string>;
 }> = [
-  // Cerebras — verified live 2026-07-14. Available models on this account:
+  // Cerebras — re-verified live 2026-07-26. Available models on this account:
   // gemma-4-31b, zai-glm-4.7, gpt-oss-120b. Using gpt-oss-120b (best quality/speed).
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
-  // Mistral La Plateforme — free tier, 1B tokens/month. Skips automatically
-  // until MISTRAL_API_KEY is configured (same pattern as every other provider).
-  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
+  // Groq — re-verified live 2026-07-26. Promoted to #2 (both confirmed-live
+  // free tiers now lead the chain, ahead of the currently-dead paid/limited
+  // entries below).
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
-  // GitHub Models -- free via the existing GITHUB_TOKEN_4 PAT (already used
-  // for repo writes elsewhere in this ecosystem), no separate signup. Live-
-  // verified 2026-07-20: openai/gpt-4.1 responds correctly with this token.
-  // Tight per-request token caps on GitHub's side, so placed after the faster
-  // free tiers (Cerebras/Mistral/Groq) rather than first.
-  { name: 'github-models', baseURL: 'https://models.github.ai/inference', apiKeyEnv: 'GITHUB_TOKEN_4', fallbackModel: 'openai/gpt-4.1' },
+  // Cohere (production) — CORRECTED 2026-07-26: the old note below this
+  // entry (dated 2026-07-14) claiming COHERE_API_KEY was actually a
+  // mislabeled trial key is now confirmed OUT OF DATE. Live test today
+  // returns a clean completion with zero trial-limit warning (unlike
+  // COHERE_TRIAL_API_KEY below, which does still show the trial-cap
+  // message) — this is a genuine production-tier key now, either rotated
+  // since or the labeling was fixed. Promoted up from its old position
+  // near the bottom of the chain to right after the two confirmed-live free
+  // tiers, since it has real headroom and no shared-quota risk.
+  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
+  // Mistral La Plateforme -- CONFIRMED DEAD 2026-07-26 (401 Unauthorized,
+  // direct curl against api.mistral.ai/v1/chat/completions with this exact
+  // key). No working replacement in the credential pool. Kept as a no-op;
+  // needs a fresh key from console.mistral.ai to actually serve requests.
+  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
   // Qwen Cloud (Alibaba Cloud Model Studio, international dashscope-intl
-  // endpoint -- NOT the mainland Bailian console, separate account/URL).
-  // PAID pay-as-you-go, NOT free -- placed after every free tier above
-  // (Cerebras/Mistral/Groq/GitHub Models) and before Cohere's trial-limited
-  // tier, since it's cheap and has no shared-quota risk. Live-verified
-  // 2026-07-20 against the real endpoint (qwen-max, qwen3-coder-plus both
-  // returned real completions). Pricing confirmed official 2026-07-20:
-  // qwen3-coder-plus $1.00/$5.00 per 1M (base tier), qwen-max $1.60/$6.40.
+  // endpoint) -- CONFIRMED DEAD 2026-07-26 ("Incorrect API key provided").
+  // No working replacement anywhere in the credential pool as of this audit.
+  // Kept as a no-op; needs Don to generate a fresh key from a paid Model
+  // Studio workspace and confirm the account itself isn't suspended/flagged.
   { name: 'qwen-cloud', baseURL: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3-coder-plus' },
+  // GitHub Models -- CONFIRMED BLOCKED 2026-07-26: every model tried
+  // ("no_access") on this token, an account/tier-level gate rather than a
+  // scope problem (the token itself authenticates fine for repo ops). Kept
+  // as a no-op; needs a token that's actually been granted Models catalog
+  // access (or the org's Models feature enabled) to serve requests.
+  { name: 'github-models', baseURL: 'https://models.github.ai/inference', apiKeyEnv: 'GITHUB_TOKEN_4', fallbackModel: 'openai/gpt-4.1' },
   // NOTE: direct Gemini fallback (GEMINI_API_KEY -> generativelanguage.googleapis.com)
   // was REMOVED 2026-07-14 — confirmed permanently dead: this Google Cloud
   // project/key returns a 429 with `limit: 0` for gemini-2.0-flash free tier,
@@ -55,16 +77,21 @@ const PROVIDERS: Array<{
   // (see business.ts / APEX_CHARTER.md `google/gemini-2.5-flash` model refs) —
   // that path goes through OpenRouter's own billing, not this dead key, and is
   // unaffected by this removal.
+  // Cohere trial -- CONFIRMED at its 1000-call/month cap 2026-07-26 (429,
+  // "You are using a Trial key"). Kept below the production Cohere entry
+  // above; this tier only matters again once the monthly window resets or
+  // Don upgrades it to production too.
   { name: 'cohere-trial', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_TRIAL_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
-  // NOTE: despite the name, COHERE_API_KEY is NOT an actual Cohere production
-  // (paid) key — confirmed live 2026-07-14: Cohere's API itself returns
-  // "You are using a Trial key, which is limited to 1000 API calls / month"
-  // for both COHERE_API_KEY and COHERE_TRIAL_API_KEY. Whoever issued this key
-  // mislabeled it, or it was downgraded. Needs a REAL production key from
-  // https://dashboard.cohere.com/api-keys (Production tab, not Trial) to
-  // actually get higher rate limits — until then this tier will keep 429ing
-  // once the shared trial quota is exhausted.
-  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
+  // xAI (Grok) -- added 2026-07-26. Confirmed the key itself is VALID but
+  // this team's credits/spending limit is currently exhausted
+  // (permission-denied, not an auth failure). Harmless no-op until Don tops
+  // up billing at console.x.ai -- will start serving requests immediately
+  // once that happens, zero code change needed.
+  { name: 'xai', baseURL: 'https://api.x.ai/v1', apiKeyEnv: 'XAI_API_KEY', fallbackModel: 'grok-3-fast' },
+  // Kilo Code Gateway (kilo.ai) -- added 2026-07-26. Confirmed the key is
+  // valid but the account balance is negative (-$0.0036, "Low Credit
+  // Warning"). Harmless no-op until Don adds credits at app.kilo.ai/profile.
+  { name: 'kilocode', baseURL: 'https://kilo.ai/api/openrouter/v1', apiKeyEnv: 'KILOCODE_API_KEY', fallbackModel: 'deepseek/deepseek-chat' },
   // OpenRouter FREE tier re-added 2026-07-22 (last-resort only) -- Don confirmed
   // the paid OpenRouter balance stays retired, but OpenRouter's :free-suffixed
   // models cost nothing and just add more distinct rate-limit buckets to this
@@ -72,7 +99,9 @@ const PROVIDERS: Array<{
   // OpenRouter's free catalog has changed since this was last used: the old
   // devstral/qwen-coder/llama-3.3-70b :free ids are gone, replaced by
   // gpt-oss-20b and nvidia/nemotron variants. Placed LAST since it's the
-  // provider most likely to already be exhausted portfolio-wide.
+  // provider most likely to already be exhausted portfolio-wide (confirmed
+  // 429 daily-quota-exhausted 2026-07-26 -- shared account-wide cap, self-
+  // resets daily, not a dead key).
   { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
   { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
