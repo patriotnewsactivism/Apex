@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
-import { db, agents, approvals, messages, learningInsights, strategyRecommendations } from '@workspace/db';
-import { eq, desc } from 'drizzle-orm';
+import { db, agents, approvals, messages, tasks as tasksTable, learningInsights, strategyRecommendations } from '@workspace/db';
+import { eq, and, desc } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
@@ -103,6 +103,18 @@ export abstract class BaseAgent {
     } catch (err) {
       // DB offline: initialization in memory mode
     }
+
+    // Recover any tasks that were left in_progress from a previous crashed run.
+    // These will never be picked up again by dequeue() (which only selects
+    // 'pending'), so we reset them to 'pending' here, once at startup, before
+    // the polling loop begins.
+    await db
+      .update(tasksTable)
+      .set({ status: 'pending', updatedAt: new Date() })
+      .where(and(
+        eq(tasksTable.assignedAgentId, this.config.id),
+        eq(tasksTable.status, 'in_progress'),
+      ));
 
     await this.logger.info(`Agent ${this.name} (${this.role}) initialized`);
     this.setStatus('idle');
@@ -385,13 +397,36 @@ export abstract class BaseAgent {
     targetAgentId: string,
     input: TaskInput,
   ): Promise<string> {
+    // Idempotency: if a task with the same goalId + title already exists for this
+    // agent (even if it failed or is in any other state), return the existing
+    // task ID rather than creating a duplicate. This prevents the CEO
+    // "Process Goal" retry loop from spawning fresh retryCount=0 child tasks on
+    // every re-run, which bypasses maxRetries and causes the crash-loop.
+    if (input.goalId) {
+      const existing = await db
+        .select({ id: tasksTable.id })
+        .from(tasksTable)
+        .where(and(
+          eq(tasksTable.goalId, input.goalId),
+          eq(tasksTable.title, input.title),
+          eq(tasksTable.assignedAgentId, targetAgentId),
+        ))
+        .limit(1);
+
+      if (existing.length > 0) {
+        await this.logger.info(
+          `Skipping duplicate task "${input.title}" for goal ${input.goalId} — already exists (${existing[0].id})`,
+          input.parentTaskId,
+        );
+        return existing[0].id;
+      }
+    }
+
     // Create task assigned to target agent
     const now = new Date();
-    const { randomUUID } = await import('crypto');
     const taskId = randomUUID();
 
-    const { tasks } = await import('@workspace/db');
-    await db.insert(tasks).values({
+    await db.insert(tasksTable).values({
       id: taskId,
       goalId: input.goalId ?? null,
       parentTaskId: input.parentTaskId ?? null,

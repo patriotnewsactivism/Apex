@@ -71,6 +71,7 @@ export const tasks = pgTable('tasks', {
   startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
   completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
   dueAt: timestamp('due_at', { withTimezone: true, mode: 'date' }),
+  nextRetryAt: timestamp('next_retry_at', { withTimezone: true, mode: 'date' }),
   retryCount: integer('retry_count').notNull().default(0),
   maxRetries: integer('max_retries').notNull().default(3),
   result: text('result'),

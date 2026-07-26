@@ -8,7 +8,8 @@ config({ path: resolve(process.cwd(), '.env') });
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
-import { db, migrate, componentHealth, healthMetrics } from '@workspace/db';
+import { db, migrate, tasks, componentHealth, healthMetrics } from '@workspace/db';
+import { eq } from 'drizzle-orm';
 import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
@@ -115,6 +116,10 @@ async function main() {
   // workforce (and its LLM clients) are created, so a key saved via the
   // dashboard's Settings panel is live from the very first LLM call.
   await loadSettingsIntoEnv();
+
+  // Reset any tasks left in_progress from a previous crash so they get re-picked up
+  await db.update(tasks).set({ status: 'pending', updatedAt: new Date() }).where(eq(tasks.status, 'in_progress'));
+  console.log('✅ Orphaned in_progress tasks reset to pending');
 
   const mode = process.env.APEX_APPROVAL_MODE;
   const approvalRequired = mode === 'strict' ? true : mode === 'off' ? false : undefined;

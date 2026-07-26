@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { db, tasks } from '@workspace/db';
-import { eq, and, asc } from 'drizzle-orm';
+import { eq, and, inArray, asc, or, isNull, lte } from 'drizzle-orm';
 import type { Task, NewTask } from '@workspace/db';
 import type { TaskInput, TaskStatus } from './types.js';
 
@@ -33,6 +33,7 @@ export class TaskQueue {
       startedAt: null,
       completedAt: null,
       dueAt: null,
+      nextRetryAt: null,
       retryCount: 0,
       maxRetries: 3,
       result: null,
@@ -51,13 +52,18 @@ export class TaskQueue {
     return taskRecord;
   }
 
-  /** Pick next highest-priority pending task */
+  /** Pick next highest-priority pending task whose retry window has elapsed */
   async dequeue(): Promise<Task | null> {
     try {
+      const now = new Date();
       const pending = await db
         .select()
         .from(tasks)
-        .where(and(eq(tasks.assignedAgentId, this.agentId), eq(tasks.status, 'pending')))
+        .where(and(
+          eq(tasks.assignedAgentId, this.agentId),
+          eq(tasks.status, 'pending'),
+          or(isNull(tasks.nextRetryAt), lte(tasks.nextRetryAt, now)),
+        ))
         .orderBy(asc(tasks.priority), asc(tasks.createdAt))
         .limit(1);
 
@@ -103,17 +109,24 @@ export class TaskQueue {
     }
   }
 
-  /** Fail a task, optionally retry */
+  /** Fail a task, optionally retry with exponential backoff */
   async fail(taskId: string, error: string): Promise<void> {
     try {
       const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
       if (task) {
         const canRetry = task.retryCount < task.maxRetries;
         if (canRetry) {
+          // Exponential backoff: 2s, 4s, 8s … capped at 5 minutes (300s).
+          // nextRetryAt is written to the DB so ALL workers respect the window —
+          // the previous setTimeout-only approach only blocked the calling worker
+          // while other workers could pick the task up immediately.
+          const retryDelayMs = Math.min(Math.pow(2, task.retryCount) * 1000, 300_000);
+          const nextRetryAt = new Date(Date.now() + retryDelayMs);
           await db.update(tasks).set({
             status: 'pending',
             retryCount: task.retryCount + 1,
             errorMessage: error,
+            nextRetryAt,
             updatedAt: new Date(),
           }).where(eq(tasks.id, taskId));
         } else {

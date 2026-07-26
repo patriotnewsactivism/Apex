@@ -1,4 +1,4 @@
-import { BaseAgent, emitApexEvent } from '@workspace/core';
+import { BaseAgent, emitApexEvent, getDefaultLLMConfig } from '@workspace/core';
 import type { AgentConfig } from '@workspace/core';
 import { db, goals } from '@workspace/db';
 import { eq } from 'drizzle-orm';
@@ -64,7 +64,7 @@ export class ApexCEO extends BaseAgent {
       role: 'CEO',
       tier: 0,
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'cerebras', model: 'gpt-4o' },
+      llm: getDefaultLLMConfig('CEO'),
       tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'dispatchSwarm', 'collectSwarmResults', 'requestPeerReview', 'health_check'],
       maxIterations: 30,
       approvalRequired: false,
