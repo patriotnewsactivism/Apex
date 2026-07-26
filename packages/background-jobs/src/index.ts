@@ -12,5 +12,7 @@ export {
   HealthCheckJob,
   ReportGenerationJob,
   MaintenanceJob,
+  GoalReviewJob,
+  LearningAnalysisJob,
 } from './handlers/index.js';
 export type { JobHandler } from './handlers/index.js';

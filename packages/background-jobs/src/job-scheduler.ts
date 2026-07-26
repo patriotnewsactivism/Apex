@@ -13,6 +13,8 @@ import {
   HealthCheckJob,
   ReportGenerationJob,
   MaintenanceJob,
+  GoalReviewJob,
+  LearningAnalysisJob,
 } from './handlers/index.js';
 
 export interface JobSchedulerConfig {
@@ -34,6 +36,8 @@ export class JobScheduler {
     this.executor.registerHandler('health_check', new HealthCheckJob());
     this.executor.registerHandler('report_generation', new ReportGenerationJob());
     this.executor.registerHandler('maintenance', new MaintenanceJob());
+    this.executor.registerHandler('goal_review', new GoalReviewJob());
+    this.executor.registerHandler('learning_analysis', new LearningAnalysisJob());
   }
 
   /** Start the scheduler polling loop. */

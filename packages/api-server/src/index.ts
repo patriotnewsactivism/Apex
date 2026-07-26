@@ -44,6 +44,63 @@ process.on('unhandledRejection', (reason) => {
   console.warn('⚠️  Unhandled rejection caught (server protected):', reason instanceof Error ? reason.message : String(reason));
 });
 
+// Seed the default recurring system jobs that make APEX self-directing and
+// self-improving. Idempotent via onConflictDoNothing: a job is created only if
+// its stable id is absent, so a job an operator later disables via
+// /api/jobs/:id/toggle stays disabled across reboots (we never re-enable it).
+async function seedDefaultJobs(): Promise<void> {
+  try {
+    const { db, scheduledJobs } = await import('@workspace/db');
+    const { CronParser } = await import('@workspace/background-jobs');
+
+    const now = new Date();
+    const defaults = [
+      {
+        id: 'system-ceo-goal-review',
+        name: 'CEO autonomous goal review',
+        jobType: 'goal_review',
+        cronExpression: '*/30 * * * *', // every 30 min
+        targetAgentId: 'apex-ceo-001' as string | null,
+        priority: 4,
+      },
+      {
+        id: 'system-learning-analysis',
+        name: 'Autonomous learning analysis',
+        jobType: 'learning_analysis',
+        cronExpression: '0 */6 * * *', // every 6 h
+        targetAgentId: null as string | null,
+        priority: 6,
+      },
+    ];
+
+    for (const def of defaults) {
+      const nextRunAt = CronParser.nextRun(def.cronExpression, now) ?? new Date(now.getTime() + 60_000);
+      await db
+        .insert(scheduledJobs)
+        .values({
+          id: def.id,
+          name: def.name,
+          jobType: def.jobType,
+          cronExpression: def.cronExpression,
+          enabled: true,
+          targetAgentId: def.targetAgentId,
+          payload: {},
+          priority: def.priority,
+          status: 'active',
+          retryCount: 0,
+          maxRetries: 3,
+          nextRunAt,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing();
+    }
+    console.log('✅ Seeded default system jobs (CEO goal review + learning analysis)');
+  } catch (err) {
+    console.warn('⚠️  Default job seeding skipped:', err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function main() {
   console.log('🚀 APEX starting up...');
 
@@ -187,6 +244,10 @@ async function main() {
     console.log(`✅ WebSocket ready at ws://0.0.0.0:${PORT}/ws`);
     console.log(`🤖 Approval mode: ${mode === 'strict' ? 'HUMAN APPROVAL REQUIRED (strict)' : mode === 'off' ? 'FULLY AUTONOMOUS' : 'PER-ROLE DEFAULT'}`);
   });
+
+  // Seed default recurring system jobs (CEO goal review + learning analysis),
+  // then start the scheduler that fires them.
+  await seedDefaultJobs();
 
   // Start background job scheduler
   scheduler.start();

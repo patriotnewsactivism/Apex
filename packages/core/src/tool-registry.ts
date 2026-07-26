@@ -1233,7 +1233,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: false, // Auto-approved 2026-07-22: marks an internal recommendation row applied, no external side effects by itself.
       // (was requiresApproval: true)
       async execute({ recommendationId }) {
-        const { db, strategyRecommendations } = await import('@workspace/db');
+        const { db, strategyRecommendations, learningInsights } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
 
         const [existing] = await db.select().from(strategyRecommendations).where(eq(strategyRecommendations.id, recommendationId)).limit(1);
@@ -1255,7 +1255,30 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           reviewedAt: new Date(),
         }).where(eq(strategyRecommendations.id, recommendationId));
 
-        return { applied: true, recommendationId, title: existing.title };
+        // Close the learning loop: persist the approved recommendation as a
+        // standing insight so it is injected into agent prompts (see
+        // BaseAgent.buildLearningContext) and actually shapes future behavior.
+        // Non-fatal — the apply already succeeded even if this insert fails.
+        let persistedAsInsight = false;
+        try {
+          const { randomUUID } = await import('crypto');
+          await db.insert(learningInsights).values({
+            id: randomUUID(),
+            insightType: 'improvement',
+            title: `Applied strategy: ${existing.title}`,
+            description: existing.text,
+            confidence: existing.confidence,
+            evidence: { sourceRecommendationId: recommendationId, type: existing.recommendationType },
+            applied: true,
+            createdAt: new Date(),
+            expiresAt: null,
+          });
+          persistedAsInsight = true;
+        } catch {
+          // insight persistence is best-effort; apply still succeeded
+        }
+
+        return { applied: true, recommendationId, title: existing.title, persistedAsInsight };
       },
     },
 

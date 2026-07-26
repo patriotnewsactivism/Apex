@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
-import { db, agents, approvals, messages } from '@workspace/db';
-import { eq } from 'drizzle-orm';
+import { db, agents, approvals, messages, learningInsights, strategyRecommendations } from '@workspace/db';
+import { eq, desc } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
@@ -222,7 +222,8 @@ export abstract class BaseAgent {
 
       // Build initial message history
       const memContext = await this.memory.buildMemoryContext(description);
-      const systemPrompt = this.config.systemPrompt + memContext;
+      const learningContext = await this.buildLearningContext(this.config.role);
+      const systemPrompt = this.config.systemPrompt + memContext + learningContext;
 
       const history: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
@@ -329,6 +330,52 @@ export abstract class BaseAgent {
       this.setStatus('error');
       recordMetricsAsync(false, msg);
       return { success: false, error: msg };
+    }
+  }
+
+  /** Best-effort: inject active learning insights and applied strategy
+   * recommendations relevant to this agent's role into the system prompt, so
+   * patterns the learning system has detected actually shape future reasoning
+   * (this is what closes the learning loop). Never throws — a DB hiccup must
+   * not block task execution. */
+  private async buildLearningContext(role: string): Promise<string> {
+    try {
+      const now = Date.now();
+      const roleLower = role.toLowerCase();
+
+      const recentInsights = await db
+        .select()
+        .from(learningInsights)
+        .orderBy(desc(learningInsights.createdAt))
+        .limit(30);
+
+      const active = recentInsights.filter((i) => !i.expiresAt || i.expiresAt.getTime() > now);
+      const roleRelevant = active.filter(
+        (i) =>
+          i.title.toLowerCase().includes(roleLower) ||
+          i.description.toLowerCase().includes(roleLower),
+      );
+      const warnings = active.filter((i) => i.insightType === 'warning');
+      const chosen = [...roleRelevant, ...warnings.filter((w) => !roleRelevant.includes(w))].slice(0, 4);
+
+      const appliedRecs = await db
+        .select()
+        .from(strategyRecommendations)
+        .where(eq(strategyRecommendations.status, 'applied'))
+        .orderBy(desc(strategyRecommendations.createdAt))
+        .limit(3);
+
+      const lines: string[] = [];
+      for (const i of chosen) {
+        lines.push(`- (${i.insightType}) ${i.title}: ${i.description}`);
+      }
+      for (const r of appliedRecs) {
+        lines.push(`- [standing strategy] ${r.title}: ${r.text}`);
+      }
+      if (lines.length === 0) return '';
+      return `\n## What I've Learned (apply these to your decisions)\n${lines.join('\n')}\n`;
+    } catch {
+      return '';
     }
   }
 

@@ -225,3 +225,138 @@ export class MaintenanceJob implements JobHandler {
     };
   }
 }
+
+// ── GoalReviewJob: the autonomous "spark" that makes APEX self-directing ────
+//
+// Before this handler existed, agent activity was purely reactive — the CEO
+// only reasoned when a human hit POST /api/goals, and the JobScheduler polled
+// an empty scheduled_jobs table forever on a fresh DB. This job runs on a
+// cron schedule, snapshots REAL system state (active goals, task backlog,
+// component health, recent learning insights), and enqueues a task for the CEO
+// to reason about it and originate/delegate the highest-value next work — or
+// consciously decide nothing needs doing. No human endpoint call required.
+//
+// Charter-safe: the CEO's own tools are read/research/delegation; any
+// downstream irreversible action (deploy, external send, schema, financial)
+// still hits its per-tool human-approval gate. The prompt explicitly instructs
+// restraint so the loop does not generate busywork or unbounded token spend.
+
+export class GoalReviewJob implements JobHandler {
+  async execute(job: ScheduledJob): Promise<unknown> {
+    const { randomUUID } = await import('crypto');
+    const { db, tasks, goals, componentHealth, learningInsights } = await import('@workspace/db');
+    const { eq, desc, sql } = await import('drizzle-orm');
+
+    const targetAgentId = job.targetAgentId ?? 'apex-ceo-001';
+
+    // Snapshot real state so the CEO reasons from facts, not a vacuum.
+    const activeGoals = await db
+      .select({ id: goals.id, title: goals.title, priority: goals.priority })
+      .from(goals)
+      .where(eq(goals.status, 'active'))
+      .orderBy(goals.priority)
+      .limit(10);
+
+    const [backlog] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(tasks)
+      .where(sql`${tasks.status} IN ('pending', 'in_progress')`);
+
+    const unhealthy = await db
+      .select({
+        component: componentHealth.component,
+        status: componentHealth.status,
+        detail: componentHealth.detail,
+      })
+      .from(componentHealth)
+      .where(sql`${componentHealth.status} IN ('degraded', 'critical')`);
+
+    const recentInsights = await db
+      .select({ title: learningInsights.title, insightType: learningInsights.insightType })
+      .from(learningInsights)
+      .orderBy(desc(learningInsights.createdAt))
+      .limit(5);
+
+    const snapshot = {
+      activeGoals,
+      openTaskBacklog: backlog?.count ?? 0,
+      unhealthyComponents: unhealthy,
+      recentInsights,
+      reviewedAt: new Date().toISOString(),
+    };
+
+    const description = [
+      'AUTONOMOUS PERIODIC REVIEW — no human requested this; you are self-directing.',
+      'Review the current state below and decide the highest-value next work for the business.',
+      '',
+      '## Current State',
+      '```json',
+      JSON.stringify(snapshot, null, 2),
+      '```',
+      '',
+      '## Your job',
+      '1. If there are active goals, take the highest-priority one and delegate concrete initiatives to your CTO/COO via sendMessage (or dispatchSwarm for multi-perspective work).',
+      '2. If a component is degraded/critical, delegate investigation and a fix to the CTO.',
+      '3. If a recent insight signals a recurring problem, act on it.',
+      '4. RESTRAINT: do NOT create busywork. If the system is healthy and nothing needs doing, record a one-line note to memory and create no tasks.',
+      'Irreversible actions (deploys, external sends, schema changes, financial) still require human approval — propose and queue them, do not execute.',
+    ].join('\n');
+
+    const taskId = randomUUID();
+    const now = new Date();
+    await db.insert(tasks).values({
+      id: taskId,
+      title: `Autonomous goal review — ${now.toISOString()}`,
+      description,
+      status: 'pending',
+      priority: job.priority,
+      assignedAgentId: targetAgentId,
+      createdByAgentId: 'system-scheduler',
+      createdAt: now,
+      updatedAt: now,
+      retryCount: 0,
+      maxRetries: 3,
+      context: { scheduledJobId: job.id, snapshot },
+    });
+
+    return {
+      taskId,
+      assignedTo: targetAgentId,
+      activeGoals: activeGoals.length,
+      unhealthyComponents: unhealthy.length,
+      openTaskBacklog: backlog?.count ?? 0,
+    };
+  }
+}
+
+// ── LearningAnalysisJob: autonomous pattern detection + insight generation ──
+//
+// Mirrors POST /api/learning/analyze but runs on a schedule, so learning is
+// not dependent on a human hitting the endpoint. Detected insights feed back
+// into agent prompts (BaseAgent.buildLearningContext), and human-approved
+// strategy recommendations that get applied become standing instructions —
+// closing the learning loop from "measure and report" to "measure and adapt".
+
+export class LearningAnalysisJob implements JobHandler {
+  async execute(_job: ScheduledJob): Promise<unknown> {
+    const { PatternDetector, InsightGenerator, StrategyOptimizer } = await import(
+      '@workspace/learning-system'
+    );
+
+    const detector = new PatternDetector(5); // documented >=5 sample threshold
+    const patterns = await detector.detectPatterns(30);
+
+    const insightGen = new InsightGenerator();
+    const insightsCreated = await insightGen.generateInsights(patterns);
+
+    const optimizer = new StrategyOptimizer();
+    const recommendationsCreated = await optimizer.generateRecommendations(patterns);
+
+    return {
+      patternsDetected: patterns.length,
+      insightsCreated,
+      recommendationsCreated,
+      analyzedAt: new Date().toISOString(),
+    };
+  }
+}
