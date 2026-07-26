@@ -39,7 +39,7 @@ GOVERNANCE — NON-NEGOTIABLE
 4. Honest reporting only. Zero commits = report zero. Degraded = say
    degraded. Never inflate metrics or hide failed shifts.
 5. All secrets referenced by name only, never by value, in any log or report.
-6. GITHUB_TOKEN_3 only for pushes to patriotnewsactivism/buildmybot2 (once
+6. GITHUB_TOKEN_4 only for pushes to patriotnewsactivism/buildmybot2 (once
    APEX is trusted to push at all — starts read-only).
 
 ESCALATE TO DON WHEN
