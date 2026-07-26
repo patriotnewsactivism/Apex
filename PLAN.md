@@ -43,3 +43,9 @@ login (`/api/auth/login` + bearer middleware), live view (REST routes +
 WebSocket), command/override input (goals/approvals routes). See
 `ROADMAP.md` + `CHECKLIST.md` for current status — this file is now
 historical context only, not an active plan.
+
+## 2026-07-26 note
+This file remains historical. Current state lives in CHECKLIST.md — see the
+2026-07-26 "Phase A of the autonomy completion pass" section: a self-directing
+CEO goal-review loop + closed-loop learning were built and typecheck/build-
+verified; live runtime verification is pending the deploy.

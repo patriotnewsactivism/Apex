@@ -196,3 +196,65 @@ Weak prediction example: a tiny or empty sample still produces a forecast, but c
 Potentially misleading prediction example: the model only reads `task_outcomes`; it does not currently join health metrics, pipeline runs, deployment statuses, or incident notes. A green/low-risk result can therefore be misleading after an operational incident if no corresponding failed task outcomes were recorded.
 
 Runtime verification status: local package and workspace typecheck/build passed after the guardrail additions. A direct live API smoke test against `https://apex.donmatthews.live/api/predictive/*` could not be completed from this sandbox because `/api/auth/login` returned HTTP 403 before a bearer token could be obtained, so the predictive feature is still not fully live-verified with production data in this pass.
+
+## Update — 2026-07-26: Phase A of the autonomy completion pass — self-direction + closed-loop learning
+Context: Don asked to bring APEX to "fully autonomous, reasoning and learning"
+per QWEN.md + APEX_CHARTER.md. A read-only audit first established ground
+truth: the execution substrate (LLM loop, tool calls, hierarchical delegation,
+cron scheduling, outcome recording) is real, but (a) nothing ORIGINATED work —
+the CEO only reasoned when a human hit POST /api/goals, and the scheduler
+polled an empty scheduled_jobs table on a fresh DB; and (b) learning was
+"measure and report" — analysis ran only via /api/learning/analyze and never
+fed back into agent behavior.
+
+**What was built (all git-reversible, NO schema changes, NO new credentials):**
+- `GoalReviewJob` (packages/background-jobs/src/handlers/index.ts) — the
+  autonomous "spark". Seeded as recurring job `system-ceo-goal-review`
+  (cron `*/30 * * * *`): snapshots real state (active goals, task backlog,
+  degraded/critical components, recent insights) and enqueues a CEO task to
+  reason about it and originate/delegate work — or consciously idle. Prompt
+  bakes in restraint (no busywork) and reaffirms irreversible actions stay
+  approval-gated.
+- `LearningAnalysisJob` — seeded as `system-learning-analysis` (cron
+  `0 */6 * * *`): runs PatternDetector→InsightGenerator→StrategyOptimizer on a
+  schedule instead of only via the manual endpoint.
+- `BaseAgent.buildLearningContext` (packages/core/src/base-agent.ts) — injects
+  active role-relevant insights + applied strategy recommendations into every
+  agent's system prompt, so detected patterns shape future reasoning. Best-
+  effort, never blocks execution.
+- `apply_strategy_recommendation` (packages/core/src/tool-registry.ts) — now
+  persists an applied (human-approved) recommendation as a standing insight
+  that feeds prompts. The "must be approved first" human gate is preserved.
+- Boot seeding (packages/api-server/src/index.ts `seedDefaultJobs`) —
+  idempotent via onConflictDoNothing, so an operator-disabled job stays
+  disabled across reboots.
+
+**Pre-existing breaks fixed to unblock the all-packages typecheck gate (NOT
+caused by this work; git status confirms the footprint):**
+- health-monitor:191/193 + the ReportGenerationJob in background-jobs:
+  `await res.json()` typed `unknown` under Node undici types failed when
+  checked through non-DOM-lib packages (agents/api-server). Added explicit casts.
+- packages/orchestrator: dead empty package (no src/, broken tsconfig ref to
+  non-existent packages/db, imported by nothing). Removed the broken reference
+  + added a valid empty module. Recommend deleting this package entirely.
+
+**Verified (2026-07-26):** `pnpm run typecheck` — all 12 packages Done, zero
+errors. `pnpm run build` — clean, dashboard emits dist/index.html + JS/CSS
+bundles (447KB).
+
+**NOT yet verified (honest):** live runtime behavior. The autonomous loop and
+scheduled learning analysis can only be confirmed by deploying and watching
+them fire (CEO review every 30m, learning every 6h) with a real admin token.
+This sandbox has no DATABASE_URL / APEX_ADMIN_PASSWORD and Railway curls time
+out, so live functional verification is PENDING the deploy. Also still
+charter-gated and untested: any autonomous buildmybot2 production action
+(send briefing / run workforce / deploy) — those remain human-approved by design.
+
+**Remaining gaps to full completion (Phases B/C, blocked on Don):**
+- Phase B (run buildmybot2 live): provision GITHUB_TOKEN (unblocks the
+  engineering PR loop), BUILDMYBOT_VERCEL_DEPLOY_HOOK, BUILDMYBOT_CRON_SECRET.
+- Phase C (recurring sales): net-new infra — live Stripe + a real outbound
+  email/SMS channel — plus the charter's permanent human-approval gate on
+  financial transactions and external emails. Apex can research/qualify leads
+  and trigger buildmybot2's own follow-up worker today, but cannot itself send
+  outreach or take payment.
