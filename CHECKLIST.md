@@ -274,3 +274,29 @@ by design.
   financial transactions and external emails. Apex can research/qualify leads
   and trigger buildmybot2's own follow-up worker today, but cannot itself send
   outreach or take payment.
+
+## Update — 2026-07-26: Phase B wiring — autonomous loop is now buildmybot2-aware
+The buildmybot2 delegation chain was already wired (COO owns buildmybot_status/
+send_briefing/dispatch_engineering/health_check; Lead Developer owns
+create_pull_request/buildmybot_deploy/health_check; CEO→COO→Lead Dev flow). The
+missing piece was that the autonomous GoalReviewJob only saw Apex's own state.
+
+**Built (git-reversible, no schema changes, no secrets needed to write):**
+- `GoalReviewJob` (packages/background-jobs/src/handlers/index.ts) now adds a
+  best-effort BuildMyBot2 telemetry leg to its snapshot — open-error count +
+  worst 3, leads awaiting reply, today's shifts + flagged count — mirroring the
+  proven Supabase fetch in ReportGenerationJob (missing env / unreachable
+  Supabase → honest note, never a crash). The CEO prompt now instructs it to
+  delegate to the COO (apex-coo-001) when buildmybot2 shows critical errors,
+  flagged/escalated shifts, or stalling leads. Gated actions stay approval-gated.
+- `.env.example` now documents BUILDMYBOT_VERCEL_DEPLOY_HOOK and adds a
+  GITHUB_TOKEN section (the engineering tools read process.env.GITHUB_TOKEN;
+  value = the GITHUB_TOKEN_4 secret).
+
+**Verified (2026-07-26):** `pnpm run typecheck` — all 12 packages Done, zero
+errors. `pnpm run build` — clean, dashboard emits dist bundles.
+
+**NOT yet verified (honest):** live. The buildmybot2 snapshot leg needs the
+deploy to settle and the next goal-review fire (every 30m) to confirm real
+buildmybot2 data lands in the CEO task context; the engineering PR loop still
+needs GITHUB_TOKEN provisioned on the live service to actually open PRs.

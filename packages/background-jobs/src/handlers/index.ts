@@ -281,11 +281,69 @@ export class GoalReviewJob implements JobHandler {
       .orderBy(desc(learningInsights.createdAt))
       .limit(5);
 
+    // BuildMyBot2 telemetry — the portfolio leg, so the autonomous review
+    // operates on the revenue flagship too, not just Apex's own queue. Mirrors
+    // the proven best-effort Supabase fetch in ReportGenerationJob: a missing
+    // env or an unreachable Supabase yields an honest note, never a crash.
+    let buildmybot2: unknown;
+    {
+      const url = process.env.BUILDMYBOT_SUPABASE_URL;
+      const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY;
+      if (!url || !key) {
+        buildmybot2 = { note: 'BUILDMYBOT_SUPABASE_URL / _SERVICE_KEY not configured' };
+      } else {
+        try {
+          const headers = { apikey: key, Authorization: `Bearer ${key}` };
+          const today = new Date().toISOString().slice(0, 10);
+          const [errorsRes, leadsRes, shiftsRes] = await Promise.all([
+            fetch(
+              `${url}/rest/v1/error_logs?status=eq.open&order=level.asc,created_at.desc&limit=10&select=id,source,level,message`,
+              { headers, signal: AbortSignal.timeout(6_000) },
+            ),
+            fetch(
+              `${url}/rest/v1/leads?replied_at=is.null&select=id,status,follow_up_sent_at&limit=500`,
+              { headers, signal: AbortSignal.timeout(6_000) },
+            ),
+            fetch(
+              `${url}/rest/v1/ai_team_log?shift_date=eq.${today}&select=role_name,flags,escalated_to&limit=100`,
+              { headers, signal: AbortSignal.timeout(6_000) },
+            ),
+          ]);
+          const openErrors = (errorsRes.ok ? await errorsRes.json() : []) as Array<{
+            id: string;
+            source: string;
+            level: string;
+            message: string;
+          }>;
+          const leadsAwaiting = (leadsRes.ok ? await leadsRes.json() : []) as Array<{
+            id: string;
+            status: string;
+            follow_up_sent_at: string | null;
+          }>;
+          const shifts = (shiftsRes.ok ? await shiftsRes.json() : []) as Array<{
+            role_name: string;
+            flags?: unknown;
+            escalated_to?: unknown;
+          }>;
+          buildmybot2 = {
+            openErrors: openErrors.length,
+            worstErrors: openErrors.slice(0, 3),
+            leadsAwaitingReply: leadsAwaiting.length,
+            shiftsToday: shifts.length,
+            flaggedShifts: shifts.filter((s) => s.flags || s.escalated_to).length,
+          };
+        } catch (err) {
+          buildmybot2 = { note: `unreachable: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }
+    }
+
     const snapshot = {
       activeGoals,
       openTaskBacklog: backlog?.count ?? 0,
       unhealthyComponents: unhealthy,
       recentInsights,
+      buildmybot2,
       reviewedAt: new Date().toISOString(),
     };
 
@@ -302,7 +360,8 @@ export class GoalReviewJob implements JobHandler {
       '1. If there are active goals, take the highest-priority one and delegate concrete initiatives to your CTO/COO via sendMessage (or dispatchSwarm for multi-perspective work).',
       '2. If a component is degraded/critical, delegate investigation and a fix to the CTO.',
       '3. If a recent insight signals a recurring problem, act on it.',
-      '4. RESTRAINT: do NOT create busywork. If the system is healthy and nothing needs doing, record a one-line note to memory and create no tasks.',
+      '4. BuildMyBot2 (managed revenue flagship): if snapshot.buildmybot2 shows open errors (especially critical), flagged/escalated shifts, or leads stalling without reply, delegate to the COO (apex-coo-001) — it owns buildmybot_status / buildmybot_send_briefing / buildmybot_dispatch_engineering. Have it send a corrective briefing or dispatch an engineering fix as warranted.',
+      '5. RESTRAINT: do NOT create busywork. If the system is healthy and nothing needs doing, record a one-line note to memory and create no tasks.',
       'Irreversible actions (deploys, external sends, schema changes, financial) still require human approval — propose and queue them, do not execute.',
     ].join('\n');
 
