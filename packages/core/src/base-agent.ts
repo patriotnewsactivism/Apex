@@ -156,17 +156,10 @@ export abstract class BaseAgent {
       // DB offline: initialization in memory mode
     }
 
-    // Recover any tasks that were left in_progress from a previous crashed run.
-    // These will never be picked up again by dequeue() (which only selects
-    // 'pending'), so we reset them to 'pending' here, once at startup, before
-    // the polling loop begins.
-    await db
-      .update(tasksTable)
-      .set({ status: 'pending', updatedAt: new Date() })
-      .where(and(
-        eq(tasksTable.assignedAgentId, this.config.id),
-        eq(tasksTable.status, 'in_progress'),
-      ));
+    // NOTE: crash recovery (in_progress → pending) was formerly done per-agent here.
+    // It is now centralized in api-server/src/index.ts as lease-expiry recovery so
+    // retryCount is properly incremented and maxRetries is respected. Do NOT add it
+    // back here.
 
     await this.logger.info(`Agent ${this.name} (${this.role}) initialized`);
     this.setStatus('idle');
@@ -551,22 +544,25 @@ export abstract class BaseAgent {
               requiredApprovals++;
               return this.requestHumanApproval(taskId, toolName, args, reason);
             },
-            delegateToRole: async (targetRole, input) =>
-              this.delegateToRole(targetRole, {
+            delegateToRole: async (targetRole, input) => {
+              const [task] = await db.select().from(tasksTable).where(eq(tasksTable.id, taskId)).limit(1);
+              return this.delegateToRole(targetRole, {
                 title: input.title,
                 description: input.description,
                 parentTaskId: input.parentTaskId ?? taskId,
                 goalId: taskGoalId,
                 context: input.context ?? undefined,
-              }),
-            delegateToAgent: async (targetAgentId, input) =>
-              this.delegate(targetAgentId, {
+              });
+            },
+            delegateToAgent: async (targetAgentId, input) => {
+              const [task] = await db.select().from(tasksTable).where(eq(tasksTable.id, taskId)).limit(1);
+              return this.delegate(targetAgentId, {
                 title: input.title,
                 description: input.description,
                 parentTaskId: input.parentTaskId ?? taskId,
                 goalId: input.goalId ?? taskGoalId,
                 context: input.context ?? undefined,
-              }),
+              });
           };
 
           const result = await registry.execute(tc.name, tc.args, toolContext);

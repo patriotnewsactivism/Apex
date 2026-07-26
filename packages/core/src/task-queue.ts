@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { db, tasks } from '@workspace/db';
-import { eq, and, inArray, asc, or, isNull, lte } from 'drizzle-orm';
+import { eq, and, asc, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task, NewTask } from '@workspace/db';
 import type { TaskInput, TaskStatus } from './types.js';
 
@@ -34,6 +34,7 @@ export class TaskQueue {
       completedAt: null,
       dueAt: null,
       nextRetryAt: null,
+      leasedAt: null,
       retryCount: 0,
       maxRetries: 3,
       result: null,
@@ -52,29 +53,30 @@ export class TaskQueue {
     return taskRecord;
   }
 
-  /** Pick next highest-priority pending task whose retry window has elapsed */
+  /** Pick next highest-priority pending task whose retry window has elapsed.
+   *
+   * Uses a single atomic UPDATE ... RETURNING so two concurrent workers
+   * can never both claim the same task row (the non-atomic SELECT + UPDATE
+   * that was here before had a TOCTOU window). The sub-select is ordered by
+   * priority ASC, then created_at ASC so oldest high-priority tasks win. */
   async dequeue(): Promise<Task | null> {
     try {
       const now = new Date();
-      const pending = await db
-        .select()
-        .from(tasks)
-        .where(and(
-          eq(tasks.assignedAgentId, this.agentId),
-          eq(tasks.status, 'pending'),
-          or(isNull(tasks.nextRetryAt), lte(tasks.nextRetryAt, now)),
-        ))
-        .orderBy(asc(tasks.priority), asc(tasks.createdAt))
-        .limit(1);
+      // One round-trip: claim the row atomically and return the full updated record.
+      const [task] = await db
+        .update(tasks)
+        .set({ status: 'in_progress', leasedAt: now, startedAt: now, updatedAt: now })
+        .where(sql`${tasks.id} = (
+          SELECT id FROM tasks
+          WHERE assigned_agent_id = ${this.agentId}
+            AND status = 'pending'
+            AND (next_retry_at IS NULL OR next_retry_at <= ${now})
+          ORDER BY priority ASC, created_at ASC
+          LIMIT 1
+        )`)
+        .returning();
 
-      if (pending.length > 0) {
-        const task = pending[0];
-        await db
-          .update(tasks)
-          .set({ status: 'in_progress', startedAt: new Date(), updatedAt: new Date() })
-          .where(eq(tasks.id, task.id));
-        return { ...task, status: 'in_progress' };
-      }
+      if (task) return task;
     } catch (err) {
       // DB offline: check in-memory queue
     }

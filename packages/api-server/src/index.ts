@@ -10,7 +10,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { db, migrate, tasks, componentHealth, healthMetrics } from '@workspace/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
@@ -253,9 +253,60 @@ async function main() {
   // dashboard's Settings panel is live from the very first LLM call.
   await loadSettingsIntoEnv();
 
-  // Reset any tasks left in_progress from a previous crash so they get re-picked up
-  await db.update(tasks).set({ status: 'pending', updatedAt: new Date() }).where(eq(tasks.status, 'in_progress'));
-  console.log('✅ Orphaned in_progress tasks reset to pending');
+  // Lease-expiry crash recovery: only recover tasks whose lease has expired (>10 min)
+  // or whose leased_at is NULL (tasks left in_progress before leased_at was added).
+  // Increments retryCount and applies backoff, or marks failed if maxRetries exceeded.
+  // The old naive reset (`SET status='pending' WHERE status='in_progress'`) blindly
+  // requeued tasks without incrementing retryCount, allowing crash-looping tasks to
+  // ignore maxRetries and spin forever.
+  try {
+    const staleThreshold = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
+    const staleTasks = await db
+      .select()
+      .from(tasks)
+      .where(and(
+        eq(tasks.status, 'in_progress'),
+        or(
+          isNull(tasks.leasedAt),
+          lt(tasks.leasedAt, staleThreshold),
+        ),
+      ));
+
+    let recovered = 0;
+    let exhausted = 0;
+    for (const task of staleTasks) {
+      const newRetryCount = task.retryCount + 1;
+      if (newRetryCount >= task.maxRetries) {
+        await db
+          .update(tasks)
+          .set({
+            status: 'failed',
+            errorMessage: 'Process crash: lease expired (max retries exceeded)',
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, task.id));
+        exhausted++;
+      } else {
+        const retryDelayMs = Math.min(Math.pow(2, newRetryCount) * 1000, 300_000);
+        const nextRetryAt = new Date(Date.now() + retryDelayMs);
+        await db
+          .update(tasks)
+          .set({
+            status: 'pending',
+            retryCount: newRetryCount,
+            leasedAt: null,
+            nextRetryAt,
+            errorMessage: 'Process crash: lease expired',
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, task.id));
+        recovered++;
+      }
+    }
+    console.log(`✅ Lease-expiry recovery: ${recovered} task(s) requeued, ${exhausted} task(s) failed (max retries)`);
+  } catch (err) {
+    console.warn('⚠️  Crash recovery skipped:', err instanceof Error ? err.message : String(err));
+  }
 
   let mode = process.env.APEX_APPROVAL_MODE ?? 'normal';
   if (mode === 'off') {
