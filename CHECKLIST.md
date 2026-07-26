@@ -242,13 +242,29 @@ caused by this work; git status confirms the footprint):**
 errors. `pnpm run build` — clean, dashboard emits dist/index.html + JS/CSS
 bundles (447KB).
 
-**NOT yet verified (honest):** live runtime behavior. The autonomous loop and
-scheduled learning analysis can only be confirmed by deploying and watching
-them fire (CEO review every 30m, learning every 6h) with a real admin token.
-This sandbox has no DATABASE_URL / APEX_ADMIN_PASSWORD and Railway curls time
-out, so live functional verification is PENDING the deploy. Also still
-charter-gated and untested: any autonomous buildmybot2 production action
-(send briefing / run workforce / deploy) — those remain human-approved by design.
+**VERIFIED LIVE (2026-07-26, post-deploy):** the earlier "pending" framing was
+overly pessimistic — this sandbox CAN reach the live service and DOES have
+APEX_ADMIN_PASSWORD. Authenticated against https://apex.donmatthews.live and
+confirmed Phase A is genuinely running, not just compiled:
+- Both seeded jobs are present and active: `system-ceo-goal-review`
+  (goal_review, `*/30 * * * *`, target apex-ceo-001) and
+  `system-learning-analysis` (learning_analysis, `0 */6 * * *`).
+- `system-ceo-goal-review` FIRED live at 2026-07-26T15:00:23Z, completed in
+  735ms, output `{"taskId":"975b64fb…","assignedTo":"apex-ceo-001",
+  "activeGoals":10,"unhealthyComponents":1,"openTaskBacklog":10}` — it
+  snapshotted real state and enqueued a CEO task.
+- That CEO task ("Autonomous goal review — 2026-07-26T15:00:23Z") was picked
+  up by the CEO and reached status `done` — the full autonomous loop
+  (scheduler → job → CEO task → CEO reasons → done) works end-to-end live.
+- `system-learning-analysis` is seeded/active; its 6h boundary (next 18:00Z)
+  had not yet passed at verification time, so 0 runs so far (expected).
+- Observation (not caused by Phase A): `/api/health` overall = `critical`
+  with 1 unhealthy component; the goal-review snapshot captured this, so the
+  autonomous CEO loop is now positioned to delegate investigation of it.
+
+Still charter-gated and untested: any autonomous buildmybot2 production
+action (send briefing / run workforce / deploy) — those remain human-approved
+by design.
 
 **Remaining gaps to full completion (Phases B/C, blocked on Don):**
 - Phase B (run buildmybot2 live): provision GITHUB_TOKEN (unblocks the
