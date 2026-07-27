@@ -554,108 +554,187 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
-    // Search Google Places API for real businesses by industry + location
-    // One call returns up to 20 businesses with name, address, phone, website.
-    // This is the structured B2B database replacement for slow DuckDuckGo scraping.
+    // Search a structured business directory for real businesses by industry + location
+    // Multi-provider: Yelp Fusion (50/call, free, no card) → Google Places (20/call) → OSM Overpass (no key, always works)
     {
       name: 'searchBusinessDirectory',
-      description: 'Search a structured business directory (Google Places API) for real businesses by industry and location. Returns up to 20 businesses per call with company name, address, phone, website, business type, rating, and review count. MUCH faster than webSearch for finding leads — one call replaces 10+ web searches. Use this FIRST before webSearch when looking for businesses in a specific industry/location.',
+      description: 'Search a structured business directory for real businesses by industry and location. Returns up to 50 businesses per call with company name, address, phone, website, rating, and review count. MUCH faster than webSearch for finding leads — one call replaces 10+ web searches. Use this FIRST before webSearch when looking for businesses in a specific industry/location.',
       schema: z.object({
         query: z.string().describe('Search query combining industry and location, e.g. "HVAC contractor Dallas Texas" or "personal injury lawyer Miami FL"'),
       }),
       requiresApproval: false,
       async execute({ query }) {
-        const apiKey = process.env.GOOGLE_PLACES_API_KEY;
-        if (!apiKey) {
-          return { error: 'GOOGLE_PLACES_API_KEY is not configured. Set it as an environment variable.' };
-        }
+        const yelpKey = process.env.YELP_API_KEY;
+        const googleKey = process.env.GOOGLE_PLACES_API_KEY;
 
-        const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${apiKey}`;
-        const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(10_000) });
-        if (!searchRes.ok) {
-          return { error: `Google Places API returned ${searchRes.status}` };
-        }
-        const searchData = await searchRes.json() as {
-          results: Array<{
-            place_id: string;
-            name: string;
-            formatted_address: string;
-            types: string[];
-            rating?: number;
-            user_ratings_total?: number;
-            opening_hours?: { open_now?: boolean };
-            geometry?: { location?: { lat: number; lng: number } };
-          }>;
-          status: string;
-          error_message?: string;
-          next_page_token?: string;
-        };
-
-        if (searchData.status !== 'OK' && searchData.status !== 'ZERO_RESULTS') {
-          return { error: searchData.error_message ?? searchData.status };
-        }
-
-        const results = searchData.results ?? [];
-
-        // Fetch Place Details (phone + website) in parallel, throttled to 10 at a time
-        const BATCH = 10;
-        const enriched: Array<{
-          name: string;
-          address: string;
-          phone?: string;
-          website?: string;
-          types: string[];
-          rating?: number;
-          reviewCount?: number;
-          openNow?: boolean;
-          placeId: string;
-        }> = [];
-
-        for (let i = 0; i < results.length; i += BATCH) {
-          const batch = results.slice(i, i + BATCH);
-          const details = await Promise.all(
-            batch.map(async (r) => {
-              try {
-                const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${r.place_id}&fields=name,formatted_address,formatted_phone_number,website,types,rating,user_ratings_total,opening_hours&key=${apiKey}`;
-                const detailsRes = await fetch(detailsUrl, { signal: AbortSignal.timeout(5_000) });
-                if (!detailsRes.ok) return null;
-                const dd = await detailsRes.json() as { result?: Record<string, unknown> };
-                const d = dd.result;
-                if (!d) return null;
-                return {
-                  name: d.name as string ?? r.name,
-                  address: d.formatted_address as string ?? r.formatted_address,
-                  phone: d.formatted_phone_number as string | undefined,
-                  website: d.website as string | undefined,
-                  types: (d.types as string[]) ?? r.types,
-                  rating: (d.rating as number) ?? r.rating,
-                  reviewCount: (d.user_ratings_total as number) ?? r.user_ratings_total,
-                  openNow: (d.opening_hours as { open_now?: boolean })?.open_now,
-                  placeId: r.place_id,
-                };
-              } catch {
-                return {
-                  name: r.name,
-                  address: r.formatted_address,
-                  types: r.types,
-                  rating: r.rating,
-                  reviewCount: r.user_ratings_total,
-                  openNow: r.opening_hours?.open_now,
-                  placeId: r.place_id,
-                };
+        // ── Provider 1: Yelp Fusion API (free, no credit card, 50 results/call) ──
+        if (yelpKey) {
+          try {
+            // Parse "industry + location" from the query
+            // e.g. "HVAC contractor Dallas Texas" → term="HVAC contractor", location="Dallas Texas"
+            const parts = query.split(/\s+/);
+            // Find where the location starts (look for common city/state patterns)
+            let locationStart = parts.length;
+            const stateAbbrev = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY']);
+            for (let i = 0; i < parts.length; i++) {
+              if (stateAbbrev.has(parts[i].toUpperCase()) || (i > 0 && i < parts.length - 1 && parts[i].length >= 3)) {
+                // Heuristic: location starts 1-2 words before the state or city name
+                locationStart = Math.max(0, i - 1);
+                break;
               }
-            }),
-          );
-          for (const d of details) {
-            if (d) enriched.push(d);
+            }
+            const term = parts.slice(0, locationStart).join(' ') || query;
+            const location = parts.slice(locationStart).join(' ') || 'United States';
+
+            const yelpUrl = `https://api.yelp.com/v3/businesses/search?term=${encodeURIComponent(term)}&location=${encodeURIComponent(location)}&limit=50&categories=contractors,home_services,legal,medical,health,realestate,insurance,automotive,beautysvc,fitness,education,financialservices,pets,professional`;
+            const yelpRes = await fetch(yelpUrl, {
+              headers: { Authorization: `Bearer ${yelpKey}` },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (yelpRes.ok) {
+              const yelpData = await yelpRes.json() as {
+                businesses: Array<{
+                  name: string;
+                  phone?: string;
+                  location?: { display_address?: string[]; city?: string; state?: string; zip_code?: string };
+                  url?: string;
+                  rating?: number;
+                  review_count?: number;
+                  categories?: Array<{ title: string; alias: string }>;
+                  coordinates?: { latitude: number; longitude: number };
+                  distance?: number;
+                }>;
+                total?: number;
+              };
+
+              const businesses = (yelpData.businesses ?? []).map((b) => ({
+                name: b.name,
+                address: b.location?.display_address?.join(', ') ?? '',
+                phone: b.phone,
+                website: b.url, // Yelp profile URL — agent can extract real website from here via fetchUrl
+                industry: b.categories?.map((c) => c.title).join(', ') ?? '',
+                city: b.location?.city ?? '',
+                rating: b.rating,
+                reviewCount: b.review_count,
+                source: 'yelp' as const,
+              }));
+
+              if (businesses.length > 0) {
+                return { query, total: businesses.length, businesses, provider: 'yelp' };
+              }
+            }
+          } catch {
+            // Fall through to next provider
           }
         }
 
-        return {
-          query,
-          total: enriched.length,
-          businesses: enriched,
-        };
+        // ── Provider 2: Google Places API (if key configured) ──
+        if (googleKey) {
+          try {
+            const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${googleKey}`;
+            const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(10_000) });
+            if (searchRes.ok) {
+              const searchData = await searchRes.json() as {
+                results: Array<{
+                  place_id: string;
+                  name: string;
+                  formatted_address: string;
+                  types: string[];
+                  rating?: number;
+                  user_ratings_total?: number;
+                }>;
+                status: string;
+              };
+
+              const BATCH = 10;
+              const enriched: Array<Record<string, unknown>> = [];
+              const results = searchData.results ?? [];
+
+              for (let i = 0; i < results.length; i += BATCH) {
+                const batch = results.slice(i, i + BATCH);
+                const details = await Promise.all(
+                  batch.map(async (r) => {
+                    try {
+                      const dUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${r.place_id}&fields=name,formatted_address,formatted_phone_number,website,types,rating,user_ratings_total&key=${googleKey}`;
+                      const dRes = await fetch(dUrl, { signal: AbortSignal.timeout(5_000) });
+                      if (!dRes.ok) return null;
+                      const dd = await dRes.json() as { result?: Record<string, unknown> };
+                      const d = dd.result;
+                      if (!d) return null;
+                      return {
+                        name: d.name, address: d.formatted_address,
+                        phone: d.formatted_phone_number, website: d.website,
+                        industry: (d.types as string[])?.join(', ') ?? '',
+                        rating: d.rating, reviewCount: d.user_ratings_total,
+                        source: 'google' as const,
+                      };
+                    } catch { return null; }
+                  }),
+                );
+                for (const d of details) { if (d) enriched.push(d); }
+              }
+
+              if (enriched.length > 0) {
+                return { query, total: enriched.length, businesses: enriched, provider: 'google' };
+              }
+            }
+          } catch {
+            // Fall through to OSM fallback
+          }
+        }
+
+        // ── Provider 3: OpenStreetMap Overpass API (no key, always works) ──
+        // Free, no signup, no credit card. Lower data quality but covers millions of businesses.
+        try {
+          // Extract a broad search area from the query
+          // Overpass uses a bounding box; we use a large US region as default
+          // and search for businesses by name keyword
+          const keyword = query.replace(/\b(in|near|around|Texas|Florida|California|Arizona|Georgia|Oklahoma|Louisiana|Alabama|Mississippi|South Carolina|North Carolina|New York|New Jersey|Illinois|Michigan|Washington|Dallas|Houston|Miami|Tampa|Orlando|San Antonio|Austin|Charlotte|Jacksonville|Fort Lauderdale|Naples|Deerfield)\b/gi, '').trim();
+
+          const overpassQuery = `[out:json][timeout:15];
+            area["name"="United States"]->.us;
+            (
+              node["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}",i](area.us);
+              way["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}",i](area.us);
+            );
+            out body 50;`;
+
+          const osmRes = await fetch('https://overpass-api.de/api/interpreter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `data=${encodeURIComponent(overpassQuery)}`,
+            signal: AbortSignal.timeout(15_000),
+          });
+
+          if (osmRes.ok) {
+            const osmData = await osmRes.json() as {
+              elements: Array<{
+                tags?: Record<string, string>;
+              }>;
+            };
+
+            const businesses = (osmData.elements ?? [])
+              .filter((e) => e.tags?.name)
+              .slice(0, 50)
+              .map((e) => ({
+                name: e.tags!.name,
+                address: [e.tags!['addr:street'], e.tags!['addr:city'], e.tags!['addr:state']].filter(Boolean).join(', ') || '',
+                phone: e.tags!['phone'] ?? e.tags!['contact:phone'],
+                website: e.tags!['website'] ?? e.tags!['contact:website'],
+                industry: e.tags!.office ?? e.tags!.craft ?? e.tags!.shop ?? e.tags!.amenity ?? keyword,
+                city: e.tags!['addr:city'] ?? '',
+                source: 'osm' as const,
+              }));
+
+            if (businesses.length > 0) {
+              return { query, total: businesses.length, businesses, provider: 'osm' };
+            }
+          }
+        } catch {
+          // All providers failed
+        }
+
+        return { query, total: 0, businesses: [], provider: 'none', error: 'No business directory API configured. Set YELP_API_KEY (free, no credit card) or GOOGLE_PLACES_API_KEY for best results. Falling back to OSM Overpass (limited). Use webSearch as an alternative.' };
       },
     },
 
