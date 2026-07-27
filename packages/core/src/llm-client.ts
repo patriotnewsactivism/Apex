@@ -73,12 +73,55 @@ const PROVIDERS: Array<{
   // this specific endpoint yet, verify with a real completion call before
   // relying on this entry.
   { name: 'qwen-cloud-anthropic', protocol: 'anthropic', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
+  // GLM-5.2 (Zhipu), THROUGH THE SAME ALIYUN TOKEN PLAN ACCOUNT — added
+  // 2026-07-27. Don correctly pointed out Aliyun Model Studio hosts
+  // third-party models (Qwen/DeepSeek/GLM) alongside its own, confirmed via
+  // Aliyun's own docs (help.aliyun.com/en/model-studio/glm-zhipu, a curl
+  // example against their compatible-mode endpoint using model id "glm-5.2"),
+  // and their Token Plan page explicitly lists GLM-5.2 as supported. So this
+  // reuses QWENCLOUD_API_KEY and the same OpenAI-compatible baseURL as
+  // qwen-cloud above — NO separate account/key needed for this entry. 1M
+  // context, MIT-licensed upstream, competitive with GPT-5.5 on coding
+  // benchmarks. NOT independently confirmed live on the TOKEN PLAN specifically
+  // (docs confirm general Model Studio + Token Plan support the model, but no
+  // real completion call has been made against this account yet) — verify
+  // before relying on it.
+  { name: 'glm-aliyun', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
+  // GLM-5.2, second path — Zhipu's own direct Z.ai API. Independent of the
+  // Aliyun account/quota above (different key, different infra) — a genuinely
+  // separate fallback, not a duplicate. General pay-per-token API
+  // (api.z.ai/api/paas/v4), NOT the GLM Coding Plan endpoint
+  // (api.z.ai/api/coding/paas/v4 — flat-rate subscription that only works
+  // inside specific coding tools like Claude Code/Cline/OpenCode, not a fit
+  // for a custom agent backend). No-op until ZAI_API_KEY is configured.
+  { name: 'glm-zai', baseURL: 'https://api.z.ai/api/paas/v4', apiKeyEnv: 'ZAI_API_KEY', fallbackModel: 'glm-5.2' },
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.
   { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
   { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
+
+// ─── Role-aware Qwen Cloud model selection ─────────────────────────────────
+//
+// ADDED 2026-07-27 per Don's explicit request: CEO/CTO/COO and the other
+// high-stakes/high-budget roles ("premium" tier — reusing the exact role set
+// already defined as the 16384-token tier in getDefaultLLMConfig below, so
+// this doesn't drift from that split) get Qwen's strongest reasoning model
+// instead of the balanced default. Both qwen-cloud entries resolve their
+// model through this instead of a static fallbackModel string. Overridable
+// via env for easy A/B against qwen3.8-max-preview (Token Plan only, newer/
+// less proven than the GA qwen3.7-max) without another code change.
+const PREMIUM_ROLES = new Set([
+  'CEO', 'CTO', 'COO', 'LEAD_DEV', 'RESEARCH', 'LEAD_RESEARCH', 'SALES', 'QA_DIRECTOR',
+]);
+
+function resolveQwenModel(role: string | undefined): string {
+  const isPremium = role !== undefined && PREMIUM_ROLES.has(role);
+  const envOverride = isPremium ? process.env.APEX_QWEN_PREMIUM_MODEL : process.env.APEX_QWEN_STANDARD_MODEL;
+  if (envOverride) return envOverride;
+  return isPremium ? 'qwen3.7-max' : 'qwen3.7-plus';
+}
 
 // ─── Anthropic Messages API conversion helpers ────────────────────────────────
 //
@@ -247,8 +290,12 @@ class MultiProviderClient {
 
       // Mistral's role-aware model routing was removed 2026-07-26 along with
       // the Mistral provider entry itself (confirmed 401 invalid key, see
-      // PROVIDERS above). Every remaining provider uses its plain fallbackModel.
-      const model: string = provider.fallbackModel ?? this.config.model;
+      // PROVIDERS above). Every OTHER remaining provider uses its plain
+      // fallbackModel — except the two qwen-cloud entries, which resolve a
+      // role-aware model via resolveQwenModel() (see above) instead.
+      const model: string = provider.name.startsWith('qwen-cloud')
+        ? resolveQwenModel(this.config.role)
+        : (provider.fallbackModel ?? this.config.model);
 
       if (provider.protocol === 'anthropic') {
         try {
@@ -401,26 +448,23 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   // Default model tier — these `model` strings are now cosmetic/legacy since
   // OpenRouter (the only provider that honored this.config.model) was removed
   // 2026-07-22; every remaining provider uses its own fixed fallbackModel.
+  // No Claude/GPT/Gemini anywhere in this map (removed 2026-07-27 — Anthropic
+  // pricing isn't affordable for this workload; OpenAI/Google were never
+  // actually reachable through this client anyway, see below). This field is
+  // COSMETIC for every provider except qwen-cloud/qwen-cloud-anthropic (which
+  // ignore it entirely in favor of resolveQwenModel(), see above) — every
+  // OTHER configured provider uses its own fixed fallbackModel, never
+  // this.config.model. Kept accurate anyway so nothing here implies a
+  // dependency on a provider this system doesn't actually call.
   const tierMap: Record<string, string> = {
-    CEO:      'anthropic/claude-sonnet-4-5',
-    CTO:      'anthropic/claude-sonnet-4-5',
-    COO:      'anthropic/claude-sonnet-4-5',
-    LEAD_DEV: 'openai/gpt-4o',
-    FRONTEND: 'openai/gpt-4o',
-    BACKEND:  'openai/gpt-4o',
-    DEVOPS:   'openai/gpt-4o',
-    QA:       'openai/gpt-4o',
-    RESEARCH: 'google/gemini-2.5-flash',
-    DOCS:     'openai/gpt-4o-mini',
-    OPS:      'openai/gpt-4o-mini',
-    LEAD_RESEARCH:    'google/gemini-2.5-flash',
-    SALES:            'openai/gpt-4o',
-    MARKETING:        'openai/gpt-4o-mini',
-    CUSTOMER_SUCCESS: 'openai/gpt-4o-mini',
-    QA_DIRECTOR:      'openai/gpt-4o',
+    CEO: 'qwen3.7-max', CTO: 'qwen3.7-max', COO: 'qwen3.7-max',
+    LEAD_DEV: 'qwen3.7-max', RESEARCH: 'qwen3.7-max', LEAD_RESEARCH: 'qwen3.7-max',
+    SALES: 'qwen3.7-max', QA_DIRECTOR: 'qwen3.7-max',
+    FRONTEND: 'qwen3.7-plus', BACKEND: 'qwen3.7-plus', DEVOPS: 'qwen3.7-plus', QA: 'qwen3.7-plus',
+    MARKETING: 'qwen3.7-plus', CUSTOMER_SUCCESS: 'qwen3.7-plus', DOCS: 'qwen3.7-plus', OPS: 'qwen3.7-plus',
   };
 
-  const model = tierMap[role] ?? 'openai/gpt-4o-mini';
+  const model = tierMap[role] ?? 'qwen3.7-plus';
   return { provider: 'cerebras', model, temperature: 0.7, maxTokens, role };
 }
 

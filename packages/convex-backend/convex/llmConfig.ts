@@ -15,6 +15,9 @@ const PROVIDERS = [
   { name: 'cohere', apiKeyEnv: 'COHERE_API_KEY' },
   { name: 'mistral', apiKeyEnv: 'MISTRAL_API_KEY' },
   { name: 'qwen-cloud', apiKeyEnv: 'QWENCLOUD_API_KEY' },
+  { name: 'qwen-cloud-anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY' },
+  { name: 'glm-aliyun', apiKeyEnv: 'QWENCLOUD_API_KEY' },
+  { name: 'glm-zai', apiKeyEnv: 'ZAI_API_KEY' },
   { name: 'openrouter-free', apiKeyEnv: 'OPENROUTER_API_KEY' },
   { name: 'openrouter-free-2', apiKeyEnv: 'OPENROUTER_API_KEY' },
 ];
@@ -26,25 +29,30 @@ const TOKEN_BUDGETS: Record<string, number> = {
   MARKETING: 8192, CUSTOMER_SUCCESS: 8192, DOCS: 8192, OPS: 8192,
 };
 
+// No Claude/GPT/Gemini anywhere in this map (removed 2026-07-27 — see
+// llm.ts's resolveQwenModel() for the full rationale). This field is COSMETIC
+// for every provider except qwen-cloud/qwen-cloud-anthropic (which resolve
+// their own role-aware model instead) — every other configured provider uses
+// its own fixed fallbackModel, never this value. Kept accurate anyway.
 const TIER_MAP: Record<string, string> = {
-  CEO: 'anthropic/claude-sonnet-4-5', CTO: 'anthropic/claude-sonnet-4-5', COO: 'anthropic/claude-sonnet-4-5',
-  LEAD_DEV: 'openai/gpt-4o', FRONTEND: 'openai/gpt-4o', BACKEND: 'openai/gpt-4o', DEVOPS: 'openai/gpt-4o', QA: 'openai/gpt-4o',
-  RESEARCH: 'google/gemini-2.5-flash', DOCS: 'openai/gpt-4o-mini', OPS: 'openai/gpt-4o-mini',
-  LEAD_RESEARCH: 'google/gemini-2.5-flash', SALES: 'openai/gpt-4o', MARKETING: 'openai/gpt-4o-mini',
-  CUSTOMER_SUCCESS: 'openai/gpt-4o-mini', QA_DIRECTOR: 'openai/gpt-4o',
+  CEO: 'qwen3.7-max', CTO: 'qwen3.7-max', COO: 'qwen3.7-max',
+  LEAD_DEV: 'qwen3.7-max', RESEARCH: 'qwen3.7-max', LEAD_RESEARCH: 'qwen3.7-max',
+  SALES: 'qwen3.7-max', QA_DIRECTOR: 'qwen3.7-max',
+  FRONTEND: 'qwen3.7-plus', BACKEND: 'qwen3.7-plus', DEVOPS: 'qwen3.7-plus', QA: 'qwen3.7-plus',
+  MARKETING: 'qwen3.7-plus', CUSTOMER_SUCCESS: 'qwen3.7-plus', DOCS: 'qwen3.7-plus', OPS: 'qwen3.7-plus',
 };
 
-export function getDefaultLLMConfig(role: string): { model: string; temperature: number; maxTokens: number } {
+export function getDefaultLLMConfig(role: string): { model: string; temperature: number; maxTokens: number; role: string } {
   const maxTokens = TOKEN_BUDGETS[role] ?? 8192;
 
   const envOverride = process.env[`APEX_MODEL_${role}`];
-  if (envOverride) return { model: envOverride, temperature: 0.7, maxTokens };
+  if (envOverride) return { model: envOverride, temperature: 0.7, maxTokens, role };
 
   const globalModel = process.env.APEX_MODEL;
-  if (globalModel) return { model: globalModel, temperature: 0.7, maxTokens };
+  if (globalModel) return { model: globalModel, temperature: 0.7, maxTokens, role };
 
-  const model = TIER_MAP[role] ?? 'openai/gpt-4o-mini';
-  return { model, temperature: 0.7, maxTokens };
+  const model = TIER_MAP[role] ?? 'qwen3.7-plus';
+  return { model, temperature: 0.7, maxTokens, role };
 }
 
 /** Which LLM fallback providers currently have an API key configured. */

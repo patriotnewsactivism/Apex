@@ -56,9 +56,32 @@ const PROVIDERS: Array<{
   // not independently confirmed live on this specific endpoint, verify with
   // a real completion call before relying on this entry.
   { name: 'qwen-cloud-anthropic', protocol: 'anthropic', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
+  // GLM-5.2 (Zhipu), THROUGH THE SAME ALIYUN TOKEN PLAN ACCOUNT — see
+  // packages/core/src/llm-client.ts for the full rationale (Aliyun Model
+  // Studio hosts GLM alongside Qwen; confirmed via Aliyun's own docs).
+  // Reuses QWENCLOUD_API_KEY — no separate account needed.
+  { name: 'glm-aliyun', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
+  // GLM-5.2, second path — Zhipu's own direct Z.ai API, independent key/infra
+  // from the Aliyun entry above. General pay-per-token API, not the Coding
+  // Plan endpoint. No-op until ZAI_API_KEY is configured.
+  { name: 'glm-zai', baseURL: 'https://api.z.ai/api/paas/v4', apiKeyEnv: 'ZAI_API_KEY', fallbackModel: 'glm-5.2' },
   { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
   { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
+
+// Role-aware Qwen Cloud model selection — mirrors packages/core/src/llm-client.ts
+// exactly (see that file for the full rationale). Both qwen-cloud entries
+// resolve their model here instead of a static fallbackModel string.
+const PREMIUM_ROLES = new Set([
+  'CEO', 'CTO', 'COO', 'LEAD_DEV', 'RESEARCH', 'LEAD_RESEARCH', 'SALES', 'QA_DIRECTOR',
+]);
+
+function resolveQwenModel(role: string | undefined): string {
+  const isPremium = role !== undefined && PREMIUM_ROLES.has(role);
+  const envOverride = isPremium ? process.env.APEX_QWEN_PREMIUM_MODEL : process.env.APEX_QWEN_STANDARD_MODEL;
+  if (envOverride) return envOverride;
+  return isPremium ? 'qwen3.7-max' : 'qwen3.7-plus';
+}
 
 export type LLMMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -181,7 +204,7 @@ async function completeViaAnthropic(
 async function completeImpl(
   messages: LLMMessage[],
   tools: LLMTool[] | undefined,
-  llmConfig: { model: string; temperature?: number; maxTokens?: number },
+  llmConfig: { model: string; temperature?: number; maxTokens?: number; role?: string },
 ): Promise<LLMResponse> {
   const OpenAI = (await import('openai')).default;
 
@@ -219,7 +242,9 @@ async function completeImpl(
       continue;
     }
 
-    const model: string = provider.fallbackModel ?? llmConfig.model;
+    const model: string = provider.name.startsWith('qwen-cloud')
+      ? resolveQwenModel(llmConfig.role)
+      : (provider.fallbackModel ?? llmConfig.model);
 
     if (provider.protocol === 'anthropic') {
       try {
@@ -309,10 +334,12 @@ export const complete = internalAction({
     model: v.string(),
     temperature: v.optional(v.number()),
     maxTokens: v.optional(v.number()),
+    role: v.optional(v.string()),
   },
   handler: async (_ctx, args) => {
     return await completeImpl(args.messages as LLMMessage[], args.tools as LLMTool[] | undefined, {
       model: args.model,
+      role: args.role,
       temperature: args.temperature,
       maxTokens: args.maxTokens,
     });
