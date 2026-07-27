@@ -20,6 +20,9 @@ dist
 **/dist
 *.tsbuildinfo
 
+# Convex codegen output (regenerated via `convex dev`/`convex codegen`)
+**/convex/_generated
+
 # IDEs and Editors
 .vscode/
 .idea/

@@ -13,10 +13,22 @@ import crypto from 'crypto';
  * APEX_ADMIN_PASSWORD for this token, for a future login UI — the token
  * itself is what's actually checked here, the password is just the
  * human-friendly front door to it.
+ *
+ * No hardcoded fallback: a fallback secret baked into source is a secret
+ * that isn't one (this repo's fallback used to be the actual live admin
+ * password). Fail startup instead if the env var is missing.
  */
-export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
-  const configuredToken = process.env.APEX_ADMIN_TOKEN || 'apex-admin-secret-token';
+const configuredToken = requireEnv('APEX_ADMIN_TOKEN');
 
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} must be set — no hardcoded fallback is used for admin credentials.`);
+  }
+  return value;
+}
+
+export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
 
