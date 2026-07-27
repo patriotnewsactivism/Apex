@@ -35,12 +35,27 @@ const PROVIDERS: Array<{
   apiKeyEnv: string;
   fallbackModel?: string;
   extraHeaders?: Record<string, string>;
+  // 'anthropic' routes through completeViaAnthropic() (Messages API wire
+  // format) instead of the OpenAI-shaped chat.completions path. Undefined =
+  // 'openai', today's default for every existing entry.
+  protocol?: 'openai' | 'anthropic';
 }> = [
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
   { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
-  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen-plus' },
+  // Model fixed 2026-07-27 to match packages/core/src/llm-client.ts: the Token
+  // Plan (Lite) endpoint uses dotted versioned model IDs (qwen3.7-plus), not
+  // hyphenated public IDs — 'qwen-plus' 404s "Model not exist" here (this
+  // file had drifted from core's already-confirmed fix).
+  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
+  // Qwen Cloud, second entry (added 2026-07-27): same Token Plan account/key,
+  // exposed through Aliyun's Anthropic-Messages-API-compatible endpoint
+  // instead of the OpenAI-compatible one above. Model ID reused from the
+  // entry above (same underlying model catalog, different wire protocol) —
+  // not independently confirmed live on this specific endpoint, verify with
+  // a real completion call before relying on this entry.
+  { name: 'qwen-cloud-anthropic', protocol: 'anthropic', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
   { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
   { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
@@ -60,6 +75,108 @@ export type LLMResponse = {
   usage: { promptTokens: number; completionTokens: number };
   model: string;
 };
+
+// ─── Anthropic Messages API conversion helpers ────────────────────────────────
+// Ported verbatim from packages/core/src/llm-client.ts's buildAnthropicMessages
+// — see that file's comment for why system/tool_result batching/input_schema
+// naming can't reuse the OpenAI-shaped request builder above.
+
+function buildAnthropicMessages(messages: LLMMessage[]): {
+  system: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }>;
+} {
+  const systemParts: string[] = [];
+  const result: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> = [];
+
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+
+    if (m.role === 'system') {
+      systemParts.push(m.content);
+      i++;
+      continue;
+    }
+
+    if (m.role === 'tool') {
+      const toolResultBlocks: Array<Record<string, unknown>> = [];
+      while (i < messages.length && messages[i].role === 'tool') {
+        const tm = messages[i];
+        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tm.toolCallId ?? '', content: tm.content });
+        i++;
+      }
+      result.push({ role: 'user', content: toolResultBlocks });
+      continue;
+    }
+
+    if (m.role === 'assistant') {
+      const content: Array<Record<string, unknown>> = [];
+      if (m.content) content.push({ type: 'text', text: m.content });
+      for (const tc of m.toolCalls ?? []) {
+        content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
+      }
+      result.push({ role: 'assistant', content });
+      i++;
+      continue;
+    }
+
+    result.push({ role: 'user', content: m.content });
+    i++;
+  }
+
+  return { system: systemParts.join('\n\n'), messages: result };
+}
+
+async function completeViaAnthropic(
+  provider: { name: string; baseURL: string },
+  apiKey: string,
+  model: string,
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+  llmConfig: { temperature?: number; maxTokens?: number },
+): Promise<LLMResponse> {
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+
+  const client = new Anthropic({ apiKey, baseURL: provider.baseURL, timeout: 75_000, maxRetries: 0 });
+
+  const { system, messages: anthropicMessages } = buildAnthropicMessages(messages);
+  const anthropicTools = tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 75_000);
+  let res;
+  try {
+    res = await client.messages.create(
+      {
+        model,
+        system: system || undefined,
+        messages: anthropicMessages as any,
+        tools: anthropicTools && anthropicTools.length > 0 ? (anthropicTools as any) : undefined,
+        max_tokens: llmConfig.maxTokens ?? 4096,
+        temperature: llmConfig.temperature ?? 0.7,
+      },
+      { signal: controller.signal },
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  let content = '';
+  const toolCalls: LLMResponse['toolCalls'] = [];
+  for (const block of res.content) {
+    if (block.type === 'text') content += block.text;
+    else if (block.type === 'tool_use') {
+      toolCalls.push({ id: block.id, name: block.name, args: block.input as Record<string, unknown> });
+    }
+  }
+
+  return {
+    content,
+    toolCalls,
+    usage: { promptTokens: res.usage?.input_tokens ?? 0, completionTokens: res.usage?.output_tokens ?? 0 },
+    model: `${provider.name}/${res.model}`,
+  };
+}
 
 async function completeImpl(
   messages: LLMMessage[],
@@ -103,6 +220,23 @@ async function completeImpl(
     }
 
     const model: string = provider.fallbackModel ?? llmConfig.model;
+
+    if (provider.protocol === 'anthropic') {
+      try {
+        const response = await completeViaAnthropic(provider, apiKey, model, messages, tools, llmConfig);
+        if (providerErrors.length > 0) {
+          console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
+        }
+        return response;
+      } catch (err) {
+        const status = (err as any)?.status ?? (err as any)?.response?.status ?? (err as any)?.code;
+        const errMessage = err instanceof Error ? err.message : String(err);
+        const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
+        console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
+        providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
+        continue;
+      }
+    }
 
     try {
       const defaultHeaders: Record<string, string> = {};

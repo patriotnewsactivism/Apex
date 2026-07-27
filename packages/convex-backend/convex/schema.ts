@@ -448,6 +448,20 @@ export default defineSchema({
     .index('by_legacyId', ['legacyId'])
     .index('by_target', ['target']),
 
+  // ─── Alerts (M4 — persistent AlertManager state; Convex crons have no
+  // in-memory process to hold this between invocations, unlike the old
+  // long-lived AlertManager instance) ─────────────────────────────────────
+  alerts: defineTable({
+    rule: v.string(), // e.g. 'component_critical' — one row per currently-firing rule
+    severity: v.union(v.literal('warning'), v.literal('critical')),
+    message: v.string(),
+    component: v.string(),
+    firedAt: v.number(),
+    acknowledgedAt: v.optional(v.number()),
+  })
+    .index('by_rule', ['rule'])
+    .index('by_acknowledged', ['acknowledgedAt']),
+
   // ─── Integration Settings (server-side persisted API keys) ────────────
   integrationSettings: defineTable({
     key: v.string(), // env var name, e.g. 'GROQ_API_KEY' — unique-in-practice
@@ -487,6 +501,7 @@ export default defineSchema({
     error: v.optional(v.string()),
     requestingTaskId: v.optional(v.id('tasks')),
     requestingAgentId: v.optional(v.id('agents')),
+    toolCallId: v.optional(v.string()), // links back to the taskRuns.pendingJoins entry awaiting this job
     claimedAt: v.optional(v.number()),
     completedAt: v.optional(v.number()),
     timeoutAt: v.number(),

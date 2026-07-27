@@ -33,6 +33,10 @@ const PROVIDERS: Array<{
   fallbackModel?: string;
   // Some providers need specific headers
   extraHeaders?: Record<string, string>;
+  // 'anthropic' routes through completeViaAnthropic() (Messages API wire
+  // format) instead of the OpenAI-shaped chat.completions path below.
+  // Undefined/omitted = 'openai', today's default for every existing entry.
+  protocol?: 'openai' | 'anthropic';
 }> = [
   // Cerebras — re-verified live 2026-07-26.
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
@@ -60,6 +64,15 @@ const PROVIDERS: Array<{
   // exist" here (auth succeeded, so the endpoint/key wiring was right, only the
   // model ID was wrong). qwen3.7-plus is the balanced large-context workhorse.
   { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
+  // Qwen Cloud, second entry (added 2026-07-27): the SAME Token Plan account/
+  // key, exposed through Aliyun's Anthropic-Messages-API-compatible endpoint
+  // instead of the OpenAI-compatible one above. Model ID reused from the
+  // qwen-cloud entry above — same underlying model catalog on the same Token
+  // Plan account, just a different wire protocol in front of it, so the model
+  // ID string itself should be identical; NOT independently confirmed live on
+  // this specific endpoint yet, verify with a real completion call before
+  // relying on this entry.
+  { name: 'qwen-cloud-anthropic', protocol: 'anthropic', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.
@@ -67,11 +80,132 @@ const PROVIDERS: Array<{
   { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
 
+// ─── Anthropic Messages API conversion helpers ────────────────────────────────
+//
+// The Anthropic wire format differs from OpenAI's chat.completions shape in
+// three load-bearing ways: (1) system prompt is a top-level `system` string
+// field, never a message with role:'system'; (2) every tool_result for a given
+// turn must be batched into ONE role:'user' message's content array — Anthropic
+// docs call splitting them across messages harmful ("silently trains Claude to
+// stop making parallel calls"); (3) tool schemas use `input_schema`, not
+// `parameters`. This function walks the internal LLMMessage[] history once and
+// produces both the extracted system string and the batched message array.
+
+function buildAnthropicMessages(messages: LLMMessage[]): {
+  system: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }>;
+} {
+  const systemParts: string[] = [];
+  const result: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> = [];
+
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+
+    if (m.role === 'system') {
+      systemParts.push(m.content);
+      i++;
+      continue;
+    }
+
+    if (m.role === 'tool') {
+      // Batch every consecutive tool result into one user message's content array.
+      const toolResultBlocks: Array<Record<string, unknown>> = [];
+      while (i < messages.length && messages[i].role === 'tool') {
+        const tm = messages[i];
+        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tm.toolCallId ?? '', content: tm.content });
+        i++;
+      }
+      result.push({ role: 'user', content: toolResultBlocks });
+      continue;
+    }
+
+    if (m.role === 'assistant') {
+      const content: Array<Record<string, unknown>> = [];
+      if (m.content) content.push({ type: 'text', text: m.content });
+      for (const tc of m.toolCalls ?? []) {
+        content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
+      }
+      result.push({ role: 'assistant', content });
+      i++;
+      continue;
+    }
+
+    // user
+    result.push({ role: 'user', content: m.content });
+    i++;
+  }
+
+  return { system: systemParts.join('\n\n'), messages: result };
+}
+
 class MultiProviderClient {
   private config: LLMClientConfig;
 
   constructor(config: LLMClientConfig) {
     this.config = config;
+  }
+
+  /** Anthropic Messages API path — see buildAnthropicMessages() above for why
+   * this can't just reuse the OpenAI-shaped request builder. Mirrors the same
+   * timeout/AbortController/error-capture scaffolding the OpenAI path uses
+   * below; only the request-building and response-parsing differ. */
+  private async completeViaAnthropic(
+    provider: { name: string; baseURL: string },
+    apiKey: string,
+    model: string,
+    messages: LLMMessage[],
+    tools: LLMTool[] | undefined,
+  ): Promise<LLMResponse> {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+
+    const client = new Anthropic({
+      apiKey,
+      baseURL: provider.baseURL,
+      timeout: 75_000,
+      maxRetries: 0,
+    });
+
+    const { system, messages: anthropicMessages } = buildAnthropicMessages(messages);
+    const anthropicTools = tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 75_000);
+    let res;
+    try {
+      res = await client.messages.create(
+        {
+          model,
+          system: system || undefined,
+          messages: anthropicMessages as any,
+          tools: anthropicTools && anthropicTools.length > 0 ? (anthropicTools as any) : undefined,
+          max_tokens: this.config.maxTokens ?? 4096,
+          temperature: this.config.temperature ?? 0.7,
+        },
+        { signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    let content = '';
+    const toolCalls: LLMToolCall[] = [];
+    for (const block of res.content) {
+      if (block.type === 'text') content += block.text;
+      else if (block.type === 'tool_use') {
+        toolCalls.push({ id: block.id, name: block.name, args: block.input as Record<string, unknown> });
+      }
+    }
+
+    return {
+      content,
+      toolCalls,
+      usage: {
+        promptTokens: res.usage?.input_tokens ?? 0,
+        completionTokens: res.usage?.output_tokens ?? 0,
+      },
+      model: `${provider.name}/${res.model}`,
+    };
   }
 
   async complete(messages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
@@ -115,6 +249,23 @@ class MultiProviderClient {
       // the Mistral provider entry itself (confirmed 401 invalid key, see
       // PROVIDERS above). Every remaining provider uses its plain fallbackModel.
       const model: string = provider.fallbackModel ?? this.config.model;
+
+      if (provider.protocol === 'anthropic') {
+        try {
+          const response = await this.completeViaAnthropic(provider, apiKey, model, messages, tools);
+          if (providerErrors.length > 0) {
+            console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
+          }
+          return response;
+        } catch (err) {
+          const status = (err as any)?.status ?? (err as any)?.response?.status ?? (err as any)?.code;
+          const errMessage = err instanceof Error ? err.message : String(err);
+          const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
+          console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
+          providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
+          continue;
+        }
+      }
 
       try {
         const defaultHeaders: Record<string, string> = {};

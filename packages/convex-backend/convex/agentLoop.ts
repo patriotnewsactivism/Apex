@@ -335,7 +335,7 @@ export const runIteration = internalAction({
         continue;
       }
 
-      const outcome = await dispatchTool(ctx, tc.name, tc.args, toolContext);
+      const outcome = await dispatchTool(ctx, tc.name, tc.args, toolContext, tc.id);
       if (outcome.kind === 'sync') {
         partialToolResults.push({ role: 'tool', toolCallId: tc.id, name: tc.name, content: JSON.stringify(outcome.result) });
       } else {
@@ -389,7 +389,7 @@ export const resumeToolCall = internalAction({
       } else {
         // Approved — actually run the tool now.
         const toolContext = buildToolContext(ctx, run.agentId, args.taskId);
-        const outcome = await dispatchTool(ctx, join.toolName, join.args, toolContext);
+        const outcome = await dispatchTool(ctx, join.toolName, join.args, toolContext, join.toolCallId);
         if (outcome.kind === 'sync') {
           remainingJoins.splice(joinIdx, 1);
           partialToolResults.push({ role: 'tool', toolCallId: join.toolCallId, name: join.toolName, content: JSON.stringify(outcome.result) });

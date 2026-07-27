@@ -54,6 +54,7 @@ export type DelegateTaskInput = {
   title: string;
   description: string;
   parentTaskId?: Id<'tasks'>;
+  priority?: number;
   context?: Record<string, unknown>;
 };
 
@@ -545,68 +546,6 @@ async function buildHealthReport(ctx: ActionCtx): Promise<HealthReport> {
   return { overall, checks, timestamp: new Date().toISOString() };
 }
 
-type Alert = { id: string; rule: string; severity: 'warning' | 'critical'; message: string; component: string; firedAt: string };
-
-/**
- * Ported from AlertManager.evaluate() — but STATELESS. The old class kept an
- * in-memory `firedRules`/`activeAlerts` map across repeated polls (a single
- * long-lived process); a Convex action has no equivalent — each invocation is
- * its own isolate. This recomputes "what's currently firing" fresh every call
- * instead of tracking dedup/acknowledge state across calls. Also note:
- * `approval_backlog_high` never actually fired in the old system either —
- * it only fires if `report.checks.approvalBacklog` is present, and
- * HealthMonitor.runAll() never populated that key — so it's a faithful
- * (still-unwired) no-op here too, not a regression.
- */
-function evaluateAlertsStateless(report: HealthReport): Alert[] {
-  const alerts: Alert[] = [];
-  let idCounter = 0;
-  const nextId = () => `alert-${Date.now()}-${++idCounter}`;
-  const now = () => new Date().toISOString();
-
-  for (const [component, check] of Object.entries(report.checks)) {
-    if (check.status === 'critical') {
-      alerts.push({
-        id: nextId(), rule: 'component_critical', severity: 'critical',
-        message: `Component '${component}' is critical: ${check.detail}`, component, firedAt: now(),
-      });
-    }
-  }
-
-  const backlog = report.checks.taskBacklog;
-  if (backlog) {
-    const match = backlog.detail.match(/^(\d+)/);
-    const count = match ? parseInt(match[1], 10) : 0;
-    if (count > 50) {
-      alerts.push({
-        id: nextId(), rule: 'task_backlog_high', severity: 'warning',
-        message: `Task backlog is ${count} (threshold: 50)`, component: 'taskBacklog', firedAt: now(),
-      });
-    }
-  }
-
-  const degradedCount = Object.values(report.checks).filter((c) => c.status === 'degraded').length;
-  if (degradedCount >= 3) {
-    alerts.push({
-      id: nextId(), rule: 'system_degraded', severity: 'warning',
-      message: `${degradedCount} components are degraded`, component: 'system', firedAt: now(),
-    });
-  }
-
-  return alerts;
-}
-
-function summarizeAlerts(alerts: Alert[]): { total: number; critical: number; warning: number; acknowledged: number } {
-  let critical = 0;
-  let warning = 0;
-  for (const a of alerts) {
-    if (a.severity === 'critical') critical++;
-    else warning++;
-  }
-  // No acknowledge mechanism without process-lifetime state — always 0 (see evaluateAlertsStateless).
-  return { total: alerts.length, critical, warning, acknowledged: 0 };
-}
-
 /** Ported from Forecaster's WINDOW_MS map. */
 function windowToMs(window: string): number {
   const WINDOW_MS: Record<string, number> = {
@@ -626,6 +565,49 @@ function wilsonConfidenceInterval(successes: number, total: number, z = 1.96): {
   const margin =
     (z * Math.sqrt((proportion * (1 - proportion)) / total + (z * z) / (4 * total * total))) / denominator;
   return { lower: Math.max(0, (center - margin) * 100), upper: Math.min(100, (center + margin) * 100) };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BuildMyBot Connector — ported from packages/core/src/buildmybot-connector.ts.
+// Direct Supabase REST (PostgREST) calls, same approach as checkBuildMyBotAITeam
+// above (which only covers the read-only health-sweep leg). Only the 6 tools
+// agentConfigs.ts actually assigns to a role are ported (buildmybot_status,
+// buildmybot_send_briefing, buildmybot_dispatch_engineering, buildmybot_deploy,
+// buildmybot_health_check, buildmybot_open_errors) — buildmybot_run_workforce,
+// buildmybot_resolve_error, and buildmybot_recent_leads exist in the old file
+// but no role's tool list references them, so they're left unported.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Thin Supabase REST helper (PostgREST). Throws on non-2xx. Ported from buildmybot-connector.ts's sbFetch. */
+async function bmbFetch(table: string, query: string, init?: RequestInit): Promise<any> {
+  const baseUrl = process.env.BUILDMYBOT_SUPABASE_URL ?? '';
+  const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY ?? '';
+  if (!baseUrl.startsWith('https://')) {
+    throw new Error(
+      `BUILDMYBOT_SUPABASE_URL must be an https:// project URL (e.g. https://xyz.supabase.co). ` +
+      `Got: "${baseUrl.slice(0, 30)}…". BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY may be swapped in your env.`,
+    );
+  }
+  const url = `${baseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`;
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`BuildMyBot Supabase ${res.status} on ${table}: ${body.slice(0, 300)}`);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
+function bmbTodayISO(): string {
+  return new Date().toISOString().slice(0, 10);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1192,25 +1174,25 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     run: async (ctx) => {
       const report = await buildHealthReport(ctx);
       const storedComponents = await ctx.runQuery(internal.toolRegistry.componentHealth_list, {});
-      const alerts = evaluateAlertsStateless(report);
-      const alertSummary = summarizeAlerts(alerts);
-      return { success: true, data: { live: report, storedComponents, alerts: alertSummary } };
+      const alerts = await ctx.runQuery(internal.health.getActiveAlerts, {});
+      const alertSummary = await ctx.runQuery(internal.health.getAlertSummary, {});
+      return { success: true, data: { live: report, storedComponents, alerts: alertSummary, activeAlerts: alerts } };
     },
   },
 
-  // ─── Get Active Alerts (sync — recomputed each call, see evaluateAlertsStateless) ──
+  // ─── Get Active Alerts (sync — real persisted state from convex/health.ts,
+  // populated by the scheduled_jobs 'health_check' cron via internal.health.runHealthCheck) ──
   get_active_alerts: {
     schema: {
       name: 'get_active_alerts',
-      description: 'Get all currently active alerts from the AlertManager. Alerts fire when health thresholds are breached (component critical, task backlog > 50, approval backlog > 10, 3+ components degraded). Includes severity, component, and when the alert fired.',
+      description: 'Get all currently active (un-acknowledged) alerts from the persistent alert store. Alerts fire when health thresholds are breached (component critical, task backlog > 50, approval backlog > 10, 3+ components degraded) and are evaluated on every scheduled health check, not recomputed on demand. Includes severity, component, and when the alert fired.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
     requiresApproval: false,
     kind: 'sync',
     run: async (ctx) => {
-      const report = await buildHealthReport(ctx);
-      const alerts = evaluateAlertsStateless(report);
-      const summary = summarizeAlerts(alerts);
+      const alerts = await ctx.runQuery(internal.health.getActiveAlerts, {});
+      const summary = await ctx.runQuery(internal.health.getAlertSummary, {});
       return { success: true, data: { alerts, summary } };
     },
   },
@@ -1911,6 +1893,213 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
       return { target: resolvedTarget, riskLevel, details, sampleSize: total, failureRate, confidence, advisoryOnly: true, actionsTriggered: [] };
     },
   },
+
+  // ─── BuildMyBot: Status (sync — Supabase REST read) ─────────────────────────
+  buildmybot_status: {
+    schema: {
+      name: 'buildmybot_status',
+      description:
+        "Get today's BuildMyBot AI-workforce status: shift outcomes per role, open error count, open escalations, and lead pipeline counts. Read this BEFORE issuing any briefing or directive so commands are grounded in real telemetry.",
+      parameters: {
+        type: 'object',
+        properties: {
+          includeYesterday: { type: 'boolean', description: 'Also include the prior day of shift logs for trend context' },
+        },
+        required: [],
+      },
+    },
+    requiresApproval: false,
+    kind: 'sync',
+    run: async (_ctx, args) => {
+      const { includeYesterday } = args as { includeYesterday?: boolean };
+      const today = bmbTodayISO();
+      const dateFilter = includeYesterday
+        ? `shift_date=gte.${new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)}`
+        : `shift_date=eq.${today}`;
+
+      const [shifts, openErrors, escalations, leadsNew, leadsAwaiting] = await Promise.all([
+        bmbFetch('ai_team_log', `${dateFilter}&order=created_at.desc&limit=60`),
+        bmbFetch('error_logs', 'status=eq.open&order=created_at.desc&limit=25&select=id,source,level,message,created_at'),
+        bmbFetch('escalations', 'order=created_at.desc&limit=15').catch(() => []),
+        bmbFetch('leads', `created_at=gte.${today}&select=id&limit=500`).catch(() => []),
+        bmbFetch('leads', 'replied_at=is.null&follow_up_sent_at=not.is.null&select=id&limit=500').catch(() => []),
+      ]);
+
+      return {
+        date: today,
+        shifts: (shifts ?? []).map((s: any) => ({
+          role: s.role_name,
+          summary: s.summary,
+          tasks_completed: s.tasks_completed,
+          flags: s.flags || undefined,
+          escalated_to: s.escalated_to || undefined,
+        })),
+        open_errors: openErrors ?? [],
+        escalations: escalations ?? [],
+        leads_created_today: (leadsNew ?? []).length,
+        leads_followed_up_awaiting_reply: (leadsAwaiting ?? []).length,
+      };
+    },
+  },
+
+  // ─── BuildMyBot: Send Briefing (sync — Supabase REST write; approval required) ──
+  buildmybot_send_briefing: {
+    schema: {
+      name: 'buildmybot_send_briefing',
+      description:
+        "Issue today's top-priority directive to EVERY BuildMyBot AI employee. Each role reads the latest briefing first on its next shift and prioritizes it above all other work. One row per day; the latest briefing wins. Use for steering (e.g. 'prioritize churn-risk leads today'), never for fabricating status.",
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: 'The directive text. Concrete and actionable; the whole team sees it verbatim.' },
+        },
+        required: ['content'],
+      },
+    },
+    requiresApproval: true,
+    kind: 'sync',
+    run: async (_ctx, args) => {
+      const { content } = args as { content: string };
+      const rows = await bmbFetch('manager_briefings', '', {
+        method: 'POST',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ briefing_date: bmbTodayISO(), content, delivered_via: 'apex' }),
+      });
+      return { saved: true, briefing: rows?.[0] ?? null };
+    },
+  },
+
+  // ─── BuildMyBot: Open Errors (sync — Supabase REST read) ─────────────────────
+  buildmybot_open_errors: {
+    schema: {
+      name: 'buildmybot_open_errors',
+      description:
+        'List open (unresolved) BuildMyBot agent errors with full context, worst first. Use to decide what needs human attention vs. a corrective briefing.',
+      parameters: {
+        type: 'object',
+        properties: { limit: { type: 'number', description: 'Max rows (default 25)' } },
+        required: [],
+      },
+    },
+    requiresApproval: false,
+    kind: 'sync',
+    run: async (_ctx, args) => {
+      const { limit } = args as { limit?: number };
+      const rows = await bmbFetch('error_logs', `status=eq.open&order=level.asc,created_at.desc&limit=${limit ?? 25}`);
+      return rows ?? [];
+    },
+  },
+
+  // ─── BuildMyBot: Dispatch Engineering (sync — delegateToRole('LEAD_DEV')) ────
+  buildmybot_dispatch_engineering: {
+    schema: {
+      name: 'buildmybot_dispatch_engineering',
+      description:
+        "Dispatch a real engineering task into the buildmybot2 codebase (github.com/patriotnewsactivism/buildmybot2). Creates a task assigned to the Lead Developer with full repo/deploy/health-check context attached — exactly like an internal Apex engineering ticket, not just a status read. The Lead Dev lands changes via the approval-gated create_pull_request tool; use buildmybot_deploy after merge and buildmybot_health_check to verify.",
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short imperative ticket title' },
+          spec: { type: 'string', description: 'Full engineering spec: what to change, where, acceptance criteria, and how to verify' },
+          priority: { type: 'number', description: '1 (highest) – 10 (lowest); default 4' },
+        },
+        required: ['title', 'spec'],
+      },
+    },
+    requiresApproval: false,
+    kind: 'sync',
+    run: async (_ctx, args, toolContext) => {
+      const { title, spec, priority } = args as { title: string; spec: string; priority?: number };
+      const appUrl = process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app';
+      const taskId = await toolContext.delegateToRole('LEAD_DEV', {
+        title,
+        description: spec,
+        parentTaskId: toolContext.taskId,
+        priority,
+        context: {
+          project: 'buildmybot2',
+          repo: 'patriotnewsactivism/buildmybot2',
+          repoUrl: 'https://github.com/patriotnewsactivism/buildmybot2',
+          prInstructions:
+            "Land changes via create_pull_request with repo 'patriotnewsactivism/buildmybot2' — never direct pushes to main",
+          deployInstructions: 'After merge, request buildmybot_deploy (approval-gated Vercel deploy hook)',
+          healthCheckUrl: `${appUrl}/api/health`,
+        },
+      });
+      return {
+        success: true, taskId, assignedTo: 'LEAD_DEV', project: 'buildmybot2',
+        message: `Engineering task dispatched into buildmybot2: ${title}`,
+      };
+    },
+  },
+
+  // ─── BuildMyBot: Deploy (sync — Vercel deploy hook; approval required) ───────
+  buildmybot_deploy: {
+    schema: {
+      name: 'buildmybot_deploy',
+      description:
+        'Trigger a production rebuild+deploy of buildmybot2 via its Vercel deploy hook. Only rebuilds what is already merged to the production branch — this is NOT a way around PR review. Requires BUILDMYBOT_VERCEL_DEPLOY_HOOK and approval.',
+      parameters: {
+        type: 'object',
+        properties: { reason: { type: 'string', description: 'Why this deploy is being triggered (audit trail)' } },
+        required: ['reason'],
+      },
+    },
+    requiresApproval: true,
+    kind: 'sync',
+    run: async (_ctx, args) => {
+      const { reason } = args as { reason: string };
+      const hook = process.env.BUILDMYBOT_VERCEL_DEPLOY_HOOK;
+      if (!hook) throw new Error('BUILDMYBOT_VERCEL_DEPLOY_HOOK is not configured');
+      const res = await fetch(hook, { method: 'POST' });
+      const body = await res.text();
+      if (!res.ok) throw new Error(`Deploy hook returned ${res.status}: ${body.slice(0, 300)}`);
+      return { success: true, reason, response: body.slice(0, 500) };
+    },
+  },
+
+  // ─── BuildMyBot: Health Check (sync — live HTTP check) ───────────────────────
+  buildmybot_health_check: {
+    schema: {
+      name: 'buildmybot_health_check',
+      description:
+        'Live HTTP health check against the deployed buildmybot.app API (/api/health). Use after a deploy, and as the buildmybot2 leg of any portfolio health sweep. Reports real HTTP status and latency — never a guess.',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+    requiresApproval: false,
+    kind: 'sync',
+    run: async () => {
+      const appUrl = process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app';
+      const url = `${appUrl}/api/health`;
+      const started = Date.now();
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+        const ms = Date.now() - started;
+        const text = await res.text();
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          /* non-JSON body — report raw */
+        }
+        return {
+          healthy: res.ok && parsed?.status === 'ok',
+          httpStatus: res.status,
+          latencyMs: ms,
+          url,
+          body: parsed ?? text.slice(0, 300),
+        };
+      } catch (err: any) {
+        return {
+          healthy: false,
+          httpStatus: 0,
+          latencyMs: Date.now() - started,
+          url,
+          error: err?.message ?? String(err),
+        };
+      }
+    },
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1939,6 +2128,7 @@ export async function dispatchTool(
   toolName: string,
   args: any,
   toolContext: ToolContext,
+  toolCallId: string,
 ): Promise<ToolOutcome> {
   const def = TOOL_DEFS[toolName];
   if (!def) throw new Error(`Unknown tool: ${toolName}`);
@@ -1956,6 +2146,7 @@ export async function dispatchTool(
     payload,
     requestingTaskId: toolContext.taskId,
     requestingAgentId: toolContext.agentId,
+    toolCallId,
   });
   return { kind: 'pendingExternalJob', jobId };
 }

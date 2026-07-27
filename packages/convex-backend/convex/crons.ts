@@ -17,4 +17,15 @@ const crons = cronJobs();
 // so a 30s staleness threshold checked every 60s never flags a live chain.
 crons.interval('agent-loop-watchdog', { seconds: 60 }, internal.agentLoop.resurrectStaleChains, {});
 
+// Ports packages/background-jobs/src/job-scheduler.ts's 60s poll loop.
+// Finds every enabled/active/due row in scheduledJobs and fires each as an
+// independent scheduler.runAfter(0, ...) call (see convex/scheduledJobs.ts's
+// dispatchDueJobs) so one slow job never blocks the others due this tick.
+crons.interval('scheduled-jobs-dispatch', { seconds: 60 }, internal.scheduledJobs.dispatchDueJobs, {});
+
+// M5: catches an externalJobs row the CI/CD worker never claimed, or claimed
+// and then died mid-execution without ever calling reportJobResult back —
+// without this, the waiting task's tool call would block forever.
+crons.interval('external-jobs-timeout-sweep', { seconds: 60 }, internal.cicd.sweepTimedOutJobs, {});
+
 export default crons;
