@@ -586,7 +586,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             const term = parts.slice(0, locationStart).join(' ') || query;
             const location = parts.slice(locationStart).join(' ') || 'United States';
 
-            const yelpUrl = `https://api.yelp.com/v3/businesses/search?term=${encodeURIComponent(term)}&location=${encodeURIComponent(location)}&limit=50&categories=contractors,home_services,legal,medical,health,realestate,insurance,automotive,beautysvc,fitness,education,financialservices,pets,professional`;
+            const yelpUrl = `https://api.yelp.com/v3/businesses/search?term=${encodeURIComponent(term)}&location=${encodeURIComponent(location)}&limit=20`;
             const yelpRes = await fetch(yelpUrl, {
               headers: { Authorization: `Bearer ${yelpKey}` },
               signal: AbortSignal.timeout(10_000),
@@ -608,15 +608,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               };
 
               const businesses = (yelpData.businesses ?? []).map((b) => ({
-                name: b.name,
-                address: b.location?.display_address?.join(', ') ?? '',
-                phone: b.phone,
-                website: b.url, // Yelp profile URL — agent can extract real website from here via fetchUrl
-                industry: b.categories?.map((c) => c.title).join(', ') ?? '',
-                city: b.location?.city ?? '',
-                rating: b.rating,
-                reviewCount: b.review_count,
-                source: 'yelp' as const,
+                n: b.name,
+                p: b.phone,
+                w: b.url,
+                i: b.categories?.map((c) => c.title).join(', ') ?? '',
+                c: b.location?.city ?? '',
               }));
 
               if (businesses.length > 0) {
