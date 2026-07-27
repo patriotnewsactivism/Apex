@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "catalog:",
+    "@workspace/convex-backend": "workspace:*",
     "convex": "^1.42.3",
     "framer-motion": "catalog:",
     "lucide-react": "catalog:",
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "catalog:",
+    "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery as useConvexQuery } from 'convex/react';
+import { api as convexApi } from '@workspace/convex-backend/api';
 import { api } from '../lib/api.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
 import type { Approval } from '../lib/api.js';
@@ -125,6 +127,9 @@ export function ApprovalQueue() {
     queryFn: () => api.approvals.list('pending'),
     refetchInterval: 5000,
   });
+
+  // Convex realtime query — live pending approvals (alongside TanStack polling)
+  const convexApprovals = useConvexQuery(convexApi.approvals.listPending, {});
 
   useApexEvent('approval:requested', () => refetch());
   useApexEvent('approval:resolved', () => refetch());

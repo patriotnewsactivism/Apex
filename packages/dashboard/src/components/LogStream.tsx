@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useQuery as useConvexQuery } from 'convex/react';
+import { api } from '@workspace/convex-backend/api';
 import { useWebSocket, type ApexEvent } from '../hooks/useWebSocket.js';
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -27,6 +29,9 @@ function formatTime(ts: number): string {
 export function LogStream() {
   const { events } = useWebSocket();
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Convex realtime query — persisted recent logs (alongside the WS event feed)
+  const convexLogs = useConvexQuery(api.logs.recent, { limit: 200 });
 
   const logEvents = events.filter((e) => e.type === 'log') as Extract<ApexEvent, { type: 'log' }>[];
 
