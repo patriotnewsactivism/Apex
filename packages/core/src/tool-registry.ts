@@ -554,6 +554,173 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    // Search Google Places API for real businesses by industry + location
+    // One call returns up to 20 businesses with name, address, phone, website.
+    // This is the structured B2B database replacement for slow DuckDuckGo scraping.
+    {
+      name: 'searchBusinessDirectory',
+      description: 'Search a structured business directory (Google Places API) for real businesses by industry and location. Returns up to 20 businesses per call with company name, address, phone, website, business type, rating, and review count. MUCH faster than webSearch for finding leads — one call replaces 10+ web searches. Use this FIRST before webSearch when looking for businesses in a specific industry/location.',
+      schema: z.object({
+        query: z.string().describe('Search query combining industry and location, e.g. "HVAC contractor Dallas Texas" or "personal injury lawyer Miami FL"'),
+      }),
+      requiresApproval: false,
+      async execute({ query }) {
+        const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+        if (!apiKey) {
+          return { error: 'GOOGLE_PLACES_API_KEY is not configured. Set it as an environment variable.' };
+        }
+
+        const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${apiKey}`;
+        const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(10_000) });
+        if (!searchRes.ok) {
+          return { error: `Google Places API returned ${searchRes.status}` };
+        }
+        const searchData = await searchRes.json() as {
+          results: Array<{
+            place_id: string;
+            name: string;
+            formatted_address: string;
+            types: string[];
+            rating?: number;
+            user_ratings_total?: number;
+            opening_hours?: { open_now?: boolean };
+            geometry?: { location?: { lat: number; lng: number } };
+          }>;
+          status: string;
+          error_message?: string;
+          next_page_token?: string;
+        };
+
+        if (searchData.status !== 'OK' && searchData.status !== 'ZERO_RESULTS') {
+          return { error: searchData.error_message ?? searchData.status };
+        }
+
+        const results = searchData.results ?? [];
+
+        // Fetch Place Details (phone + website) in parallel, throttled to 10 at a time
+        const BATCH = 10;
+        const enriched: Array<{
+          name: string;
+          address: string;
+          phone?: string;
+          website?: string;
+          types: string[];
+          rating?: number;
+          reviewCount?: number;
+          openNow?: boolean;
+          placeId: string;
+        }> = [];
+
+        for (let i = 0; i < results.length; i += BATCH) {
+          const batch = results.slice(i, i + BATCH);
+          const details = await Promise.all(
+            batch.map(async (r) => {
+              try {
+                const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${r.place_id}&fields=name,formatted_address,formatted_phone_number,website,types,rating,user_ratings_total,opening_hours&key=${apiKey}`;
+                const detailsRes = await fetch(detailsUrl, { signal: AbortSignal.timeout(5_000) });
+                if (!detailsRes.ok) return null;
+                const dd = await detailsRes.json() as { result?: Record<string, unknown> };
+                const d = dd.result;
+                if (!d) return null;
+                return {
+                  name: d.name as string ?? r.name,
+                  address: d.formatted_address as string ?? r.formatted_address,
+                  phone: d.formatted_phone_number as string | undefined,
+                  website: d.website as string | undefined,
+                  types: (d.types as string[]) ?? r.types,
+                  rating: (d.rating as number) ?? r.rating,
+                  reviewCount: (d.user_ratings_total as number) ?? r.user_ratings_total,
+                  openNow: (d.opening_hours as { open_now?: boolean })?.open_now,
+                  placeId: r.place_id,
+                };
+              } catch {
+                return {
+                  name: r.name,
+                  address: r.formatted_address,
+                  types: r.types,
+                  rating: r.rating,
+                  reviewCount: r.user_ratings_total,
+                  openNow: r.opening_hours?.open_now,
+                  placeId: r.place_id,
+                };
+              }
+            }),
+          );
+          for (const d of details) {
+            if (d) enriched.push(d);
+          }
+        }
+
+        return {
+          query,
+          total: enriched.length,
+          businesses: enriched,
+        };
+      },
+    },
+
+    // Batch save multiple researched leads in one tool call (saves iterations)
+    {
+      name: 'saveResearchedLeadsBatch',
+      description: 'Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once.',
+      schema: z.object({
+        leads: z.array(z.object({
+          companyName: z.string().describe('Real company name'),
+          website: z.string().optional().describe('Company website URL'),
+          industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa'),
+          city: z.string().optional(),
+          fitReason: z.string().describe('Why this company is a good fit for BuildMyBot'),
+          outreachAngle: z.string().optional().describe('Suggested outreach pitch'),
+        })).describe('Array of leads to save (10-20 at a time is ideal)'),
+      }),
+      requiresApproval: false,
+      async execute({ leads }, ctx) {
+        const { randomUUID } = await import('crypto');
+        const { db, researchedLeads } = await import('@workspace/db');
+        const { eq } = await import('drizzle-orm');
+
+        let saved = 0;
+        let duplicates = 0;
+        let failed = 0;
+        const savedNames: string[] = [];
+
+        for (const lead of leads) {
+          try {
+            if (lead.website) {
+              const existing = await db
+                .select()
+                .from(researchedLeads)
+                .where(eq(researchedLeads.website, lead.website))
+                .limit(1);
+              if (existing.length > 0) {
+                duplicates++;
+                continue;
+              }
+            }
+
+            await db.insert(researchedLeads).values({
+              id: randomUUID(),
+              companyName: lead.companyName,
+              website: lead.website,
+              industry: lead.industry,
+              city: lead.city,
+              fitReason: lead.fitReason,
+              outreachAngle: lead.outreachAngle,
+              status: 'new',
+              researchedByAgentId: ctx.agentId,
+              createdAt: new Date(),
+            });
+            saved++;
+            savedNames.push(lead.companyName);
+          } catch {
+            failed++;
+          }
+        }
+
+        return { saved, duplicates, failed, total: leads.length, savedNames };
+      },
+    },
+
     // Request peer review from another specialized role
     {
       name: 'requestPeerReview',

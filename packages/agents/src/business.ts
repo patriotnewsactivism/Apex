@@ -71,14 +71,15 @@ lose a customer by missing a call or message — they're a potential lead.
   auto-skips duplicates by website).
 ${GROUND_TRUTH_CLAUSE}
 ## Output
-For each qualifying lead, call saveResearchedLead with: company name, website, industry, city,
-why it's a good fit (specific pain point), and a suggested outreach angle (how to pitch BuildMyBot
-to them). This is REQUIRED — a lead only counts as pipeline output once it's saved via the tool.
-Aim for 10-20 qualified leads per research session. Use multiple webSearch calls with different
-queries to build a comprehensive dataset — never give up after one search.`,
+For each qualifying lead, call saveResearchedLeadsBatch with an array of all qualified leads at once
+(this saves 10-20 leads in ONE tool call instead of one at a time — much faster).
+Each lead needs: company name, website, industry, city, why it's a good fit (specific pain point),
+and a suggested outreach angle (how to pitch BuildMyBot to them).
+Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
+businesses per call), then webSearch for additional coverage. Never give up after one search.`,
       llm: { provider: 'cerebras', model: 'gpt-oss-120b' },
-      tools: ['webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'listResearchedLeads', 'requestPeerReview'],
-      maxIterations: 25,
+      tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'requestPeerReview'],
+      maxIterations: 50,
       approvalRequired: false,
       // CEO's task-decomposition instructions have it dispatchSwarm one
       // instance per state/city for broad research asks -- run several at
