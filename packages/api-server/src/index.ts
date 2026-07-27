@@ -32,6 +32,7 @@ import { createLearningRouter } from './routes/learning.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
+import { createLeadsRouter } from './routes/leads.js';
 import { requireAdminAuth } from './middleware/auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
@@ -222,6 +223,7 @@ async function main() {
   app.use('/api/applications', createMultiappRouter());
   app.use('/api/predictive', createPredictiveRouter());
   app.use('/api/settings', createSettingsRouter());
+  app.use('/api/leads', createLeadsRouter());
 
   // WebSocket
   setupWebSocket(server);

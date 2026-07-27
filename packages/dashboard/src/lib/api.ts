@@ -150,6 +150,27 @@ export const api = {
     forecast: () => apiFetch<PredictiveForecastRow>('/predictive/tasks-forecast'),
     risks: () => apiFetch<{ latestAssessment: RiskAssessmentRow; riskHistory: RiskAssessmentRow[] }>('/predictive/risks'),
   },
+
+  leads: {
+    list: (params?: { status?: string; industry?: string; city?: string; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.status) qs.set('status', params.status);
+      if (params?.industry) qs.set('industry', params.industry);
+      if (params?.city) qs.set('city', params.city);
+      if (params?.limit) qs.set('limit', String(params.limit));
+      const query = qs.toString();
+      return apiFetch<{ leads: ResearchedLead[] }>(`/leads${query ? `?${query}` : ''}`).then((r) => r.leads);
+    },
+    stats: () => apiFetch<LeadStats>('/leads/stats'),
+    exportCsv: () => {
+      const token = localStorage.getItem('apex_token');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      return fetch(`${API}/leads/export`, { headers }).then((r) => r.blob());
+    },
+    updateStatus: (id: string, status: string) =>
+      apiFetch(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  },
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -441,6 +462,27 @@ export interface RiskAssessmentRow {
   riskLevel: string;
   details: string;
   createdAt: string;
+}
+
+// ─── Leads Types ───────────────────────────────────────────────────────────
+
+export interface ResearchedLead {
+  id: string;
+  companyName: string;
+  website: string | null;
+  industry: string | null;
+  city: string | null;
+  fitReason: string;
+  outreachAngle: string | null;
+  status: string;
+  researchedByAgentId: string;
+  createdAt: string;
+}
+
+export interface LeadStats {
+  total: number;
+  byStatus: { new: number; contacted: number; qualified: number; rejected: number };
+  byIndustry: Record<string, number>;
 }
 
 

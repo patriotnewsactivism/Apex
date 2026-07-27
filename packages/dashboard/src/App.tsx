@@ -15,6 +15,7 @@ import { HealthPanel } from './components/HealthPanel.js';
 import { LearningPanel } from './components/LearningPanel.js';
 import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
+import { LeadsPanel } from './components/LeadsPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
@@ -33,6 +34,7 @@ import {
   FolderGit2,
   Menu,
   X,
+  Search,
 } from 'lucide-react';
 
 const queryClient = new QueryClient({
@@ -81,6 +83,7 @@ function Sidebar({
     { id: 'mission', label: 'Mission Control', icon: <Target size={18} /> },
     { id: 'agents', label: 'Agent Network', icon: <Network size={18} /> },
     { id: 'tasks', label: 'Task Board', icon: <Kanban size={18} /> },
+    { id: 'leads', label: 'Leads', icon: <Search size={18} /> },
     { id: 'logs', label: 'Log Stream', icon: <Terminal size={18} /> },
     { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={18} /> },
     { id: 'health', label: 'Health System', icon: <Activity size={18} /> },
@@ -418,6 +421,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: <MissionControl />,
     agents: <AgentNetwork agents={agents} />,
     tasks: <TaskBoard />,
+    leads: <LeadsPanel />,
     logs: (
       <div
         className="glass-card"
@@ -442,6 +446,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: '🎯 Mission Control',
     agents: '🤖 Agent Network',
     tasks: '📋 Task Board',
+    leads: '🎯 Lead Pipeline',
     logs: '🖥 Live Log Stream',
     approvals: '🛡 Approval Queue',
     health: '🩺 System Health & Observability',
