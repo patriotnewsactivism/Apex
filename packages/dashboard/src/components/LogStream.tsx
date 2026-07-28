@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useQuery as useConvexQuery } from 'convex/react';
-import { api } from '@workspace/convex-backend/api';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '../lib/api.js';
 import { useWebSocket, type ApexEvent } from '../hooks/useWebSocket.js';
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -26,18 +26,60 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'America/Chicago' });
 }
 
+interface DisplayLog {
+  timestamp: number;
+  agentId?: string;
+  level: string;
+  message: string;
+}
+
 export function LogStream() {
   const { events } = useWebSocket();
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Convex realtime query — persisted recent logs (alongside the WS event feed)
-  const convexLogs = useConvexQuery(api.logs.recent, { limit: 200 });
+  // REST API fallback — fetches persisted logs every 5s. This ensures the
+  // stream shows content even when the WebSocket isn't connected or no live
+  // events are flowing. (The previous Convex query was fetched but never
+  // rendered, and could crash the component if the Convex deployment wasn't
+  // synced.)
+  const { data: restLogs = [] } = useQuery({
+    queryKey: ['logs'],
+    queryFn: () => api.logs.list(200),
+    refetchInterval: 5_000,
+  });
 
-  const logEvents = events.filter((e) => e.type === 'log') as Extract<ApexEvent, { type: 'log' }>[];
+  // Live WebSocket log events
+  const wsLogs = useMemo(
+    () => events.filter((e) => e.type === 'log') as Extract<ApexEvent, { type: 'log' }>[],
+    [events],
+  );
+
+  // Merge: REST logs as the historical base, then live WS events that are
+  // newer than the newest REST log (avoiding duplicates).
+  const merged = useMemo<DisplayLog[]>(() => {
+    const restMapped: DisplayLog[] = restLogs.map((l) => ({
+      timestamp: l.timestamp,
+      agentId: l.agentId ?? undefined,
+      level: l.level,
+      message: l.message,
+    }));
+
+    if (restMapped.length === 0) {
+      // No REST logs — show all WS events
+      return wsLogs.map((e) => ({ timestamp: e.timestamp, agentId: e.agentId, level: e.level, message: e.message }));
+    }
+
+    const newestRestTs = Math.max(...restMapped.map((l) => l.timestamp));
+    const liveOnly = wsLogs
+      .filter((e) => e.timestamp > newestRestTs)
+      .map((e) => ({ timestamp: e.timestamp, agentId: e.agentId, level: e.level, message: e.message }));
+
+    return [...restMapped, ...liveOnly].slice(-500);
+  }, [restLogs, wsLogs]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logEvents.length]);
+  }, [merged.length]);
 
   return (
     <div
@@ -52,13 +94,13 @@ export function LogStream() {
         padding: '12px',
       }}
     >
-      {logEvents.length === 0 && (
+      {merged.length === 0 && (
         <div style={{ color: 'var(--color-apex-muted)', textAlign: 'center', marginTop: 40 }}>
           Waiting for agent activity...
         </div>
       )}
       <AnimatePresence initial={false}>
-        {logEvents.map((e, i) => (
+        {merged.map((e, i) => (
           <motion.div
             key={i}
             initial={{ opacity: 0, x: -10 }}
