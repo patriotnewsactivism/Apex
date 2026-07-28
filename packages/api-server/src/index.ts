@@ -30,6 +30,7 @@ import { createHealthRouter } from './routes/health.js';
 import { createJobsRouter } from './routes/jobs.js';
 import { createLearningRouter } from './routes/learning.js';
 import { createSuggestionsRouter } from './routes/suggestions.js';
+import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
@@ -252,6 +253,10 @@ async function main() {
 
   // Login is the front door — not behind requireAdminAuth.
   app.use('/api/auth', createAuthRouter());
+
+  // Vapi webhook — receives call results from Vapi's server (server-to-server,
+  // no Bearer token available). Must be mounted BEFORE requireAdminAuth.
+  app.use('/api/vapi', createVapiWebhookRouter());
 
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);

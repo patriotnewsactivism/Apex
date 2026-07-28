@@ -495,7 +495,7 @@ export function getConfiguredProviders(): Array<{ name: string; configured: bool
  * ever set/clear a key this client actually consumes — never an arbitrary
  * environment variable. */
 export function getKnownApiKeyEnvs(): string[] {
-  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY'];
+  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY'];
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {

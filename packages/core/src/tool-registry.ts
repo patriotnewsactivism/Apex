@@ -1811,6 +1811,156 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         return result;
       },
     },
+
+    // ─── Vapi: Make outbound AI phone call ────────────────────────────────
+    {
+      name: 'make_outbound_call',
+      description: 'Make an outbound AI phone call to a prospect/customer. The AI voice agent will use the provided script as its system prompt and conduct the conversation. Returns a call ID. Costs ~$0.05-0.30/min (Vapi platform + provider pass-through). Requires VAPI_API_KEY and VAPI_PHONE_NUMBER_ID to be configured.',
+      schema: z.object({
+        customerNumber: z.string().describe('Destination phone number in E.164 format (e.g. "+18328804970")'),
+        customerName: z.string().optional().describe('Name of the person being called (for personalization)'),
+        assistantPrompt: z.string().describe('System prompt for the AI caller — the cold call script, value proposition, objection handling, and goal of the call. Be specific and conversational.'),
+        firstMessage: z.string().describe('The exact words the AI says when the call connects (e.g. "Hi, is this {{customerName}}? I\'m Alex from BuildMyBot.app...")'),
+      }),
+      requiresApproval: true, // Makes a real phone call to a real person — externally visible, costs money, irreversible.
+      async execute({ customerNumber, customerName, assistantPrompt, firstMessage }) {
+        const apiKey = process.env.VAPI_API_KEY;
+        const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
+
+        if (!apiKey || !phoneNumberId) {
+          return {
+            success: false,
+            error: 'Vapi is not configured. Set VAPI_API_KEY and VAPI_PHONE_NUMBER_ID env vars. Sign up at https://dashboard.vapi.ai to get started.',
+          };
+        }
+
+        // Build the webhook URL for receiving call results (end-of-call-report)
+        const webhookUrl = process.env.VAPI_WEBHOOK_URL ?? `${process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live'}/api/vapi/webhook`;
+
+        // Create a transient (inline) assistant — no need to pre-create one via POST /assistant.
+        // The assistant config includes the cold call script as the system prompt,
+        // a natural voice (ElevenLabs), and Deepgram for STT.
+        const callBody = {
+          assistant: {
+            name: 'APEX Outbound SDR',
+            firstMessage,
+            model: {
+              provider: 'openai',
+              model: 'gpt-4o',
+              messages: [
+                {
+                  role: 'system',
+                  content: assistantPrompt,
+                },
+              ],
+              temperature: 0.7,
+              maxTokens: 250,
+            },
+            voice: {
+              provider: '11labs',
+              voiceId: '21m00Tcm4TlvDq8ikWAM', // Rachel — natural, professional female voice
+              stability: 0.5,
+              similarityBoost: 0.75,
+              speed: 1.0,
+            },
+            transcriber: {
+              provider: 'deepgram',
+              model: 'nova-2-phonecall',
+              language: 'en-US',
+              smartFormat: true,
+            },
+            server: {
+              url: webhookUrl,
+            },
+            silenceTimeoutSeconds: 30,
+            responseDelaySeconds: 0.4,
+            endCallMessageEnabled: true,
+          },
+          phoneNumberId,
+          customer: {
+            number: customerNumber,
+            name: customerName,
+          },
+        };
+
+        const res = await fetch('https://api.vapi.ai/call', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(callBody),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          return {
+            success: false,
+            error: `Vapi call failed (${res.status}): ${errText.slice(0, 500)}`,
+          };
+        }
+
+        const data = await res.json() as { id: string; status: string; startedAt?: string };
+        return {
+          success: true,
+          callId: data.id,
+          status: data.status,
+          startedAt: data.startedAt,
+          message: `Outbound call initiated to ${customerNumber}${customerName ? ` (${customerName})` : ''}. Call ID: ${data.id}. The AI agent will use your script and conduct the conversation. Results will be logged via webhook.`,
+        };
+      },
+    },
+
+    // ─── Vapi: Get call status + transcript ───────────────────────────────
+    {
+      name: 'get_call_status',
+      description: 'Check the status of an outbound call — includes current status (ringing/in-progress/ended), transcript, AI analysis summary, success evaluation, recording URLs, and cost breakdown. Poll this after making a call to get results.',
+      schema: z.object({
+        callId: z.string().describe('The Vapi call ID returned from make_outbound_call'),
+      }),
+      requiresApproval: false, // Read-only — just checks status, no side effects.
+      async execute({ callId }) {
+        const apiKey = process.env.VAPI_API_KEY;
+        if (!apiKey) {
+          return { success: false, error: 'VAPI_API_KEY not configured' };
+        }
+
+        const res = await fetch(`https://api.vapi.ai/call/${callId}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
+
+        if (!res.ok) {
+          return { success: false, error: `Vapi GET call failed (${res.status})` };
+        }
+
+        const data = await res.json() as {
+          id: string;
+          status: string;
+          type?: string;
+          startedAt?: string;
+          endedAt?: string;
+          endedReason?: string;
+          artifact?: { transcript?: string; recordingUrl?: string; stereoRecordingUrl?: string };
+          analysis?: { summary?: string; structuredData?: unknown; successEvaluation?: string };
+          costs?: unknown[];
+          cost?: number;
+        };
+        return {
+          success: true,
+          callId: data.id,
+          status: data.status,
+          type: data.type,
+          startedAt: data.startedAt,
+          endedAt: data.endedAt,
+          endedReason: data.endedReason,
+          transcript: data.artifact?.transcript ?? null,
+          recordingUrl: data.artifact?.recordingUrl ?? data.artifact?.stereoRecordingUrl ?? null,
+          analysis: data.analysis ?? null,
+          costs: data.costs ?? null,
+          totalCost: data.cost ?? null,
+        };
+      },
+    },
   ];
 }
 

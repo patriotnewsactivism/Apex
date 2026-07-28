@@ -124,7 +124,7 @@ ${GROUND_TRUTH_CLAUSE}
 Prioritized lead list with next action per lead, and an honest status: what's pipeline-ready vs.
 what's blocked on missing infrastructure (Twilio, live Stripe, etc).`,
       llm: { provider: 'cerebras', model: 'openai/gpt-4o' },
-      tools: ['readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview'],
+      tools: ['readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview', 'make_outbound_call', 'get_call_status'],
       maxIterations: 20,
       approvalRequired: false,
       ...overrides,
