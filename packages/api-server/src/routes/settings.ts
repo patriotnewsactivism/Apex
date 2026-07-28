@@ -51,10 +51,10 @@ export function createSettingsRouter(): Router {
 
       await db
         .insert(integrationSettings)
-        .values({ key, value, updatedBy: req.headers['x-admin-user']?.toString() ?? null, updatedAt: new Date() })
+        .values({ key, value, updatedAt: new Date() })
         .onConflictDoUpdate({
           target: integrationSettings.key,
-          set: { value, updatedAt: new Date(), updatedBy: req.headers['x-admin-user']?.toString() ?? null },
+          set: { value, updatedAt: new Date() },
         });
 
       // Apply immediately so the currently-running process picks it up
