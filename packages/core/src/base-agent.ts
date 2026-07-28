@@ -5,6 +5,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
+import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { TaskQueue } from './task-queue.js';
 import { OutcomeAnalyzer } from '@workspace/learning-system';
 import type {
@@ -223,6 +224,10 @@ export abstract class BaseAgent {
     // Self-review runs at most once per task (see the critique gate below), so
     // the extra reasoning costs exactly one additional LLM call, never a loop.
     let selfReviewed = false;
+    // How many times this task's model has emitted a tool call as plain text
+    // instead of issuing it through the API. Bounded: one correction, then the
+    // task fails honestly rather than completing on work that never ran.
+    let malformedToolCallCount = 0;
     const startTime = Date.now();
     const analyzer = new OutcomeAnalyzer();
 
@@ -308,6 +313,55 @@ export abstract class BaseAgent {
 
         if (response.content) {
           await this.logger.thinking(response.content.slice(0, 200), taskId);
+        }
+
+        // ── Guard: a tool call written as TEXT is not a finished task ──────
+        //
+        // Models that don't reliably use the structured tool API (typically
+        // the smaller ones the fallback chain drops to once the primary
+        // provider is exhausted) emit the call in the message body instead.
+        // The provider then returns toolCalls: [], which the loop below would
+        // read as "agent is done" — completing the task and storing the
+        // pseudo-call as its RESULT. Observed live 2026-07-28: DevOps
+        // "completed" an outage diagnosis in 2s having executed nothing.
+        //
+        // A false success is worse than a failure here, because it propagates:
+        // the delegating manager sees a done child, reports the initiative
+        // delivered, and the goal closes on work that never happened. Correct
+        // it once; if the model does it again, fail honestly.
+        if (response.toolCalls.length === 0 && response.content) {
+          const malformed = detectMalformedToolCall(
+            response.content,
+            tools.map((t) => t.name),
+          );
+          if (malformed) {
+            malformedToolCallCount++;
+            await this.logger.warn(
+              `Model emitted a text-encoded tool call (${malformed.pattern}` +
+                `${malformed.toolName ? `: ${malformed.toolName}` : ''}) — nothing executed. ` +
+                `Attempt ${malformedToolCallCount}.`,
+              taskId,
+            );
+
+            if (malformedToolCallCount === 1 && iterations < maxIter) {
+              history.push({ role: 'user', content: buildMalformedToolCallCorrection(malformed) });
+              this.setStatus('thinking');
+              continue;
+            }
+
+            // Refused to correct. Do NOT complete — that would record work
+            // that never ran as a success.
+            const failMsg =
+              `Model emitted tool calls as text (${malformed.pattern}) and did not correct after being told. ` +
+              `No tool actually executed, so this task is NOT done. This usually means the serving model ` +
+              `does not support structured tool calls — check which provider is handling this agent. ` +
+              `Excerpt: ${malformed.excerpt.slice(0, 200)}`;
+            await this.logger.error(`Task failed: ${title} — ${failMsg}`, undefined, taskId);
+            await this.taskQueue.fail(taskId, failMsg);
+            this.setStatus('error');
+            recordMetricsAsync(false, failMsg);
+            return { success: false, error: failMsg };
+          }
         }
 
         // No tool calls → the agent thinks it's finished. Before accepting
@@ -428,7 +482,13 @@ export abstract class BaseAgent {
       return { success: false, error: 'Max iterations exceeded' };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      await this.logger.error(`Task failed: ${title}`, err, taskId);
+      // The reason goes in the MESSAGE, not only in `data`. AgentLogger.error
+      // stashes the Error in the log row's `data` column, but the dashboard's
+      // Log Stream renders `message` — so every failure read as a bare
+      // "Task failed: <title>" with no cause, making live triage impossible
+      // (observed 2026-07-28: Lead Developer failed mid-delegation and the
+      // stream showed nothing about why).
+      await this.logger.error(`Task failed: ${title} — ${msg}`, err, taskId);
       await this.taskQueue.fail(taskId, msg);
       this.setStatus('error');
       recordMetricsAsync(false, msg);

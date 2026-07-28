@@ -425,3 +425,61 @@ than silently retrying), BUILDMYBOT_VERCEL_DEPLOY_HOOK, BUILDMYBOT_CRON_SECRET,
 and Phase C recurring sales (live Stripe + a real outbound email/SMS channel,
 both permanently human-approval-gated for financial transactions and external
 sends).
+
+## Update — 2026-07-28 (later): silent false completions — root cause of "it stopped accomplishing tasks"
+A live log excerpt from a real goal ("whats up with tubescribe not working?")
+showed the delegation chain working exactly as designed — CEO → CTO → Lead Dev →
+DevOps, four agents, twelve seconds — and then producing NOTHING, with the task
+recorded as `done`. Two distinct bugs, both now fixed:
+
+**1. Text-encoded tool calls were treated as task completion (the serious one).**
+The DevOps agent emitted its tool call as plain text in the message body:
+
+    <function.runInSandbox [{"language": "python", "code": "...", "timeoutMs": 10000}]</function
+
+The provider returned `toolCalls: []`, so `executeTask` read that as "the agent
+is finished", called `taskQueue.complete()`, and stored the pseudo-call text as
+the task's RESULT. Nothing executed. The task was marked done. This is the worst
+failure mode an autonomous system can have, because a false success propagates
+upward: the delegating manager reads a `done` child, reports the initiative
+delivered, and (post-Phase-C) the goal closes on work that never happened.
+
+Cause is the model, not the framework: smaller/open models — precisely the ones
+the fallback chain drops to when the primary provider is exhausted (gpt-oss,
+qwen, glm, gemini-via-OpenRouter) — do not reliably use the structured
+tool-calling API. So this gets WORSE exactly when providers are degraded, which
+is when it is hardest to notice.
+
+Fixed in `packages/core/src/malformed-tool-calls.ts` + the `executeTask` loop:
+detect six known text-encoded call syntaxes, push one concrete correction, and
+if the model repeats it, FAIL the task honestly rather than record a lie. The
+detector deliberately does NOT parse-and-execute what it finds — a model that
+cannot use the tool API correctly is evidence something is wrong with the
+provider, and guessing intent then executing it (including approval-gated tools
+like `runInSandbox`) is how an autonomous system takes an unsanctioned action.
+
+False positives were treated as the equal risk, since one would fail a task that
+actually succeeded. Two defenses: every pattern requires structural call syntax
+(never a bare tool name in prose), and the captured name must be a tool the
+agent actually has. Verified against the real CEO output from this same log
+("**Delegation Complete** — I used sendMessage to delegate to the CTO…"), which
+is correctly NOT flagged.
+
+**2. Task failures logged no reason.** `AgentLogger.error(msg, err)` puts the
+Error in the log row's `data` column, but the dashboard's Log Stream renders
+`message` — so every failure appeared as a bare `Task failed: <title>`. In the
+same excerpt, Lead Developer failed three seconds after delegating and the
+stream gave no cause at all, making live triage impossible. The reason is now in
+the message.
+
+**Verified 2026-07-28:** `scripts/verify-malformed-tool-calls.ts` — 14/14,
+including the exact `<function.runInSandbox [...]` line captured live, all six
+syntaxes, and six false-positive cases drawn from real agent prose. Both earlier
+suites re-run green (`verify-autonomy-loop.ts` 40/40, `verify-autonomy-scheduler.ts`
+9/9). Typecheck clean across core/agents/api-server/background-jobs.
+
+**NOT verified:** not deployed. And this does not explain the ERROR states on
+COO/CTO/LEAD_DEV/LEAD_RESEARCH — that still needs
+`scripts/triage-stalled-agents.mjs` run with live credentials. The two findings
+are related in cause (a degraded provider chain produces both silent false
+completions and hard failures) but they are separate bugs.
