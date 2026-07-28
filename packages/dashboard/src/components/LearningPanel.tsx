@@ -15,6 +15,7 @@ import {
   X,
   RefreshCw,
   BarChart3,
+  Rocket,
 } from 'lucide-react';
 
 export function LearningPanel() {
@@ -51,6 +52,14 @@ export function LearningPanel() {
       api.learning.respondRecommendation(id, action),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['learning-recommendations'] });
+    },
+  });
+
+  const applyMutation = useMutation({
+    mutationFn: (id: string) => api.learning.applyRecommendation(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['learning-recommendations'] });
+      queryClient.invalidateQueries({ queryKey: ['agents'] });
     },
   });
 
