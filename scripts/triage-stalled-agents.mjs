@@ -52,7 +52,7 @@ const line = (s) => console.log(`\n${'─'.repeat(72)}\n${s}\n${'─'.repeat(72)
 // ── 1. Who is broken, and how long have they been broken? ─────────────────
 line('1. AGENT STATUS');
 const agentsData = await get('/api/agents');
-const agents = agentsData.agents ?? [];
+const agents = Array.isArray(agentsData) ? agentsData : (agentsData.agents ?? []);
 const errored = [];
 for (const a of agents) {
   const status = a.liveStatus ?? a.status;
@@ -65,7 +65,7 @@ console.log(`\n  ${errored.length} of ${agents.length} agents in error.`);
 // ── 2. The actual error text — the thing status dots don't tell you ───────
 line('2. WHY THEY FAILED (recent error logs)');
 const logsData = await get('/api/logs?limit=200');
-const logs = (logsData.logs ?? []).filter((l) => l.level === 'error');
+const logs = (Array.isArray(logsData) ? logsData : (logsData.logs ?? [])).filter((l) => l.level === 'error');
 if (logs.length === 0) {
   console.log('  No error-level logs returned. If agents show error but no errors are');
   console.log('  logged, the failure predates the log retention window (MaintenanceJob');
@@ -93,7 +93,7 @@ if (logs.length === 0) {
 // ── 3. Failed tasks — the durable record, survives log pruning ────────────
 line('3. RECENTLY FAILED TASKS');
 const tasksData = await get('/api/tasks?limit=200');
-const allTasks = tasksData.tasks ?? [];
+const allTasks = Array.isArray(tasksData) ? tasksData : (tasksData.tasks ?? []);
 const failed = allTasks.filter((t) => t.status === 'failed');
 const open = allTasks.filter((t) => ['pending', 'in_progress', 'blocked', 'awaiting_approval'].includes(t.status));
 console.log(`  ${failed.length} failed / ${open.length} still open / ${allTasks.length} total in window`);
@@ -124,8 +124,12 @@ if (llmSignals.length > 0) {
 
 // ── 5. Are the autonomous crons actually firing? ──────────────────────────
 line('5. SCHEDULED JOBS (is anything originating work?)');
+// /api/jobs returns a BARE ARRAY, not {jobs:[...]}. Several routes in this
+// API differ on that; normalize rather than assume.
 const jobsData = await get('/api/jobs');
-for (const j of jobsData.jobs ?? []) {
+const jobList = Array.isArray(jobsData) ? jobsData : (jobsData.jobs ?? []);
+if (jobList.length === 0) console.log('  (no scheduled jobs returned)');
+for (const j of jobList) {
   const flag = !j.enabled ? '⏸ disabled' : j.status === 'failed' ? '❌ failed' : '✅';
   console.log(`  ${flag}  ${(j.jobType ?? '').padEnd(22)} ${(j.cronExpression ?? '').padEnd(14)} last=${j.lastRunAt ?? 'never'} next=${j.nextRunAt ?? '?'}`);
   if (j.error) console.log(`         error: ${String(j.error).slice(0, 200)}`);

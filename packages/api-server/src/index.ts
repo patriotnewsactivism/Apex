@@ -148,6 +148,18 @@ async function seedDefaultJobs(): Promise<void> {
       },
       // The COO and CTO had no heartbeat of their own — whole branches sat idle
       // between CEO reviews. These give each branch manager its own cadence.
+      // Provider outages are transient; the work they killed should not be.
+      // Runs often enough that a recovered chain resumes business work within
+      // minutes rather than waiting for the next sparse business cron.
+      {
+        id: 'system-stalled-work-recovery',
+        name: 'Recover work killed by LLM provider outages',
+        jobType: 'stalled_work_recovery',
+        cronExpression: '*/10 * * * *', // every 10 min
+        targetAgentId: null as string | null,
+        priority: 2,
+        payload: { windowHours: 24, maxPerRun: 15, maxRequeues: 3 } as Record<string, unknown>,
+      },
       {
         id: 'system-coo-branch-review',
         name: 'COO operations branch review',

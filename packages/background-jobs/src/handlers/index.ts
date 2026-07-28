@@ -1137,3 +1137,129 @@ export class BranchReviewJob implements JobHandler {
     };
   }
 }
+
+// ── StalledWorkRecoveryJob: capacity failures must not be permanent ────────
+//
+// `TaskQueue.fail()` deliberately refuses to retry a whole-chain LLM capacity
+// exhaustion (`isCapacityExhaustion`), and that call is correct on its own
+// terms: retrying on a 2s→300s backoff just hammers providers that are already
+// 429ing and floods the dashboard.
+//
+// But nothing ever revisited those tasks afterwards. A task killed by a
+// transient provider outage was dead FOREVER — the work simply vanished. On
+// 2026-07-28 that was 22 tasks, including "Lead Generation & Outreach Campaign
+// for BuildMyBot2" and every BuildMyBot2 error-remediation task. The workforce
+// did not just stop when capacity ran out; it never came back when capacity
+// returned, because no code path existed to bring it back. The Task Board sat
+// at 0 pending / 0 in-progress with 22 dead tasks beside it.
+//
+// This handler is that missing path. It requeues capacity-failed work on a
+// widening backoff, bounded so a genuinely dead task cannot loop forever:
+// if the chain is still exhausted the task fails again, comes back with a
+// longer delay, and after `maxRequeues` is left alone for a human.
+
+export class StalledWorkRecoveryJob implements JobHandler {
+  /** Backoff before each successive requeue attempt. Widening, so a prolonged
+   *  outage costs a handful of probe calls rather than a hot loop. */
+  private static readonly BACKOFF_MS = [10 * 60_000, 45 * 60_000, 180 * 60_000];
+
+  /** Mirrors TaskQueue.isCapacityExhaustion — the signature of "every provider
+   *  in the chain refused", which is recoverable once capacity returns, as
+   *  opposed to a real defect in the task itself. */
+  private isCapacityFailure(error: string | null): boolean {
+    if (!error || !error.includes('All LLM providers failed')) return false;
+    return /(\b429\b|\b402\b|\b401\b|\b413\b|rate limit|insufficient credits|quota|tokens per day|request too large)/i.test(
+      error,
+    );
+  }
+
+  async execute(job: ScheduledJob): Promise<unknown> {
+    const { db, tasks } = await import('@workspace/db');
+    const { and, eq, gte, inArray, sql } = await import('drizzle-orm');
+
+    const payload = (job.payload ?? {}) as Record<string, unknown>;
+    const windowHours = Number(payload.windowHours ?? 24);
+    const maxPerRun = Number(payload.maxPerRun ?? 15);
+    const maxRequeues = Number(payload.maxRequeues ?? StalledWorkRecoveryJob.BACKOFF_MS.length);
+    const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
+
+    const failedTasks = await db
+      .select({
+        id: tasks.id,
+        title: tasks.title,
+        assignedAgentId: tasks.assignedAgentId,
+        errorMessage: tasks.errorMessage,
+        context: tasks.context,
+      })
+      .from(tasks)
+      .where(and(eq(tasks.status, 'failed'), gte(tasks.updatedAt, since)))
+      .limit(200);
+
+    const recoverable = failedTasks.filter((t) => this.isCapacityFailure(t.errorMessage));
+    if (recoverable.length === 0) {
+      return {
+        windowHours,
+        failedInWindow: failedTasks.length,
+        capacityFailures: 0,
+        requeued: 0,
+        note: 'No capacity-related failures to recover. Any failures in this window are real defects, not provider outages — they are left alone for FailureReviewJob to triage.',
+      };
+    }
+
+    let requeued = 0;
+    let exhausted = 0;
+    const requeuedTasks: Array<{ taskId: string; title: string; attempt: number; dueInMin: number }> = [];
+
+    for (const task of recoverable) {
+      if (requeued >= maxPerRun) break;
+
+      const ctx = (task.context ?? {}) as Record<string, unknown>;
+      const priorRequeues = Number(ctx.capacityRequeueCount ?? 0);
+
+      // Repeatedly recovered and repeatedly died — stop burning calls on it.
+      // FailureReviewJob will cluster it and put it in front of the CEO.
+      if (priorRequeues >= maxRequeues) {
+        exhausted++;
+        continue;
+      }
+
+      const backoffMs =
+        StalledWorkRecoveryJob.BACKOFF_MS[Math.min(priorRequeues, StalledWorkRecoveryJob.BACKOFF_MS.length - 1)];
+      const nextRetryAt = new Date(Date.now() + backoffMs);
+
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          // Fresh retry budget: the previous failure was the provider's fault,
+          // not this task's, so it should not inherit exhausted retries.
+          retryCount: 0,
+          errorMessage: null,
+          nextRetryAt,
+          updatedAt: new Date(),
+          context: sql`coalesce(${tasks.context}, '{}'::jsonb) || ${JSON.stringify({
+            capacityRequeueCount: priorRequeues + 1,
+            lastCapacityRequeueAt: new Date().toISOString(),
+          })}::jsonb`,
+        })
+        .where(eq(tasks.id, task.id));
+
+      requeued++;
+      requeuedTasks.push({
+        taskId: task.id,
+        title: task.title,
+        attempt: priorRequeues + 1,
+        dueInMin: Math.round(backoffMs / 60_000),
+      });
+    }
+
+    return {
+      windowHours,
+      failedInWindow: failedTasks.length,
+      capacityFailures: recoverable.length,
+      requeued,
+      exhaustedGiveUp: exhausted,
+      requeuedTasks,
+    };
+  }
+}
