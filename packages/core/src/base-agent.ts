@@ -76,6 +76,20 @@ export abstract class BaseAgent {
   get name() { return this.config.name; }
   get role() { return this.config.role; }
   get tier() { return this.config.tier; }
+  get currentConcurrency() { return this.concurrency; }
+  get maxIterations() { return this.config.maxIterations ?? 20; }
+
+  /** Runtime reconfiguration — applies overrides to an already-running agent
+   *  instance (from PATCH /api/agents/:id). Only concurrency and maxIterations
+   *  are adjustable at runtime; the LLM provider/model requires a restart. */
+  reconfigure(opts: { concurrency?: number; maxIterations?: number }): void {
+    if (opts.concurrency !== undefined) {
+      this.concurrency = Math.max(1, opts.concurrency);
+    }
+    if (opts.maxIterations !== undefined) {
+      this.config.maxIterations = opts.maxIterations;
+    }
+  }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 

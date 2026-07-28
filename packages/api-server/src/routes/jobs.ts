@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, scheduledJobs, jobExecutionLog } from '@workspace/db';
 import { eq, desc } from 'drizzle-orm';
 import crypto from 'crypto';
+import { CronParser } from '@workspace/background-jobs';
 
 // ─── Job Management API Routes ────────────────────────────────────────────────
 //
@@ -88,6 +89,45 @@ export function createJobsRouter(): Router {
         updatedAt: new Date(),
       }).where(eq(scheduledJobs.id, req.params.id));
 
+      const [updated] = await db.select().from(scheduledJobs).where(eq(scheduledJobs.id, req.params.id)).limit(1);
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // PATCH /api/jobs/:id — update a job's cronExpression, payload, priority, enabled
+  router.patch('/:id', async (req, res) => {
+    try {
+      const [existing] = await db.select().from(scheduledJobs).where(eq(scheduledJobs.id, req.params.id)).limit(1);
+      if (!existing) {
+        res.status(404).json({ error: `Job ${req.params.id} not found` });
+        return;
+      }
+
+      const { cronExpression, payload, priority, enabled } = req.body;
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+
+      if (cronExpression !== undefined) {
+        const validation = CronParser.validate(cronExpression);
+        if (validation) {
+          res.status(400).json({ error: `Invalid cron expression: ${validation}` });
+          return;
+        }
+        updates.cronExpression = cronExpression;
+        updates.nextRunAt = CronParser.nextRun(cronExpression, new Date()) ?? new Date(Date.now() + 60_000);
+        updates.retryCount = 0;
+        updates.error = null;
+        updates.status = 'active';
+      }
+      if (payload !== undefined) updates.payload = payload;
+      if (priority !== undefined) updates.priority = priority;
+      if (enabled !== undefined) {
+        updates.enabled = enabled;
+        updates.status = enabled ? 'active' : 'paused';
+      }
+
+      await db.update(scheduledJobs).set(updates).where(eq(scheduledJobs.id, req.params.id));
       const [updated] = await db.select().from(scheduledJobs).where(eq(scheduledJobs.id, req.params.id)).limit(1);
       res.json(updated);
     } catch (err) {

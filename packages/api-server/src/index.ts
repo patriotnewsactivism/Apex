@@ -266,7 +266,7 @@ async function main() {
   app.use('/api/tools', createToolsRouter());
   app.use('/api/health', createHealthRouter(healthMonitor, alertManager));
   app.use('/api/jobs', createJobsRouter());
-  app.use('/api/learning', createLearningRouter());
+  app.use('/api/learning', createLearningRouter(workforce));
   app.use('/api/cicd', createCicdRouter());
   app.use('/api/applications', createMultiappRouter());
   app.use('/api/predictive', createPredictiveRouter());

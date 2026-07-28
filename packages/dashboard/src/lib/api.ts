@@ -60,6 +60,11 @@ export const api = {
     list: () => apiFetch<{ agents: Agent[] }>('/agents').then((r) => r.agents),
     get: (id: string) => apiFetch<{ agent: Agent }>(`/agents/${id}`).then((r) => r.agent),
     memory: (id: string) => apiFetch<{ memories: Memory[] }>(`/agents/${id}/memory`).then((r) => r.memories),
+    reconfigure: (id: string, data: { concurrency?: number; maxIterations?: number }) =>
+      apiFetch<{ success: boolean; applied: Record<string, unknown> }>(`/agents/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
   },
 
   logs: {
@@ -109,6 +114,8 @@ export const api = {
     list: () => apiFetch<ScheduledJobRow[]>('/jobs'),
     create: (data: { name: string; jobType: string; cronExpression?: string; scheduledAt?: string; targetAgentId?: string; payload?: Record<string, unknown>; priority?: number }) =>
       apiFetch<ScheduledJobRow>('/jobs', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: { cronExpression?: string; payload?: Record<string, unknown>; priority?: number; enabled?: boolean }) =>
+      apiFetch<ScheduledJobRow>(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
     toggle: (id: string) => apiFetch<ScheduledJobRow>(`/jobs/${id}/toggle`, { method: 'POST' }),
     remove: (id: string) => apiFetch(`/jobs/${id}`, { method: 'DELETE' }),
     history: (id: string) => apiFetch<JobExecutionRow[]>(`/jobs/${id}/history`),
@@ -120,6 +127,8 @@ export const api = {
     recommendations: (status?: string) => apiFetch<StrategyRecommendationRow[]>(`/learning/recommendations${status ? `?status=${status}` : ''}`),
     respondRecommendation: (id: string, action: 'approve' | 'reject') =>
       apiFetch(`/learning/recommendations/${id}/respond`, { method: 'POST', body: JSON.stringify({ action }) }),
+    applyRecommendation: (id: string) =>
+      apiFetch<{ success: boolean; status: string; changes: Record<string, unknown> }>(`/learning/recommendations/${id}/apply`, { method: 'POST' }),
     analyze: () => apiFetch<{ success: boolean; patternsCreated: number }>('/learning/analyze', { method: 'POST' }),
     baselines: () => apiFetch<PerformanceBaselineRow[]>('/learning/baselines'),
   },
