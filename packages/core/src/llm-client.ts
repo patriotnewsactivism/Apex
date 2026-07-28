@@ -37,6 +37,9 @@ const PROVIDERS: Array<{
   // format) instead of the OpenAI-shaped chat.completions path below.
   // Undefined/omitted = 'openai', today's default for every existing entry.
   protocol?: 'openai' | 'anthropic';
+  // Cap max_tokens per provider — some models reject requests with
+  // max_tokens higher than their supported output limit (Cohere 400).
+  maxOutputTokens?: number;
 }> = [
   // Cerebras — re-verified live 2026-07-26.
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
@@ -44,7 +47,7 @@ const PROVIDERS: Array<{
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
   // Cohere (production) — re-verified live 2026-07-26, genuine production tier
   // (clean completion, no trial-cap warning).
-  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
+  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024', maxOutputTokens: 4096 },
   // Mistral RE-ADDED 2026-07-26: Don rotated a fresh key same-day, confirmed
   // live via direct completion call (real "Ok!" response) before re-adding.
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
@@ -194,7 +197,7 @@ class MultiProviderClient {
    * timeout/AbortController/error-capture scaffolding the OpenAI path uses
    * below; only the request-building and response-parsing differ. */
   private async completeViaAnthropic(
-    provider: { name: string; baseURL: string },
+    provider: { name: string; baseURL: string; maxOutputTokens?: number },
     apiKey: string,
     model: string,
     messages: LLMMessage[],
@@ -222,7 +225,7 @@ class MultiProviderClient {
           system: system || undefined,
           messages: anthropicMessages as any,
           tools: anthropicTools && anthropicTools.length > 0 ? (anthropicTools as any) : undefined,
-          max_tokens: this.config.maxTokens ?? 4096,
+          max_tokens: Math.min(this.config.maxTokens ?? 4096, provider.maxOutputTokens ?? 32768),
           temperature: this.config.temperature ?? 0.7,
         },
         { signal: controller.signal },
@@ -342,7 +345,7 @@ class MultiProviderClient {
               messages: openaiMessages,
               tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
               temperature: this.config.temperature ?? 0.7,
-              max_tokens: this.config.maxTokens ?? 4096,
+              max_tokens: Math.min(this.config.maxTokens ?? 4096, provider.maxOutputTokens ?? 32768),
             },
             { signal: controller.signal },
           );

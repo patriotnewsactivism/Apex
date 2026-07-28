@@ -259,7 +259,7 @@ export class GoalReviewJob implements JobHandler {
       .from(goals)
       .where(eq(goals.status, 'active'))
       .orderBy(goals.priority)
-      .limit(10);
+      .limit(5);
 
     const [backlog] = await db
       .select({ count: sql<number>`count(*)::int` })
@@ -293,13 +293,10 @@ export class GoalReviewJob implements JobHandler {
         enabled: scheduledJobs.enabled,
         targetAgentId: scheduledJobs.targetAgentId,
         nextRunAt: scheduledJobs.nextRunAt,
-        lastRunAt: scheduledJobs.lastRunAt,
-        retryCount: scheduledJobs.retryCount,
-        error: scheduledJobs.error,
       })
       .from(scheduledJobs)
       .orderBy(desc(scheduledJobs.createdAt))
-      .limit(50);
+      .limit(20);
 
     // BuildMyBot2 telemetry — the portfolio leg, so the autonomous review
     // operates on the revenue flagship too, not just Apex's own queue. Mirrors
