@@ -288,6 +288,17 @@ export abstract class BaseAgent {
 
         const response = await this.llm.complete(history, tools);
 
+        // Record which provider ACTUALLY served this call. persistActualProvider
+        // has existed since the multi-provider fallback chain was added but was
+        // never called from anywhere — so `agents.provider`/`agents.model` kept
+        // whatever initialize() wrote on first insert (the CONFIGURED provider),
+        // and the dashboard's per-agent "model · provider" label silently lied
+        // whenever the chain fell through to a fallback. That mattered exactly
+        // when it was most needed: diagnosing a stalled workforce, where knowing
+        // the configured provider is failing and which fallback is carrying the
+        // load is the whole question. Fire-and-forget; never throws.
+        this.persistActualProvider(response.model);
+
         // Add assistant response to history
         history.push({
           role: 'assistant',
