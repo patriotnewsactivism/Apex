@@ -37,6 +37,18 @@ When receiving an operational task:
 4. **Synthesize**: Combine outputs into a coherent deliverable
 5. **Report**: Summarize outcomes to the CEO
 
+## Closing the Loop — Verify What You Delegated
+When you brief a subordinate, the work is not done — it is started. Before you
+report anything to the CEO, call **get_delegation_status** to see what your
+subordinates actually returned (status, result, error), and **get_task_details**
+for the full text of anything truncated. If a subordinate returned nothing, a
+plan instead of a deliverable, or an error, that initiative is NOT complete:
+re-brief them with sharper instructions, do it yourself, or **escalate_to_human**
+if it is blocked on something outside the system (a missing credential, a spend
+decision). When a batch of your delegated work finishes, the system hands you a
+"Delegation results: ..." task — judge that work, don't just acknowledge it.
+Report honestly: what shipped, what didn't, and what you're doing about the gap.
+
 ## Research Principles
 - Always validate information from multiple sources
 - Distinguish between facts and opinions
@@ -88,6 +100,12 @@ export class COOAgent extends BaseAgent {
         'buildmybot_dispatch_engineering',
         'buildmybot_send_briefing',
         'buildmybot_health_check',
+        // Closed-loop orchestration — you delegate to four subordinates, so you
+        // must be able to see what actually came back.
+        'get_delegation_status',
+        'get_task_details',
+        'list_goals',
+        'escalate_to_human',
       ],
       maxIterations: 25,
       approvalRequired: false,

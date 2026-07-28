@@ -220,6 +220,9 @@ export abstract class BaseAgent {
     let iterations = 0;
     let toolExecutions = 0;
     let requiredApprovals = 0;
+    // Self-review runs at most once per task (see the critique gate below), so
+    // the extra reasoning costs exactly one additional LLM call, never a loop.
+    let selfReviewed = false;
     const startTime = Date.now();
     const analyzer = new OutcomeAnalyzer();
 
@@ -262,6 +265,23 @@ export abstract class BaseAgent {
       const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
       const tools = registry.getLLMToolSchemas(this.config.tools);
 
+      // Resolve this task's goal once, up front, instead of re-querying inside
+      // every delegate call. It also populates ToolContext.goalId, which
+      // sendMessage already reads but nothing ever set — so delegated tasks
+      // now inherit their goal and roll up correctly in list_goals /
+      // get_delegation_status instead of landing goal-less.
+      let taskGoalId: string | undefined;
+      try {
+        const [row] = await db
+          .select({ goalId: tasksTable.goalId })
+          .from(tasksTable)
+          .where(eq(tasksTable.id, taskId))
+          .limit(1);
+        taskGoalId = row?.goalId ?? undefined;
+      } catch {
+        // DB offline — delegation still works, it just can't inherit the goal.
+      }
+
       // Agentic loop
       while (iterations < maxIter) {
         iterations++;
@@ -279,7 +299,58 @@ export abstract class BaseAgent {
           await this.logger.thinking(response.content.slice(0, 200), taskId);
         }
 
-        // No tool calls → task is done
+        // No tool calls → the agent thinks it's finished. Before accepting
+        // that, make it check its own work ONCE.
+        //
+        // Why: a "done" turn is just text — the model claiming success. In
+        // practice that is where the weak output came from: an agent that
+        // delegated three initiatives and immediately declared them complete
+        // (without ever looking at whether the children ran), or a researcher
+        // answering "I couldn't find anything" after a single failed search.
+        // Neither is caught by the tool loop, because neither calls a tool.
+        //
+        // One critique turn with the tools still attached lets the agent
+        // discover the gap and keep working — the loop continues normally if it
+        // decides to act, and completes on the next no-tool-call turn if the
+        // work genuinely holds up. Costs one LLM call per task; set
+        // APEX_SELF_REVIEW=0 to disable.
+        const selfReviewEnabled = !['0', 'false', 'off'].includes(
+          (process.env.APEX_SELF_REVIEW ?? '1').toLowerCase(),
+        );
+        if (
+          response.toolCalls.length === 0 &&
+          selfReviewEnabled &&
+          !selfReviewed &&
+          iterations < maxIter
+        ) {
+          selfReviewed = true;
+          await this.logger.thinking('Self-review: checking own work before reporting done', taskId);
+          history.push({
+            role: 'user',
+            content: [
+              'SELF-REVIEW (automatic — no human is asking). Before this is accepted as complete,',
+              'audit your own answer against the original task honestly:',
+              '',
+              '1. Did you actually DO the work, or only describe/plan it? Producing a plan when the task',
+              '   asked for a deliverable is not complete.',
+              '2. If you delegated anything (sendMessage / dispatchSwarm), you have NOT verified the outcome.',
+              '   Call get_delegation_status now and read what the child tasks actually returned before',
+              '   claiming the initiative is done. Delegating is not delivering.',
+              '3. If your answer reports empty/no results, that is a failed search strategy, not an answer.',
+              '   Retry with different, narrower queries before giving up.',
+              '4. Are any specifics (numbers, names, statuses) things you verified with a tool, or did you',
+              '   assume them? Verify or remove them — never state an unverified figure as fact.',
+              '5. Is anything genuinely blocked on a decision only Don can make? Then escalate_to_human',
+              '   with your recommendation, and say plainly in your final answer what is blocked.',
+              '',
+              'If you find a gap: keep working — call the tools you need. If the work genuinely holds up,',
+              'reply with your final report and no tool calls. Do not pad it; do not restate this checklist.',
+            ].join('\n'),
+          });
+          this.setStatus('thinking');
+          continue;
+        }
+
         if (response.toolCalls.length === 0) {
           const result = response.content;
           await this.taskQueue.complete(taskId, result);
@@ -301,33 +372,28 @@ export abstract class BaseAgent {
           const toolContext: ToolContext = {
             agentId: this.config.id,
             taskId,
+            goalId: taskGoalId,
             workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
             requestApproval: async (toolName, args, reason) => {
               requiredApprovals++;
               return this.requestHumanApproval(taskId, toolName, args, reason);
             },
-            delegateToRole: async (targetRole, input) => {
-              const { db, tasks } = await import('@workspace/db');
-              const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
-              return this.delegateToRole(targetRole, {
+            delegateToRole: async (targetRole, input) =>
+              this.delegateToRole(targetRole, {
                 title: input.title,
                 description: input.description,
                 parentTaskId: input.parentTaskId ?? taskId,
-                goalId: task?.goalId ?? undefined,
+                goalId: taskGoalId,
                 context: input.context ?? undefined,
-              });
-            },
-            delegateToAgent: async (targetAgentId, input) => {
-              const { db, tasks } = await import('@workspace/db');
-              const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
-              return this.delegate(targetAgentId, {
+              }),
+            delegateToAgent: async (targetAgentId, input) =>
+              this.delegate(targetAgentId, {
                 title: input.title,
                 description: input.description,
                 parentTaskId: input.parentTaskId ?? taskId,
-                goalId: input.goalId ?? task?.goalId ?? undefined,
+                goalId: input.goalId ?? taskGoalId,
                 context: input.context ?? undefined,
-              });
-            },
+              }),
           };
 
           const result = await registry.execute(tc.name, tc.args, toolContext);
