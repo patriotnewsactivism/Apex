@@ -148,7 +148,7 @@ export function createLearningRouter(workforce?: Map<string, BaseAgent>): Router
             const newConcurrency = Math.min(currentConcurrency + 1, 10);
 
             const newMeta = { ...currentMeta, concurrency: newConcurrency };
-            await db.update(agents).set({ metadata: newMeta, updatedAt: new Date() }).where(eq(agents.id, a.id));
+            await db.update(agents).set({ metadata: newMeta }).where(eq(agents.id, a.id));
 
             const live = workforce?.get(a.id);
             if (live) {

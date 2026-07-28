@@ -257,7 +257,7 @@ export function LearningPanel() {
                     Impact: {rec.expectedImpact}
                   </div>
                   {rec.status === 'pending' && (
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button
                         onClick={() => respondMutation.mutate({ id: rec.id, action: 'approve' })}
                         style={{
@@ -293,6 +293,46 @@ export function LearningPanel() {
                         }}
                       >
                         <X size={14} /> Reject
+                      </button>
+                      <button
+                        onClick={() => applyMutation.mutate(rec.id)}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: 6,
+                          background: 'rgba(168,85,247,0.2)',
+                          border: '1px solid rgba(168,85,247,0.4)',
+                          color: '#a855f7',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <Rocket size={14} /> Apply Now
+                      </button>
+                    </div>
+                  )}
+                  {rec.status === 'approved' && (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={() => applyMutation.mutate(rec.id)}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: 6,
+                          background: 'rgba(168,85,247,0.2)',
+                          border: '1px solid rgba(168,85,247,0.4)',
+                          color: '#a855f7',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <Rocket size={14} /> Apply Now
                       </button>
                     </div>
                   )}

@@ -282,7 +282,16 @@ async function main() {
   const dashboardDist = existsSync(primaryDist) ? primaryDist : existsSync(fallbackDist) ? fallbackDist : null;
 
   if (dashboardDist) {
-    app.use(express.static(dashboardDist));
+    app.use(express.static(dashboardDist, {
+      setHeaders: (res, path) => {
+        if (path.endsWith('.webmanifest')) {
+          res.setHeader('Content-Type', 'application/manifest+json');
+        }
+        if (path.endsWith('sw.js')) {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }));
     app.use((req, res, next) => {
       if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
         return next();

@@ -70,7 +70,7 @@ export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
       if (concurrency !== undefined) newMeta.concurrency = concurrency;
       if (maxIterations !== undefined) newMeta.maxIterations = maxIterations;
 
-      await db.update(agents).set({ metadata: newMeta, updatedAt: new Date() }).where(eq(agents.id, req.params.id));
+      await db.update(agents).set({ metadata: newMeta }).where(eq(agents.id, req.params.id));
 
       // Apply to the in-memory instance for immediate effect
       const live = workforce.get(req.params.id);
