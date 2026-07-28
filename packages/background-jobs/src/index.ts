@@ -18,5 +18,6 @@ export {
   GoalProgressJob,
   FailureReviewJob,
   BranchReviewJob,
+  StalledWorkRecoveryJob,
 } from './handlers/index.js';
 export type { JobHandler } from './handlers/index.js';

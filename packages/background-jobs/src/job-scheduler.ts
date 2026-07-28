@@ -19,6 +19,7 @@ import {
   GoalProgressJob,
   FailureReviewJob,
   BranchReviewJob,
+  StalledWorkRecoveryJob,
 } from './handlers/index.js';
 
 export interface JobSchedulerConfig {
@@ -50,6 +51,9 @@ export class JobScheduler {
     this.executor.registerHandler('goal_progress', new GoalProgressJob());
     this.executor.registerHandler('failure_review', new FailureReviewJob());
     this.executor.registerHandler('branch_review', new BranchReviewJob());
+    // Capacity failures are transient by nature; without this, a provider
+    // outage permanently destroys whatever work was in flight.
+    this.executor.registerHandler('stalled_work_recovery', new StalledWorkRecoveryJob());
   }
 
   /** Start the scheduler polling loop. */

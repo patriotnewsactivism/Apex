@@ -119,6 +119,126 @@ const PREMIUM_ROLES = new Set([
   'CEO', 'CTO', 'COO', 'LEAD_DEV', 'RESEARCH', 'LEAD_RESEARCH', 'SALES', 'QA_DIRECTOR',
 ]);
 
+// ─── Request size control ─────────────────────────────────────────────────────
+//
+// Observed live 2026-07-28: every agent task died with "All LLM providers
+// failed", and the chain read:
+//   • cerebras (gpt-oss-120b, 429): rate limited
+//   • groq (llama-3.3-70b-versatile, 413): Request too large … tokens per minute
+//
+// The 413 is the important one. A 429 is genuinely "come back later", but a
+// 413 means THIS request will never fit — and because every downstream
+// provider was handed the identical oversized `messages` array, one bloated
+// conversation failed the ENTIRE fallback chain. The fallback existed and was
+// structurally incapable of rescuing anything.
+//
+// Histories grow without bound: every tool result is appended, and agents run
+// up to 50 iterations (Lead Research). Tool results are the bulk of it —
+// search results, file contents, snapshot JSON. So trim tool output, not turns.
+//
+// Deliberately truncates message CONTENT rather than dropping messages: an
+// assistant message carrying tool_calls MUST be followed by its matching tool
+// results or the OpenAI-shaped APIs reject the request outright. Dropping
+// messages to save space would trade a 413 for a 400.
+
+/** Rough chars-per-token. Deliberately conservative — this is a safety budget,
+ *  not an accounting system, and over-trimming costs far less than a 413. */
+const CHARS_PER_TOKEN = 4;
+
+/** Default budget in characters (~30k tokens). Comfortably under the TPM
+ *  ceilings of the free/on-demand tiers this chain falls back to. */
+export const DEFAULT_HISTORY_CHAR_BUDGET = 120_000;
+
+/** Hard retry budget (~6k tokens) used for the one retry after a 413. */
+export const EMERGENCY_HISTORY_CHAR_BUDGET = 24_000;
+
+export function historySize(messages: LLMMessage[]): number {
+  return messages.reduce(
+    (n, m) => n + (m.content?.length ?? 0) + (m.toolCalls ? JSON.stringify(m.toolCalls).length : 0),
+    0,
+  );
+}
+
+/**
+ * Shrink a conversation to fit `maxChars` while keeping it structurally valid.
+ *
+ * Priority of what survives, highest first: the system prompt, the first user
+ * message (the task itself — losing it makes the agent forget what it was
+ * asked), and the most recent turns. Oldest tool results are truncated first,
+ * since they are both the largest and the least likely to still matter.
+ */
+export function trimMessageHistory(
+  messages: LLMMessage[],
+  maxChars: number = DEFAULT_HISTORY_CHAR_BUDGET,
+): { messages: LLMMessage[]; trimmed: boolean; originalChars: number; finalChars: number } {
+  const originalChars = historySize(messages);
+  if (originalChars <= maxChars) {
+    return { messages, trimmed: false, originalChars, finalChars: originalChars };
+  }
+
+  const out = messages.map((m) => ({ ...m }));
+  const marker = '\n… [truncated to fit the provider request limit]';
+
+  // Never touch the last 4 messages — that's the live working context the
+  // model needs to make its next decision.
+  const protectedFrom = Math.max(0, out.length - 4);
+
+  // Pass 1: oldest tool results down to a stub. Biggest win, least loss.
+  for (let i = 0; i < protectedFrom && historySize(out) > maxChars; i++) {
+    if (out[i].role !== 'tool') continue;
+    const c = out[i].content ?? '';
+    if (c.length > 400) out[i].content = c.slice(0, 400) + marker;
+  }
+
+  // Pass 2: still too big — trim old assistant prose (keep toolCalls intact,
+  // they are structural and small).
+  for (let i = 0; i < protectedFrom && historySize(out) > maxChars; i++) {
+    if (out[i].role !== 'assistant') continue;
+    const c = out[i].content ?? '';
+    if (c.length > 500) out[i].content = c.slice(0, 500) + marker;
+  }
+
+  // Pass 3: squeeze the protected tail too, oldest first, but keep it usable.
+  for (let i = protectedFrom; i < out.length && historySize(out) > maxChars; i++) {
+    const c = out[i].content ?? '';
+    if (out[i].role === 'tool' && c.length > 1_000) out[i].content = c.slice(0, 1_000) + marker;
+  }
+
+  // Pass 4: the emergency floor. Passes 1-3 bottom out around 25k chars on a
+  // long run (40+ tool results at a 400-char stub each), which is ABOVE the
+  // emergency budget — so a 413 retry would have 413'd again. Squeeze every
+  // tool result to a stub and every assistant turn to a summary line.
+  // tool_calls are left intact throughout: they are structural, and dropping
+  // them breaks assistant→tool pairing.
+  for (let i = 0; i < out.length && historySize(out) > maxChars; i++) {
+    const c = out[i].content ?? '';
+    if (out[i].role === 'tool' && c.length > 120) out[i].content = c.slice(0, 120) + marker;
+    else if (out[i].role === 'assistant' && c.length > 200) out[i].content = c.slice(0, 200) + marker;
+  }
+
+  // Pass 5: absolute last resort — the system prompt itself. It carries the
+  // agent's role and org chart at the HEAD, with memory context and learning
+  // insights appended at the TAIL (see BaseAgent.executeTask), so truncating
+  // from the end sheds the accumulated context and keeps the identity. Only
+  // reached when everything else has already been stubbed.
+  if (historySize(out) > maxChars && out[0]?.role === 'system') {
+    const c = out[0].content ?? '';
+    if (c.length > 6_000) out[0].content = c.slice(0, 6_000) + marker;
+  }
+
+  return { messages: out, trimmed: true, originalChars, finalChars: historySize(out) };
+}
+
+/** True when a provider error means "this request is too big" rather than
+ *  "you are going too fast". The two demand opposite responses: shrink and
+ *  retry vs. back off and wait. */
+export function isRequestTooLargeError(status: unknown, message: string): boolean {
+  if (status === 413) return true;
+  return /request too large|too many tokens|context length|maximum context|reduce the length|prompt is too long/i.test(
+    message,
+  );
+}
+
 function resolveQwenModel(role: string | undefined): string {
   const isPremium = role !== undefined && PREMIUM_ROLES.has(role);
   const envOverride = isPremium ? process.env.APEX_QWEN_PREMIUM_MODEL : process.env.APEX_QWEN_STANDARD_MODEL;
@@ -254,10 +374,23 @@ class MultiProviderClient {
     };
   }
 
-  async complete(messages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
+  async complete(rawMessages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
     const OpenAI = (await import('openai')).default;
 
-    const openaiMessages = messages.map((m) => {
+    // Cap the conversation BEFORE any provider sees it. Previously an
+    // overgrown history was handed unchanged to every provider in turn, so a
+    // single bloated task could 413 its way through the entire chain and
+    // report "All LLM providers failed" — making a size problem look like a
+    // capacity outage.
+    const trim = trimMessageHistory(rawMessages);
+    if (trim.trimmed) {
+      console.warn(
+        `[LLM] History trimmed ${trim.originalChars} → ${trim.finalChars} chars to stay under the request limit`,
+      );
+    }
+    const messages = trim.messages;
+
+    const buildOpenAIMessages = (msgs: LLMMessage[]) => msgs.map((m) => {
       if (m.role === 'tool') {
         return { role: 'tool' as const, content: m.content, tool_call_id: m.toolCallId ?? '' };
       }
@@ -276,6 +409,8 @@ class MultiProviderClient {
       }
       return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
     });
+
+    const openaiMessages = buildOpenAIMessages(messages);
 
     const openaiTools = tools?.map((t) => ({
       type: 'function' as const,
@@ -339,16 +474,37 @@ class MultiProviderClient {
         const timeoutId = setTimeout(() => controller.abort(), 75_000);
         let res;
         try {
-          res = await client.chat.completions.create(
-            {
-              model,
-              messages: openaiMessages,
-              tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
-              temperature: this.config.temperature ?? 0.7,
-              max_tokens: Math.min(this.config.maxTokens ?? 4096, provider.maxOutputTokens ?? 32768),
-            },
-            { signal: controller.signal },
-          );
+          const send = (msgs: typeof openaiMessages) =>
+            client.chat.completions.create(
+              {
+                model,
+                messages: msgs,
+                tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
+                temperature: this.config.temperature ?? 0.7,
+                max_tokens: Math.min(this.config.maxTokens ?? 4096, provider.maxOutputTokens ?? 32768),
+              },
+              { signal: controller.signal },
+            );
+
+          try {
+            res = await send(openaiMessages);
+          } catch (err) {
+            // A 413 is recoverable HERE and nowhere else: moving to the next
+            // provider carries the same oversized payload and earns the same
+            // 413. Shrink hard and retry this provider once before giving up
+            // on it. This is exactly what turned a transient cerebras 429 into
+            // a total chain failure on 2026-07-28.
+            const status = (err as any)?.status ?? (err as any)?.response?.status;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!isRequestTooLargeError(status, msg)) throw err;
+
+            const hard = trimMessageHistory(messages, EMERGENCY_HISTORY_CHAR_BUDGET);
+            console.warn(
+              `[LLM] ${provider.name} rejected the request as too large; retrying once at ` +
+                `${hard.finalChars} chars (was ${hard.originalChars}).`,
+            );
+            res = await send(buildOpenAIMessages(hard.messages));
+          }
         } finally {
           clearTimeout(timeoutId);
         }
