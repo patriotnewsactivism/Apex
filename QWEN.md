@@ -64,6 +64,13 @@ pnpm install
 
 # Typecheck ALL packages (must show every package "Done", zero errors)
 pnpm run typecheck
+# ⚠️ As of 2026-07-28 this does NOT pass end-to-end, for reasons predating any
+# current work: `packages/convex-backend` fails (its subagent-written
+# convex/toolRegistry.ts was never codegen'd — apexplan.md documents it as
+# UNVERIFIED), and `packages/dashboard` fails because it imports
+# `@workspace/convex-backend/api`, which that package never emits. Both fail
+# identically on a clean checkout. Verify a change by typechecking the packages
+# it touches until the in-flight Convex migration is finished or reverted.
 
 # Build (typecheck + per-package builds; dashboard emits dist/index.html + bundles)
 pnpm run build
@@ -156,6 +163,38 @@ actually broken:
 | Phase 3 — CI/CD test+build | ✅ Functionally verified live (9/9 typecheck, real vite build). |
 | Phase 3 — Deploy/rollback trigger | ⚠️ Higher risk — needs Don present (No Unilateral Actions). |
 | Phase 4 — Multiapp / Predictive | ⚠️ Built + typechecks. NOT functionally tested live. |
+
+## Autonomy model (updated 2026-07-28)
+
+Delegation is a **closed loop**, not a one-way broadcast. Understand this before
+changing anything in `background-jobs` or `base-agent.ts`:
+
+1. Work originates from cron, not only from a human `POST /api/goals`. The
+   standing roster is seeded idempotently in `seedDefaultJobs`
+   (`packages/api-server/src/index.ts`) and is runtime-editable by the CEO via
+   `schedule_task`/`cancel_scheduled_task` — the jobs table is the source of
+   truth, not that array.
+2. When work is delegated, `DelegationFollowupJob` routes the **real outcomes**
+   (results and error text) back to the delegator once every sibling under that
+   parent is terminal. The synthesis task is a root task, so the loop converges.
+3. Goals only leave `active` via the `update_goal_status` tool — nothing closes
+   them automatically. `GoalProgressJob` drives each active goal toward that
+   decision; `update_goal_status` refuses to complete a goal with open tasks or
+   without a `result`.
+4. Failures cluster into a CEO triage task via `FailureReviewJob` instead of
+   dying silently at `status = 'failed'`.
+5. COO and CTO have their own `BranchReviewJob` heartbeats, so autonomy is not
+   bottlenecked on the CEO's review cycle.
+6. Every agent gets one **self-review turn** before a no-tool-call answer is
+   accepted as done (`APEX_SELF_REVIEW=0` disables it).
+
+Two invariants to preserve: every autonomous handler is **idempotent** (it must
+never stack a second review on an agent that hasn't worked the last one), and
+irreversible actions stay approval-gated regardless of who originated the task.
+
+Re-verify with (destructive — scratch DB only, never production):
+`DATABASE_URL=... pnpm --filter @workspace/api-server exec tsx ../../scripts/verify-autonomy-loop.ts`
+and `.../verify-autonomy-scheduler.ts`.
 
 ## Key Documentation Files
 

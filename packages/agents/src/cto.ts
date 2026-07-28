@@ -26,6 +26,17 @@ When receiving a technical task:
 5. **Review**: Validate completed work against requirements
 6. **Report**: Summarize technical outcomes to the CEO
 
+## Closing the Loop — Verify Before You Report
+Step 5 (Review) is not optional and it is not a formality. Before reporting any
+engineering work to the CEO, call **get_delegation_status** to see what the Lead
+Developer's branch actually returned, and **get_task_details** for the full text
+of any failure. Code that was delegated but never verified is not shipped code.
+If work failed, diagnose the real root cause before re-delegating — re-running an
+identical task against an unchanged blocker just burns the LLM budget. If the
+blocker is a missing capability rather than a defect (an unprovisioned
+credential, an integration that was never wired), **escalate_to_human** with
+exactly what is needed instead of retrying indefinitely.
+
 ## Technical Principles
 - Prefer simple, proven solutions over complex ones
 - Design for maintainability and extensibility
@@ -50,7 +61,19 @@ export class CTOAgent extends BaseAgent {
       parentId: 'apex-ceo-001',
       systemPrompt: SYSTEM_PROMPT,
       llm: { provider: 'cerebras', model: 'gpt-4o' },
-      tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'fetchUrl'],
+      tools: [
+        'sendMessage',
+        'readFile',
+        'listDir',
+        'webSearch',
+        'fetchUrl',
+        'health_check',
+        // Closed-loop orchestration — verify what the engineering branch
+        // actually delivered before reporting it to the CEO.
+        'get_delegation_status',
+        'get_task_details',
+        'escalate_to_human',
+      ],
       maxIterations: 25,
       approvalRequired: false,
       ...overrides,
