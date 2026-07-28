@@ -248,7 +248,7 @@ export class MaintenanceJob implements JobHandler {
 export class GoalReviewJob implements JobHandler {
   async execute(job: ScheduledJob): Promise<unknown> {
     const { randomUUID } = await import('crypto');
-    const { db, tasks, goals, componentHealth, learningInsights } = await import('@workspace/db');
+    const { db, tasks, goals, componentHealth, learningInsights, scheduledJobs } = await import('@workspace/db');
     const { eq, desc, sql } = await import('drizzle-orm');
 
     const targetAgentId = job.targetAgentId ?? 'apex-ceo-001';
@@ -280,6 +280,26 @@ export class GoalReviewJob implements JobHandler {
       .from(learningInsights)
       .orderBy(desc(learningInsights.createdAt))
       .limit(5);
+
+    // Current cron schedule — the CEO owns scheduling/HR and must see the
+    // standing shift roster to decide whether cadence matches priorities.
+    const cronSchedule = await db
+      .select({
+        id: scheduledJobs.id,
+        name: scheduledJobs.name,
+        jobType: scheduledJobs.jobType,
+        cronExpression: scheduledJobs.cronExpression,
+        status: scheduledJobs.status,
+        enabled: scheduledJobs.enabled,
+        targetAgentId: scheduledJobs.targetAgentId,
+        nextRunAt: scheduledJobs.nextRunAt,
+        lastRunAt: scheduledJobs.lastRunAt,
+        retryCount: scheduledJobs.retryCount,
+        error: scheduledJobs.error,
+      })
+      .from(scheduledJobs)
+      .orderBy(desc(scheduledJobs.createdAt))
+      .limit(50);
 
     // BuildMyBot2 telemetry — the portfolio leg, so the autonomous review
     // operates on the revenue flagship too, not just Apex's own queue. Mirrors
@@ -343,6 +363,7 @@ export class GoalReviewJob implements JobHandler {
       openTaskBacklog: backlog?.count ?? 0,
       unhealthyComponents: unhealthy,
       recentInsights,
+      cronSchedule,
       buildmybot2,
       reviewedAt: new Date().toISOString(),
     };
@@ -361,7 +382,8 @@ export class GoalReviewJob implements JobHandler {
       '2. If a component is degraded/critical, delegate investigation and a fix to the CTO.',
       '3. If a recent insight signals a recurring problem, act on it.',
       '4. BuildMyBot2 (managed revenue flagship): if snapshot.buildmybot2 shows open errors (especially critical), flagged/escalated shifts, or leads stalling without reply, delegate to the COO (apex-coo-001) — it owns buildmybot_status / buildmybot_send_briefing / buildmybot_dispatch_engineering. Have it send a corrective briefing or dispatch an engineering fix as warranted.',
-      '5. RESTRAINT: do NOT create busywork. If the system is healthy and nothing needs doing, record a one-line note to memory and create no tasks.',
+      '5. WORK SCHEDULE (you own scheduling/HR): review snapshot.cronSchedule. If the lead-gen cadence is too slow for the #1 priority, create a more frequent sweep or a second sweep targeting a different industry with schedule_task. If a recurring function is missing (outreach follow-ups, content cadence), create it. If a cron is stale or redundant, cancel it with cancel_scheduled_task. The baseline crons are a starting roster — adjust them as priorities shift.',
+      '6. RESTRAINT: do NOT create busywork. If the system is healthy and nothing needs doing, record a one-line note to memory and create no tasks.',
       'Irreversible actions (deploys, external sends, schema changes, financial) still require human approval — propose and queue them, do not execute.',
     ].join('\n');
 

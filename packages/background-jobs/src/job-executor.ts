@@ -7,6 +7,7 @@
 import crypto from 'crypto';
 import { db, scheduledJobs, jobExecutionLog } from '@workspace/db';
 import { eq } from 'drizzle-orm';
+import { CronParser } from './cron-parser.js';
 import type { JobHandler } from './handlers/index.js';
 
 export interface JobExecutorConfig {
@@ -122,14 +123,31 @@ export class JobExecutor {
       const maxRetries = job.maxRetries ?? 3;
 
       if (newRetryCount >= maxRetries) {
-        // Max retries exhausted — mark job as failed
-        await db.update(scheduledJobs).set({
-          retryCount: newRetryCount,
-          error: errorMsg,
-          status: 'failed',
-          lastRunAt: completedAt,
-          updatedAt: completedAt,
-        }).where(eq(scheduledJobs.id, jobId));
+        if (job.cronExpression) {
+          // Recurring (cron) jobs must NEVER be permanently silenced by a
+          // transient outage (LLM exhaustion, DB blip). Self-heal: reset to
+          // 'active' and schedule the next cron run so the autonomous loop
+          // revives without waiting for a reboot. Only one-off jobs go to a
+          // terminal 'failed' status.
+          const nextRun = CronParser.nextRun(job.cronExpression, completedAt);
+          await db.update(scheduledJobs).set({
+            retryCount: 0,
+            error: `Recovered after ${maxRetries} retries: ${errorMsg}`,
+            status: 'active',
+            nextRunAt: nextRun ?? new Date(completedAt.getTime() + 60_000),
+            lastRunAt: completedAt,
+            updatedAt: completedAt,
+          }).where(eq(scheduledJobs.id, jobId));
+        } else {
+          // One-off job — max retries exhausted, mark as permanently failed
+          await db.update(scheduledJobs).set({
+            retryCount: newRetryCount,
+            error: errorMsg,
+            status: 'failed',
+            lastRunAt: completedAt,
+            updatedAt: completedAt,
+          }).where(eq(scheduledJobs.id, jobId));
+        }
       } else {
         // Schedule retry with exponential backoff: 2^retry * 30s
         const backoffMs = Math.pow(2, newRetryCount) * 30_000;

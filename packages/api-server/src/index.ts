@@ -46,14 +46,18 @@ process.on('unhandledRejection', (reason) => {
   console.warn('⚠️  Unhandled rejection caught (server protected):', reason instanceof Error ? reason.message : String(reason));
 });
 
-// Seed the default recurring system jobs that make APEX self-directing and
-// self-improving. Idempotent via onConflictDoNothing: a job is created only if
-// its stable id is absent, so a job an operator later disables via
-// /api/jobs/:id/toggle stays disabled across reboots (we never re-enable it).
+// Seed the default recurring system jobs — the baseline work schedule that
+// scheduling/HR owns. On conflict (job already exists), revive ONLY jobs
+// currently stuck in 'failed' status: a transient outage (LLM exhaustion, DB
+// blip) must never permanently silence autonomous work. Jobs an operator
+// disabled via /api/jobs/:id/toggle stay disabled (enabled=false is untouched;
+// only status='failed' rows are reset to 'active'). The CEO can further
+// create/adjust crons at runtime via the schedule_task tool.
 async function seedDefaultJobs(): Promise<void> {
   try {
     const { db, scheduledJobs } = await import('@workspace/db');
     const { CronParser } = await import('@workspace/background-jobs');
+    const { eq } = await import('drizzle-orm');
 
     const now = new Date();
     const defaults = [
@@ -61,9 +65,41 @@ async function seedDefaultJobs(): Promise<void> {
         id: 'system-ceo-goal-review',
         name: 'CEO autonomous goal review',
         jobType: 'goal_review',
-        cronExpression: '*/30 * * * *', // every 30 min
+        cronExpression: '*/15 * * * *', // every 15 min — the autonomous spark
         targetAgentId: 'apex-ceo-001' as string | null,
         priority: 4,
+        payload: {} as Record<string, unknown>,
+      },
+      {
+        id: 'system-lead-gen-sweep',
+        name: 'Lead generation research sweep',
+        jobType: 'task_delegation',
+        cronExpression: '0 */2 * * *', // every 2 h
+        targetAgentId: 'apex-lead-research-001' as string | null,
+        priority: 3,
+        payload: {
+          title: 'Lead generation sweep',
+          description:
+            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered (rotate through the full target list in your system prompt). Use searchBusinessDirectory and webSearch to find 20-50 real qualifying businesses, then save them in one batch with saveResearchedLeadsBatch. Quality over quantity, but aim high.',
+        },
+      },
+      {
+        id: 'system-daily-report',
+        name: 'Daily activity report',
+        jobType: 'report_generation',
+        cronExpression: '0 9 * * *', // daily at 09:00
+        targetAgentId: null as string | null,
+        priority: 7,
+        payload: {} as Record<string, unknown>,
+      },
+      {
+        id: 'system-daily-maintenance',
+        name: 'Daily cleanup (logs, expired memories)',
+        jobType: 'maintenance',
+        cronExpression: '0 3 * * *', // daily at 03:00
+        targetAgentId: null as string | null,
+        priority: 8,
+        payload: {} as Record<string, unknown>,
       },
       {
         id: 'system-learning-analysis',
@@ -72,6 +108,7 @@ async function seedDefaultJobs(): Promise<void> {
         cronExpression: '0 */6 * * *', // every 6 h
         targetAgentId: null as string | null,
         priority: 6,
+        payload: {} as Record<string, unknown>,
       },
     ];
 
@@ -86,7 +123,7 @@ async function seedDefaultJobs(): Promise<void> {
           cronExpression: def.cronExpression,
           enabled: true,
           targetAgentId: def.targetAgentId,
-          payload: {},
+          payload: def.payload,
           priority: def.priority,
           status: 'active',
           retryCount: 0,
@@ -95,9 +132,20 @@ async function seedDefaultJobs(): Promise<void> {
           createdAt: now,
           updatedAt: now,
         })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: scheduledJobs.id,
+          set: {
+            enabled: true,
+            status: 'active',
+            retryCount: 0,
+            error: null,
+            nextRunAt,
+            updatedAt: now,
+          },
+          where: eq(scheduledJobs.status, 'failed'),
+        });
     }
-    console.log('✅ Seeded default system jobs (CEO goal review + learning analysis)');
+    console.log('✅ Seeded default system jobs (goal review, lead-gen sweep, daily report, maintenance, learning)');
   } catch (err) {
     console.warn('⚠️  Default job seeding skipped:', err instanceof Error ? err.message : String(err));
   }

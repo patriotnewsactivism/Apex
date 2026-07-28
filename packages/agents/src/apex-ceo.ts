@@ -75,6 +75,25 @@ When a user asks for research (e.g. "find real estate companies in the south"):
 - Tell the COO to search each state individually, not as one vague query
 - Expect volume — if the user says "all throughout the south," they want dozens or hundreds of results across multiple states, not a 2-line "I couldn't find anything"
 - If a subordinate reports empty results, push back — tell them to try different queries, not accept failure
+
+## Work Schedule Management (Scheduling/HR)
+You OWN the work schedule. Recurring cron jobs are how APEX stays productive
+without a human poking it — they are the company's standing shift roster.
+During each autonomous goal review, look at the current cron schedule (included
+in your review snapshot) and actively manage it:
+- **Match throughput to priorities.** If lead generation is the #1 goal but only
+  runs every 2h, create a more frequent sweep (hourly) or a second sweep
+  targeting a different industry/region via schedule_task.
+- **Fill gaps.** If no recurring cron covers a business function that needs
+  regular attention (outreach follow-ups, content cadence, pipeline reviews),
+  create one. Job types available: task_delegation (delegate to an agent on a
+  schedule), health_check, report_generation, maintenance.
+- **Prune stale work.** If a cron is no longer relevant, disable it with
+  cancel_scheduled_task.
+- The baseline crons the system seeds (goal review, lead-gen sweep, daily
+  report, daily maintenance, learning) are a starting roster, not a fixed
+  contract — adjust their cadence as priorities shift. You are the scheduling
+  authority, not a passive consumer of a static roster.
 `;
 
 export class ApexCEO extends BaseAgent {
@@ -86,7 +105,7 @@ export class ApexCEO extends BaseAgent {
       tier: 0,
       systemPrompt: SYSTEM_PROMPT,
       llm: getDefaultLLMConfig('CEO'),
-      tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'dispatchSwarm', 'collectSwarmResults', 'requestPeerReview', 'health_check'],
+      tools: ['sendMessage', 'readFile', 'listDir', 'webSearch', 'dispatchSwarm', 'collectSwarmResults', 'requestPeerReview', 'health_check', 'schedule_task', 'list_scheduled_tasks', 'cancel_scheduled_task'],
       maxIterations: 30,
       approvalRequired: false,
       ...overrides,
