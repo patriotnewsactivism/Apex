@@ -212,6 +212,9 @@ export interface Agent {
   model: string;
   provider: string;
   lastActiveAt: number | null;
+  concurrency?: number;
+  maxIterations?: number;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface Memory {
