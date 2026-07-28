@@ -180,6 +180,18 @@ export const api = {
     updateStatus: (id: string, status: string) =>
       apiFetch(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   },
+
+  suggestions: {
+    list: () => apiFetch<{ suggestions: SuggestionRow[] }>('/suggestions').then((r) => r.suggestions),
+    implement: (id: string, data: { goalTitle: string; goalDescription: string; goalPriority: number }) =>
+      apiFetch<{ success: boolean; goalId: string }>(`/suggestions/${id}/implement`, { method: 'POST', body: JSON.stringify(data) }),
+  },
+
+  system: {
+    get: () => apiFetch<{ settings: Record<string, string> }>('/settings/system'),
+    update: (data: { autonomy_level?: string }) =>
+      apiFetch<{ ok: boolean }>('/settings/system', { method: 'PUT', body: JSON.stringify(data) }),
+  },
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -495,6 +507,18 @@ export interface LeadStats {
   total: number;
   byStatus: { new: number; contacted: number; qualified: number; rejected: number };
   byIndustry: Record<string, number>;
+}
+
+export interface SuggestionRow {
+  id: string;
+  title: string;
+  description: string;
+  category: 'self_improvement' | 'app_improvement';
+  impact: 'high' | 'medium' | 'low';
+  difficulty: 'easy' | 'medium' | 'hard';
+  goalTitle: string;
+  goalDescription: string;
+  goalPriority: number;
 }
 
 

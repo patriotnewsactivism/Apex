@@ -388,6 +388,21 @@ export function Settings() {
     queryFn: () => api.agents.list(),
   });
 
+  // System settings (autonomy level)
+  const { data: systemSettings } = useQuery({
+    queryKey: ['system-settings'],
+    queryFn: () => api.system.get(),
+  });
+  const autonomyLevel = systemSettings?.settings?.autonomy_level ?? 'balanced';
+
+  const autonomyMutation = useMutation({
+    mutationFn: (level: string) => api.system.update({ autonomy_level: level }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['system-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    },
+  });
+
   const { data: tools = [] } = useQuery({
     queryKey: ['tools'],
     queryFn: () => api.tools.list(),
@@ -405,6 +420,68 @@ export function Settings() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {/* Autonomy Level */}
+      <div style={{
+        background: 'var(--color-apex-card)',
+        border: '1px solid rgba(0,229,255,0.15)',
+        borderRadius: 12,
+        padding: 20,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Shield size={20} color="#00e5ff" />
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>Autonomy Level</span>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '0 0 16px', lineHeight: 1.4 }}>
+          Controls how aggressively APEX operates. Adjusts the CEO's goal review frequency and overall system throughput.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {([
+            { value: 'conservative', label: 'Conservative', desc: '30 min reviews' },
+            { value: 'balanced', label: 'Balanced', desc: '15 min reviews' },
+            { value: 'aggressive', label: 'Aggressive', desc: '10 min reviews' },
+          ] as const).map((opt) => {
+            const isActive = autonomyLevel === opt.value;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => autonomyMutation.mutate(opt.value)}
+                style={{
+                  flex: '1 1 0',
+                  minWidth: 120,
+                  minHeight: 56,
+                  background: isActive ? 'rgba(0,229,255,0.12)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${isActive ? 'rgba(0,229,255,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                  borderRadius: 10,
+                  padding: '10px 14px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2,
+                  alignItems: 'center',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <span style={{
+                  fontSize: 13,
+                  fontWeight: isActive ? 700 : 500,
+                  color: isActive ? 'var(--color-apex-cyan)' : 'var(--color-apex-text)',
+                }}>
+                  {opt.label}
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>
+                  {opt.desc}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {autonomyMutation.isSuccess && (
+          <div style={{ fontSize: 11, color: 'var(--color-apex-green)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Check size={12} /> Applied — goal review cadence updated
+          </div>
+        )}
+      </div>
+
       {/* System overview */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
         {[

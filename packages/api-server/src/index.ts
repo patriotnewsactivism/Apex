@@ -29,6 +29,7 @@ import { createAuthRouter } from './routes/auth.js';
 import { createHealthRouter } from './routes/health.js';
 import { createJobsRouter } from './routes/jobs.js';
 import { createLearningRouter } from './routes/learning.js';
+import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
@@ -267,6 +268,7 @@ async function main() {
   app.use('/api/health', createHealthRouter(healthMonitor, alertManager));
   app.use('/api/jobs', createJobsRouter());
   app.use('/api/learning', createLearningRouter(workforce));
+  app.use('/api/suggestions', createSuggestionsRouter());
   app.use('/api/cicd', createCicdRouter());
   app.use('/api/applications', createMultiappRouter());
   app.use('/api/predictive', createPredictiveRouter());

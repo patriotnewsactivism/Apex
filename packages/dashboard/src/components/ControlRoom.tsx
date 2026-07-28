@@ -367,7 +367,7 @@ export function ControlRoom() {
         </div>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))',
           gap: 12,
         }}>
           {activeJobs.map((job) => (
@@ -390,7 +390,7 @@ export function ControlRoom() {
         </div>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 260px), 1fr))',
           gap: 12,
         }}>
           {sortedAgents.map((agent) => (
