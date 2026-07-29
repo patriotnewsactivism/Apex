@@ -58,6 +58,8 @@ const PROVIDERS: Array<{
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
   // Cerebras (2nd account) — same endpoint, separate key for 2x rate limit.
   { name: 'cerebras-2', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_2', fallbackModel: 'gpt-oss-120b' },
+  // Cerebras (3rd account) — 3x rate limit.
+  { name: 'cerebras-3', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_3', fallbackModel: 'gpt-oss-120b' },
   // Groq — re-verified live 2026-07-26.
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
   // Groq (2nd account) — 2x daily token capacity (100K → 200K TPD).
@@ -834,7 +836,7 @@ export function getConfiguredProviders(): Array<{ name: string; configured: bool
  * ever set/clear a key this client actually consumes — never an arbitrary
  * environment variable. */
 export function getKnownApiKeyEnvs(): string[] {
-  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'GEMINI_API_KEY', 'STRIPE_SECRET_KEY', 'CEREBRAS_API_KEY_2', 'GROQ_API_KEY_2', 'GEMINI_API_KEY_2', 'NVIDIA_API_KEY', 'TOGETHER_API_KEY'];
+  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'GEMINI_API_KEY', 'STRIPE_SECRET_KEY', 'CEREBRAS_API_KEY_2', 'CEREBRAS_API_KEY_3', 'GROQ_API_KEY_2', 'GEMINI_API_KEY_2', 'NVIDIA_API_KEY', 'TOGETHER_API_KEY'];
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {
