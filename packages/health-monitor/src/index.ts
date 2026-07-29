@@ -44,6 +44,11 @@ export type WebSocketLivenessChecker = () => { serverRunning: boolean; connected
  * real llm-client.ts provider list and tool-registry.ts registry). */
 export interface HealthMonitorDeps {
   getConfiguredProviders?: () => Array<{ name: string; configured: boolean }>;
+  // Reports whether the LLM chain has recently served tool-bearing requests
+  // from a provider that cannot reliably emit structured tool calls. Injected
+  // (rather than imported) to keep this package free of a @workspace/core
+  // dependency — core already depends on health-monitor.
+  getDegradedToolCalling?: () => { degraded: boolean; count: number; providers: string[]; since: string | null };
   getRegisteredToolCount?: () => number;
   wsChecker?: WebSocketLivenessChecker;
 }
@@ -80,9 +85,30 @@ export class HealthMonitor {
       }
       const providers = this.deps.getConfiguredProviders();
       const configuredCount = providers.filter((p) => p.configured).length;
+      const detail = providers.map((p) => `${p.name}:${p.configured ? 'ok' : 'missing'}`).join(', ');
+
+      // Key-presence alone says nothing about whether the workforce can
+      // actually WORK. On 2026-07-29 every key was present and healthy-looking
+      // while cerebras/groq were exhausted and 11 of 13 agents had fallen
+      // through to cohere/command-r-plus, which does not reliably call tools —
+      // so agents answered in prose instead of acting and the business quietly
+      // stopped producing. That must not read as 'healthy' again.
+      const degraded = this.deps.getDegradedToolCalling?.();
+      if (degraded?.degraded) {
+        return {
+          status: 'degraded',
+          detail:
+            `TOOL CALLING DEGRADED — ${degraded.count} tool-bearing request(s) served by ` +
+            `${degraded.providers.join(', ')} since ${degraded.since}, which cannot reliably emit ` +
+            `structured tool calls. Agents will answer in prose instead of acting (empty search ` +
+            `results, "I am unable to…", no leads saved). Restore capacity on an earlier provider ` +
+            `in the chain. Keys: ${detail}`,
+        };
+      }
+
       return {
         status: configuredCount === 0 ? 'critical' : configuredCount < providers.length ? 'degraded' : 'healthy',
-        detail: providers.map((p) => `${p.name}:${p.configured ? 'ok' : 'missing'}`).join(', '),
+        detail,
       };
     });
   }

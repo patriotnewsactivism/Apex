@@ -15,7 +15,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler } from '@workspace/background-jobs';
-import { getConfiguredProviders, getToolRegistry, getSharedAlertManager, emitApexEvent } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
@@ -327,6 +327,7 @@ async function main() {
   // Health Monitor & Alert Manager setup
   const healthMonitor = new HealthMonitor({
     getConfiguredProviders,
+    getDegradedToolCalling: () => getDegradedToolCallingReport(),
     getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
     wsChecker: () => ({ serverRunning: server.listening, connectedClients: getConnectedClientCount() }),
   });
