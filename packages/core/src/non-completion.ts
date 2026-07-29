@@ -111,3 +111,47 @@ export function buildNonCompletionFailure(found: NonCompletion, hadToolCalls: bo
     `Agent said: "${found.excerpt.slice(0, 220)}"`,
   ].join(' ');
 }
+
+
+/**
+ * Catch a final answer that ANNOUNCES an action instead of taking it.
+ *
+ * Observed live 2026-07-29, and it is precisely why leads stopped saving:
+ *
+ *   [lead-research] "I have found 20 legal firms in Miami, FL. I will now save
+ *                    these leads using saveResearchedLeadsBatch."
+ *   [lead-research] Task completed        <- saveResearchedLeadsBatch never called
+ *
+ * The research genuinely succeeded — 20 real firms — and then the agent
+ * narrated the save rather than performing it. The task completed, the manager
+ * saw a success, and nothing reached the database. An announcement in a turn
+ * with NO tool calls means the action did not happen, full stop.
+ *
+ * Tightly scoped to avoid eating legitimate hand-offs: the sentence must be
+ * first-person future tense AND name a tool this agent actually has. "I will
+ * report back once the CTO responds" names no tool and passes; "I will now
+ * save these using saveResearchedLeadsBatch" names one and fails.
+ */
+export function detectAnnouncedButNotTaken(
+  content: string,
+  availableToolNames: string[],
+): NonCompletion | null {
+  if (!content || availableToolNames.length === 0) return null;
+
+  // First-person intent to act, followed shortly by a real tool name.
+  const intent = /\b(?:I(?:'ll| will| am going to| shall)|[Ll]et me|[Nn]ext,? I(?:'ll| will))\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = intent.exec(content)) !== null) {
+    // Only look at the clause the intent introduces, not the whole document —
+    // a tool named three paragraphs later is unrelated.
+    const clause = content.slice(m.index, m.index + 220);
+    const named = availableToolNames.find((t) => clause.includes(t));
+    if (named) {
+      return {
+        pattern: `announced-not-taken:${named}`,
+        excerpt: clause.trim().slice(0, 200),
+      };
+    }
+  }
+  return null;
+}

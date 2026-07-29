@@ -6,7 +6,7 @@ import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-clie
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
-import { detectNonCompletion, buildNonCompletionFailure } from './non-completion.js';
+import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
 import { OutcomeAnalyzer } from '@workspace/learning-system';
 import type {
@@ -458,7 +458,12 @@ export abstract class BaseAgent {
           // reported inability and every one was recorded `done`. Two of those
           // claimed to lack tools they actually had — giving up was cheaper than
           // working, and nothing downstream could tell the difference.
-          const gaveUp = selfReviewed ? detectNonCompletion(result) : null;
+          // Two shapes of the same lie: "I couldn't" and "I will now" — the
+          // latter observed persisting zero leads after finding 20 real firms.
+          const gaveUp = selfReviewed
+            ? (detectNonCompletion(result) ??
+               detectAnnouncedButNotTaken(result, tools.map((t) => t.name)))
+            : null;
           if (gaveUp) {
             const failMsg = buildNonCompletionFailure(gaveUp, toolExecutions > 0);
             await this.logger.error(`Task failed: ${title} — ${failMsg}`, undefined, taskId);
