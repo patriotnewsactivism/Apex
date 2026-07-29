@@ -60,7 +60,7 @@ const PROVIDERS: Array<{
   // Google Gemini — added 2026-07-29. Free tier: 1,500 req/day, 15 RPM, 1M
   // tokens/min. Supports function calling reliably. OpenAI-compatible endpoint
   // at generativelanguage.googleapis.com/v1beta/openai/. Key from aistudio.google.com.
-  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-2.0-flash' },
+  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-3.6-flash' },
   // DeepSeek — added 2026-07-29. Free API credits for new accounts, reliable
   // function-calling support (deepseek-chat). OpenAI-compatible endpoint.
   { name: 'deepseek', baseURL: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', fallbackModel: 'deepseek-chat' },
