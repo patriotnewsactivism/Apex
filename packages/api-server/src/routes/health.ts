@@ -27,6 +27,25 @@ export function createHealthRouter(monitor: HealthMonitor, alertManager: AlertMa
     }
   });
 
+  // GET /api/health/providers — why each LLM provider in the fallback chain
+  // was passed over. Added 2026-07-29: qwen-cloud was promoted to the top of
+  // the chain, reported `configured: ok`, and still never served a request —
+  // and the reason existed only in container stdout. This makes the chain's
+  // real behavior inspectable from the API.
+  router.get('/providers', async (_req, res) => {
+    try {
+      const { getProviderFailureReport, getDegradedToolCallingReport, getConfiguredProviders } =
+        await import('@workspace/core');
+      res.json({
+        configured: getConfiguredProviders(),
+        recentFailures: getProviderFailureReport(),
+        degradedToolCalling: getDegradedToolCallingReport(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // GET /api/health/components — per-component status from DB
   router.get('/components', async (_req, res) => {
     try {
