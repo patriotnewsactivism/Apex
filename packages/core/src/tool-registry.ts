@@ -1841,7 +1841,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
         // Create a transient (inline) assistant — no need to pre-create one via POST /assistant.
         // The assistant config includes the cold call script as the system prompt,
-        // a natural voice (ElevenLabs), and Deepgram for STT.
+        // a natural voice (ElevenLabs), Deepgram for STT, and a send_checkout_link
+        // function the AI can call during the call to create a Stripe checkout
+        // session for the prospect. The Vapi webhook handler at the server URL
+        // receives the function call, creates the Stripe session, and returns
+        // the checkout URL — the AI then tells the prospect "I've sent you a link."
         const callBody = {
           assistant: {
             name: 'APEX Outbound SDR',
@@ -1858,9 +1862,33 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               temperature: 0.7,
               maxTokens: 250,
             },
+            tools: [
+              {
+                type: 'function',
+                function: {
+                  name: 'send_checkout_link',
+                  description: 'Send a Stripe checkout link to the prospect so they can sign up for BuildMyBot.app right now. Call this when the prospect agrees to sign up. Ask for their email first if you don\'t have it.',
+                  parameters: {
+                    type: 'object',
+                    properties: {
+                      plan: {
+                        type: 'string',
+                        enum: ['starter', 'professional', 'executive', 'enterprise'],
+                        description: 'Which plan the prospect wants. Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
+                      },
+                      email: {
+                        type: 'string',
+                        description: "The prospect's email address to send the checkout link to",
+                      },
+                    },
+                    required: ['plan', 'email'],
+                  },
+                },
+              },
+            ],
             voice: {
               provider: '11labs',
-              voiceId: '21m00Tcm4TlvDq8ikWAM', // Rachel — natural, professional female voice
+              voiceId: '21m00Tcm4TlvDq8ikWAM',
               stability: 0.5,
               similarityBoost: 0.75,
               speed: 1.0,
