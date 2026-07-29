@@ -529,26 +529,56 @@ class MultiProviderClient {
           try {
             res = await send(openaiMessages);
           } catch (err) {
-            // A 413 is recoverable HERE and nowhere else: moving to the next
-            // provider carries the same oversized payload and earns the same
-            // 413. Shrink hard and retry this provider once before giving up
-            // on it. This is exactly what turned a transient cerebras 429 into
-            // a total chain failure on 2026-07-28.
             const status = (err as any)?.status ?? (err as any)?.response?.status;
             const msg = err instanceof Error ? err.message : String(err);
-            if (!isRequestTooLargeError(status, msg)) throw err;
 
-            const hard = trimMessageHistory(messages, EMERGENCY_HISTORY_CHAR_BUDGET);
-            console.warn(
-              `[LLM] ${provider.name} rejected the request as too large; retrying once at ` +
-                `${hard.finalChars} chars (was ${hard.originalChars}).`,
-            );
-            res = await send(buildOpenAIMessages(hard.messages));
+            if (status === 429) {
+              // Rate limited — retry this provider with backoff instead of
+              // immediately falling through. Gemini free tier (15 RPM) and
+              // Groq both 429 under concurrent agent load; retrying keeps
+              // the request on a tool-calling provider instead of cascading
+              // to cohere/openrouter-free which answer in prose.
+              let recovered = false;
+              for (let attempt = 1; attempt <= 2 && !recovered; attempt++) {
+                const delayMs = 4000 * attempt;
+                console.warn(`[LLM] ${provider.name}/${model} 429 rate limited, retry ${attempt}/2 in ${delayMs / 1000}s`);
+                await new Promise(r => setTimeout(r, delayMs));
+                try {
+                  res = await send(openaiMessages);
+                  recovered = true;
+                } catch (retryErr) {
+                  const retryStatus = (retryErr as any)?.status ?? (retryErr as any)?.response?.status;
+                  if (isRequestTooLargeError(retryStatus, retryErr instanceof Error ? retryErr.message : String(retryErr))) {
+                    const hard = trimMessageHistory(messages, EMERGENCY_HISTORY_CHAR_BUDGET);
+                    res = await send(buildOpenAIMessages(hard.messages));
+                    recovered = true;
+                  } else if (attempt === 2 || retryStatus !== 429) {
+                    throw retryErr;
+                  }
+                }
+              }
+              if (!recovered) throw err;
+            } else if (isRequestTooLargeError(status, msg)) {
+              // A 413 is recoverable HERE and nowhere else: moving to the next
+              // provider carries the same oversized payload and earns the same
+              // 413. Shrink hard and retry this provider once before giving up
+              // on it. This is exactly what turned a transient cerebras 429 into
+              // a total chain failure on 2026-07-28.
+              const hard = trimMessageHistory(messages, EMERGENCY_HISTORY_CHAR_BUDGET);
+              console.warn(
+                `[LLM] ${provider.name} rejected the request as too large; retrying once at ` +
+                  `${hard.finalChars} chars (was ${hard.originalChars}).`,
+              );
+              res = await send(buildOpenAIMessages(hard.messages));
+            } else {
+              throw err;
+            }
           }
         } finally {
           clearTimeout(timeoutId);
         }
 
+        if (!res) throw new Error(`Unexpected: ${provider.name} returned no response`);
         const choice = res.choices[0];
         const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).flatMap((tc) => {
           if (tc.type !== 'function') return [];
