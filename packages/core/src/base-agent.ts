@@ -6,6 +6,7 @@ import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-clie
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
+import { detectNonCompletion, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
 import { OutcomeAnalyzer } from '@workspace/learning-system';
 import type {
@@ -26,6 +27,36 @@ apexEventBus.setMaxListeners(100);
 export function emitApexEvent(event: ApexEvent) {
   apexEventBus.emit('event', event);
 }
+
+// ─── Standing rules appended to every agent's system prompt ──────────────────
+//
+// Added 2026-07-29 after the first post-deploy log showed agents declining work
+// they were fully equipped to do: `apex-frontend-001` answered "I am unable to
+// access the code for the frontend" while holding readFile/listDir/fetchUrl,
+// and `apex-devops-001` answered "I don't have access to the deployment
+// changes" while holding readFile/listDir/runShell/runInSandbox. Neither called
+// a single tool. Both were recorded as completed.
+//
+// Kept here rather than copied into 13 role prompts so the rule cannot drift
+// between agents, and short on purpose — a long preamble crowds out the
+// role-specific instructions that follow it.
+
+const STANDING_OPERATING_RULES = `
+
+## Standing Rules (apply to every task)
+1. YOU HAVE TOOLS. The tools listed for this request are real and available right
+   now. Never answer "I don't have access" or "I am unable to" without having
+   actually called them and seen them fail — that answer is treated as a failed
+   task, not a completed one. If a tool errors, report the real error text.
+2. TRY BEFORE YOU DECLINE. Reading the workspace, fetching a URL, or listing a
+   directory costs one call. Make it before concluding something is unreachable.
+3. NO FICTIONAL SUCCESS. Never describe work you did not do, and never state a
+   number, name, status or URL you did not verify with a tool. Guessing a
+   hostname and reporting "page not found" is a fabricated finding.
+4. PARTIAL IS FINE, PRETEND IS NOT. If you complete part of the work, deliver
+   that part and say plainly what remains. An honest partial is a good outcome;
+   an invented complete one is the worst possible outcome.
+`;
 
 // ─── Base Agent ───────────────────────────────────────────────────────────────
 
@@ -257,7 +288,8 @@ export abstract class BaseAgent {
       // Build initial message history
       const memContext = await this.memory.buildMemoryContext(description);
       const learningContext = await this.buildLearningContext(this.config.role);
-      const systemPrompt = this.config.systemPrompt + memContext + learningContext;
+      const systemPrompt =
+        this.config.systemPrompt + STANDING_OPERATING_RULES + memContext + learningContext;
 
       const history: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
@@ -418,6 +450,24 @@ export abstract class BaseAgent {
 
         if (response.toolCalls.length === 0) {
           const result = response.content;
+
+          // "I couldn't do it" is not a completed task. Checked only after the
+          // self-review turn above, so the agent has already had one explicit
+          // chance to notice the gap and keep working. Live 2026-07-29, minutes
+          // after first deploy: frontend/devops/backend/qa-director/lead-dev all
+          // reported inability and every one was recorded `done`. Two of those
+          // claimed to lack tools they actually had — giving up was cheaper than
+          // working, and nothing downstream could tell the difference.
+          const gaveUp = selfReviewed ? detectNonCompletion(result) : null;
+          if (gaveUp) {
+            const failMsg = buildNonCompletionFailure(gaveUp, toolExecutions > 0);
+            await this.logger.error(`Task failed: ${title} — ${failMsg}`, undefined, taskId);
+            await this.taskQueue.fail(taskId, failMsg);
+            this.setStatus('error');
+            recordMetricsAsync(false, failMsg);
+            return { success: false, error: failMsg };
+          }
+
           await this.taskQueue.complete(taskId, result);
           await this.memory.remember(`task:${taskId}:result`, result.slice(0, 500), { importance: 0.6 });
           await this.logger.info(`Task completed: ${title}`, taskId);
