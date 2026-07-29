@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
+import { createOrchestrationTools } from './orchestration-tools.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
 import { HealthMonitor, AlertManager } from '@workspace/health-monitor';
@@ -1974,6 +1975,13 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     const root = workspaceRoot ?? process.cwd();
     for (const tool of createBuiltinTools(root)) {
      _registry.register(tool);
+    }
+    // Goal-lifecycle / delegation-feedback / escalation tools. Always
+    // registered (no external credentials involved) — these close the
+    // delegation loop, so an agent can see what happened to work it handed
+    // down instead of reporting an initiative complete the moment it is sent.
+    for (const tool of createOrchestrationTools()) {
+      _registry.register(tool);
     }
     // Portfolio connectors register only when their env is configured, so a
     // bare APEX install never exposes half-working tools to the agents.

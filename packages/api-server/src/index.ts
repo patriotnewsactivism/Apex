@@ -112,6 +112,88 @@ async function seedDefaultJobs(): Promise<void> {
         priority: 6,
         payload: {} as Record<string, unknown>,
       },
+      // ── Closed-loop autonomy roster ──────────────────────────────────────
+      // Delegation used to be one-way: a manager handed work down and its own
+      // task finished immediately, so nothing ever read the outcome back. This
+      // is the return leg — it routes finished sub-work to whoever delegated it.
+      {
+        id: 'system-delegation-followup',
+        name: 'Delegation results follow-up',
+        jobType: 'delegation_followup',
+        cronExpression: '*/5 * * * *', // every 5 min — keeps the feedback tight
+        targetAgentId: null as string | null,
+        priority: 3,
+        payload: { maxPerRun: 8 } as Record<string, unknown>,
+      },
+      // Goals only ever left 'active' when a human clicked. This drives each
+      // one to a real conclusion: decompose it, close it, or change approach.
+      {
+        id: 'system-goal-progress',
+        name: 'Goal progress & close-out review',
+        jobType: 'goal_progress',
+        cronExpression: '*/30 * * * *', // every 30 min
+        targetAgentId: 'apex-ceo-001' as string | null,
+        priority: 4,
+        payload: { maxPerRun: 4, minAgeMinutes: 20 } as Record<string, unknown>,
+      },
+      // Failed tasks used to be terminal and unseen. Cluster them and put the
+      // recurring ones in front of the CEO.
+      {
+        id: 'system-failure-review',
+        name: 'Failure triage review',
+        jobType: 'failure_review',
+        cronExpression: '15 */2 * * *', // every 2 h, offset off the hour
+        targetAgentId: 'apex-ceo-001' as string | null,
+        priority: 5,
+        payload: { windowHours: 24, minClusterSize: 2 } as Record<string, unknown>,
+      },
+      // The COO and CTO had no heartbeat of their own — whole branches sat idle
+      // between CEO reviews. These give each branch manager its own cadence.
+      // Provider outages are transient; the work they killed should not be.
+      // Runs often enough that a recovered chain resumes business work within
+      // minutes rather than waiting for the next sparse business cron.
+      {
+        id: 'system-stalled-work-recovery',
+        name: 'Recover work killed by LLM provider outages',
+        jobType: 'stalled_work_recovery',
+        cronExpression: '*/10 * * * *', // every 10 min
+        targetAgentId: null as string | null,
+        priority: 2,
+        payload: { windowHours: 24, maxPerRun: 15, maxRequeues: 3 } as Record<string, unknown>,
+      },
+      {
+        id: 'system-coo-branch-review',
+        name: 'COO operations branch review',
+        jobType: 'branch_review',
+        cronExpression: '0 * * * *', // hourly
+        targetAgentId: 'apex-coo-001' as string | null,
+        priority: 4,
+        payload: {
+          subordinates: ['apex-lead-research-001', 'apex-sales-001', 'apex-marketing-001', 'apex-success-001'],
+          includeBuildMyBot2: true,
+          focus:
+            'You run BuildMyBot.App day-to-day operations. Priorities in order: (1) BuildMyBot2 health — if snapshot.buildmybot2 shows open critical errors, flagged/escalated shifts, or leads stalling without a reply, act: read buildmybot_status, then send a corrective briefing with buildmybot_send_briefing or file a real ticket with buildmybot_dispatch_engineering. (2) Pipeline — leads researched but never worked are wasted spend; make sure the Lead Researcher is covering new industries/regions rather than re-covering the same ones, and that Sales is actually reviewing what was found. (3) Content and support cadence. Be honest about what is genuinely not wired yet (real outbound email/SMS and payments are not) — never report outreach that did not happen.',
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-cto-branch-review',
+        name: 'CTO engineering branch review',
+        jobType: 'branch_review',
+        cronExpression: '30 */2 * * *', // every 2 h, offset off the COO review
+        targetAgentId: 'apex-cto-001' as string | null,
+        priority: 4,
+        payload: {
+          subordinates: [
+            'apex-lead-dev-001',
+            'apex-frontend-001',
+            'apex-backend-001',
+            'apex-devops-001',
+            'apex-qa-001',
+          ],
+          focus:
+            'You run engineering for Apex itself and for buildmybot2. Priorities in order: (1) Stability over features — if a component is degraded or a deploy is unhealthy, that outranks all new work; call health_check and act on what it says. (2) Repeated task failures in your branch are engineering defects until proven otherwise — diagnose the real root cause rather than re-running the same work. (3) Ship real changes through PRs, never direct pushes; deploys stay approval-gated. (4) If a capability is missing because a credential or integration is not provisioned (for example GITHUB_TOKEN for the PR loop), escalate_to_human with exactly what is needed instead of repeatedly attempting work that cannot succeed.',
+        } as Record<string, unknown>,
+      },
     ];
 
     for (const def of defaults) {
@@ -147,7 +229,9 @@ async function seedDefaultJobs(): Promise<void> {
           where: eq(scheduledJobs.status, 'failed'),
         });
     }
-    console.log('✅ Seeded default system jobs (goal review, lead-gen sweep, daily report, maintenance, learning)');
+    console.log(
+      '✅ Seeded default system jobs (goal review, lead-gen sweep, daily report, maintenance, learning, delegation follow-up, goal progress, failure triage, COO/CTO branch reviews)',
+    );
   } catch (err) {
     console.warn('⚠️  Default job seeding skipped:', err instanceof Error ? err.message : String(err));
   }

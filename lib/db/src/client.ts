@@ -72,6 +72,16 @@ export async function migrate() {
   await client`
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS next_retry_at timestamptz
   `;
+  // goals.project_id was added to schema.ts on 2026-07-18 but never to this
+  // DDL, so on any fresh database every goal insert failed with
+  // 'column "project_id" of relation "goals" does not exist' — submitGoal
+  // (and therefore the whole autonomous loop) could not bootstrap. Additive
+  // and IF NOT EXISTS: a no-op against the live database, which already has
+  // the column. Not a schema change — this makes the DDL match the schema
+  // that is already deployed. Found 2026-07-28 on a clean bootstrap.
+  await client`
+    ALTER TABLE goals ADD COLUMN IF NOT EXISTS project_id text
+  `;
   await client`
     CREATE TABLE IF NOT EXISTS approvals (
       id text PRIMARY KEY,
@@ -317,7 +327,14 @@ export async function migrate() {
       metric_name text NOT NULL,
       forecast_value real NOT NULL,
       confidence real NOT NULL DEFAULT 0.8,
-      window text NOT NULL DEFAULT '7d',
+      -- "window" is a reserved keyword in Postgres and MUST stay quoted here.
+      -- Unquoted, this statement raised a syntax error that aborted migrate()
+      -- part-way through: predictive_forecasts, risk_assessments and
+      -- integration_settings were never created on a fresh database, and the
+      -- failure surfaced only as a warning ("migration skipped or deferred").
+      -- Drizzle quotes identifiers itself, so ORM reads/writes were unaffected
+      -- and hid the gap. Found 2026-07-28 while bootstrapping a clean DB.
+      "window" text NOT NULL DEFAULT '7d',
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;

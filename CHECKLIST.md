@@ -300,3 +300,186 @@ errors. `pnpm run build` — clean, dashboard emits dist bundles.
 deploy to settle and the next goal-review fire (every 30m) to confirm real
 buildmybot2 data lands in the CEO task context; the engineering PR loop still
 needs GITHUB_TOKEN provisioned on the live service to actually open PRs.
+
+## Update — 2026-07-28: Phase C — the delegation loop is closed
+Don's report: "not seeing near enough automation and reasoning; this thing
+should be capable of running BuildMyBot.App on its own." A read of the running
+system found the cause, and it was structural rather than a missing feature.
+
+**Root cause — the org chart was one-way.** `BaseAgent.delegate()` wrote a child
+task row and the delegating agent's own task finished immediately. Nothing in
+the live system ever read `tasks.parent_task_id` back (verified by grep — the
+only readers were in the not-yet-live `packages/convex-backend`). So a manager
+could delegate five initiatives, report "delegated", and never learn that four
+failed. Three consequences compounded from that single gap:
+1. **Goals never closed.** The only writer of `goals.status` was a human hitting
+   `PATCH /api/goals/:id`. Active goals accumulated forever, so the 15-minute
+   CEO review re-reasoned over a growing pile of already-finished goals — and
+   `delegate()`'s idempotency guard turned each re-delegation into a no-op. The
+   loop looked busy and did nothing.
+2. **Failures were terminal and unseen.** A task exhausting its retries went to
+   `failed` and stopped. Nothing aggregated them; the same root cause could fail
+   work indefinitely. (The learning system measured outcomes, but only emitted
+   insights at a >=5-sample statistical threshold — it never put a specific
+   actionable failure in front of a decision-maker.)
+3. **Only the CEO had a heartbeat.** COO and CTO — the two agents that own
+   day-to-day ops and engineering — did nothing unless the CEO happened to
+   message them. Whole branches idled between reviews.
+
+**Built (git-reversible; NO production schema changes; NO new credentials):**
+- `packages/core/src/orchestration-tools.ts` — 5 new tools, all read-only or
+  Apex-internal bookkeeping, so none are approval-gated: `get_delegation_status`
+  (what actually happened to work I handed down), `get_task_details`,
+  `list_goals` (real per-goal task rollup + a derived state), `update_goal_status`
+  (the only way a goal ever closes), `escalate_to_human` (charter escalation as a
+  real pending row in the dashboard's existing approval queue, not a log line).
+  `update_goal_status` refuses to complete a goal that still has open tasks, and
+  refuses to complete without a `result` — an anti-inflated-reporting guard.
+- `DelegationFollowupJob` (`delegation_followup`, `*/5 * * * *`) — the return leg.
+  Waits until EVERY sibling under a parent is terminal, then hands the delegator
+  one synthesis task carrying the real results and real error text. The synthesis
+  task is a ROOT task (no parentTaskId) so it can never re-trigger itself;
+  children are marked `reportedToParent` via a jsonb merge on `context` (not a
+  schema change) so a batch reports exactly once.
+- `GoalProgressJob` (`goal_progress`, `*/30 * * * *`) — drives each active goal to
+  a conclusion: decompose it (accepted but never broken down), close it out
+  (work finished), or change approach (all tasks failed). Leaves in-flight goals
+  alone.
+- `FailureReviewJob` (`failure_review`, `15 */2 * * *`) — clusters 24h failures by
+  agent + normalized error signature (UUIDs/numbers/timestamps stripped so one
+  root cause is one cluster) and hands the CEO a triage task that teaches the
+  capacity-vs-missing-capability-vs-defect-vs-bad-instructions distinction.
+  Single one-off failures are treated as noise, not escalated.
+- `BranchReviewJob` (`branch_review`) — a generic branch heartbeat, seeded for the
+  COO (hourly, with live BuildMyBot2 telemetry) and CTO (every 2h). Role-specific
+  focus lives in the job payload, so cadence and emphasis are tunable from the
+  jobs table without a redeploy.
+- `BaseAgent.executeTask` self-review — when an agent produces a no-tool-call
+  "done" turn, it gets ONE critique turn (tools still attached) before that is
+  accepted: did you do the work or only describe it; if you delegated, call
+  get_delegation_status before claiming delivery; an empty-results answer is a
+  failed search strategy, not an answer. Costs exactly one extra LLM call per
+  task, bounded by `selfReviewed`; `APEX_SELF_REVIEW=0` disables it.
+- `ToolContext.goalId` is now populated (it was read by `sendMessage` but never
+  set), so delegated tasks inherit their goal and roll up correctly.
+- `GoalReviewJob` is now idempotent — it previously inserted a fresh CEO review
+  every 15 minutes regardless of whether the last one had been worked, building a
+  backlog of stale snapshots whenever the CEO was busy or the LLM chain was
+  briefly exhausted. All new handlers carry the same guard.
+- Manager agents got the new tools + prompt sections making verification of
+  delegated work mandatory before reporting (CEO, COO, CTO, Lead Developer).
+
+**Two pre-existing bugs found and fixed while bootstrapping a clean database
+(both blocked fresh-DB startup; neither was caused by this work):**
+- `lib/db/src/client.ts` — `window` is a reserved Postgres keyword and was used
+  unquoted in the `predictive_forecasts` DDL. The syntax error aborted `migrate()`
+  part-way, so `predictive_forecasts`, `risk_assessments` and
+  `integration_settings` were never created on a fresh database. It surfaced only
+  as the swallowed "migration skipped or deferred" warning, and Drizzle quotes
+  identifiers itself so ORM reads/writes hid the gap. Now quoted.
+- `goals.project_id` was added to `schema.ts` on 2026-07-18 but never to the DDL,
+  so on a fresh database EVERY goal insert failed and `submitGoal` could not
+  bootstrap. Fixed with an additive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`,
+  matching the existing `next_retry_at` pattern — a no-op against the live
+  database, which already has the column. Not a schema change: it makes the DDL
+  match the schema already deployed.
+
+**Verified 2026-07-28 — functionally, not just compiled.** Per the standing
+discipline that compiling is necessary but not sufficient, both new scripts were
+run against a REAL Postgres 16 with the REAL migrated schema, exercising the
+actual handler classes and actual tool implementations against real rows:
+- `scripts/verify-autonomy-loop.ts` — 40/40 checks pass. Asserts on real returned
+  data, including: the follow-up job DEFERS while a sibling still runs and fires
+  once all finish; the synthesis lands on the delegator (not the worker), is a
+  root task, inherits the goal, and carries the real result AND error text; a
+  second run does not re-report; `get_delegation_status` returns 2 done/1 failed
+  with guidance to act on the failure; `update_goal_status` refuses to close a
+  goal with open work and refuses to close without a result, then closes cleanly
+  once work is genuinely finished; failure clustering collapses varying
+  ids/numbers into one cluster; every handler is idempotent on re-run; the
+  escalation lands as a pending approval row with urgency+category.
+- `scripts/verify-autonomy-scheduler.ts` — 9/9 checks pass. All five new cron
+  expressions parse to sane future runs, and the real `JobScheduler` dispatched
+  and completed all four new job types (catching the "No handler registered"
+  failure mode, with a bogus-job control proving the assertion is meaningful).
+- `pnpm run typecheck` — clean for all 9 server-side packages and `tsc --build`.
+
+One behavior worth calling out, found during verification and kept deliberately:
+a goal cannot be closed while its delegation-results review is still unworked.
+The manager must actually process the outcomes before the goal can be reported
+complete. That is the closed loop doing its job, not a bug.
+
+**NOT verified (honest):** nothing here has been deployed or run live. The two
+pre-existing typecheck failures — `packages/convex-backend` (subagent-written
+`toolRegistry.ts`, codegen never run, documented as UNVERIFIED in apexplan.md)
+and `packages/dashboard` (imports `@workspace/convex-backend/api`, which does not
+build) — were confirmed to fail identically on a clean tree and are untouched by
+this work. They mean `pnpm run build` cannot currently pass end-to-end, so the
+dashboard bundle must be built from a tree where the Convex migration is either
+finished or reverted before this deploys.
+
+**Still charter-gated / still blocked on Don (unchanged):** GITHUB_TOKEN on the
+live service (the engineering PR loop cannot open PRs without it — the new
+failure triage will now surface this as a missing-capability escalation rather
+than silently retrying), BUILDMYBOT_VERCEL_DEPLOY_HOOK, BUILDMYBOT_CRON_SECRET,
+and Phase C recurring sales (live Stripe + a real outbound email/SMS channel,
+both permanently human-approval-gated for financial transactions and external
+sends).
+
+## Update — 2026-07-28 (later): silent false completions — root cause of "it stopped accomplishing tasks"
+A live log excerpt from a real goal ("whats up with tubescribe not working?")
+showed the delegation chain working exactly as designed — CEO → CTO → Lead Dev →
+DevOps, four agents, twelve seconds — and then producing NOTHING, with the task
+recorded as `done`. Two distinct bugs, both now fixed:
+
+**1. Text-encoded tool calls were treated as task completion (the serious one).**
+The DevOps agent emitted its tool call as plain text in the message body:
+
+    <function.runInSandbox [{"language": "python", "code": "...", "timeoutMs": 10000}]</function
+
+The provider returned `toolCalls: []`, so `executeTask` read that as "the agent
+is finished", called `taskQueue.complete()`, and stored the pseudo-call text as
+the task's RESULT. Nothing executed. The task was marked done. This is the worst
+failure mode an autonomous system can have, because a false success propagates
+upward: the delegating manager reads a `done` child, reports the initiative
+delivered, and (post-Phase-C) the goal closes on work that never happened.
+
+Cause is the model, not the framework: smaller/open models — precisely the ones
+the fallback chain drops to when the primary provider is exhausted (gpt-oss,
+qwen, glm, gemini-via-OpenRouter) — do not reliably use the structured
+tool-calling API. So this gets WORSE exactly when providers are degraded, which
+is when it is hardest to notice.
+
+Fixed in `packages/core/src/malformed-tool-calls.ts` + the `executeTask` loop:
+detect six known text-encoded call syntaxes, push one concrete correction, and
+if the model repeats it, FAIL the task honestly rather than record a lie. The
+detector deliberately does NOT parse-and-execute what it finds — a model that
+cannot use the tool API correctly is evidence something is wrong with the
+provider, and guessing intent then executing it (including approval-gated tools
+like `runInSandbox`) is how an autonomous system takes an unsanctioned action.
+
+False positives were treated as the equal risk, since one would fail a task that
+actually succeeded. Two defenses: every pattern requires structural call syntax
+(never a bare tool name in prose), and the captured name must be a tool the
+agent actually has. Verified against the real CEO output from this same log
+("**Delegation Complete** — I used sendMessage to delegate to the CTO…"), which
+is correctly NOT flagged.
+
+**2. Task failures logged no reason.** `AgentLogger.error(msg, err)` puts the
+Error in the log row's `data` column, but the dashboard's Log Stream renders
+`message` — so every failure appeared as a bare `Task failed: <title>`. In the
+same excerpt, Lead Developer failed three seconds after delegating and the
+stream gave no cause at all, making live triage impossible. The reason is now in
+the message.
+
+**Verified 2026-07-28:** `scripts/verify-malformed-tool-calls.ts` — 14/14,
+including the exact `<function.runInSandbox [...]` line captured live, all six
+syntaxes, and six false-positive cases drawn from real agent prose. Both earlier
+suites re-run green (`verify-autonomy-loop.ts` 40/40, `verify-autonomy-scheduler.ts`
+9/9). Typecheck clean across core/agents/api-server/background-jobs.
+
+**NOT verified:** not deployed. And this does not explain the ERROR states on
+COO/CTO/LEAD_DEV/LEAD_RESEARCH — that still needs
+`scripts/triage-stalled-agents.mjs` run with live credentials. The two findings
+are related in cause (a degraded provider chain produces both silent false
+completions and hard failures) but they are separate bugs.

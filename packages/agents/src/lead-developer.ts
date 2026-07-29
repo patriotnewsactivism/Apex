@@ -79,6 +79,11 @@ export class LeadDeveloperAgent extends BaseAgent {
         'create_pull_request',
         'buildmybot_deploy',
         'buildmybot_health_check',
+        // Verify sub-work handed to Frontend/Backend/DevOps/QA before
+        // reporting an implementation complete to the CTO.
+        'get_delegation_status',
+        'get_task_details',
+        'escalate_to_human',
       ],
       maxIterations: 30,
       approvalRequired: false,

@@ -15,6 +15,11 @@ import {
   MaintenanceJob,
   GoalReviewJob,
   LearningAnalysisJob,
+  DelegationFollowupJob,
+  GoalProgressJob,
+  FailureReviewJob,
+  BranchReviewJob,
+  StalledWorkRecoveryJob,
 } from './handlers/index.js';
 
 export interface JobSchedulerConfig {
@@ -38,6 +43,17 @@ export class JobScheduler {
     this.executor.registerHandler('maintenance', new MaintenanceJob());
     this.executor.registerHandler('goal_review', new GoalReviewJob());
     this.executor.registerHandler('learning_analysis', new LearningAnalysisJob());
+    // Closed-loop autonomy handlers: delegation results route back to the
+    // delegator, goals get driven to a real conclusion, recurring failures
+    // reach a decision-maker, and the COO/CTO branches get their own heartbeat
+    // instead of only acting when the CEO happens to message them.
+    this.executor.registerHandler('delegation_followup', new DelegationFollowupJob());
+    this.executor.registerHandler('goal_progress', new GoalProgressJob());
+    this.executor.registerHandler('failure_review', new FailureReviewJob());
+    this.executor.registerHandler('branch_review', new BranchReviewJob());
+    // Capacity failures are transient by nature; without this, a provider
+    // outage permanently destroys whatever work was in flight.
+    this.executor.registerHandler('stalled_work_recovery', new StalledWorkRecoveryJob());
   }
 
   /** Start the scheduler polling loop. */
