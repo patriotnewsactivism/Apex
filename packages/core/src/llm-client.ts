@@ -14,8 +14,9 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 // — team credits/spending limit exhausted, key itself is valid), Kilo Code
 // (402 — negative account balance). Chain order now:
 //
-//   Cerebras → Groq → Google Gemini → DeepSeek → Qwen Cloud → GLM-Aliyun →
-//   Mistral → Qwen Cloud (Anthropic) → GLM-Zai → Poolside → Cohere → OpenRouter (free) x2
+//   Cerebras → Cerebras-2 → Groq → Groq-2 → Gemini → Gemini-2 → DeepSeek →
+//   NVIDIA NIM → Together AI → Qwen Cloud → GLM-Aliyun → Mistral →
+//   Qwen Cloud (Anthropic) → GLM-Zai → Poolside → Cohere → OpenRouter (free) x2
 //
 // Dead/blocked entries kept in the chain rather than removed — harmless
 // no-ops today, zero-code-change recovery the moment Don rotates a key or
@@ -55,15 +56,27 @@ const PROVIDERS: Array<{
 }> = [
   // Cerebras — re-verified live 2026-07-26.
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
+  // Cerebras (2nd account) — same endpoint, separate key for 2x rate limit.
+  { name: 'cerebras-2', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_2', fallbackModel: 'gpt-oss-120b' },
   // Groq — re-verified live 2026-07-26.
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
+  // Groq (2nd account) — 2x daily token capacity (100K → 200K TPD).
+  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.3-70b-versatile' },
   // Google Gemini — added 2026-07-29. Free tier: 1,500 req/day, 15 RPM, 1M
   // tokens/min. Supports function calling reliably. OpenAI-compatible endpoint
   // at generativelanguage.googleapis.com/v1beta/openai/. Key from aistudio.google.com.
   { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-3.6-flash' },
+  // Google Gemini (2nd project) — separate Google Cloud project = separate quota.
+  { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-3.6-flash' },
   // DeepSeek — added 2026-07-29. Free API credits for new accounts, reliable
   // function-calling support (deepseek-chat). OpenAI-compatible endpoint.
   { name: 'deepseek', baseURL: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', fallbackModel: 'deepseek-chat' },
+  // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B supports
+  // function calling. OpenAI-compatible at integrate.api.nvidia.com.
+  { name: 'nvidia', baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'meta/llama-3.3-70b-instruct' },
+  // Together AI — free credits for new accounts. Llama 3.3 70B Turbo supports
+  // function calling. OpenAI-compatible at api.together.xyz.
+  { name: 'together', baseURL: 'https://api.together.xyz/v1', apiKeyEnv: 'TOGETHER_API_KEY', fallbackModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' },
   // Cohere (production) — re-verified live 2026-07-26, genuine production tier
   // (clean completion, no trial-cap warning).
   // toolCallingReliable: false — the OpenAI-compatibility shim accepts a
@@ -821,7 +834,7 @@ export function getConfiguredProviders(): Array<{ name: string; configured: bool
  * ever set/clear a key this client actually consumes — never an arbitrary
  * environment variable. */
 export function getKnownApiKeyEnvs(): string[] {
-  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'GEMINI_API_KEY', 'STRIPE_SECRET_KEY'];
+  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'GEMINI_API_KEY', 'STRIPE_SECRET_KEY', 'CEREBRAS_API_KEY_2', 'GROQ_API_KEY_2', 'GEMINI_API_KEY_2', 'NVIDIA_API_KEY', 'TOGETHER_API_KEY'];
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {
