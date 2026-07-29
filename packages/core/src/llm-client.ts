@@ -483,6 +483,7 @@ class MultiProviderClient {
           const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
           console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
           providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
+          recordProviderFailure(provider.name, model, status, truncatedMsg);
           continue;
         }
       }
@@ -587,6 +588,7 @@ class MultiProviderClient {
         console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
 
         providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
+        recordProviderFailure(provider.name, model, status, truncatedMsg);
         continue; // try next provider in the chain
       }
     }
@@ -698,6 +700,59 @@ async function getLocalPipeline() {
 // reads. Bounded and in-memory by design — it describes the CURRENT process.
 
 const degradedToolCallEvents: Array<{ provider: string; model: string; at: number }> = [];
+
+// Why each provider in the chain was passed over. Until now these errors went
+// only to console.warn, which is unreadable from anywhere but the container's
+// stdout — so "qwen-cloud is configured and healthy but never serves" was
+// undiagnosable from the API. Bounded and in-memory: it describes the CURRENT
+// process, exactly like the degraded tracker above.
+const providerFailureEvents: Array<{
+  provider: string;
+  model: string;
+  status?: string | number;
+  message: string;
+  at: number;
+}> = [];
+
+function recordProviderFailure(
+  provider: string,
+  model: string,
+  status: string | number | undefined,
+  message: string,
+): void {
+  providerFailureEvents.push({ provider, model, status, message, at: Date.now() });
+  if (providerFailureEvents.length > 300) providerFailureEvents.shift();
+}
+
+/** Most recent failure per provider in the last `windowMs` (default 1h).
+ *  This is how you find out that the provider you promoted to the top of the
+ *  chain is 404ing on its model id rather than actually being used. */
+export function getProviderFailureReport(windowMs = 3_600_000): Array<{
+  provider: string;
+  model: string;
+  status?: string | number;
+  message: string;
+  count: number;
+  lastAt: string;
+}> {
+  const cutoff = Date.now() - windowMs;
+  const byProvider = new Map<string, { e: (typeof providerFailureEvents)[number]; count: number }>();
+  for (const e of providerFailureEvents) {
+    if (e.at < cutoff) continue;
+    const prev = byProvider.get(e.provider);
+    byProvider.set(e.provider, { e, count: (prev?.count ?? 0) + 1 });
+  }
+  return [...byProvider.values()]
+    .map(({ e, count }) => ({
+      provider: e.provider,
+      model: e.model,
+      status: e.status,
+      message: e.message,
+      count,
+      lastAt: new Date(e.at).toISOString(),
+    }))
+    .sort((a, b) => b.count - a.count);
+}
 
 function recordDegradedToolCalling(provider: string, model: string): void {
   degradedToolCallEvents.push({ provider, model, at: Date.now() });

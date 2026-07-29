@@ -4,7 +4,7 @@
  * expensive to get wrong (a genuine short "nothing to do", and a real report
  * that merely mentions a limitation).
  */
-import { detectNonCompletion } from '../packages/core/src/non-completion.js';
+import { detectNonCompletion, detectAnnouncedButNotTaken } from '../packages/core/src/non-completion.js';
 
 let failures = 0;
 const check = (l: string, c: boolean, d?: unknown) => {
@@ -45,6 +45,23 @@ mustNot('closing out a goal honestly with a partial',
 mustNot('empty content', '');
 mustNot('one N/A field in an otherwise real report',
   'Persona: Susan. Severity: Medium. Finding: checkout button unlabeled for screen readers. Suggested Fix: add aria-label. Owner: N/A');
+
+console.log('\n── ANNOUNCED-BUT-NEVER-TAKEN (why leads stopped saving) ──');
+const TOOLS = ['saveResearchedLeadsBatch', 'saveResearchedLead', 'searchBusinessDirectory', 'sendMessage'];
+const mustA = (l: string, s: string) => { const r = detectAnnouncedButNotTaken(s, TOOLS); check(l, r !== null, r); return r; };
+const mustNotA = (l: string, s: string) => check(l, detectAnnouncedButNotTaken(s, TOOLS) === null, detectAnnouncedButNotTaken(s, TOOLS));
+
+const real = mustA('REAL live string: "I will now save these leads using saveResearchedLeadsBatch."',
+  'I have found 20 legal firms in Miami, FL. I will now save these leads using saveResearchedLeadsBatch.');
+console.log(`      → ${real?.pattern}`);
+mustA('"Let me call searchBusinessDirectory"', 'Let me call searchBusinessDirectory to find more prospects.');
+mustA('"Next, I will use sendMessage"', 'Analysis done. Next, I will use sendMessage to brief the COO.');
+
+mustNotA('legitimate hand-off naming no tool', 'I have delegated this to the CTO and I will report back once they respond.');
+mustNotA('past tense — work actually done', 'I called saveResearchedLeadsBatch and persisted 32 leads. No duplicates.');
+mustNotA('tool named far from any intent phrase',
+  'I will summarize below.\n\n' + 'Findings are extensive and detailed across many regions and industries. '.repeat(6) + '\nEarlier steps used saveResearchedLeadsBatch successfully.');
+check('no tools available → cannot match', detectAnnouncedButNotTaken('I will now save these leads using saveResearchedLeadsBatch.', []) === null);
 
 console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
