@@ -124,11 +124,11 @@ const PROVIDERS: Array<{
   // for a custom agent backend). No-op until ZAI_API_KEY is configured.
   { name: 'glm-zai', baseURL: 'https://api.z.ai/api/paas/v4', apiKeyEnv: 'ZAI_API_KEY', fallbackModel: 'glm-5.2' },
   // Poolside — re-added 2026-07-29. Was removed when inference.poolside.ai
-  // had DNS/connection failures; endpoint is live again now (403 auth check
-  // confirms the server is running). Code-generation-focused model
-  // (laguna-m.1), OpenAI-compatible. Keys start with sky_. No-op until
-  // POOLSIDE_API_KEY is configured.
-  { name: 'poolside', baseURL: 'https://inference.poolside.ai/v1', apiKeyEnv: 'POOLSIDE_API_KEY', fallbackModel: 'laguna-m.1' },
+  // had DNS/connection failures; endpoint is live again now. Old key still
+  // works (verified with a real completion call). Model catalog changed:
+  // laguna-m.1 → poolside/laguna-s-2.1 (the larger of two available models).
+  // OpenAI-compatible. Keys start with sky_.
+  { name: 'poolside', baseURL: 'https://inference.poolside.ai/v1', apiKeyEnv: 'POOLSIDE_API_KEY', fallbackModel: 'poolside/laguna-s-2.1' },
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.

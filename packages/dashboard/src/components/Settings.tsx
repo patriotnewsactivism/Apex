@@ -86,7 +86,7 @@ const INTEGRATIONS: IntegrationConfig[] = [
   {
     id: 'poolside',
     name: 'Poolside',
-    description: 'Laguna model for code generation',
+    description: 'Laguna-S 2.1 model for code generation',
     icon: <Cpu size={18} />,
     category: 'ai',
     envVars: [{ key: 'POOLSIDE_API_KEY', label: 'API Key', placeholder: 'sky_...', secret: true }],
