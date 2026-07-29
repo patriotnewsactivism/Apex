@@ -16,6 +16,7 @@ import {
   Globe,
   Mail,
   MessageSquare,
+  Phone,
   GitBranch,
   Database,
   Shield,
@@ -90,6 +91,18 @@ const INTEGRATIONS: IntegrationConfig[] = [
     category: 'ai',
     envVars: [{ key: 'POOLSIDE_API_KEY', label: 'API Key', placeholder: 'sky_...', secret: true }],
     docsUrl: 'https://platform.poolside.ai',
+  },
+  {
+    id: 'vapi',
+    name: 'Vapi',
+    description: 'AI voice agent outbound calling (make_outbound_call tool)',
+    icon: <Phone size={18} />,
+    category: 'ai',
+    envVars: [
+      { key: 'VAPI_API_KEY', label: 'API Key', placeholder: 'Private key from dashboard.vapi.ai', secret: true },
+      { key: 'VAPI_PHONE_NUMBER_ID', label: 'Phone Number ID', placeholder: 'ID of purchased Vapi number', secret: false },
+    ],
+    docsUrl: 'https://dashboard.vapi.ai',
   },
   {
     id: 'github-models',

@@ -1875,7 +1875,6 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             },
             silenceTimeoutSeconds: 30,
             responseDelaySeconds: 0.4,
-            endCallMessageEnabled: true,
           },
           phoneNumberId,
           customer: {
