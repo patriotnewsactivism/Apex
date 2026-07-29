@@ -7,3 +7,4 @@ export * from './buildmybot-connector.js';
 export * from './memory.js';
 export * from './task-queue.js';
 export * from './base-agent.js';
+export * from './non-completion.js';
