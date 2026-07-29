@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
+import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector.js';
 import { createOrchestrationTools } from './orchestration-tools.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
@@ -1986,6 +1987,12 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     // bare APEX install never exposes half-working tools to the agents.
     if (buildMyBotConfigured()) {
       for (const tool of createBuildMyBotTools()) {
+        _registry.register(tool);
+      }
+    }
+
+    if (caseBuddyConfigured()) {
+      for (const tool of createCaseBuddyTools()) {
         _registry.register(tool);
       }
     }
