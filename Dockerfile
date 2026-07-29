@@ -31,6 +31,14 @@ COPY packages/api-server/package.json ./packages/api-server/
 COPY packages/api-server/tsconfig.json ./packages/api-server/
 COPY packages/dashboard/package.json ./packages/dashboard/
 COPY packages/dashboard/tsconfig.json ./packages/dashboard/
+COPY packages/convex-backend/package.json ./packages/convex-backend/
+COPY packages/convex-backend/tsconfig.json ./packages/convex-backend/
+COPY packages/buildmybot-ops/package.json ./packages/buildmybot-ops/
+COPY packages/cicd-worker/package.json ./packages/cicd-worker/
+COPY packages/cicd-worker/tsconfig.json ./packages/cicd-worker/
+COPY packages/orchestrator/package.json ./packages/orchestrator/
+COPY packages/orchestrator/tsconfig.json ./packages/orchestrator/
+COPY packages/frontend/package.json ./packages/frontend/
 
 # Install all deps (no-frozen-lockfile to tolerate catalog/override drift)
 RUN pnpm install --no-frozen-lockfile --ignore-scripts
