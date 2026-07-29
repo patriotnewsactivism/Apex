@@ -14,8 +14,8 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 // — team credits/spending limit exhausted, key itself is valid), Kilo Code
 // (402 — negative account balance). Chain order now:
 //
-//   Cerebras → Groq → Cohere (prod) → Mistral → Qwen Cloud → GitHub Models →
-//   Cohere (trial) → xAI → Kilo Code → OpenRouter (free) x2
+//   Cerebras → Groq → DeepSeek → Qwen Cloud → GLM-Aliyun → Mistral →
+//   Qwen Cloud (Anthropic) → GLM-Zai → Poolside → Cohere → OpenRouter (free) x2
 //
 // Dead/blocked entries kept in the chain rather than removed — harmless
 // no-ops today, zero-code-change recovery the moment Don rotates a key or
@@ -57,6 +57,9 @@ const PROVIDERS: Array<{
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
   // Groq — re-verified live 2026-07-26.
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
+  // DeepSeek — added 2026-07-29. Free API credits for new accounts, reliable
+  // function-calling support (deepseek-chat). OpenAI-compatible endpoint.
+  { name: 'deepseek', baseURL: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', fallbackModel: 'deepseek-chat' },
   // Cohere (production) — re-verified live 2026-07-26, genuine production tier
   // (clean completion, no trial-cap warning).
   // toolCallingReliable: false — the OpenAI-compatibility shim accepts a
@@ -120,6 +123,12 @@ const PROVIDERS: Array<{
   // inside specific coding tools like Claude Code/Cline/OpenCode, not a fit
   // for a custom agent backend). No-op until ZAI_API_KEY is configured.
   { name: 'glm-zai', baseURL: 'https://api.z.ai/api/paas/v4', apiKeyEnv: 'ZAI_API_KEY', fallbackModel: 'glm-5.2' },
+  // Poolside — re-added 2026-07-29. Was removed when inference.poolside.ai
+  // had DNS/connection failures; endpoint is live again now (403 auth check
+  // confirms the server is running). Code-generation-focused model
+  // (laguna-m.1), OpenAI-compatible. Keys start with sky_. No-op until
+  // POOLSIDE_API_KEY is configured.
+  { name: 'poolside', baseURL: 'https://inference.poolside.ai/v1', apiKeyEnv: 'POOLSIDE_API_KEY', fallbackModel: 'laguna-m.1' },
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.

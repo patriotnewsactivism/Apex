@@ -44,6 +44,15 @@ const INTEGRATIONS: IntegrationConfig[] = [
     docsUrl: 'https://console.groq.com',
   },
   {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    description: 'DeepSeek-V3 chat model, reliable tool calling (free credits)',
+    icon: <Cpu size={18} />,
+    category: 'ai',
+    envVars: [{ key: 'DEEPSEEK_API_KEY', label: 'API Key', placeholder: 'sk-...', secret: true }],
+    docsUrl: 'https://platform.deepseek.com',
+  },
+  {
     id: 'cerebras',
     name: 'Cerebras',
     description: 'High-speed AI inference',
