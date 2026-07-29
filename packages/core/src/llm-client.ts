@@ -40,6 +40,18 @@ const PROVIDERS: Array<{
   // Cap max_tokens per provider — some models reject requests with
   // max_tokens higher than their supported output limit (Cohere 400).
   maxOutputTokens?: number;
+  // FALSE = this provider's model does not reliably emit structured tool
+  // calls. Added 2026-07-29 after persistActualProvider (finally wired up)
+  // revealed 11 of 13 live agents had fallen through to
+  // cohere/command-r-plus and QA Director to gpt-oss-20b:free, because
+  // cerebras and groq were both exhausted. Every symptom that day traced to
+  // it: agents answering "I am unable to access the code" without ever
+  // calling readFile, "I couldn't find any results" without ever calling
+  // searchBusinessDirectory (which returns 20 real businesses when called
+  // directly), tool calls emitted as literal text, and all-N/A reports.
+  // The workforce was not broken — it was running on a tier that cannot
+  // drive tools, and nothing said so.
+  toolCallingReliable?: boolean;
 }> = [
   // Cerebras — re-verified live 2026-07-26.
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
@@ -47,7 +59,19 @@ const PROVIDERS: Array<{
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
   // Cohere (production) — re-verified live 2026-07-26, genuine production tier
   // (clean completion, no trial-cap warning).
-  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024', maxOutputTokens: 4096 },
+  // toolCallingReliable: false — the OpenAI-compatibility shim accepts a
+  // tools array but command-r-plus frequently answers in prose instead of
+  // calling anything. Kept in the chain (better than no LLM at all), but the
+  // degradation is now surfaced rather than silent.
+  // PROMOTED above cohere 2026-07-29. Qwen Cloud was configured and live
+  // (health reported qwen-cloud:ok) but the chain never reached it: cerebras
+  // and groq were exhausted, cohere then answered SUCCESSFULLY — in prose,
+  // without calling tools — so the fallback stopped there and never tried
+  // Qwen. Ordering by "does it respond" instead of "can it do the work" is
+  // what stalled the workforce; a provider that answers but cannot call tools
+  // must sit BELOW ones that can.
+  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
+  { name: 'glm-aliyun', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
   // Mistral RE-ADDED 2026-07-26: Don rotated a fresh key same-day, confirmed
   // live via direct completion call (real "Ok!" response) before re-adding.
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
@@ -66,7 +90,6 @@ const PROVIDERS: Array<{
   // hyphenated public IDs — qwen3-coder-plus AND qwen-plus both 404 "Model not
   // exist" here (auth succeeded, so the endpoint/key wiring was right, only the
   // model ID was wrong). qwen3.7-plus is the balanced large-context workhorse.
-  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
   // Qwen Cloud, second entry (added 2026-07-27): the SAME Token Plan account/
   // key, exposed through Aliyun's Anthropic-Messages-API-compatible endpoint
   // instead of the OpenAI-compatible one above. Model ID reused from the
@@ -89,7 +112,6 @@ const PROVIDERS: Array<{
   // (docs confirm general Model Studio + Token Plan support the model, but no
   // real completion call has been made against this account yet) — verify
   // before relying on it.
-  { name: 'glm-aliyun', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
   // GLM-5.2, second path — Zhipu's own direct Z.ai API. Independent of the
   // Aliyun account/quota above (different key, different infra) — a genuinely
   // separate fallback, not a duplicate. General pay-per-token API
@@ -101,8 +123,12 @@ const PROVIDERS: Array<{
   // OpenRouter FREE tier -- kept: daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.
-  { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
-  { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  // DEMOTED 2026-07-29 to just above the free tier: still a genuine fallback
+  // and far better than nothing, but it cannot reliably drive tools (see
+  // toolCallingReliable), so every provider that can now gets tried first.
+  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024', maxOutputTokens: 4096, toolCallingReliable: false },
+  { name: 'openrouter-free', toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  { name: 'openrouter-free-2', toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 ];
 
 // ─── Role-aware Qwen Cloud model selection ─────────────────────────────────
@@ -519,6 +545,20 @@ class MultiProviderClient {
         if (providerErrors.length > 0) {
           console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
         }
+        // The condition that silently stopped the business on 2026-07-29:
+        // tools were offered, but the provider the chain fell through to
+        // cannot reliably call them. The request "succeeds" and the agent
+        // answers in prose ("I couldn't find any results"), so nothing
+        // upstream can tell this apart from a genuine empty result.
+        if (provider.toolCallingReliable === false && openaiTools && openaiTools.length > 0) {
+          recordDegradedToolCalling(provider.name, model);
+          console.warn(
+            `[LLM] DEGRADED TOOL CALLING: ${provider.name}/${model} served a request with ` +
+              `${openaiTools.length} tool(s) offered, but this provider does not reliably emit ` +
+              `structured tool calls. Expect agents to answer in prose instead of acting. ` +
+              `Restore capacity on an earlier provider in the chain.`,
+          );
+        }
 
         return {
           content: choice.message.content ?? '',
@@ -642,6 +682,38 @@ async function getLocalPipeline() {
 /** Which LLM fallback providers currently have an API key configured.
  * Read-only, no network calls — used by health_check to report LLM
  * connectivity config without burning real API requests on every check. */
+// ─── Degraded-tool-calling tracker ───────────────────────────────────────────
+// Remembers the most recent occasions the chain served a tool-bearing request
+// from a provider that cannot reliably call tools, so the condition is
+// queryable (health checks, reports) instead of only being a log line nobody
+// reads. Bounded and in-memory by design — it describes the CURRENT process.
+
+const degradedToolCallEvents: Array<{ provider: string; model: string; at: number }> = [];
+
+function recordDegradedToolCalling(provider: string, model: string): void {
+  degradedToolCallEvents.push({ provider, model, at: Date.now() });
+  if (degradedToolCallEvents.length > 200) degradedToolCallEvents.shift();
+}
+
+/** Tool-bearing requests served by a tool-unreliable provider in the last
+ *  `windowMs` (default 1h). Non-zero means agents are very likely answering in
+ *  prose instead of acting — the business looks busy and produces nothing. */
+export function getDegradedToolCallingReport(windowMs = 3_600_000): {
+  degraded: boolean;
+  count: number;
+  providers: string[];
+  since: string | null;
+} {
+  const cutoff = Date.now() - windowMs;
+  const recent = degradedToolCallEvents.filter((e) => e.at >= cutoff);
+  return {
+    degraded: recent.length > 0,
+    count: recent.length,
+    providers: [...new Set(recent.map((e) => `${e.provider}/${e.model}`))],
+    since: recent.length > 0 ? new Date(recent[0].at).toISOString() : null,
+  };
+}
+
 export function getConfiguredProviders(): Array<{ name: string; configured: boolean }> {
   return PROVIDERS.map((p) => ({ name: p.name, configured: Boolean(process.env[p.apiKeyEnv]) }));
 }
