@@ -45,6 +45,15 @@ const INTEGRATIONS: IntegrationConfig[] = [
     docsUrl: 'https://console.groq.com',
   },
   {
+    id: 'google-gemini',
+    name: 'Google Gemini',
+    description: 'Gemini 2.0 Flash — free, reliable tool calling (1,500 req/day)',
+    icon: <Cpu size={18} />,
+    category: 'ai',
+    envVars: [{ key: 'GEMINI_API_KEY', label: 'API Key', placeholder: 'AIza...', secret: true }],
+    docsUrl: 'https://aistudio.google.com',
+  },
+  {
     id: 'deepseek',
     name: 'DeepSeek',
     description: 'DeepSeek-V3 chat model, reliable tool calling (free credits)',

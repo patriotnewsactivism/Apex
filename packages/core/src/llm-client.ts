@@ -14,8 +14,8 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 // — team credits/spending limit exhausted, key itself is valid), Kilo Code
 // (402 — negative account balance). Chain order now:
 //
-//   Cerebras → Groq → DeepSeek → Qwen Cloud → GLM-Aliyun → Mistral →
-//   Qwen Cloud (Anthropic) → GLM-Zai → Poolside → Cohere → OpenRouter (free) x2
+//   Cerebras → Groq → Google Gemini → DeepSeek → Qwen Cloud → GLM-Aliyun →
+//   Mistral → Qwen Cloud (Anthropic) → GLM-Zai → Poolside → Cohere → OpenRouter (free) x2
 //
 // Dead/blocked entries kept in the chain rather than removed — harmless
 // no-ops today, zero-code-change recovery the moment Don rotates a key or
@@ -57,6 +57,10 @@ const PROVIDERS: Array<{
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
   // Groq — re-verified live 2026-07-26.
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
+  // Google Gemini — added 2026-07-29. Free tier: 1,500 req/day, 15 RPM, 1M
+  // tokens/min. Supports function calling reliably. OpenAI-compatible endpoint
+  // at generativelanguage.googleapis.com/v1beta/openai/. Key from aistudio.google.com.
+  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-2.0-flash' },
   // DeepSeek — added 2026-07-29. Free API credits for new accounts, reliable
   // function-calling support (deepseek-chat). OpenAI-compatible endpoint.
   { name: 'deepseek', baseURL: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', fallbackModel: 'deepseek-chat' },
@@ -787,7 +791,7 @@ export function getConfiguredProviders(): Array<{ name: string; configured: bool
  * ever set/clear a key this client actually consumes — never an arbitrary
  * environment variable. */
 export function getKnownApiKeyEnvs(): string[] {
-  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID'];
+  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'GEMINI_API_KEY'];
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {
