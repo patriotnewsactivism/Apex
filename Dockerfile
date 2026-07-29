@@ -38,7 +38,14 @@ COPY packages/cicd-worker/package.json ./packages/cicd-worker/
 COPY packages/cicd-worker/tsconfig.json ./packages/cicd-worker/
 COPY packages/orchestrator/package.json ./packages/orchestrator/
 COPY packages/orchestrator/tsconfig.json ./packages/orchestrator/
-COPY packages/frontend/package.json ./packages/frontend/
+# NOTE: packages/frontend is deliberately NOT copied. The directory contains
+# only a stray src/ — it has no package.json, so pnpm does not treat it as a
+# workspace package and nothing depends on it. A `COPY packages/frontend/
+# package.json` line was added here on 2026-07-29 alongside the (correct)
+# convex-backend fix, and it failed every build since with:
+#   failed to compute cache key: "/packages/frontend/package.json": not found
+# Reproduced locally with a real `docker build` before removing. If frontend
+# ever becomes a real package, add the COPY back together with its package.json.
 
 # Install all deps (no-frozen-lockfile to tolerate catalog/override drift)
 RUN pnpm install --no-frozen-lockfile --ignore-scripts

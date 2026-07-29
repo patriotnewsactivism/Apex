@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery as useConvexQuery } from 'convex/react';
-import { api as convexApi } from '@workspace/convex-backend/api';
+import { api as convexApi } from '../lib/convexApi.js';
 import { api } from '../lib/api.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
 import type { Approval } from '../lib/api.js';

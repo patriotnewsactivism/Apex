@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useQuery as useConvexQuery } from 'convex/react';
-import { api as convexApi } from '@workspace/convex-backend/api';
+import { api as convexApi } from '../lib/convexApi.js';
 import { api } from '../lib/api.js';
 import { useApexEvent, useWebSocket } from '../hooks/useWebSocket.js';
 import { Zap, Target, ChevronRight, Activity } from 'lucide-react';
