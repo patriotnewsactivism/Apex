@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { useQuery as useConvexQuery } from 'convex/react';
-import { api } from '@workspace/convex-backend/api';
+import { api } from '../lib/convexApi.js';
 import type { Agent } from '../lib/api.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 
