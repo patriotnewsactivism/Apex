@@ -76,7 +76,7 @@ async function login() {
 async function retryFetch(url, opts, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(30000) });
+      const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(60000) });
       if (res.status === 502 || res.status === 503) {
         await new Promise(r => setTimeout(r, 2000 * (i + 1))); // backoff
         continue;
@@ -187,7 +187,7 @@ async function worker(workerId) {
 async function main() {
   await login();
 
-  const NUM_WORKERS = 3;
+  const NUM_WORKERS = 2;
   console.log(`Starting ${NUM_WORKERS} parallel workers...\n`);
 
   const workers = [];
