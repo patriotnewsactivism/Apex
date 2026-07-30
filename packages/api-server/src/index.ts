@@ -1,3 +1,4 @@
+// APEX API Server — force rebuild 2026-07-30 to clear stale Docker cache
 import { config } from 'dotenv';
 import { resolve, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
