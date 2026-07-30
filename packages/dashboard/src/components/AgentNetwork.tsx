@@ -1,6 +1,4 @@
 import { motion } from 'framer-motion';
-import { useQuery as useConvexQuery } from 'convex/react';
-import { api } from '../lib/convexApi.js';
 import type { Agent } from '../lib/api.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 
@@ -100,8 +98,6 @@ interface AgentNetworkProps {
 }
 
 export function AgentNetwork({ agents }: AgentNetworkProps) {
-  // Convex realtime query — live agent roster (alongside the TanStack prop)
-  const convexAgents = useConvexQuery(api.agents.list, {});
 
   const tiers: Record<number, Agent[]> = {};
   for (const a of agents) {

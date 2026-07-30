@@ -1,8 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useQuery as useConvexQuery } from 'convex/react';
-import { api as convexApi } from '../lib/convexApi.js';
 import { api } from '../lib/api.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
 import type { Task } from '../lib/api.js';
@@ -124,9 +122,6 @@ export function TaskBoard() {
     queryFn: () => api.tasks.list(),
     refetchInterval: 10000,
   });
-
-  // Convex realtime query — live task board (alongside TanStack polling)
-  const convexTasks = useConvexQuery(convexApi.tasks.list, {});
 
   // Refresh on task events
   useApexEvent('task:created', () => refetch());

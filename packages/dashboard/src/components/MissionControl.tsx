@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useQuery as useConvexQuery } from 'convex/react';
-import { api as convexApi } from '../lib/convexApi.js';
 import { api } from '../lib/api.js';
 import { useApexEvent, useWebSocket } from '../hooks/useWebSocket.js';
 import { Zap, Target, ChevronRight, Activity } from 'lucide-react';
@@ -99,9 +97,6 @@ export function MissionControl() {
     queryFn: () => api.goals.list(),
     refetchInterval: 15000,
   });
-
-  // Convex realtime query — live goals (alongside TanStack polling)
-  const convexGoals = useConvexQuery(convexApi.goals.list, {});
 
   useApexEvent('goal:created', () => refetch());
   useApexEvent('goal:updated', () => refetch());
