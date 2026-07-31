@@ -1,0 +1,9 @@
+{
+  "name": "@apex/cli",
+  "version": "0.1.0",
+  "description": "Installable Apex swarm — bootstrap an org chart, LLM fallback chain, and prompt-forge config into any repo.",
+  "bin": { "apex-install": "./bin/apex-install.js" },
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true
+}
