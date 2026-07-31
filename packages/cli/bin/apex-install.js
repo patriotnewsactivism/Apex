@@ -23,6 +23,10 @@ const args = process.argv.slice(2);
 const targetDir = args.find((a) => !a.startsWith("--")) || ".";
 const template = (args.find((a) => a.startsWith("--template="))?.split("=")[1]) || "full";
 const projectName = (args.find((a) => a.startsWith("--name="))?.split("=")[1]) || path.basename(path.resolve(targetDir));
+const requestedConnectors = (args.find((a) => a.startsWith("--connectors="))?.split("=")[1] || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const FULL_ORG_CHART = {
   roles: [
@@ -76,6 +80,44 @@ const force = args.includes("--force");
  * a project owner's manual edits to their own .apex/ config). Pass --force
  * to intentionally overwrite (e.g. after bumping a template default).
  */
+/**
+ * Connector catalog — declarative only. Installing a connector here does NOT
+ * perform any OAuth flow or network call; it just declares which optional
+ * integrations this project WANTS, and which env vars each one needs. The
+ * runtime loader (getConnectorStatus) then cross-checks actual process.env
+ * to report real configured/missing status — no guessing, no faking "connected".
+ */
+const CONNECTOR_CATALOG = {
+  slack: {
+    description: "Slack notifications (agent status posts, alerts)",
+    requiredEnvVars: ["SLACK_BOT_TOKEN"],
+  },
+  stripe: {
+    description: "Stripe billing (subscriptions, one-off charges)",
+    requiredEnvVars: ["STRIPE_SECRET_KEY"],
+  },
+  supabase: {
+    description: "Supabase (Postgres + auth + storage backend)",
+    requiredEnvVars: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
+  },
+};
+
+function buildConnectorsConfig() {
+  const connectors = {};
+  for (const [id, def] of Object.entries(CONNECTOR_CATALOG)) {
+    connectors[id] = {
+      enabled: requestedConnectors.includes(id),
+      description: def.description,
+      requiredEnvVars: def.requiredEnvVars,
+    };
+  }
+  const unknown = requestedConnectors.filter((id) => !CONNECTOR_CATALOG[id]);
+  if (unknown.length > 0) {
+    console.warn(`apex-install: warning — unknown connector id(s) ignored: ${unknown.join(", ")}. Known: ${Object.keys(CONNECTOR_CATALOG).join(", ")}`);
+  }
+  return connectors;
+}
+
 function write(relPath, content) {
   const full = path.join(targetDir, relPath);
   if (fs.existsSync(full) && !force) {
@@ -92,6 +134,7 @@ const written = [];
 written.push(write(".apex/agents.json", JSON.stringify({ project: projectName, ...orgChart }, null, 2) + "\n"));
 written.push(write(".apex/llm-chain.json", JSON.stringify(LLM_CHAIN, null, 2) + "\n"));
 written.push(write(".apex/prompt-forge.json", JSON.stringify(PROMPT_FORGE_CONFIG, null, 2) + "\n"));
+written.push(write(".apex/connectors.json", JSON.stringify(buildConnectorsConfig(), null, 2) + "\n"));
 written.push(
   write(
     ".github/workflows/apex-swarm-sync.yml",
