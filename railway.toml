@@ -4,8 +4,10 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "pnpm --filter @workspace/api-server run start"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 5
+restartPolicyMaxRetries = 10
 
 [[volumes]]
 mountPath = "/app/.local"

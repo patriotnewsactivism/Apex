@@ -5,7 +5,16 @@ import * as schema from './schema.js';
 const connectionString = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/apex';
 
 // Supabase's transaction pooler (pgbouncer) does not support prepared statements.
-const client = postgres(connectionString, { prepare: false });
+const client = postgres(connectionString, {
+  prepare: false,
+  max: 20,
+  idle_timeout: 30,
+  // Prune connections before Supabase's pgbouncer silently drops them —
+  // postgres.js defaults max_lifetime to unlimited, leaving stuck slots
+  // that hang the whole pool (and therefore the whole server) until restart.
+  max_lifetime: 60 * 30,
+  connect_timeout: 15,
+});
 
 export const db = drizzle(client, {
   schema,
