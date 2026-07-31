@@ -45,3 +45,6 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 .gemini/
+
+# Local-only dev scripts (contain live API keys — must never be committed)
+scripts/test-providers.mjs
