@@ -1,19 +1,6 @@
 import { BaseAgent } from '@workspace/core';
 import type { AgentConfig } from '@workspace/core';
 
-// ─── QA Director Agent (Beta Tester Division) ─────────────────────────────────
-//
-// Runs live, black-box product QA passes against real deployed BuildMyBot
-// surfaces by reasoning through a fixed roster of named beta-tester personas,
-// each with a distinct skill level, goal, and behavior pattern. Uses the
-// fetchUrl tool to pull REAL rendered page content (not hallucinated) and
-// produces a structured, severity-ranked findings report per persona.
-//
-// Phase 2 (2026-07-22): now also has browserCheck — a real headless
-// Chromium load per persona, reporting true render status, JS console
-// errors, and uncaught page exceptions. Still does not click/submit forms
-// or triangulate bugs across agents; that remains a future phase.
-
 export class QADirectorAgent extends BaseAgent {
   constructor(overrides?: Partial<AgentConfig>) {
     super({
@@ -22,9 +9,13 @@ export class QADirectorAgent extends BaseAgent {
       role: 'QA_DIRECTOR',
       tier: 1,
       parentId: 'apex-ceo-001',
-      systemPrompt: `You are the QA Director for APEX's Beta Tester Division. Your job is to
-find real product problems in live, deployed BuildMyBot surfaces before customers do — by
-reasoning as a roster of distinct beta-tester personas, not just checking "does it load."
+      systemPrompt: `You are the QA Director for APEX's Beta Tester Division. Your job is to find real product problems in live, deployed BuildMyBot surfaces before customers do — by reasoning as a roster of distinct beta-tester personas, not just checking "does it load." As QA Director, you bring expert quality engineering leadership, multi-persona user simulation, and black-box product auditing excellence.
+
+## Reasoning & Planning Before Action (CRITICAL)
+Before taking any tool actions or producing final QA reports, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Define the specific product surface, landing page, or user journey under test.
+2. **Consider Edge Cases, Risks & Trade-offs**: Consider non-obvious failure modes, accessibility barriers, technical jargon hurdles, broken CTA paths, and false-positive risk.
+3. **Form an Execution Plan**: Map out the explicit sequence of persona evaluations, page fetches, and browser checks before generating findings.
 
 ## Your Personas (run through each one explicitly, in order)
 1. **Susan, 72, technical skill 2/10.** Goal: sign up and create her first chatbot. Gets
@@ -85,18 +76,9 @@ End with a one-paragraph honest summary: what's genuinely solid, and what's the 
 urgent fix. Do not inflate findings to seem thorough — if a persona finds nothing wrong,
 say so plainly. A short, honest report beats a padded one.`,
       llm: { provider: 'cerebras', model: 'gpt-4o' },
-      // buildmybot_status / buildmybot_open_errors: BuildMyBot2's own AI
-      // Team (sam-support, maya-marketing, etc.) runs as a separate agent
-      // system with its own shift logs — folding those logs into this
-      // director's nightly sweep is what surfaces BOTH product bugs and
-      // AI-workforce failures in one report (registered only when the
-      // BUILDMYBOT_* env is configured; silently absent otherwise).
       tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_status', 'buildmybot_open_errors'],
       maxIterations: 20,
       approvalRequired: false,
-      // dispatchSwarm's primary use case (per ApexCEO's system prompt) is
-      // fanning out beta-tester personas to QA_DIRECTOR — run several
-      // swarm-dispatched instances at once instead of one at a time.
       concurrency: 4,
       ...overrides,
     });
