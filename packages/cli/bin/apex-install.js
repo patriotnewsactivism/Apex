@@ -68,11 +68,22 @@ const PROMPT_FORGE_CONFIG = {
   scoringAxes: ["clarity", "success_rate", "persona_match"],
 };
 
+const force = args.includes("--force");
+
+/**
+ * Writes relPath UNLESS it already exists (true idempotency — re-running
+ * apex-install, e.g. from the CI sync workflow, must never silently clobber
+ * a project owner's manual edits to their own .apex/ config). Pass --force
+ * to intentionally overwrite (e.g. after bumping a template default).
+ */
 function write(relPath, content) {
   const full = path.join(targetDir, relPath);
+  if (fs.existsSync(full) && !force) {
+    return { path: full, skipped: true };
+  }
   fs.mkdirSync(path.dirname(full), { recursive: true });
   fs.writeFileSync(full, content);
-  return full;
+  return { path: full, skipped: false };
 }
 
 const orgChart = template === "minimal" ? MINIMAL_ORG_CHART : FULL_ORG_CHART;
@@ -81,6 +92,55 @@ const written = [];
 written.push(write(".apex/agents.json", JSON.stringify({ project: projectName, ...orgChart }, null, 2) + "\n"));
 written.push(write(".apex/llm-chain.json", JSON.stringify(LLM_CHAIN, null, 2) + "\n"));
 written.push(write(".apex/prompt-forge.json", JSON.stringify(PROMPT_FORGE_CONFIG, null, 2) + "\n"));
+written.push(
+  write(
+    ".github/workflows/apex-swarm-sync.yml",
+    `name: Apex Swarm Config Sync
+
+# Keeps this project's .apex/ config in sync on every push to main.
+# NOTE: this is the CONFIG-SYNC layer only — it re-runs apex-install
+# idempotently (never overwrites files that already exist) so the org
+# chart / LLM chain / prompt-forge config stay present and don't get
+# accidentally deleted. It does NOT yet trigger an actual live swarm run
+# against this repo — that's separate follow-on work (the runtime needs
+# API keys/secrets wired in via repo secrets before it could safely do that).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  sync-apex-config:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Sparse-checkout Apex CLI
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/patriotnewsactivism/Apex.git /tmp/apex-cli-src
+          cd /tmp/apex-cli-src
+          git sparse-checkout set packages/cli
+
+      - name: Run apex-install (idempotent — will not overwrite existing .apex/ files)
+        run: node /tmp/apex-cli-src/packages/cli/bin/apex-install.js . --name="\${{ github.repository }}"
+
+      - name: Commit any newly-scaffolded files
+        run: |
+          if [ -n "$(git status --porcelain .apex .github/workflows/apex-swarm-sync.yml)" ]; then
+            git config user.email "apex-bot@users.noreply.github.com"
+            git config user.name "apex-swarm-sync"
+            git add .apex .github/workflows/apex-swarm-sync.yml
+            git commit -m "chore: sync Apex swarm config [skip ci]"
+            git push
+          else
+            echo "No config drift — nothing to commit."
+          fi
+`
+  )
+);
+
 written.push(
   write(
     ".apex/README.md",
@@ -105,5 +165,11 @@ This is v0.1 — the core config layer. Next slice: wire the CI/CD + connector i
   )
 );
 
-console.log(`apex-install: wrote ${written.length} files to ${path.resolve(targetDir)}/.apex/`);
-written.forEach((w) => console.log(`  - ${w}`));
+const created = written.filter((w) => !w.skipped);
+const skipped = written.filter((w) => w.skipped);
+console.log(`apex-install: ${created.length} file(s) created, ${skipped.length} already present (left untouched) in ${path.resolve(targetDir)}`);
+created.forEach((w) => console.log(`  + ${w.path}`));
+skipped.forEach((w) => console.log(`  = ${w.path} (unchanged)`));
+if (skipped.length > 0 && !force) {
+  console.log("Pass --force to overwrite existing files instead of skipping them.");
+}
