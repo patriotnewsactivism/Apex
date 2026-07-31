@@ -523,6 +523,129 @@ export class LearningAnalysisJob implements JobHandler {
   }
 }
 
+// ── PromptSelfImproveJob: closes the loop on Apex improving its own prompts ─
+//
+// Runs Prompt Forge (packages/core/src/prompt-forge.ts) against ONE of Apex's
+// own agent roles per invocation (job.payload.role — e.g. 'MARKETING',
+// 'QA_DIRECTOR'). Compares the winning candidate's score against the stored
+// baseline for that role (performance_baselines, metricName
+// `prompt_forge:{role}`). This NEVER edits the live prompt file itself — a
+// self-modifying production agent with no human in the loop is exactly the
+// kind of irreversible unilateral action Apex's own operating rules forbid.
+// Instead, a genuine improvement creates a pending review task for Lead Dev
+// carrying the full proposed prompt + score trajectory + real test output, so
+// a human applies (or rejects) the diff. No improvement -> logged silently in
+// job_execution_log via the return value, no task noise.
+export class PromptSelfImproveJob implements JobHandler {
+  static readonly IMPROVEMENT_THRESHOLD = 0.5; // out of a 10-point total_score scale
+
+  async execute(job: ScheduledJob): Promise<unknown> {
+    const payload = (job.payload as Record<string, unknown>) ?? {};
+    const role = String(payload.role ?? '').trim();
+    if (!role) {
+      return { skipped: true, reason: "job.payload.role is required (e.g. 'MARKETING', 'QA_DIRECTOR')" };
+    }
+    const personaHint = typeof payload.personaHint === 'string' ? payload.personaHint : undefined;
+
+    const { optimizePrompt } = await import('@workspace/core');
+    const { db, performanceBaselines } = await import('@workspace/db');
+    const { eq } = await import('drizzle-orm');
+
+    const goalDescription =
+      typeof payload.goalDescription === 'string'
+        ? payload.goalDescription
+        : `Improve the ${role} agent's system prompt for higher clarity and task-success, while ` +
+          `preserving every existing hard rule and domain-specific requirement — this is a refinement, not a rewrite.`;
+
+    const result = await optimizePrompt({
+      goalDescription,
+      targetPersona: personaHint,
+      maxIterations: Number(payload.maxIterations ?? 4),
+      role: role.toLowerCase(),
+    });
+
+    const metricName = `prompt_forge:${role}`;
+    const [baseline] = await db
+      .select()
+      .from(performanceBaselines)
+      .where(eq(performanceBaselines.metricName, metricName))
+      .limit(1);
+
+    if (result.status !== 'converged' || !result.bestCandidate) {
+      return {
+        role,
+        status: result.status,
+        iterationsRun: result.iterationsRun,
+        note: 'No usable candidate produced this run — no baseline change, no task created.',
+      };
+    }
+
+    const newScore = result.bestCandidate.totalScore;
+    const previousBaseline = baseline?.baselineValue ?? null;
+    const isFirstRun = previousBaseline === null;
+    const delta = isFirstRun ? null : newScore - (previousBaseline as number);
+
+    // Always record the latest attempt as the new comparison point — whether
+    // or not it beat the last one — so a plateaued prompt doesn't re-alert
+    // every run once a human has already seen and decided on that ceiling.
+    await db
+      .insert(performanceBaselines)
+      .values({
+        metricName,
+        baselineValue: newScore,
+        measurementWindow: 'prompt_forge',
+        sampleSize: (baseline?.sampleSize ?? 0) + 1,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: performanceBaselines.metricName,
+        set: {
+          baselineValue: newScore,
+          sampleSize: (baseline?.sampleSize ?? 0) + 1,
+          updatedAt: new Date(),
+        },
+      });
+
+    const meaningfulImprovement = !isFirstRun && (delta as number) >= PromptSelfImproveJob.IMPROVEMENT_THRESHOLD;
+
+    if (meaningfulImprovement) {
+      await enqueueSystemTask({
+        title: `Prompt Forge: proposed improvement for ${role} agent (+${(delta as number).toFixed(2)})`,
+        description:
+          `Prompt Forge ran ${result.iterationsRun} generation(s) against the ${role} agent's system prompt and ` +
+          `found a candidate that scores ${newScore.toFixed(2)}/10 vs. the current baseline ${(previousBaseline as number).toFixed(2)}/10.\n\n` +
+          `Score trajectory: ${JSON.stringify(result.scoreTrajectory)}\n\n` +
+          `Real test-drive output from the winning candidate:\n${result.bestCandidate.testOutput}\n\n` +
+          `Self-critique: ${result.bestCandidate.selfCritique}\n\n` +
+          `PROPOSED PROMPT TEXT (review before applying — this does NOT auto-deploy):\n\n${result.bestCandidate.promptText}`,
+        assignedAgentId: 'lead-dev-001',
+        priority: 4,
+        context: {
+          promptForgeRole: role,
+          newScore,
+          previousBaseline,
+          delta,
+          scoreTrajectory: result.scoreTrajectory,
+          proposedPromptText: result.bestCandidate.promptText,
+          requiresManualApplication: true,
+        },
+      });
+    }
+
+    return {
+      role,
+      isFirstRun,
+      newScore,
+      previousBaseline,
+      delta,
+      meaningfulImprovement,
+      iterationsRun: result.iterationsRun,
+      scoreTrajectory: result.scoreTrajectory,
+      taskCreated: meaningfulImprovement,
+    };
+  }
+}
+
 // ── DelegationFollowupJob: closes the delegation loop ──────────────────────
 //
 // THE structural gap this fixes: `BaseAgent.delegate()` wrote a child task row

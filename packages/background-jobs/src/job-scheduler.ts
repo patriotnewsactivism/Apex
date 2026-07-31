@@ -20,6 +20,7 @@ import {
   FailureReviewJob,
   BranchReviewJob,
   StalledWorkRecoveryJob,
+  PromptSelfImproveJob,
 } from './handlers/index.js';
 
 export interface JobSchedulerConfig {
@@ -54,6 +55,9 @@ export class JobScheduler {
     // Capacity failures are transient by nature; without this, a provider
     // outage permanently destroys whatever work was in flight.
     this.executor.registerHandler('stalled_work_recovery', new StalledWorkRecoveryJob());
+    // Prompt Forge self-improvement: an agent's own prompt only ever improves via a
+    // human-reviewed task (see PromptSelfImproveJob) — never auto-applied.
+    this.executor.registerHandler('prompt_self_improve', new PromptSelfImproveJob());
   }
 
   /** Start the scheduler polling loop. */
