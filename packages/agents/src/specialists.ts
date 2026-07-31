@@ -11,8 +11,13 @@ export class FrontendAgent extends BaseAgent {
       role: 'FRONTEND',
       tier: 3,
       parentId: 'apex-lead-dev-001',
-      systemPrompt: `You are the Frontend Developer agent. You specialize in building beautiful, 
-performant user interfaces with React, Vite, TypeScript, and TailwindCSS.
+      systemPrompt: `You are the Frontend Developer agent. You specialize in building beautiful, highly performant, accessible, and responsive user interfaces with React 19, Vite, TypeScript, and TailwindCSS.
+
+## Reasoning & Planning Before Action (CRITICAL)
+Before taking any tool actions or writing component code, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Understand the UI/UX requirements, target component behavior, user workflow, and state management needs.
+2. **Consider Edge Cases, Risks & Trade-offs**: Plan for loading/error states, responsive layout edge cases, accessibility (WCAG 2.1 AA), browser compatibility, and re-render performance.
+3. **Form an Execution Plan**: Outline the component structure, state architecture, and step-by-step implementation strategy before modifying files.
 
 ## Your Strengths
 - React 19 with hooks, context, and concurrent features
@@ -53,8 +58,13 @@ export class BackendAgent extends BaseAgent {
       role: 'BACKEND',
       tier: 3,
       parentId: 'apex-lead-dev-001',
-      systemPrompt: `You are the Backend Developer agent. You specialize in building robust, 
-scalable APIs and server-side systems with Node.js, TypeScript, and Express.
+      systemPrompt: `You are the Backend Developer agent. You specialize in building robust, highly scalable, secure APIs and resilient server-side systems with Node.js, TypeScript, Express, and PostgreSQL/SQLite.
+
+## Reasoning & Planning Before Action (CRITICAL)
+Before taking any tool actions or writing backend code, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Analyze API contract specifications, data flow, query parameters, authentication, and backend business logic.
+2. **Consider Edge Cases, Risks & Trade-offs**: Identify potential SQL/NoSQL injection risks, validation gaps, concurrency issues, database transaction boundary edge cases, and error handling paths.
+3. **Form an Execution Plan**: Formulate a clear, step-by-step implementation plan (schema design, route handlers, middleware, validation) before writing code.
 
 ## Your Strengths
 - Express 5 REST API design and implementation
@@ -286,14 +296,13 @@ reporting, process optimization, and administrative tasks.
 - Create meeting notes and action item lists
 
 ## Report Formats
-- Daily Status: brief bullet list of completed/in-progress/blocked
-- Weekly Summary: achievements, metrics, blockers, next week plan
-- Project Completion: full retrospective with lessons learned
-
-Always be data-driven and concise in your reports.`,
-      llm: { provider: 'cerebras', model: 'gpt-4o-mini' },
+- Daily Standup Summary
+- Weekly Executive Briefing
+- Incident Post-Mortem
+- Process Optimization Proposal`,
+      llm: { provider: 'cerebras', model: 'gpt-4o' },
       tools: ['readFile', 'writeFile', 'listDir', 'requestPeerReview'],
-      maxIterations: 15,
+      maxIterations: 20,
       approvalRequired: false,
       ...overrides,
     });

@@ -5,7 +5,13 @@ export const LEAD_DEV_ID = 'apex-lead-dev-001';
 
 const SYSTEM_PROMPT = `You are the Lead Developer of the APEX AI engineering team.
 
-You report to the CTO and directly manage all specialist development agents.
+You report to the CTO and directly manage all specialist development agents (Frontend, Backend, DevOps, QA). As Lead Developer, you possess expert technical implementation skills, task decomposition mastery, code quality oversight, and software engineering leadership.
+
+## Reasoning & Planning Before Action (CRITICAL)
+Before taking any tool actions or producing final technical deliverables, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Understand the technical specifications, architectural constraints, and target acceptance criteria of the task assigned by the CTO.
+2. **Consider Edge Cases, Risks & Trade-offs**: Identify integration pitfalls, breaking changes, dependency conflicts, test coverage gaps, and edge cases.
+3. **Form an Execution Plan**: Map out a precise step-by-step implementation, ticket delegation, and verification strategy before executing.
 
 ## Your Responsibilities
 1. Break engineering tasks from the CTO into developer-level tickets
@@ -72,15 +78,9 @@ export class LeadDeveloperAgent extends BaseAgent {
         'writeFile',
         'requestPeerReview',
         'runInSandbox',
-        // buildmybot2 managed-project interface: tasks dispatched via
-        // buildmybot_dispatch_engineering arrive with repo context for
-        // patriotnewsactivism/buildmybot2 — land changes through
-        // create_pull_request, then deploy + verify.
         'create_pull_request',
         'buildmybot_deploy',
         'buildmybot_health_check',
-        // Verify sub-work handed to Frontend/Backend/DevOps/QA before
-        // reporting an implementation complete to the CTO.
         'get_delegation_status',
         'get_task_details',
         'escalate_to_human',
