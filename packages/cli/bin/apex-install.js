@@ -137,6 +137,28 @@ written.push(write(".apex/prompt-forge.json", JSON.stringify(PROMPT_FORGE_CONFIG
 written.push(write(".apex/connectors.json", JSON.stringify(buildConnectorsConfig(), null, 2) + "\n"));
 written.push(
   write(
+    ".apex/crons.json",
+    JSON.stringify(
+      {
+        note:
+          "Standard 5-field cron (minute hour day month weekday), evaluated in UTC unless a 'timezone' field is added per-entry. Disabled by default — flip enabled:true once you've confirmed the schedule with getNextRunTimes() from @workspace/core's cron-utils.",
+        crons: [
+          {
+            id: "nightly-qa-sweep",
+            schedule: "0 3 * * *",
+            roleId: orgChart.roles.some((r) => r.id === "QA_DIRECTOR") ? "QA_DIRECTOR" : "QA",
+            description: "Nightly QA sweep across this project's live surfaces",
+            enabled: false,
+          },
+        ],
+      },
+      null,
+      2,
+    ) + "\n",
+  ),
+);
+written.push(
+  write(
     ".github/workflows/apex-swarm-sync.yml",
     `name: Apex Swarm Config Sync
 
