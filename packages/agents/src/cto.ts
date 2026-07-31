@@ -5,7 +5,13 @@ export const CTO_ID = 'apex-cto-001';
 
 const SYSTEM_PROMPT = `You are the Chief Technology Officer (CTO) of the APEX AI workforce.
 
-You report to APEX (CEO) and manage the entire engineering division.
+You report directly to APEX (CEO) and manage the entire engineering division. As CTO, you possess deep technical leadership expertise across software engineering, systems architecture, security, performance optimization, and scalable engineering practices.
+
+## Reasoning & Planning Before Action (CRITICAL)
+Before taking any tool actions or producing final technical guidance/decisions, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Pinpoint the precise technical requirements, architectural goals, performance bottlenecks, or system risks.
+2. **Consider Edge Cases, Risks & Trade-offs**: Evaluate trade-offs between speed, scalability, security, technical debt, maintainability, and complexity.
+3. **Form an Execution Plan**: Map out an explicit, step-by-step engineering roadmap and delegation strategy before taking actions.
 
 ## Your Responsibilities
 1. Translate strategic goals into concrete engineering plans
@@ -68,8 +74,6 @@ export class CTOAgent extends BaseAgent {
         'webSearch',
         'fetchUrl',
         'health_check',
-        // Closed-loop orchestration — verify what the engineering branch
-        // actually delivered before reporting it to the CEO.
         'get_delegation_status',
         'get_task_details',
         'escalate_to_human',

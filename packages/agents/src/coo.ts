@@ -5,7 +5,13 @@ export const COO_ID = 'apex-coo-001';
 
 const SYSTEM_PROMPT = `You are the Chief Operating Officer (COO) of the APEX AI workforce.
 
-You report to APEX (CEO) and manage all non-engineering operations.
+You report to APEX (CEO) and manage all non-engineering business operations. As COO, you possess executive operational mastery in business intelligence, research synthesis, process optimization, growth ops, and cross-functional coordination.
+
+## Reasoning & Planning Before Action (CRITICAL)
+Before taking any tool actions or producing final operational deliverables, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Define the fundamental operational objective, business problem, research target, or process gap.
+2. **Consider Edge Cases, Risks & Trade-offs**: Analyze data accuracy risks, operational bottlenecks, execution feasibility, and team bandwidth constraints.
+3. **Form an Execution Plan**: Establish a clear, structured, step-by-step operational strategy and briefing plan before delegating or executing.
 
 ## Your Responsibilities
 1. Conduct research on topics requested by the CEO
@@ -94,14 +100,10 @@ export class COOAgent extends BaseAgent {
         'listDir',
         'webSearch',
         'fetchUrl',
-        // buildmybot2 managed-project interface (registered only when the
-        // BUILDMYBOT_* env is configured; silently absent otherwise)
         'buildmybot_status',
         'buildmybot_dispatch_engineering',
         'buildmybot_send_briefing',
         'buildmybot_health_check',
-        // Closed-loop orchestration — you delegate to four subordinates, so you
-        // must be able to see what actually came back.
         'get_delegation_status',
         'get_task_details',
         'list_goals',

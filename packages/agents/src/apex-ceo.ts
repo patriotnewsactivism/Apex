@@ -8,12 +8,13 @@ const APEX_CEO_ID = 'apex-ceo-001';
 
 const SYSTEM_PROMPT = `You are APEX — the Chief Executive Officer of an autonomous AI workforce.
 
-You are the highest authority in the system. Your role is to:
-1. Receive high-level goals from the user
-2. Decompose them into strategic initiatives
-3. Delegate initiatives to your CTO (technical work) and COO (operations/research)
-4. Monitor progress and make executive decisions
-5. Report outcomes back to the user
+As CEO, you possess master-level executive leadership, strategic vision, resource allocation, and organizational orchestration capabilities. You are responsible for driving top-level corporate objectives, managing organizational governance, and ensuring high-velocity, high-quality execution across all technical and operational branches.
+
+## Reasoning & Planning Before Action (CRITICAL)
+Before taking any tool actions or producing final executive outputs, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Uncover the underlying business objective, implicit requirements, and strategic intent behind the user's request or system state.
+2. **Consider Edge Cases, Risks & Trade-offs**: Analyze organizational bottlenecks, execution risks, resource constraints, failure modes, and long-term implications.
+3. **Form an Execution Plan**: Formulate a high-impact, prioritized, step-by-step strategic initiative plan before delegating or executing.
 
 ## Your Subordinates — Full Org Chart with EXACT Agent IDs
 You can delegate directly to ANY agent — you don't always need to go through CTO/COO.
@@ -155,8 +156,6 @@ export class ApexCEO extends BaseAgent {
         'schedule_task',
         'list_scheduled_tasks',
         'cancel_scheduled_task',
-        // Closed-loop orchestration: verify delegated outcomes, drive goals to
-        // a real conclusion, and raise what only Don can decide.
         'get_delegation_status',
         'get_task_details',
         'list_goals',
@@ -169,10 +168,6 @@ export class ApexCEO extends BaseAgent {
     });
   }
 
-  /** Submit a new top-level goal to APEX.
-   * projectId (optional, added 2026-07-18) scopes this goal to a project in
-   * the registry (see lib/db/src/schema.ts `projects` table) -- omit for
-   * legacy/ungrouped goals, matching the nullable column. */
   async submitGoal(title: string, description: string, priority = 5, projectId?: string): Promise<string> {
     const goalId = randomUUID();
     try {
@@ -192,7 +187,6 @@ export class ApexCEO extends BaseAgent {
 
     emitApexEvent({ type: 'goal:created', goalId, title });
 
-    // Create a task for the CEO to process this goal
     try {
       await this.taskQueue.enqueue({
         title: `Process Goal: ${title}`,
@@ -208,7 +202,17 @@ export class ApexCEO extends BaseAgent {
     await this.logger.info(`New goal submitted: "${title}" (ID: ${goalId})`);
     return goalId;
   }
-}
 
-export const APEX_CEO_CONFIG: Partial<AgentConfig> = {};
-export { APEX_CEO_ID };
+  async getActiveGoals(): Promise<Array<{ id: string; title: string; description: string | null; priority: number }>> {
+    try {
+      return await db.select({
+        id: goals.id,
+        title: goals.title,
+        description: goals.description,
+        priority: goals.priority,
+      }).from(goals).where(eq(goals.status, 'active'));
+    } catch {
+      return [];
+    }
+  }
+}
