@@ -136,3 +136,34 @@ export function getNextRunTimes(expr: string, count = 1, from: Date = new Date()
 
   return results;
 }
+
+/**
+ * Pure due-check: does `expr` match at exactly `at` (to-the-minute), in `timeZone`?
+ * This is the building block apex-run uses to decide "is this cron due right now" —
+ * it does NOT invoke anything itself, just answers the yes/no scheduling question.
+ */
+export function cronMatches(expr: string, at: Date = new Date(), timeZone = 'UTC'): boolean {
+  const [minutes, hours, daysOfMonth, months, daysOfWeek] = parseCronExpression(expr);
+
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    weekday: 'short',
+  });
+  const parts = fmt.formatToParts(at);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+  return (
+    minutes.has(parseInt(get('minute'), 10)) &&
+    hours.has(parseInt(get('hour'), 10)) &&
+    daysOfMonth.has(parseInt(get('day'), 10)) &&
+    months.has(parseInt(get('month'), 10)) &&
+    daysOfWeek.has(weekdayMap[get('weekday')])
+  );
+}
