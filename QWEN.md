@@ -34,7 +34,7 @@ focus on CaseBuddy. Governed by `APEX_CHARTER.md`.
 | API server | Express 5 + WebSocket (`ws`), entry: `packages/api-server/src/index.ts`. |
 | Dashboard | React 19 + Vite + Tailwind CSS 4 + TanStack Query + wouter. |
 | Database | Drizzle ORM over SQLite (`DATABASE_PATH=.local/apex.db`). Schema: `lib/db/src/schema.ts`. |
-| LLM | Multi-provider fallback chain in `packages/core/src/llm-client.ts`: OpenRouter → Cerebras → Mistral → Groq → Cohere-trial → Cohere → OpenRouter-free. NOT a single-provider setup. |
+| LLM | Multi-provider fallback chain in `packages/core/src/llm-client.ts` (verified live 2026-07-31): Cerebras(×3) → Groq(×2) → Google Gemini(×2) → DeepSeek → NVIDIA NIM → Together AI → Qwen Cloud → GLM-Aliyun → Mistral → Qwen Cloud (Anthropic protocol) → GLM-Z.ai → Poolside → Cohere (`toolCallingReliable:false`) → OpenRouter-free ×2 (`toolCallingReliable:false`). OpenRouter is the **last-resort free tier, not the primary**. NOT a single-provider setup. Duplicate-key slots (`CEREBRAS_API_KEY_2/3`, `GROQ_API_KEY_2`, `GEMINI_API_KEY_2`) multiply free-tier rate limits. |
 | Deployment | Multi-stage Dockerfile → Railway (docker builder, `railway.toml`). |
 
 ### Workspace packages (13 directories)
@@ -88,10 +88,14 @@ pnpm run dev
 pnpm --filter @workspace/api-server run start
 ```
 
-**Environment:** Copy `.env.example` → `.env`. Minimum required:
-`OPENROUTER_API_KEY`. Optional fallback keys: `CEREBRAS_API_KEY`,
-`MISTRAL_API_KEY`, `GROQ_API_KEY`, `COHERE_TRIAL_API_KEY`,
-`COHERE_API_KEY`. Server listens on `PORT` (default 5000).
+**Environment:** Copy `.env.example` → `.env`. At least one LLM provider key
+makes the system functional — practical primaries are `CEREBRAS_API_KEY`
+and `GROQ_API_KEY`; `OPENROUTER_API_KEY` is the last-resort free tier, not
+the primary. Other provider keys: `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`,
+`NVIDIA_API_KEY`, `TOGETHER_API_KEY`, `QWENCLOUD_API_KEY`, `MISTRAL_API_KEY`,
+`COHERE_API_KEY`. Duplicate-key slots (`CEREBRAS_API_KEY_2/3`,
+`GROQ_API_KEY_2`, `GEMINI_API_KEY_2`) multiply free-tier rate limits. Server
+listens on `PORT` (default 5000).
 
 ## Development Conventions
 
@@ -114,11 +118,17 @@ pnpm --filter @workspace/api-server run start
    via `requireAdminAuth`. `/api/auth/login` exchanges `APEX_ADMIN_PASSWORD`
    for a token. Never add routes outside this middleware stack. This was a
    real, live open exposure until 2026-07-12 — never regress it.
-2. **Per-tool approval gating.** Only 6 tools require human approval
-   system-wide: `runShell`, `runInSandbox`, and 3 buildmybot-connector
-   actions. `writeFile` was flipped to auto-approved 2026-07-19
-   (git-reversible). Never remove gating from `runShell`/`runInSandbox`/
-   production actions without Don's explicit sign-off.
+2. **Per-tool approval gating.** 13 tools require human approval
+   system-wide (verified live 2026-07-31 against `requiresApproval: true` in
+   the tool definitions): `runShell`, `deploy_to_environment`,
+   `rollback_deployment`, `push_to_remote`, `create_pull_request`,
+   `register_application`, `delegate_to_application`, `make_outbound_call`,
+   `buildmybot_send_briefing`, `buildmybot_run_workforce`,
+   `buildmybot_resolve_error`, `buildmybot_deploy`, `casebuddy_deploy_firm`.
+   `writeFile` (2026-07-19), `runInSandbox`, and `create_feature_branch`
+   (2026-07-22) were all flipped to auto-approved — git-reversible / local
+   only. Never remove gating from `runShell` or production/deploy/PR/push/
+   outbound-call actions without Don's explicit sign-off.
 3. **Secrets by name only.** Never log, report, or commit secret values.
    Reference them by name (e.g., "OPENROUTER_API_KEY") only.
 4. **GitHub writes** use `GITHUB_TOKEN_4`. No GITHUB_TOKEN env var currently

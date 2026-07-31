@@ -1,5 +1,5 @@
 # Repository Guidelines — Apex
-_Last verified against live system: 2026-07-20. Single canonical instructions
+_Last verified against live system: 2026-07-31. Single canonical instructions
 file for any AI coding tool (Claude Code, Gemini CLI, Codex, Replit Agent,
 etc.) — the separate CLAUDE.md/GEMINI.md/replit.md/BASE44.md files were
 deleted 2026-07-20 as stale duplicates from 2026-07-12 that had drifted out
@@ -33,9 +33,14 @@ code, do not delegate to it or treat it as part of the real org chart.
 - DB: Drizzle ORM, real prod DB URL cached at `/tmp/apex_db_url.txt` in the
   agent sandbox. A separate raw-container Postgres also exists in this
   Railway project (service `1ab5efa2-...`) -- unused, no volume, DO NOT USE.
-- **LLM fallback chain** (`packages/core/src/llm-client.ts`): OpenRouter ->
-  Cerebras -> Mistral -> Groq -> Cohere-trial -> Cohere -> OpenRouter-free.
-  Not a single-provider `OPENAI_API_KEY` setup.
+- **LLM fallback chain** (`packages/core/src/llm-client.ts`, verified live
+  2026-07-31): Cerebras(×3) -> Groq(×2) -> Google Gemini(×2) -> DeepSeek ->
+  NVIDIA NIM -> Together AI -> Qwen Cloud -> GLM-Aliyun -> Mistral ->
+  Qwen Cloud (Anthropic protocol) -> GLM-Z.ai -> Poolside ->
+  Cohere (toolCallingReliable:false) -> OpenRouter-free ×2
+  (toolCallingReliable:false). OpenRouter is the last-resort free tier, NOT
+  the primary. Not a single-provider `OPENAI_API_KEY` setup. Duplicate-key
+  slots (CEREBRAS_API_KEY_2/3, GROQ_API_KEY_2) multiply free-tier rate limits.
 
 ## Security
 - All routes under `/api/*` except `/api/auth/login` and `/health` require
@@ -43,11 +48,16 @@ code, do not delegate to it or treat it as part of the real org chart.
   exchanges `APEX_ADMIN_PASSWORD` for that token. Do not add routes outside
   this middleware stack. This was a real, live open exposure until
   2026-07-12 (no auth, `cors({origin:'*'})`) -- never regress it.
-- Approval is **per-tool**, not a global on/off switch: only 6 tools require
-  it system-wide (`writeFile` was flipped to auto-approved 2026-07-19 as
-  git-reversible; `runShell`, `runInSandbox`, and 3 buildmybot-connector
-  actions remain human-gated). Never remove gating from `runShell`/
-  `runInSandbox`/production actions without Don's explicit sign-off.
+- Approval is **per-tool**, not a global on/off switch: 13 tools require it
+  system-wide (verified 2026-07-31) -- `runShell`, `deploy_to_environment`,
+  `rollback_deployment`, `push_to_remote`, `create_pull_request`,
+  `register_application`, `delegate_to_application`, `make_outbound_call`,
+  `buildmybot_send_briefing`, `buildmybot_run_workforce`,
+  `buildmybot_resolve_error`, `buildmybot_deploy`, `casebuddy_deploy_firm`.
+  `writeFile` (2026-07-19), `runInSandbox`, and `create_feature_branch`
+  (2026-07-22) are all auto-approved now (git-reversible / local only). Never
+  remove gating from `runShell` or production/deploy/PR/push/outbound-call
+  actions without Don's explicit sign-off.
 - Secrets referenced by name only, never by value, in any log/report/commit
   message. GitHub writes always use `GITHUB_TOKEN_4`. No GITHUB_TOKEN env
   var currently exists on the live Railway service itself -- so in-app
