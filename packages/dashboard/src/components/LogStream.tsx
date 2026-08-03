@@ -7,10 +7,10 @@ import { useWebSocket, type ApexEvent } from '../hooks/useWebSocket.js';
 const LEVEL_COLORS: Record<string, string> = {
   debug: '#64748b',
   info: '#e2e8f0',
-  warn: '#ffd60a',
-  error: '#ff3b5c',
-  thinking: '#00e5ff',
-  acting: '#b84cff',
+  warn: '#c9a84a',
+  error: '#c45c66',
+  thinking: '#5a9eae',
+  acting: '#8b7ec8',
 };
 
 const LEVEL_ICONS: Record<string, string> = {
@@ -121,7 +121,7 @@ export function LogStream() {
             {e.agentId && (
               <span
                 style={{
-                  color: '#00e5ff',
+                  color: '#5a9eae',
                   opacity: 0.7,
                   flexShrink: 0,
                   fontSize: 10,

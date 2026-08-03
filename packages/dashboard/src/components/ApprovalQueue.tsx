@@ -26,7 +26,7 @@ function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: ()
       className="glass-card"
       style={{
         padding: 20,
-        borderColor: isPending ? 'rgba(255,214,10,0.3)' : 'rgba(255,255,255,0.08)',
+        borderColor: isPending ? 'rgba(201,168,74,0.3)' : 'rgba(255,255,255,0.08)',
       }}
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
@@ -40,13 +40,13 @@ function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: ()
             gap: 8,
             marginBottom: 14,
             padding: '6px 10px',
-            background: 'rgba(255,214,10,0.08)',
+            background: 'rgba(201,168,74,0.08)',
             borderRadius: 6,
-            border: '1px solid rgba(255,214,10,0.2)',
+            border: '1px solid rgba(201,168,74,0.2)',
           }}
         >
-          <AlertTriangle size={14} color="#ffd60a" />
-          <span style={{ color: '#ffd60a', fontSize: 11, fontWeight: 600 }}>AWAITING APPROVAL</span>
+          <AlertTriangle size={14} color="#c9a84a" />
+          <span style={{ color: '#c9a84a', fontSize: 11, fontWeight: 600 }}>AWAITING APPROVAL</span>
         </div>
       )}
 
@@ -73,7 +73,7 @@ function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: ()
           borderRadius: 6,
           padding: '10px 12px',
           overflowX: 'auto',
-          color: '#00e5ff',
+          color: '#5a9eae',
           fontFamily: 'var(--font-mono)',
           margin: '0 0 14px 0',
         }}

@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Brain } from 'lucide-react';
 
 interface LoginScreenProps {
   onLogin: () => void;
@@ -29,11 +28,12 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         throw new Error(data.error || 'Login failed');
       }
 
-      const data = await res.json() as { token: string };
+      const data = (await res.json()) as { token: string };
       localStorage.setItem('apex_token', data.token);
       onLogin();
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Authentication failed';
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -53,207 +53,189 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
-        background: '#07080d',
-        fontFamily: 'var(--font-sans, system-ui, sans-serif)',
-        color: 'white',
+        background: 'var(--color-apex-bg)',
+        fontFamily: 'var(--font-sans)',
+        color: 'var(--color-apex-text)',
         position: 'relative',
         overflow: 'hidden',
+        padding: 24,
       }}
     >
-      {/* Background glow effects */}
+      {/* Quiet steel wash — not neon orbs */}
       <div
+        aria-hidden
         style={{
           position: 'absolute',
-          width: '400px',
-          height: '400px',
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(0,229,255,0.05) 0%, transparent 70%)',
-          top: '10%',
-          left: '10%',
+          inset: 0,
+          background:
+            'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(184,149,108,0.07), transparent 55%), radial-gradient(ellipse 60% 40% at 90% 90%, rgba(90,158,174,0.04), transparent 50%)',
           pointerEvents: 'none',
         }}
       />
+
+      {/* Hierarchy silhouette — signature on the gate */}
       <div
+        aria-hidden
         style={{
           position: 'absolute',
-          width: '500px',
-          height: '500px',
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(184,76,255,0.03) 0%, transparent 70%)',
-          bottom: '10%',
-          right: '10%',
+          top: '12%',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          width: 'min(320px, 80vw)',
+          opacity: 0.18,
           pointerEvents: 'none',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          letterSpacing: '0.14em',
+          textAlign: 'center',
+          color: 'var(--color-apex-brass)',
         }}
-      />
+      >
+        <div style={{ marginBottom: 8 }}>CEO</div>
+        <div
+          style={{
+            height: 28,
+            borderLeft: '1px solid var(--color-apex-brass)',
+            margin: '0 auto',
+            width: 0,
+          }}
+        />
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            borderTop: '1px solid var(--color-apex-brass)',
+            paddingTop: 8,
+          }}
+        >
+          <span>CTO</span>
+          <span>COO</span>
+        </div>
+      </div>
 
       <div
         style={{
           width: '100%',
-          maxWidth: '400px',
-          padding: '40px 32px',
-          borderRadius: '16px',
-          background: 'rgba(13,17,23,0.8)',
-          border: '1px solid rgba(0,229,255,0.1)',
-          backdropFilter: 'blur(16px)',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 40px rgba(0,229,255,0.02)',
+          maxWidth: 380,
+          padding: '36px 32px',
+          borderRadius: 8,
+          background: 'var(--color-apex-card)',
+          border: '1px solid var(--color-apex-border)',
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
           zIndex: 1,
         }}
       >
-        {/* Logo/Icon */}
-        <div
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: 14,
-            background: 'linear-gradient(135deg, #00e5ff, #b84cff)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 0 30px rgba(0,229,255,0.25)',
-            marginBottom: '24px',
-          }}
-        >
-          <Brain size={30} color="#000" />
+        <div style={{ marginBottom: 28 }}>
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 6,
+              background: 'var(--color-apex-brass)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontFamily: 'var(--font-display)',
+              fontWeight: 800,
+              fontSize: 15,
+              color: '#14120f',
+              marginBottom: 16,
+            }}
+          >
+            Ax
+          </div>
+          <h1
+            className="apex-display"
+            style={{
+              fontSize: 28,
+              margin: '0 0 6px 0',
+              color: 'var(--color-apex-text)',
+              letterSpacing: '0.06em',
+            }}
+          >
+            APEX
+          </h1>
+          <p
+            style={{
+              fontSize: 13,
+              color: 'var(--color-apex-muted)',
+              margin: 0,
+              lineHeight: 1.45,
+            }}
+          >
+            Sign in to the workforce desk. Thirteen agents, one hierarchy.
+          </p>
         </div>
 
-        <h1
-          style={{
-            fontSize: '24px',
-            fontWeight: 800,
-            letterSpacing: '0.08em',
-            margin: '0 0 4px 0',
-            textAlign: 'center',
-            background: 'linear-gradient(to right, #ffffff, #a5b4fc)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-          }}
-        >
-          APEX
-        </h1>
-        <p
-          style={{
-            fontSize: '13px',
-            color: 'rgba(255,255,255,0.5)',
-            margin: '0 0 32px 0',
-            textAlign: 'center',
-            letterSpacing: '0.04em',
-          }}
-        >
-          AI Workforce Command Center
-        </p>
-
         <form onSubmit={handleSubmit} style={{ width: '100%' }}>
-          <div style={{ marginBottom: '20px' }}>
+          <div style={{ marginBottom: 18 }}>
             <label
               htmlFor="password"
-              style={{
-                display: 'block',
-                fontSize: '11px',
-                fontWeight: 600,
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-                color: 'rgba(255,255,255,0.4)',
-                marginBottom: '8px',
-              }}
+              className="apex-eyebrow"
+              style={{ display: 'block', marginBottom: 8 }}
             >
-              Command Authorization Key
+              Admin password
             </label>
             <input
               id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••••••"
+              placeholder="Enter password"
               disabled={loading}
+              autoComplete="current-password"
+              className="apex-input"
               style={{
-                width: '100%',
-                padding: '12px 16px',
-                borderRadius: '8px',
-                background: 'rgba(0,0,0,0.3)',
-                border: '1px solid rgba(0,229,255,0.15)',
-                color: 'white',
-                fontSize: '14px',
-                outline: 'none',
-                boxSizing: 'border-box',
-                transition: 'border-color 0.2s, box-shadow 0.2s',
-              }}
-              onFocus={(e) => {
-                e.currentTarget.style.borderColor = '#00e5ff';
-                e.currentTarget.style.boxShadow = '0 0 10px rgba(0,229,255,0.15)';
-              }}
-              onBlur={(e) => {
-                e.currentTarget.style.borderColor = 'rgba(0,229,255,0.15)';
-                e.currentTarget.style.boxShadow = 'none';
+                borderColor: error ? 'var(--color-apex-red)' : undefined,
               }}
             />
           </div>
 
           {error && (
             <div
+              role="alert"
               style={{
                 padding: '10px 12px',
-                borderRadius: '6px',
-                background: 'rgba(255,59,92,0.1)',
-                border: '1px solid rgba(255,59,92,0.2)',
-                color: '#ff3b5c',
-                fontSize: '12px',
-                marginBottom: '20px',
-                textAlign: 'center',
+                borderRadius: 6,
+                background: 'rgba(196,92,102,0.1)',
+                border: '1px solid rgba(196,92,102,0.28)',
+                color: 'var(--color-apex-red)',
+                fontSize: 12,
+                marginBottom: 16,
+                lineHeight: 1.4,
               }}
             >
-              {error}
+              {error}. Check the password and try again.
             </div>
           )}
 
           <button
             type="submit"
-            disabled={loading}
-            style={{
-              width: '100%',
-              padding: '12px',
-              borderRadius: '8px',
-              border: 'none',
-              background: '#00e5ff',
-              color: '#000',
-              fontWeight: 700,
-              fontSize: '14px',
-              cursor: loading ? 'not-allowed' : 'pointer',
-              boxShadow: '0 0 20px rgba(0,229,255,0.3)',
-              transition: 'transform 0.1s, opacity 0.2s, box-shadow 0.2s',
-              opacity: loading ? 0.7 : 1,
-            }}
-            onMouseEnter={(e) => {
-              if (!loading) e.currentTarget.style.boxShadow = '0 0 25px rgba(0,229,255,0.5)';
-            }}
-            onMouseLeave={(e) => {
-              if (!loading) e.currentTarget.style.boxShadow = '0 0 20px rgba(0,229,255,0.3)';
-            }}
+            disabled={loading || !password}
+            className="btn-primary"
+            style={{ width: '100%', padding: '12px 16px', fontSize: 14 }}
           >
-            {loading ? 'Authorizing...' : 'Enter Command Center'}
+            {loading ? 'Checking…' : 'Open desk'}
           </button>
         </form>
       </div>
 
-      {/* Footer */}
       <div
         style={{
           position: 'absolute',
-          bottom: '24px',
-          fontSize: '11px',
-          color: 'rgba(255,255,255,0.3)',
-          fontFamily: 'var(--font-mono, monospace)',
+          bottom: 24,
+          fontSize: 11,
+          color: 'var(--color-apex-muted)',
+          fontFamily: 'var(--font-mono)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          gap: '4px',
+          gap: 4,
           zIndex: 1,
         }}
       >
-        <div>APEX SECURITY GATE v1.0.0</div>
-        <div>SYSTEM TIME: {cstTime} CST</div>
+        <div>Gate · CST {cstTime}</div>
       </div>
     </div>
   );

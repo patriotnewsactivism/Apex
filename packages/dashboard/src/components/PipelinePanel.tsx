@@ -91,7 +91,7 @@ export function PipelinePanel() {
               gap: 10,
             }}
           >
-            <GitBranch size={24} color="#00e5ff" /> CI/CD & Deployment Pipeline
+            <GitBranch size={24} color="#5a9eae" /> CI/CD & Deployment Pipeline
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: '#94a3b8' }}>
             Automated testing, typechecks, production builds, and approval-gated deployments
@@ -174,7 +174,7 @@ export function PipelinePanel() {
       >
         <div className="glass-card" style={{ padding: '20px 24px', borderRadius: 12 }}>
           <div style={{ fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Activity size={14} color="#00e5ff" /> Latest Pipeline Run
+            <Activity size={14} color="#5a9eae" /> Latest Pipeline Run
           </div>
           <div style={{ fontSize: 20, fontWeight: 700, color: '#f8fafc', marginTop: 8 }}>
             {latestRun ? latestRun.status.toUpperCase() : 'NO RUNS'}
@@ -214,7 +214,7 @@ export function PipelinePanel() {
         {/* Active Deployments */}
         <div>
           <h3 style={{ fontSize: 15, fontWeight: 600, color: '#cbd5e1', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Server size={16} color="#00e5ff" /> Deployment Status
+            <Server size={16} color="#5a9eae" /> Deployment Status
           </h3>
           {deploymentsList.length === 0 ? (
             <div style={{ padding: 24, textAlign: 'center', color: '#64748b', background: 'rgba(255,255,255,0.02)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -250,7 +250,7 @@ export function PipelinePanel() {
                     </span>
                   </div>
                   <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>
-                    URL: <a href={dep.deploymentUrl ?? '#'} target="_blank" rel="noreferrer" style={{ color: '#00e5ff', textDecoration: 'none' }}>{dep.deploymentUrl}</a>
+                    URL: <a href={dep.deploymentUrl ?? '#'} target="_blank" rel="noreferrer" style={{ color: '#5a9eae', textDecoration: 'none' }}>{dep.deploymentUrl}</a>
                   </div>
                   {dep.status === 'healthy' && !dep.rolledBack && (
                     <button

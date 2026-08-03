@@ -2,27 +2,32 @@ import { motion } from 'framer-motion';
 import type { Agent } from '../lib/api.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 
+/* Hierarchy ink: brass for authority, signal for eng live, green for ops */
 const ROLE_COLORS: Record<string, string> = {
-  CEO: '#00e5ff',
-  CTO: '#b84cff',
-  COO: '#00ff88',
-  LEAD_DEV: '#ffd60a',
-  FRONTEND: '#ff8c00',
-  BACKEND: '#ff8c00',
-  DEVOPS: '#ff8c00',
-  QA: '#ff8c00',
-  RESEARCH: '#00ff88',
-  DOCS: '#00ff88',
-  OPS: '#00ff88',
+  CEO: '#b8956c',
+  CTO: '#5a9eae',
+  COO: '#6a9f78',
+  LEAD_DEV: '#8b7ec8',
+  FRONTEND: '#5a9eae',
+  BACKEND: '#5a9eae',
+  DEVOPS: '#5a9eae',
+  QA: '#c9a84a',
+  RESEARCH: '#6a9f78',
+  DOCS: '#6a9f78',
+  OPS: '#6a9f78',
+  SALES: '#b8956c',
+  MARKETING: '#b8956c',
+  CUSTOMER_SUCCESS: '#6a9f78',
+  QA_DIRECTOR: '#c9a84a',
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  idle: '#64748b',
-  thinking: '#00e5ff',
-  acting: '#b84cff',
-  blocked: '#ff8c00',
-  error: '#ff3b5c',
-  done: '#00ff88',
+  idle: '#8a909c',
+  thinking: '#5a9eae',
+  acting: '#8b7ec8',
+  blocked: '#c4894a',
+  error: '#c45c66',
+  done: '#6a9f78',
 };
 
 function StatusDot({ status }: { status: string }) {
@@ -110,21 +115,28 @@ export function AgentNetwork({ agents }: AgentNetworkProps) {
       {[0, 1, 2, 3].map((tier) => {
         const tierAgents = tiers[tier] ?? [];
         if (tierAgents.length === 0) return null;
-        const tierLabel = ['Executive', 'C-Suite', 'Management', 'Specialists'][tier];
+        const tierLabel = ['Tier 0 · Executive', 'Tier 1 · C-Suite', 'Tier 2 · Leads', 'Tier 3 · Specialists'][tier];
         return (
           <div key={tier}>
             <div
+              className="apex-eyebrow"
               style={{
-                fontSize: 11,
-                fontWeight: 600,
-                color: 'var(--color-apex-muted)',
-                letterSpacing: '0.1em',
-                textTransform: 'uppercase',
                 marginBottom: 10,
-                paddingLeft: `${tier * 20}px`,
+                paddingLeft: `${tier * 16}px`,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
               }}
             >
-              Tier {tier} — {tierLabel}
+              <span
+                style={{
+                  flex: 1,
+                  height: 1,
+                  background: 'var(--color-apex-line)',
+                  maxWidth: tier === 0 ? 0 : 24,
+                }}
+              />
+              {tierLabel}
             </div>
             <div
               style={{

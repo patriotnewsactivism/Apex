@@ -175,10 +175,10 @@ const INTEGRATIONS: IntegrationConfig[] = [
 ];
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
-  ai: { label: 'AI Models', color: '#b84cff' },
-  comms: { label: 'Communications', color: '#00e5ff' },
-  dev: { label: 'Development', color: '#00ff88' },
-  data: { label: 'Data & Storage', color: '#ffd60a' },
+  ai: { label: 'AI Models', color: '#8b7ec8' },
+  comms: { label: 'Communications', color: '#5a9eae' },
+  dev: { label: 'Development', color: '#6a9f78' },
+  data: { label: 'Data & Storage', color: '#c9a84a' },
 };
 
 function IntegrationCard({
@@ -272,8 +272,8 @@ function IntegrationCard({
                   fontSize: 9,
                   padding: '1px 6px',
                   borderRadius: 3,
-                  background: 'rgba(0,255,136,0.1)',
-                  color: '#00ff88',
+                  background: 'rgba(106,159,120,0.1)',
+                  color: '#6a9f78',
                   fontWeight: 600,
                 }}
               >
@@ -365,7 +365,7 @@ function IntegrationCard({
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
             {saveError && (
-              <div style={{ fontSize: 11, color: '#ff3b5c' }}>⚠ Save failed: {saveError}</div>
+              <div style={{ fontSize: 11, color: '#c45c66' }}>⚠ Save failed: {saveError}</div>
             )}
             <div style={{ display: 'flex', gap: 8 }}>
               <button
@@ -454,12 +454,12 @@ export function Settings() {
       {/* Autonomy Level */}
       <div style={{
         background: 'var(--color-apex-card)',
-        border: '1px solid rgba(0,229,255,0.15)',
+        border: '1px solid rgba(90,158,174,0.15)',
         borderRadius: 12,
         padding: 20,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <Shield size={20} color="#00e5ff" />
+          <Shield size={20} color="#5a9eae" />
           <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>Autonomy Level</span>
         </div>
         <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '0 0 16px', lineHeight: 1.4 }}>
@@ -480,8 +480,8 @@ export function Settings() {
                   flex: '1 1 0',
                   minWidth: 120,
                   minHeight: 56,
-                  background: isActive ? 'rgba(0,229,255,0.12)' : 'rgba(255,255,255,0.03)',
-                  border: `1px solid ${isActive ? 'rgba(0,229,255,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                  background: isActive ? 'rgba(90,158,174,0.12)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${isActive ? 'rgba(90,158,174,0.4)' : 'rgba(255,255,255,0.08)'}`,
                   borderRadius: 10,
                   padding: '10px 14px',
                   cursor: 'pointer',
@@ -516,14 +516,14 @@ export function Settings() {
       {/* System overview */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
         {[
-          { label: 'Agents', value: agents.length, color: '#b84cff', icon: <Cpu size={14} /> },
-          { label: 'Tools', value: tools.length, color: '#00e5ff', icon: <Zap size={14} /> },
+          { label: 'Agents', value: agents.length, color: '#8b7ec8', icon: <Cpu size={14} /> },
+          { label: 'Tools', value: tools.length, color: '#5a9eae', icon: <Zap size={14} /> },
           {
             label: 'Configured',
             value: INTEGRATIONS.filter((i) =>
               i.envVars.some((v) => configuredKeys.has(v.key))
             ).length,
-            color: '#00ff88',
+            color: '#6a9f78',
             icon: <Check size={14} />,
           },
           {
@@ -533,7 +533,7 @@ export function Settings() {
               INTEGRATIONS.filter((i) =>
                 i.envVars.some((v) => configuredKeys.has(v.key))
               ).length,
-            color: '#ff3b5c',
+            color: '#c45c66',
             icon: <Shield size={14} />,
           },
         ].map((stat) => (
@@ -689,7 +689,7 @@ export function Settings() {
       {tools.length > 0 && (
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#00e5ff' }} />
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#5a9eae' }} />
             <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>
               Available Tools
             </span>
@@ -715,7 +715,7 @@ export function Settings() {
                       padding: '1px 6px',
                       borderRadius: 3,
                       background: 'rgba(255,216,10,0.1)',
-                      color: '#ffd60a',
+                      color: '#c9a84a',
                       fontWeight: 600,
                       display: 'inline-block',
                     }}

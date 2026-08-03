@@ -128,10 +128,10 @@ function StatCard({
 function AgentPill({ agent }: { agent: Agent }) {
   const statusColors: Record<string, string> = {
     idle: '#64748b',
-    active: '#00e5ff',
-    working: '#00e5ff',
-    thinking: '#b84cff',
-    error: '#ff3b5c',
+    active: '#5a9eae',
+    working: '#5a9eae',
+    thinking: '#8b7ec8',
+    error: '#c45c66',
   };
   const c = statusColors[agent.liveStatus || agent.status] || '#64748b';
   const isActive = agent.liveStatus === 'working' || agent.liveStatus === 'active' || agent.liveStatus === 'thinking';
@@ -198,9 +198,9 @@ function AgentPill({ agent }: { agent: Agent }) {
 
 function LogLine({ entry }: { entry: LogEntry }) {
   const levelColors: Record<string, string> = {
-    info: '#00e5ff',
-    warn: '#ffd60a',
-    error: '#ff3b5c',
+    info: '#5a9eae',
+    warn: '#c9a84a',
+    error: '#c45c66',
     debug: '#64748b',
   };
   const c = levelColors[entry.level] || '#64748b';
@@ -256,24 +256,24 @@ function LogLine({ entry }: { entry: LogEntry }) {
 function GoalCard({ goal }: { goal: Goal }) {
   const statusConfig: Record<string, { color: string; icon: React.ReactNode; bg: string }> = {
     active: {
-      color: '#00e5ff',
+      color: '#5a9eae',
       icon: <Loader size={12} />,
-      bg: 'rgba(0,229,255,0.06)',
+      bg: 'rgba(90,158,174,0.06)',
     },
     completed: {
-      color: '#00ff88',
+      color: '#6a9f78',
       icon: <CheckCircle2 size={12} />,
-      bg: 'rgba(0,255,136,0.06)',
+      bg: 'rgba(106,159,120,0.06)',
     },
     paused: {
-      color: '#ffd60a',
+      color: '#c9a84a',
       icon: <AlertTriangle size={12} />,
-      bg: 'rgba(255,214,10,0.06)',
+      bg: 'rgba(201,168,74,0.06)',
     },
     cancelled: {
-      color: '#ff3b5c',
+      color: '#c45c66',
       icon: <AlertTriangle size={12} />,
-      bg: 'rgba(255,59,92,0.06)',
+      bg: 'rgba(196,92,102,0.06)',
     },
   };
   const cfg = statusConfig[goal.status] || statusConfig.active;
@@ -341,11 +341,11 @@ function GoalCard({ goal }: { goal: Goal }) {
         <div
           style={{
             fontSize: 10,
-            color: '#00ff88',
+            color: '#6a9f78',
             fontFamily: 'var(--font-mono)',
             marginTop: 6,
             padding: '4px 8px',
-            background: 'rgba(0,255,136,0.05)',
+            background: 'rgba(106,159,120,0.05)',
             borderRadius: 4,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
@@ -502,31 +502,31 @@ export function QuickChat() {
           label="Active Goals"
           value={activeGoals}
           icon={<Target size={16} />}
-          color="#00e5ff"
-          glow="#00e5ff"
+          color="#5a9eae"
+          glow="#5a9eae"
           sub={`${goals.length} total`}
         />
         <StatCard
           label="Completed"
           value={completedGoals}
           icon={<CheckCircle2 size={16} />}
-          color="#00ff88"
-          glow="#00ff88"
+          color="#6a9f78"
+          glow="#6a9f78"
         />
         <StatCard
           label="Agents"
           value={`${activeAgentCount}/${agents.length}`}
           icon={<Users size={16} />}
-          color="#b84cff"
-          glow="#b84cff"
+          color="#8b7ec8"
+          glow="#8b7ec8"
           sub={activeAgentCount > 0 ? 'working' : 'standing by'}
         />
         <StatCard
           label="Status"
           value={connected ? 'LIVE' : 'OFF'}
           icon={<Zap size={16} />}
-          color={connected ? '#00ff88' : '#ff3b5c'}
-          glow={connected ? '#00ff88' : '#ff3b5c'}
+          color={connected ? '#6a9f78' : '#c45c66'}
+          glow={connected ? '#6a9f78' : '#c45c66'}
           sub={connected ? 'WebSocket connected' : 'Reconnecting...'}
         />
       </div>
@@ -548,7 +548,7 @@ export function QuickChat() {
               flex: 1,
               borderRadius: 14,
               background: 'rgba(13,17,23,0.6)',
-              border: '1px solid rgba(0,229,255,0.08)',
+              border: '1px solid rgba(90,158,174,0.08)',
               backdropFilter: 'blur(8px)',
               display: 'flex',
               flexDirection: 'column',
@@ -560,7 +560,7 @@ export function QuickChat() {
             <div
               style={{
                 padding: '12px 16px',
-                borderBottom: '1px solid rgba(0,229,255,0.06)',
+                borderBottom: '1px solid rgba(90,158,174,0.06)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
@@ -571,13 +571,13 @@ export function QuickChat() {
                   width: 28,
                   height: 28,
                   borderRadius: 8,
-                  background: 'linear-gradient(135deg, #00e5ff20, #b84cff20)',
+                  background: 'linear-gradient(135deg, #5a9eae20, #8b7ec820)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
               >
-                <Sparkles size={14} color="#00e5ff" />
+                <Sparkles size={14} color="#5a9eae" />
               </div>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-apex-text)' }}>
@@ -620,9 +620,9 @@ export function QuickChat() {
                           msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
                         background:
                           msg.role === 'user'
-                            ? 'linear-gradient(135deg, rgba(0,229,255,0.15), rgba(184,76,255,0.08))'
+                            ? 'linear-gradient(135deg, rgba(90,158,174,0.15), rgba(139,126,200,0.08))'
                             : 'rgba(255,255,255,0.03)',
-                        border: `1px solid ${msg.role === 'user' ? 'rgba(0,229,255,0.18)' : 'rgba(255,255,255,0.05)'}`,
+                        border: `1px solid ${msg.role === 'user' ? 'rgba(90,158,174,0.18)' : 'rgba(255,255,255,0.05)'}`,
                         fontSize: 13,
                         lineHeight: 1.5,
                         color: 'var(--color-apex-text)',
@@ -642,7 +642,7 @@ export function QuickChat() {
                     display: 'flex',
                     alignItems: 'center',
                     gap: 8,
-                    color: '#00e5ff',
+                    color: '#5a9eae',
                     fontSize: 12,
                   }}
                 >
@@ -666,12 +666,12 @@ export function QuickChat() {
                   color: 'var(--color-apex-muted)',
                   marginBottom: 6,
                   padding: '8px 12px',
-                  background: 'rgba(0,229,255,0.03)',
-                  border: '1px solid rgba(0,229,255,0.08)',
+                  background: 'rgba(90,158,174,0.03)',
+                  border: '1px solid rgba(90,158,174,0.08)',
                   borderRadius: 8,
                 }}
               >
-                <strong style={{ color: '#00e5ff' }}>Tips:</strong> First line becomes the goal
+                <strong style={{ color: '#5a9eae' }}>Tips:</strong> First line becomes the goal
                 title. Say "urgent" or "critical" for high priority. Shift+Enter for newlines.
               </motion.div>
             )}
@@ -680,11 +680,11 @@ export function QuickChat() {
                 onClick={() => setExpanded(!expanded)}
                 style={{
                   background: 'rgba(13,17,23,0.6)',
-                  border: '1px solid rgba(0,229,255,0.12)',
+                  border: '1px solid rgba(90,158,174,0.12)',
                   borderRadius: 10,
                   padding: '11px',
                   cursor: 'pointer',
-                  color: expanded ? '#00e5ff' : 'var(--color-apex-muted)',
+                  color: expanded ? '#5a9eae' : 'var(--color-apex-muted)',
                   display: 'flex',
                   alignItems: 'center',
                   transition: 'all 0.15s',
@@ -743,7 +743,7 @@ export function QuickChat() {
             style={{
               borderRadius: 14,
               background: 'rgba(13,17,23,0.6)',
-              border: '1px solid rgba(184,76,255,0.08)',
+              border: '1px solid rgba(139,126,200,0.08)',
               backdropFilter: 'blur(8px)',
               overflow: 'hidden',
             }}
@@ -751,13 +751,13 @@ export function QuickChat() {
             <div
               style={{
                 padding: '12px 14px',
-                borderBottom: '1px solid rgba(184,76,255,0.06)',
+                borderBottom: '1px solid rgba(139,126,200,0.06)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
               }}
             >
-              <Bot size={14} color="#b84cff" />
+              <Bot size={14} color="#8b7ec8" />
               <span
                 style={{
                   fontSize: 12,
@@ -810,7 +810,7 @@ export function QuickChat() {
             style={{
               borderRadius: 14,
               background: 'rgba(13,17,23,0.6)',
-              border: '1px solid rgba(0,229,255,0.08)',
+              border: '1px solid rgba(90,158,174,0.08)',
               backdropFilter: 'blur(8px)',
               overflow: 'hidden',
             }}
@@ -818,13 +818,13 @@ export function QuickChat() {
             <div
               style={{
                 padding: '12px 14px',
-                borderBottom: '1px solid rgba(0,229,255,0.06)',
+                borderBottom: '1px solid rgba(90,158,174,0.06)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
               }}
             >
-              <Target size={14} color="#00e5ff" />
+              <Target size={14} color="#5a9eae" />
               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
                 Recent Goals
               </span>
@@ -872,7 +872,7 @@ export function QuickChat() {
             style={{
               borderRadius: 14,
               background: 'rgba(13,17,23,0.6)',
-              border: '1px solid rgba(0,255,136,0.08)',
+              border: '1px solid rgba(106,159,120,0.08)',
               backdropFilter: 'blur(8px)',
               overflow: 'hidden',
               flex: 1,
@@ -882,13 +882,13 @@ export function QuickChat() {
             <div
               style={{
                 padding: '12px 14px',
-                borderBottom: '1px solid rgba(0,255,136,0.06)',
+                borderBottom: '1px solid rgba(106,159,120,0.06)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
               }}
             >
-              <Terminal size={14} color="#00ff88" />
+              <Terminal size={14} color="#6a9f78" />
               <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
                 Live Feed
               </span>
@@ -898,8 +898,8 @@ export function QuickChat() {
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  background: connected ? '#00ff88' : '#ff3b5c',
-                  boxShadow: connected ? '0 0 6px #00ff8880' : 'none',
+                  background: connected ? '#6a9f78' : '#c45c66',
+                  boxShadow: connected ? '0 0 6px #6a9f7880' : 'none',
                 }}
               />
             </div>

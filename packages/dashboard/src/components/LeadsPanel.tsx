@@ -5,17 +5,17 @@ import { api, type ResearchedLead } from '../lib/api.js';
 import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter } from 'lucide-react';
 
 const STATUS_COLORS: Record<string, string> = {
-  new: '#00e5ff',
-  contacted: '#ffd60a',
-  qualified: '#00ff88',
-  rejected: '#ff3b5c',
+  new: '#5a9eae',
+  contacted: '#c9a84a',
+  qualified: '#6a9f78',
+  rejected: '#c45c66',
 };
 
 const STATUS_BG: Record<string, string> = {
-  new: 'rgba(0,229,255,0.1)',
-  contacted: 'rgba(255,214,10,0.1)',
-  qualified: 'rgba(0,255,136,0.1)',
-  rejected: 'rgba(255,59,92,0.1)',
+  new: 'rgba(90,158,174,0.1)',
+  contacted: 'rgba(201,168,74,0.1)',
+  qualified: 'rgba(106,159,120,0.1)',
+  rejected: 'rgba(196,92,102,0.1)',
 };
 
 export function LeadsPanel() {
@@ -109,7 +109,7 @@ export function LeadsPanel() {
             onClick={() => setShowFilters(!showFilters)}
             style={{
               background: 'transparent',
-              border: '1px solid rgba(0,229,255,0.15)',
+              border: '1px solid rgba(90,158,174,0.15)',
               borderRadius: 6,
               padding: '6px 12px',
               color: 'var(--color-apex-muted)',
@@ -126,7 +126,7 @@ export function LeadsPanel() {
             onClick={() => refetch()}
             style={{
               background: 'transparent',
-              border: '1px solid rgba(0,229,255,0.15)',
+              border: '1px solid rgba(90,158,174,0.15)',
               borderRadius: 6,
               padding: '6px 10px',
               color: 'var(--color-apex-muted)',
@@ -142,11 +142,11 @@ export function LeadsPanel() {
           <button
             onClick={handleExport}
             style={{
-              background: 'rgba(0,229,255,0.1)',
-              border: '1px solid rgba(0,229,255,0.3)',
+              background: 'rgba(90,158,174,0.1)',
+              border: '1px solid rgba(90,158,174,0.3)',
               borderRadius: 6,
               padding: '6px 12px',
-              color: '#00e5ff',
+              color: '#5a9eae',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -174,7 +174,7 @@ export function LeadsPanel() {
             onChange={(e) => setStatusFilter(e.target.value)}
             style={{
               background: 'rgba(13,17,23,0.8)',
-              border: '1px solid rgba(0,229,255,0.15)',
+              border: '1px solid rgba(90,158,174,0.15)',
               borderRadius: 6,
               padding: '6px 10px',
               color: 'var(--color-apex-text)',
@@ -193,7 +193,7 @@ export function LeadsPanel() {
             onChange={(e) => setIndustryFilter(e.target.value)}
             style={{
               background: 'rgba(13,17,23,0.8)',
-              border: '1px solid rgba(0,229,255,0.15)',
+              border: '1px solid rgba(90,158,174,0.15)',
               borderRadius: 6,
               padding: '6px 10px',
               color: 'var(--color-apex-text)',
@@ -212,7 +212,7 @@ export function LeadsPanel() {
               style={{
                 background: 'transparent',
                 border: 'none',
-                color: '#ff3b5c',
+                color: '#c45c66',
                 cursor: 'pointer',
                 fontSize: 12,
               }}
@@ -226,7 +226,7 @@ export function LeadsPanel() {
       {/* Leads table */}
       <div className="glass-card" style={{ overflow: 'hidden' }}>
         {isLoading ? (
-          <div style={{ padding: 40, textAlign: 'center', color: '#00e5ff', fontSize: 13 }}>
+          <div style={{ padding: 40, textAlign: 'center', color: '#5a9eae', fontSize: 13 }}>
             Loading leads...
           </div>
         ) : leads.length === 0 ? (
@@ -237,7 +237,7 @@ export function LeadsPanel() {
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
-                <tr style={{ borderBottom: '1px solid rgba(0,229,255,0.1)' }}>
+                <tr style={{ borderBottom: '1px solid rgba(90,158,174,0.1)' }}>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}></th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Company</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Industry</th>
@@ -258,9 +258,9 @@ export function LeadsPanel() {
                         style={{
                           cursor: 'pointer',
                           borderBottom: '1px solid rgba(255,255,255,0.03)',
-                          background: isExpanded ? 'rgba(0,229,255,0.03)' : 'transparent',
+                          background: isExpanded ? 'rgba(90,158,174,0.03)' : 'transparent',
                         }}
-                        whileHover={{ background: 'rgba(0,229,255,0.03)' }}
+                        whileHover={{ background: 'rgba(90,158,174,0.03)' }}
                       >
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>
                           {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -275,7 +275,7 @@ export function LeadsPanel() {
                               onClick={(e) => e.stopPropagation()}
                               style={{
                                 fontSize: 10,
-                                color: '#00e5ff',
+                                color: '#5a9eae',
                                 textDecoration: 'none',
                                 display: 'inline-flex',
                                 alignItems: 'center',

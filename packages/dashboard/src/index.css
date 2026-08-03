@@ -1,24 +1,51 @@
 @import "tailwindcss";
 
+/*
+  APEX "Steel Hierarchy" visual system
+  ─────────────────────────────────────
+  Subject: operator console for a 13-agent hierarchical workforce
+  Risk: bronze authority + desaturated signal on graphite steel
+        (not neon cyan cyber / cream serif / broadsheet)
+  Signature: live hierarchy spine in the shell
+*/
+
 @theme {
-  --color-apex-bg: #07080d;
-  --color-apex-surface: #0d1117;
-  --color-apex-card: #111827;
-  --color-apex-border: rgba(0, 229, 255, 0.12);
-  --color-apex-border-hover: rgba(0, 229, 255, 0.35);
-  --color-apex-cyan: #00e5ff;
-  --color-apex-cyan-dim: rgba(0, 229, 255, 0.6);
-  --color-apex-purple: #b84cff;
-  --color-apex-green: #00ff88;
-  --color-apex-orange: #ff8c00;
-  --color-apex-red: #ff3b5c;
-  --color-apex-yellow: #ffd60a;
-  --color-apex-text: #e2e8f0;
-  --color-apex-muted: #64748b;
-  --color-apex-subtle: #1e2936;
-  
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  /* Surfaces — warm graphite steel, never pure black */
+  --color-apex-bg: #111318;
+  --color-apex-surface: #191c24;
+  --color-apex-card: #1e222b;
+  --color-apex-subtle: #252a35;
+  --color-apex-raised: #262b36;
+
+  /* Rules */
+  --color-apex-border: rgba(184, 149, 108, 0.14);
+  --color-apex-border-hover: rgba(184, 149, 108, 0.36);
+  --color-apex-line: #2e3340;
+
+  /* Authority — human gate, CEO, approvals, active chrome */
+  --color-apex-brass: #b8956c;
+  --color-apex-brass-dim: rgba(184, 149, 108, 0.55);
+  --color-apex-brass-soft: rgba(184, 149, 108, 0.12);
+
+  /* Live signal — machine activity (replaces neon cyan; keep -cyan alias) */
+  --color-apex-cyan: #5a9eae;
+  --color-apex-cyan-dim: rgba(90, 158, 174, 0.65);
+  --color-apex-signal: #5a9eae;
+
+  /* Role / state */
+  --color-apex-purple: #8b7ec8;
+  --color-apex-green: #6a9f78;
+  --color-apex-orange: #c4894a;
+  --color-apex-red: #c45c66;
+  --color-apex-yellow: #c9a84a;
+
+  /* Type */
+  --color-apex-text: #e4e0d6;
+  --color-apex-muted: #8a909c;
+
+  --font-display: 'Syne', system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', ui-monospace, monospace;
 }
 
 * {
@@ -39,19 +66,26 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Focus ring — visible, not neon */
+:focus-visible {
+  outline: 2px solid var(--color-apex-brass);
+  outline-offset: 2px;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--color-apex-surface); }
-::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.3); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--color-apex-cyan); }
+::-webkit-scrollbar-thumb {
+  background: rgba(184, 149, 108, 0.28);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-apex-brass); }
 
-/* Glassmorphism card */
+/* Solid panel — disciplined, no heavy glass */
 .glass-card {
-  background: rgba(13, 17, 23, 0.8);
+  background: var(--color-apex-card);
   border: 1px solid var(--color-apex-border);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-radius: 12px;
+  border-radius: 8px;
   transition: border-color 0.2s ease;
 }
 
@@ -59,47 +93,42 @@ body {
   border-color: var(--color-apex-border-hover);
 }
 
-/* Neon glow */
+/* Authority / live accents */
 .glow-cyan {
-  box-shadow: 0 0 20px rgba(0, 229, 255, 0.15), 0 0 60px rgba(0, 229, 255, 0.05);
+  box-shadow: 0 0 0 1px rgba(90, 158, 174, 0.25);
 }
 
 .glow-text-cyan {
-  text-shadow: 0 0 20px rgba(0, 229, 255, 0.5);
+  color: var(--color-apex-signal);
+}
+
+.glow-brass {
+  box-shadow: 0 0 0 1px rgba(184, 149, 108, 0.35);
 }
 
 /* Status colors */
 .status-idle { color: var(--color-apex-muted); }
-.status-thinking { color: var(--color-apex-cyan); }
+.status-thinking { color: var(--color-apex-signal); }
 .status-acting { color: var(--color-apex-purple); }
 .status-blocked { color: var(--color-apex-orange); }
 .status-error { color: var(--color-apex-red); }
 .status-done { color: var(--color-apex-green); }
 
-/* Pulse animation */
-@keyframes pulse-cyan {
+/* Motion — restrained; respect reduced motion */
+@keyframes pulse-live {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.45; }
 }
 
-@keyframes scan-line {
-  0% { transform: translateY(-100%); }
-  100% { transform: translateY(100vh); }
+@keyframes hierarchy-breathe {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 
 @keyframes float {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
+  50% { transform: translateY(-4px); }
 }
-
-@keyframes gradient-shift {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
-
-.animate-pulse-cyan { animation: pulse-cyan 2s ease-in-out infinite; }
-.animate-float { animation: float 4s ease-in-out infinite; }
 
 @keyframes spin {
   from { transform: rotate(0deg); }
@@ -108,7 +137,26 @@ body {
 
 @keyframes pulse {
   0%, 100% { opacity: 0.4; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.3); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* Legacy alias used by AgentNetwork */
+@keyframes pulse-cyan {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.animate-pulse-cyan { animation: pulse-live 2s ease-in-out infinite; }
+.animate-float { animation: float 4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-cyan,
+  .animate-float,
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Log level colors */
@@ -116,104 +164,119 @@ body {
 .log-info { color: var(--color-apex-text); }
 .log-warn { color: var(--color-apex-yellow); }
 .log-error { color: var(--color-apex-red); }
-.log-thinking { color: var(--color-apex-cyan); }
+.log-thinking { color: var(--color-apex-signal); }
 .log-acting { color: var(--color-apex-purple); }
 
-/* Gradient text */
-.gradient-text {
-  background: linear-gradient(135deg, var(--color-apex-cyan) 0%, var(--color-apex-purple) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+/* Display wordmark / titles */
+.apex-display {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
-/* Button styles */
+.gradient-text {
+  color: var(--color-apex-brass);
+  background: none;
+  -webkit-text-fill-color: unset;
+}
+
+/* Buttons */
 .btn-primary {
-  background: linear-gradient(135deg, var(--color-apex-cyan), #0099cc);
-  color: #000;
+  background: var(--color-apex-brass);
+  color: #14120f;
   font-weight: 600;
   border: none;
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 10px 20px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background 0.15s ease, transform 0.15s ease;
   font-family: var(--font-sans);
 }
 .btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.4);
+  background: #c9a87a;
 }
-.btn-primary:active { transform: translateY(0); }
+.btn-primary:active { transform: translateY(1px); }
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 .btn-secondary {
   background: transparent;
-  color: var(--color-apex-cyan);
+  color: var(--color-apex-brass);
   font-weight: 500;
   border: 1px solid var(--color-apex-border);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 9px 19px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   font-family: var(--font-sans);
 }
 .btn-secondary:hover {
-  border-color: var(--color-apex-cyan);
-  background: rgba(0, 229, 255, 0.05);
+  border-color: var(--color-apex-brass);
+  background: var(--color-apex-brass-soft);
 }
 
 .btn-danger {
   background: transparent;
   color: var(--color-apex-red);
-  border: 1px solid rgba(255, 59, 92, 0.3);
-  border-radius: 8px;
+  border: 1px solid rgba(196, 92, 102, 0.35);
+  border-radius: 6px;
   padding: 9px 19px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
   font-family: var(--font-sans);
 }
 .btn-danger:hover {
-  background: rgba(255, 59, 92, 0.1);
+  background: rgba(196, 92, 102, 0.1);
   border-color: var(--color-apex-red);
 }
 
-/* Input */
+/* Inputs */
 .apex-input {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--color-apex-border);
-  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--color-apex-line);
+  border-radius: 6px;
   color: var(--color-apex-text);
   padding: 10px 14px;
   font-family: var(--font-sans);
   font-size: 14px;
   width: 100%;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .apex-input:focus {
-  border-color: var(--color-apex-cyan);
-  box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.1);
+  border-color: var(--color-apex-brass);
+  box-shadow: 0 0 0 2px rgba(184, 149, 108, 0.15);
 }
 .apex-input::placeholder { color: var(--color-apex-muted); }
 
-/* Textarea */
 .apex-textarea {
   resize: vertical;
   min-height: 100px;
 }
 
+/* Section eyebrow — encodes hierarchy, not decoration */
+.apex-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-apex-muted);
+}
+
 /* ─── Mobile ─────────────────────────────────────────────────────────────── */
 
 @media (max-width: 767px) {
-  /* Prevent horizontal overflow */
   html, body, #root {
     overflow-x: hidden;
     width: 100%;
   }
 
-  /* Larger touch targets */
   .apex-input {
     padding: 12px 14px;
-    font-size: 16px; /* prevents iOS zoom on focus */
+    font-size: 16px;
   }
 
   .apex-textarea {
@@ -229,18 +292,15 @@ body {
     padding: 11px 18px;
   }
 
-  /* Glass cards: slightly less border-radius on mobile */
   .glass-card {
-    border-radius: 10px;
+    border-radius: 8px;
   }
 
-  /* Better scrollbar on mobile */
   ::-webkit-scrollbar {
     width: 3px;
     height: 3px;
   }
 
-  /* Safe area padding for notched phones */
   body {
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);

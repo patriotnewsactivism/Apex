@@ -80,7 +80,7 @@ function ScheduleCard({ job }: { job: ScheduledJobRow }) {
       animate={{ opacity: 1, y: 0 }}
       style={{
         background: 'var(--color-apex-card)',
-        border: `1px solid ${job.enabled ? 'rgba(0,229,255,0.15)' : 'rgba(100,116,139,0.15)'}`,
+        border: `1px solid ${job.enabled ? 'rgba(90,158,174,0.15)' : 'rgba(100,116,139,0.15)'}`,
         borderRadius: 12,
         padding: 16,
         display: 'flex',
@@ -101,8 +101,8 @@ function ScheduleCard({ job }: { job: ScheduledJobRow }) {
         <button
           onClick={() => updateMutation.mutate({ enabled: !job.enabled })}
           style={{
-            background: job.enabled ? 'rgba(0,255,136,0.1)' : 'rgba(100,116,139,0.1)',
-            border: `1px solid ${job.enabled ? 'rgba(0,255,136,0.3)' : 'rgba(100,116,139,0.3)'}`,
+            background: job.enabled ? 'rgba(106,159,120,0.1)' : 'rgba(100,116,139,0.1)',
+            border: `1px solid ${job.enabled ? 'rgba(106,159,120,0.3)' : 'rgba(100,116,139,0.3)'}`,
             borderRadius: 8,
             padding: '4px 10px',
             fontSize: 11,
@@ -146,8 +146,8 @@ function ScheduleCard({ job }: { job: ScheduledJobRow }) {
               key={preset.cron}
               onClick={() => updateMutation.mutate({ cronExpression: preset.cron })}
               style={{
-                background: isActive ? 'rgba(0,229,255,0.15)' : 'rgba(255,255,255,0.04)',
-                border: `1px solid ${isActive ? 'rgba(0,229,255,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                background: isActive ? 'rgba(90,158,174,0.15)' : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${isActive ? 'rgba(90,158,174,0.4)' : 'rgba(255,255,255,0.08)'}`,
                 borderRadius: 6,
                 padding: '4px 10px',
                 fontSize: 11,
@@ -186,8 +186,8 @@ function ScheduleCard({ job }: { job: ScheduledJobRow }) {
             if (customCron.trim()) updateMutation.mutate({ cronExpression: customCron.trim() });
           }}
           style={{
-            background: 'rgba(0,229,255,0.1)',
-            border: '1px solid rgba(0,229,255,0.3)',
+            background: 'rgba(90,158,174,0.1)',
+            border: '1px solid rgba(90,158,174,0.3)',
             borderRadius: 6,
             padding: '6px 12px',
             fontSize: 11,
@@ -239,7 +239,7 @@ function AgentBehaviorCard({ agent }: { agent: Agent }) {
       animate={{ opacity: 1, y: 0 }}
       style={{
         background: 'var(--color-apex-card)',
-        border: '1px solid rgba(0,229,255,0.12)',
+        border: '1px solid rgba(90,158,174,0.12)',
         borderRadius: 12,
         padding: 16,
         display: 'flex',
@@ -285,8 +285,8 @@ function AgentBehaviorCard({ agent }: { agent: Agent }) {
               style={{
                 flex: 1,
                 height: 24,
-                background: n <= concurrency ? 'rgba(0,229,255,0.2)' : 'rgba(255,255,255,0.03)',
-                border: `1px solid ${n === concurrency ? 'rgba(0,229,255,0.5)' : 'rgba(255,255,255,0.06)'}`,
+                background: n <= concurrency ? 'rgba(90,158,174,0.2)' : 'rgba(255,255,255,0.03)',
+                border: `1px solid ${n === concurrency ? 'rgba(90,158,174,0.5)' : 'rgba(255,255,255,0.06)'}`,
                 borderRadius: 4,
                 cursor: 'pointer',
                 transition: 'all 0.15s',
@@ -346,8 +346,8 @@ export function ControlRoom() {
           <button
             onClick={() => { refetchJobs(); refetchAgents(); }}
             style={{
-              background: 'rgba(0,229,255,0.06)',
-              border: '1px solid rgba(0,229,255,0.15)',
+              background: 'rgba(90,158,174,0.06)',
+              border: '1px solid rgba(90,158,174,0.15)',
               borderRadius: 8,
               padding: '6px 12px',
               fontSize: 11,

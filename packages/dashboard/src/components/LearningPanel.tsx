@@ -94,7 +94,7 @@ export function LearningPanel() {
               gap: 10,
             }}
           >
-            <Brain size={24} color="#00e5ff" /> Learning & Adaptation System
+            <Brain size={24} color="#5a9eae" /> Learning & Adaptation System
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: '#94a3b8' }}>
             Continuous performance tracking, automated pattern recognition, and approval-gated strategy optimization
@@ -106,9 +106,9 @@ export function LearningPanel() {
           style={{
             padding: '10px 18px',
             borderRadius: 8,
-            background: 'linear-gradient(135deg, rgba(0,229,255,0.2), rgba(59,130,246,0.2))',
-            border: '1px solid rgba(0,229,255,0.4)',
-            color: '#00e5ff',
+            background: 'linear-gradient(135deg, rgba(90,158,174,0.2), rgba(59,130,246,0.2))',
+            border: '1px solid rgba(90,158,174,0.4)',
+            color: '#5a9eae',
             fontSize: 13,
             fontWeight: 600,
             cursor: 'pointer',

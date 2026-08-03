@@ -71,7 +71,7 @@ export function MultiAppPanel() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#f1f5f9', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FolderGit2 size={24} color="#00e5ff" /> Portfolio & Multi-App Orchestration
+            <FolderGit2 size={24} color="#5a9eae" /> Portfolio & Multi-App Orchestration
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: '#94a3b8' }}>
             Cross-repository portfolio coordination, shared learnings, and predictive risk management
@@ -83,7 +83,7 @@ export function MultiAppPanel() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16, marginBottom: 28 }}>
         <div className="glass-card" style={{ padding: '20px 24px', borderRadius: 12 }}>
           <div style={{ fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Layers size={14} color="#00e5ff" /> Monitored Repositories
+            <Layers size={14} color="#5a9eae" /> Monitored Repositories
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, color: '#f8fafc', marginTop: 8 }}>
             {portfolioApps.length}
@@ -120,7 +120,7 @@ export function MultiAppPanel() {
 
       {/* Portfolio Application Cards */}
       <h3 style={{ fontSize: 15, fontWeight: 600, color: '#cbd5e1', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <FolderGit2 size={16} color="#00e5ff" /> Portfolio Repositories & Standing Rules
+        <FolderGit2 size={16} color="#5a9eae" /> Portfolio Repositories & Standing Rules
       </h3>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16, marginBottom: 32 }}>
         {portfolioApps.map((app) => (
@@ -154,7 +154,7 @@ export function MultiAppPanel() {
                 </span>
               </div>
               <div style={{ fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <a href={app.repoUrl} target="_blank" rel="noreferrer" style={{ color: '#00e5ff', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <a href={app.repoUrl} target="_blank" rel="noreferrer" style={{ color: '#5a9eae', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
                   {app.id} <ExternalLink size={12} />
                 </a>
               </div>
@@ -170,9 +170,9 @@ export function MultiAppPanel() {
                   flex: 1,
                   padding: '6px 12px',
                   borderRadius: 6,
-                  background: 'rgba(0,229,255,0.12)',
-                  border: '1px solid rgba(0,229,255,0.3)',
-                  color: '#00e5ff',
+                  background: 'rgba(90,158,174,0.12)',
+                  border: '1px solid rgba(90,158,174,0.3)',
+                  color: '#5a9eae',
                   fontSize: 12,
                   fontWeight: 600,
                   cursor: 'pointer',

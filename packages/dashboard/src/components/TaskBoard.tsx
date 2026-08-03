@@ -7,11 +7,11 @@ import type { Task } from '../lib/api.js';
 
 const STATUS_COLUMNS = [
   { key: 'pending', label: 'Pending', color: '#64748b' },
-  { key: 'in_progress', label: 'In Progress', color: '#00e5ff' },
-  { key: 'awaiting_approval', label: 'Needs Approval', color: '#ffd60a' },
-  { key: 'blocked', label: 'Blocked', color: '#ff8c00' },
-  { key: 'done', label: 'Done', color: '#00ff88' },
-  { key: 'failed', label: 'Failed', color: '#ff3b5c' },
+  { key: 'in_progress', label: 'In Progress', color: '#5a9eae' },
+  { key: 'awaiting_approval', label: 'Needs Approval', color: '#c9a84a' },
+  { key: 'blocked', label: 'Blocked', color: '#c4894a' },
+  { key: 'done', label: 'Done', color: '#6a9f78' },
+  { key: 'failed', label: 'Failed', color: '#c45c66' },
 ];
 
 function TaskCard({ task }: { task: Task }) {
@@ -33,7 +33,7 @@ function TaskCard({ task }: { task: Task }) {
         <div
           style={{
             fontSize: 10,
-            color: '#00e5ff',
+            color: '#5a9eae',
             fontFamily: 'var(--font-mono)',
             opacity: 0.7,
             marginBottom: 6,
@@ -48,8 +48,8 @@ function TaskCard({ task }: { task: Task }) {
             fontSize: 9,
             padding: '2px 6px',
             borderRadius: 4,
-            background: 'rgba(0,229,255,0.1)',
-            color: '#00e5ff',
+            background: 'rgba(90,158,174,0.1)',
+            color: '#5a9eae',
             fontFamily: 'var(--font-mono)',
           }}
         >
@@ -82,12 +82,12 @@ function TaskCard({ task }: { task: Task }) {
               style={{
                 marginTop: 8,
                 fontSize: 11,
-                color: '#00ff88',
+                color: '#6a9f78',
                 fontFamily: 'var(--font-mono)',
-                background: 'rgba(0,255,136,0.05)',
+                background: 'rgba(106,159,120,0.05)',
                 padding: '8px 10px',
                 borderRadius: 6,
-                borderLeft: '2px solid #00ff88',
+                borderLeft: '2px solid #6a9f78',
               }}
             >
               {task.result.slice(0, 200)}
@@ -98,12 +98,12 @@ function TaskCard({ task }: { task: Task }) {
               style={{
                 marginTop: 8,
                 fontSize: 11,
-                color: '#ff3b5c',
+                color: '#c45c66',
                 fontFamily: 'var(--font-mono)',
-                background: 'rgba(255,59,92,0.05)',
+                background: 'rgba(196,92,102,0.05)',
                 padding: '8px 10px',
                 borderRadius: 6,
-                borderLeft: '2px solid #ff3b5c',
+                borderLeft: '2px solid #c45c66',
               }}
             >
               {task.errorMessage}

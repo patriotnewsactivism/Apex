@@ -15,14 +15,14 @@ import {
 } from 'lucide-react';
 
 const IMPACT_COLORS: Record<string, string> = {
-  high: '#ff3b5c',
-  medium: '#ffd60a',
-  low: '#00ff88',
+  high: '#c45c66',
+  medium: '#c9a84a',
+  low: '#6a9f78',
 };
 
 const CATEGORY_META: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
-  self_improvement: { icon: <Zap size={14} />, color: '#00e5ff', label: 'Self-Improvement' },
-  app_improvement: { icon: <Building2 size={14} />, color: '#b84cff', label: 'App Improvement' },
+  self_improvement: { icon: <Zap size={14} />, color: '#5a9eae', label: 'Self-Improvement' },
+  app_improvement: { icon: <Building2 size={14} />, color: '#8b7ec8', label: 'App Improvement' },
 };
 
 function SuggestionCard({ suggestion }: { suggestion: SuggestionRow }) {
@@ -166,14 +166,14 @@ export function SuggestionsPanel() {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-apex-text)', display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
-          <Lightbulb size={20} color="#ffd60a" />
+          <Lightbulb size={20} color="#c9a84a" />
           Suggestions
         </h2>
         <button
           onClick={() => refetch()}
           style={{
-            background: 'rgba(0,229,255,0.06)',
-            border: '1px solid rgba(0,229,255,0.15)',
+            background: 'rgba(90,158,174,0.06)',
+            border: '1px solid rgba(90,158,174,0.15)',
             borderRadius: 8,
             padding: '6px 12px',
             fontSize: 11,
@@ -209,7 +209,7 @@ export function SuggestionsPanel() {
           {selfImprovement.length > 0 && (
             <section>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                <TrendingUp size={16} color="#00e5ff" />
+                <TrendingUp size={16} color="#5a9eae" />
                 <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-apex-cyan)' }}>Self-Improvement</span>
                 <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>({selfImprovement.length})</span>
               </div>
@@ -229,7 +229,7 @@ export function SuggestionsPanel() {
           {appImprovement.length > 0 && (
             <section>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                <Building2 size={16} color="#b84cff" />
+                <Building2 size={16} color="#8b7ec8" />
                 <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-apex-purple)' }}>App Improvement</span>
                 <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>({appImprovement.length})</span>
               </div>

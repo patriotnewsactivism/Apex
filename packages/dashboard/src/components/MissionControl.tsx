@@ -17,10 +17,18 @@ function useIsMobile() {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  active: '#00e5ff',
-  paused: '#ffd60a',
-  completed: '#00ff88',
-  cancelled: '#ff3b5c',
+  active: '#5a9eae',
+  paused: '#c9a84a',
+  completed: '#6a9f78',
+  cancelled: '#c45c66',
+};
+
+const ACCENT = {
+  signal: '#5a9eae',
+  acting: '#8b7ec8',
+  clear: '#6a9f78',
+  halt: '#c45c66',
+  brass: '#b8956c',
 };
 
 function GoalCard({ goal }: { goal: Goal }) {
@@ -65,12 +73,12 @@ function GoalCard({ goal }: { goal: Goal }) {
               style={{
                 marginTop: 10,
                 fontSize: 11,
-                color: '#00ff88',
+                color: '#6a9f78',
                 fontFamily: 'var(--font-mono)',
-                background: 'rgba(0,255,136,0.06)',
+                background: 'rgba(106,159,120,0.06)',
                 padding: '8px 12px',
                 borderRadius: 6,
-                borderLeft: '2px solid #00ff88',
+                borderLeft: '2px solid #6a9f78',
                 wordBreak: 'break-word',
               }}
             >
@@ -135,9 +143,9 @@ export function MissionControl() {
           }}
         >
           {[
-            { label: 'Active Goals', value: goals.filter((g) => g.status === 'active').length, color: '#00e5ff', icon: <Target size={isMobile ? 14 : 16} /> },
-            { label: 'Active Agents', value: activeAgents, color: '#b84cff', icon: <Activity size={isMobile ? 14 : 16} /> },
-            { label: 'Connected', value: connected ? 'LIVE' : 'OFF', color: connected ? '#00ff88' : '#ff3b5c', icon: <Zap size={isMobile ? 14 : 16} /> },
+            { label: 'Active Goals', value: goals.filter((g) => g.status === 'active').length, color: ACCENT.signal, icon: <Target size={isMobile ? 14 : 16} /> },
+            { label: 'Active Agents', value: activeAgents, color: ACCENT.acting, icon: <Activity size={isMobile ? 14 : 16} /> },
+            { label: 'Connected', value: connected ? 'LIVE' : 'OFF', color: connected ? ACCENT.clear : ACCENT.halt, icon: <Zap size={isMobile ? 14 : 16} /> },
           ].map((stat) => (
             <div
               key={stat.label}
@@ -176,9 +184,12 @@ export function MissionControl() {
 
         {/* Goal Submission Form */}
         <div className="glass-card" style={{ padding: isMobile ? 16 : 24, flex: isMobile ? 'none' : 1 }}>
-          <h2 style={{ margin: '0 0 16px 0', fontSize: isMobile ? 14 : 16, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-            🎯 Submit New Goal
+          <h2 style={{ margin: '0 0 4px 0', fontSize: isMobile ? 14 : 16, fontWeight: 700, color: 'var(--color-apex-text)', fontFamily: 'var(--font-display)' }}>
+            Issue a goal
           </h2>
+          <p style={{ margin: '0 0 16px 0', fontSize: 12, color: 'var(--color-apex-muted)', lineHeight: 1.45 }}>
+            CEO receives it first, then delegates down the hierarchy.
+          </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div>
@@ -219,7 +230,7 @@ export function MissionControl() {
                 max={10}
                 value={priority}
                 onChange={(e) => setPriority(parseInt(e.target.value, 10))}
-                style={{ width: '100%', accentColor: '#00e5ff' }}
+                style={{ width: '100%', accentColor: 'var(--color-apex-brass)' }}
               />
             </div>
 
@@ -233,17 +244,17 @@ export function MissionControl() {
               whileTap={{ scale: 0.98 }}
             >
               {submitMut.isPending ? (
-                '⟳ Submitting to APEX...'
+                'Sending…'
               ) : submitted ? (
-                '✅ Goal Submitted!'
+                'Goal sent'
               ) : (
-                <>Deploy to APEX <ChevronRight size={16} /></>
+                <>Send to CEO <ChevronRight size={16} /></>
               )}
             </motion.button>
 
             {submitMut.isError && (
-              <div style={{ color: '#ff3b5c', fontSize: 12, padding: '8px 12px', background: 'rgba(255,59,92,0.08)', borderRadius: 6 }}>
-                ❌ {submitMut.error?.message ?? 'Failed to submit goal'}
+              <div style={{ color: 'var(--color-apex-red)', fontSize: 12, padding: '8px 12px', background: 'rgba(196,92,102,0.08)', borderRadius: 6, border: '1px solid rgba(196,92,102,0.25)' }}>
+                {submitMut.error?.message ?? 'Could not send goal. Check connection and try again.'}
               </div>
             )}
           </div>
@@ -252,8 +263,8 @@ export function MissionControl() {
 
       {/* Right: Active Goals */}
       <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <h2 style={{ margin: '0 0 4px 0', fontSize: isMobile ? 14 : 16, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-          📋 Active Goals
+        <h2 style={{ margin: '0 0 4px 0', fontSize: isMobile ? 14 : 16, fontWeight: 700, color: 'var(--color-apex-text)', fontFamily: 'var(--font-display)' }}>
+          Active goals
         </h2>
         {goals.length === 0 && (
           <div
@@ -261,13 +272,15 @@ export function MissionControl() {
               textAlign: 'center',
               color: 'var(--color-apex-muted)',
               padding: isMobile ? '40px 16px' : '60px 20px',
-              border: '1px dashed rgba(255,255,255,0.08)',
-              borderRadius: 12,
+              border: '1px dashed var(--color-apex-line)',
+              borderRadius: 8,
+              background: 'rgba(0,0,0,0.12)',
             }}
           >
-            <div style={{ fontSize: 32, marginBottom: 8 }}>🚀</div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>No goals yet</div>
-            <div style={{ fontSize: 12, marginTop: 4 }}>Submit your first goal to activate APEX</div>
+            <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--color-apex-text)' }}>No goals yet</div>
+            <div style={{ fontSize: 12, marginTop: 6, lineHeight: 1.45 }}>
+              Issue a goal on the left to put the workforce to work.
+            </div>
           </div>
         )}
         {goals.map((g) => <GoalCard key={g.id} goal={g} />)}
