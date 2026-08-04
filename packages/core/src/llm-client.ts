@@ -474,16 +474,47 @@ class MultiProviderClient {
     // Two-pass fallback: first try only reliable providers, then fall to
     // unreliable ones as last resort if everything else fails.
     let lastResortMode = false;
+    // If the last request totally exhausted all providers, wait before trying
+    // again — stampeding 13 agents into a dead provider chain wastes tokens
+    // and generates noise. Let the providers recover.
+    const sinceTotalFailure = Date.now() - lastTotalFailureAt;
+    if (sinceTotalFailure < GLOBAL_BACKOFF_MS) {
+      const waitMs = GLOBAL_BACKOFF_MS - sinceTotalFailure;
+      console.warn(`[LLM] Global backoff: waiting ${Math.round(waitMs / 1000)}s before retrying — all providers recently exhausted`);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+
+    // Build a round-robin ordered provider list: start from a different index
+    // each call so concurrent requests don't all stampede the same provider.
+    const reliableProviders: typeof PROVIDERS = [];
+    const unreliableProviders: typeof PROVIDERS = [];
+    for (let i = 0; i < PROVIDERS.length; i++) {
+      const idx = (rrStartIndex + i) % PROVIDERS.length;
+      const p = PROVIDERS[idx];
+      if (p.toolCallingReliable === false) {
+        unreliableProviders.push(p);
+      } else {
+        reliableProviders.push(p);
+      }
+    }
+    rrStartIndex = (rrStartIndex + 1) % PROVIDERS.length; // rotate for next call
+
     for (let pass = 0; pass <= 1; pass++) {
       if (pass === 1) {
         if (providerErrors.length === 0) break; // succeeded on pass 0, no need for pass 1
         lastResortMode = true;
         console.warn(`[LLM] All reliable providers exhausted — starting last-resort pass with unreliable tool-calling providers`);
       }
-    for (const provider of PROVIDERS) {
+    const orderedProviders = lastResortMode ? unreliableProviders : reliableProviders;
+    for (const provider of orderedProviders) {
       const apiKey = process.env[provider.apiKeyEnv];
       if (!apiKey) {
-        console.warn(`[LLM] Skipping ${provider.name}: no ${provider.apiKeyEnv} configured`);
+        continue; // skip silently — no key configured
+      }
+
+      // Circuit breaker: skip providers in cooldown
+      if (isProviderInCooldown(provider.name)) {
+        console.warn(`[LLM] Skipping ${provider.name}: in cooldown (circuit breaker)`);
         continue;
       }
 
@@ -519,6 +550,7 @@ class MultiProviderClient {
       if (provider.protocol === 'anthropic') {
         try {
           const response = await this.completeViaAnthropic(provider, apiKey, model, messages, tools);
+          clearProviderCooldown(provider.name);
           if (providerErrors.length > 0) {
             console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
           }
@@ -530,6 +562,7 @@ class MultiProviderClient {
           console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
           providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
           recordProviderFailure(provider.name, model, status, truncatedMsg);
+          setProviderCooldown(provider.name, status);
           continue;
         }
       }
@@ -628,6 +661,7 @@ class MultiProviderClient {
         });
 
         // Log success so it's visible which provider actually served the request
+        clearProviderCooldown(provider.name); // provider recovered — clear circuit breaker
         if (providerErrors.length > 0) {
           console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
         }
@@ -665,10 +699,14 @@ class MultiProviderClient {
 
         providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
         recordProviderFailure(provider.name, model, status, truncatedMsg);
+        setProviderCooldown(provider.name, status);
         continue; // try next provider in the chain
       }
     }
     } // end pass loop
+
+    // Record total failure for global backoff
+    lastTotalFailureAt = Date.now();
 
     // All providers failed — build a detailed error showing every attempt
     const errorSummary = providerErrors.length > 0
@@ -790,6 +828,60 @@ const providerFailureEvents: Array<{
   message: string;
   at: number;
 }> = [];
+
+// ─── Provider Circuit Breaker ─────────────────────────────────────────────────
+// When a provider returns 429 (rate limited) or 402 (billing), it's not just
+// THIS request that will fail — every concurrent request from every agent will
+// fail too, because they all hit the same provider first. Without a circuit
+// breaker, 13 agents × 5 concurrency = 65 simultaneous requests all hammer
+// Cerebras at once, all get 429, all cascade to Groq, all get 429, etc.
+//
+// The breaker sets a per-provider cooldown after a 429/402. During cooldown,
+// the provider is skipped entirely (not tried, not retried). This spreads
+// load across remaining providers instead of all agents stampeding the same
+// first-in-chain provider.
+const providerCooldowns = new Map<string, number>(); // provider name → epoch ms
+const COOLDOWN_429_MS = 30_000;  // 30s for rate limits (resets quickly)
+const COOLDOWN_402_MS = 300_000; // 5min for billing blocks (won't recover soon)
+const COOLDOWN_401_MS = 600_000; // 10min for auth failures (key won't fix itself)
+
+function setProviderCooldown(name: string, status: number | undefined): void {
+  let ms = COOLDOWN_429_MS;
+  if (status === 402) ms = COOLDOWN_402_MS;
+  else if (status === 401 || status === 403) ms = COOLDOWN_401_MS;
+  else if (status === 429) ms = COOLDOWN_429_MS;
+  providerCooldowns.set(name, Date.now() + ms);
+}
+
+function isProviderInCooldown(name: string): boolean {
+  const until = providerCooldowns.get(name);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    providerCooldowns.delete(name);
+    return false;
+  }
+  return true;
+}
+
+function clearProviderCooldown(name: string): void {
+  providerCooldowns.delete(name);
+}
+
+// ─── Round-Robin Starting Provider ─────────────────────────────────────────────
+// Instead of every request always starting from Cerebras (index 0), rotate
+// the starting index per request. This spreads concurrent load across all
+// available providers instead of stampeding the first one. Combined with the
+// circuit breaker, this means when Cerebras is in cooldown, the next request
+// naturally starts from Groq, then Gemini, etc.
+let rrStartIndex = 0;
+
+// ─── Global Backoff ───────────────────────────────────────────────────────────
+// When ALL providers fail in a single pass, the entire system is under
+// pressure. Rather than immediately failing and letting the agent pick up
+// the next task (which triggers another immediate round of provider calls),
+// track the last total-failure timestamp and add a backoff delay.
+let lastTotalFailureAt = 0;
+const GLOBAL_BACKOFF_MS = 15_000; // 15s pause after total provider exhaustion
 
 function recordProviderFailure(
   provider: string,

@@ -208,12 +208,14 @@ export abstract class BaseAgent {
             .finally(() => {
               this.currentTaskIds.delete(task.id);
               inFlight.delete(task.id);
+              // Small delay between tasks to avoid back-to-back LLM calls
+              // from the same agent hammering the same provider.
             });
           inFlight.set(task.id, p);
         }
 
         if (inFlight.size === 0) {
-          await new Promise((r) => setTimeout(r, 2000)); // Poll every 2s
+          await new Promise((r) => setTimeout(r, 5000)); // Poll every 5s (was 2s — reduced provider stampeding)
           continue;
         }
 

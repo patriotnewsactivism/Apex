@@ -472,11 +472,19 @@ async function main() {
   // Run an immediate initial health check after 5s
   setTimeout(runHealthPoll, 5_000);
 
-  console.log('🤖 Starting autonomous agent loops...');
+  // Stagger agent startup to avoid all 13 agents hitting the first LLM provider
+  // simultaneously on deploy. Each agent waits a random 1-5s before starting its
+  // loop, spreading the initial burst of LLM calls across a wider window.
+  console.log('🤖 Starting autonomous agent loops (staggered)...');
+  let agentIdx = 0;
   for (const agent of workforce.values()) {
-    agent.start().catch((err: Error) => {
-      console.error(`Agent ${agent.id} crashed:`, err.message);
-    });
+    const delay = 500 + (agentIdx * 300) + Math.floor(Math.random() * 500);
+    setTimeout(() => {
+      agent.start().catch((err: Error) => {
+        console.error(`Agent ${agent.id} crashed:`, err.message);
+      });
+    }, delay);
+    agentIdx++;
   }
 
   const shutdown = (signal: string) => {
