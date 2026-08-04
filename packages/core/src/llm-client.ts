@@ -94,9 +94,7 @@ const PROVIDERS: Array<{
   // must sit BELOW ones that can.
   { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
   { name: 'glm-aliyun', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
-  // Mistral RE-ADDED 2026-07-26: Don rotated a fresh key same-day, confirmed
   // live via direct completion call (real "Ok!" response) before re-adding.
-  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
   // Still removed 2026-07-26 per Don's explicit instruction ("remove models
   // that keep returning errors, get them out"): github-models (no_access on
   // every model tried), cohere-trial (429, monthly cap hit), xai (403, team
