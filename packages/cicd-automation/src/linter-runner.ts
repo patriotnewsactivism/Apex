@@ -11,6 +11,20 @@ import { ensureCiWorkspace } from './ci-workspace.js';
 
 const execAsync = promisify(exec);
 
+function parsePnpmPackageResults(output: string): { total: number; passed: number; failed: number } {
+  const lines = output.split('\n');
+  const total: string[] = [];
+  const failed: string[] = [];
+  for (const line of lines) {
+    const m = line.match(/^(\S+)\s+typecheck:\s*(Done|Failed)$/);
+    if (m) {
+      total.push(m[1]);
+      if (m[2] === 'Failed') failed.push(m[1]);
+    }
+  }
+  return { total: total.length, passed: total.length - failed.length, failed: failed.length };
+}
+
 export interface LintRunReport {
   runId: string;
   totalFiles: number;
@@ -39,14 +53,17 @@ export class LinterRunner {
         cwd,
         timeout: 120_000,
       });
+      const combinedOutput = stdout + (stderr ? `\n${stderr}` : '');
+      const counts = parsePnpmPackageResults(combinedOutput);
+      const hasErrors = counts.failed > 0;
 
       const report: LintRunReport = {
         runId: activeRunId,
-        totalFiles: 150,
-        errors: 0,
+        totalFiles: counts.total,
+        errors: hasErrors ? 1 : 0,
         warnings: 0,
-        output: stdout + (stderr ? `\n${stderr}` : ''),
-        success: true,
+        output: combinedOutput,
+        success: !hasErrors,
       };
 
       await db.insert(lintResults).values({
@@ -62,10 +79,11 @@ export class LinterRunner {
     } catch (err: any) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       const output = err?.stdout || err?.stderr || errorMsg;
+      const counts = parsePnpmPackageResults(String(output));
 
       const report: LintRunReport = {
         runId: activeRunId,
-        totalFiles: 150,
+        totalFiles: counts.total,
         errors: 1,
         warnings: 0,
         output: String(output),

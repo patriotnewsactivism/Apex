@@ -34,6 +34,21 @@ export class BuildManager {
     const activeRunId = runId ?? `build-${crypto.randomUUID().slice(0, 8)}`;
     const startTime = Date.now();
 
+    // Build results are stored against a pipelineRuns row; create one if the
+    // caller did not pass an existing run ID.
+    await db
+      .insert(pipelineRuns)
+      .values({
+        id: activeRunId,
+        repo: 'Apex',
+        branch: 'main',
+        status: 'running',
+        triggerType: 'manual',
+        startedAt: new Date(),
+      })
+      .onConflictDoNothing()
+      .catch((err) => console.error('[BuildManager] pipelineRuns insert failed:', err));
+
     try {
       const cwd = this.explicitRoot ? this.workspaceRoot : await ensureCiWorkspace();
       const { stdout, stderr } = await execAsync('pnpm run build', {

@@ -1291,7 +1291,9 @@ export class StalledWorkRecoveryJob implements JobHandler {
    *  opposed to a real defect in the task itself. */
   private isCapacityFailure(error: string | null): boolean {
     if (!error || !error.includes('All LLM providers failed')) return false;
-    return /(\b429\b|\b402\b|\b401\b|\b413\b|rate limit|insufficient credits|quota|tokens per day|request too large)/i.test(
+    // 401/403 are credential/config issues, not capacity. Requeuing them
+    // wastes retries on permanently broken work.
+    return /(\b429\b|\b402\b|\b413\b|rate limit|insufficient credits|quota|tokens per day|request too large)/i.test(
       error,
     );
   }

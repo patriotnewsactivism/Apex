@@ -63,7 +63,7 @@ export function MultiAppPanel() {
     },
   });
 
-  const portfolioApps = apps.length > 0 ? apps : DEFAULT_PORTFOLIO_APPS.map((a) => ({ ...a, status: 'active', healthScore: 1.0, lastSyncAt: new Date().toISOString(), createdAt: new Date().toISOString() }));
+  const portfolioApps = apps;
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1200 }}>
@@ -77,6 +77,32 @@ export function MultiAppPanel() {
             Cross-repository portfolio coordination, shared learnings, and predictive risk management
           </p>
         </div>
+        <button
+          onClick={() => {
+            const id = prompt('Application ID (e.g. buildmybot2):');
+            if (!id) return;
+            const name = prompt('Display name:');
+            if (!name) return;
+            const repoUrl = prompt('Repository URL:');
+            if (!repoUrl) return;
+            registerMutation.mutate({ id, name, repoUrl });
+          }}
+          style={{
+            padding: '8px 14px',
+            borderRadius: 8,
+            background: 'rgba(34,197,94,0.15)',
+            border: '1px solid rgba(34,197,94,0.4)',
+            color: '#22c55e',
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <Plus size={14} /> Register App
+        </button>
       </div>
 
       {/* KPI Cards */}
@@ -122,6 +148,11 @@ export function MultiAppPanel() {
       <h3 style={{ fontSize: 15, fontWeight: 600, color: '#cbd5e1', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
         <FolderGit2 size={16} color="#5a9eae" /> Portfolio Repositories & Standing Rules
       </h3>
+      {portfolioApps.length === 0 && (
+        <div style={{ color: '#94a3b8', textAlign: 'center', padding: '40px 0' }}>
+          No applications registered. Use the Register App button above to add a portfolio repository.
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16, marginBottom: 32 }}>
         {portfolioApps.map((app) => (
           <motion.div
@@ -147,10 +178,11 @@ export function MultiAppPanel() {
                   borderRadius: 10,
                   fontSize: 10,
                   fontWeight: 700,
-                  background: 'rgba(34,197,94,0.2)',
-                  color: '#22c55e',
+                  background: app.status === 'active' ? 'rgba(34,197,94,0.2)' : 'rgba(234,179,8,0.2)',
+                  color: app.status === 'active' ? '#22c55e' : '#eab308',
+                  textTransform: 'uppercase',
                 }}>
-                  ACTIVE
+                  {app.status || 'unknown'}
                 </span>
               </div>
               <div style={{ fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 4 }}>

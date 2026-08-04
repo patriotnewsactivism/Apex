@@ -11,6 +11,20 @@ import { ensureCiWorkspace } from './ci-workspace.js';
 
 const execAsync = promisify(exec);
 
+function parsePnpmPackageResults(output: string): { total: number; passed: number; failed: number } {
+  const lines = output.split('\n');
+  const total: string[] = [];
+  const failed: string[] = [];
+  for (const line of lines) {
+    const m = line.match(/^(\S+)\s+typecheck:\s*(Done|Failed)$/);
+    if (m) {
+      total.push(m[1]);
+      if (m[2] === 'Failed') failed.push(m[1]);
+    }
+  }
+  return { total: total.length, passed: total.length - failed.length, failed: failed.length };
+}
+
 export interface TestRunReport {
   runId: string;
   totalTests: number;
@@ -63,18 +77,19 @@ export class TestRunner {
         cwd,
         timeout: 120_000,
       });
+      const combinedOutput = stdout + (stderr ? `\n${stderr}` : '');
+      const counts = parsePnpmPackageResults(combinedOutput);
 
       const durationMs = Date.now() - startTime;
       const report: TestRunReport = {
         runId: activeRunId,
-        totalTests: 9, // 9 workspace packages
-        passed: 9,
-        failed: 0,
+        totalTests: counts.total,
+        passed: counts.passed,
+        failed: counts.failed,
         skipped: 0,
         durationMs,
-        coveragePct: 100,
-        output: stdout + (stderr ? `\n${stderr}` : ''),
-        success: true,
+        output: combinedOutput,
+        success: counts.failed === 0,
       };
 
       await db.insert(testResults).values({
@@ -84,7 +99,6 @@ export class TestRunner {
         failed: report.failed,
         skipped: report.skipped,
         durationMs,
-        coveragePct: report.coveragePct,
         testReport: { output: report.output.slice(-2000) },
         recordedAt: new Date(),
       });
@@ -104,12 +118,13 @@ export class TestRunner {
       const durationMs = Date.now() - startTime;
       const errorMsg = err instanceof Error ? err.message : String(err);
       const output = err?.stdout || err?.stderr || errorMsg;
+      const counts = parsePnpmPackageResults(String(output));
 
       const report: TestRunReport = {
         runId: activeRunId,
-        totalTests: 9,
-        passed: 0,
-        failed: 9,
+        totalTests: counts.total,
+        passed: counts.passed,
+        failed: counts.failed,
         skipped: 0,
         durationMs,
         output: String(output),
