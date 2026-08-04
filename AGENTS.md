@@ -40,11 +40,15 @@ code, do not delegate to it or treat it as part of the real org chart.
   this Railway project (service `1ab5efa2-...`) -- unused, no volume, DO NOT
   USE.
 - **LLM fallback chain** (`packages/core/src/llm-client.ts`, re-verified
-  2026-08-04): Cerebras(×3) -> Groq(×2) -> Google Gemini(×2) -> DeepSeek ->
-  NVIDIA NIM -> Together AI -> Qwen Cloud -> GLM-Aliyun ->
-  Qwen Cloud (Anthropic protocol) -> GLM-Z.ai -> Poolside ->
+  2026-08-04): Cerebras(×3) -> Google Gemini(×2) -> Groq(×2) -> NVIDIA NIM ->
+  Poolside -> Together AI -> DeepSeek -> Qwen Cloud -> GLM-Aliyun ->
+  Qwen Cloud (Anthropic protocol) -> GLM-Z.ai ->
   Cohere (toolCallingReliable:false) -> OpenRouter-free ×2
-  (toolCallingReliable:false). Mistral was REMOVED (all keys 401). Two-pass
+  (toolCallingReliable:false). Ordered by the 2026-08-04 live+local audit
+  (scripts/llm-probe.mjs): live/self-resetting providers first; 401/402-dead
+  entries (cerebras-2/3, together, deepseek, the three qwen entries) demoted
+  but kept for zero-code-change recovery. Mistral was REMOVED (all keys
+  401). Two-pass
   fallback: toolCallingReliable:false providers are skipped on tool-bearing
   requests and only tried as last resort after all reliable providers fail.
   Circuit breaker (30s/429, 5min/402, 10min/401 cooldowns) + round-robin

@@ -10,6 +10,7 @@ const env = readFileSync('.env', 'utf8');
 const getKey = (name) => env.match(new RegExp(`^${name}=(.+)$`, 'm'))?.[1]?.trim() || '';
 
 const openaiProbe = async (name, url, key, model, headers = {}) => {
+  if (!key) { console.log(`⚪ ${name} — skipped (no key set in .env; chain entry is a no-op)`); return; }
   const r = await fetch(`${url}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}`, ...headers },
@@ -28,6 +29,7 @@ const openaiProbe = async (name, url, key, model, headers = {}) => {
 };
 
 const anthropicProbe = async (name, url, key, model) => {
+  if (!key) { console.log(`⚪ ${name} — skipped (no key set in .env; chain entry is a no-op)`); return; }
   const r = await fetch(`${url}/v1/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
@@ -47,13 +49,20 @@ const anthropicProbe = async (name, url, key, model) => {
 
 const qwenKey = getKey('QWENCLOUD_API_KEY');
 
+// MUST mirror PROVIDERS in packages/core/src/llm-client.ts one-for-one, in
+// chain order — every chain entry gets probed here, no orphans either side.
 const tests = [
   () => openaiProbe('cerebras', 'https://api.cerebras.ai/v1', getKey('CEREBRAS_API_KEY'), 'gpt-oss-120b'),
-  () => openaiProbe('groq', 'https://api.groq.com/openai/v1', getKey('GROQ_API_KEY'), 'llama-3.3-70b-versatile'),
+  () => openaiProbe('cerebras-2', 'https://api.cerebras.ai/v1', getKey('CEREBRAS_API_KEY_2'), 'gpt-oss-120b'),
+  () => openaiProbe('cerebras-3', 'https://api.cerebras.ai/v1', getKey('CEREBRAS_API_KEY_3'), 'gpt-oss-120b'),
   () => openaiProbe('google-gemini', 'https://generativelanguage.googleapis.com/v1beta/openai', getKey('GEMINI_API_KEY'), 'gemini-3.6-flash'),
-  () => openaiProbe('deepseek', 'https://api.deepseek.com/v1', getKey('DEEPSEEK_API_KEY'), 'deepseek-chat'),
+  () => openaiProbe('google-gemini-2', 'https://generativelanguage.googleapis.com/v1beta/openai', getKey('GEMINI_API_KEY_2'), 'gemini-3.6-flash'),
+  () => openaiProbe('groq', 'https://api.groq.com/openai/v1', getKey('GROQ_API_KEY'), 'llama-3.3-70b-versatile'),
+  () => openaiProbe('groq-2', 'https://api.groq.com/openai/v1', getKey('GROQ_API_KEY_2'), 'llama-3.3-70b-versatile'),
   () => openaiProbe('nvidia', 'https://integrate.api.nvidia.com/v1', getKey('NVIDIA_API_KEY'), 'meta/llama-3.3-70b-instruct'),
+  () => openaiProbe('poolside', 'https://inference.poolside.ai/v1', getKey('POOLSIDE_API_KEY'), 'poolside/laguna-s-2.1'),
   () => openaiProbe('together', 'https://api.together.xyz/v1', getKey('TOGETHER_API_KEY'), 'meta-llama/Llama-3.3-70B-Instruct-Turbo'),
+  () => openaiProbe('deepseek', 'https://api.deepseek.com/v1', getKey('DEEPSEEK_API_KEY'), 'deepseek-chat'),
   // Qwen Cloud — test BOTH models: the standard default AND the premium model
   // the live system is observed using (qwen3.8-max-preview), so we can tell
   // apart "key invalid" from "model id not on Token Plan".
@@ -62,7 +71,6 @@ const tests = [
   () => openaiProbe('glm-aliyun', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', qwenKey, 'glm-5.2'),
   () => anthropicProbe('qwen-cloud-anthropic', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', qwenKey, 'qwen3.7-plus'),
   () => openaiProbe('glm-zai', 'https://api.z.ai/api/paas/v4', getKey('ZAI_API_KEY'), 'glm-5.2'),
-  () => openaiProbe('poolside', 'https://inference.poolside.ai/v1', getKey('POOLSIDE_API_KEY'), 'poolside/laguna-s-2.1'),
   () => openaiProbe('cohere', 'https://api.cohere.com/compatibility/v1', getKey('COHERE_API_KEY'), 'command-r-plus-08-2024'),
   () => openaiProbe('openrouter-free', 'https://openrouter.ai/api/v1', getKey('OPENROUTER_API_KEY'), 'openai/gpt-oss-20b:free', { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' }),
   () => openaiProbe('openrouter-free-2', 'https://openrouter.ai/api/v1', getKey('OPENROUTER_API_KEY'), 'nvidia/nemotron-3-super-120b-a12b:free', { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' }),

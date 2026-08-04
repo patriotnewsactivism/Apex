@@ -120,12 +120,15 @@ prints status only).
 
 ## LLM Chain Operations (verified 2026-08-04)
 
-`packages/core/src/llm-client.ts` is the source of truth. Current order:
+`packages/core/src/llm-client.ts` is the source of truth. Current order
+(reordered 2026-08-04 by a live+local audit — live/self-resetting providers
+first; 401/402-dead entries demoted to the bottom but KEPT for zero-code-
+change recovery once a key is rotated or topped up):
 
 ```
-cerebras → cerebras-2 → cerebras-3 → groq → groq-2 → google-gemini →
-google-gemini-2 → deepseek → nvidia → together → qwen-cloud → glm-aliyun →
-qwen-cloud-anthropic (Anthropic protocol) → glm-zai → poolside →
+cerebras → cerebras-2 → cerebras-3 → google-gemini → google-gemini-2 →
+groq → groq-2 → nvidia → poolside → together → deepseek → qwen-cloud →
+glm-aliyun → qwen-cloud-anthropic (Anthropic protocol) → glm-zai →
 cohere* → openrouter-free* → openrouter-free-2*      (* toolCallingReliable:false)
 ```
 
@@ -154,14 +157,19 @@ Mechanics that MUST be preserved when editing this file:
 **Known-bad as of 2026-08-04 (re-probe before trusting):**
 `QWENCLOUD_API_KEY` is **401 Invalid API-key on every Qwen entry** (live AND
 local) — the paid tier that should catch all fallbacks is dead until Don
-rotates the Token Plan key in the Aliyun console. `ZAI_API_KEY` (local) is
+rotates the Token Plan key in the Aliyun console; the three qwen entries are
+demoted near the bottom until then (promote them back above the free tiers
+after rotation). `CEREBRAS_API_KEY_2/3` are **402 on Railway too, not just
+local** (accounts need a payment method). `TOGETHER_API_KEY` 402 credit
+limit exceeded; `DEEPSEEK_API_KEY` 402 insufficient balance;
+`POOLSIDE_API_KEY` 429 usage-limit-exceeded. `ZAI_API_KEY` (local) is
 expired; Railway has no ZAI key at all. `GEMINI_API_KEY_2` and
 `NVIDIA_API_KEY` are unset on Railway — free capacity left on the table.
-Cerebras local keys 402 (billing-gated); Railway's are alive but rate-limit
-prone. Everything else was quota-exhausted (429) at probe time — resets
-daily. Duplicate-key slots (`CEREBRAS_API_KEY_2/3`, `GROQ_API_KEY_2`,
-`GEMINI_API_KEY_2`) multiply free-tier rate limits — Don's standing strategy
-is more free accounts per provider.
+Cerebras key #1 is alive on Railway but rate-limit prone. Everything else
+was quota-exhausted (429) at probe time — resets daily. Duplicate-key slots
+(`CEREBRAS_API_KEY_2/3`, `GROQ_API_KEY_2`, `GEMINI_API_KEY_2`) multiply
+free-tier rate limits — Don's standing strategy is more free accounts per
+provider. `scripts/llm-probe.mjs` covers every chain entry in chain order.
 
 ## Security — Non-Negotiable
 
