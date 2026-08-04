@@ -197,9 +197,16 @@ const PREMIUM_ROLES = new Set([
  *  not an accounting system, and over-trimming costs far less than a 413. */
 const CHARS_PER_TOKEN = 4;
 
-/** Default budget in characters (~30k tokens). Comfortably under the TPM
- *  ceilings of the free/on-demand tiers this chain falls back to. */
-export const DEFAULT_HISTORY_CHAR_BUDGET = 120_000;
+/** Default budget in characters (~15k tokens).
+ *
+ * Was 120_000 (~30k tokens) until 2026-08-04. That budget was fatal for the
+ * free tiers this chain depends on: Groq's TPD limit is 100k tokens, so ONE
+ * 30k-token request consumed ~30% of an org's entire day — live logs showed
+ * requests of 10k-30k tokens exhausting every provider by mid-afternoon and
+ * the workforce degrading to prose-only cohere answers. 60k keeps the system
+ * prompt + task + recent context intact while roughly doubling how many tasks
+ * the free-tier capacity can serve. */
+export const DEFAULT_HISTORY_CHAR_BUDGET = 60_000;
 
 /** Hard retry budget (~6k tokens) used for the one retry after a 413. */
 export const EMERGENCY_HISTORY_CHAR_BUDGET = 24_000;

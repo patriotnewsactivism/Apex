@@ -114,6 +114,12 @@ COPY --from=builder /app/packages/agents ./packages/agents
 COPY --from=builder /app/packages/api-server ./packages/api-server
 COPY --from=builder /app/packages/dashboard/dist ./packages/dashboard/dist
 
+# Root docs ARE the agents' workspace: Sales reads BUSINESS_PROFILE.md, every
+# agent references AGENTS.md/APEX_CHARTER.md. Without these the readFile tool
+# fails live ("BUSINESS_PROFILE.md doesn't exist") and whole scheduled sweeps
+# die on retries. Keep in sync if new workspace docs are added at repo root.
+COPY *.md ./
+
 # Create .local dir for SQLite (Railway volume mounts here)
 RUN mkdir -p /app/.local
 

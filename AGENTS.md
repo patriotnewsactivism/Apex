@@ -1,5 +1,5 @@
 # Repository Guidelines — Apex
-_Last verified against live system: 2026-07-31. Single canonical instructions
+_Last verified against live system: 2026-08-04. Single canonical instructions
 file for any AI coding tool (Claude Code, Gemini CLI, Codex, Replit Agent,
 etc.) — the separate CLAUDE.md/GEMINI.md/replit.md/BASE44.md files were
 deleted 2026-07-20 as stale duplicates from 2026-07-12 that had drifted out
@@ -27,20 +27,34 @@ code, do not delegate to it or treat it as part of the real org chart.
 - **Package manager: pnpm** (workspace, `pnpm-workspace.yaml`). Never
   introduce npm/bun lockfiles.
 - **ESM via `tsx`**, not CommonJS -- use `import`, never `require()`.
-- TypeScript strict mode throughout, 12 workspace packages: core, agents,
-  api-server, dashboard, health-monitor, background-jobs, learning-system,
-  cicd-automation, multiapp, predictive, plus lib/db.
-- DB: Drizzle ORM, real prod DB URL cached at `/tmp/apex_db_url.txt` in the
-  agent sandbox. A separate raw-container Postgres also exists in this
-  Railway project (service `1ab5efa2-...`) -- unused, no volume, DO NOT USE.
-- **LLM fallback chain** (`packages/core/src/llm-client.ts`, verified live
-  2026-07-31): Cerebras(×3) -> Groq(×2) -> Google Gemini(×2) -> DeepSeek ->
-  NVIDIA NIM -> Together AI -> Qwen Cloud -> GLM-Aliyun -> Mistral ->
+- TypeScript strict mode throughout, 16 directories under packages/ (core,
+  agents, api-server, dashboard, health-monitor, background-jobs,
+  learning-system, cicd-automation, cicd-worker, convex-backend, cli,
+  buildmybot-ops, orchestrator, frontend, multiapp, predictive) plus lib/db.
+  convex-backend does NOT typecheck (never codegen'd — apexplan.md) and
+  dashboard + cicd-worker depend on it; packages/frontend is a stray src/
+  with no package.json (not a real package).
+- DB: Drizzle ORM over **Postgres (Supabase)** via `DATABASE_URL`; schema
+  bootstrapped idempotently at startup (lib/db/src/client.ts). The old
+  SQLite setup is dead. A separate raw-container Postgres also exists in
+  this Railway project (service `1ab5efa2-...`) -- unused, no volume, DO NOT
+  USE.
+- **LLM fallback chain** (`packages/core/src/llm-client.ts`, re-verified
+  2026-08-04): Cerebras(×3) -> Groq(×2) -> Google Gemini(×2) -> DeepSeek ->
+  NVIDIA NIM -> Together AI -> Qwen Cloud -> GLM-Aliyun ->
   Qwen Cloud (Anthropic protocol) -> GLM-Z.ai -> Poolside ->
   Cohere (toolCallingReliable:false) -> OpenRouter-free ×2
-  (toolCallingReliable:false). OpenRouter is the last-resort free tier, NOT
-  the primary. Not a single-provider `OPENAI_API_KEY` setup. Duplicate-key
-  slots (CEREBRAS_API_KEY_2/3, GROQ_API_KEY_2) multiply free-tier rate limits.
+  (toolCallingReliable:false). Mistral was REMOVED (all keys 401). Two-pass
+  fallback: toolCallingReliable:false providers are skipped on tool-bearing
+  requests and only tried as last resort after all reliable providers fail.
+  Circuit breaker (30s/429, 5min/402, 10min/401 cooldowns) + round-robin
+  start index spread concurrent load. Request history budget is 60k chars
+  (~15k tokens) on purpose — free-tier TPD caps make request size the
+  capacity ceiling. OpenRouter is the last-resort free tier, NOT the
+  primary. Duplicate-key slots (CEREBRAS_API_KEY_2/3, GROQ_API_KEY_2,
+  GEMINI_API_KEY_2) multiply free-tier rate limits. As of 2026-08-04 the
+  QWENCLOUD_API_KEY is 401-dead on live AND local — needs rotation before
+  the paid tier works again.
 
 ## Security
 - All routes under `/api/*` except `/api/auth/login` and `/health` require
