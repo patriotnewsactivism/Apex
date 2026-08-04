@@ -471,6 +471,15 @@ class MultiProviderClient {
 
     const providerErrors: Array<{ provider: string; model: string; status?: number; message: string }> = [];
 
+    // Two-pass fallback: first try only reliable providers, then fall to
+    // unreliable ones as last resort if everything else fails.
+    let lastResortMode = false;
+    for (let pass = 0; pass <= 1; pass++) {
+      if (pass === 1) {
+        if (providerErrors.length === 0) break; // succeeded on pass 0, no need for pass 1
+        lastResortMode = true;
+        console.warn(`[LLM] All reliable providers exhausted — starting last-resort pass with unreliable tool-calling providers`);
+      }
     for (const provider of PROVIDERS) {
       const apiKey = process.env[provider.apiKeyEnv];
       if (!apiKey) {
@@ -478,17 +487,24 @@ class MultiProviderClient {
         continue;
       }
 
-      // Skip unreliable providers for tool-bearing requests. They answer in
+      // Defer unreliable providers for tool-bearing requests. They answer in
       // prose instead of emitting structured tool calls, which creates fake
-      // "success" responses — the agent reports "I couldn't find any results"
-      // without ever calling the search tool. Better to let the request fail
-      // and retry later when a reliable provider recovers than to record a
-      // fictitious completion. (2026-08-04: 200+ requests fell through to
-      // cohere/openrouter-free during provider exhaustion, producing pages of
-      // prose-only answers that clogged the task backlog.)
+      // "success" responses. On the first pass, skip them entirely so reliable
+      // providers are preferred. If ALL reliable providers fail, we restart
+      // the loop in lastResort mode and try them anyway — a prose-only answer
+      // is better than the entire workforce going dead for hours.
+      // (2026-08-04: 200+ requests fell through to cohere/openrouter-free
+      // during provider exhaustion, producing pages of prose-only answers
+      // that clogged the task backlog. But the opposite extreme — skipping
+      // them entirely — caused total workforce failure when ALL reliable
+      // providers hit daily caps. The two-pass approach gets the best of
+      // both: prefer reliable providers, fall to unreliable as last resort.)
       if (provider.toolCallingReliable === false && openaiTools && openaiTools.length > 0) {
-        console.warn(`[LLM] Skipping ${provider.name}: toolCallingReliable=false and ${openaiTools.length} tool(s) offered — refusing prose-only fallback`);
-        continue;
+        if (!lastResortMode) {
+          console.warn(`[LLM] Deferring ${provider.name}: toolCallingReliable=false and ${openaiTools.length} tool(s) offered — will retry as last resort if all reliable providers fail`);
+          continue;
+        }
+        console.warn(`[LLM] LAST RESORT: trying ${provider.name} with unreliable tool calling — all reliable providers exhausted`);
       }
 
       // Mistral's role-aware model routing was removed 2026-07-26 along with
@@ -652,6 +668,7 @@ class MultiProviderClient {
         continue; // try next provider in the chain
       }
     }
+    } // end pass loop
 
     // All providers failed — build a detailed error showing every attempt
     const errorSummary = providerErrors.length > 0
