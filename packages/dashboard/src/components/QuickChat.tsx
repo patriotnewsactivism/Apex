@@ -277,7 +277,7 @@ function GoalCard({ goal }: { goal: Goal }) {
     },
   };
   const cfg = statusConfig[goal.status] || statusConfig.active;
-  const age = Date.now() - goal.createdAt;
+  const age = Date.now() - new Date(goal.createdAt).getTime();
   const ageStr =
     age < 3600000
       ? `${Math.floor(age / 60000)}m ago`

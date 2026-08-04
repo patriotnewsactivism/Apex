@@ -26,6 +26,20 @@ export const db = drizzle(client, {
 // statements running without await, so the server raced ahead before tables existed).
 export async function migrate() {
   await client`
+    CREATE TABLE IF NOT EXISTS projects (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      repository text,
+      purpose text NOT NULL,
+      priority text NOT NULL DEFAULT 'normal',
+      status text NOT NULL DEFAULT 'active',
+      autonomy_level text NOT NULL DEFAULT 'supervisor',
+      metadata jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
     CREATE TABLE IF NOT EXISTS agents (
       id text PRIMARY KEY,
       name text NOT NULL,
@@ -141,6 +155,20 @@ export async function migrate() {
       body text NOT NULL,
       reply_to_id text,
       read boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS researched_leads (
+      id text PRIMARY KEY,
+      company_name text NOT NULL,
+      website text,
+      industry text,
+      city text,
+      fit_reason text NOT NULL,
+      outreach_angle text,
+      status text NOT NULL DEFAULT 'new',
+      researched_by_agent_id text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;

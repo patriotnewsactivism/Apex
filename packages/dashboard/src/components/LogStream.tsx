@@ -58,7 +58,7 @@ export function LogStream() {
   // newer than the newest REST log (avoiding duplicates).
   const merged = useMemo<DisplayLog[]>(() => {
     const restMapped: DisplayLog[] = restLogs.map((l) => ({
-      timestamp: l.timestamp,
+      timestamp: new Date(l.timestamp).getTime(),
       agentId: l.agentId ?? undefined,
       level: l.level,
       message: l.message,

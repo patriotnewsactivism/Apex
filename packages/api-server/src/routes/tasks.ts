@@ -23,10 +23,13 @@ export function createTasksRouter() {
       if (conditions.length > 0) {
         query = query.where(and(...conditions));
       }
-      const allTasks = await query.orderBy(desc(tasks.createdAt)).limit(parseInt(String(limit), 10));
+      const rawLimit = parseInt(String(limit), 10);
+      const safeLimit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 50;
+      const allTasks = await query.orderBy(desc(tasks.createdAt)).limit(safeLimit);
       res.json({ tasks: allTasks });
     } catch (err) {
-      res.json({ tasks: [] });
+      console.error('[tasks] list error:', err);
+      res.status(500).json({ error: 'Failed to list tasks' });
     }
   });
 

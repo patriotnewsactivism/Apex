@@ -694,8 +694,9 @@ export abstract class BaseAgent {
     args: unknown,
     reason: string,
   ): Promise<boolean> {
-    // If approval not required, auto-approve
-    if (!this.config.approvalRequired) return true;
+    // Per-tool approval gating is enforced by ToolRegistry.execute before
+    // calling requestApproval. Once we are here, the tool requires approval
+    // regardless of the agent's seniority, so never auto-approve.
 
     const approvalId = randomUUID();
     await db.insert(approvals).values({

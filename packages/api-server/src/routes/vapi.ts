@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 
 // ─── Vapi Webhook Route ──────────────────────────────────────────────────────
 //
@@ -69,14 +70,23 @@ export function createVapiWebhookRouter(): Router {
 
   router.post('/webhook', async (req, res) => {
     try {
-      // Optional shared-secret verification
+      // Shared-secret verification is required. Webhooks are server-to-server,
+      // so we cannot use a bearer token, but we still need to verify sender.
       const secret = process.env.VAPI_WEBHOOK_SECRET;
-      if (secret) {
-        const received = req.headers['x-webhook-secret'] as string | undefined;
-        if (received !== secret) {
-          res.status(403).json({ error: 'Invalid webhook secret' });
-          return;
+      if (!secret) {
+        console.error('[Vapi] VAPI_WEBHOOK_SECRET is not configured; rejecting webhook');
+        return res.status(500).json({ error: 'Webhook secret not configured' });
+      }
+      const received = req.headers['x-webhook-secret'] as string | undefined;
+      if (!received || received.length !== secret.length) {
+        return res.status(403).json({ error: 'Invalid webhook secret' });
+      }
+      try {
+        if (!crypto.timingSafeEqual(Buffer.from(received), Buffer.from(secret))) {
+          return res.status(403).json({ error: 'Invalid webhook secret' });
         }
+      } catch {
+        return res.status(403).json({ error: 'Invalid webhook secret' });
       }
 
       const message = req.body?.message;
@@ -99,8 +109,11 @@ export function createVapiWebhookRouter(): Router {
           console.log(`[Vapi] Function call: ${fnName}(${JSON.stringify(args)}) on call ${callId}`);
 
           if (fnName === 'send_checkout_link') {
-            const plan = args.plan || 'starter';
-            const email = args.email || '';
+            const rawPlan = args.plan || 'starter';
+            const plan = Object.prototype.hasOwnProperty.call(STRIPE_PRICE_IDS, rawPlan)
+              ? rawPlan
+              : 'starter';
+            const email = typeof args.email === 'string' ? args.email : '';
 
             const result = await createStripeCheckoutSession(plan, email);
 
@@ -191,7 +204,7 @@ export function createVapiWebhookRouter(): Router {
       return res.status(200).json({ received: true });
     } catch (err) {
       console.error('[Vapi] Webhook error:', err instanceof Error ? err.message : String(err));
-      return res.status(200).json({ received: true });
+      return res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
 

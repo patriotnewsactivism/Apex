@@ -53,9 +53,14 @@ export async function handleCreateBranch(
   payload: CreateBranchPayload,
 ): Promise<{ success: boolean; branchName?: string; error?: string }> {
   const cwd = workspaceRoot();
+  const branchName = payload.branchName;
+  const valid = /^[A-Za-z0-9_\-/.]+$/.test(branchName) && !branchName.startsWith('-') && !branchName.includes('..');
+  if (!valid) {
+    return { success: false, error: `Invalid branch name: ${branchName}` };
+  }
   try {
-    await execAsync(`git checkout -b ${payload.branchName}`, { cwd });
-    return { success: true, branchName: payload.branchName };
+    await execAsync(`git checkout -b -- ${branchName}`, { cwd });
+    return { success: true, branchName };
   } catch (err: any) {
     return { success: false, error: err?.message || String(err) };
   }
@@ -70,16 +75,22 @@ export async function handlePush(
   payload: PushPayload,
 ): Promise<{ success: boolean; branch?: string; remote?: string; output?: string; error?: string }> {
   const cwd = workspaceRoot();
-  const token = process.env.GITHUB_TOKEN;
+  const token = process.env.GITHUB_TOKEN_4;
   if (!token) {
-    return { success: false, error: 'GITHUB_TOKEN is not configured in this environment' };
+    return { success: false, error: 'GITHUB_TOKEN_4 is not configured in this environment' };
   }
   try {
     const targetBranch = payload.branch ?? (await execAsync('git rev-parse --abbrev-ref HEAD', { cwd })).stdout.trim();
     const remoteName = payload.remote ?? 'origin';
-    const { stdout: remoteUrlRaw } = await execAsync(`git remote get-url ${remoteName}`, { cwd });
+    if (!/^[A-Za-z0-9_\-/.]+$/.test(targetBranch) || targetBranch.startsWith('-') || targetBranch.includes('..')) {
+      return { success: false, error: `Invalid branch name: ${targetBranch}` };
+    }
+    if (!/^[A-Za-z0-9_\-/.]+$/.test(remoteName) || remoteName.startsWith('-')) {
+      return { success: false, error: `Invalid remote name: ${remoteName}` };
+    }
+    const { stdout: remoteUrlRaw } = await execAsync(`git remote get-url -- ${remoteName}`, { cwd });
     const authedUrl = remoteUrlRaw.trim().replace('https://github.com/', `https://x-access-token:${token}@github.com/`);
-    const { stdout, stderr } = await execAsync(`git push ${authedUrl} ${targetBranch}`, { cwd });
+    const { stdout, stderr } = await execAsync(`git push -- ${authedUrl} ${targetBranch}`, { cwd });
     return { success: true, branch: targetBranch, remote: remoteName, output: (stdout || stderr).slice(0, 4000) };
   } catch (err: any) {
     return { success: false, error: err?.message || String(err) };
@@ -104,11 +115,14 @@ export async function handleCreatePr(payload: CreatePrPayload): Promise<{
   error?: string;
   details?: unknown;
 }> {
-  const token = process.env.GITHUB_TOKEN;
+  const token = process.env.GITHUB_TOKEN_4;
   if (!token) {
-    return { success: false, error: 'GITHUB_TOKEN is not configured in this environment' };
+    return { success: false, error: 'GITHUB_TOKEN_4 is not configured in this environment' };
   }
   const targetRepo = payload.repo ?? 'patriotnewsactivism/Apex';
+  if (!/^[-\w]+\/[-\w]+$/.test(targetRepo)) {
+    return { success: false, error: `Invalid repo format: ${targetRepo}` };
+  }
   const res = await fetch(`https://api.github.com/repos/${targetRepo}/pulls`, {
     method: 'POST',
     headers: {

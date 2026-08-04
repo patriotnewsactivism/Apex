@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { db, tasks, goals, agents, scheduledJobs, researchedLeads, componentHealth } from '@workspace/db';
 import { eq, desc, sql, and } from 'drizzle-orm';
 

@@ -31,8 +31,8 @@ export interface Goal {
   status: string;
   priority: number;
   assignedAgentId: string | null;
-  createdAt: number;
-  completedAt: number | null;
+  createdAt: string;
+  completedAt: string | null;
   result: string | null;
 }
 
@@ -206,9 +206,9 @@ export interface Task {
   priority: number;
   assignedAgentId: string | null;
   createdByAgentId: string | null;
-  createdAt: number;
-  updatedAt: number;
-  completedAt: number | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
   result: string | null;
   errorMessage: string | null;
 }
@@ -223,7 +223,7 @@ export interface Agent {
   liveStatus?: string;
   model: string;
   provider: string;
-  lastActiveAt: number | null;
+  lastActiveAt: string | null;
   concurrency?: number;
   maxIterations?: number;
   metadata?: Record<string, unknown> | null;
@@ -237,7 +237,7 @@ export interface Memory {
   value: string;
   importance: number;
   tags: string[] | null;
-  createdAt: number;
+  createdAt: string;
 }
 
 export interface LogEntry {
@@ -246,7 +246,7 @@ export interface LogEntry {
   taskId: string | null;
   level: string;
   message: string;
-  timestamp: number;
+  timestamp: string;
 }
 
 export interface Approval {
@@ -257,7 +257,7 @@ export interface Approval {
   toolArgs: Record<string, unknown>;
   reason: string;
   status: string;
-  createdAt: number;
+  createdAt: string;
 }
 
 export interface ToolInfo {

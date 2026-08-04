@@ -28,27 +28,21 @@ function requireEnv(name: string): string {
   return value;
 }
 
+export function validateAdminToken(authHeader: string | undefined): boolean {
+  const [scheme, token] = (authHeader || '').split(' ');
+  if (scheme !== 'Bearer' || !token) return false;
+  if (token.length !== configuredToken.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(configuredToken));
+  } catch {
+    return false;
+  }
+}
+
 export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
-  const header = req.headers.authorization || '';
-  const [scheme, token] = header.split(' ');
-
-  if (scheme !== 'Bearer' || !token) {
-    res.status(401).json({ error: 'Missing bearer token' });
-    return;
-  }
-
-  if (token.length !== configuredToken.length) {
+  if (validateAdminToken(req.headers.authorization)) {
+    next();
+  } else {
     res.status(401).json({ error: 'Invalid token' });
-    return;
   }
-
-  // constant-time compare
-  const a = Buffer.from(token);
-  const b = Buffer.from(configuredToken);
-  if (!crypto.timingSafeEqual(a, b)) {
-    res.status(401).json({ error: 'Invalid token' });
-    return;
-  }
-
-  next();
 }

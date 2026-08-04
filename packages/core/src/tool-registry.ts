@@ -1618,8 +1618,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const { promisify } = await import('util');
         const execAsync = promisify(exec);
 
+        // Guard against shell metacharacters and path-style branch names.
+        const valid = /^[A-Za-z0-9_\-/.]+$/.test(branchName) && !branchName.startsWith('-') && !branchName.includes('..');
+        if (!valid) {
+          return { success: false, error: `Invalid branch name: ${branchName}` };
+        }
+
         try {
-          await execAsync(`git checkout -b ${branchName}`);
+          await execAsync(`git checkout -b -- ${branchName}`);
           return { success: true, branchName };
         } catch (err: any) {
           return { success: false, error: err?.message || String(err) };
@@ -1655,23 +1661,30 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── CI/CD: Push to remote ───────────────────────────────────────────
     {
       name: 'push_to_remote',
-      description: 'Push committed changes on a branch to the GitHub remote. Requires approval and a GITHUB_TOKEN configured in this environment.',
+      description: 'Push committed changes on a branch to the GitHub remote. Requires approval and GITHUB_TOKEN_4 configured in this environment.',
       schema: z.object({
         branch: z.string().optional().describe('Branch to push (default: current branch)'),
         remote: z.string().optional().describe('Remote name (default "origin")'),
       }),
       requiresApproval: true,
       async execute({ branch, remote }) {
-        const token = process.env.GITHUB_TOKEN;
+        const token = process.env.GITHUB_TOKEN_4;
         if (!token) {
-          return { success: false, error: 'GITHUB_TOKEN is not configured in this environment' };
+          return { success: false, error: 'GITHUB_TOKEN_4 is not configured in this environment' };
         }
         try {
           const targetBranch = branch ?? (await execAsync('git rev-parse --abbrev-ref HEAD')).stdout.trim();
           const remoteName = remote ?? 'origin';
-          const { stdout: remoteUrlRaw } = await execAsync(`git remote get-url ${remoteName}`);
+          // Validate branch and remote names to prevent shell injection.
+          if (!/^[A-Za-z0-9_\-/.]+$/.test(targetBranch) || targetBranch.startsWith('-') || targetBranch.includes('..')) {
+            return { success: false, error: `Invalid branch name: ${targetBranch}` };
+          }
+          if (!/^[A-Za-z0-9_\-/.]+$/.test(remoteName) || remoteName.startsWith('-')) {
+            return { success: false, error: `Invalid remote name: ${remoteName}` };
+          }
+          const { stdout: remoteUrlRaw } = await execAsync(`git remote get-url -- ${remoteName}`);
           const authedUrl = remoteUrlRaw.trim().replace('https://github.com/', `https://x-access-token:${token}@github.com/`);
-          const { stdout, stderr } = await execAsync(`git push ${authedUrl} ${targetBranch}`);
+          const { stdout, stderr } = await execAsync(`git push -- ${authedUrl} ${targetBranch}`);
           return { success: true, branch: targetBranch, remote: remoteName, output: (stdout || stderr).slice(0, 4000) };
         } catch (err: any) {
           return { success: false, error: err?.message || String(err) };
@@ -1682,7 +1695,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── CI/CD: Create pull request ──────────────────────────────────────
     {
       name: 'create_pull_request',
-      description: 'Create a real pull request on GitHub via the GitHub API for code review. Requires approval and a GITHUB_TOKEN configured in this environment.',
+      description: 'Create a real pull request on GitHub via the GitHub API for code review. Requires approval and GITHUB_TOKEN_4 configured in this environment.',
       schema: z.object({
         title: z.string().describe('PR Title'),
         body: z.string().describe('PR Description'),
@@ -1692,11 +1705,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       }),
       requiresApproval: true,
       async execute({ title, body, headBranch, baseBranch, repo }) {
-        const token = process.env.GITHUB_TOKEN;
+        const token = process.env.GITHUB_TOKEN_4;
         if (!token) {
-          return { success: false, error: 'GITHUB_TOKEN is not configured in this environment' };
+          return { success: false, error: 'GITHUB_TOKEN_4 is not configured in this environment' };
         }
         const targetRepo = repo ?? 'patriotnewsactivism/Apex';
+        if (!/^[-\w]+\/[-\w]+$/.test(targetRepo)) {
+          return { success: false, error: `Invalid repo format: ${targetRepo}` };
+        }
         const res = await fetch(`https://api.github.com/repos/${targetRepo}/pulls`, {
           method: 'POST',
           headers: {

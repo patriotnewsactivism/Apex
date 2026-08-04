@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, agents, memories } from '@workspace/db';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { BaseAgent } from '@workspace/core';
 
 export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
@@ -103,8 +103,15 @@ export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
 
   // DELETE /api/agents/:id/memory/:key
   router.delete('/:id/memory/:key', async (req, res) => {
-    await db.delete(memories).where(eq(memories.agentId, req.params.id));
-    return res.json({ deleted: true });
+    try {
+      await db
+        .delete(memories)
+        .where(and(eq(memories.agentId, req.params.id), eq(memories.key, req.params.key)));
+      return res.json({ deleted: true });
+    } catch (err) {
+      console.error('[agents] memory delete error:', err);
+      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   return router;
