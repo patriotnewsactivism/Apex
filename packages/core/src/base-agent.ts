@@ -670,6 +670,17 @@ export abstract class BaseAgent {
     if (!agentId) {
       throw new Error(`No active agent found with role: ${targetRole}`);
     }
+    // Guard against self-delegation: an agent delegating to its own role
+    // creates an infinite loop (observed 2026-08-04: Lead Researcher created
+    // 200+ "Peer Review Request" tasks assigned to itself, clogging the
+    // backlog). Check on existing work with get_task_details or
+    // get_delegation_status instead of spawning new tasks for yourself.
+    if (agentId === this.config.id) {
+      throw new Error(
+        `Cannot delegate to your own role (${targetRole}) — you are already the agent for this role. ` +
+        `Use get_task_details or get_delegation_status to check on existing work instead of creating new tasks.`,
+      );
+    }
     return this.delegate(agentId, input);
   }
 

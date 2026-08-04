@@ -478,6 +478,19 @@ class MultiProviderClient {
         continue;
       }
 
+      // Skip unreliable providers for tool-bearing requests. They answer in
+      // prose instead of emitting structured tool calls, which creates fake
+      // "success" responses — the agent reports "I couldn't find any results"
+      // without ever calling the search tool. Better to let the request fail
+      // and retry later when a reliable provider recovers than to record a
+      // fictitious completion. (2026-08-04: 200+ requests fell through to
+      // cohere/openrouter-free during provider exhaustion, producing pages of
+      // prose-only answers that clogged the task backlog.)
+      if (provider.toolCallingReliable === false && openaiTools && openaiTools.length > 0) {
+        console.warn(`[LLM] Skipping ${provider.name}: toolCallingReliable=false and ${openaiTools.length} tool(s) offered — refusing prose-only fallback`);
+        continue;
+      }
+
       // Mistral's role-aware model routing was removed 2026-07-26 along with
       // the Mistral provider entry itself (confirmed 401 invalid key, see
       // PROVIDERS above). Every OTHER remaining provider uses its plain
