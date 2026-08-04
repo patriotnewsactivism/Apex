@@ -852,7 +852,9 @@ export class GoalProgressJob implements JobHandler {
     const maxPerRun = Number((job.payload as Record<string, unknown>)?.maxPerRun ?? 4);
     const defaultOwner = job.targetAgentId ?? 'apex-ceo-001';
     // A goal submitted seconds ago has legitimately not been decomposed yet.
-    const minAgeMs = Number((job.payload as Record<string, unknown>)?.minAgeMinutes ?? 20) * 60_000;
+    // Default 60 minutes gives the CEO goal-review loop (every 15 min) several
+    // cycles to decompose before flagging the goal as idle.
+    const minAgeMs = Number((job.payload as Record<string, unknown>)?.minAgeMinutes ?? 60) * 60_000;
 
     const activeGoals = await db
       .select()
