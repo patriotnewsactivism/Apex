@@ -29,7 +29,19 @@ export function setupWebSocket(server: Server) {
     // Send current system status on connect
     ws.send(JSON.stringify({ type: 'connected', timestamp: Date.now() }));
 
+    // Heartbeat: ping the client every 30s and terminate unresponsive sockets.
+    const heartbeatInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    }, 30_000);
+
+    ws.on('pong', () => {
+      (ws as any).isAlive = true;
+    });
+
     ws.on('close', () => {
+      clearInterval(heartbeatInterval);
       clients.delete(ws);
       console.log(`📡 WebSocket client disconnected (total: ${clients.size})`);
     });

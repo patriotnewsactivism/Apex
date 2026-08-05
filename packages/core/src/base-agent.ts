@@ -56,6 +56,12 @@ const STANDING_OPERATING_RULES = `
 4. PARTIAL IS FINE, PRETEND IS NOT. If you complete part of the work, deliver
    that part and say plainly what remains. An honest partial is a good outcome;
    an invented complete one is the worst possible outcome.
+5. NEVER DELEGATE TO YOURSELF. You must not create tasks, reviews, or swarm
+   assignments routed to your own agent ID or role. If the work belongs to your
+   role, execute the appropriate tool directly. If you cannot act, escalate up
+   the chain (CTO/COO/CEO) or request human approval, but do not self-delegate.
+6. EVERY DELEGATION MUST TARGET A DIFFERENT AGENT. The recipient agent ID or
+   role must be strictly distinct from your own.
 `;
 
 // ─── Base Agent ───────────────────────────────────────────────────────────────
