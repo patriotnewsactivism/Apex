@@ -36,6 +36,16 @@ export function tubeScribeConfigured(): boolean {
   }
 }
 
+function buildQuery(params: Record<string, string | number | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    sp.append(key, String(value));
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : '';
+}
+
 /** Thin Supabase REST helper (PostgREST). Throws on non-2xx. */
 async function sbFetch(
   table: string,
@@ -49,7 +59,7 @@ async function sbFetch(
       `Got: "${baseUrl.slice(0, 30)}…". Env vars may be swapped.`,
     );
   }
-  const url = `${baseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`;
+  const url = `${baseUrl}/rest/v1/${table}${query}`;
   const res = await fetch(url, {
     ...init,
     headers: {
@@ -80,13 +90,19 @@ export function createTubeScribeTools(): ToolDefinition[] {
         const today = new Date().toISOString().slice(0, 10);
 
         const [pending, extracting, transcribing, processing, complete, failed, keyStatus] = await Promise.all([
-          sbFetch('analyses', 'status=eq.pending&select=id&limit=500').catch(() => []),
-          sbFetch('analyses', 'status=eq.extracting&select=id&limit=500').catch(() => []),
-          sbFetch('analyses', 'status=eq.transcribing&select=id&limit=500').catch(() => []),
-          sbFetch('analyses', 'status=eq.processing&select=id&limit=500').catch(() => []),
-          sbFetch('analyses', 'status=eq.complete&select=id&limit=500').catch(() => []),
-          sbFetch('analyses', `status=eq.failed&created_at=gte.${today}&select=id,youtube_url,error_message&order=created_at.desc&limit=10`).catch(() => []),
-          sbFetch('supadata_key_status', 'order=last_used_at.desc&limit=10').catch(() => []),
+          sbFetch('analyses', buildQuery({ status: 'eq.pending', select: 'id', limit: 500 })).catch(() => []),
+          sbFetch('analyses', buildQuery({ status: 'eq.extracting', select: 'id', limit: 500 })).catch(() => []),
+          sbFetch('analyses', buildQuery({ status: 'eq.transcribing', select: 'id', limit: 500 })).catch(() => []),
+          sbFetch('analyses', buildQuery({ status: 'eq.processing', select: 'id', limit: 500 })).catch(() => []),
+          sbFetch('analyses', buildQuery({ status: 'eq.complete', select: 'id', limit: 500 })).catch(() => []),
+          sbFetch('analyses', buildQuery({
+            status: 'eq.failed',
+            created_at: `gte.${today}`,
+            select: 'id,youtube_url,error_message',
+            order: 'created_at.desc',
+            limit: 10,
+          })).catch(() => []),
+          sbFetch('supadata_key_status', buildQuery({ order: 'last_used_at.desc', limit: 10 })).catch(() => []),
         ]);
 
         return {
@@ -123,12 +139,13 @@ export function createTubeScribeTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ limit, status }) {
-        const filter = status ? `&status=eq.${status}` : '';
-        const rows = await sbFetch(
-          'analyses',
-          `order=created_at.desc&limit=${limit ?? 20}${filter}` +
-            '&select=id,youtube_url,status,summary,error_message,created_at,user_id',
-        );
+        const params: Record<string, string | number> = {
+          order: 'created_at.desc',
+          limit: limit ?? 20,
+          select: 'id,youtube_url,status,summary,error_message,created_at,user_id',
+        };
+        if (status) params.status = `eq.${status}`;
+        const rows = await sbFetch('analyses', buildQuery(params));
         return rows ?? [];
       },
     },
@@ -141,10 +158,7 @@ export function createTubeScribeTools(): ToolDefinition[] {
       schema: z.object({}),
       requiresApproval: false,
       async execute() {
-        const rows = await sbFetch(
-          'supadata_key_status',
-          'order=last_used_at.desc&limit=20',
-        );
+        const rows = await sbFetch('supadata_key_status', buildQuery({ order: 'last_used_at.desc', limit: 20 }));
         return rows ?? [];
       },
     },
@@ -264,11 +278,9 @@ export function createTubeScribeTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ analysisId, limit }) {
-        const filter = analysisId ? `&analysis_id=eq.${analysisId}` : '';
-        const rows = await sbFetch(
-          'custody_log',
-          `order=created_at.desc&limit=${limit ?? 20}${filter}`,
-        );
+        const params: Record<string, string | number> = { order: 'created_at.desc', limit: limit ?? 20 };
+        if (analysisId) params.analysis_id = `eq.${analysisId}`;
+        const rows = await sbFetch('custody_log', buildQuery(params));
         return rows ?? [];
       },
     },

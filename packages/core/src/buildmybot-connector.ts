@@ -57,6 +57,16 @@ export function buildMyBotConfigured(): boolean {
   }
 }
 
+function buildQuery(params: Record<string, string | number | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    sp.append(key, String(value));
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : '';
+}
+
 /** Thin Supabase REST helper (PostgREST). Throws on non-2xx. */
 async function sbFetch(
   table: string,
@@ -75,7 +85,7 @@ async function sbFetch(
       `BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY may be swapped in your env.`,
     );
   }
-  const url = `${baseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`;
+  const url = `${baseUrl}/rest/v1/${table}${query}`;
   const res = await fetch(url, {
     ...init,
     headers: {
@@ -113,22 +123,30 @@ export function createBuildMyBotTools(): ToolDefinition[] {
       requiresApproval: false,
       async execute({ includeYesterday }) {
         const today = todayISO();
-        const dateFilter = includeYesterday
-          ? `shift_date=gte.${new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)}`
-          : `shift_date=eq.${today}`;
+        const fromDate = includeYesterday
+          ? new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+          : today;
 
         const [shifts, openErrors, escalations, leadsNew, leadsAwaiting] = await Promise.all([
-          sbFetch('ai_team_log', `${dateFilter}&order=created_at.desc&limit=60`),
-          sbFetch(
-            'error_logs',
-            'status=eq.open&order=created_at.desc&limit=25&select=id,source,level,message,created_at',
-          ),
-          sbFetch('escalations', 'order=created_at.desc&limit=15').catch(() => []),
-          sbFetch('leads', `created_at=gte.${today}&select=id&limit=500`).catch(() => []),
-          sbFetch(
-            'leads',
-            'replied_at=is.null&follow_up_sent_at=not.is.null&select=id&limit=500',
-          ).catch(() => []),
+          sbFetch('ai_team_log', buildQuery({
+            'shift_date': `gte.${fromDate}`,
+            order: 'created_at.desc',
+            limit: 60,
+          })),
+          sbFetch('error_logs', buildQuery({
+            status: 'eq.open',
+            order: 'created_at.desc',
+            limit: 25,
+            select: 'id,source,level,message,created_at',
+          })),
+          sbFetch('escalations', buildQuery({ order: 'created_at.desc', limit: 15 })).catch(() => []),
+          sbFetch('leads', buildQuery({ created_at: `gte.${today}`, select: 'id', limit: 500 })).catch(() => []),
+          sbFetch('leads', buildQuery({
+            replied_at: 'is.null',
+            follow_up_sent_at: 'not.is.null',
+            select: 'id',
+            limit: 500,
+          })).catch(() => []),
         ]);
 
         return {
@@ -209,7 +227,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
       async execute({ limit }) {
         const rows = await sbFetch(
           'error_logs',
-          `status=eq.open&order=level.asc,created_at.desc&limit=${limit ?? 25}`,
+          buildQuery({ status: 'eq.open', order: 'level.asc,created_at.desc', limit: limit ?? 25 }),
         );
         return rows ?? [];
       },
@@ -230,7 +248,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
       async execute({ errorId, resolutionNote }) {
         const existing = await sbFetch(
           'error_logs',
-          `id=eq.${errorId}&select=id,context`,
+          buildQuery({ id: `eq.${errorId}`, select: 'id,context' }),
         );
         if (!existing?.length) throw new Error(`No error_logs row with id ${errorId}`);
         const context = {
@@ -238,7 +256,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           apex_resolution: resolutionNote,
           apex_resolved_at: new Date().toISOString(),
         };
-        await sbFetch('error_logs', `id=eq.${errorId}`, {
+        await sbFetch('error_logs', buildQuery({ id: `eq.${errorId}` }), {
           method: 'PATCH',
           body: JSON.stringify({ status: 'resolved', context }),
         });
@@ -386,11 +404,14 @@ export function createBuildMyBotTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ limit, onlyUnreplied }) {
-        const filter = onlyUnreplied ? '&replied_at=is.null' : '';
         const rows = await sbFetch(
           'leads',
-          `order=created_at.desc&limit=${limit ?? 20}${filter}` +
-            '&select=id,name,email,status,source,created_at,replied_at,follow_up_sent_at,last_ai_action_at',
+          buildQuery({
+            order: 'created_at.desc',
+            limit: limit ?? 20,
+            ...(onlyUnreplied ? { replied_at: 'is.null' } : {}),
+            select: 'id,name,email,status,source,created_at,replied_at,follow_up_sent_at,last_ai_action_at',
+          }),
         );
         return rows ?? [];
       },

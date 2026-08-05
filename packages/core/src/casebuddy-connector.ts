@@ -45,6 +45,16 @@ export function caseBuddyConfigured(): boolean {
   }
 }
 
+function buildQuery(params: Record<string, string | number | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    sp.append(key, String(value));
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : '';
+}
+
 /** Thin Supabase REST helper (PostgREST). Throws on non-2xx. */
 async function sbFetch(
   table: string,
@@ -58,7 +68,7 @@ async function sbFetch(
       `Got: "${baseUrl.slice(0, 30)}…". Check that env vars are not swapped.`,
     );
   }
-  const url = `${baseUrl}/rest/v1/${table}${query ? `?${query}` : ''}`;
+  const url = `${baseUrl}/rest/v1/${table}${query}`;
   const res = await fetch(url, {
     ...init,
     headers: {
@@ -87,10 +97,10 @@ export function createCaseBuddyTools(): ToolDefinition[] {
       requiresApproval: false,
       async execute() {
         const [cases, recentRuns, pendingWork, intakes] = await Promise.all([
-          sbFetch('cases', 'select=id,updated_at&order=updated_at.desc&limit=500').catch(() => []),
-          sbFetch('firm_runs', 'order=created_at.desc&limit=10').catch(() => []),
-          sbFetch('work_products', 'status=in.(queued,working)&order=started_at.desc&limit=20').catch(() => []),
-          sbFetch('intake_cases', 'order=created_at.desc&limit=20').catch(() => []),
+          sbFetch('cases', buildQuery({ select: 'id,updated_at', order: 'updated_at.desc', limit: 500 })).catch(() => []),
+          sbFetch('firm_runs', buildQuery({ order: 'created_at.desc', limit: 10 })).catch(() => []),
+          sbFetch('work_products', buildQuery({ status: 'in.(queued,working)', order: 'started_at.desc', limit: 20 })).catch(() => []),
+          sbFetch('intake_cases', buildQuery({ order: 'created_at.desc', limit: 20 })).catch(() => []),
         ]);
 
         const caseList = cases ?? [];
@@ -140,11 +150,12 @@ export function createCaseBuddyTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ limit, status }) {
-        const filter = status ? `data->>status=eq.${status}&` : '';
-        const rows = await sbFetch(
-          'cases',
-          `${filter}order=updated_at.desc&limit=${limit ?? 25}`,
-        );
+        const params: Record<string, string | number> = {
+          order: 'updated_at.desc',
+          limit: limit ?? 25,
+        };
+        if (status) params['data->>status'] = `eq.${status}`;
+        const rows = await sbFetch('cases', buildQuery(params));
         return (rows ?? []).map((r: any) => {
           const d = r.data || {};
           return {
@@ -172,7 +183,7 @@ export function createCaseBuddyTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ caseId }) {
-        const rows = await sbFetch('cases', `id=eq.${caseId}`);
+        const rows = await sbFetch('cases', buildQuery({ id: `eq.${caseId}` }));
         if (!rows?.length) throw new Error(`No case found with id ${caseId}`);
         return { id: rows[0].id, ...rows[0].data, updated_at: rows[0].updated_at };
       },
@@ -229,11 +240,9 @@ export function createCaseBuddyTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ limit, onlyNew }) {
-        const filter = onlyNew ? 'status=eq.new&' : '';
-        const rows = await sbFetch(
-          'intake_cases',
-          `${filter}order=created_at.desc&limit=${limit ?? 20}`,
-        );
+        const params: Record<string, string | number> = { order: 'created_at.desc', limit: limit ?? 20 };
+        if (onlyNew) params.status = 'eq.new';
+        const rows = await sbFetch('intake_cases', buildQuery(params));
         return (rows ?? []).map((i: any) => ({
           id: i.id,
           created_at: i.created_at,
@@ -258,11 +267,12 @@ export function createCaseBuddyTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ runId, limit }) {
-        const filter = runId ? `run_id=eq.${runId}&` : '';
-        const rows = await sbFetch(
-          'work_products',
-          `${filter}order=completed_at.desc.nullslast&limit=${limit ?? 20}`,
-        );
+        const params: Record<string, string | number> = {
+          order: 'completed_at.desc.nullslast',
+          limit: limit ?? 20,
+        };
+        if (runId) params.run_id = `eq.${runId}`;
+        const rows = await sbFetch('work_products', buildQuery(params));
         return (rows ?? []).map((w: any) => ({
           id: w.id,
           run_id: w.run_id,
