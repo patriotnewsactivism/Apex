@@ -6,7 +6,7 @@
 import type { ScheduledJob } from '@workspace/db';
 
 export interface JobHandler {
-  execute(job: ScheduledJob): Promise<unknown>;
+  execute(job: ScheduledJob, signal?: AbortSignal): Promise<unknown>;
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────────

@@ -349,6 +349,23 @@ export abstract class BaseAgent {
           await this.logger.thinking(response.content.slice(0, 200), taskId);
         }
 
+        // Degraded provider path: the request was served by a model that does
+        // not reliably emit structured tool calls. If no tool calls were made,
+        // the response is almost certainly prose rather than a completed task.
+        // Prompt again once before accepting the answer as done.
+        if (response.degraded && response.toolCalls.length === 0 && iterations < maxIter) {
+          await this.logger.warn(
+            `Response from ${response.model} marked as degraded (no structured tool calls). Re-prompting.`,
+            taskId,
+          );
+          history.push({
+            role: 'user',
+            content: 'The previous response was served by a provider that does not reliably call tools. You MUST use the provided tools to complete this task. Do not answer in prose.',
+          });
+          this.setStatus('thinking');
+          continue;
+        }
+
         // ── Guard: a tool call written as TEXT is not a finished task ──────
         //
         // Models that don't reliably use the structured tool API (typically

@@ -713,6 +713,7 @@ class MultiProviderClient {
             completionTokens: res.usage?.completion_tokens ?? 0,
           },
           model: `${provider.name}/${res.model}`,
+          degraded: provider.toolCallingReliable === false && !!openaiTools && openaiTools.length > 0,
         };
       } catch (err) {
         // Extract status code and message for clear diagnostics

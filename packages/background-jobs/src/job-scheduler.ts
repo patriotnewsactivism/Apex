@@ -32,6 +32,9 @@ export class JobScheduler {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private pollIntervalMs: number;
   private executor: JobExecutor;
+  // Track in-flight job IDs to prevent overlapping cron instances while the
+  // handler is still running. nextRunAt is also advanced before dispatch.
+  private runningJobs = new Set<string>();
 
   constructor(config?: JobSchedulerConfig) {
     this.pollIntervalMs = config?.pollIntervalMs ?? 60_000;
@@ -103,6 +106,7 @@ export class JobScheduler {
       and(
         eq(scheduledJobs.enabled, true),
         eq(scheduledJobs.status, 'active'),
+        isNotNull(scheduledJobs.nextRunAt),
         lte(scheduledJobs.nextRunAt, now),
       ),
     );
@@ -112,6 +116,21 @@ export class JobScheduler {
         console.warn('[JobScheduler] Executor at capacity, deferring remaining jobs');
         break;
       }
+
+      // Lease the job: advance nextRunAt before dispatching so overlapping
+      // polls do not start a second instance while this one is running. For
+      // cron jobs, compute the next scheduled occurrence; for one-time jobs,
+      // push nextRunAt far into the future to prevent re-dispatch.
+      if (this.runningJobs.has(job.id)) {
+        continue;
+      }
+      this.runningJobs.add(job.id);
+      const nextRun = job.cronExpression
+        ? CronParser.nextRun(job.cronExpression, now)
+        : null;
+      await db.update(scheduledJobs)
+        .set({ nextRunAt: nextRun ?? new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000), updatedAt: now })
+        .where(eq(scheduledJobs.id, job.id));
 
       // Execute asynchronously (don't block the loop for other due jobs)
       this.executor.execute(job.id).then(async (result) => {
@@ -123,10 +142,10 @@ export class JobScheduler {
 
         // Calculate next run for recurring cron jobs
         if (job.cronExpression && result.success) {
-          const nextRun = CronParser.nextRun(job.cronExpression, new Date());
-          if (nextRun) {
+          const freshNextRun = CronParser.nextRun(job.cronExpression, new Date());
+          if (freshNextRun) {
             await db.update(scheduledJobs).set({
-              nextRunAt: nextRun,
+              nextRunAt: freshNextRun,
               updatedAt: new Date(),
             }).where(eq(scheduledJobs.id, job.id));
           }
@@ -139,6 +158,8 @@ export class JobScheduler {
         }
       }).catch((err) => {
         console.error(`[JobScheduler] Unexpected error executing job '${job.name}':`, err);
+      }).finally(() => {
+        this.runningJobs.delete(job.id);
       });
     }
   }

@@ -10,6 +10,8 @@ import { eq } from 'drizzle-orm';
 import { CronParser } from './cron-parser.js';
 import type { JobHandler } from './handlers/index.js';
 
+class JobTimeoutError extends Error {}
+
 export interface JobExecutorConfig {
   maxConcurrent?: number;  // default 50
   defaultTimeoutMs?: number;  // default 60_000
@@ -20,6 +22,7 @@ export class JobExecutor {
   private maxConcurrent: number;
   private defaultTimeoutMs: number;
   private handlers = new Map<string, JobHandler>();
+  private abortControllers = new Map<string, AbortController>();
 
   constructor(config?: JobExecutorConfig) {
     this.maxConcurrent = config?.maxConcurrent ?? 50;
@@ -36,6 +39,17 @@ export class JobExecutor {
 
   canAccept(): boolean {
     return this.inFlight < this.maxConcurrent;
+  }
+
+  /**
+   * Atomically reserve a concurrency slot. Returns true if a slot was available.
+   */
+  reserveSlot(): boolean {
+    if (this.inFlight >= this.maxConcurrent) {
+      return false;
+    }
+    this.inFlight++;
+    return true;
   }
 
   /**
@@ -58,11 +72,13 @@ export class JobExecutor {
       return { success: false, error: `No handler registered for job type '${job.jobType}'` };
     }
 
-    if (!this.canAccept()) {
+    if (!this.reserveSlot()) {
       return { success: false, error: `Executor at capacity (${this.maxConcurrent} concurrent jobs)` };
     }
 
     const executionId = crypto.randomUUID();
+    const abortController = new AbortController();
+    this.abortControllers.set(executionId, abortController);
     const startedAt = new Date();
 
     // Log execution start
@@ -73,16 +89,16 @@ export class JobExecutor {
       status: 'running',
     });
 
-    this.inFlight++;
-
     try {
-      // Execute with timeout
-      const result = await Promise.race([
-        handler.execute(job),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Job timed out after ${this.defaultTimeoutMs}ms`)), this.defaultTimeoutMs),
-        ),
-      ]);
+      // Execute with timeout. We race the handler against a timeout that also
+      // aborts the signal so long-running work can be cancelled.
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => {
+          reject(new JobTimeoutError(`Job timed out after ${this.defaultTimeoutMs}ms`));
+        }, this.defaultTimeoutMs);
+        abortController.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+      });
+      const result = await Promise.race([handler.execute(job, abortController.signal), timeoutPromise]);
 
       const completedAt = new Date();
       const durationMs = completedAt.getTime() - startedAt.getTime();
@@ -108,7 +124,7 @@ export class JobExecutor {
       const completedAt = new Date();
       const durationMs = completedAt.getTime() - startedAt.getTime();
       const errorMsg = err instanceof Error ? err.message : String(err);
-      const isTimeout = errorMsg.includes('timed out');
+      const isTimeout = err instanceof JobTimeoutError;
 
       // Log failure
       await db.update(jobExecutionLog).set({
@@ -165,6 +181,10 @@ export class JobExecutor {
       return { success: false, error: errorMsg };
     } finally {
       this.inFlight--;
+      this.abortControllers.delete(executionId);
+      if (!abortController.signal.aborted) {
+        abortController.abort();
+      }
     }
   }
 }

@@ -2,9 +2,11 @@ import { z } from 'zod';
 
 // ─── LLM ─────────────────────────────────────────────────────────────────────
 
-// All LLM calls are routed through OpenRouter (openrouter.ai).
-// The "provider" field is kept for future extensibility but defaults to 'openrouter'.
-export type LLMProvider = 'cerebras' | 'openai' | 'anthropic' | 'google' | 'cohere' | 'poolside';
+// Provider names mirror the runtime chain in llm-client.ts (cerebras,
+// cerebras-2, groq, google-gemini, cohere, openrouter-free, etc.).
+// The actual provider used is determined by the fallback chain, so this
+// field is primarily for observability/override.
+export type LLMProvider = string;
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -31,6 +33,9 @@ export interface LLMResponse {
   toolCalls: LLMToolCall[];
   usage: { promptTokens: number; completionTokens: number };
   model: string;
+  // Set when the response was served by a provider that does not reliably
+  // emit structured tool calls. The agent loop can use this to prompt again.
+  degraded?: boolean;
 }
 
 export interface LLMClientConfig {
