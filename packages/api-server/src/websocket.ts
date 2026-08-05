@@ -17,7 +17,8 @@ export function setupWebSocket(server: Server) {
     // as a query parameter because browser WebSocket clients cannot set custom
     // headers. We also accept an Authorization header for non-browser clients.
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    const token = url.searchParams.get('token') ?? req.headers.authorization;
+    const queryToken = url.searchParams.get('token');
+    const token = queryToken ? `Bearer ${queryToken}` : req.headers.authorization;
     if (!validateAdminToken(token || undefined)) {
       ws.close(1008, 'Invalid or missing token');
       return;
