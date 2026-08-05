@@ -66,7 +66,7 @@ const PROVIDERS: Array<{
   // resets in minutes; the in-provider 429 retry + circuit breaker absorb the
   // bursts). Local key is 402 billing-gated — Railway's is the one that
   // matters for the workforce.
-  { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
+  { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'llama3.1-70b' },
   // Cerebras (2nd account) — 402 payment required on Railway AND local as of
   // 2026-08-04 (account needs a payment method). Demoted but kept: zero-code-
   // change recovery once billing is sorted; circuit breaker makes it a cheap
@@ -670,7 +670,19 @@ class MultiProviderClient {
         const choice = res.choices[0];
         const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).flatMap((tc) => {
           if (tc.type !== 'function') return [];
-          return [{ id: tc.id, name: tc.function.name, args: JSON.parse(tc.function.arguments) as Record<string, unknown> }];
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(tc.function.arguments);
+          } catch {
+            parsed = null;
+          }
+          // Providers may emit "null", empty strings, or arrays for arguments.
+          // Coerce anything non-object to an empty object so schema validation
+          // can surface a meaningful error instead of a cryptic Zod failure.
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            parsed = {};
+          }
+          return [{ id: tc.id, name: tc.function.name, args: parsed as Record<string, unknown> }];
         });
 
         // Log success so it's visible which provider actually served the request
