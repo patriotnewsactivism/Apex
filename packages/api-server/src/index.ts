@@ -257,8 +257,12 @@ async function main() {
   await db.update(tasks).set({ status: 'pending', updatedAt: new Date() }).where(eq(tasks.status, 'in_progress'));
   console.log('✅ Orphaned in_progress tasks reset to pending');
 
-  const mode = process.env.APEX_APPROVAL_MODE;
-  const approvalRequired = mode === 'strict' ? true : mode === 'off' ? false : undefined;
+  let mode = process.env.APEX_APPROVAL_MODE ?? 'normal';
+  if (mode === 'off') {
+    console.warn('⚠️  APEX_APPROVAL_MODE=off is not allowed; reverting to normal (per-role default gating).');
+    mode = 'normal';
+  }
+  const approvalRequired = mode === 'strict' ? true : undefined;
   const workforce = createWorkforce({ approvalRequired });
   try {
     await initializeWorkforce(workforce);
@@ -266,7 +270,7 @@ async function main() {
   } catch (err) {
     console.warn('⚠️  Workforce DB state sync skipped:', err instanceof Error ? err.message : String(err));
   }
-  console.log(`   Approval mode: ${mode === 'strict' ? 'STRICT (all agents gated)' : mode === 'off' ? 'FULLY AUTONOMOUS (no gating)' : 'PER-ROLE DEFAULT (dev/infra gated, business/orchestration autonomous)'}`);
+  console.log(`   Approval mode: ${mode === 'strict' ? 'STRICT (all agents gated)' : 'PER-ROLE DEFAULT (dev/infra gated, business/orchestration autonomous)'}`);
 
   // buildmybot2 as a registered MANAGED project (2026-07-23): idempotent
   // upsert so the registration survives fresh databases instead of relying

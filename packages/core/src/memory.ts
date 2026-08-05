@@ -249,6 +249,8 @@ export class AgentLogger {
   info(msg: string, taskId?: string) { return this.log('info', msg, undefined, taskId); }
   warn(msg: string, taskId?: string) { return this.log('warn', msg, undefined, taskId); }
   error(msg: string, err?: unknown, taskId?: string) {
-    return this.log('error', msg, err instanceof Error ? { message: err.message, stack: err.stack } : { err }, taskId);
+    const errText = err instanceof Error ? err.message : err ? String(err) : '';
+    const fullMsg = errText ? `${msg} — ${errText}` : msg;
+    return this.log('error', fullMsg, err instanceof Error ? { message: err.message, stack: err.stack } : { err }, taskId);
   }
 }
