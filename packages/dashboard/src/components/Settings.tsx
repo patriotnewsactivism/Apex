@@ -86,9 +86,12 @@ const INTEGRATIONS: IntegrationConfig[] = [
     description: 'Command R+ model for agents',
     icon: <Cpu size={18} />,
     category: 'ai',
+    // COHERE_TRIAL_API_KEY field removed 2026-08-05 — it was never a real
+    // key the backend allowlist recognized (getKnownApiKeyEnvs() only ever
+    // exposed COHERE_API_KEY), so it silently 400'd on save. There is only
+    // one Cohere key this app actually uses.
     envVars: [
-      { key: 'COHERE_TRIAL_API_KEY', label: 'Trial Key', placeholder: 'cohere_...', secret: true },
-      { key: 'COHERE_API_KEY', label: 'Production Key', placeholder: 'cohere_...', secret: true },
+      { key: 'COHERE_API_KEY', label: 'API Key', placeholder: 'cohere_...', secret: true },
     ],
     docsUrl: 'https://dashboard.cohere.com/api-keys',
   },
@@ -112,15 +115,6 @@ const INTEGRATIONS: IntegrationConfig[] = [
       { key: 'VAPI_PHONE_NUMBER_ID', label: 'Phone Number ID', placeholder: 'ID of purchased Vapi number', secret: false },
     ],
     docsUrl: 'https://dashboard.vapi.ai',
-  },
-  {
-    id: 'github-models',
-    name: 'GitHub Models',
-    description: 'Free tier via GitHub PAT (openai/gpt-4.1, codestral, llama-4-maverick)',
-    icon: <GitBranch size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'GITHUB_TOKEN_4', label: 'GitHub PAT', placeholder: 'ghp_...', secret: true }],
-    docsUrl: 'https://github.com/marketplace/models',
   },
   {
     id: 'qwen',

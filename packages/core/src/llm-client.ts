@@ -91,6 +91,15 @@ const PROVIDERS: Array<{
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
   // Groq (2nd account) — second org, same 100K TPD, same daily reset.
   { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.3-70b-versatile' },
+  // Mistral (La Plateforme) — RESTORED 2026-08-05 after Don rotated a fresh
+  // MISTRAL_API_KEY (all 7 prior key variants had gone dead by the
+  // 2026-08-04 audit and the provider was removed from this chain that same
+  // day). Confirmed live via a direct completion call against the new key
+  // before this entry was re-added — not restored on faith. mistral-small-
+  // latest supports reliable function calling, so it sits with the other
+  // confirmed-live tool-capable providers, not down with cohere/openrouter.
+  // Free tier: La Plateforme, 1B tokens/month.
+  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
   // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B supports
   // function calling. OpenAI-compatible at integrate.api.nvidia.com. NOT
   // configured on Railway as of 2026-08-04 — no-op until the key is added.
