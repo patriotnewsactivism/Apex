@@ -71,9 +71,9 @@ const PROVIDERS: Array<{
   // 2026-08-04 (account needs a payment method). Demoted but kept: zero-code-
   // change recovery once billing is sorted; circuit breaker makes it a cheap
   // skip meanwhile.
-  { name: 'cerebras-2', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_2', fallbackModel: 'gpt-oss-120b' },
+  { name: 'cerebras-2', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_2', fallbackModel: 'llama3.1-70b' },
   // Cerebras (3rd account) — same 402 story as cerebras-2.
-  { name: 'cerebras-3', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_3', fallbackModel: 'gpt-oss-120b' },
+  { name: 'cerebras-3', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_3', fallbackModel: 'llama3.1-70b' },
   // Google Gemini — PROMOTED 2026-08-04 ahead of Groq: its free tier
   // (1,500 req/day, 15 RPM, 1M tokens/min) is by far the largest daily
   // budget in this chain — Groq's whole org gets 100K TPD, which is only
@@ -81,11 +81,11 @@ const PROVIDERS: Array<{
   // in-provider 429 retry absorbs the 15 RPM ceiling. OpenAI-compatible
   // endpoint at generativelanguage.googleapis.com/v1beta/openai/. Key from
   // aistudio.google.com.
-  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-3.6-flash' },
+  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-1.5-flash-latest' },
   // Google Gemini (2nd project) — separate Google Cloud project = separate
   // quota. NOT configured on Railway as of 2026-08-04 — no-op until the key
   // is added.
-  { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-3.6-flash' },
+  { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-1.5-flash-latest' },
   // Groq — the workhorse while its 100K TPD org budget lasts; both orgs were
   // ~99% consumed by 19:10Z on 2026-08-04. Resets daily.
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
