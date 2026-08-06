@@ -183,6 +183,23 @@ export abstract class BaseAgent {
    * behavior exactly; roles that receive swarms set a higher concurrency. */
   async start(): Promise<void> {
     this.running = true;
+
+    // Startup stampede guard — added 2026-08-06 after confirming the LLM
+    // circuit breaker (llm-client.ts) is fully reactive: it only spreads
+    // load AFTER a provider has already 429'd. Without this, a Railway
+    // redeploy (or a fresh process boot) makes all 13 agents — several at
+    // concurrency 4 (QA_DIRECTOR, LEAD_RESEARCH) — call dequeue()->complete()
+    // in the very first event-loop tick, which is exactly the "65
+    // simultaneous requests hammer Cerebras at once" stampede scenario
+    // documented in llm-client.ts's circuit-breaker comment. A random 0-4s
+    // jitter per agent instance spreads that very first wave across a real
+    // window instead of firing it all at once — cheaper than surviving the
+    // burst after the fact.
+    const startupJitterMs = Math.floor(Math.random() * 4000);
+    if (startupJitterMs > 0) {
+      await new Promise((r) => setTimeout(r, startupJitterMs));
+    }
+
     await this.logger.info(
       `${this.name} starting autonomous loop (concurrency=${this.concurrency})`,
     );
@@ -211,11 +228,22 @@ export abstract class BaseAgent {
               const msg = err instanceof Error ? err.message : String(err);
               await this.logger.error(`Unhandled task error: ${msg}`, err, task.id).catch(() => {});
             })
+            .then(async (result) => {
+              // Actually implement the inter-task delay this comment used to
+              // only describe (2026-08-06 — found it was dead intent, no
+              // code). Roles running at concurrency>1 (QA_DIRECTOR,
+              // LEAD_RESEARCH = 4) would otherwise queue the next task's LLM
+              // call the instant a slot frees, back-to-back, into the same
+              // provider that just served the previous one. A short jittered
+              // pause spreads a busy agent's own calls out instead of
+              // firing them as fast as the loop can spin.
+              const jitterMs = 400 + Math.floor(Math.random() * 800); // 400-1200ms
+              await new Promise((r) => setTimeout(r, jitterMs));
+              return result;
+            })
             .finally(() => {
               this.currentTaskIds.delete(task.id);
               inFlight.delete(task.id);
-              // Small delay between tasks to avoid back-to-back LLM calls
-              // from the same agent hammering the same provider.
             });
           inFlight.set(task.id, p);
         }
