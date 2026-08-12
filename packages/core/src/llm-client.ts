@@ -100,6 +100,13 @@ const PROVIDERS: Array<{
   // confirmed-live tool-capable providers, not down with cohere/openrouter.
   // Free tier: La Plateforme, 1B tokens/month.
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
+  // xAI (Grok) — ADDED 2026-08-12: confirmed live via direct completion call
+  // during the LLM-exhaustion audit that day (XAI_API_KEY was present in the
+  // migrated env but never wired into this chain at all — genuinely unused
+  // capacity, not a demoted/dead entry). grok-3-mini is fast and reliable on
+  // OpenAI-compatible tool calling; sits with the other confirmed-live
+  // tool-capable providers, ahead of the last-resort tier.
+  { name: 'xai', baseURL: 'https://api.x.ai/v1', apiKeyEnv: 'XAI_API_KEY', fallbackModel: 'grok-3-mini' },
   // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B supports
   // function calling. OpenAI-compatible at integrate.api.nvidia.com. NOT
   // configured on Railway as of 2026-08-04 — no-op until the key is added.
@@ -165,6 +172,14 @@ const PROVIDERS: Array<{
   // 2026-08-04: small requests probe 200, but live tool-bearing requests
   // intermittently 422 (no body) — treat its output as best-effort.
   { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024', maxOutputTokens: 4096, toolCallingReliable: false },
+  // Cohere (trial key) — ADDED 2026-08-12: production COHERE_API_KEY started
+  // 402ing ("add or update your payment method") during that day's
+  // exhaustion audit. COHERE_TRIAL_API_KEY confirmed live via direct
+  // completion call the same day. Kept behind production (in case Don adds
+  // billing and it recovers) but ahead of OpenRouter so this tier isn't
+  // fully dead while production is billing-blocked. Same tool-calling
+  // caveat as production.
+  { name: 'cohere-trial', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_TRIAL_API_KEY', fallbackModel: 'command-r-plus-08-2024', maxOutputTokens: 4096, toolCallingReliable: false },
   // OpenRouter FREE tier — daily-quota 429s are a shared, self-resetting
   // rate limit (not a dead/invalid key), genuinely serves requests once the
   // daily window resets.
