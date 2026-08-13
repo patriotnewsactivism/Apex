@@ -135,7 +135,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Prioritized lead list with next action per lead, and an honest status: what's pipeline-ready vs.
 what's blocked on missing infrastructure (Twilio, live Stripe, etc).`,
-      llm: { provider: 'cerebras', model: 'openai/gpt-4o' },
+      llm: { provider: 'cerebras', model: 'gpt-oss-120b' },
       tools: ['readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview', 'make_outbound_call', 'get_call_status'],
       maxIterations: 20,
       approvalRequired: false,
@@ -179,7 +179,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clean, ready-to-post drafts labeled by platform, plus a short rationale for why this angle will
 land with the ICP (Home Services, Legal, Medical/Esthetics, Real Estate).`,
-      llm: { provider: 'cerebras', model: 'openai/gpt-4o-mini' },
+      llm: { provider: 'cerebras', model: 'gpt-oss-120b' },
       tools: ['readFile', 'writeFile', 'webSearch', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: true,
@@ -222,7 +222,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clear, honest customer-facing responses. When escalating a gap between marketing and reality,
 flag it explicitly as a "sold but not built" item for the CEO/engineering team to prioritize.`,
-      llm: { provider: 'cerebras', model: 'openai/gpt-4o-mini' },
+      llm: { provider: 'cerebras', model: 'gpt-oss-120b' },
       tools: ['readFile', 'writeFile', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: false,

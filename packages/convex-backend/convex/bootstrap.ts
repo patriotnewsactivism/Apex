@@ -29,8 +29,8 @@ export const bootstrapWorkforce = internalAction({
         systemPrompt: cfg.systemPrompt,
         // Cosmetic/legacy fields — the model actually used per LLM call is
         // resolved fresh each time via getDefaultLLMConfig(role) in llmConfig.ts.
-        model: 'gpt-4o',
-        provider: 'openai',
+        model: 'gpt-oss-120b',
+        provider: 'cerebras',
       });
     }
 
