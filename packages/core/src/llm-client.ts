@@ -538,9 +538,22 @@ class MultiProviderClient {
 
     for (let pass = 0; pass <= 1; pass++) {
       if (pass === 1) {
-        if (providerErrors.length === 0) break; // succeeded on pass 0, no need for pass 1
+        // BUG FIX 2026-08-12: this used to `break` when providerErrors was
+        // empty, on the theory that empty errors meant "pass 0 already
+        // succeeded." That's wrong — if pass 0 had succeeded, the function
+        // would already have `return`ed above, so execution never reaches
+        // here at all. Empty providerErrors at this point almost always
+        // means every reliable provider was silently *skipped* (missing key
+        // or circuit-breaker cooldown — neither path pushes to
+        // providerErrors), NOT that the request succeeded. The old code
+        // then skipped the last-resort unreliable-provider pass entirely,
+        // surfacing a misleading "(no providers were configured or had API
+        // keys)" error even when live last-resort providers (openrouter-free,
+        // cohere-trial) were available and never got a chance to try.
+        // Only skip pass 1 if there is genuinely nothing to try in it.
+        if (unreliableProviders.length === 0) break;
         lastResortMode = true;
-        console.warn(`[LLM] All reliable providers exhausted — starting last-resort pass with unreliable tool-calling providers`);
+        console.warn(`[LLM] All reliable providers exhausted or in cooldown — starting last-resort pass with unreliable tool-calling providers`);
       }
     const orderedProviders = lastResortMode ? unreliableProviders : reliableProviders;
     for (const provider of orderedProviders) {
