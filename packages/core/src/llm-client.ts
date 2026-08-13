@@ -612,7 +612,7 @@ class MultiProviderClient {
           console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
           providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
           recordProviderFailure(provider.name, model, status, truncatedMsg);
-          setProviderCooldown(provider.name, status);
+          setProviderCooldown(provider.name, status, truncatedMsg);
           continue;
         }
       }
@@ -657,7 +657,16 @@ class MultiProviderClient {
             const status = (err as any)?.status ?? (err as any)?.response?.status;
             const msg = err instanceof Error ? err.message : String(err);
 
-            if (status === 429) {
+            if (status === 429 && isDailyQuotaError(msg)) {
+              // 2026-08-13 fix: this provider's own error body says the
+              // limit is a DAILY one (e.g. Groq "tokens per day (TPD)") —
+              // it will not recover in the next 12 seconds. Skip the
+              // in-request retry entirely and fall straight through to the
+              // next provider; setProviderCooldown (below, in the catch
+              // block at the outer scope) will also park this provider for
+              // hours instead of the usual 30s.
+              throw err;
+            } else if (status === 429) {
               // Rate limited — retry this provider with backoff instead of
               // immediately falling through. Gemini free tier (15 RPM) and
               // Groq both 429 under concurrent agent load; retrying keeps
@@ -762,7 +771,7 @@ class MultiProviderClient {
 
         providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
         recordProviderFailure(provider.name, model, status, truncatedMsg);
-        setProviderCooldown(provider.name, status);
+        setProviderCooldown(provider.name, status, truncatedMsg);
         continue; // try next provider in the chain
       }
     }
@@ -904,16 +913,34 @@ const providerFailureEvents: Array<{
 // load across remaining providers instead of all agents stampeding the same
 // first-in-chain provider.
 const providerCooldowns = new Map<string, number>(); // provider name → epoch ms
-const COOLDOWN_429_MS = 30_000;  // 30s for rate limits (resets quickly)
-const COOLDOWN_402_MS = 300_000; // 5min for billing blocks (won't recover soon)
-const COOLDOWN_401_MS = 600_000; // 10min for auth failures (key won't fix itself)
+const COOLDOWN_429_MS = 30_000;   // 30s for ordinary short-window rate limits (resets quickly)
+const COOLDOWN_402_MS = 300_000;  // 5min for billing blocks (won't recover soon)
+const COOLDOWN_401_MS = 600_000;  // 10min for auth failures (key won't fix itself)
+// 2026-08-13 fix: a 429 whose OWN error body says the limit is a DAILY one
+// (Groq/Cerebras/Gemini/OpenRouter-free all phrase it as "per day"/"TPD"/
+// "daily"/"free-models-per-day") will not recover in 30s — that provider is
+// done until its actual daily reset. Before this fix every provider got the
+// same blanket 30s cooldown regardless of WHY it 429'd, so once a provider's
+// day-quota was blown the retry loop kept re-hitting it every ~30-90s for the
+// rest of the day: guaranteed-fail requests that burn real per-day REQUEST
+// budgets (e.g. Cerebras's 2400 req/day) for zero benefit, and starve
+// still-live providers (e.g. Mistral) of a fair shot in the rotation.
+const COOLDOWN_DAILY_MS = 4 * 60 * 60 * 1000; // 4hr — long enough to stop the retry-storm, short enough to self-heal without a redeploy if the message-sniff ever misses a case
+const DAILY_QUOTA_PATTERN = /\b(per[\s-]?day|daily|tokens per day|tpd|free-models-per-day)\b/i;
 
-function setProviderCooldown(name: string, status: number | undefined): void {
+function isDailyQuotaError(message: string | undefined): boolean {
+  return !!message && DAILY_QUOTA_PATTERN.test(message);
+}
+
+function setProviderCooldown(name: string, status: number | undefined, message?: string): void {
   let ms = COOLDOWN_429_MS;
   if (status === 402) ms = COOLDOWN_402_MS;
   else if (status === 401 || status === 403) ms = COOLDOWN_401_MS;
-  else if (status === 429) ms = COOLDOWN_429_MS;
+  else if (status === 429) ms = isDailyQuotaError(message) ? COOLDOWN_DAILY_MS : COOLDOWN_429_MS;
   providerCooldowns.set(name, Date.now() + ms);
+  if (status === 429 && isDailyQuotaError(message)) {
+    console.warn(`[LLM] ${name}: 429 is a DAILY quota exhaustion, not a short burst — cooling down ${ms / 60000}min instead of the usual 30s`);
+  }
 }
 
 function isProviderInCooldown(name: string): boolean {
