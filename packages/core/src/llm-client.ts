@@ -932,14 +932,55 @@ function isDailyQuotaError(message: string | undefined): boolean {
   return !!message && DAILY_QUOTA_PATTERN.test(message);
 }
 
+// 2026-08-14 fix: some providers (confirmed: Cerebras) return a bare
+// "429 status code (no body)" with zero descriptive text — isDailyQuotaError
+// can never match on an empty message, so these always fell through to the
+// short 30s cooldown regardless of the REAL cause. Under 13-agent concurrent
+// load this reproduced the exact same retry-storm the keyword fix was meant
+// to stop, just for providers that don't bother describing their own 429s.
+// Fix: track a rolling count of UNCLASSIFIED 429s (no keyword match) per
+// provider. If 3+ land within a 2-minute window, treat that streak itself as
+// evidence of a real (not transient) exhaustion and escalate to the long
+// cooldown — a real one-off burst self-heals in under 2 minutes and never
+// accumulates 3 hits, so this doesn't punish genuine brief spikes.
+const UNCLASSIFIED_429_WINDOW_MS = 2 * 60 * 1000;
+const UNCLASSIFIED_429_STREAK_THRESHOLD = 3;
+const recentUnclassified429s = new Map<string, number[]>();
+
+function isRepeatedUnclassified429(name: string): boolean {
+  const now = Date.now();
+  const history = (recentUnclassified429s.get(name) ?? []).filter((t) => now - t < UNCLASSIFIED_429_WINDOW_MS);
+  history.push(now);
+  recentUnclassified429s.set(name, history);
+  return history.length >= UNCLASSIFIED_429_STREAK_THRESHOLD;
+}
+
 function setProviderCooldown(name: string, status: number | undefined, message?: string): void {
   let ms = COOLDOWN_429_MS;
+  let escalatedViaStreak = false;
   if (status === 402) ms = COOLDOWN_402_MS;
   else if (status === 401 || status === 403) ms = COOLDOWN_401_MS;
-  else if (status === 429) ms = isDailyQuotaError(message) ? COOLDOWN_DAILY_MS : COOLDOWN_429_MS;
+  else if (status === 429) {
+    if (isDailyQuotaError(message)) {
+      ms = COOLDOWN_DAILY_MS;
+    } else if (isRepeatedUnclassified429(name)) {
+      ms = COOLDOWN_DAILY_MS;
+      escalatedViaStreak = true;
+    } else {
+      ms = COOLDOWN_429_MS;
+    }
+  }
   providerCooldowns.set(name, Date.now() + ms);
   if (status === 429 && isDailyQuotaError(message)) {
     console.warn(`[LLM] ${name}: 429 is a DAILY quota exhaustion, not a short burst — cooling down ${ms / 60000}min instead of the usual 30s`);
+  } else if (status === 429 && escalatedViaStreak) {
+    console.warn(`[LLM] ${name}: ${UNCLASSIFIED_429_STREAK_THRESHOLD}+ unclassified 429s (no body/keyword) within ${UNCLASSIFIED_429_WINDOW_MS / 60000}min — treating as real exhaustion, cooling down ${ms / 60000}min instead of the usual 30s`);
+  }
+  if (status === 429 && !isDailyQuotaError(message) && !escalatedViaStreak) {
+    // Genuine short-window rate limit (or first/second unclassified 429 in this
+    // provider's rolling window) — clear its streak isn't reset here on
+    // purpose: clearProviderCooldown() (called on success) is what actually
+    // resets the provider to a clean slate.
   }
 }
 
@@ -955,6 +996,7 @@ function isProviderInCooldown(name: string): boolean {
 
 function clearProviderCooldown(name: string): void {
   providerCooldowns.delete(name);
+  recentUnclassified429s.delete(name);
 }
 
 // ─── Round-Robin Starting Provider ─────────────────────────────────────────────
