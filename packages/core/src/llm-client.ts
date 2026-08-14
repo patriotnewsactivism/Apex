@@ -515,9 +515,13 @@ class MultiProviderClient {
     // again — stampeding 13 agents into a dead provider chain wastes tokens
     // and generates noise. Let the providers recover.
     const sinceTotalFailure = Date.now() - lastTotalFailureAt;
-    if (sinceTotalFailure < GLOBAL_BACKOFF_MS) {
-      const waitMs = GLOBAL_BACKOFF_MS - sinceTotalFailure;
-      console.warn(`[LLM] Global backoff: waiting ${Math.round(waitMs / 1000)}s before retrying — all providers recently exhausted`);
+    const dynamicBackoffMs = Math.min(
+      Math.max(GLOBAL_BACKOFF_FLOOR_MS, getShortestActiveCooldownMs()),
+      GLOBAL_BACKOFF_CAP_MS,
+    );
+    if (sinceTotalFailure < dynamicBackoffMs) {
+      const waitMs = dynamicBackoffMs - sinceTotalFailure;
+      console.warn(`[LLM] Global backoff: waiting ${Math.round(waitMs / 1000)}s before retrying — all providers recently exhausted (sized to shortest active cooldown, floor ${GLOBAL_BACKOFF_FLOOR_MS / 1000}s, cap ${GLOBAL_BACKOFF_CAP_MS / 1000}s)`);
       await new Promise(r => setTimeout(r, waitMs));
     }
 
@@ -994,6 +998,18 @@ function isProviderInCooldown(name: string): boolean {
   return true;
 }
 
+/** Shortest remaining cooldown (ms) across all providers currently in
+ *  cooldown, or 0 if none are active. Used to size the global backoff to
+ *  reality instead of a flat guess — see GLOBAL_BACKOFF_FLOOR_MS/CAP_MS. */
+function getShortestActiveCooldownMs(): number {
+  const now = Date.now();
+  let shortest = Infinity;
+  for (const until of providerCooldowns.values()) {
+    if (until > now) shortest = Math.min(shortest, until - now);
+  }
+  return shortest === Infinity ? 0 : shortest;
+}
+
 function clearProviderCooldown(name: string): void {
   providerCooldowns.delete(name);
   recentUnclassified429s.delete(name);
@@ -1012,8 +1028,29 @@ let rrStartIndex = 0;
 // pressure. Rather than immediately failing and letting the agent pick up
 // the next task (which triggers another immediate round of provider calls),
 // track the last total-failure timestamp and add a backoff delay.
+//
+// BUG FIX 2026-08-14: this was a flat 15s regardless of WHY providers were
+// exhausted. But the circuit breaker's own cooldown tiers are 30s (429) /
+// 5min (402) / 10min (401/403) / 4hr (daily quota) — every one of those is
+// LONGER than 15s. So under sustained load the loop retried every ~15-20s
+// into a chain it had already proven was still cooling down, and because
+// task-queue.ts's fail() correctly refuses to retry capacity-exhaustion
+// errors (retrying a guaranteed-fail just hammers dead providers), each of
+// those doomed 15s-early retries permanently failed whatever real task
+// triggered it. Live evidence from the 2026-08-14 12:51-12:59 log window:
+// 1 successful completion vs 48 permanently-failed tasks and 24
+// "all providers exhausted" cascades in 8 minutes — the backoff was
+// actively destroying real work, not just being noisy.
+// Fix: wait for the SHORTEST remaining real cooldown across providers
+// currently in cooldown (not a flat guess), floored at the old 15s (so a
+// transient one-off failure with no active cooldown still gets a small
+// courtesy pause) and capped at 90s (so a single request never blocks for
+// the full 4hr daily-quota tier — that long-horizon case is what the
+// capacity-exhaustion permanent-fail path in task-queue.ts is already for;
+// this backoff only exists to de-stampede short-window retries).
 let lastTotalFailureAt = 0;
-const GLOBAL_BACKOFF_MS = 15_000; // 15s pause after total provider exhaustion
+const GLOBAL_BACKOFF_FLOOR_MS = 15_000;
+const GLOBAL_BACKOFF_CAP_MS = 90_000;
 
 function recordProviderFailure(
   provider: string,
