@@ -71,9 +71,7 @@ const PROVIDERS: Array<{
   // 2026-08-04 (account needs a payment method). Demoted but kept: zero-code-
   // change recovery once billing is sorted; circuit breaker makes it a cheap
   // skip meanwhile.
-  { name: 'cerebras-2', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_2', fallbackModel: 'gpt-oss-120b' },
   // Cerebras (3rd account) — same 402 story as cerebras-2.
-  { name: 'cerebras-3', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_3', fallbackModel: 'gpt-oss-120b' },
   // Google Gemini — PROMOTED 2026-08-04 ahead of Groq: its free tier
   // (1,500 req/day, 15 RPM, 1M tokens/min) is by far the largest daily
   // budget in this chain — Groq's whole org gets 100K TPD, which is only
@@ -85,12 +83,10 @@ const PROVIDERS: Array<{
   // Google Gemini (2nd project) — separate Google Cloud project = separate
   // quota. NOT configured on Railway as of 2026-08-04 — no-op until the key
   // is added.
-  { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-flash-latest' },
   // Groq — the workhorse while its 100K TPD org budget lasts; both orgs were
   // ~99% consumed by 19:10Z on 2026-08-04. Resets daily.
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
   // Groq (2nd account) — second org, same 100K TPD, same daily reset.
-  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.3-70b-versatile' },
   // Mistral (La Plateforme) — RESTORED 2026-08-05 after Don rotated a fresh
   // MISTRAL_API_KEY (all 7 prior key variants had gone dead by the
   // 2026-08-04 audit and the provider was removed from this chain that same
@@ -110,19 +106,15 @@ const PROVIDERS: Array<{
   // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B supports
   // function calling. OpenAI-compatible at integrate.api.nvidia.com. NOT
   // configured on Railway as of 2026-08-04 — no-op until the key is added.
-  { name: 'nvidia', baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'meta/llama-3.3-70b-instruct' },
   // Poolside — 429 "usage limit exceeded" on Railway AND local as of
   // 2026-08-04 (quota top-up or reset needed). Kept above the 401/402-dead
   // entries because its limit can self-reset. OpenAI-compatible; model
   // catalog is poolside/laguna-s-2.1 (the larger of two); keys start sky_.
-  { name: 'poolside', baseURL: 'https://inference.poolside.ai/v1', apiKeyEnv: 'POOLSIDE_API_KEY', fallbackModel: 'poolside/laguna-s-2.1' },
   // Together AI — 402 credit limit exceeded on Railway 2026-08-04 (the free
   // credits are spent). Demoted; needs a top-up to serve again. Llama 3.3
   // 70B Turbo, OpenAI-compatible at api.together.xyz.
-  { name: 'together', baseURL: 'https://api.together.xyz/v1', apiKeyEnv: 'TOGETHER_API_KEY', fallbackModel: 'meta-llama/Llama-3.3-70B-Instruct-Turbo' },
   // DeepSeek — 402 insufficient balance on Railway AND local 2026-08-04.
   // Demoted; needs a top-up. OpenAI-compatible endpoint, deepseek-chat.
-  { name: 'deepseek', baseURL: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', fallbackModel: 'deepseek-chat' },
   // Qwen Cloud (Aliyun Token Plan) — DEMOTED 2026-08-04: QWENCLOUD_API_KEY
   // is 401 Invalid API-key on all three entries, live AND local, until Don
   // rotates the Token Plan key in the Aliyun console. Kept in the chain
@@ -141,19 +133,16 @@ const PROVIDERS: Array<{
   // the hyphenated public IDs — qwen3-coder-plus AND qwen-plus both 404
   // "Model not exist" here. qwen3.7-plus is the balanced large-context
   // workhorse; role-aware selection via resolveQwenModel().
-  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
   // GLM-5.2 (Zhipu) THROUGH THE SAME ALIYUN TOKEN PLAN ACCOUNT — Aliyun Model
   // Studio hosts third-party models alongside its own (docs:
   // help.aliyun.com/en/model-studio/glm-zhipu; Token Plan page lists GLM-5.2
   // as supported). Reuses QWENCLOUD_API_KEY, so exactly as dead/live as
   // qwen-cloud above. 1M context. Never independently confirmed live on this
   // account — verify with a real completion call after the key rotation.
-  { name: 'glm-aliyun', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
   // SAME Token Plan account again, through Aliyun's Anthropic-Messages-API-
   // compatible endpoint — different wire protocol in front of the same model
   // catalog, so the model ID is identical by design. NOT independently
   // confirmed live on this endpoint; verify after the key rotation.
-  { name: 'qwen-cloud-anthropic', protocol: 'anthropic', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
   // GLM-5.2, second path — Zhipu's own direct Z.ai API. Independent of the
   // Aliyun account/quota (different key, different infra) — a genuinely
   // separate fallback, not a duplicate. General pay-per-token API
@@ -162,7 +151,6 @@ const PROVIDERS: Array<{
   // inside specific coding tools like Claude Code/Cline/OpenCode, not a fit
   // for a custom agent backend). Local key expired ("token expired or
   // incorrect", 2026-08-04 probe) and no key configured on Railway.
-  { name: 'glm-zai', baseURL: 'https://api.z.ai/api/paas/v4', apiKeyEnv: 'ZAI_API_KEY', fallbackModel: 'glm-5.2' },
   // Cohere — last-resort tier with the openrouter-free entries below: reached
   // only after every reliable provider above has failed (two-pass fallback in
   // complete()). toolCallingReliable: false — the OpenAI-compatibility shim
