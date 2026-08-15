@@ -832,6 +832,10 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     CUSTOMER_SUCCESS: 8192,
     DOCS: 8192,
     OPS: 8192,
+    // Community Watch (comment classification/drafting, ported from
+    // APEX-Stream's agent-warden) — output is a small JSON verdict or a
+    // one/two-sentence draft, nowhere near the 8192 default other roles need.
+    COMMUNITY_WATCH: 1024,
   };
   const maxTokens = tokenBudgets[role] ?? 8192;
 
