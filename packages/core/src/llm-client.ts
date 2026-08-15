@@ -1113,7 +1113,7 @@ export function getConfiguredProviders(): Array<{ name: string; configured: bool
  * ever set/clear a key this client actually consumes — never an arbitrary
  * environment variable. */
 export function getKnownApiKeyEnvs(): string[] {
-  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'GEMINI_API_KEY', 'STRIPE_SECRET_KEY', 'CEREBRAS_API_KEY_2', 'CEREBRAS_API_KEY_3', 'GROQ_API_KEY_2', 'GEMINI_API_KEY_2', 'NVIDIA_API_KEY', 'TOGETHER_API_KEY', 'APEX_APPROVAL_MODE'];
+  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'STRIPE_SECRET_KEY', 'APEX_APPROVAL_MODE'];
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {
