@@ -1,8 +1,13 @@
 // ─── DeploymentManager ────────────────────────────────────────────────────────
 //
-// Manages deployment operations (Railway, Vercel, Local). Checks deployment
+// Manages deployment operations (Vercel, Local). Checks deployment
 // health and performs automated rollback if deployment health degrades per
 // ROADMAP.md governance rules. Production deployments are approval-gated.
+//
+// 2026-08-16: Railway retired -- see packages/cicd-worker/src/handlers/
+// deploy.ts for the full note. Don't re-add a 'railway' case here without a
+// confirmed replacement URL/mechanism for wherever production actually runs
+// now.
 
 import { db, deployments, type NewDeploymentRow } from '@workspace/db';
 import { eq } from 'drizzle-orm';
@@ -10,7 +15,7 @@ import crypto from 'crypto';
 
 export interface DeploymentConfig {
   environment: 'staging' | 'production';
-  platform: 'railway' | 'vercel' | 'local';
+  platform: 'vercel' | 'local';
   runId?: string;
 }
 
@@ -25,7 +30,7 @@ export class DeploymentManager {
       runId: config.runId ?? null,
       environment: config.environment,
       platform: config.platform,
-      deploymentUrl: config.platform === 'railway' ? 'https://apex-production.up.railway.app' : 'https://apex.vercel.app',
+      deploymentUrl: config.platform === 'vercel' ? 'https://apex.vercel.app' : undefined,
       status: 'healthy',
       rolledBack: false,
       error: null,

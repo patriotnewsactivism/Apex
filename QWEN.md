@@ -1,13 +1,21 @@
 # QWEN.md — Apex Repository Context
 _Last re-verified against live system + code: 2026-08-04._
 
+> **2026-08-16: RAILWAY RETIRED.** Production is fully off Railway —
+> `railway.toml` is gone and the deploy-platform code no longer offers it.
+> Every Railway-specific detail in this file (project IDs, `*.up.railway.app`
+> hostnames, the GraphQL deploy-status polling steps below) is DEAD. The
+> current production host/URL and deploy mechanism aren't documented here
+> yet — confirm with Don rather than following the old steps.
+
 ## Project Overview
 
 **Apex** is a persistent, hierarchical **13-agent autonomous AI workforce**
-deployed as an always-on Node process on Railway
-(`apex-production-731c.up.railway.app` / `apex.donmatthews.live`). It is NOT
-a request/response serverless app — it runs continuously, polling health,
-executing background jobs, and serving a live dashboard + API.
+deployed as an always-on Node process -- NOT a request/response serverless
+app. It runs continuously, polling health, executing background jobs, and
+serving a live dashboard + API. (Formerly on Railway at
+`apex-production-731c.up.railway.app` / `apex.donmatthews.live` — retired
+2026-08-16, see banner above.)
 
 ```
 APEX CEO (Tier 0)
@@ -36,7 +44,7 @@ focus on CaseBuddy. Governed by `APEX_CHARTER.md`.
 | Dashboard | React 19 + Vite + Tailwind CSS 4 + TanStack Query + wouter. |
 | Database | **Postgres (Supabase)** via Drizzle ORM + `postgres` driver (`lib/db/src/client.ts`). Connection string in `DATABASE_URL` (local default `postgres://postgres:postgres@localhost:5432/apex`). Schema is bootstrapped **idempotently at startup** — no separate migration step. The old SQLite setup (`DATABASE_PATH=.local/apex.db`) is dead; ignore stale references. |
 | LLM | Multi-provider fallback chain in `packages/core/src/llm-client.ts` — see **LLM Chain Operations** below. |
-| Deployment | Multi-stage Dockerfile → Railway (docker builder, `railway.toml`; healthcheck `/health`, restart ON_FAILURE ×10). The runtime image `COPY *.md ./` so agent workspace docs (BUSINESS_PROFILE.md etc.) exist at `/app` — keep that line in sync when adding root docs. |
+| Deployment | Multi-stage Dockerfile (docker builder; healthcheck `/health`, restart ON_FAILURE ×10). Railway retired 2026-08-16 — `railway.toml` removed; current host/platform not yet documented. The runtime image `COPY *.md ./` so agent workspace docs (BUSINESS_PROFILE.md etc.) exist at `/app` — keep that line in sync when adding root docs. |
 
 ### Workspace packages (16 directories under `packages/` + `lib/db`)
 
@@ -193,9 +201,10 @@ provider. `scripts/llm-probe.mjs` covers every chain entry in chain order.
 3. **Secrets by name only.** Never log, report, or commit secret values.
    Reference them by name (e.g., "OPENROUTER_API_KEY") only.
 4. **GitHub writes** use `GITHUB_TOKEN_4` from the local/vault environment.
-   No GITHUB_TOKEN env var currently exists on the live Railway service —
-   in-app `create_feature_branch`/`create_pull_request` tools fail there.
-   Known gap; do not "fix" by hardcoding a token into prod.
+   As of the last check (on the now-retired Railway service) no GITHUB_TOKEN
+   env var existed on the live host — in-app `create_feature_branch`/
+   `create_pull_request` tools would fail there. Re-verify against the
+   current host; known gap, do not "fix" by hardcoding a token into prod.
 5. **No production DB schema changes** without explicit sign-off from Don,
    logged and timestamped. (The idempotent bootstrap DDL in
    `lib/db/src/client.ts` mirrors `schema.ts` — change both together.)
@@ -217,11 +226,12 @@ Every real fix in this repo has followed this exact order:
    + JS/CSS bundles. Don't just trust exit code 0.
 4. **Commit + push** with an honest commit message (root cause, what was
    tried, what was verified — not just "fixed bug").
-5. **Wait ~60–70s**, then poll Railway's GraphQL deployments API
-   (`backboard.railway.app/graphql/v2`) for `status: SUCCESS` on the new
-   commit hash. Direct curls to `*.up.railway.app` can fail with TLS
-   timeouts from sandboxes; `apex.donmatthews.live` works from a normal dev
-   machine.
+5. **Wait for the deploy to land**, then confirm it landed on the CURRENT
+   production host. Railway (and the `backboard.railway.app` GraphQL
+   polling steps that used to live here) is retired as of 2026-08-16 — do
+   not poll it or any `*.up.railway.app` host; both are dead. The current
+   deploy-status verification method isn't documented here yet — confirm
+   the real mechanism (with Don if needed) instead of reusing these steps.
 6. **Functionally smoke-test the actual feature live** — hit the real API
    route/tool with a real admin token and confirm real data comes back.
    Compiling and deploying are necessary but NOT sufficient.

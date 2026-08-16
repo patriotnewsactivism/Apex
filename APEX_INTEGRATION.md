@@ -66,7 +66,9 @@ DISCORD_WEBHOOK_URL=<agent notification channel>
 SLACK_WEBHOOK_URL=<agent notification channel>
 ```
 
-**Railway project donmatthews-live:**
+**Formerly Railway project donmatthews-live** — Railway retired 2026-08-16;
+these env vars need to exist wherever that service actually runs now
+(not yet documented — confirm with Don before assuming they're set):
 
 ```
 PORTFOLIO_INTAKE_SECRET=<same as above>

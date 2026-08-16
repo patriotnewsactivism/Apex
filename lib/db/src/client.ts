@@ -328,7 +328,7 @@ export async function migrate() {
       id text PRIMARY KEY,
       run_id text,
       environment text NOT NULL DEFAULT 'production',
-      platform text NOT NULL DEFAULT 'railway',
+      platform text NOT NULL DEFAULT 'local',
       deployment_url text,
       status text NOT NULL DEFAULT 'pending',
       rolled_back boolean NOT NULL DEFAULT false,

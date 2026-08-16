@@ -3,13 +3,22 @@
 // Ported from packages/cicd-automation/src/deployment-manager.ts.
 //
 // IMPORTANT, carried over unchanged from the original: DeploymentManager.
-// deploy()/.rollback() were NEVER real Railway/Vercel API calls -- deploy()
-// hardcoded deploymentUrl='https://apex-production.up.railway.app' and
-// status='healthy' unconditionally; rollback() just flipped a status flag.
-// This is a known, pre-existing limitation of the CURRENT system, not
-// something introduced or "fixed" here -- wiring up real deploy automation
-// is separate future scope that needs real Railway/Vercel API tokens nobody
-// has configured yet. Do not treat this handler as doing anything real.
+// deploy()/.rollback() were NEVER real platform API calls -- deploy()
+// hardcoded a deploymentUrl and status='healthy' unconditionally; rollback()
+// just flipped a status flag. This is a known, pre-existing limitation of
+// the CURRENT system, not something introduced or "fixed" here -- wiring up
+// real deploy automation is separate future scope that needs a real
+// platform API token nobody has configured yet. Do not treat this handler
+// as doing anything real.
+//
+// 2026-08-16: Railway retired -- production is off Railway entirely (see
+// the same date's commit removing railway.toml). The 'railway' platform
+// option and its hardcoded *.up.railway.app URL were removed rather than
+// pointed at a new value: the actual current production URL/platform is
+// not yet documented anywhere in this repo, and guessing one would repeat
+// exactly the mistake llm-client.ts's Gemini model-id churn made (picking
+// a value with no verification). Confirm the real deployment target before
+// adding a 'lightsail' (or other) case back here.
 //
 // Behavior difference from the original (forced, not a choice): the old
 // rollback() first looked up the deployment row in Postgres and THREW if it
@@ -22,7 +31,7 @@ import crypto from 'crypto';
 
 export interface DeployPayload {
   environment: 'staging' | 'production';
-  platform?: 'railway' | 'vercel' | 'local';
+  platform?: 'vercel' | 'local';
 }
 
 export interface DeployResult {
@@ -33,13 +42,8 @@ export interface DeployResult {
 
 export async function handleDeploy(payload: DeployPayload): Promise<DeployResult> {
   const deploymentId = `deploy-${crypto.randomUUID().slice(0, 8)}`;
-  const platform = payload.platform ?? 'railway';
-  const deploymentUrl =
-    platform === 'railway'
-      ? 'https://apex-production.up.railway.app'
-      : platform === 'vercel'
-        ? 'https://apex.vercel.app'
-        : undefined;
+  const platform = payload.platform ?? 'local';
+  const deploymentUrl = platform === 'vercel' ? 'https://apex.vercel.app' : undefined;
 
   return {
     deploymentId,

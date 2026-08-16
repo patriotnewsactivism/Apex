@@ -181,8 +181,9 @@ Still not functionally tested: DeploymentManager's actual deploy/rollback
 trigger (higher risk, needs Don present per No Unilateral Actions), lint
 (shares the same fix but wasn't separately re-triggered), background-jobs,
 learning-system, multiapp, predictive. Still a real gap: no GITHUB_TOKEN
-env var on Apex's live Railway service, so `create_feature_branch`/
-`create_pull_request` tools will fail if invoked.
+env var confirmed on Apex's live service (Railway retired 2026-08-16 — see
+AGENTS.md; re-verify this gap against the current host once documented), so
+`create_feature_branch`/`create_pull_request` tools will fail if invoked.
 
 ## Update — 2026-07-20: Predictive intelligence smoke-test and guardrail review
 Known input selected for this pass: recent `task_outcomes` rows from the same 7-day window used by `forecast_tasks` and `risk_assessment`, compared against the already-documented 2026-07-20 CI/CD incident where the live pipeline failed immediately because production dependencies omitted TypeScript before the isolated CI workspace fix. That trend should show up as task failures if those outcomes were recorded; if not, the prediction is only measuring agent task outcomes and can miss operational incidents documented elsewhere.
