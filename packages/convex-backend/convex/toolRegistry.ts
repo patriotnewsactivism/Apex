@@ -1623,14 +1623,14 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
         type: 'object',
         properties: {
           environment: { type: 'string', enum: ['staging', 'production'] },
-          platform: { type: 'string', enum: ['railway', 'vercel', 'local'] },
+          platform: { type: 'string', enum: ['vercel', 'local'] }, // railway retired 2026-08-16
         },
         required: ['environment'],
       },
     },
     requiresApproval: true,
     kind: 'externalJob',
-    buildJobPayload: (args) => ({ jobType: 'deploy', payload: { environment: args.environment, platform: args.platform ?? 'railway' } }),
+    buildJobPayload: (args) => ({ jobType: 'deploy', payload: { environment: args.environment, platform: args.platform ?? 'local' } }),
   },
 
   // ─── CI/CD: Rollback Deployment (externalJob; approval required) ────────────

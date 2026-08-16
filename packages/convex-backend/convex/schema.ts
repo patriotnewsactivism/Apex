@@ -391,7 +391,7 @@ export default defineSchema({
     legacyId: v.optional(v.string()),
     runId: v.optional(v.string()),
     environment: v.union(v.literal('staging'), v.literal('production')),
-    platform: v.union(v.literal('railway'), v.literal('vercel'), v.literal('local')),
+    platform: v.union(v.literal('vercel'), v.literal('local')), // railway retired 2026-08-16
     deploymentUrl: v.optional(v.string()),
     status: v.union(
       v.literal('pending'),

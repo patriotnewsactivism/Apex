@@ -7,21 +7,36 @@ of sync with reality (wrong agent count, wrong LLM provider setup, a
 dashboard bug that was long since fixed). Keep THIS file current instead of
 letting per-tool copies re-diverge._
 
-> **2026-08-16: RAILWAY RETIRED.** Production is fully off Railway —
-> `railway.toml` has been removed and the deploy-platform code no longer
-> offers it as an option. Every Railway-specific detail below (project IDs,
-> `*.up.railway.app` hostnames, the GraphQL deploy-status polling steps) is
-> DEAD and must not be followed. The current production host/URL and deploy
-> mechanism are not yet documented in this repo — confirm with Don before
-> attempting any real deploy or deploy-status check, rather than guessing.
+> **2026-08-16: RAILWAY RETIRED — replaced by AWS Lightsail.** Production
+> is fully off Railway (`railway.toml` removed, all `'railway'` deploy-
+> platform options stripped from code/schemas — do not re-add a `railway`
+> case anywhere without a real reason). Real production runtime:
+> **AWS Lightsail container service `apex-service`**
+> (`535203103662.dkr.ecr.us-east-1.amazonaws.com/apex-lightsail:latest`),
+> built by CodeBuild project `apex-lightsail-build` (pulls from GitHub
+> `main` when triggered — pushing to `main` alone does NOT deploy).
+> To ship a real change: (1) push/merge to `main`, (2)
+> `aws codebuild start-build --project-name apex-lightsail-build --region
+> us-east-1` and wait for `buildStatus: SUCCEEDED` (this builds + pushes the
+> new image to ECR), (3)
+> `aws lightsail create-container-service-deployment` for service
+> `apex-service` with the current container/env spec (pull it first via
+> `aws lightsail get-container-service-deployments --service-name
+> apex-service` and only change what you intend to) — a bare CodeBuild
+> success does NOT redeploy the running service. (4) Poll
+> `aws lightsail get-container-service-deployments --service-name
+> apex-service --query 'deployments[0].state'` until `ACTIVE`, then hit the
+> service's real health endpoint (`aws lightsail get-container-services
+> --service-name apex-service --query 'containerServices[0].url'`, then
+> `curl <url>health`) for direct proof, not just deployment state.
 
 ## What this is
 A persistent, hierarchical **13-agent** autonomous workforce (CEO -> CTO/COO
 -> specialists -> QA Director), deployed as an always-on Node process --
 not a request/response serverless app. (Formerly hosted on Railway at
 `apex-production-731c.up.railway.app` / `apex.donmatthews.live` — retired
-2026-08-16, see banner above. `apex.donmatthews.live` may still be the
-domain if it was simply repointed at the new host; not yet confirmed.)
+2026-08-16, see banner above. Now runs on AWS Lightsail as `apex-service`;
+`apex.donmatthews.live` is repointed at the Lightsail service URL.)
 
 ```
 APEX CEO (Tier 0)
@@ -87,11 +102,13 @@ code, do not delegate to it or treat it as part of the real org chart.
   remove gating from `runShell` or production/deploy/PR/push/outbound-call
   actions without Don's explicit sign-off.
 - Secrets referenced by name only, never by value, in any log/report/commit
-  message. GitHub writes always use `GITHUB_TOKEN_4`. As of the last check
-  (on the now-retired Railway service) no GITHUB_TOKEN env var existed on
-  the live host -- so in-app `create_feature_branch`/`create_pull_request`
-  tools would fail if invoked. Re-verify against the current host; that's a
-  known gap, not a bug to "fix" by hardcoding a token into prod.
+  message. GitHub writes use `GITHUB_TOKEN_12` (the current standing token
+  per portfolio convention; `GITHUB_TOKEN_4` is superseded). Confirmed
+  present on the current Lightsail `apex-service` host as of 2026-08-16
+  (both `GITHUB_TOKEN` and `GITHUB_TOKEN_4` env vars exist there) -- this
+  replaces the old note about the retired Railway host having none, so
+  in-app `create_feature_branch`/`create_pull_request` tools should work if
+  invoked. Still verify live rather than trusting this note forever.
 
 ## The order that reliably reproduces success (verified 2026-07-20)
 Every real fix this repo has needed followed this exact sequence -- skipping
@@ -104,15 +121,17 @@ CHECKLIST.md while `packages/core` was actually broken:
    the output), that's a false pass, not a real one.
 3. `pnpm run build` -- same rule; confirm dashboard actually emits
    `dist/index.html` + JS/CSS bundles, don't just trust exit code 0.
-4. Commit + push with `GITHUB_TOKEN_4`, honest commit message (root cause,
+4. Commit + push with `GITHUB_TOKEN_12` (the current standing token; `GITHUB_TOKEN_4` is superseded), honest commit message (root cause,
    what was tried, what was verified -- not just "fixed bug").
 5. Wait for the deploy to land, then confirm it landed on the CURRENT
-   production host. Railway (and the GraphQL polling steps that used to
-   live here) is retired as of 2026-08-16 -- do not poll
-   `backboard.railway.app` or any `*.up.railway.app` host; both are dead.
-   The current deploy-status verification method is not yet documented
-   here -- confirm the real mechanism (with Don if needed) rather than
-   reusing the old Railway-specific steps.
+   production host: AWS Lightsail service `apex-service`. Railway (and the
+   GraphQL polling steps that used to live here) is retired as of
+   2026-08-16 -- do not poll `backboard.railway.app` or any
+   `*.up.railway.app` host; both are dead. Verify via
+   `aws lightsail get-container-service-deployments --service-name
+   apex-service --query 'deployments[0].state'` (wait for `ACTIVE`), then a
+   real `curl` against the service's health endpoint -- see the banner at
+   the top of this file for the full CodeBuild + Lightsail deploy sequence.
 6. **Functionally smoke-test the actual feature live** -- hit the real API
    route/tool with a real admin token and confirm real data comes back.
    Compiling and deploying are necessary but not sufficient; this step is
