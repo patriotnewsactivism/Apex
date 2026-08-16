@@ -46,6 +46,20 @@ const PROVIDERS: Array<{
   // Cap max_tokens per provider — some models reject requests with
   // max_tokens higher than their supported output limit (Cohere 400).
   maxOutputTokens?: number;
+  // Total request budget in characters (messages + stringified tool schemas
+  // combined) — trimmed to BEFORE the first attempt, not just after a 413.
+  // Added 2026-08-16 for Groq: its free tier's TPM (tokens per minute) limit
+  // reserves `max_tokens` against the SAME budget as the prompt, so a
+  // premium-role request (maxTokens: 16384) alone already exceeds Groq's
+  // 12,000 TPM cap before a single prompt token is counted — see
+  // maxOutputTokens on the groq entries below, which fixes the dominant
+  // cause. This field is the second layer: even with output capped, a long
+  // conversation history can still push a single request over a small TPM
+  // budget, and the existing 413-triggered EMERGENCY_HISTORY_CHAR_BUDGET
+  // retry only fires AFTER wasting one guaranteed-fail attempt. Providers
+  // with a known small per-minute/per-request cap should set this so the
+  // first attempt is already sized to fit.
+  maxRequestChars?: number;
   // FALSE = this provider's model does not reliably emit structured tool
   // calls. Added 2026-07-29 after persistActualProvider (finally wired up)
   // revealed 11 of 13 live agents had fallen through to
@@ -72,12 +86,28 @@ const PROVIDERS: Array<{
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
 
   // Google Gemini — permanent free tier: 1,500 RPD, 15 RPM, 250K TPM.
-  // gemini-3.5-flash: current-gen flash model, reliable tool calling.
-  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-3.5-flash' },
+  //
+  // MODEL ID — 2026-08-16: this string had been changed 4 times across prior
+  // commits (gemini-1.5-flash-latest → gemini-flash-latest → gemini-3.6-flash
+  // → gemini-3.5-flash) by different sessions, none of which verified the
+  // change against a live source before committing — pure guessing, and the
+  // 400s never stopped because nobody confirmed which guess (if any) was
+  // right. Verified this time via a live fetch of ai.google.dev/gemini-api/
+  // docs/models: gemini-3.7-flash is Google's current "New Stable" flash
+  // model, explicitly described as built for "complex coding, agentic
+  // workflows, and reliable multi-step execution" — the exact shape of this
+  // system's workload. A rolling `gemini-flash-latest` alias also exists but
+  // Google's own docs recommend pinning a stable version for production
+  // rather than an alias that can hot-swap underlying models with only two
+  // weeks' notice. DO NOT change this string again without a live probe
+  // (scripts/llm-probe.mjs) or a fresh docs fetch confirming the new value —
+  // the 400s this system has been seeing are NOT proof the model id is
+  // wrong; verify before guessing.
+  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-3.7-flash' },
 
   // Google Gemini (2nd project) — separate Google Cloud project = separate
   // quota, doubling Gemini's effective daily capacity to 3,000 RPD.
-  { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-3.5-flash' },
+  { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-3.7-flash' },
 
   // xAI (Grok) — $25 signup credit + optional $150/month data-sharing credits.
   // grok-3-mini: fast, reliable OpenAI-compatible tool calling, 131K context.
@@ -95,10 +125,24 @@ const PROVIDERS: Array<{
 
   // Groq — permanent free tier: 30 RPM, 14,400 RPD. Llama 3.3 70B Versatile,
   // reliable tool calling. Daily token quota resets at midnight UTC.
-  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
+  //
+  // 413 FIX — 2026-08-16: live errors showed "TPM Limit 12000, Requested
+  // 19198-27829" on nearly every call, across wildly different history sizes
+  // — the constant wasn't the prompt, it was `max_tokens`. Groq's on_demand
+  // TPM check reserves `max_tokens` against the SAME 12,000-token budget as
+  // the prompt, and premium roles (CEO/COO/CTO/SALES/...) request
+  // maxTokens:16384 by default — already 4,384 tokens OVER the entire quota
+  // before one prompt token is counted. No amount of message-history
+  // trimming could ever have fixed this; that's why the existing
+  // 413-triggered emergency retry (EMERGENCY_HISTORY_CHAR_BUDGET) kept
+  // re-failing. maxOutputTokens caps the response reservation well under the
+  // quota; maxRequestChars pre-trims the prompt on the FIRST attempt instead
+  // of wasting one guaranteed-fail request to discover it's oversized.
+  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
 
   // Groq (2nd org) — separate org = 2x daily token capacity (200K TPD total).
-  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.3-70b-versatile' },
+  // Same 12,000 TPM ceiling per org as groq above — same caps apply.
+  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.3-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
 
   // SambaNova — $5 signup credit, 20M TPD developer tier. OpenAI-compatible,
   // gpt-oss-120b on SambaNova RDU hardware. Tool calling reliable.
@@ -605,6 +649,28 @@ class MultiProviderClient {
         }
       }
 
+      // Pre-emptive per-provider trim: for providers with a known small
+      // request budget (e.g. Groq's 12,000 TPM), shrink the FIRST attempt to
+      // fit instead of wasting a guaranteed-fail round trip discovering it's
+      // oversized (that's what the 413-triggered emergency retry further
+      // down already does, but only after paying for one failure first).
+      // Tool schemas count against the same budget on every provider here
+      // but aren't part of `messages`, so they're measured and subtracted
+      // from the budget before trimming.
+      let providerOpenaiMessages = openaiMessages;
+      if (provider.maxRequestChars) {
+        const toolsChars = openaiTools ? JSON.stringify(openaiTools).length : 0;
+        const budget = Math.max(EMERGENCY_HISTORY_CHAR_BUDGET, provider.maxRequestChars - toolsChars);
+        if (historySize(messages) > budget) {
+          const preTrim = trimMessageHistory(messages, budget);
+          providerOpenaiMessages = buildOpenAIMessages(preTrim.messages);
+          console.warn(
+            `[LLM] Pre-trimming for ${provider.name}: ${preTrim.originalChars} → ${preTrim.finalChars} chars ` +
+              `(provider budget ${provider.maxRequestChars}, ~${toolsChars} chars of tool schemas)`,
+          );
+        }
+      }
+
       try {
         const defaultHeaders: Record<string, string> = {};
         if (provider.extraHeaders) {
@@ -640,7 +706,7 @@ class MultiProviderClient {
             );
 
           try {
-            res = await send(openaiMessages);
+            res = await send(providerOpenaiMessages);
           } catch (err) {
             const status = (err as any)?.status ?? (err as any)?.response?.status;
             const msg = err instanceof Error ? err.message : String(err);
@@ -666,7 +732,7 @@ class MultiProviderClient {
                 console.warn(`[LLM] ${provider.name}/${model} 429 rate limited, retry ${attempt}/2 in ${delayMs / 1000}s`);
                 await new Promise(r => setTimeout(r, delayMs));
                 try {
-                  res = await send(openaiMessages);
+                  res = await send(providerOpenaiMessages);
                   recovered = true;
                 } catch (retryErr) {
                   const retryStatus = (retryErr as any)?.status ?? (retryErr as any)?.response?.status;
@@ -908,6 +974,15 @@ const providerCooldowns = new Map<string, number>(); // provider name → epoch 
 const COOLDOWN_429_MS = 30_000;   // 30s for ordinary short-window rate limits (resets quickly)
 const COOLDOWN_402_MS = 300_000;  // 5min for billing blocks (won't recover soon)
 const COOLDOWN_401_MS = 600_000;  // 10min for auth failures (key won't fix itself)
+// 413 reaching THIS function means even the in-request emergency retry
+// (EMERGENCY_HISTORY_CHAR_BUDGET, and now the pre-emptive maxRequestChars
+// trim above) still didn't fit — a structural mismatch between this
+// provider's request-size cap and this workload, not a transient blip.
+// Retrying it every ~30s (the old default-bucket behavior, since 413 had no
+// explicit branch here) just re-burns the provider's real per-day request
+// quota for a guaranteed-fail. Give it room to be fixed by config/plan
+// changes without hammering it meanwhile.
+const COOLDOWN_413_MS = 900_000;  // 15min for "this request structurally does not fit"
 // 2026-08-13 fix: a 429 whose OWN error body says the limit is a DAILY one
 // (Groq/Cerebras/Gemini/OpenRouter-free all phrase it as "per day"/"TPD"/
 // "daily"/"free-models-per-day") will not recover in 30s — that provider is
@@ -952,6 +1027,7 @@ function setProviderCooldown(name: string, status: number | undefined, message?:
   let escalatedViaStreak = false;
   if (status === 402) ms = COOLDOWN_402_MS;
   else if (status === 401 || status === 403) ms = COOLDOWN_401_MS;
+  else if (status === 413) ms = COOLDOWN_413_MS;
   else if (status === 429) {
     if (isDailyQuotaError(message)) {
       ms = COOLDOWN_DAILY_MS;
@@ -963,7 +1039,9 @@ function setProviderCooldown(name: string, status: number | undefined, message?:
     }
   }
   providerCooldowns.set(name, Date.now() + ms);
-  if (status === 429 && isDailyQuotaError(message)) {
+  if (status === 413) {
+    console.warn(`[LLM] ${name}: request too large even after the emergency trim — this is a structural size mismatch, not a transient blip. Cooling down ${ms / 60000}min instead of the usual 30s.`);
+  } else if (status === 429 && isDailyQuotaError(message)) {
     console.warn(`[LLM] ${name}: 429 is a DAILY quota exhaustion, not a short burst — cooling down ${ms / 60000}min instead of the usual 30s`);
   } else if (status === 429 && escalatedViaStreak) {
     console.warn(`[LLM] ${name}: ${UNCLASSIFIED_429_STREAK_THRESHOLD}+ unclassified 429s (no body/keyword) within ${UNCLASSIFIED_429_WINDOW_MS / 60000}min — treating as real exhaustion, cooling down ${ms / 60000}min instead of the usual 30s`);
