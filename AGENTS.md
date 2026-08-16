@@ -7,11 +7,21 @@ of sync with reality (wrong agent count, wrong LLM provider setup, a
 dashboard bug that was long since fixed). Keep THIS file current instead of
 letting per-tool copies re-diverge._
 
+> **2026-08-16: RAILWAY RETIRED.** Production is fully off Railway —
+> `railway.toml` has been removed and the deploy-platform code no longer
+> offers it as an option. Every Railway-specific detail below (project IDs,
+> `*.up.railway.app` hostnames, the GraphQL deploy-status polling steps) is
+> DEAD and must not be followed. The current production host/URL and deploy
+> mechanism are not yet documented in this repo — confirm with Don before
+> attempting any real deploy or deploy-status check, rather than guessing.
+
 ## What this is
 A persistent, hierarchical **13-agent** autonomous workforce (CEO -> CTO/COO
--> specialists -> QA Director), deployed as an always-on Node process on
-Railway (`apex-production-731c.up.railway.app` / `apex.donmatthews.live`) --
-not a request/response serverless app.
+-> specialists -> QA Director), deployed as an always-on Node process --
+not a request/response serverless app. (Formerly hosted on Railway at
+`apex-production-731c.up.railway.app` / `apex.donmatthews.live` — retired
+2026-08-16, see banner above. `apex.donmatthews.live` may still be the
+domain if it was simply repointed at the new host; not yet confirmed.)
 
 ```
 APEX CEO (Tier 0)
@@ -36,9 +46,9 @@ code, do not delegate to it or treat it as part of the real org chart.
   with no package.json (not a real package).
 - DB: Drizzle ORM over **Postgres (Supabase)** via `DATABASE_URL`; schema
   bootstrapped idempotently at startup (lib/db/src/client.ts). The old
-  SQLite setup is dead. A separate raw-container Postgres also exists in
-  this Railway project (service `1ab5efa2-...`) -- unused, no volume, DO NOT
-  USE.
+  SQLite setup is dead. A separate raw-container Postgres also existed in
+  the (now-retired) Railway project (service `1ab5efa2-...`) -- unused, no
+  volume, DO NOT USE even if it's somehow still reachable.
 - **LLM fallback chain** (`packages/core/src/llm-client.ts`, re-verified
   2026-08-04): Cerebras(×3) -> Google Gemini(×2) -> Groq(×2) -> NVIDIA NIM ->
   Poolside -> Together AI -> DeepSeek -> Qwen Cloud -> GLM-Aliyun ->
@@ -77,10 +87,11 @@ code, do not delegate to it or treat it as part of the real org chart.
   remove gating from `runShell` or production/deploy/PR/push/outbound-call
   actions without Don's explicit sign-off.
 - Secrets referenced by name only, never by value, in any log/report/commit
-  message. GitHub writes always use `GITHUB_TOKEN_4`. No GITHUB_TOKEN env
-  var currently exists on the live Railway service itself -- so in-app
-  `create_feature_branch`/`create_pull_request` tools will fail if invoked;
-  that's a known gap, not a bug to "fix" by hardcoding a token into prod.
+  message. GitHub writes always use `GITHUB_TOKEN_4`. As of the last check
+  (on the now-retired Railway service) no GITHUB_TOKEN env var existed on
+  the live host -- so in-app `create_feature_branch`/`create_pull_request`
+  tools would fail if invoked. Re-verify against the current host; that's a
+  known gap, not a bug to "fix" by hardcoding a token into prod.
 
 ## The order that reliably reproduces success (verified 2026-07-20)
 Every real fix this repo has needed followed this exact sequence -- skipping
@@ -95,10 +106,13 @@ CHECKLIST.md while `packages/core` was actually broken:
    `dist/index.html` + JS/CSS bundles, don't just trust exit code 0.
 4. Commit + push with `GITHUB_TOKEN_4`, honest commit message (root cause,
    what was tried, what was verified -- not just "fixed bug").
-5. Wait ~60-70s, then poll Railway's GraphQL deployments API for `status:
-   SUCCESS` on the new commit hash (direct curls to `*.up.railway.app`
-   reliably fail in this sandbox from TLS timeouts -- use
-   `backboard.railway.app/graphql/v2` instead).
+5. Wait for the deploy to land, then confirm it landed on the CURRENT
+   production host. Railway (and the GraphQL polling steps that used to
+   live here) is retired as of 2026-08-16 -- do not poll
+   `backboard.railway.app` or any `*.up.railway.app` host; both are dead.
+   The current deploy-status verification method is not yet documented
+   here -- confirm the real mechanism (with Don if needed) rather than
+   reusing the old Railway-specific steps.
 6. **Functionally smoke-test the actual feature live** -- hit the real API
    route/tool with a real admin token and confirm real data comes back.
    Compiling and deploying are necessary but not sufficient; this step is

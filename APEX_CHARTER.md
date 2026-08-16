@@ -1,6 +1,11 @@
 # APEX Charter — Don Matthews' Autonomous AI Employee
 **Version 1.0 — 2026-07-12**
 
+> **2026-08-16 addendum:** Railway has been retired — production is fully
+> off Railway. Every "Railway" reference below is historical (accurate to
+> what was true on 2026-07-12) and should NOT be read as current
+> infrastructure state. See AGENTS.md for what's actually current.
+
 ## Master Prompt (save this — this is the operating charter APEX runs under)
 
 ```

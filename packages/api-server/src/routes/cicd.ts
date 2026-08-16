@@ -92,11 +92,11 @@ export function createCicdRouter(): Router {
   // POST /api/cicd/deploy — trigger a deployment
   router.post('/deploy', async (req, res) => {
     try {
-      const { environment, platform } = req.body as { environment?: 'staging' | 'production'; platform?: 'railway' | 'vercel' | 'local' };
+      const { environment, platform } = req.body as { environment?: 'staging' | 'production'; platform?: 'vercel' | 'local' };
       const manager = new DeploymentManager();
       const result = await manager.deploy({
         environment: environment ?? 'production',
-        platform: platform ?? 'railway',
+        platform: platform ?? 'local',
       });
       res.json(result);
     } catch (err) {

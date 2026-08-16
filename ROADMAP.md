@@ -92,7 +92,9 @@ standing "vibe code to completion" discipline: stop immediately on failure.
   generateTestReport), LinterRunner (runLint/parseLintResults/
   generateLintReport), BuildManager (buildProject/monitorBuildProgress/
   handleBuildErrors), DeploymentManager (triggerVercelDeployment,
-  triggerRailwayDeployment, checkDeploymentStatus, rollbackIfNeeded).
+  checkDeploymentStatus, rollbackIfNeeded). Railway retired 2026-08-16 —
+  do not build a Railway trigger; confirm the current production platform
+  first (see AGENTS.md).
 - Tools: `run_tests`, `run_lint`, `build_project` (approval:false);
   `deploy_to_environment`, `rollback_deployment`, `create_feature_branch`,
   `create_pull_request` (approval:true).

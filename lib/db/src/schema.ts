@@ -319,7 +319,7 @@ export const deployments = pgTable('deployments', {
   id: text('id').primaryKey(),
   runId: text('run_id'),
   environment: text('environment').notNull().default('production'), // staging | production
-  platform: text('platform').notNull().default('railway'), // railway | vercel | local
+  platform: text('platform').notNull().default('local'), // vercel | local (railway retired 2026-08-16)
   deploymentUrl: text('deployment_url'),
   status: text('status').notNull().default('pending'), // pending | deploying | healthy | degraded | failed | rolled_back
   rolledBack: boolean('rolled_back').notNull().default(false),

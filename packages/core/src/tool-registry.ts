@@ -1574,7 +1574,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       description: 'Deploy codebase to specified target environment (staging | production). Production deploys require explicit human approval.',
       schema: z.object({
         environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
-        platform: z.enum(['railway', 'vercel', 'local']).optional().describe('Deployment platform (default "railway")'),
+        platform: z.enum(['vercel', 'local']).optional().describe('Deployment platform (default "local")'),
       }),
       requiresApproval: true,
       async execute({ environment, platform }) {
@@ -1582,7 +1582,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const manager = new DeploymentManager();
         const result = await manager.deploy({
           environment,
-          platform: platform ?? 'railway',
+          platform: platform ?? 'local',
         });
         return result;
       },

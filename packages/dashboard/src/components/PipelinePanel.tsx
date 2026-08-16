@@ -49,7 +49,7 @@ export function PipelinePanel() {
   });
 
   const deployMutation = useMutation({
-    mutationFn: () => api.cicd.deploy('production', 'railway'),
+    mutationFn: () => api.cicd.deploy('production', 'local'),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cicd-status'] });
       queryClient.invalidateQueries({ queryKey: ['cicd-history'] });
