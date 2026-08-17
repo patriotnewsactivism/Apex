@@ -126,7 +126,7 @@ const PROVIDERS: Array<{
   // Cerebras (3rd account) — triple the rate-limit pool.
   { name: 'cerebras-3', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_3', fallbackModel: 'gpt-oss-120b' },
 
-  // Groq — permanent free tier: 30 RPM, 14,400 RPD. Llama 3.3 70B Versatile,
+  // Groq — permanent free tier: 30 RPM, 14,400 RPD. Llama 3.1 70B Versatile,
   // reliable tool calling. Daily token quota resets at midnight UTC.
   //
   // 413 FIX — 2026-08-16: live errors showed "TPM Limit 12000, Requested
@@ -141,11 +141,12 @@ const PROVIDERS: Array<{
   // re-failing. maxOutputTokens caps the response reservation well under the
   // quota; maxRequestChars pre-trims the prompt on the FIRST attempt instead
   // of wasting one guaranteed-fail request to discover it's oversized.
-  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
+  // Model updated from llama-3.3-70b-versatile → llama-3.1-70b-versatile (2026-08-17).
+  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.1-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
 
   // Groq (2nd org) — separate org = 2x daily token capacity (200K TPD total).
   // Same 12,000 TPM ceiling per org as groq above — same caps apply.
-  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.3-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
+  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.1-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
 
   // SambaNova — $5 signup credit, 20M TPD developer tier. OpenAI-compatible,
   // gpt-oss-120b on SambaNova RDU hardware. Tool calling reliable.
