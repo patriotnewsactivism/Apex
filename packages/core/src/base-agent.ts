@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { db, agents, approvals, messages, tasks as tasksTable, learningInsights, strategyRecommendations } from '@workspace/db';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
@@ -415,7 +415,8 @@ export abstract class BaseAgent {
 
     if (rows.length === 0 && input.goalId) {
       // Constraint fired: task already exists for this (goalId, title, agent) tuple.
-      // Fetch the existing row id and return it.
+      // Only reuse the existing task if it is still pending or in_progress — failed/
+      // completed tasks should not block new work from being delegated.
       const [existing] = await db
         .select({ id: tasksTable.id })
         .from(tasksTable)
@@ -423,6 +424,7 @@ export abstract class BaseAgent {
           eq(tasksTable.goalId, input.goalId),
           eq(tasksTable.title, input.title),
           eq(tasksTable.assignedAgentId, targetAgentId),
+          inArray(tasksTable.status, ['pending', 'in_progress']),
         ))
         .limit(1);
 

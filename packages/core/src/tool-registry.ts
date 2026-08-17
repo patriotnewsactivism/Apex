@@ -10,6 +10,7 @@ import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connec
 import { getConfiguredProviders } from './llm-client.js';
 import { HealthMonitor, AlertManager } from '@workspace/health-monitor';
 import { db, messages } from '@workspace/db';
+import { eq } from 'drizzle-orm';
 
 const execAsync = promisify(exec);
 
@@ -462,7 +463,6 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           : null;
 
         const messageId = randomUUID();
-        const { eq: eqLocal } = await import('drizzle-orm');
 
         const insertedRows = await db.insert(messages).values({
           id: messageId,
@@ -483,7 +483,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const [existing] = await db
             .select({ id: messages.id })
             .from(messages)
-            .where(eqLocal(messages.idempotencyKey, idempotencyKey))
+            .where(eq(messages.idempotencyKey, idempotencyKey))
             .limit(1);
           finalMessageId = existing?.id ?? messageId;
         } else {

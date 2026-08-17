@@ -1,5 +1,5 @@
 import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial, uniqueIndex } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ export const tasks = pgTable('tasks', {
   // Prevents duplicate task delegation: two workers racing on the same (goal, title, agent)
   // tuple can't both insert — one gets DO NOTHING. Partial (WHERE goal_id IS NOT NULL)
   // because goal_id is nullable for ad-hoc tasks. Enforced by the migration in client.ts.
-  delegationUniq: uniqueIndex('tasks_delegation_unique').on(t.goalId, t.title, t.assignedAgentId),
+  delegationUniq: uniqueIndex('tasks_delegation_unique').on(t.goalId, t.title, t.assignedAgentId).where(sql`goal_id IS NOT NULL`),
 }));
 
 // ─── Approvals ────────────────────────────────────────────────────────────────
@@ -144,7 +144,11 @@ export const messages = pgTable('messages', {
   // messages sent before this column was added. Unique via partial index in migration.
   idempotencyKey: text('idempotency_key'),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
+}, (table) => ({
+  idempotencyKeyUniq: uniqueIndex('messages_idempotency_key_unique')
+    .on(table.idempotencyKey)
+    .where(sql`idempotency_key IS NOT NULL`),
+}));
 
 // ─── Researched Leads (Lead Research Agent output) ────────────────────────────
 

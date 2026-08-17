@@ -80,11 +80,27 @@ export async function migrate() {
   // Unique partial index for delegation idempotency (Issue 3 / CodeRabbit fix 2026-07-26).
   // Prevents two concurrent workers from both inserting the same (goal, title, agent) task.
   // Partial (WHERE goal_id IS NOT NULL) because goal_id is nullable for ad-hoc tasks.
-  await client`
-    CREATE UNIQUE INDEX IF NOT EXISTS tasks_delegation_unique
-    ON tasks(goal_id, title, assigned_agent_id)
-    WHERE goal_id IS NOT NULL
-  `;
+  // Wrapped in try/catch: dedup existing rows first, then create index. If index creation
+  // fails (e.g. still-duplicate rows from a concurrent writer), log a warning and continue
+  // so remaining bootstrap steps are not aborted.
+  try {
+    await client`
+      DELETE FROM tasks t
+      USING (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY goal_id, title, assigned_agent_id ORDER BY created_at ASC) as rn
+        FROM tasks
+        WHERE goal_id IS NOT NULL
+      ) dupes
+      WHERE t.id = dupes.id AND dupes.rn > 1
+    `;
+    await client`
+      CREATE UNIQUE INDEX IF NOT EXISTS tasks_delegation_unique
+      ON tasks(goal_id, title, assigned_agent_id)
+      WHERE goal_id IS NOT NULL
+    `;
+  } catch (err) {
+    console.warn('⚠️  tasks_delegation_unique index not created:', err instanceof Error ? err.message : String(err));
+  }
   await client`
     CREATE TABLE IF NOT EXISTS approvals (
       id text PRIMARY KEY,
