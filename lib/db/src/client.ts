@@ -89,7 +89,7 @@ export async function migrate() {
       USING (
         SELECT id, ROW_NUMBER() OVER (PARTITION BY goal_id, title, assigned_agent_id ORDER BY created_at ASC) as rn
         FROM tasks
-        WHERE goal_id IS NOT NULL
+        WHERE goal_id IS NOT NULL AND assigned_agent_id IS NOT NULL
       ) dupes
       WHERE t.id = dupes.id AND dupes.rn > 1
     `;
