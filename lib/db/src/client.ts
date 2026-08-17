@@ -105,6 +105,35 @@ export async function migrate() {
   await client`
     ALTER TABLE goals ADD COLUMN IF NOT EXISTS project_id text
   `;
+  // Add leased_at column for atomic task claiming (Issue 1 / CodeRabbit fix 2026-07-26).
+  // dequeue() sets this on claim; crash recovery uses it to detect stale leases.
+  await client`
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS leased_at timestamptz
+  `;
+  // Unique partial index for delegation idempotency (Issue 3 / CodeRabbit fix 2026-07-26).
+  // Prevents two concurrent workers from both inserting the same (goal, title, agent) task.
+  // Partial (WHERE goal_id IS NOT NULL) because goal_id is nullable for ad-hoc tasks.
+  // Wrapped in try/catch: dedup existing rows first, then create index. If index creation
+  // fails (e.g. still-duplicate rows from a concurrent writer), log a warning and continue
+  // so remaining bootstrap steps are not aborted.
+  try {
+    await client`
+      DELETE FROM tasks t
+      USING (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY goal_id, title, assigned_agent_id ORDER BY created_at ASC) as rn
+        FROM tasks
+        WHERE goal_id IS NOT NULL AND assigned_agent_id IS NOT NULL
+      ) dupes
+      WHERE t.id = dupes.id AND dupes.rn > 1
+    `;
+    await client`
+      CREATE UNIQUE INDEX IF NOT EXISTS tasks_delegation_unique
+      ON tasks(goal_id, title, assigned_agent_id)
+      WHERE goal_id IS NOT NULL
+    `;
+  } catch (err) {
+    console.warn('⚠️  tasks_delegation_unique index not created:', err instanceof Error ? err.message : String(err));
+  }
   await client`
     CREATE TABLE IF NOT EXISTS approvals (
       id text PRIMARY KEY,
@@ -157,6 +186,16 @@ export async function migrate() {
       read boolean NOT NULL DEFAULT false,
       created_at timestamptz NOT NULL DEFAULT now()
     )
+  `;
+  // Add idempotency_key for sendMessage dedup on retry (Issue 4 / CodeRabbit fix 2026-07-26).
+  // Partial unique index (WHERE IS NOT NULL) so legacy NULL rows don't conflict each other.
+  await client`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS idempotency_key text
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS messages_idempotency_key_unique
+    ON messages(idempotency_key)
+    WHERE idempotency_key IS NOT NULL
   `;
   await client`
     CREATE TABLE IF NOT EXISTS researched_leads (

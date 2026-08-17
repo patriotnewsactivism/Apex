@@ -1,5 +1,5 @@
-import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial, uniqueIndex } from 'drizzle-orm/pg-core';
+import { relations, sql } from 'drizzle-orm';
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
@@ -72,12 +72,18 @@ export const tasks = pgTable('tasks', {
   completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
   dueAt: timestamp('due_at', { withTimezone: true, mode: 'date' }),
   nextRetryAt: timestamp('next_retry_at', { withTimezone: true, mode: 'date' }),
+  leasedAt: timestamp('leased_at', { withTimezone: true, mode: 'date' }),
   retryCount: integer('retry_count').notNull().default(0),
   maxRetries: integer('max_retries').notNull().default(3),
   result: text('result'),
   errorMessage: text('error_message'),
   context: jsonb('context').$type<Record<string, unknown>>(),
-});
+}, (t) => ({
+  // Prevents duplicate task delegation: two workers racing on the same (goal, title, agent)
+  // tuple can't both insert — one gets DO NOTHING. Partial (WHERE goal_id IS NOT NULL)
+  // because goal_id is nullable for ad-hoc tasks. Enforced by the migration in client.ts.
+  delegationUniq: uniqueIndex('tasks_delegation_unique').on(t.goalId, t.title, t.assignedAgentId).where(sql`goal_id IS NOT NULL`),
+}));
 
 // ─── Approvals ────────────────────────────────────────────────────────────────
 
@@ -133,8 +139,16 @@ export const messages = pgTable('messages', {
   body: text('body').notNull(),
   replyToId: text('reply_to_id'),
   read: boolean('read').notNull().default(false),
+  // Idempotency key: prevents duplicate message inserts on agent retry.
+  // Format: "${fromAgentId}:${toAgentId}:${subject}:${taskId}". Nullable for
+  // messages sent before this column was added. Unique via partial index in migration.
+  idempotencyKey: text('idempotency_key'),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-});
+}, (table) => ({
+  idempotencyKeyUniq: uniqueIndex('messages_idempotency_key_unique')
+    .on(table.idempotencyKey)
+    .where(sql`idempotency_key IS NOT NULL`),
+}));
 
 // ─── Researched Leads (Lead Research Agent output) ────────────────────────────
 

@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { db, agents, approvals, messages, tasks as tasksTable, learningInsights, strategyRecommendations } from '@workspace/db';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
@@ -156,17 +156,10 @@ export abstract class BaseAgent {
       // DB offline: initialization in memory mode
     }
 
-    // Recover any tasks that were left in_progress from a previous crashed run.
-    // These will never be picked up again by dequeue() (which only selects
-    // 'pending'), so we reset them to 'pending' here, once at startup, before
-    // the polling loop begins.
-    await db
-      .update(tasksTable)
-      .set({ status: 'pending', updatedAt: new Date() })
-      .where(and(
-        eq(tasksTable.assignedAgentId, this.config.id),
-        eq(tasksTable.status, 'in_progress'),
-      ));
+    // NOTE: crash recovery (in_progress → pending) was formerly done per-agent here.
+    // It is now centralized in api-server/src/index.ts as lease-expiry recovery so
+    // retryCount is properly incremented and maxRetries is respected. Do NOT add it
+    // back here.
 
     await this.logger.info(`Agent ${this.name} (${this.role}) initialized`);
     this.setStatus('idle');
@@ -551,22 +544,25 @@ export abstract class BaseAgent {
               requiredApprovals++;
               return this.requestHumanApproval(taskId, toolName, args, reason);
             },
-            delegateToRole: async (targetRole, input) =>
-              this.delegateToRole(targetRole, {
+            delegateToRole: async (targetRole, input) => {
+              const [task] = await db.select().from(tasksTable).where(eq(tasksTable.id, taskId)).limit(1);
+              return this.delegateToRole(targetRole, {
                 title: input.title,
                 description: input.description,
                 parentTaskId: input.parentTaskId ?? taskId,
                 goalId: taskGoalId,
                 context: input.context ?? undefined,
-              }),
-            delegateToAgent: async (targetAgentId, input) =>
-              this.delegate(targetAgentId, {
+              });
+            },
+            delegateToAgent: async (targetAgentId, input) => {
+              const [task] = await db.select().from(tasksTable).where(eq(tasksTable.id, taskId)).limit(1);
+              return this.delegate(targetAgentId, {
                 title: input.title,
                 description: input.description,
                 parentTaskId: input.parentTaskId ?? taskId,
                 goalId: input.goalId ?? taskGoalId,
                 context: input.context ?? undefined,
-              }),
+              });
           };
 
           const result = await registry.execute(tc.name, tc.args, toolContext);
@@ -656,36 +652,15 @@ export abstract class BaseAgent {
     targetAgentId: string,
     input: TaskInput,
   ): Promise<string> {
-    // Idempotency: if a task with the same goalId + title already exists for this
-    // agent (even if it failed or is in any other state), return the existing
-    // task ID rather than creating a duplicate. This prevents the CEO
-    // "Process Goal" retry loop from spawning fresh retryCount=0 child tasks on
-    // every re-run, which bypasses maxRetries and causes the crash-loop.
-    if (input.goalId) {
-      const existing = await db
-        .select({ id: tasksTable.id })
-        .from(tasksTable)
-        .where(and(
-          eq(tasksTable.goalId, input.goalId),
-          eq(tasksTable.title, input.title),
-          eq(tasksTable.assignedAgentId, targetAgentId),
-        ))
-        .limit(1);
-
-      if (existing.length > 0) {
-        await this.logger.info(
-          `Skipping duplicate task "${input.title}" for goal ${input.goalId} — already exists (${existing[0].id})`,
-          input.parentTaskId,
-        );
-        return existing[0].id;
-      }
-    }
-
-    // Create task assigned to target agent
     const now = new Date();
     const taskId = randomUUID();
 
-    await db.insert(tasksTable).values({
+    // DB-level idempotency: ON CONFLICT (goal_id, title, assigned_agent_id) DO NOTHING.
+    // The unique partial index (WHERE goal_id IS NOT NULL) in the migration ensures two
+    // concurrent workers racing to delegate the same (goal, title, agent) task both
+    // complete without duplicating the row. The old application-level SELECT-then-INSERT
+    // had a TOCTOU window: both workers could query, find no duplicate, then both insert.
+    const rows = await db.insert(tasksTable).values({
       id: taskId,
       goalId: input.goalId ?? null,
       parentTaskId: input.parentTaskId ?? null,
@@ -700,12 +675,36 @@ export abstract class BaseAgent {
       retryCount: 0,
       maxRetries: 3,
       context: input.context ?? null,
-    });
+    }).onConflictDoNothing().returning();
 
-    emitApexEvent({ type: 'task:created', taskId, title: input.title, assignedAgentId: targetAgentId });
+    if (rows.length === 0 && input.goalId) {
+      // Constraint fired: task already exists for this (goalId, title, agent) tuple.
+      // Only reuse the existing task if it is still pending or in_progress — failed/
+      // completed tasks should not block new work from being delegated.
+      const [existing] = await db
+        .select({ id: tasksTable.id })
+        .from(tasksTable)
+        .where(and(
+          eq(tasksTable.goalId, input.goalId),
+          eq(tasksTable.title, input.title),
+          eq(tasksTable.assignedAgentId, targetAgentId),
+          inArray(tasksTable.status, ['pending', 'in_progress']),
+        ))
+        .limit(1);
+
+      const existingId = existing?.id ?? taskId;
+      await this.logger.info(
+        `Skipping duplicate task "${input.title}" for goal ${input.goalId} — already exists (${existingId})`,
+        input.parentTaskId,
+      );
+      return existingId;
+    }
+
+    const createdId = rows[0]?.id ?? taskId;
+    emitApexEvent({ type: 'task:created', taskId: createdId, title: input.title, assignedAgentId: targetAgentId });
     await this.logger.info(`Delegated task "${input.title}" to agent ${targetAgentId}`, input.parentTaskId);
 
-    return taskId;
+    return createdId;
   }
 
   async findAgentIdByRole(role: string): Promise<string | null> {
