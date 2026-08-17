@@ -42,7 +42,8 @@ const PROVIDERS: Array<{
 }> = [
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
   { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
-  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024' },
+  // Cohere removed 2026-08-16 (billing-dead / trial cap reached) to match
+  // packages/core/src/llm-client.ts — explicit removal, not the usual demote.
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
   // Model fixed 2026-07-27 to match packages/core/src/llm-client.ts: the Token
   // Plan (Lite) endpoint uses dotted versioned model IDs (qwen3.7-plus), not

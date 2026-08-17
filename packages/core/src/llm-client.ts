@@ -14,20 +14,26 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 //      breaker they cost one skipped probe per cooldown, and keeping them means
 //      zero-code-change recovery when keys are rotated or billing is sorted.
 //
-// Chain order (24 entries, 3 tiers):
+// Chain order (21 entries, 3 tiers):
 //
 //   Tier A (live, tool-reliable, ordered by daily capacity):
 //     Mistral (1B tok/mo) → Gemini ×2 (1,500 RPD each) →
 //     Cerebras ×3 ($5 credit each) → Groq ×2 (100K TPD each) →
 //     SambaNova ($5 credit + 20M TPD) → Hugging Face (free credits)
 //
-//   Tier B (demoted — dead keys or billing-blocked, circuit breaker = cheap
-//   skip): xAI ($25 credit exhausted, 403 — 2026-08-16, real provider, just
-//   needs a top-up) → NVIDIA NIM → Poolside → Together AI → DeepSeek →
-//   Qwen Cloud ×3 → GLM-Z.ai
+//   Tier B (demoted — dead keys, circuit breaker = cheap skip):
+//     NVIDIA NIM → Poolside → Together AI → DeepSeek → Qwen Cloud ×3 →
+//     GLM-Z.ai
 //
 //   Tier C (last resort — unreliable tool calling):
-//     OpenRouter/free router → Cohere → Cohere-trial → OpenRouter-free ×2
+//     OpenRouter/free router → OpenRouter-free ×2
+//
+// 2026-08-16: xAI (403, credits exhausted) and Cohere/Cohere-trial (402/429,
+// no payment method / trial cap reached) REMOVED outright, not demoted —
+// explicit instruction, not the usual "keep for zero-code-change recovery"
+// treatment every other dead entry gets. (A prior commit the same day had
+// demoted xAI to Tier B instead of removing it; superseded by this explicit
+// removal instruction.) Re-add only if asked.
 //
 // Each provider uses the standard OpenAI-compatible chat completions shape,
 // so the same request/response mapping logic is reused across all of them.
@@ -155,16 +161,6 @@ const PROVIDERS: Array<{
   // When QWENCLOUD_API_KEY is rotated, PROMOTE the three qwen/glm entries back
   // above the free tiers: that paid Token Plan is meant to be the chain's anchor.
 
-  // xAI (Grok) — DEMOTED 2026-08-16: confirmed billing-blocked, 403 "team has
-  // either used all available credits or reached its monthly spending
-  // limit." Unlike the dead-key entries below, this is a real, live,
-  // reliable-tool-calling provider — it was only pulled out of Tier A
-  // because every hit wasted a guaranteed-fail request at the front of the
-  // chain. Circuit breaker still gives it a cheap periodic skip. PROMOTE
-  // back to Tier A (right after google-gemini-2) the moment Don tops up
-  // xAI billing — no other code change needed.
-  { name: 'xai', baseURL: 'https://api.x.ai/v1', apiKeyEnv: 'XAI_API_KEY', fallbackModel: 'grok-3-mini' },
-
   // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B, tool-calling
   // reliable. NOT configured on Railway — no-op until the key is added.
   { name: 'nvidia', baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'meta/llama-3.3-70b-instruct' },
@@ -207,14 +203,6 @@ const PROVIDERS: Array<{
   // Still marked unreliable as a safety measure: free-tier models rotate and
   // tool quality varies across underlying models.
   { name: 'openrouter-free-router', toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openrouter/free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
-
-  // Cohere — command-r-plus frequently answers in prose instead of calling tools.
-  // 2026-08-04: small requests probe 200, but live tool-bearing requests
-  // intermittently 422 (no body). Treat output as best-effort.
-  { name: 'cohere', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_API_KEY', fallbackModel: 'command-r-plus-08-2024', maxOutputTokens: 4096, toolCallingReliable: false },
-
-  // Cohere (trial key) — same tool-calling caveat as production.
-  { name: 'cohere-trial', baseURL: 'https://api.cohere.com/compatibility/v1', apiKeyEnv: 'COHERE_TRIAL_API_KEY', fallbackModel: 'command-r-plus-08-2024', maxOutputTokens: 4096, toolCallingReliable: false },
 
   // OpenRouter FREE tier — explicit free models, daily-quota 429s self-reset.
   { name: 'openrouter-free', toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },

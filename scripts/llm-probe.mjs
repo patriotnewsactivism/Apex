@@ -71,7 +71,8 @@ const tests = [
   () => openaiProbe('glm-aliyun', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', qwenKey, 'glm-5.2'),
   () => anthropicProbe('qwen-cloud-anthropic', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', qwenKey, 'qwen3.7-plus'),
   () => openaiProbe('glm-zai', 'https://api.z.ai/api/paas/v4', getKey('ZAI_API_KEY'), 'glm-5.2'),
-  () => openaiProbe('cohere', 'https://api.cohere.com/compatibility/v1', getKey('COHERE_API_KEY'), 'command-r-plus-08-2024'),
+  // xai and cohere/cohere-trial removed 2026-08-16 (403 credits exhausted /
+  // 402+429 billing-dead) — see packages/core/src/llm-client.ts.
   () => openaiProbe('openrouter-free', 'https://openrouter.ai/api/v1', getKey('OPENROUTER_API_KEY'), 'openai/gpt-oss-20b:free', { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' }),
   () => openaiProbe('openrouter-free-2', 'https://openrouter.ai/api/v1', getKey('OPENROUTER_API_KEY'), 'nvidia/nemotron-3-super-120b-a12b:free', { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' }),
 ];

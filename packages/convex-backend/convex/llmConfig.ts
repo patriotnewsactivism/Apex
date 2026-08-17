@@ -12,7 +12,6 @@
 const PROVIDERS = [
   { name: 'cerebras', apiKeyEnv: 'CEREBRAS_API_KEY' },
   { name: 'groq', apiKeyEnv: 'GROQ_API_KEY' },
-  { name: 'cohere', apiKeyEnv: 'COHERE_API_KEY' },
   { name: 'mistral', apiKeyEnv: 'MISTRAL_API_KEY' },
   { name: 'qwen-cloud', apiKeyEnv: 'QWENCLOUD_API_KEY' },
   { name: 'qwen-cloud-anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY' },
