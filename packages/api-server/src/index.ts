@@ -276,7 +276,7 @@ async function main() {
     let exhausted = 0;
     for (const task of staleTasks) {
       const newRetryCount = task.retryCount + 1;
-      if (newRetryCount >= task.maxRetries) {
+      if (task.retryCount >= task.maxRetries) {
         await db
           .update(tasks)
           .set({
@@ -284,7 +284,7 @@ async function main() {
             errorMessage: 'Process crash: lease expired (max retries exceeded)',
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, task.id));
+          .where(and(eq(tasks.id, task.id), eq(tasks.status, 'in_progress')));
         exhausted++;
       } else {
         const retryDelayMs = Math.min(Math.pow(2, newRetryCount) * 1000, 300_000);
@@ -299,7 +299,7 @@ async function main() {
             errorMessage: 'Process crash: lease expired',
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, task.id));
+          .where(and(eq(tasks.id, task.id), eq(tasks.status, 'in_progress')));
         recovered++;
       }
     }
