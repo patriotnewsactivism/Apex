@@ -563,6 +563,7 @@ export abstract class BaseAgent {
                 goalId: input.goalId ?? taskGoalId,
                 context: input.context ?? undefined,
               });
+            },
           };
 
           const result = await registry.execute(tc.name, tc.args, toolContext);
