@@ -17,13 +17,14 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 // Chain order (24 entries, 3 tiers):
 //
 //   Tier A (live, tool-reliable, ordered by daily capacity):
-//     Mistral (1B tok/mo) → Gemini ×2 (1,500 RPD each) → xAI ($25 credit) →
+//     Mistral (1B tok/mo) → Gemini ×2 (1,500 RPD each) →
 //     Cerebras ×3 ($5 credit each) → Groq ×2 (100K TPD each) →
 //     SambaNova ($5 credit + 20M TPD) → Hugging Face (free credits)
 //
-//   Tier B (demoted — dead keys, circuit breaker = cheap skip):
-//     NVIDIA NIM → Poolside → Together AI → DeepSeek → Qwen Cloud ×3 →
-//     GLM-Z.ai
+//   Tier B (demoted — dead keys or billing-blocked, circuit breaker = cheap
+//   skip): xAI ($25 credit exhausted, 403 — 2026-08-16, real provider, just
+//   needs a top-up) → NVIDIA NIM → Poolside → Together AI → DeepSeek →
+//   Qwen Cloud ×3 → GLM-Z.ai
 //
 //   Tier C (last resort — unreliable tool calling):
 //     OpenRouter/free router → Cohere → Cohere-trial → OpenRouter-free ×2
@@ -109,10 +110,6 @@ const PROVIDERS: Array<{
   // quota, doubling Gemini's effective daily capacity to 3,000 RPD.
   { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-3.7-flash' },
 
-  // xAI (Grok) — $25 signup credit + optional $150/month data-sharing credits.
-  // grok-3-mini: fast, reliable OpenAI-compatible tool calling, 131K context.
-  { name: 'xai', baseURL: 'https://api.x.ai/v1', apiKeyEnv: 'XAI_API_KEY', fallbackModel: 'grok-3-mini' },
-
   // Cerebras — $5 free credit per account, 30 RPM, ~3000 tok/s inference.
   // gpt-oss-120b on Cerebras hardware. Credits expire 30 days after creation.
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
@@ -157,6 +154,16 @@ const PROVIDERS: Array<{
   // skip. Zero-code-change recovery when Don rotates keys or tops up billing.
   // When QWENCLOUD_API_KEY is rotated, PROMOTE the three qwen/glm entries back
   // above the free tiers: that paid Token Plan is meant to be the chain's anchor.
+
+  // xAI (Grok) — DEMOTED 2026-08-16: confirmed billing-blocked, 403 "team has
+  // either used all available credits or reached its monthly spending
+  // limit." Unlike the dead-key entries below, this is a real, live,
+  // reliable-tool-calling provider — it was only pulled out of Tier A
+  // because every hit wasted a guaranteed-fail request at the front of the
+  // chain. Circuit breaker still gives it a cheap periodic skip. PROMOTE
+  // back to Tier A (right after google-gemini-2) the moment Don tops up
+  // xAI billing — no other code change needed.
+  { name: 'xai', baseURL: 'https://api.x.ai/v1', apiKeyEnv: 'XAI_API_KEY', fallbackModel: 'grok-3-mini' },
 
   // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B, tool-calling
   // reliable. NOT configured on Railway — no-op until the key is added.
