@@ -124,7 +124,7 @@ const PROVIDERS: Array<{
   
   // Cerebras (3rd account) — triple the rate-limit pool.
   
-  // Groq — permanent free tier: 30 RPM, 14,400 RPD. Llama 3.1 70B Versatile,
+  // Groq — permanent free tier: 30 RPM, 14,400 RPD. openai/gpt-oss-120b,
   // reliable tool calling. Daily token quota resets at midnight UTC.
   //
   // 413 FIX — 2026-08-16: live errors showed "TPM Limit 12000, Requested
@@ -139,12 +139,26 @@ const PROVIDERS: Array<{
   // re-failing. maxOutputTokens caps the response reservation well under the
   // quota; maxRequestChars pre-trims the prompt on the FIRST attempt instead
   // of wasting one guaranteed-fail request to discover it's oversized.
-  // Model updated from llama-3.3-70b-versatile → llama-3.1-70b-versatile (2026-08-17).
-  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.1-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
+  // MODEL ID — 2026-08-19: corrected to openai/gpt-oss-120b, VERIFIED against
+  // console.groq.com/docs/models (Production Models) and /docs/deprecations.
+  // Both prior values are decommissioned and 404 on every call:
+  //   • llama-3.3-70b-versatile — deprecated 2026-06-17, SHUT DOWN 2026-08-16.
+  //   • llama-3.1-70b-versatile — SHUT DOWN 2025-01-24, i.e. dead ~19 months
+  //     before the 2026-08-17 commit that "fixed" 3.3 → 3.1. That change swapped
+  //     a freshly-dead model for a long-dead one and was never verified against
+  //     Groq's docs; it made the outage permanent rather than resolving it.
+  // openai/gpt-oss-120b is Groq's own documented migration target for
+  // llama-3.3-70b-versatile and is listed under Production Models with tool-use
+  // support. Same model family already used by the cerebras/sambanova entries
+  // (those are unprefixed 'gpt-oss-120b'; Groq namespaces it as 'openai/...').
+  // DO NOT change this string again without a live probe (scripts/llm-probe.mjs)
+  // or a fresh docs fetch — Groq retires models aggressively and guessing is
+  // exactly how this entry stayed broken across three separate commits.
+  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'openai/gpt-oss-120b', maxOutputTokens: 3072, maxRequestChars: 32_000 },
 
   // Groq (2nd org) — separate org = 2x daily token capacity (200K TPD total).
   // Same 12,000 TPM ceiling per org as groq above — same caps apply.
-  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'llama-3.1-70b-versatile', maxOutputTokens: 3072, maxRequestChars: 32_000 },
+  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'openai/gpt-oss-120b', maxOutputTokens: 3072, maxRequestChars: 32_000 },
 
   // SambaNova — $5 signup credit, 20M TPD developer tier. OpenAI-compatible,
   // gpt-oss-120b on SambaNova RDU hardware. Tool calling reliable.
