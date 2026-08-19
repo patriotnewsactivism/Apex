@@ -121,11 +121,9 @@ const PROVIDERS: Array<{
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
 
   // Cerebras (2nd account) — separate account = separate $5 credit + rate limit.
-  { name: 'cerebras-2', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_2', fallbackModel: 'gpt-oss-120b' },
-
+  
   // Cerebras (3rd account) — triple the rate-limit pool.
-  { name: 'cerebras-3', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY_3', fallbackModel: 'gpt-oss-120b' },
-
+  
   // Groq — permanent free tier: 30 RPM, 14,400 RPD. Llama 3.1 70B Versatile,
   // reliable tool calling. Daily token quota resets at midnight UTC.
   //
@@ -168,33 +166,26 @@ const PROVIDERS: Array<{
 
   // Poolside — 429 usage limit exceeded. Self-resetting quota; kept above the
   // 401/402-dead entries. poolside/laguna-s-2.1, code-generation focused.
-  { name: 'poolside', baseURL: 'https://api.poolside.ai/v1', apiKeyEnv: 'POOLSIDE_API_KEY', fallbackModel: 'poolside/laguna-s-2.1' },
-
+  
   // Together AI — 402 credit limit exceeded. Llama 3.3 70B Turbo.
-  { name: 'together', baseURL: 'https://api.together.xyz/v1', apiKeyEnv: 'TOGETHER_API_KEY', fallbackModel: 'meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo' },
-
+  
   // DeepSeek — 402 insufficient balance.
-  { name: 'deepseek', baseURL: 'https://api.deepseek.com', apiKeyEnv: 'DEEPSEEK_API_KEY', fallbackModel: 'deepseek-chat' },
-
+  
   // Qwen Cloud (Aliyun Token Plan) — 401 invalid key until Don rotates in the
   // Aliyun console. Uses resolveQwenModel() for role-aware model selection
   // (qwen3.7-max for premium roles, qwen3.7-plus for standard). Token Plan
   // endpoint uses DOTTED versioned model IDs (qwen3.7-plus / qwen3.7-max),
   // NOT the hyphenated public IDs.
-  { name: 'qwen-cloud', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY' },
-
+  
   // GLM-5.2 via Aliyun — same Token Plan key, same endpoint, different model.
   // 1M context. Never independently confirmed live on this account.
-  { name: 'glm-aliyun', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
-
+  
   // Qwen Cloud (Anthropic-compatible endpoint) — same Token Plan key, Anthropic
   // Messages API wire format. NOT independently confirmed live.
-  { name: 'qwen-cloud-anthropic', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', protocol: 'anthropic' },
-
+  
   // GLM-5.2 via Z.ai — independent key/infra from Aliyun. General pay-per-
   // token API (NOT the GLM Coding Plan endpoint). Expired key as of 2026-08-04.
-  { name: 'glm-zai', baseURL: 'https://api.z.ai/api/paas/v4', apiKeyEnv: 'ZAI_API_KEY', fallbackModel: 'glm-5.2' },
-
+  
   // ── Tier C: Last resort — unreliable or best-effort tool calling ───────────
   // Reached only after all reliable providers fail (two-pass fallback).
 

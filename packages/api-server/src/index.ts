@@ -238,6 +238,65 @@ async function seedDefaultJobs(): Promise<void> {
   }
 }
 
+async function recoverStaleLeasedTasks(): Promise<void> {
+try {
+  const staleThreshold = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
+  const staleTasks = await db
+    .select()
+    .from(tasks)
+    .where(and(
+      eq(tasks.status, 'in_progress'),
+      or(
+        isNull(tasks.leasedAt),
+        lt(tasks.leasedAt, staleThreshold),
+      ),
+    ));
+
+  let recovered = 0;
+  let exhausted = 0;
+  for (const task of staleTasks) {
+    const newRetryCount = task.retryCount + 1;
+    if (task.retryCount >= task.maxRetries) {
+      await db
+        .update(tasks)
+        .set({
+          status: 'failed',
+          errorMessage: 'Process crash: lease expired (max retries exceeded)',
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(tasks.id, task.id),
+          eq(tasks.status, 'in_progress'),
+          or(isNull(tasks.leasedAt), lt(tasks.leasedAt, staleThreshold))
+        ));
+      exhausted++;
+    } else {
+      const retryDelayMs = Math.min(Math.pow(2, newRetryCount) * 1000, 300_000);
+      const nextRetryAt = new Date(Date.now() + retryDelayMs);
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          retryCount: newRetryCount,
+          leasedAt: null,
+          nextRetryAt,
+          errorMessage: 'Process crash: lease expired',
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(tasks.id, task.id),
+          eq(tasks.status, 'in_progress'),
+          or(isNull(tasks.leasedAt), lt(tasks.leasedAt, staleThreshold))
+        ));
+      recovered++;
+    }
+  }
+  console.log(`✅ Lease-expiry recovery: ${recovered} task(s) requeued, ${exhausted} task(s) failed (max retries)`);
+} catch (err) {
+  console.warn('⚠️  Crash recovery skipped:', err instanceof Error ? err.message : String(err));
+}
+}
+
 async function main() {
   console.log('🚀 APEX starting up...');
 
@@ -259,62 +318,7 @@ async function main() {
   // The old naive reset (`SET status='pending' WHERE status='in_progress'`) blindly
   // requeued tasks without incrementing retryCount, allowing crash-looping tasks to
   // ignore maxRetries and spin forever.
-  try {
-    const staleThreshold = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
-    const staleTasks = await db
-      .select()
-      .from(tasks)
-      .where(and(
-        eq(tasks.status, 'in_progress'),
-        or(
-          isNull(tasks.leasedAt),
-          lt(tasks.leasedAt, staleThreshold),
-        ),
-      ));
-
-    let recovered = 0;
-    let exhausted = 0;
-    for (const task of staleTasks) {
-      const newRetryCount = task.retryCount + 1;
-      if (task.retryCount >= task.maxRetries) {
-        await db
-          .update(tasks)
-          .set({
-            status: 'failed',
-            errorMessage: 'Process crash: lease expired (max retries exceeded)',
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(tasks.id, task.id),
-            eq(tasks.status, 'in_progress'),
-            or(isNull(tasks.leasedAt), lt(tasks.leasedAt, staleThreshold))
-          ));
-        exhausted++;
-      } else {
-        const retryDelayMs = Math.min(Math.pow(2, newRetryCount) * 1000, 300_000);
-        const nextRetryAt = new Date(Date.now() + retryDelayMs);
-        await db
-          .update(tasks)
-          .set({
-            status: 'pending',
-            retryCount: newRetryCount,
-            leasedAt: null,
-            nextRetryAt,
-            errorMessage: 'Process crash: lease expired',
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(tasks.id, task.id),
-            eq(tasks.status, 'in_progress'),
-            or(isNull(tasks.leasedAt), lt(tasks.leasedAt, staleThreshold))
-          ));
-        recovered++;
-      }
-    }
-    console.log(`✅ Lease-expiry recovery: ${recovered} task(s) requeued, ${exhausted} task(s) failed (max retries)`);
-  } catch (err) {
-    console.warn('⚠️  Crash recovery skipped:', err instanceof Error ? err.message : String(err));
-  }
+await recoverStaleLeasedTasks();
 
   let mode = process.env.APEX_APPROVAL_MODE ?? 'normal';
   if (mode === 'off') {
@@ -532,6 +536,14 @@ async function main() {
   };
 
   const healthInterval = setInterval(runHealthPoll, 60_000);
+  // Recurring safety net (2026-08-19): the original lease-expiry recovery
+  // only ran once at boot, so a task wedged mid-run had no path back to
+  // 'pending' short of a full process restart. Every 5 minutes is cheap
+  // (one SELECT when nothing is stale) and bounds the worst case to ~15
+  // minutes total (10 min stale threshold + up to 5 min until next sweep).
+  const leaseRecoveryInterval = setInterval(() => {
+    recoverStaleLeasedTasks().catch((err) => console.warn('⚠️  Periodic lease recovery failed:', err instanceof Error ? err.message : String(err)));
+  }, 5 * 60 * 1000);
   // Run an immediate initial health check after 5s
   setTimeout(runHealthPoll, 5_000);
 
@@ -553,6 +565,7 @@ async function main() {
   const shutdown = (signal: string) => {
     console.log(`\n${signal} received. Shutting down APEX...`);
     clearInterval(healthInterval);
+    clearInterval(leaseRecoveryInterval);
     scheduler.stop();
     for (const agent of workforce.values()) {
       agent.stop();

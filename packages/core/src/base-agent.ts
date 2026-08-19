@@ -213,13 +213,45 @@ export abstract class BaseAgent {
 
           consecutiveErrors = 0;
           this.currentTaskIds.add(task.id);
-          const p = this.executeTask(task.id, task.title, task.description, task.context ?? {})
+          // Hard wall-clock ceiling on the WHOLE task, not just individual LLM
+          // calls. Root-caused 2026-08-19: Apex's worker loop went completely
+          // silent for ~46h (zero completions, zero failures, zero DB writes)
+          // while /health kept responding — the per-provider 75s timeouts in
+          // llm-client.ts only bound a single HTTP call, but nothing bounded
+          // executeTask() as a whole. Any await in that path (a tool call, a
+          // DB round-trip, a provider SDK edge case the 75s AbortController
+          // doesn't actually cover) that never settles wedges this agent's
+          // concurrency slot FOREVER, since Promise.race(inFlight.values())
+          // below just waits on whatever's in the map. A 10-minute cap here
+          // means the worst case is "one task takes up to 10 min to be
+          // detected as stuck," not "this agent never processes anything
+          // again until someone manually restarts the whole process."
+          const TASK_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+          let hardTimeoutId: ReturnType<typeof setTimeout> | undefined;
+          const hardTimeout = new Promise<never>((_, reject) => {
+            hardTimeoutId = setTimeout(
+              () => reject(new Error(`Task exceeded hard ${TASK_HARD_TIMEOUT_MS / 60000}-minute wall-clock timeout`)),
+              TASK_HARD_TIMEOUT_MS,
+            );
+          });
+          const p = Promise.race([
+            this.executeTask(task.id, task.title, task.description, task.context ?? {}),
+            hardTimeout,
+          ])
+            .finally(() => clearTimeout(hardTimeoutId))
             .catch(async (err) => {
               // executeTask already catches+logs+fails its own errors; this is
               // just a last-resort guard so a truly unexpected throw can never
               // take down the whole worker-pool loop.
               const msg = err instanceof Error ? err.message : String(err);
               await this.logger.error(`Unhandled task error: ${msg}`, err, task.id).catch(() => {});
+              if (msg.includes('hard') && msg.includes('wall-clock timeout')) {
+                // executeTask() itself is still running detached in the background
+                // and will never reach its own fail()/complete() call for this
+                // reason — mark it failed now so it doesn't sit stuck in_progress
+                // in the DB until a full process restart's boot-time recovery sweep.
+                await this.taskQueue.fail(task.id, msg).catch(() => {});
+              }
             })
             .then(async (result) => {
               // Actually implement the inter-task delay this comment used to
