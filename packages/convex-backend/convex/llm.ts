@@ -41,7 +41,16 @@ const PROVIDERS: Array<{
   protocol?: 'openai' | 'anthropic';
 }> = [
   { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
-  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'llama-3.3-70b-versatile' },
+  // Model fixed 2026-08-19 to match packages/core/src/llm-client.ts. This entry
+  // sat on llama-3.3-70b-versatile (shut down 2026-08-16) and never received
+  // core's Groq model correction at all, despite being the copy that actually
+  // runs in production via agentLoop.ts → internal.llm.complete — so every Groq
+  // call through this path 404'd. Verified against console.groq.com/docs/models:
+  // openai/gpt-oss-120b is Groq's current production model and its own
+  // documented replacement for llama-3.3-70b-versatile. (Note: core's 2026-08-17
+  // "fix" to llama-3.1-70b-versatile was itself wrong — that ID shut down
+  // 2025-01-24 — so it is corrected there too rather than copied here.)
+  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'openai/gpt-oss-120b' },
   // Cohere removed 2026-08-16 (billing-dead / trial cap reached) to match
   // packages/core/src/llm-client.ts — explicit removal, not the usual demote.
   { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
