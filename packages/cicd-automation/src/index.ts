@@ -8,4 +8,12 @@ export { BuildManager } from './build-manager.js';
 export type { BuildResult } from './build-manager.js';
 
 export { DeploymentManager } from './deployment-manager.js';
-export type { DeploymentConfig } from './deployment-manager.js';
+export type { DeploymentConfig, ApexDeployPlatform } from './deployment-manager.js';
+
+export {
+  deployToLightsail,
+  rollbackLightsail,
+  isDeployEnabled,
+  DeployNotConfiguredError,
+} from './lightsail-deployer.js';
+export type { LightsailDeployResult } from './lightsail-deployer.js';
