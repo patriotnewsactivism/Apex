@@ -1,0 +1,63 @@
+# Deploy Apex to AWS Lightsail.
+#
+# Why a workflow instead of running the deploy from a laptop or an agent's
+# sandbox: the AWS credentials live in GitHub Secrets and never leave the
+# runner, every deploy leaves an audit log, and the commit being deployed is
+# unambiguous. Nobody needs to hold long-lived keys to ship.
+#
+# Manual by default. Set APEX_DEPLOY_ENABLED as a repo/environment variable
+# (staging | production | all) — without it the deployer refuses to run.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [staging, production]
+        default: staging
+        required: true
+
+concurrency:
+  # Never let two deploys race for the same container service.
+  group: deploy-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Builds the image in CodeBuild, redeploys the Lightsail service, polls
+      # until ACTIVE, verifies /health, and fails if the live commit is not the
+      # commit we just deployed.
+      - name: Build, deploy and verify
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          APEX_DEPLOY_ENABLED: ${{ vars.APEX_DEPLOY_ENABLED }}
+          APEX_CODEBUILD_PROJECT: ${{ vars.APEX_CODEBUILD_PROJECT || 'apex-lightsail-build' }}
+          APEX_LIGHTSAIL_SERVICE: ${{ vars.APEX_LIGHTSAIL_SERVICE || 'apex-service' }}
+        run: >
+          pnpm dlx tsx@4.19.2 packages/cicd-automation/scripts/deploy.mts
+          "${{ github.event.inputs.environment }}" --expect-sha "${{ github.sha }}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to .github/workflows/deploy.yml (GitHub → Add file → Create
+# new file). It lives here as well because GitHub Apps cannot create or modify
+# workflow files, so it could not be committed to its real path automatically.
