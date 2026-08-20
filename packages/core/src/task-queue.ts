@@ -3,6 +3,7 @@ import { db, tasks } from '@workspace/db';
 import { eq, and, asc, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task, NewTask } from '@workspace/db';
 import type { TaskInput, TaskStatus } from './types.js';
+import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure } from './runtime-health.js';
 
 // ─── Task Queue ───────────────────────────────────────────────────────────────
 
@@ -60,6 +61,7 @@ export class TaskQueue {
    * that was here before had a TOCTOU window). The sub-select is ordered by
    * priority ASC, then created_at ASC so oldest high-priority tasks win. */
   async dequeue(): Promise<Task | null> {
+    recordDequeueAttempt();
     try {
       const now = new Date();
       // ROOT CAUSE FOUND 2026-08-19 (via the console.error added earlier
@@ -93,8 +95,14 @@ export class TaskQueue {
         )`)
         .returning();
 
+      // Counted as a success even when no row matched: a healthy idle queue
+      // and a queue that throws on every call are indistinguishable from the
+      // outside otherwise, which is exactly the trap this whole investigation
+      // fell into.
+      recordDequeueSuccess(Boolean(task));
       if (task) return task;
     } catch (err) {
+      recordDequeueFailure(this.agentId, err);
       // 2026-08-19: this used to swallow EVERY exception silently under the
       // assumption it only ever fires when the DB is genuinely offline. That
       // assumption was never verified and there was zero logging to check it
