@@ -220,3 +220,28 @@ CHECKLIST.md while `packages/core` was actually broken:
   accurate.
 - `PLAN.md`, `ROADMAP.md`, `CHECKLIST.md` -- living status docs, updated as
   work happens. Check these first for current state before starting work.
+
+## Context budget (token exhaustion)
+
+`packages/core/src/context-budget.ts` bounds what each task re-sends to the model.
+The agent loop keeps one `history` array and re-sends all of it every turn, for up
+to `maxIterations` (20) turns. Tool results used to be appended as uncapped
+`JSON.stringify(result)`, so a single large payload was re-billed on every later
+turn — cost scaled with (turns x accumulated bytes) rather than with useful work.
+
+Two limits, both env-tunable:
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `APEX_MAX_TOOL_RESULT_CHARS` | `8000` | Truncates one tool result (keeps head **and** tail, states how much was dropped). |
+| `APEX_MAX_HISTORY_TOKENS` | `60000` | Elides oldest tool results until the whole history fits. |
+
+This is distinct from `token-ledger.ts`: the ledger caps total spend after the
+fact, this reduces the spend in the first place. Both are wanted.
+
+**Do not "optimise" this by deleting old messages.** OpenAI-compatible APIs
+reject a request where an assistant `tool_calls` message has no matching `tool`
+result, so elision replaces `content` and keeps `toolCallId`/`name`. Dropping
+messages would produce 400s in exactly the long conversations it aimed to help.
+The system prompt, the first user message (the task) and the most recent turns
+are never elided — an agent that forgets its objective thrashes and costs more.

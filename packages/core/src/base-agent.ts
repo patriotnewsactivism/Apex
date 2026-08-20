@@ -9,6 +9,7 @@ import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './mal
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
 import { OutcomeAnalyzer } from '@workspace/learning-system';
+import { applyHistoryBudget, resolveBudget, truncateToolResult } from './context-budget.js';
 import type {
   AgentConfig,
   AgentStatus,
@@ -367,6 +368,8 @@ export abstract class BaseAgent {
       await this.logger.thinking(`Starting task: ${title}`, taskId);
       this.setStatus('thinking');
 
+      const contextBudget = resolveBudget();
+
       // Build initial message history
       const memContext = await this.memory.buildMemoryContext(description);
       const learningContext = await this.buildLearningContext(this.config.role);
@@ -404,6 +407,19 @@ export abstract class BaseAgent {
       // Agentic loop
       while (iterations < maxIter) {
         iterations++;
+
+        // Keep the re-sent context bounded. Elides oldest tool results only;
+        // never drops a message, which would orphan an assistant tool_call.
+        const budgeted = applyHistoryBudget(history, contextBudget);
+        if (budgeted.modified) {
+          history.length = 0;
+          history.push(...budgeted.history);
+          await this.logger.thinking(
+            `Context budget: elided ${budgeted.elidedCount} old tool result(s), ` +
+              `~${budgeted.tokensBefore} -> ~${budgeted.tokensAfter} tokens`,
+            taskId,
+          );
+        }
 
         const response = await this.llm.complete(history, tools);
 
@@ -621,11 +637,13 @@ export abstract class BaseAgent {
 
           const result = await registry.execute(tc.name, tc.args, toolContext);
 
+          // Capped on the way in: an uncapped result is re-sent on every
+          // remaining iteration, so one large payload is billed many times.
           toolResults.push({
             role: 'tool',
             toolCallId: tc.id,
             name: tc.name,
-            content: JSON.stringify(result),
+            content: truncateToolResult(JSON.stringify(result), contextBudget.maxToolResultChars),
           });
         }
 

@@ -13,3 +13,4 @@ export * from './runtime-health.js';
 
 export { optimizePrompt } from './prompt-forge.js';
 export type { OptimizePromptInput, OptimizePromptResult, PromptCandidateResult } from './prompt-forge.js';
+export * from './context-budget.js';
