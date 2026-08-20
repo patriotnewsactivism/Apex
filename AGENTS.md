@@ -85,6 +85,30 @@ code, do not delegate to it or treat it as part of the real org chart.
   QWENCLOUD_API_KEY is 401-dead on live AND local — needs rotation before
   the paid tier works again.
 
+## Token budget governor (added 2026-08-19)
+Everything that protected token spend before this was REACTIVE — the circuit
+breaker, the daily-quota keyword sniff, the unclassified-429 streak
+escalation and the global backoff all only fire after a provider has already
+refused a request. `LLMResponse.usage` was parsed on every call and thrown
+away, so nothing knew how many tokens the workforce had spent today.
+`packages/core/src/token-ledger.ts` now records real per-provider spend
+(persisted to `APEX_TOKEN_LEDGER_PATH`, default `/tmp/apex/token-ledger.json`,
+so a Lightsail redeploy doesn't reset the day), keyed by UTC day.
+- `APEX_TOKEN_CAPS=mistral:30000000,groq:400000` — per-provider daily token
+  caps. A provider at/over its cap is skipped BEFORE the HTTP call and put in
+  cooldown until the real UTC daily reset (not the 4h heuristic).
+- `APEX_TOKEN_CAP_TOTAL=8000000` — workspace-wide daily cap; `complete()`
+  fails fast with a clear "spend paused until UTC reset" error instead of
+  walking 15 providers to collect 15 429s.
+- Unset/0 = no cap (exactly the pre-2026-08-19 behavior). Caps count prompt +
+  completion tokens, since every free tier with a TPD limit counts both.
+- `GET /api/tokens` (behind `requireAdminAuth`) returns today's spend per
+  provider with cap percentages — the answer to "are we about to run out?"
+  that previously only existed in error logs after the fact.
+- Idle agents now back off 5s → 60s between empty dequeues
+  (`base-agent.ts`, reset to 5s the moment a task arrives), so an idle
+  workforce stops converting every speculative task into instant LLM spend.
+
 ## Security
 - All routes under `/api/*` except `/api/auth/login` and `/health` require
   `Authorization: Bearer <token>` (`requireAdminAuth`). `/api/auth/login`
