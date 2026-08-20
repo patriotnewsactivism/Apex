@@ -78,7 +78,15 @@ export class TaskQueue {
 
       if (task) return task;
     } catch (err) {
-      // DB offline: check in-memory queue
+      // 2026-08-19: this used to swallow EVERY exception silently under the
+      // assumption it only ever fires when the DB is genuinely offline. That
+      // assumption was never verified and there was zero logging to check it
+      // -- if this query throws for ANY other reason (bad SQL, schema drift,
+      // driver issue), every single dequeue() call fails identically and
+      // silently forever, with the outer loop's `if (!task) break` + 5s sleep
+      // producing a system that looks alive (starts fine, polls, sleeps) but
+      // never executes a single task, and never says why. Log it for real.
+      console.error(`[TaskQueue.dequeue] agent=${this.agentId} query failed:`, err instanceof Error ? err.stack ?? err.message : err);
     }
 
     const nextMemIdx = this.memoryQueue.findIndex((t) => t.status === 'pending');

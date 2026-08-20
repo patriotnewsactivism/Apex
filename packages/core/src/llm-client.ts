@@ -14,26 +14,35 @@ import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } f
 //      breaker they cost one skipped probe per cooldown, and keeping them means
 //      zero-code-change recovery when keys are rotated or billing is sorted.
 //
-// Chain order (21 entries, 3 tiers):
+// Chain order (12 entries, 4 tiers as of 2026-08-19 — see `tier` field on
+// each PROVIDERS entry; tier is now enforced in code, not just documented):
 //
-//   Tier A (live, tool-reliable, ordered by daily capacity):
+//   Tier 0 (paid anchor — always tried first, ends the free-tier cascade):
+//     OpenRouter → anthropic/claude-sonnet-5 ($2/$10 per M, real per-call cost)
+//
+//   Tier 1 (live, tool-reliable, ordered by daily capacity):
 //     Mistral (1B tok/mo) → Gemini ×2 (1,500 RPD each) →
-//     Cerebras ×3 ($5 credit each) → Groq ×2 (100K TPD each) →
+//     Cerebras ($5 credit) → Groq ×2 (100K TPD each) →
 //     SambaNova ($5 credit + 20M TPD) → Hugging Face (free credits)
 //
-//   Tier B (demoted — dead keys, circuit breaker = cheap skip):
-//     NVIDIA NIM → Poolside → Together AI → DeepSeek → Qwen Cloud ×3 →
-//     GLM-Z.ai
+//   Tier 2 (demoted — no key configured, circuit breaker = cheap skip):
+//     NVIDIA NIM
 //
-//   Tier C (last resort — unreliable tool calling):
+//   Tier 3 (last resort — unreliable tool calling):
 //     OpenRouter/free router → OpenRouter-free ×2
+//
+// ROOT-CAUSE FIX 2026-08-19: rrStartIndex used to rotate across the entire
+// flat array, defeating this tier ordering on all but 1 call in N (see
+// rrStartIndexByTier below) — tier order is now unconditional; round-robin
+// only spreads load within a tier. A process-wide concurrency semaphore
+// (MAX_CONCURRENT_LLM_CALLS) also caps how many complete() calls can be
+// mid-flight at once, so a large task backlog releasing at boot can't
+// stampede tier 0/1 with ~20 simultaneous requests.
 //
 // 2026-08-16: xAI (403, credits exhausted) and Cohere/Cohere-trial (402/429,
 // no payment method / trial cap reached) REMOVED outright, not demoted —
 // explicit instruction, not the usual "keep for zero-code-change recovery"
-// treatment every other dead entry gets. (A prior commit the same day had
-// demoted xAI to Tier B instead of removing it; superseded by this explicit
-// removal instruction.) Re-add only if asked.
+// treatment every other dead entry gets. Re-add only if asked.
 //
 // Each provider uses the standard OpenAI-compatible chat completions shape,
 // so the same request/response mapping logic is reused across all of them.
@@ -79,12 +88,38 @@ const PROVIDERS: Array<{
   // The workforce was not broken — it was running on a tier that cannot
   // drive tools, and nothing said so.
   toolCallingReliable?: boolean;
+  // Priority tier — ADDED 2026-08-19 per root-cause finding: rrStartIndex
+  // previously round-robined across the ENTIRE flat array regardless of
+  // this comment block's documented tier structure, so "largest budget/paid
+  // anchor first" only actually held on 1 call in N. Lower tier = tried
+  // first, always, for every call. Round-robin (load spreading across
+  // concurrent calls) still applies, but only WITHIN a tier — it can no
+  // longer cause a tier-0 paid anchor or a tier-1 large-budget free
+  // provider to be skipped in favor of a later tier just because of where
+  // rrStartIndex happened to land. Omitted = tier 1 (default free/reliable).
+  tier?: number;
 }> = [
-  // ── Tier A: Live, tool-calling reliable, ordered by daily capacity ──────────
+  // ── Tier 0: Paid anchor — ends the correlated free-tier cascade ────────────
+  //
+  // ADDED 2026-08-19 per root-cause finding: every Tier 1 provider below is a
+  // free tier, and free tiers share a correlated failure mode — they all
+  // exhaust on the same busy day. "All providers failed" was never bad luck;
+  // it was the designed behavior of a chain made entirely of free quotas with
+  // no paid floor under it. anthropic/claude-sonnet-5 via OpenRouter is a
+  // zero-code-change frontier path: OPENROUTER_API_KEY, baseURL, headers, and
+  // wire format are already wired up for the Tier C openrouter-free* entries
+  // below — this just points the SAME client at a paid, non-":free" model.
+  // Confirmed live, tool-calling capable, $2/$10 per M tokens. This is a real
+  // (small) per-call cost, unlike every other entry in this file — that's the
+  // point: one reliable rung stops the whole workforce going dead whenever
+  // Mistral/Gemini/Cerebras/Groq/SambaNova all happen to be tapped out at once.
+  { name: 'openrouter-paid-anchor', tier: 0, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'anthropic/claude-sonnet-5', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+
+  // ── Tier 1: Live, tool-calling reliable, ordered by daily capacity ──────────
   //
   // REORDERED 2026-08-15 to maximize exhaustion resistance. Providers with the
   // LARGEST daily/monthly budgets go first. Round-robin start index spreads
-  // concurrent load across all entries.
+  // concurrent load across entries WITHIN this tier only (see `tier` field).
 
   // Mistral (La Plateforme) — #1 POSITION: 1B tokens/month free tier (~33M
   // tokens/day) is by far the largest budget in this entire chain — more than
@@ -169,38 +204,34 @@ const PROVIDERS: Array<{
   // Llama 3.3 70B Instruct, tool calling reliable.
   { name: 'huggingface', baseURL: 'https://router.huggingface.co/v1', apiKeyEnv: 'HF_TOKEN', fallbackModel: 'meta-llama/Llama-3.3-70B-Instruct' },
 
-  // ── Tier B: Demoted but kept — dead/expired keys, circuit breaker = cheap ──
-  // skip. Zero-code-change recovery when Don rotates keys or tops up billing.
-  // When QWENCLOUD_API_KEY is rotated, PROMOTE the three qwen/glm entries back
-  // above the free tiers: that paid Token Plan is meant to be the chain's anchor.
-
+  // ── Tier 2: Demoted — kept for zero-code-change recovery only ─────────────
+  //
+  // CLEANED UP 2026-08-19: poolside/together/deepseek/qwen-cloud x3/glm-zai
+  // were previously listed here as demoted-but-present entries. All were
+  // actually removed as real PROVIDERS entries in commit 071b47a (2026-08-19,
+  // same-day earlier fix) because each was structurally broken regardless of
+  // key/billing state, not just rate-limited or unfunded:
+  //   • together    — model ID carried a bogus "Meta-" prefix, 404s always.
+  //   • poolside     — api.poolside.ai does not resolve in DNS at all; a
+  //                     connection error has no HTTP status, so it fell into
+  //                     the circuit breaker's 30s cooldown bucket and got
+  //                     retried forever instead of being backed off properly.
+  //   • qwen-cloud-anthropic — baseURL double-appended /v1, so the SDK POSTed
+  //                     to .../compatible-mode/v1/v1/messages — always 404.
+  //   • deepseek, qwen-cloud, qwen-cloud-anthropic (paid), glm-zai — dead
+  //     keys/billing, no path to zero-code-change recovery without Don
+  //     rotating a key anyway, so keeping the broken entry bought nothing.
+  // If Don rotates a fresh QWENCLOUD_API_KEY or fixes any of the above, ADD
+  // A NEW ENTRY with the defect fixed rather than resurrecting the old one.
+  //
   // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B, tool-calling
-  // reliable. NOT configured on Railway — no-op until the key is added.
-  { name: 'nvidia', baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'meta/llama-3.3-70b-instruct' },
+  // reliable. NOT configured on Railway/Lightsail — no-op until the key is
+  // added. FLAGGED 2026-08-19: meta/llama-3.3-70b-instruct deprecates
+  // 2026-08-25 — if NVIDIA_API_KEY is ever added, verify the model ID is
+  // still current before relying on this entry after that date.
+  { name: 'nvidia', tier: 2, baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'meta/llama-3.3-70b-instruct' },
 
-  // Poolside — 429 usage limit exceeded. Self-resetting quota; kept above the
-  // 401/402-dead entries. poolside/laguna-s-2.1, code-generation focused.
-  
-  // Together AI — 402 credit limit exceeded. Llama 3.3 70B Turbo.
-  
-  // DeepSeek — 402 insufficient balance.
-  
-  // Qwen Cloud (Aliyun Token Plan) — 401 invalid key until Don rotates in the
-  // Aliyun console. Uses resolveQwenModel() for role-aware model selection
-  // (qwen3.7-max for premium roles, qwen3.7-plus for standard). Token Plan
-  // endpoint uses DOTTED versioned model IDs (qwen3.7-plus / qwen3.7-max),
-  // NOT the hyphenated public IDs.
-  
-  // GLM-5.2 via Aliyun — same Token Plan key, same endpoint, different model.
-  // 1M context. Never independently confirmed live on this account.
-  
-  // Qwen Cloud (Anthropic-compatible endpoint) — same Token Plan key, Anthropic
-  // Messages API wire format. NOT independently confirmed live.
-  
-  // GLM-5.2 via Z.ai — independent key/infra from Aliyun. General pay-per-
-  // token API (NOT the GLM Coding Plan endpoint). Expired key as of 2026-08-04.
-  
-  // ── Tier C: Last resort — unreliable or best-effort tool calling ───────────
+  // ── Tier 3: Last resort — unreliable or best-effort tool calling ───────────
   // Reached only after all reliable providers fail (two-pass fallback).
 
   // OpenRouter smart router — `openrouter/free` auto-selects a free model that
@@ -208,11 +239,11 @@ const PROVIDERS: Array<{
   // the explicit :free model entries because it filters for tool-capable models.
   // Still marked unreliable as a safety measure: free-tier models rotate and
   // tool quality varies across underlying models.
-  { name: 'openrouter-free-router', toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openrouter/free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  { name: 'openrouter-free-router', tier: 3, toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openrouter/free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 
   // OpenRouter FREE tier — explicit free models, daily-quota 429s self-reset.
-  { name: 'openrouter-free', toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
-  { name: 'openrouter-free-2', toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  { name: 'openrouter-free', tier: 3, toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  { name: 'openrouter-free-2', tier: 3, toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 
 ];
 
@@ -492,7 +523,27 @@ class MultiProviderClient {
     };
   }
 
+  // PUBLIC ENTRY POINT — gates on the process-wide LLM concurrency semaphore
+  // (see acquireLLMConcurrencySlot below) before doing any real work. Root-
+  // cause finding 2026-08-19: 345 tasks releasing at once across 13 agents
+  // (several at concurrency 4-5) means up to ~20 concurrent complete() calls
+  // can fire within the same second on a fresh boot or after a backlog
+  // clears — every one of them tries the SAME tier-0/tier-1 provider first,
+  // which is exactly a 429 stampede against a 30 RPM free-tier limit. This
+  // caps how many complete() calls are actually making outbound HTTP
+  // requests at once, process-wide, independent of each agent's own
+  // concurrency setting (which only bounds ONE agent's in-flight tasks, not
+  // the whole process's in-flight LLM calls).
   async complete(rawMessages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
+    await acquireLLMConcurrencySlot();
+    try {
+      return await this.completeInner(rawMessages, tools);
+    } finally {
+      releaseLLMConcurrencySlot();
+    }
+  }
+
+  private async completeInner(rawMessages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
     const OpenAI = (await import('openai')).default;
 
     // Cap the conversation BEFORE any provider sees it. Previously an
@@ -554,20 +605,40 @@ class MultiProviderClient {
       await new Promise(r => setTimeout(r, waitMs));
     }
 
-    // Build a round-robin ordered provider list: start from a different index
-    // each call so concurrent requests don't all stampede the same provider.
+    // Build a round-robin ordered provider list.
+    //
+    // FIXED 2026-08-19 — root-cause finding: this used to rotate the start
+    // index across the ENTIRE flat PROVIDERS array, so the documented
+    // "paid anchor / largest budget first" tier ordering only actually held
+    // on 1 call in PROVIDERS.length; the rest of the time a later-tier
+    // provider got tried before an earlier, higher-priority one purely
+    // because of where rrStartIndex happened to land that call. Tiers now
+    // determine priority ORDER unconditionally (tier 0 paid anchor always
+    // considered before tier 1 free providers, always before tier 2/3);
+    // round-robin only spreads concurrent load WITHIN a tier, by rotating a
+    // separate start index per tier so it can't cross a tier boundary.
+    const byTier = new Map<number, typeof PROVIDERS>();
+    for (const p of PROVIDERS) {
+      const t = p.tier ?? 1;
+      if (!byTier.has(t)) byTier.set(t, []);
+      byTier.get(t)!.push(p);
+    }
+    const sortedTiers = [...byTier.keys()].sort((a, b) => a - b);
     const reliableProviders: typeof PROVIDERS = [];
     const unreliableProviders: typeof PROVIDERS = [];
-    for (let i = 0; i < PROVIDERS.length; i++) {
-      const idx = (rrStartIndex + i) % PROVIDERS.length;
-      const p = PROVIDERS[idx];
-      if (p.toolCallingReliable === false) {
-        unreliableProviders.push(p);
-      } else {
-        reliableProviders.push(p);
+    for (const t of sortedTiers) {
+      const group = byTier.get(t)!;
+      const startIdx = rrStartIndexByTier.get(t) ?? 0;
+      for (let i = 0; i < group.length; i++) {
+        const p = group[(startIdx + i) % group.length];
+        if (p.toolCallingReliable === false) {
+          unreliableProviders.push(p);
+        } else {
+          reliableProviders.push(p);
+        }
       }
+      rrStartIndexByTier.set(t, (startIdx + 1) % group.length); // rotate this tier for next call
     }
-    rrStartIndex = (rrStartIndex + 1) % PROVIDERS.length; // rotate for next call
 
     for (let pass = 0; pass <= 1; pass++) {
       if (pass === 1) {
@@ -1088,7 +1159,41 @@ function clearProviderCooldown(name: string): void {
 // available providers instead of stampeding the first one. Combined with the
 // circuit breaker, this means when Cerebras is in cooldown, the next request
 // naturally starts from Groq, then Gemini, etc.
-let rrStartIndex = 0;
+const rrStartIndexByTier = new Map<number, number>(); // rotation index PER TIER — see complete() for why
+
+// ─── Process-wide LLM call concurrency cap ─────────────────────────────────
+//
+// ADDED 2026-08-19 per root-cause finding: 345 tasks releasing at once
+// across 13 agents (some at concurrency 4-5) means the process can attempt
+// ~20 simultaneous outbound LLM calls the instant a backlog clears or right
+// after boot — all racing into the SAME first tier/provider, a guaranteed
+// 429 stampede against free-tier per-minute limits. This is a simple
+// counting semaphore: only MAX_CONCURRENT_LLM_CALLS complete() calls are
+// ever doing real work at once; the rest await their turn in FIFO order.
+// Deliberately generous (not 1-2) — the goal is smoothing a stampede into a
+// steady stream, not serializing the whole workforce.
+const MAX_CONCURRENT_LLM_CALLS = 6;
+let activeLLMCalls = 0;
+const llmCallWaitQueue: Array<() => void> = [];
+
+function acquireLLMConcurrencySlot(): Promise<void> {
+  if (activeLLMCalls < MAX_CONCURRENT_LLM_CALLS) {
+    activeLLMCalls++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    llmCallWaitQueue.push(() => {
+      activeLLMCalls++;
+      resolve();
+    });
+  });
+}
+
+function releaseLLMConcurrencySlot(): void {
+  activeLLMCalls--;
+  const next = llmCallWaitQueue.shift();
+  if (next) next();
+}
 
 // ─── Global Backoff ───────────────────────────────────────────────────────────
 // When ALL providers fail in a single pass, the entire system is under
