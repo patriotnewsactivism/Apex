@@ -21,6 +21,10 @@ import type {
 
 // ─── Global Event Bus ─────────────────────────────────────────────────────────
 
+// Idle polling bounds — see the idle backoff in start() below.
+const IDLE_POLL_FLOOR_MS = 5_000;
+const IDLE_POLL_CAP_MS = 60_000;
+
 export const apexEventBus = new EventEmitter();
 apexEventBus.setMaxListeners(100);
 
@@ -199,6 +203,9 @@ export abstract class BaseAgent {
     this.setStatus('idle');
 
     let consecutiveErrors = 0;
+    // Consecutive polls that found an empty queue — drives the idle backoff
+    // below. Reset to 0 as soon as a task is dequeued.
+    let idleCycles = 0;
     // Promise<unknown> (not Promise<void>): executeTask resolves TaskResult on
     // success and the .catch handler resolves void on failure -- the union
     // type doesn't matter here, only Promise.race()'s settle timing is used.
@@ -212,6 +219,7 @@ export abstract class BaseAgent {
           if (!task) break;
 
           consecutiveErrors = 0;
+          idleCycles = 0; // real work arrived — back to the fast 5s poll
           this.currentTaskIds.add(task.id);
           // Hard wall-clock ceiling on the WHOLE task, not just individual LLM
           // calls. Root-caused 2026-08-19: Apex's worker loop went completely
@@ -274,7 +282,20 @@ export abstract class BaseAgent {
         }
 
         if (inFlight.size === 0) {
-          await new Promise((r) => setTimeout(r, 5000)); // Poll every 5s (was 2s — reduced provider stampeding)
+          // Idle backoff (2026-08-19). A flat 5s poll means 13 agents issue
+          // ~225k dequeue() round-trips a day doing nothing, and — worse for
+          // token spend — an idle-but-polling workforce picks up every
+          // speculative task the instant it appears, so any task-generating
+          // job turns straight into LLM spend at maximum rate. Backing an
+          // idle agent off from 5s toward 60s costs at most ~1 min of pickup
+          // latency on a quiet queue and is reset to 5s the moment real work
+          // arrives (below), so a busy workforce behaves exactly as before.
+          idleCycles++;
+          const idleWaitMs = Math.min(
+            IDLE_POLL_FLOOR_MS * Math.pow(2, Math.min(idleCycles - 1, 4)),
+            IDLE_POLL_CAP_MS,
+          );
+          await new Promise((r) => setTimeout(r, idleWaitMs));
           continue;
         }
 

@@ -8,6 +8,7 @@ export * from './memory.js';
 export * from './task-queue.js';
 export * from './base-agent.js';
 export * from './non-completion.js';
+export * from './token-ledger.js';
 
 export { optimizePrompt } from './prompt-forge.js';
 export type { OptimizePromptInput, OptimizePromptResult, PromptCandidateResult } from './prompt-forge.js';
