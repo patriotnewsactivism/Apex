@@ -1,5 +1,13 @@
 # Apex Implementation Checklist
 
+> **⚠️ 2026-08-19 — INFRASTRUCTURE NOTE (read before acting on anything below).**
+> Every deployment/hosting reference in this file is **historical**. Apex
+> production runs on the **AWS Lightsail** container service `apex-service`,
+> image built by CodeBuild project `apex-lightsail-build`. Railway was retired
+> 2026-08-16 and Apex has never run on Vercel. Where this file says "Railway"
+> or implies Apex deploys to Vercel, read it as a record of what was true at
+> the time, not as current state. `README.md` and `AGENTS.md` are authoritative.
+
 Master tracking checklist for the roadmap in `ROADMAP.md`. Only check an item
 when it is actually built AND verified (typecheck/build/test + deployed) —
 per standing discipline, do not mark ahead of real, confirmed work.
