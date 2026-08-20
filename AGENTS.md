@@ -29,6 +29,16 @@ letting per-tool copies re-diverge._
 > service's real health endpoint (`aws lightsail get-container-services
 > --service-name apex-service --query 'containerServices[0].url'`, then
 > `curl <url>health`) for direct proof, not just deployment state.
+>
+> **Differentiating the deploy targets (2026-08-19):** Apex ITSELF runs only on
+> Lightsail. Vercel and Railway still appear throughout this repo — in the
+> CI/CD tooling, the BuildMyBot/TubeScribe connectors, and older planning docs
+> — as deploy targets for **client projects** Apex manages, or as history. Do
+> not read those as Apex's hosting, and never repoint Apex at one of them.
+> `deploy_to_environment`/`rollback_deployment` are NOT implemented: as of
+> 2026-08-19 they throw with this runbook instead of returning a fabricated
+> `status: 'healthy'` plus a fake `apex.vercel.app` URL, which previously let
+> agents report releases that never happened.
 
 ## What this is
 A persistent, hierarchical **13-agent** autonomous workforce (CEO -> CTO/COO

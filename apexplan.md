@@ -1,5 +1,13 @@
 # Apex → Convex Migration
 
+> **⚠️ 2026-08-19 — INFRASTRUCTURE NOTE (read before acting on anything below).**
+> Every deployment/hosting reference in this file is **historical**. Apex
+> production runs on the **AWS Lightsail** container service `apex-service`,
+> image built by CodeBuild project `apex-lightsail-build`. Railway was retired
+> 2026-08-16 and Apex has never run on Vercel. Where this file says "Railway"
+> or implies Apex deploys to Vercel, read it as a record of what was true at
+> the time, not as current state. `README.md` and `AGENTS.md` are authoritative.
+
 ## ⚡ RESUMPTION SNAPSHOT (2026-07-26, ~21:40) — READ THIS FIRST
 
 Written mid-M3 at the user's request so work can resume on a different model/session. This section is the source of truth for "what's actually done" — trust it over inference from file timestamps.

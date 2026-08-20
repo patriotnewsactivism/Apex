@@ -1595,10 +1595,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── CI/CD: Deploy to environment ───────────────────────────────────
     {
       name: 'deploy_to_environment',
-      description: 'Deploy codebase to specified target environment (staging | production). Production deploys require explicit human approval.',
+      // 2026-08-19: description corrected to state the truth. This tool has
+      // never performed a deployment — it used to return a fabricated
+      // status:'healthy' and a fake 'apex.vercel.app' URL, so agents reported
+      // releases that never happened. It now throws with the real runbook.
+      description:
+        'NOT IMPLEMENTED — records a deploy attempt and fails with instructions. Apex production runs on AWS Lightsail (container service apex-service, built by CodeBuild project apex-lightsail-build), and no AWS credentials are wired into this process, so no agent can deploy Apex. Call this only to surface the runbook; escalate to a human to actually ship. Never report a deployment as complete based on this tool.',
       schema: z.object({
         environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
-        platform: z.enum(['vercel', 'local']).optional().describe('Deployment platform (default "local")'),
+        platform: z.enum(['lightsail', 'local']).optional().describe('Deployment platform — Apex production is "lightsail" (AWS Lightsail apex-service); "local" is a dev box. Apex is NOT hosted on Vercel.'),
       }),
       requiresApproval: true,
       async execute({ environment, platform }) {
@@ -1615,7 +1620,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── CI/CD: Rollback deployment ──────────────────────────────────────
     {
       name: 'rollback_deployment',
-      description: 'Rollback a deployment environment to the previous healthy release. Requires approval.',
+      description:
+        'NOT IMPLEMENTED — fails with instructions instead of pretending to roll back (it previously only flipped a DB flag, leaving the bad release live). Roll back by deploying the previous image tag to the AWS Lightsail service apex-service; escalate to a human.',
       schema: z.object({
         deploymentId: z.string().describe('Deployment ID to roll back'),
       }),

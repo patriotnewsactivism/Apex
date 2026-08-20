@@ -1,5 +1,13 @@
 # Apex — Build Plan
 
+> **⚠️ 2026-08-19 — INFRASTRUCTURE NOTE (read before acting on anything below).**
+> Every deployment/hosting reference in this file is **historical**. Apex
+> production runs on the **AWS Lightsail** container service `apex-service`,
+> image built by CodeBuild project `apex-lightsail-build`. Railway was retired
+> 2026-08-16 and Apex has never run on Vercel. Where this file says "Railway"
+> or implies Apex deploys to Vercel, read it as a record of what was true at
+> the time, not as current state. `README.md` and `AGENTS.md` are authoritative.
+
 Last updated 2026-07-12. Ranked in build order — later items assume earlier
 ones are done.
 
