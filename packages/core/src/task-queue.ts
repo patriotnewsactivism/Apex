@@ -86,7 +86,26 @@ export class TaskQueue {
       // silently forever, with the outer loop's `if (!task) break` + 5s sleep
       // producing a system that looks alive (starts fine, polls, sleeps) but
       // never executes a single task, and never says why. Log it for real.
-      console.error(`[TaskQueue.dequeue] agent=${this.agentId} query failed:`, err instanceof Error ? err.stack ?? err.message : err);
+      // Drizzle/postgres-js wraps the REAL Postgres error in `.cause` — the
+      // outer error's own .message/.stack is just "Failed query: <the SQL>"
+      // and tells us nothing about WHY. Log the cause chain explicitly.
+      const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
+      console.error(`[TaskQueue.dequeue] agent=${this.agentId} query failed:`, err instanceof Error ? err.message : err);
+      if (cause) {
+        console.error(`[TaskQueue.dequeue] agent=${this.agentId} ROOT CAUSE:`, cause instanceof Error ? (cause.stack ?? cause.message) : cause);
+        // postgres-js errors carry structured fields (code, detail, position, etc.) not on .message
+        if (typeof cause === 'object') {
+          const pgFields = ['code', 'detail', 'hint', 'position', 'severity', 'where', 'schema', 'table', 'column', 'constraint'];
+          const extracted: Record<string, unknown> = {};
+          for (const f of pgFields) {
+            const v = (cause as Record<string, unknown>)[f];
+            if (v !== undefined) extracted[f] = v;
+          }
+          if (Object.keys(extracted).length > 0) {
+            console.error(`[TaskQueue.dequeue] agent=${this.agentId} PG FIELDS:`, JSON.stringify(extracted));
+          }
+        }
+      }
     }
 
     const nextMemIdx = this.memoryQueue.findIndex((t) => t.status === 'pending');
