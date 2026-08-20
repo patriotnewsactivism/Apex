@@ -63,3 +63,31 @@ The second tag above is the real fix for this class of confusion. Deploying
 `:<sha>` instead of `:latest` makes every deployment name exactly one image, and
 makes rollback meaningful — `rollbackLightsail()` currently warns that restoring
 a spec pinned to `:latest` may re-pull the same bad image, because it can.
+
+## How to deploy
+
+```
+Actions → Deploy → Run workflow → environment: staging | production
+```
+
+`.github/workflows/deploy.yml` (see `docs/deploy-workflow.yml` for the exact
+contents to copy in — GitHub Apps are barred from writing workflow files, so it
+has to be added by a human) runs `packages/cicd-automation/scripts/deploy.mts`,
+which calls the same `deployToLightsail()` used everywhere else — CI does not
+reimplement the deploy in YAML — and then additionally asserts that the commit
+answering `/health` **is the commit that was just deployed**. A cached `:latest`
+digest therefore fails the run instead of passing as green.
+
+One-time setup in the repo (Settings):
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Secret | `AWS_ACCESS_KEY_ID` | the `apex-deployer` IAM user's key |
+| Secret | `AWS_SECRET_ACCESS_KEY` | its secret |
+| Variable | `APEX_DEPLOY_ENABLED` | `staging`, `production`, or `all` |
+| Variable | `AWS_REGION` | `us-east-1` (default if unset) |
+
+Use the scoped `apex-deployer` user from `docs/aws-deploy-iam-policy.json`, never
+root credentials: the policy grants five actions and cannot touch anything else
+if it leaks. With `APEX_DEPLOY_ENABLED` unset the deployer refuses to run, so
+merging this workflow does not by itself enable deployments.
