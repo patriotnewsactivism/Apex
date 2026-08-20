@@ -1595,15 +1595,17 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── CI/CD: Deploy to environment ───────────────────────────────────
     {
       name: 'deploy_to_environment',
-      // 2026-08-19: description corrected to state the truth. This tool has
-      // never performed a deployment — it used to return a fabricated
-      // status:'healthy' and a fake 'apex.vercel.app' URL, so agents reported
-      // releases that never happened. It now throws with the real runbook.
+      // 2026-08-19 (second pass): now REAL. Runs CodeBuild
+      // apex-lightsail-build, redeploys the Lightsail service apex-service
+      // with its existing spec, waits for ACTIVE, and verifies the live
+      // /health endpoint. Requires APEX_DEPLOY_ENABLED plus scoped AWS
+      // credentials; without either it fails with instructions instead of
+      // faking success (which is what it did before today).
       description:
-        'NOT IMPLEMENTED — records a deploy attempt and fails with instructions. Apex production runs on AWS Lightsail (container service apex-service, built by CodeBuild project apex-lightsail-build), and no AWS credentials are wired into this process, so no agent can deploy Apex. Call this only to surface the runbook; escalate to a human to actually ship. Never report a deployment as complete based on this tool.',
+        'Deploy Apex to AWS Lightsail for real: triggers CodeBuild project apex-lightsail-build, redeploys container service apex-service with its current spec, waits for the deployment to reach ACTIVE, then verifies the live /health endpoint and returns the real service URL. Takes several minutes. Throws with actionable instructions if deploys are disabled (APEX_DEPLOY_ENABLED) or AWS credentials are missing — a throw means NOTHING shipped, so never report a release as done unless this returns successfully. Requires human approval.',
       schema: z.object({
         environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
-        platform: z.enum(['lightsail', 'local']).optional().describe('Deployment platform — Apex production is "lightsail" (AWS Lightsail apex-service); "local" is a dev box. Apex is NOT hosted on Vercel.'),
+        platform: z.enum(['lightsail', 'local']).optional().describe('Deployment platform — use "lightsail" (AWS Lightsail apex-service) for a real deploy; "local" has no deploy target and is rejected. Apex is NOT hosted on Vercel.'),
       }),
       requiresApproval: true,
       async execute({ environment, platform }) {
@@ -1611,7 +1613,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const manager = new DeploymentManager();
         const result = await manager.deploy({
           environment,
-          platform: platform ?? 'local',
+          platform: platform ?? 'lightsail',
         });
         return result;
       },
@@ -1621,7 +1623,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     {
       name: 'rollback_deployment',
       description:
-        'NOT IMPLEMENTED — fails with instructions instead of pretending to roll back (it previously only flipped a DB flag, leaving the bad release live). Roll back by deploying the previous image tag to the AWS Lightsail service apex-service; escalate to a human.',
+        'Roll the live AWS Lightsail service apex-service back to its previous ACTIVE deployment spec, wait for ACTIVE, and verify the /health endpoint before reporting success. Note: if the bad release overwrote the same :latest image tag, this re-pulls that image — the tool warns when it detects this, and the real fix is rebuilding a known-good commit. Requires approval.',
       schema: z.object({
         deploymentId: z.string().describe('Deployment ID to roll back'),
       }),
