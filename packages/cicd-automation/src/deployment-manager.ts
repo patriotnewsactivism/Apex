@@ -22,6 +22,7 @@
 // from where Apex itself is hosted, which is Lightsail, only Lightsail.
 
 import { db, deployments, type NewDeploymentRow } from '@workspace/db';
+import { deployToLightsail, rollbackLightsail, DeployNotConfiguredError } from './lightsail-deployer.js';
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 
@@ -54,43 +55,98 @@ export class DeploymentManager {
    *  approval. NOTE: this does not and never did perform a deployment — it
    *  records the attempt as `failed` and throws with the real runbook, so no
    *  agent can mistake it for a shipped release. See the header comment. */
-  async deploy(config: DeploymentConfig): Promise<never> {
+  async deploy(config: DeploymentConfig): Promise<{
+    deploymentId: string;
+    status: string;
+    deploymentUrl?: string;
+    buildId?: string;
+    deploymentVersion?: number;
+  }> {
     const deploymentId = `deploy-${crypto.randomUUID().slice(0, 8)}`;
-    const now = new Date();
-    const error =
-      `Automated deploy is not implemented. ${LIGHTSAIL_DEPLOY_RUNBOOK}`;
+    const startedAt = new Date();
+    const logLines: string[] = [];
+    const log = (m: string) => {
+      logLines.push(m);
+      console.log(`[deploy ${deploymentId}] ${m}`);
+    };
 
+    // 'local' has no deploy target and never did. Say so instead of
+    // pretending, and never let it reach AWS.
+    if (config.platform === 'local') {
+      throw new Error(
+        `platform 'local' has no deploy target — nothing to ship. Use 'lightsail' for real deploys.`,
+      );
+    }
+
+    // Record the attempt BEFORE doing anything, as 'deploying'. If this
+    // process dies mid-deploy, the row shows an in-flight deploy rather than
+    // no evidence at all.
     const record: NewDeploymentRow = {
       id: deploymentId,
       runId: config.runId ?? null,
       environment: config.environment,
       platform: config.platform,
-      // No URL is invented. The only real Apex production hostname is the
-      // Lightsail service URL that apex.donmatthews.live points at, and this
-      // code has no way to look it up without AWS credentials.
-      deploymentUrl: undefined,
-      status: 'failed',
+      deploymentUrl: null,
+      status: 'deploying',
       rolledBack: false,
-      error,
-      deployedAt: now,
+      error: null,
+      deployedAt: startedAt,
     };
-
-    // Best effort: the audit row matters, but a DB hiccup must not mask the
-    // real message below.
     try {
       await db.insert(deployments).values(record);
     } catch (err) {
       console.error('[DeploymentManager] Failed to record deploy attempt:', err);
     }
 
-    throw new Error(`${error} (attempt recorded as ${deploymentId})`);
+    try {
+      const result = await deployToLightsail(config.environment, log);
+      await this.updateRow(deploymentId, {
+        status: 'healthy',
+        deploymentUrl: result.serviceUrl,
+        error: null,
+      });
+      return {
+        deploymentId,
+        status: 'healthy',
+        deploymentUrl: result.serviceUrl,
+        buildId: result.buildId,
+        deploymentVersion: result.deploymentVersion,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A config/permission problem is not a failed release — nothing was
+      // shipped — so it's recorded distinctly from a genuine bad deploy.
+      const status = err instanceof DeployNotConfiguredError ? 'blocked' : 'failed';
+      await this.updateRow(deploymentId, {
+        status,
+        error: [message, ...logLines.map((l) => `  · ${l}`)].join('\n'),
+      });
+      throw new Error(`${message} (deployment ${deploymentId}, status ${status})`);
+    }
   }
 
-  /** Rollback a deployment. Also not implemented: this only ever flipped the
-   *  `rolled_back` flag on a DB row, which is worse than failing — it ends
-   *  the incident in the agent's mind (and in the dashboard) while production
-   *  is still serving the bad release. Throws before mutating anything. */
-  async rollback(deploymentId: string): Promise<never> {
+  private async updateRow(
+    deploymentId: string,
+    values: Partial<NewDeploymentRow>,
+  ): Promise<void> {
+    try {
+      await db.update(deployments).set(values).where(eq(deployments.id, deploymentId));
+    } catch (err) {
+      console.error('[DeploymentManager] Failed to update deploy row:', err);
+    }
+  }
+
+  /** Roll the RUNNING SERVICE back to the previous ACTIVE deployment spec and
+   *  verify health. The DB row is only marked `rolled_back` after Lightsail
+   *  reports ACTIVE and the health endpoint answers — the old implementation
+   *  flipped that flag with no deployment at all, which closed the incident
+   *  while the bad release kept serving traffic. */
+  async rollback(deploymentId: string): Promise<{
+    success: boolean;
+    rolledBackId: string;
+    restoredFromVersion: number;
+    serviceUrl: string;
+  }> {
     const [existing] = await db
       .select()
       .from(deployments)
@@ -101,10 +157,22 @@ export class DeploymentManager {
       throw new Error(`Deployment ${deploymentId} not found`);
     }
 
-    throw new Error(
-      `Automated rollback is not implemented for deployment ${deploymentId}. ` +
-        `${LIGHTSAIL_DEPLOY_RUNBOOK} Roll back by deploying the previous image ` +
-        `tag to apex-service, then update this row by hand.`,
-    );
+    const environment = (existing.environment === 'staging' ? 'staging' : 'production') as
+      | 'staging'
+      | 'production';
+    const result = await rollbackLightsail(environment);
+
+    await this.updateRow(deploymentId, {
+      status: 'rolled_back',
+      rolledBack: true,
+      error: `Rolled back to the deployment spec from v${result.restoredFromVersion}; health ${result.healthStatus}`,
+    });
+
+    return {
+      success: true,
+      rolledBackId: deploymentId,
+      restoredFromVersion: result.restoredFromVersion,
+      serviceUrl: result.serviceUrl,
+    };
   }
 }
