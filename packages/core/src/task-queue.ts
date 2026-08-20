@@ -62,6 +62,23 @@ export class TaskQueue {
   async dequeue(): Promise<Task | null> {
     try {
       const now = new Date();
+      // ROOT CAUSE FOUND 2026-08-19 (via the console.error added earlier
+      // today): this raw `sql` fragment interpolated the bare `now` Date
+      // object directly (`next_retry_at <= ${now}`). Drizzle's typed
+      // `.set({ leasedAt: now, ... })` above knows each column's type and
+      // serializes Date correctly, but a raw sql`` fragment has no column
+      // type context -- the driver received an unconverted Date instance as
+      // a bind parameter and threw `TypeError [ERR_INVALID_ARG_TYPE]: The
+      // "string" argument must be of type string or an instance of Buffer
+      // or ArrayBuffer. Received an instance of Date` on every single call.
+      // This was thrown BEFORE the query ever reached Postgres -- every
+      // agent's dequeue() has been failing identically and (until today)
+      // silently since whatever commit introduced next_retry_at, which is
+      // the actual explanation for the "workers never process tasks"
+      // symptom this whole investigation chased through the LLM chain.
+      // Fix: serialize explicitly with .toISOString() instead of relying on
+      // implicit driver coercion inside a raw fragment.
+      const nowIso = now.toISOString();
       // One round-trip: claim the row atomically and return the full updated record.
       const [task] = await db
         .update(tasks)
@@ -70,7 +87,7 @@ export class TaskQueue {
           SELECT id FROM tasks
           WHERE assigned_agent_id = ${this.agentId}
             AND status = 'pending'
-            AND (next_retry_at IS NULL OR next_retry_at <= ${now})
+            AND (next_retry_at IS NULL OR next_retry_at <= ${nowIso})
           ORDER BY priority ASC, created_at ASC
           LIMIT 1
         )`)
