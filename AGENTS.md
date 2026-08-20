@@ -35,6 +35,13 @@ letting per-tool copies re-diverge._
 > CI/CD tooling, the BuildMyBot/TubeScribe connectors, and older planning docs
 > — as deploy targets for **client projects** Apex manages, or as history. Do
 > not read those as Apex's hosting, and never repoint Apex at one of them.
+> **Verifying what's live:** `GET /health` reports the commit baked into the
+> running image (`build.sha`), process uptime, and task-queue liveness, and
+> returns 503 when `dequeue()` is failing repeatedly. Check it before theorising
+> about production behaviour — on 2026-08-19 hours went into a bug that was
+> actually a stale image, because nothing could answer "is my fix running?".
+> See `docs/deploy-provenance.md`.
+>
 > **Self-deploy is now implemented (2026-08-19, second pass).**
 > `deploy_to_environment` runs the four steps above for real via
 > `packages/cicd-automation/src/lightsail-deployer.ts` (CodeBuild StartBuild →
