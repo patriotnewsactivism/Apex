@@ -1,4 +1,11 @@
 import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } from './types.js';
+import {
+  isProviderOverDailyCap,
+  isTotalDailyCapReached,
+  msUntilDailyReset,
+  providerTokensToday,
+  recordTokenUsage,
+} from './token-ledger.js';
 
 // ─── Multi-Provider Fallback Client ───────────────────────────────────────────
 //
@@ -546,6 +553,16 @@ class MultiProviderClient {
   private async completeInner(rawMessages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
     const OpenAI = (await import('openai')).default;
 
+    // ── Workspace-wide daily token cap (token-ledger.ts) ────────────────────
+    // Fail fast and honestly instead of walking 15 providers to collect 15
+    // 429s. Unset/0 = no cap, i.e. exactly the pre-2026-08-19 behavior.
+    if (isTotalDailyCapReached()) {
+      throw new Error(
+        `APEX daily token cap reached (APEX_TOKEN_CAP_TOTAL) — LLM spend is paused until the UTC daily reset ` +
+          `in ~${Math.round(msUntilDailyReset() / 60000)} min. Raise APEX_TOKEN_CAP_TOTAL to continue today.`,
+      );
+    }
+
     // Cap the conversation BEFORE any provider sees it. Previously an
     // overgrown history was handed unchanged to every provider in turn, so a
     // single bloated task could 413 its way through the entire chain and
@@ -672,6 +689,21 @@ class MultiProviderClient {
         continue;
       }
 
+      // Budget governor (token-ledger.ts): skip a provider that has already
+      // spent its configured daily token allowance. This is the PROACTIVE
+      // counterpart to the circuit breaker — the breaker can only react after
+      // a 429 has already been paid for out of the provider's per-day REQUEST
+      // quota, whereas this never sends the request at all. No configured cap
+      // for a provider = never skipped here.
+      if (isProviderOverDailyCap(provider.name)) {
+        console.warn(
+          `[LLM] Skipping ${provider.name}: daily token budget spent (${providerTokensToday(provider.name)} tokens today, ` +
+            `APEX_TOKEN_CAPS) — resets in ~${Math.round(msUntilDailyReset() / 60000)} min`,
+        );
+        setProviderCooldown(provider.name, 'daily-cap', undefined);
+        continue;
+      }
+
       // Defer unreliable providers for tool-bearing requests. They answer in
       // prose instead of emitting structured tool calls, which creates fake
       // "success" responses. On the first pass, skip them entirely so reliable
@@ -704,6 +736,7 @@ class MultiProviderClient {
       if (provider.protocol === 'anthropic') {
         try {
           const response = await this.completeViaAnthropic(provider, apiKey, model, messages, tools);
+          recordTokenUsage(provider.name, response.usage);
           clearProviderCooldown(provider.name);
           if (providerErrors.length > 0) {
             console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
@@ -855,6 +888,15 @@ class MultiProviderClient {
             parsed = {};
           }
           return [{ id: tc.id, name: tc.function.name, args: parsed as Record<string, unknown> }];
+        });
+
+        // Real spend accounting — usage was parsed on every call since the
+        // multi-provider chain was written, but never recorded anywhere, so
+        // nothing in the system knew how many tokens the workforce had burned
+        // today. See token-ledger.ts.
+        recordTokenUsage(provider.name, {
+          promptTokens: res.usage?.prompt_tokens ?? 0,
+          completionTokens: res.usage?.completion_tokens ?? 0,
         });
 
         // Log success so it's visible which provider actually served the request
@@ -1094,7 +1136,18 @@ function isRepeatedUnclassified429(name: string): boolean {
   return history.length >= UNCLASSIFIED_429_STREAK_THRESHOLD;
 }
 
-function setProviderCooldown(name: string, status: number | undefined, message?: string): void {
+function setProviderCooldown(
+  name: string,
+  status: number | 'daily-cap' | undefined,
+  message?: string,
+): void {
+  // 'daily-cap' is not a provider error at all — it's OUR ledger saying this
+  // provider's configured daily token allowance is spent. The correct cooldown
+  // is until the actual UTC daily reset, not a 4h heuristic.
+  if (status === 'daily-cap') {
+    providerCooldowns.set(name, Date.now() + msUntilDailyReset());
+    return;
+  }
   let ms = COOLDOWN_429_MS;
   let escalatedViaStreak = false;
   if (status === 402) ms = COOLDOWN_402_MS;
