@@ -120,6 +120,18 @@ COPY --from=builder /app/packages/dashboard/dist ./packages/dashboard/dist
 # die on retries. Keep in sync if new workspace docs are added at repo root.
 COPY *.md ./
 
+# ─── Build provenance ────────────────────────────────────────────────────────
+# Baked in so /health can report exactly which commit is running. Without this,
+# a mutable `:latest` tag makes "is my fix actually deployed?" unanswerable
+# without a redeploy — which cost hours on 2026-08-19. Pass from CodeBuild:
+#   --build-arg APEX_BUILD_SHA=$CODEBUILD_RESOLVED_SOURCE_VERSION
+#   --build-arg APEX_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Defaults to 'unknown' so an un-updated buildspec still builds (and says so).
+ARG APEX_BUILD_SHA=unknown
+ARG APEX_BUILD_TIME=
+ENV APEX_BUILD_SHA=$APEX_BUILD_SHA
+ENV APEX_BUILD_TIME=$APEX_BUILD_TIME
+
 # Create .local dir for SQLite (Railway volume mounts here)
 RUN mkdir -p /app/.local
 

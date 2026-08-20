@@ -16,7 +16,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
@@ -387,9 +387,37 @@ await recoverStaleLeasedTasks();
   app.use(cors({ origin: '*' }));
   app.use(express.json({ limit: '10mb' }));
 
-  // Health check
+  // Health check.
+  //
+  // This used to return a flat {status:'ok'} that proved only that Express was
+  // listening. On 2026-08-19 every agent's dequeue() was throwing on 100% of
+  // calls for hours while this endpoint reported 'ok' — so a deploy "verified"
+  // against it was not verified at all. It now reports:
+  //   · build provenance (which commit is actually running, and for how long),
+  //     so "did my fix reach production?" is one curl instead of a redeploy;
+  //   · task-queue liveness, so a queue failing identically forever is visible
+  //     from outside the box.
+  // A provably broken queue returns HTTP 503, which makes the automated deploy
+  // verifier in @workspace/cicd-automation reject such a release instead of
+  // reporting a healthy deploy of a service that cannot do any work.
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', agents: workforce.size, timestamp: Date.now() });
+    const queue = getDequeueHealth();
+    const broken = isTaskQueueBroken();
+    res.status(broken ? 503 : 200).json({
+      status: broken ? 'degraded' : 'ok',
+      agents: workforce.size,
+      build: getBuildInfo(),
+      taskQueue: {
+        ...queue,
+        // Named so the failure mode is unmissable in a log tail or a curl.
+        verdict: broken
+          ? `BROKEN — ${queue.consecutiveFailures} consecutive dequeue failures: ${queue.lastFailureMessage}`
+          : queue.failures > 0
+            ? 'recovered — dequeue is succeeding now, but has failed before (see counters)'
+            : 'ok',
+      },
+      timestamp: Date.now(),
+    });
   });
 
   // Health Monitor & Alert Manager setup
