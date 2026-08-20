@@ -70,7 +70,9 @@ a spec pinned to `:latest` may re-pull the same bad image, because it can.
 Actions → Deploy → Run workflow → environment: staging | production
 ```
 
-`.github/workflows/deploy.yml` runs `packages/cicd-automation/scripts/deploy.mts`,
+`.github/workflows/deploy.yml` (see `docs/deploy-workflow.yml` for the exact
+contents to copy in — GitHub Apps are barred from writing workflow files, so it
+has to be added by a human) runs `packages/cicd-automation/scripts/deploy.mts`,
 which calls the same `deployToLightsail()` used everywhere else — CI does not
 reimplement the deploy in YAML — and then additionally asserts that the commit
 answering `/health` **is the commit that was just deployed**. A cached `:latest`
