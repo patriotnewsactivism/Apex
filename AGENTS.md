@@ -35,10 +35,23 @@ letting per-tool copies re-diverge._
 > CI/CD tooling, the BuildMyBot/TubeScribe connectors, and older planning docs
 > — as deploy targets for **client projects** Apex manages, or as history. Do
 > not read those as Apex's hosting, and never repoint Apex at one of them.
-> `deploy_to_environment`/`rollback_deployment` are NOT implemented: as of
-> 2026-08-19 they throw with this runbook instead of returning a fabricated
-> `status: 'healthy'` plus a fake `apex.vercel.app` URL, which previously let
-> agents report releases that never happened.
+> **Self-deploy is now implemented (2026-08-19, second pass).**
+> `deploy_to_environment` runs the four steps above for real via
+> `packages/cicd-automation/src/lightsail-deployer.ts` (CodeBuild StartBuild →
+> poll → CreateContainerServiceDeployment reusing the CURRENT spec → poll to
+> ACTIVE → verify the live `/health` endpoint) and `rollback_deployment` rolls
+> the service back to the previous ACTIVE spec, also health-verified. Both are
+> approval-gated. Earlier the same day they threw; before that they returned a
+> fabricated `status: 'healthy'` plus a fake `apex.vercel.app` URL, which let
+> agents report releases that never happened — never reintroduce that shape.
+> Requirements, both mandatory or the tool refuses (it never fakes):
+> `APEX_DEPLOY_ENABLED=production` (or `staging` / `all` — credentials existing
+> is not consent to ship) and scoped AWS credentials. Use a dedicated IAM
+> identity with the five actions in `docs/aws-deploy-iam-policy.json`, never
+> root-account keys. Optional: `APEX_CODEBUILD_PROJECT`,
+> `APEX_LIGHTSAIL_SERVICE`, `APEX_DEPLOY_BUILD_TIMEOUT_MS`,
+> `APEX_DEPLOY_ACTIVATION_TIMEOUT_MS`, `APEX_DEPLOY_POLL_INTERVAL_MS`.
+> A throw from either tool means NOTHING shipped.
 
 ## What this is
 A persistent, hierarchical **13-agent** autonomous workforce (CEO -> CTO/COO

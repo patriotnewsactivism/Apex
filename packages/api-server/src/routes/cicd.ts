@@ -96,7 +96,7 @@ export function createCicdRouter(): Router {
       const manager = new DeploymentManager();
       const result = await manager.deploy({
         environment: environment ?? 'production',
-        platform: platform ?? 'local',
+        platform: platform ?? 'lightsail',
       });
       res.json(result);
     } catch (err) {

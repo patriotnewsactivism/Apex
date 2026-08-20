@@ -29,7 +29,17 @@ manages, or historical notes. Neither is where Apex itself runs. Don't "fix" a
 deploy problem by pointing Apex at one of them, and don't trust any doc below
 that implies otherwise over this section and `AGENTS.md`.
 
-Note: `deploy_to_environment` / `rollback_deployment` are **not implemented** —
-they fail with the runbook above rather than faking success. Shipping Apex is a
-human action today.
+Apex can now run that sequence itself: `deploy_to_environment` performs all four
+steps and then verifies the live `/health` endpoint, and `rollback_deployment`
+restores the previous ACTIVE deployment spec (also health-verified). Both are
+approval-gated and both **refuse rather than fake** unless two things are true:
+
+- `APEX_DEPLOY_ENABLED=production` (or `staging` / `all`) — AWS credentials
+  merely existing in the process is not consent to ship.
+- Scoped AWS credentials are attached. Use a dedicated IAM identity with the
+  five actions in [`docs/aws-deploy-iam-policy.json`](docs/aws-deploy-iam-policy.json)
+  — **never AWS root-account keys**, which cannot be scoped or cleanly rotated
+  and would be handed to 13 autonomous agents.
+
+A throw from either tool means nothing shipped.
 Built: Sat Jul 11 12:34:20 UTC 2026
