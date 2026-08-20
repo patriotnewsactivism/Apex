@@ -1,5 +1,13 @@
 # Apex Completion Roadmap (v2 — supersedes v1 ordering)
 
+> **⚠️ 2026-08-19 — INFRASTRUCTURE NOTE (read before acting on anything below).**
+> Every deployment/hosting reference in this file is **historical**. Apex
+> production runs on the **AWS Lightsail** container service `apex-service`,
+> image built by CodeBuild project `apex-lightsail-build`. Railway was retired
+> 2026-08-16 and Apex has never run on Vercel. Where this file says "Railway"
+> or implies Apex deploys to Vercel, read it as a record of what was true at
+> the time, not as current state. `README.md` and `AGENTS.md` are authoritative.
+
 Captured 2026-07-19. Don sent a refined "Direct Path Forward" that reorders
 priority vs. the original analysis (Learning now comes before CI/CD;
 Background Jobs merged into Phase 1 alongside Health Monitoring). This
