@@ -91,3 +91,24 @@ Use the scoped `apex-deployer` user from `docs/aws-deploy-iam-policy.json`, neve
 root credentials: the policy grants five actions and cannot touch anything else
 if it leaks. With `APEX_DEPLOY_ENABLED` unset the deployer refuses to run, so
 merging this workflow does not by itself enable deployments.
+
+## Deploying without the workflow file (CloudShell)
+
+`.github/workflows/deploy.yml` can only be committed by a human. Until it is,
+`scripts/deploy-from-shell.sh` performs the same build → redeploy → verify
+sequence from AWS CloudShell, where no credential ever leaves AWS:
+
+```
+curl -sL https://raw.githubusercontent.com/patriotnewsactivism/Apex/main/scripts/deploy-from-shell.sh | bash
+```
+
+It forces a genuinely new container spec (by stamping `APEX_DEPLOY_STAMP`) so a
+cached `:latest` digest cannot be silently reused, then compares the commit
+CodeBuild built against the commit answering `/health` and fails with
+`STALE IMAGE` if they differ.
+
+It deliberately does **not** set `APEX_BUILD_SHA` in the deployment spec.
+`/health` reads that value from the environment, so injecting it would override
+whatever the image was actually built with and make the provenance check pass
+unconditionally — a green light that proves nothing. The value must come from
+the image, which is why the buildspec `--build-arg` above is still required.
