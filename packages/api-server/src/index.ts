@@ -16,7 +16,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
@@ -432,6 +432,13 @@ await recoverStaleLeasedTasks();
   app.use('/api/predictive', createPredictiveRouter());
   app.use('/api/settings', createSettingsRouter());
   app.use('/api/leads', createLeadsRouter());
+
+  // Token spend observability (token-ledger.ts). Before this, "are we about to
+  // run out of tokens?" could only be answered by reading provider error logs
+  // after the fact. Behind requireAdminAuth like every other /api route.
+  app.get('/api/tokens', (_req, res) => {
+    res.json(getTokenLedgerSnapshot());
+  });
 
   // WebSocket
   setupWebSocket(server);
