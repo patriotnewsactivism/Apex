@@ -40,7 +40,9 @@ letting per-tool copies re-diverge._
 > returns 503 when `dequeue()` is failing repeatedly. Check it before theorising
 > about production behaviour — on 2026-08-19 hours went into a bug that was
 > actually a stale image, because nothing could answer "is my fix running?".
-> See `docs/deploy-provenance.md`.
+> See `docs/deploy-provenance.md`. Deploys run via the **Deploy** GitHub Actions
+> workflow (manual trigger); it fails the run if the live commit is not the
+> commit deployed, so a cached `:latest` digest can no longer pass as green.
 >
 > **Self-deploy is now implemented (2026-08-19, second pass).**
 > `deploy_to_environment` runs the four steps above for real via
