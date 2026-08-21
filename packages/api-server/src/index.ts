@@ -16,7 +16,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
@@ -311,6 +311,13 @@ async function main() {
   // workforce (and its LLM clients) are created, so a key saved via the
   // dashboard's Settings panel is live from the very first LLM call.
   await loadSettingsIntoEnv();
+
+  const durableTokenLedger = await initializeTokenLedgerPersistence();
+  console.log(
+    durableTokenLedger
+      ? '✅ Daily token ledger hydrated from Postgres'
+      : '⚠️  Daily token ledger is memory-only; restart-safe budget accounting unavailable',
+  );
 
   // Lease-expiry crash recovery: only recover tasks whose lease has expired (>10 min)
   // or whose leased_at is NULL (tasks left in_progress before leased_at was added).

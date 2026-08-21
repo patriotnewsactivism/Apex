@@ -24,9 +24,9 @@
  *      of burning a request on a guaranteed 429.
  *   3. A total daily cap can pause LLM spend workspace-wide (soft-pause: the
  *      call fails fast with a clear reason instead of silently hammering).
- *   4. State is persisted to disk so a container restart does not reset the
- *      day's counters (the failure mode that made caps meaningless before:
- *      Lightsail redeploys are frequent).
+ *   4. State is mirrored to Postgres and hydrated at boot, so replacing a
+ *      Lightsail container cannot reset the day's counters. A local file is
+ *      retained only as a fast process-level fallback when the DB is offline.
  *
  * Deliberately dependency-free and synchronous-ish (fire-and-forget disk
  * writes): it sits on the hot path of every LLM call and must never be able
@@ -77,6 +77,7 @@ function load(): LedgerState {
 }
 
 let state: LedgerState = load();
+let databasePersistenceReady = false;
 
 function persist(): void {
   try {
@@ -104,13 +105,26 @@ function rolloverIfNeeded(): void {
 //   APEX_TOKEN_CAP_TOTAL=8000000            → total tokens/day, all providers
 //   APEX_TOKEN_CAPS=mistral:30000000,groq:400000,gemini:1000000
 //
-// 0 or unset = no cap (previous behavior, exactly). Caps count prompt +
-// completion tokens, because every free tier that has a TPD limit counts both.
+// Safe defaults apply even when deployment variables have not been configured:
+// 2M total tokens/day and 250K tokens/day on the paid OpenRouter fallback.
+// Set either value explicitly to 0 to disable that cap. Caps count prompt +
+// completion tokens, because provider TPD limits and paid usage count both.
+
+const DEFAULT_TOTAL_DAILY_CAP = 2_000_000;
+const DEFAULT_PAID_DAILY_CAP = 250_000;
 
 function parseCaps(): Record<string, number> {
-  const raw = process.env.APEX_TOKEN_CAPS;
-  if (!raw) return {};
   const out: Record<string, number> = {};
+  const paidRaw = process.env.APEX_PAID_TOKEN_CAP;
+  const paidCap = paidRaw === undefined || paidRaw.trim() === ''
+    ? DEFAULT_PAID_DAILY_CAP
+    : Number(paidRaw);
+  if (Number.isFinite(paidCap) && paidCap > 0) {
+    out['openrouter-paid-anchor'] = paidCap;
+  }
+
+  const raw = process.env.APEX_TOKEN_CAPS;
+  if (!raw) return out;
   for (const part of raw.split(',')) {
     const [name, value] = part.split(':').map((s) => s?.trim());
     const n = Number(value);
@@ -120,11 +134,91 @@ function parseCaps(): Record<string, number> {
 }
 
 function totalCap(): number {
-  const n = Number(process.env.APEX_TOKEN_CAP_TOTAL ?? 0);
+  const raw = process.env.APEX_TOKEN_CAP_TOTAL;
+  const n = raw === undefined || raw.trim() === '' ? DEFAULT_TOTAL_DAILY_CAP : Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+async function persistDatabaseDelta(
+  day: string,
+  provider: string,
+  promptTokens: number,
+  completionTokens: number,
+): Promise<void> {
+  try {
+    const [{ db, llmTokenUsageDaily }, { sql }] = await Promise.all([
+      import('@workspace/db'),
+      import('drizzle-orm'),
+    ]);
+    await db
+      .insert(llmTokenUsageDaily)
+      .values({ day, provider, promptTokens, completionTokens, calls: 1, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [llmTokenUsageDaily.day, llmTokenUsageDaily.provider],
+        set: {
+          promptTokens: sql`${llmTokenUsageDaily.promptTokens} + ${promptTokens}`,
+          completionTokens: sql`${llmTokenUsageDaily.completionTokens} + ${completionTokens}`,
+          calls: sql`${llmTokenUsageDaily.calls} + 1`,
+          updatedAt: new Date(),
+        },
+      });
+    databasePersistenceReady = true;
+  } catch {
+    databasePersistenceReady = false;
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
+
+/** Hydrate today's in-memory counters from Postgres before agents start.
+ * Returns false when the DB is unavailable; local accounting still works. */
+export async function initializeTokenLedgerPersistence(): Promise<boolean> {
+  try {
+    rolloverIfNeeded();
+    const [{ db, llmTokenUsageDaily }, { eq, sql }] = await Promise.all([
+      import('@workspace/db'),
+      import('drizzle-orm'),
+    ]);
+    const rows = await db
+      .select()
+      .from(llmTokenUsageDaily)
+      .where(eq(llmTokenUsageDaily.day, state.day));
+
+    for (const row of rows) {
+      const local = state.providers[row.provider];
+      state.providers[row.provider] = {
+        promptTokens: Math.max(local?.promptTokens ?? 0, row.promptTokens),
+        completionTokens: Math.max(local?.completionTokens ?? 0, row.completionTokens),
+        calls: Math.max(local?.calls ?? 0, row.calls),
+      };
+    }
+
+    // If the local fallback captured usage during a prior DB interruption,
+    // reconcile the larger counters back into Postgres before work resumes.
+    await Promise.all(
+      Object.entries(state.providers).map(([provider, spend]) =>
+        db
+          .insert(llmTokenUsageDaily)
+          .values({ day: state.day, provider, ...spend, updatedAt: new Date() })
+          .onConflictDoUpdate({
+            target: [llmTokenUsageDaily.day, llmTokenUsageDaily.provider],
+            set: {
+              promptTokens: sql`GREATEST(${llmTokenUsageDaily.promptTokens}, ${spend.promptTokens})`,
+              completionTokens: sql`GREATEST(${llmTokenUsageDaily.completionTokens}, ${spend.completionTokens})`,
+              calls: sql`GREATEST(${llmTokenUsageDaily.calls}, ${spend.calls})`,
+              updatedAt: new Date(),
+            },
+          }),
+      ),
+    );
+    persist();
+    databasePersistenceReady = true;
+    return true;
+  } catch {
+    databasePersistenceReady = false;
+    return false;
+  }
+}
 
 export function recordTokenUsage(
   providerName: string,
@@ -132,13 +226,20 @@ export function recordTokenUsage(
 ): void {
   try {
     rolloverIfNeeded();
+    const rawPromptTokens = Number(usage?.promptTokens ?? 0);
+    const rawCompletionTokens = Number(usage?.completionTokens ?? 0);
+    const promptTokens = Number.isFinite(rawPromptTokens) ? Math.max(0, Math.floor(rawPromptTokens)) : 0;
+    const completionTokens = Number.isFinite(rawCompletionTokens)
+      ? Math.max(0, Math.floor(rawCompletionTokens))
+      : 0;
     const entry =
       state.providers[providerName] ??
       (state.providers[providerName] = { promptTokens: 0, completionTokens: 0, calls: 0 });
-    entry.promptTokens += Math.max(0, usage?.promptTokens ?? 0);
-    entry.completionTokens += Math.max(0, usage?.completionTokens ?? 0);
+    entry.promptTokens += promptTokens;
+    entry.completionTokens += completionTokens;
     entry.calls += 1;
     persist();
+    void persistDatabaseDelta(state.day, providerName, promptTokens, completionTokens);
   } catch {
     /* never throw on the hot path */
   }
@@ -189,6 +290,7 @@ export function msUntilDailyReset(at: number = Date.now()): number {
 
 export interface TokenLedgerSnapshot {
   day: string;
+  persistence: 'postgres+memory' | 'memory-only';
   totalTokens: number;
   totalCap: number;
   totalCapReached: boolean;
@@ -230,6 +332,7 @@ export function getTokenLedgerSnapshot(): TokenLedgerSnapshot {
   const total = providers.reduce((s, p) => s + p.totalTokens, 0);
   return {
     day: state.day,
+    persistence: databasePersistenceReady ? 'postgres+memory' : 'memory-only',
     totalTokens: total,
     totalCap: cap,
     totalCapReached: cap > 0 && total >= cap,
@@ -237,8 +340,18 @@ export function getTokenLedgerSnapshot(): TokenLedgerSnapshot {
   };
 }
 
-/** Test/ops escape hatch: wipe today's counters (e.g. after rotating keys). */
-export function resetTokenLedger(): void {
+/** Test/ops escape hatch: wipe today's local and durable counters. */
+export async function resetTokenLedger(): Promise<void> {
+  const day = state.day;
   state = emptyState();
   persist();
+  try {
+    const [{ db, llmTokenUsageDaily }, { eq }] = await Promise.all([
+      import('@workspace/db'),
+      import('drizzle-orm'),
+    ]);
+    await db.delete(llmTokenUsageDaily).where(eq(llmTokenUsageDaily.day, day));
+  } catch {
+    databasePersistenceReady = false;
+  }
 }

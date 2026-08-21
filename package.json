@@ -1,11 +1,14 @@
 {
   "name": "workspace",
   "version": "0.0.0",
+  "packageManager": "pnpm@9.15.9",
   "license": "MIT",
   "scripts": {
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "build": "pnpm run typecheck:production && pnpm --filter @workspace/dashboard run build",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./packages/**\" --filter \"./scripts\" --if-present run typecheck",
+    "typecheck": "pnpm run typecheck:production",
+    "typecheck:production": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./packages/**\" --filter \"./scripts\" --filter \"!@workspace/convex-backend\" --filter \"!@workspace/apex-cicd-worker\" --if-present run typecheck",
+    "typecheck:experimental": "pnpm --filter @workspace/convex-backend --filter @workspace/apex-cicd-worker --if-present run typecheck",
     "dev:api": "pnpm --filter @workspace/api-server run dev",
     "dev:dashboard": "pnpm --filter @workspace/dashboard run dev",
     "dev": "concurrently \"pnpm run dev:api\" \"pnpm run dev:dashboard\""

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck production runtime
+        run: pnpm run typecheck:production
+
+      - name: Run deterministic agent guards
+        run: |
+          pnpm exec tsx scripts/verify-malformed-tool-calls.ts
+          pnpm exec tsx scripts/verify-non-completion.ts
+
+      - name: Build dashboard
+        run: pnpm --filter @workspace/dashboard run build
+
+  convex-experimental:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck unfinished Convex migration
+        run: pnpm --filter @workspace/convex-backend --filter @workspace/apex-cicd-worker --if-present run typecheck

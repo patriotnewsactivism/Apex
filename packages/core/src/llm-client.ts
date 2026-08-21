@@ -12,28 +12,26 @@ import {
 // REORDERED 2026-08-15 for maximum exhaustion resistance. Key principles:
 //   1. Providers with the LARGEST daily/monthly budgets go first so the chain
 //      absorbs the most traffic before falling through.
-//   2. Duplicate-key slots (CEREBRAS_API_KEY_2/3, GROQ_API_KEY_2, GEMINI_API_KEY_2)
-//      multiply free-tier rate limits — each is a real PROVIDERS entry now, not
-//      just a comment.
+//   2. Separate Groq and Gemini project keys spread requests across independent
+//      free-tier rate limits.
 //   3. Two-pass fallback: toolCallingReliable:false providers are skipped on
 //      tool-bearing requests and only tried as last resort.
-//   4. Dead/expired-key entries are DEMOTED, not removed — behind the circuit
-//      breaker they cost one skipped probe per cooldown, and keeping them means
-//      zero-code-change recovery when keys are rotated or billing is sorted.
+//   4. Per-provider circuit breakers stop concurrent agents from stampeding a
+//      key that is rate-limited, unfunded, or temporarily unavailable.
 //
-// Chain order (12 entries, 4 tiers as of 2026-08-19 — see `tier` field on
+// Chain order (13 entries, 4 tiers as of 2026-08-21 — see `tier` field on
 // each PROVIDERS entry; tier is now enforced in code, not just documented):
 //
-//   Tier 0 (paid anchor — always tried first, ends the free-tier cascade):
-//     OpenRouter → anthropic/claude-sonnet-5 ($2/$10 per M, real per-call cost)
-//
-//   Tier 1 (live, tool-reliable, ordered by daily capacity):
+//   Tier 0 (live, tool-reliable, ordered by daily capacity):
 //     Mistral (1B tok/mo) → Gemini ×2 (1,500 RPD each) →
 //     Cerebras ($5 credit) → Groq ×2 (100K TPD each) →
 //     SambaNova ($5 credit + 20M TPD) → Hugging Face (free credits)
 //
-//   Tier 2 (demoted — no key configured, circuit breaker = cheap skip):
+//   Tier 1 (demoted free capacity — no key configured by default):
 //     NVIDIA NIM
+//
+//   Tier 2 (paid fallback — only after free, reliable capacity is spent):
+//     OpenRouter → anthropic/claude-sonnet-5 (real per-call cost)
 //
 //   Tier 3 (last resort — unreliable tool calling):
 //     OpenRouter/free router → OpenRouter-free ×2
@@ -73,7 +71,7 @@ const PROVIDERS: Array<{
   // combined) — trimmed to BEFORE the first attempt, not just after a 413.
   // Added 2026-08-16 for Groq: its free tier's TPM (tokens per minute) limit
   // reserves `max_tokens` against the SAME budget as the prompt, so a
-  // premium-role request (maxTokens: 16384) alone already exceeds Groq's
+  // premium-role request used to reserve 16,384 output tokens and exceed Groq's
   // 12,000 TPM cap before a single prompt token is counted — see
   // maxOutputTokens on the groq entries below, which fixes the dominant
   // cause. This field is the second layer: even with output capped, a long
@@ -95,20 +93,24 @@ const PROVIDERS: Array<{
   // The workforce was not broken — it was running on a tier that cannot
   // drive tools, and nothing said so.
   toolCallingReliable?: boolean;
+  // True for providers that can incur a metered charge. Paid providers are
+  // always placed after reliable free capacity and can be disabled globally
+  // with APEX_PAID_LLM_MODE=off.
+  paid?: boolean;
   // Priority tier — ADDED 2026-08-19 per root-cause finding: rrStartIndex
   // previously round-robined across the ENTIRE flat array regardless of
-  // this comment block's documented tier structure, so "largest budget/paid
-  // anchor first" only actually held on 1 call in N. Lower tier = tried
+  // this comment block's documented tier structure, so the documented
+  // priority only actually held on 1 call in N. Lower tier = tried
   // first, always, for every call. Round-robin (load spreading across
   // concurrent calls) still applies, but only WITHIN a tier — it can no
-  // longer cause a tier-0 paid anchor or a tier-1 large-budget free
-  // provider to be skipped in favor of a later tier just because of where
-  // rrStartIndex happened to land. Omitted = tier 1 (default free/reliable).
+  // longer cause an earlier free provider to be skipped in favor of a paid
+  // or unreliable tier just because of where
+  // rrStartIndex happened to land. Omitted = tier 0 (default free/reliable).
   tier?: number;
 }> = [
-  // ── Tier 0: Paid anchor — ends the correlated free-tier cascade ────────────
+  // ── Tier 2: Paid fallback — used only after reliable free capacity ─────────
   //
-  // ADDED 2026-08-19 per root-cause finding: every Tier 1 provider below is a
+  // ADDED 2026-08-19 per root-cause finding: every Tier 0 provider below is a
   // free tier, and free tiers share a correlated failure mode — they all
   // exhaust on the same busy day. "All providers failed" was never bad luck;
   // it was the designed behavior of a chain made entirely of free quotas with
@@ -120,9 +122,9 @@ const PROVIDERS: Array<{
   // (small) per-call cost, unlike every other entry in this file — that's the
   // point: one reliable rung stops the whole workforce going dead whenever
   // Mistral/Gemini/Cerebras/Groq/SambaNova all happen to be tapped out at once.
-  { name: 'openrouter-paid-anchor', tier: 0, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'anthropic/claude-sonnet-5', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  { name: 'openrouter-paid-anchor', tier: 2, paid: true, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'anthropic/claude-sonnet-5', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 
-  // ── Tier 1: Live, tool-calling reliable, ordered by daily capacity ──────────
+  // ── Tier 0: Live, tool-calling reliable, ordered by daily capacity ──────────
   //
   // REORDERED 2026-08-15 to maximize exhaustion resistance. Providers with the
   // LARGEST daily/monthly budgets go first. Round-robin start index spreads
@@ -174,7 +176,7 @@ const PROVIDERS: Array<{
   // — the constant wasn't the prompt, it was `max_tokens`. Groq's on_demand
   // TPM check reserves `max_tokens` against the SAME 12,000-token budget as
   // the prompt, and premium roles (CEO/COO/CTO/SALES/...) request
-  // maxTokens:16384 by default — already 4,384 tokens OVER the entire quota
+  // the old 16,384-token default — already 4,384 tokens OVER the entire quota
   // before one prompt token is counted. No amount of message-history
   // trimming could ever have fixed this; that's why the existing
   // 413-triggered emergency retry (EMERGENCY_HISTORY_CHAR_BUDGET) kept
@@ -211,7 +213,7 @@ const PROVIDERS: Array<{
   // Llama 3.3 70B Instruct, tool calling reliable.
   { name: 'huggingface', baseURL: 'https://router.huggingface.co/v1', apiKeyEnv: 'HF_TOKEN', fallbackModel: 'meta-llama/Llama-3.3-70B-Instruct' },
 
-  // ── Tier 2: Demoted — kept for zero-code-change recovery only ─────────────
+  // ── Tier 1: Demoted — kept for zero-code-change recovery only ─────────────
   //
   // CLEANED UP 2026-08-19: poolside/together/deepseek/qwen-cloud x3/glm-zai
   // were previously listed here as demoted-but-present entries. All were
@@ -231,12 +233,10 @@ const PROVIDERS: Array<{
   // If Don rotates a fresh QWENCLOUD_API_KEY or fixes any of the above, ADD
   // A NEW ENTRY with the defect fixed rather than resurrecting the old one.
   //
-  // NVIDIA NIM — free tier at build.nvidia.com. Llama 3.3 70B, tool-calling
-  // reliable. NOT configured on Railway/Lightsail — no-op until the key is
-  // added. FLAGGED 2026-08-19: meta/llama-3.3-70b-instruct deprecates
-  // 2026-08-25 — if NVIDIA_API_KEY is ever added, verify the model ID is
-  // still current before relying on this entry after that date.
-  { name: 'nvidia', tier: 2, baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'meta/llama-3.3-70b-instruct' },
+  // NVIDIA NIM — free endpoint at build.nvidia.com. The previous Llama 3.3
+  // endpoint retires 2026-08-25; Nemotron 3 Nano is its current, tool-calling
+  // replacement and has a 1M-token context window.
+  { name: 'nvidia', tier: 1, baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'nvidia/nemotron-3-nano-30b-a3b' },
 
   // ── Tier 3: Last resort — unreliable or best-effort tool calling ───────────
   // Reached only after all reliable providers fail (two-pass fallback).
@@ -254,19 +254,10 @@ const PROVIDERS: Array<{
 
 ];
 
-// ─── Role-aware Qwen Cloud model selection ─────────────────────────────────
-//
-// ADDED 2026-07-27 per Don's explicit request: CEO/CTO/COO and the other
-// high-stakes/high-budget roles ("premium" tier — reusing the exact role set
-// already defined as the 16384-token tier in getDefaultLLMConfig below, so
-// this doesn't drift from that split) get Qwen's strongest reasoning model
-// instead of the balanced default. Both qwen-cloud entries resolve their
-// model through this instead of a static fallbackModel string. Overridable
-// via env for easy A/B against qwen3.8-max-preview (Token Plan only, newer/
-// less proven than the GA qwen3.7-max) without another code change.
-const PREMIUM_ROLES = new Set([
-  'CEO', 'CTO', 'COO', 'LEAD_DEV', 'RESEARCH', 'LEAD_RESEARCH', 'SALES', 'QA_DIRECTOR',
-]);
+function paidLLMFallbackEnabled(): boolean {
+  const mode = (process.env.APEX_PAID_LLM_MODE ?? 'fallback').trim().toLowerCase();
+  return !['0', 'false', 'off', 'disabled'].includes(mode);
+}
 
 // ─── Request size control ─────────────────────────────────────────────────────
 //
@@ -393,13 +384,6 @@ export function isRequestTooLargeError(status: unknown, message: string): boolea
   return /request too large|too many tokens|context length|maximum context|reduce the length|prompt is too long/i.test(
     message,
   );
-}
-
-function resolveQwenModel(role: string | undefined): string {
-  const isPremium = role !== undefined && PREMIUM_ROLES.has(role);
-  const envOverride = isPremium ? process.env.APEX_QWEN_PREMIUM_MODEL : process.env.APEX_QWEN_STANDARD_MODEL;
-  if (envOverride) return envOverride;
-  return isPremium ? 'qwen3.7-max' : 'qwen3.7-plus';
 }
 
 // ─── Anthropic Messages API conversion helpers ────────────────────────────────
@@ -626,17 +610,17 @@ class MultiProviderClient {
     //
     // FIXED 2026-08-19 — root-cause finding: this used to rotate the start
     // index across the ENTIRE flat PROVIDERS array, so the documented
-    // "paid anchor / largest budget first" tier ordering only actually held
+    // documented priority ordering only actually held
     // on 1 call in PROVIDERS.length; the rest of the time a later-tier
     // provider got tried before an earlier, higher-priority one purely
     // because of where rrStartIndex happened to land that call. Tiers now
-    // determine priority ORDER unconditionally (tier 0 paid anchor always
-    // considered before tier 1 free providers, always before tier 2/3);
+    // determine priority ORDER unconditionally (tier 0 free capacity is
+    // considered before tier 1, then the paid tier, then unreliable tier 3);
     // round-robin only spreads concurrent load WITHIN a tier, by rotating a
     // separate start index per tier so it can't cross a tier boundary.
     const byTier = new Map<number, typeof PROVIDERS>();
     for (const p of PROVIDERS) {
-      const t = p.tier ?? 1;
+      const t = p.tier ?? 0;
       if (!byTier.has(t)) byTier.set(t, []);
       byTier.get(t)!.push(p);
     }
@@ -678,6 +662,10 @@ class MultiProviderClient {
       }
     const orderedProviders = lastResortMode ? unreliableProviders : reliableProviders;
     for (const provider of orderedProviders) {
+      if (provider.paid && !paidLLMFallbackEnabled()) {
+        console.warn(`[LLM] Skipping ${provider.name}: paid fallback disabled (APEX_PAID_LLM_MODE=off)`);
+        continue;
+      }
       const apiKey = process.env[provider.apiKeyEnv];
       if (!apiKey) {
         continue; // skip silently — no key configured
@@ -724,13 +712,11 @@ class MultiProviderClient {
         console.warn(`[LLM] LAST RESORT: trying ${provider.name} with unreliable tool calling — all reliable providers exhausted`);
       }
 
-      // Mistral's role-aware model routing was removed 2026-07-26 along with
-      // the Mistral provider entry itself (confirmed 401 invalid key, see
-      // PROVIDERS above). Every OTHER remaining provider uses its plain
-      // fallbackModel — except the two qwen-cloud entries, which resolve a
-      // role-aware model via resolveQwenModel() (see above) instead.
-      const model: string = provider.name.startsWith('qwen-cloud')
-        ? resolveQwenModel(this.config.role)
+      // The configured primary provider can honor APEX_MODEL/per-role model
+      // overrides. Other fallback providers keep their verified, provider-
+      // specific model IDs so one override cannot break the entire chain.
+      const model: string = provider.name === this.config.provider
+        ? this.config.model
         : (provider.fallbackModel ?? this.config.model);
 
       if (provider.protocol === 'anthropic') {
@@ -972,36 +958,44 @@ export type LLMClient = MultiProviderClient;
 
 // ─── Default model configs per agent tier ────────────────────────────────────
 //
-// Primary model IDs are OpenRouter-style; if OpenRouter fails, the client
-// automatically retries with Groq/Gemini/Cohere/Poolside using their own model IDs.
+// Each provider selects its verified provider-specific fallback model; these
+// defaults only carry role metadata and per-turn output budgets.
 
 export function getDefaultLLMConfig(role: string): LLMClientConfig {
   // Per-role token budgets — each turn in the agentic loop gets this budget,
   // and agents iterate up to maxIterations (20-25), so total output per task
   // can be much larger than these per-turn numbers.
   const tokenBudgets: Record<string, number> = {
-    CEO: 16384,
-    CTO: 16384,
-    COO: 16384,
-    LEAD_DEV: 16384,
-    RESEARCH: 16384,
-    LEAD_RESEARCH: 16384,
-    SALES: 16384,
-    QA_DIRECTOR: 16384,
-    FRONTEND: 8192,
-    BACKEND: 8192,
-    DEVOPS: 8192,
-    QA: 8192,
-    MARKETING: 8192,
-    CUSTOMER_SUCCESS: 8192,
-    DOCS: 8192,
-    OPS: 8192,
+    CEO: 4096,
+    CTO: 4096,
+    COO: 4096,
+    LEAD_DEV: 4096,
+    RESEARCH: 4096,
+    LEAD_RESEARCH: 4096,
+    SALES: 4096,
+    QA_DIRECTOR: 4096,
+    FRONTEND: 2048,
+    BACKEND: 2048,
+    DEVOPS: 2048,
+    QA: 2048,
+    MARKETING: 2048,
+    CUSTOMER_SUCCESS: 2048,
+    DOCS: 2048,
+    OPS: 2048,
     // Community Watch (comment classification/drafting, ported from
     // APEX-Stream's agent-warden) — output is a small JSON verdict or a
-    // one/two-sentence draft, nowhere near the 8192 default other roles need.
+    // one/two-sentence draft, nowhere near the standard-role default.
     COMMUNITY_WATCH: 1024,
   };
-  const maxTokens = tokenBudgets[role] ?? 8192;
+  const defaultMaxTokens = tokenBudgets[role] ?? 2048;
+  const configuredMaxTokens = Number(
+    process.env[`APEX_MAX_OUTPUT_TOKENS_${role}`] ??
+      process.env.APEX_MAX_OUTPUT_TOKENS ??
+      defaultMaxTokens,
+  );
+  const maxTokens = Number.isFinite(configuredMaxTokens)
+    ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
+    : defaultMaxTokens;
 
   const envKey = `APEX_MODEL_${role}`;
   const envOverride = process.env[envKey];
@@ -1014,27 +1008,10 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     return { provider: 'cerebras', model: globalModel, temperature: 0.7, maxTokens, role };
   }
 
-  // Default model tier — these `model` strings are now cosmetic/legacy since
-  // OpenRouter (the only provider that honored this.config.model) was removed
-  // 2026-07-22; every remaining provider uses its own fixed fallbackModel.
-  // No Claude/GPT/Gemini anywhere in this map (removed 2026-07-27 — Anthropic
-  // pricing isn't affordable for this workload; OpenAI/Google were never
-  // actually reachable through this client anyway, see below). This field is
-  // COSMETIC for every provider except qwen-cloud/qwen-cloud-anthropic (which
-  // ignore it entirely in favor of resolveQwenModel(), see above) — every
-  // OTHER configured provider uses its own fixed fallbackModel, never
-  // this.config.model. Kept accurate anyway so nothing here implies a
-  // dependency on a provider this system doesn't actually call.
-  const tierMap: Record<string, string> = {
-    CEO: 'qwen3.7-max', CTO: 'qwen3.7-max', COO: 'qwen3.7-max',
-    LEAD_DEV: 'qwen3.7-max', RESEARCH: 'qwen3.7-max', LEAD_RESEARCH: 'qwen3.7-max',
-    SALES: 'qwen3.7-max', QA_DIRECTOR: 'qwen3.7-max',
-    FRONTEND: 'qwen3.7-plus', BACKEND: 'qwen3.7-plus', DEVOPS: 'qwen3.7-plus', QA: 'qwen3.7-plus',
-    MARKETING: 'qwen3.7-plus', CUSTOMER_SUCCESS: 'qwen3.7-plus', DOCS: 'qwen3.7-plus', OPS: 'qwen3.7-plus',
-  };
-
-  const model = tierMap[role] ?? 'qwen3.7-plus';
-  return { provider: 'cerebras', model, temperature: 0.7, maxTokens, role };
+  // Every configured provider currently supplies a verified provider-specific
+  // fallbackModel; this is only a neutral default for a future provider that
+  // does not.
+  return { provider: 'cerebras', model: 'gpt-oss-120b', temperature: 0.7, maxTokens, role };
 }
 
 // ─── Embedding Generation ─────────────────────────────────────────────────────
@@ -1225,7 +1202,10 @@ const rrStartIndexByTier = new Map<number, number>(); // rotation index PER TIER
 // ever doing real work at once; the rest await their turn in FIFO order.
 // Deliberately generous (not 1-2) — the goal is smoothing a stampede into a
 // steady stream, not serializing the whole workforce.
-const MAX_CONCURRENT_LLM_CALLS = 6;
+const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 3);
+const MAX_CONCURRENT_LLM_CALLS = Number.isFinite(configuredLLMConcurrency)
+  ? Math.min(16, Math.max(1, Math.floor(configuredLLMConcurrency)))
+  : 3;
 let activeLLMCalls = 0;
 const llmCallWaitQueue: Array<() => void> = [];
 
@@ -1355,8 +1335,8 @@ export function getKnownApiKeyEnvs(): string[] {
 
 export async function createEmbedding(text: string): Promise<number[]> {
   const openaiKey = process.env.OPENAI_API_KEY;
-  // OpenRouter fallback removed 2026-07-22 along with the rest of OpenRouter --
-  // local embeddings are now the default whenever OPENAI_API_KEY isn't set.
+  // OpenRouter has no embedding path here; local embeddings are the default
+  // whenever OPENAI_API_KEY isn't set.
   const useLocal = process.env.APEX_EMBEDDING_PROVIDER === 'local' || !openaiKey;
 
   if (useLocal) {
@@ -1391,4 +1371,3 @@ export async function createEmbedding(text: string): Promise<number[]> {
 
   return response.data[0].embedding;
 }
-

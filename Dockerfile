@@ -47,8 +47,8 @@ COPY packages/orchestrator/tsconfig.json ./packages/orchestrator/
 # Reproduced locally with a real `docker build` before removing. If frontend
 # ever becomes a real package, add the COPY back together with its package.json.
 
-# Install all deps (no-frozen-lockfile to tolerate catalog/override drift)
-RUN pnpm install --no-frozen-lockfile --ignore-scripts
+# Install exactly the dependency graph reviewed in pnpm-lock.yaml.
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy source
 COPY lib/ ./lib/
@@ -98,8 +98,8 @@ COPY packages/agents/tsconfig.json ./packages/agents/
 COPY packages/api-server/package.json ./packages/api-server/
 COPY packages/api-server/tsconfig.json ./packages/api-server/
 
-# Production deps only (no-frozen-lockfile to tolerate catalog/override drift)
-RUN pnpm install --no-frozen-lockfile --ignore-scripts --prod
+# Production deps only, still pinned to the reviewed lockfile.
+RUN pnpm install --frozen-lockfile --ignore-scripts --prod
 
 # Copy built source
 COPY --from=builder /app/lib ./lib
@@ -132,7 +132,8 @@ ARG APEX_BUILD_TIME=
 ENV APEX_BUILD_SHA=$APEX_BUILD_SHA
 ENV APEX_BUILD_TIME=$APEX_BUILD_TIME
 
-# Create .local dir for SQLite (Railway volume mounts here)
+# Local execution sandboxes live here. Durable application state is in
+# Supabase Postgres.
 RUN mkdir -p /app/.local
 
 EXPOSE 5000

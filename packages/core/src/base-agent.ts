@@ -335,6 +335,8 @@ export abstract class BaseAgent {
     let iterations = 0;
     let toolExecutions = 0;
     let requiredApprovals = 0;
+    let delegatedWork = false;
+    let delegationVerified = false;
     // Self-review runs at most once per task (see the critique gate below), so
     // the extra reasoning costs exactly one additional LLM call, never a loop.
     let selfReviewed = false;
@@ -521,14 +523,14 @@ export abstract class BaseAgent {
         // answering "I couldn't find anything" after a single failed search.
         // Neither is caught by the tool loop, because neither calls a tool.
         //
-        // One critique turn with the tools still attached lets the agent
-        // discover the gap and keep working — the loop continues normally if it
-        // decides to act, and completes on the next no-tool-call turn if the
-        // work genuinely holds up. Costs one LLM call per task; set
-        // APEX_SELF_REVIEW=0 to disable.
-        const selfReviewEnabled = !['0', 'false', 'off'].includes(
-          (process.env.APEX_SELF_REVIEW ?? '1').toLowerCase(),
-        );
+        // Adaptive mode avoids automatically doubling every task's LLM calls:
+        // review prose-only work and unverified delegations, but accept work
+        // that already executed concrete tools. Set APEX_SELF_REVIEW=on/off to
+        // force either behavior.
+        const selfReviewMode = (process.env.APEX_SELF_REVIEW ?? 'adaptive').toLowerCase();
+        const selfReviewEnabled = ['1', 'true', 'on', 'always'].includes(selfReviewMode) ||
+          (selfReviewMode === 'adaptive' &&
+            (toolExecutions === 0 || (delegatedWork && !delegationVerified)));
         if (
           response.toolCalls.length === 0 &&
           selfReviewEnabled &&
@@ -602,6 +604,13 @@ export abstract class BaseAgent {
 
         for (const tc of response.toolCalls) {
           toolExecutions++;
+          if (tc.name === 'sendMessage' || tc.name === 'dispatchSwarm') {
+            delegatedWork = true;
+            delegationVerified = false;
+          }
+          if (tc.name === 'get_delegation_status' || tc.name === 'collectSwarmResults') {
+            delegationVerified = true;
+          }
           await this.logger.acting(`Calling tool: ${tc.name}(${JSON.stringify(tc.args).slice(0, 100)})`, taskId);
 
           const toolContext: ToolContext = {
@@ -841,11 +850,11 @@ export abstract class BaseAgent {
       await new Promise((r) => setTimeout(r, 1000));
       const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId)).limit(1);
       if (row?.status === 'approved') {
-        await this.taskQueue.resume(taskId);
+        await this.taskQueue.markInProgress(taskId);
         return true;
       }
       if (row?.status === 'rejected') {
-        await this.taskQueue.resume(taskId);
+        await this.taskQueue.markInProgress(taskId);
         return false;
       }
     }
@@ -855,11 +864,12 @@ export abstract class BaseAgent {
     // ever queries 'pending'/'in_progress' -- a timed-out approval meant
     // the task silently vanished from the queue forever, requiring a human
     // to be watching and clicking within 5 minutes or the work was lost).
-    // Fixed 2026-07-18: mark the approval row rejected and resume the task
+    // Fixed 2026-07-18: mark the approval row rejected and resume the current
+    // worker's task
     // so the agent's own loop sees the rejection and can react (retry,
     // report back, try a different approach) instead of the run just dying.
     await db.update(approvals).set({ status: 'rejected' }).where(eq(approvals.id, approvalId));
-    await this.taskQueue.resume(taskId);
+    await this.taskQueue.markInProgress(taskId);
     return false; // Timeout = reject
   }
 

@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
@@ -176,6 +176,22 @@ export const healthMetrics = pgTable('health_metrics', {
   errorMessage: text('error_message'),
   checkedAt: timestamp('checked_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
+
+// ─── Daily LLM Usage ────────────────────────────────────────────────────────
+
+// Durable counterpart to core/token-ledger.ts. The in-process ledger keeps
+// the hot-path budget check synchronous; this table survives Lightsail
+// container replacement so a redeploy cannot reset the day's spend to zero.
+export const llmTokenUsageDaily = pgTable('llm_token_usage_daily', {
+  day: text('day').notNull(), // UTC YYYY-MM-DD
+  provider: text('provider').notNull(),
+  promptTokens: integer('prompt_tokens').notNull().default(0),
+  completionTokens: integer('completion_tokens').notNull().default(0),
+  calls: integer('calls').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.day, table.provider] }),
+}));
 
 // ─── Component Health (real-time per-component snapshot) ──────────────────────
 
@@ -510,4 +526,3 @@ export type PredictiveForecastRow = typeof predictiveForecasts.$inferSelect;
 export type NewPredictiveForecastRow = typeof predictiveForecasts.$inferInsert;
 export type RiskAssessmentRow = typeof riskAssessments.$inferSelect;
 export type NewRiskAssessmentRow = typeof riskAssessments.$inferInsert;
-
