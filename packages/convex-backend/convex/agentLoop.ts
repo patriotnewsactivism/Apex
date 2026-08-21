@@ -27,6 +27,10 @@ const ERROR_BACKOFF_CAP_MS = 30_000;
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 const HEARTBEAT_STALE_MS = 30_000;
 
+function convexAutonomyEnabled(): boolean {
+  return (process.env.APEX_CONVEX_AUTONOMY_ENABLED ?? 'false').toLowerCase() === 'true';
+}
+
 type AgentMeta = {
   maxIterations?: number;
   concurrency?: number;
@@ -47,6 +51,9 @@ type PendingJoin = {
 export const tick = internalAction({
   args: { agentId: v.id('agents'), concurrency: v.number(), consecutiveErrors: v.optional(v.number()) },
   handler: async (ctx, { agentId, concurrency, consecutiveErrors }) => {
+    // Fail closed. A tick left in Convex's scheduler from an older deploy
+    // exits without creating another link in the 2-second chain.
+    if (!convexAutonomyEnabled()) return;
     try {
       // Heartbeat first, unconditionally — this is what lets the watchdog
       // cron tell "chain alive but idle/busy" apart from "chain died".
@@ -86,6 +93,7 @@ export const tick = internalAction({
 export const resurrectStaleChains = internalMutation({
   args: {},
   handler: async (ctx) => {
+    if (!convexAutonomyEnabled()) return 0;
     const cutoff = Date.now() - HEARTBEAT_STALE_MS;
     const all = await ctx.db.query('agents').collect();
     const stale = all.filter((a) => !a.lastActiveAt || a.lastActiveAt < cutoff);
@@ -213,6 +221,16 @@ async function buildLearningContext(ctx: ActionCtx, role: string): Promise<strin
 export const runIteration = internalAction({
   args: { taskId: v.id('tasks'), agentId: v.id('agents') },
   handler: async (ctx, { taskId, agentId }) => {
+    if (!convexAutonomyEnabled()) {
+      // Preserve unfinished Convex work for a deliberate future cutover rather
+      // than leaving it orphaned in_progress or spending another model call.
+      const pausedTask = await ctx.runQuery(api.tasks.get, { taskId });
+      if (pausedTask?.status === 'in_progress' || pausedTask?.status === 'awaiting_approval') {
+        await ctx.runMutation(internal.tasks.resume, { taskId });
+      }
+      await ctx.runMutation(internal.agents.updateStatus, { agentId, status: 'idle' });
+      return;
+    }
     const agent = await ctx.runQuery(api.agents.get, { agentId });
     const task = await ctx.runQuery(api.tasks.get, { taskId });
     if (!agent || !task) return;

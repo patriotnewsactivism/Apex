@@ -223,6 +223,17 @@ export async function migrate() {
     )
   `;
   await client`
+    CREATE TABLE IF NOT EXISTS llm_token_usage_daily (
+      day text NOT NULL,
+      provider text NOT NULL,
+      prompt_tokens integer NOT NULL DEFAULT 0,
+      completion_tokens integer NOT NULL DEFAULT 0,
+      calls integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (day, provider)
+    )
+  `;
+  await client`
     CREATE TABLE IF NOT EXISTS component_health (
       component text PRIMARY KEY,
       status text NOT NULL DEFAULT 'healthy',

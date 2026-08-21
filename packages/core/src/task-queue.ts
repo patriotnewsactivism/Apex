@@ -269,7 +269,7 @@ export class TaskQueue {
     }
   }
 
-  /** Resume a task after an approval decision back to pending/in_progress */
+  /** Return a task to the queue for a future worker to claim. */
   async resume(taskId: string): Promise<void> {
     try {
       await db.update(tasks).set({
@@ -283,6 +283,25 @@ export class TaskQueue {
     const memTask = this.memoryQueue.find((t) => t.id === taskId);
     if (memTask) {
       memTask.status = 'pending';
+    }
+  }
+
+  /** Restore the status of a task whose current worker stayed alive while it
+   * waited for an approval decision. Re-queuing that same in-flight task would
+   * let another worker claim and execute it a second time. */
+  async markInProgress(taskId: string): Promise<void> {
+    try {
+      await db.update(tasks).set({
+        status: 'in_progress',
+        updatedAt: new Date(),
+      }).where(eq(tasks.id, taskId));
+    } catch (err) {
+      // DB offline: update in memory
+    }
+
+    const memTask = this.memoryQueue.find((t) => t.id === taskId);
+    if (memTask) {
+      memTask.status = 'in_progress';
     }
   }
 }

@@ -17,6 +17,8 @@ import { AGENT_CONFIGS } from './agentConfigs.js';
 export const bootstrapWorkforce = internalAction({
   args: {},
   handler: async (ctx) => {
+    const autonomyEnabled =
+      (process.env.APEX_CONVEX_AUTONOMY_ENABLED ?? 'false').toLowerCase() === 'true';
     // Pass 1: upsert every agent so parent-legacyId resolution always finds
     // its parent regardless of array order.
     for (const cfg of AGENT_CONFIGS) {
@@ -52,10 +54,12 @@ export const bootstrapWorkforce = internalAction({
         },
       });
 
-      await ctx.scheduler.runAfter(0, internal.agentLoop.tick, { agentId: agent._id, concurrency });
-      kicked.push(cfg.legacyId);
+      if (autonomyEnabled) {
+        await ctx.scheduler.runAfter(0, internal.agentLoop.tick, { agentId: agent._id, concurrency });
+        kicked.push(cfg.legacyId);
+      }
     }
 
-    return { seeded: AGENT_CONFIGS.length, kicked };
+    return { seeded: AGENT_CONFIGS.length, kicked, autonomyEnabled };
   },
 });
