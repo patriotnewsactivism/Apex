@@ -1,7 +1,7 @@
 {
   "name": "workspace",
   "version": "0.0.0",
-  "packageManager": "pnpm@9.15.9",
+  "packageManager": "pnpm@11.19.0",
   "license": "MIT",
   "scripts": {
     "build": "pnpm run typecheck:production && pnpm --filter @workspace/dashboard run build",

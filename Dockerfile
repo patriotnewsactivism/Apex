@@ -1,7 +1,7 @@
 # ─── Stage 1: Builder ─────────────────────────────────────────────────────────
 FROM public.ecr.aws/docker/library/node:20-alpine AS builder
 
-RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 
 WORKDIR /app
 
@@ -72,7 +72,7 @@ FROM public.ecr.aws/docker/library/node:20-alpine AS runtime
 # chromium package instead and point Playwright at it via executablePath.
 RUN apk add --no-cache git chromium nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont
 
-RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 
 WORKDIR /app
 
