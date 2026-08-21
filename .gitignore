@@ -1,50 +1,13 @@
+```
 # Dependencies
-node_modules
-/node_modules
-**/node_modules
+node_modules/
+.pnpm-store/
 
-# Local/Environment Config
+# Logs
+*.log
+
+# Environment variables
 .env
 .env.local
-.env.*.local
-
-# Databases and Local Storage
-.local/
-*.db
-*.db-journal
-*.sqlite
-
-# Build and Compilation outputs
-dist
-/dist
-**/dist
-*.tsbuildinfo
-
-# Convex codegen output (regenerated via `convex dev`/`convex codegen`)
-**/convex/_generated
-
-# IDEs and Editors
-.vscode/
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# OS Files
-.DS_Store
-Thumbs.db
-
-# Temp/Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-.gemini/
-
-# Local-only dev scripts (contain live API keys — must never be committed)
-scripts/test-providers.mjs
+*.env.*
+```
