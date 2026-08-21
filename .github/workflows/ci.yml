@@ -35,8 +35,8 @@ jobs:
 
       - name: Run deterministic agent guards
         run: |
-          pnpm exec tsx scripts/verify-malformed-tool-calls.ts
-          pnpm exec tsx scripts/verify-non-completion.ts
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-malformed-tool-calls.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-non-completion.ts"
 
       - name: Build dashboard
         run: pnpm --filter @workspace/dashboard run build
@@ -44,7 +44,6 @@ jobs:
   convex-experimental:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -59,4 +58,5 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - name: Typecheck unfinished Convex migration
+        continue-on-error: true
         run: pnpm --filter @workspace/convex-backend --filter @workspace/apex-cicd-worker --if-present run typecheck
