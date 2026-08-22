@@ -160,14 +160,12 @@ const PROVIDERS: Array<{
   // quota, doubling Gemini's effective daily capacity to 3,000 RPD.
   { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-3.7-flash' },
 
-  // Cerebras — $5 free credit per account, 30 RPM, ~3000 tok/s inference.
-  // gpt-oss-120b on Cerebras hardware. Credits expire 30 days after creation.
-  { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
+  // Cerebras REMOVED 2026-08-22: account billing-blocked (402 "Payment
+  // required to access this resource") — confirmed dead on the original key
+  // AND on a freshly rotated CEREBRAS_API_KEY_2, so this is an account
+  // balance issue, not a bad/expired key. Re-add only after Don tops up
+  // billing at cloud.cerebras.ai and a live probe confirms 200s again.
 
-  // Cerebras (2nd account) — separate account = separate $5 credit + rate limit.
-  
-  // Cerebras (3rd account) — triple the rate-limit pool.
-  
   // Groq — permanent free tier: 30 RPM, 14,400 RPD. openai/gpt-oss-120b,
   // reliable tool calling. Daily token quota resets at midnight UTC.
   //
@@ -999,18 +997,18 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const envKey = `APEX_MODEL_${role}`;
   const envOverride = process.env[envKey];
   if (envOverride) {
-    return { provider: 'cerebras', model: envOverride, temperature: 0.7, maxTokens, role };
+    return { provider: 'groq', model: envOverride, temperature: 0.7, maxTokens, role };
   }
 
   const globalModel = process.env.APEX_MODEL;
   if (globalModel) {
-    return { provider: 'cerebras', model: globalModel, temperature: 0.7, maxTokens, role };
+    return { provider: 'groq', model: globalModel, temperature: 0.7, maxTokens, role };
   }
 
   // Every configured provider currently supplies a verified provider-specific
   // fallbackModel; this is only a neutral default for a future provider that
   // does not.
-  return { provider: 'cerebras', model: 'gpt-oss-120b', temperature: 0.7, maxTokens, role };
+  return { provider: 'groq', model: 'openai/gpt-oss-120b', temperature: 0.7, maxTokens, role };
 }
 
 // ─── Embedding Generation ─────────────────────────────────────────────────────

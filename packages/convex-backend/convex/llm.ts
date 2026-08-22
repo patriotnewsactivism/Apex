@@ -40,7 +40,6 @@ const PROVIDERS: Array<{
   // 'openai', today's default for every existing entry.
   protocol?: 'openai' | 'anthropic';
 }> = [
-  { name: 'cerebras', baseURL: 'https://api.cerebras.ai/v1', apiKeyEnv: 'CEREBRAS_API_KEY', fallbackModel: 'gpt-oss-120b' },
   // Model fixed 2026-08-19 to match packages/core/src/llm-client.ts. This entry
   // sat on llama-3.3-70b-versatile (shut down 2026-08-16) and never received
   // core's Groq model correction at all, despite being the copy that actually

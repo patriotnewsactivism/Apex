@@ -70,7 +70,7 @@ export class LeadDeveloperAgent extends BaseAgent {
       tier: 2,
       parentId: 'apex-cto-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'cerebras', model: 'gpt-oss-120b' },
+      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
       tools: [
         'sendMessage',
         'readFile',

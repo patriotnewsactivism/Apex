@@ -66,7 +66,7 @@ export class CTOAgent extends BaseAgent {
       tier: 1,
       parentId: 'apex-ceo-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'cerebras', model: 'gpt-oss-120b' },
+      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
       tools: [
         'sendMessage',
         'readFile',

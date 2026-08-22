@@ -1,5 +1,5 @@
 # ─── Stage 1: Builder ─────────────────────────────────────────────────────────
-FROM public.ecr.aws/docker/library/node:22-alpine AS builder
+FROM public.ecr.aws/docker/library/node:22-slim AS builder
 
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 

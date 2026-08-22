@@ -32,7 +32,7 @@ export const bootstrapWorkforce = internalAction({
         // Cosmetic/legacy fields — the model actually used per LLM call is
         // resolved fresh each time via getDefaultLLMConfig(role) in llmConfig.ts.
         model: 'gpt-oss-120b',
-        provider: 'cerebras',
+        provider: 'groq',
       });
     }
 
