@@ -21,13 +21,14 @@ on:
 
 concurrency:
   # Never let two deploys race for the same container service.
-  group: deploy-${{ github.event.inputs.environment }}
+  group: deploy-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +37,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           APEX_DEPLOY_ENABLED: ${{ vars.APEX_DEPLOY_ENABLED }}
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
         run: |
           missing=()
           test -n "$AWS_ACCESS_KEY_ID" || missing+=(AWS_ACCESS_KEY_ID)
@@ -45,6 +47,15 @@ jobs:
             printf 'Missing GitHub deployment configuration: %s\n' "${missing[*]}" >&2
             exit 2
           fi
+          enabled=",${APEX_DEPLOY_ENABLED,,},"
+          enabled="${enabled//[[:space:]]/}"
+          case "$enabled" in
+            ,1,|,true,|,all,|*,"$TARGET_ENVIRONMENT",*) ;;
+            *)
+              printf 'APEX_DEPLOY_ENABLED does not authorize %s: %s\n' "$TARGET_ENVIRONMENT" "$APEX_DEPLOY_ENABLED" >&2
+              exit 2
+              ;;
+          esac
 
       - uses: pnpm/action-setup@v4
         with:
@@ -69,9 +80,9 @@ jobs:
           APEX_CODEBUILD_PROJECT: ${{ vars.APEX_CODEBUILD_PROJECT || 'apex-lightsail-build' }}
           APEX_LIGHTSAIL_SERVICE: ${{ vars.APEX_LIGHTSAIL_SERVICE || 'apex-service' }}
         run: >
-          pnpm --filter @workspace/core exec tsx
+          pnpm --filter @workspace/cicd-automation exec tsx
           "$GITHUB_WORKSPACE/packages/cicd-automation/scripts/deploy.mts"
-          "${{ github.event.inputs.environment }}" --expect-sha "${{ github.sha }}"
+          "${{ inputs.environment }}" --expect-sha "${{ github.sha }}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Copy this file to .github/workflows/deploy.yml (GitHub → Add file → Create
