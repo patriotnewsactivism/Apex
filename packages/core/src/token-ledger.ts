@@ -102,15 +102,30 @@ function rolloverIfNeeded(): void {
 // (a real constraint here: shipping code means CodeBuild + a Lightsail
 // deployment, see AGENTS.md).
 //
-//   APEX_TOKEN_CAP_TOTAL=8000000            → total tokens/day, all providers
-//   APEX_TOKEN_CAPS=mistral:30000000,groq:400000,gemini:1000000
+//   APEX_TOKEN_CAP_TOTAL=30000000           → total tokens/day, all providers
+//   APEX_TOKEN_CAPS=mistral:20000000,groq:400000,google-gemini:1500000
 //
-// Safe defaults apply even when deployment variables have not been configured:
-// 2M total tokens/day and 250K tokens/day on the paid OpenRouter fallback.
-// Set either value explicitly to 0 to disable that cap. Caps count prompt +
-// completion tokens, because provider TPD limits and paid usage count both.
-
-const DEFAULT_TOTAL_DAILY_CAP = 2_000_000;
+// Defaults apply when the deployment variables are not configured. Set either
+// value explicitly to 0 to disable that cap. Caps count prompt + completion
+// tokens, because provider TPD limits and paid usage count both.
+//
+// The total default was 2M until 2026-08-22, when it was measured throttling
+// production: real spend that day was 2,160,261 tokens, the cap was hit at
+// ~07:00 UTC, and every complete() call for the following 17 hours failed
+// fast while the free tiers still had quota to give. Mistral's free tier
+// alone is ~33M tokens/day, so the "safe" default was holding a 13-agent
+// workforce to roughly 6% of the capacity it already had — and because the
+// default is hardcoded rather than deployed, nothing in the environment
+// revealed the number that was doing it.
+//
+// A low TOTAL cap is the wrong instrument anyway: it stops the whole
+// workforce dead rather than shifting load. Per-provider APEX_TOKEN_CAPS is
+// what spreads spend across the chain; the total is a runaway backstop and
+// should sit above normal operation, not inside it. Paid spend is bounded
+// separately by APEX_PAID_TOKEN_CAP and paid providers stay off unless
+// APEX_PAID_LLM_MODE is explicitly set, so this default governs free-tier
+// spend only.
+const DEFAULT_TOTAL_DAILY_CAP = 30_000_000;
 const DEFAULT_PAID_DAILY_CAP = 250_000;
 
 function parseCaps(): Record<string, number> {
