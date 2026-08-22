@@ -5,6 +5,7 @@ import {
   msUntilDailyReset,
   providerTokensToday,
   recordTokenUsage,
+  totalTokensToday,
 } from './token-ledger.js';
 
 // ─── Multi-Provider Fallback Client ───────────────────────────────────────────
@@ -538,9 +539,17 @@ class MultiProviderClient {
     // Fail fast and honestly instead of walking 15 providers to collect 15
     // 429s. Unset/0 = no cap, i.e. exactly the pre-2026-08-19 behavior.
     if (isTotalDailyCapReached()) {
+      // State the actual numbers. On 2026-08-22 this fired at ~07:00 UTC and
+      // paused the whole workforce for 17 hours against a cap set to 2M — well
+      // under what the configured free tiers hand out — and the message gave a
+      // reader no way to tell whether the cap was reasonable or absurd without
+      // querying the ledger by hand.
       throw new Error(
-        `APEX daily token cap reached (APEX_TOKEN_CAP_TOTAL) — LLM spend is paused until the UTC daily reset ` +
-          `in ~${Math.round(msUntilDailyReset() / 60000)} min. Raise APEX_TOKEN_CAP_TOTAL to continue today.`,
+        `APEX daily token cap reached — ${totalTokensToday().toLocaleString()} tokens spent today vs ` +
+          `APEX_TOKEN_CAP_TOTAL=${process.env.APEX_TOKEN_CAP_TOTAL ?? '(unset)'}. LLM spend is paused until ` +
+          `the UTC daily reset in ~${Math.round(msUntilDailyReset() / 60000)} min. If the workforce is idle ` +
+          `while providers still have free quota, this cap is set too low — raise APEX_TOKEN_CAP_TOTAL and ` +
+          `use per-provider APEX_TOKEN_CAPS to spread load instead.`,
       );
     }
 
@@ -585,6 +594,16 @@ class MultiProviderClient {
     }));
 
     const providerErrors: Array<{ provider: string; model: string; status?: number; message: string }> = [];
+
+    // Every provider the chain declined to even CALL, and why. Before
+    // 2026-08-22 these skips were silent: a provider with no key, in
+    // cooldown, or over its daily cap just `continue`d without recording
+    // anything, so when every provider was skipped the chain reported
+    // "(no providers were configured or had API keys)" — naming the wrong
+    // cause. 2,256 failed tasks carried that message while keys WERE
+    // configured and working, which is how a config gap read as a quota
+    // outage for weeks. A skip is diagnostic information, not nothing.
+    const skipReasons: Array<{ provider: string; reason: string }> = [];
 
     // Two-pass fallback: first try only reliable providers, then fall to
     // unreliable ones as last resort if everything else fails.
@@ -661,16 +680,29 @@ class MultiProviderClient {
     for (const provider of orderedProviders) {
       if (provider.paid && !paidLLMFallbackEnabled(process.env.APEX_PAID_LLM_MODE)) {
         console.warn(`[LLM] Skipping ${provider.name}: paid fallback requires explicit APEX_PAID_LLM_MODE=fallback`);
+        skipReasons.push({
+          provider: provider.name,
+          reason: 'paid provider — set APEX_PAID_LLM_MODE=fallback to allow metered spend',
+        });
         continue;
       }
       const apiKey = process.env[provider.apiKeyEnv];
       if (!apiKey) {
-        continue; // skip silently — no key configured
+        skipReasons.push({
+          provider: provider.name,
+          reason: `no API key — ${provider.apiKeyEnv} is not set`,
+        });
+        continue;
       }
 
       // Circuit breaker: skip providers in cooldown
       if (isProviderInCooldown(provider.name)) {
+        const remainingMin = Math.max(1, Math.round(providerCooldownRemainingMs(provider.name) / 60_000));
         console.warn(`[LLM] Skipping ${provider.name}: in cooldown (circuit breaker)`);
+        skipReasons.push({
+          provider: provider.name,
+          reason: `in circuit-breaker cooldown for ~${remainingMin} more min after a recent failure`,
+        });
         continue;
       }
 
@@ -686,6 +718,12 @@ class MultiProviderClient {
             `APEX_TOKEN_CAPS) — resets in ~${Math.round(msUntilDailyReset() / 60000)} min`,
         );
         setProviderCooldown(provider.name, 'daily-cap', undefined);
+        skipReasons.push({
+          provider: provider.name,
+          reason:
+            `daily token cap spent (${providerTokensToday(provider.name)} tokens today, APEX_TOKEN_CAPS) — ` +
+            `resets in ~${Math.round(msUntilDailyReset() / 60_000)} min`,
+        });
         continue;
       }
 
@@ -704,6 +742,10 @@ class MultiProviderClient {
       if (provider.toolCallingReliable === false && openaiTools && openaiTools.length > 0) {
         if (!lastResortMode) {
           console.warn(`[LLM] Deferring ${provider.name}: toolCallingReliable=false and ${openaiTools.length} tool(s) offered — will retry as last resort if all reliable providers fail`);
+          skipReasons.push({
+            provider: provider.name,
+            reason: 'deferred on the reliable pass — cannot reliably emit tool calls',
+          });
           continue;
         }
         console.warn(`[LLM] LAST RESORT: trying ${provider.name} with unreliable tool calling — all reliable providers exhausted`);
@@ -931,16 +973,40 @@ class MultiProviderClient {
     // Record total failure for global backoff
     lastTotalFailureAt = Date.now();
 
-    // All providers failed — build a detailed error showing every attempt
-    const errorSummary = providerErrors.length > 0
-      ? providerErrors.map((e) => `  • ${e.provider} (model: ${e.model}, status: ${e.status ?? 'N/A'}): ${e.message}`).join('\n')
-      : '  (no providers were configured or had API keys)';
-
-    const finalError = new Error(
-      `All LLM providers failed.\n${errorSummary}`
+    // All providers failed — build a detailed error showing every attempt AND
+    // every provider that was never attempted, with the reason it was skipped.
+    // Reporting only the attempts is what made a config gap ("no key set")
+    // indistinguishable from a capacity outage ("everyone 429'd").
+    const attemptLines = providerErrors.map(
+      (e) => `  • ${e.provider} (model: ${e.model}, status: ${e.status ?? 'N/A'}): ${e.message}`,
     );
 
-    console.error(`[LLM] All providers exhausted:\n${errorSummary}`);
+    // Last reason wins per provider, so a provider visited on both passes
+    // reports its final disposition rather than appearing twice.
+    const skipsByProvider = new Map<string, string>();
+    for (const skip of skipReasons) skipsByProvider.set(skip.provider, skip.reason);
+    const skipLines = [...skipsByProvider].map(([name, reason]) => `  ∘ ${name}: skipped — ${reason}`);
+
+    const sections: string[] = [];
+    if (attemptLines.length > 0) sections.push(`Attempted (${attemptLines.length}):\n${attemptLines.join('\n')}`);
+    if (skipLines.length > 0) sections.push(`Not attempted (${skipLines.length}):\n${skipLines.join('\n')}`);
+    if (sections.length === 0) {
+      sections.push('  (the provider roster is empty — PROVIDERS has no entries at all)');
+    }
+
+    const errorSummary = sections.join('\n');
+
+    // A chain where nothing was even tried is a configuration problem, not a
+    // capacity one. Say so in the first line so it is legible in a task's
+    // error_message without reading the whole breakdown.
+    const headline =
+      attemptLines.length === 0 && skipLines.length > 0
+        ? `All ${skipLines.length} LLM provider(s) were skipped without being called — this is a configuration/cooldown problem, not a provider outage.`
+        : 'All LLM providers failed.';
+
+    const finalError = new Error(`${headline}\n${errorSummary}`);
+
+    console.error(`[LLM] ${headline}\n${errorSummary}`);
     throw finalError;
   }
 }
@@ -1153,6 +1219,13 @@ function setProviderCooldown(
   }
 }
 
+/** Milliseconds left on a provider's cooldown, or 0 if it is not in one. */
+function providerCooldownRemainingMs(name: string): number {
+  const until = providerCooldowns.get(name);
+  if (until === undefined) return 0;
+  return Math.max(0, until - Date.now());
+}
+
 function isProviderInCooldown(name: string): boolean {
   const until = providerCooldowns.get(name);
   if (!until) return false;
@@ -1320,6 +1393,69 @@ export function getDegradedToolCallingReport(windowMs = 3_600_000): {
 
 export function getConfiguredProviders(): Array<{ name: string; configured: boolean }> {
   return PROVIDERS.map((p) => ({ name: p.name, configured: Boolean(process.env[p.apiKeyEnv]) }));
+}
+
+/**
+ * The full provider roster with, for each slot, whether a key is actually
+ * present. Never includes a key VALUE — only the env var name and a boolean.
+ *
+ * Added 2026-08-22. The roster carries 8 free-tier slots but only 4 held a
+ * key, so Mistral absorbed ~87% of a day's traffic and the chain had nothing
+ * to fall through to when it capped. Nothing surfaced that: an empty slot is
+ * indistinguishable from a slot that simply wasn't reached. This makes the
+ * gap a first-class, queryable fact.
+ */
+export function getProviderRoster(): {
+  providers: Array<{
+    name: string;
+    envVar: string;
+    configured: boolean;
+    tier: number;
+    paid: boolean;
+    toolCallingReliable: boolean;
+  }>;
+  freeSlots: number;
+  freeSlotsConfigured: number;
+  emptyFreeSlots: string[];
+} {
+  const providers = PROVIDERS.map((p) => ({
+    name: p.name,
+    envVar: p.apiKeyEnv,
+    configured: Boolean(process.env[p.apiKeyEnv]),
+    tier: p.tier ?? 0,
+    paid: p.paid === true,
+    toolCallingReliable: p.toolCallingReliable !== false,
+  }));
+  const free = providers.filter((p) => !p.paid);
+  return {
+    providers,
+    freeSlots: free.length,
+    freeSlotsConfigured: free.filter((p) => p.configured).length,
+    // Deduped: openrouter-free-router and openrouter-paid-anchor read the same
+    // OPENROUTER_API_KEY, so listing it twice would overstate how many
+    // distinct keys are actually missing.
+    emptyFreeSlots: [...new Set(free.filter((p) => !p.configured).map((p) => p.envVar))],
+  };
+}
+
+/**
+ * Print the roster at boot. A warning line naming the exact env vars that
+ * would widen the pool is far more actionable than discovering weeks later
+ * that half the chain was never callable.
+ */
+export function logProviderRoster(): void {
+  const roster = getProviderRoster();
+  console.log(
+    `[LLM] Provider roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} free-tier slots have a key ` +
+      `(${roster.providers.filter((p) => p.configured).map((p) => p.name).join(', ') || 'none'})`,
+  );
+  if (roster.emptyFreeSlots.length > 0) {
+    console.warn(
+      `[LLM] ${roster.emptyFreeSlots.length} free provider slot(s) are EMPTY and can never be called: ` +
+        `${roster.emptyFreeSlots.join(', ')}. Each one you fill widens the fallback chain before ` +
+        `the workforce starts failing tasks with "All LLM providers failed".`,
+    );
+  }
 }
 
 /** Sanitized provider metadata for deterministic routing-policy checks. Never

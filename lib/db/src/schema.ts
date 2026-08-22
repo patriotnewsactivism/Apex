@@ -94,10 +94,27 @@ export const approvals = pgTable('approvals', {
   toolName: text('tool_name').notNull(),
   toolArgs: jsonb('tool_args').$type<Record<string, unknown>>().notNull(),
   reason: text('reason').notNull(), // why agent wants to run this tool
-  status: text('status').notNull().default('pending'), // pending | approved | rejected
+  status: text('status').notNull().default('pending'), // pending | approved | rejected | stale
   reviewedAt: timestamp('reviewed_at', { withTimezone: true, mode: 'date' }),
   reviewerNote: text('reviewer_note'),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  // ── Added 2026-08-22 ──────────────────────────────────────────────────────
+  // This table carried two unrelated things under one status='pending' filter:
+  // genuine per-tool approval gates (runShell, create_pull_request, …) and
+  // escalate_to_human, which is not gated at all — it writes a row here as the
+  // "tell Don" channel. Nothing drained the escalations, so 8,683 of them
+  // buried the 16 real gated calls and made the queue unusable for its actual
+  // job. `kind` separates the two so each can be listed and handled on its own
+  // terms.
+  kind: text('kind').notNull().default('approval'), // approval | escalation
+  // Stable identity for a repeated escalation: same agent, same goal, same
+  // subject. Agents re-raise the same blocker every shift, and 8,683 rows were
+  // overwhelmingly a handful of complaints repeated — so a repeat bumps
+  // `occurrences` on the open row instead of inserting another one. The count
+  // is worth keeping: "this blocked me 340 times" is louder than 340 rows.
+  dedupeKey: text('dedupe_key'),
+  occurrences: integer('occurrences').notNull().default(1),
+  lastOccurredAt: timestamp('last_occurred_at', { withTimezone: true, mode: 'date' }),
 });
 
 // ─── Memory ───────────────────────────────────────────────────────────────────

@@ -16,14 +16,14 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { createAgentsRouter } from './routes/agents.js';
 import { createLogsRouter } from './routes/logs.js';
-import { createApprovalsRouter } from './routes/approvals.js';
+import { createApprovalsRouter, sweepStaleEscalations } from './routes/approvals.js';
 import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
 import { createAuthRouter } from './routes/auth.js';
@@ -344,6 +344,11 @@ async function main() {
   // dashboard's Settings panel is live from the very first LLM call.
   await loadSettingsIntoEnv();
 
+  // Audit the provider roster the moment keys are in process.env, before any
+  // agent can make a call. An empty free slot is a silent capacity loss —
+  // this is the one place it becomes visible without reading failure logs.
+  logProviderRoster();
+
   const durableTokenLedger = await initializeTokenLedgerPersistence();
   console.log(
     durableTokenLedger
@@ -504,7 +509,10 @@ await recoverStaleLeasedTasks();
   // run out of tokens?" could only be answered by reading provider error logs
   // after the fact. Behind requireAdminAuth like every other /api route.
   app.get('/api/tokens', (_req, res) => {
-    res.json(getTokenLedgerSnapshot());
+    // Spend alone answers "what did we use?" but not "what COULD we have
+    // used?" — the roster is what makes an unfilled free slot visible here
+    // rather than only in a failed task's error_message.
+    res.json({ ...getTokenLedgerSnapshot(), roster: getProviderRoster() });
   });
 
   // WebSocket
@@ -618,6 +626,17 @@ await recoverStaleLeasedTasks();
   const leaseRecoveryInterval = setInterval(() => {
     recoverStaleLeasedTasks().catch((err) => console.warn('⚠️  Periodic lease recovery failed:', err instanceof Error ? err.message : String(err)));
   }, 5 * 60 * 1000);
+  // Escalations nobody answers are noise, and noise is what made the queue
+  // unusable in the first place. Hourly is plenty for a 7-day window; the
+  // sweep never touches a gated approval, only escalate_to_human rows.
+  const escalationSweepInterval = setInterval(() => {
+    sweepStaleEscalations().catch((err) =>
+      console.warn('⚠️  Escalation sweep failed:', err instanceof Error ? err.message : String(err)),
+    );
+  }, 60 * 60 * 1000);
+  setTimeout(() => {
+    sweepStaleEscalations().catch(() => {});
+  }, 30_000);
   // Run an immediate initial health check after 5s
   setTimeout(runHealthPoll, 5_000);
 
@@ -640,6 +659,7 @@ await recoverStaleLeasedTasks();
     console.log(`\n${signal} received. Shutting down APEX...`);
     clearInterval(healthInterval);
     clearInterval(leaseRecoveryInterval);
+    clearInterval(escalationSweepInterval);
     scheduler.stop();
     for (const agent of workforce.values()) {
       agent.stop();

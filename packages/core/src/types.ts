@@ -156,7 +156,10 @@ export type ApexEvent =
   | { type: 'goal:updated'; goalId: string; status: string }
   | { type: 'log'; agentId?: string; taskId?: string; level: string; message: string; timestamp: number }
   | { type: 'approval:requested'; approvalId: string; agentId: string; toolName: string; reason: string }
-  | { type: 'approval:resolved'; approvalId: string; status: 'approved' | 'rejected' }
+  // 'acknowledged' applies only to kind='escalation': an escalation authorizes
+  // no tool call, so approving it would misrepresent what happened. It is a
+  // message the reader has seen and cleared.
+  | { type: 'approval:resolved'; approvalId: string; status: 'approved' | 'rejected' | 'acknowledged' }
   | { type: 'memory:updated'; agentId: string; key: string }
   | { type: 'message:sent'; messageId: string; fromAgentId: string; toAgentId: string; subject: string }
   | { type: 'health:updated'; overall: string; checks: Record<string, unknown>; timestamp: string }

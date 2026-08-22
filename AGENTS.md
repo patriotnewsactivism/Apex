@@ -133,6 +133,44 @@ so a Lightsail redeploy doesn't reset the day), keyed by UTC day.
   (`base-agent.ts`, reset to 5s the moment a task arrives), so an idle
   workforce stops converting every speculative task into instant LLM spend.
 
+## Capacity: why the workforce was starving (2026-08-22)
+
+Three independent causes, all measured live, all of which presented as
+"All LLM providers failed" and were read for weeks as quota exhaustion:
+
+1. **The roster was half empty.** 9 free provider slots, 4 with keys
+   (`MISTRAL_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `GROQ_API_KEY_2`).
+   `GEMINI_API_KEY_2`, `SAMBANOVA_API_KEY`, `HF_TOKEN` and `NVIDIA_API_KEY`
+   were never set, so Mistral absorbed 87% of a day's traffic and the chain
+   had nothing to fall through to when it capped.
+2. **`APEX_TOKEN_CAP_TOTAL=2000000` was throttling production.** Actual spend
+   on 2026-08-22 was 2,160,261 tokens; the cap was hit at ~07:00 UTC and every
+   later `complete()` failed fast for 17 hours. Mistral's free tier alone is
+   ~33M tokens/day — the cap was set to roughly 6% of capacity already
+   available. Per-provider `APEX_TOKEN_CAPS` is the right tool for spreading
+   load; the workspace total should reflect real free-tier headroom.
+3. **The error named the wrong cause.** When every provider was *skipped*
+   (no key / in cooldown / over cap) nothing was pushed to `providerErrors`,
+   so the chain reported `(no providers were configured or had API keys)`.
+   2,256 failed tasks carried that message while keys were configured and
+   working. `skipReasons` now records every skip, and a chain where nothing
+   was attempted says so in the first line.
+
+Two things make this visible instead of archaeological:
+`logProviderRoster()` runs at boot and warns with the exact env var names of
+empty slots, and `GET /api/tokens` returns `roster` alongside today's spend.
+`verify-llm-diagnostics.ts` (repo root, `tsx verify-llm-diagnostics.ts`)
+exercises both paths without needing a live key.
+
+**Escalations are not approvals.** `escalate_to_human` writes to `approvals`
+as the "tell Don" channel but gates nothing — the agent carries on. Nothing
+drained it, so 8,683 escalations buried the 16 genuinely gated calls under one
+`status='pending'` filter. `approvals.kind` (`'approval' | 'escalation'`) now
+separates them; repeated escalations dedupe onto one row via
+`dedupe_key` and bump `occurrences` instead of inserting again; escalations
+older than 7 days sweep to `stale` (a gated approval is NEVER auto-closed —
+something is blocked on it).
+
 ## Security
 - All routes under `/api/*` except `/api/auth/login` and `/health` require
   `Authorization: Bearer <token>` (`requireAdminAuth`). `/api/auth/login`
