@@ -4,6 +4,7 @@ import { eq, and, asc, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task, NewTask } from '@workspace/db';
 import type { TaskInput, TaskStatus } from './types.js';
 import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure } from './runtime-health.js';
+import { isLLMProviderChainFailure } from './provider-failure.js';
 
 // ─── Task Queue ───────────────────────────────────────────────────────────────
 
@@ -168,11 +169,12 @@ export class TaskQueue {
     try {
       const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
       if (task) {
-        // A capacity/rate-limit exhaustion (the whole LLM chain 429/402/401'd)
-        // will not clear within the backoff window — retrying just hammers the
-        // exhausted providers and floods the dashboard. Fail it now; the
-        // autonomous loop / a re-submit picks it up once capacity returns.
-        const canRetry = task.retryCount < task.maxRetries && !this.isCapacityExhaustion(error);
+        // Once the complete provider chain has failed, a 2s/4s/8s task retry
+        // just repeats the same chain and floods the log. This includes the
+        // 2026-08-22 retired-model 404 and no-configured-key failures, not only
+        // quota responses. Fail it once; StalledWorkRecoveryJob handles the
+        // recoverable subset later with a long, bounded backoff.
+        const canRetry = task.retryCount < task.maxRetries && !isLLMProviderChainFailure(error);
         if (canRetry) {
           // Exponential backoff: 2s, 4s, 8s … capped at 5 minutes (300s).
           // nextRetryAt is written to the DB so ALL workers respect the window —
@@ -205,13 +207,6 @@ export class TaskQueue {
       memTask.status = 'failed';
       memTask.errorMessage = error;
     }
-  }
-
-  /** True when `error` is a whole-chain LLM capacity/rate-limit exhaustion that
-   * retrying on a backoff window cannot fix (every provider 429/402/401'd). */
-  private isCapacityExhaustion(error: string): boolean {
-    if (!error.includes('All LLM providers failed')) return false;
-    return /(\b429\b|\b402\b|\b401\b|rate limit|insufficient credits|quota|tokens per day)/i.test(error);
   }
 
   /** Block a task (waiting on external dependency) */
