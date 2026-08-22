@@ -35,20 +35,8 @@ const openaiProbe = async (name, url, key, model, headers = {}) => {
     }),
     signal: AbortSignal.timeout(30_000),
   });
-  const body = await response.text();
-  let detail = "";
-  try {
-    const parsed = JSON.parse(body);
-    detail =
-      parsed?.choices?.[0]?.message?.content ||
-      parsed?.error?.message ||
-      parsed?.message ||
-      body.slice(0, 120);
-  } catch {
-    detail = body.slice(0, 120);
-  }
   console.log(
-    `${response.ok ? "✅" : "❌"} ${name} [${model}] -> ${response.status}${response.ok ? "" : ` :: ${String(detail).slice(0, 160)}`}`,
+    `${response.ok ? "✅" : "❌"} ${name} [${model}] -> ${response.status}`,
   );
 };
 
