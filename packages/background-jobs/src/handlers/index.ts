@@ -4,6 +4,7 @@
 // Handlers are stateless — they receive the job row and execute against the DB.
 
 import type { ScheduledJob } from '@workspace/db';
+import { isRecoverableLLMProviderFailure } from '@workspace/core';
 
 export interface JobHandler {
   execute(job: ScheduledJob, signal?: AbortSignal): Promise<unknown>;
@@ -13,6 +14,25 @@ export interface JobHandler {
 
 /** Task states where the task is still live in a queue and will (or may) run. */
 const OPEN_STATUSES = ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const;
+
+/** Separate historical provider failures disproved by a later successful task
+ * from failures that are still actionable. Kept pure so the exact incident
+ * classification can be regression-tested without touching production data. */
+export function partitionRecoveredProviderFailures<
+  T extends { id: string; errorMessage: string | null; updatedAt: Date },
+>(failures: T[], latestSuccessfulTaskAt: Date | null): { actionable: T[]; recovered: T[] } {
+  if (!latestSuccessfulTaskAt) return { actionable: failures, recovered: [] };
+  const recovered = failures.filter(
+    (failure) =>
+      isRecoverableLLMProviderFailure(failure.errorMessage) &&
+      failure.updatedAt.getTime() < latestSuccessfulTaskAt.getTime(),
+  );
+  const recoveredIds = new Set(recovered.map((failure) => failure.id));
+  return {
+    actionable: failures.filter((failure) => !recoveredIds.has(failure.id)),
+    recovered,
+  };
+}
 
 /** BuildMyBot2 operational telemetry, read straight from its Supabase.
  *
@@ -1183,30 +1203,62 @@ export class BranchReviewJob implements JobHandler {
         title: tasks.title,
         assignedAgentId: tasks.assignedAgentId,
         errorMessage: tasks.errorMessage,
+        updatedAt: tasks.updatedAt,
       })
       .from(tasks)
       .where(and(inArray(tasks.assignedAgentId, branchIds), eq(tasks.status, 'failed'), gte(tasks.updatedAt, since)))
-      .orderBy(desc(tasks.updatedAt))
-      .limit(10);
+      .orderBy(desc(tasks.updatedAt));
 
     const branchCompleted = await db
-      .select({ id: tasks.id, title: tasks.title, assignedAgentId: tasks.assignedAgentId, result: tasks.result })
+      .select({
+        id: tasks.id,
+        title: tasks.title,
+        assignedAgentId: tasks.assignedAgentId,
+        result: tasks.result,
+        updatedAt: tasks.updatedAt,
+      })
       .from(tasks)
       .where(and(inArray(tasks.assignedAgentId, branchIds), eq(tasks.status, 'done'), gte(tasks.updatedAt, since)))
       .orderBy(desc(tasks.updatedAt))
       .limit(10);
+
+    // A later successful agent task proves that the process-wide provider
+    // chain recovered. Without this partition, every branch review continued
+    // treating pre-deploy 402/404/no-key failures as an active outage for 24h,
+    // generating false credit requests, duplicate work, and human escalations
+    // even while agents were completing tool-using tasks successfully.
+    const [latestSuccessfulTask] = await db
+      .select({ id: tasks.id, updatedAt: tasks.updatedAt })
+      .from(tasks)
+      .where(eq(tasks.status, 'done'))
+      .orderBy(desc(tasks.updatedAt))
+      .limit(1);
+
+    const {
+      actionable: actionableFailures,
+      recovered: recoveredProviderFailures,
+    } = partitionRecoveredProviderFailures(
+      branchFailures,
+      latestSuccessfulTask?.updatedAt ?? null,
+    );
 
     const snapshot: Record<string, unknown> = {
       manager: targetAgentId,
       subordinates,
       myOpenTasks: ownOpen,
       branchOpenByAgent: branchOpen,
-      branchFailuresLast24h: branchFailures.map((f) => ({
+      branchFailuresLast24h: actionableFailures.slice(0, 10).map((f) => ({
         taskId: f.id,
         title: f.title,
         agent: f.assignedAgentId,
         error: (f.errorMessage ?? '').slice(0, 300),
       })),
+      recoveredProviderFailuresLast24h: {
+        count: recoveredProviderFailures.length,
+        latestSuccessfulTaskAt: latestSuccessfulTask?.updatedAt.toISOString() ?? null,
+        note:
+          'Historical provider-chain failures older than a later successful task. They are recovered context, not active incidents; do not escalate or duplicate them unless health_check currently fails.',
+      },
       branchCompletedLast24h: branchCompleted.map((c) => ({
         taskId: c.id,
         title: c.title,
@@ -1232,16 +1284,29 @@ export class BranchReviewJob implements JobHandler {
       payload.focus ?? 'Keep your branch productive and unblocked.',
       '',
       '## Standing rules for every branch review',
-      '1. IDLE SUBORDINATES ARE WASTE. Any subordinate with zero open tasks should either be given real work',
-      '   that advances a current priority, or you state explicitly why it is correctly idle.',
+      '1. IDLE IS NOT A DEFECT. Give a subordinate work only when it advances an existing goal, resolves a',
+      '   current incident, or implements an approved roadmap item. Zero open tasks is acceptable; never',
+      '   manufacture audits, refactors, or reviews merely to make an agent look busy.',
       '2. VERIFY, DO NOT ASSUME. For work you previously delegated, call get_delegation_status and read what',
       '   actually came back before treating it as delivered.',
-      '3. ACT ON FAILURES. Anything in branchFailuresLast24h either gets a corrected re-delegation, a fix, or',
-      '   an escalate_to_human — never a silent drop.',
-      '4. RESTRAINT. Do not manufacture busywork to look productive. If the branch is genuinely healthy and',
-      '   fully utilized, say so in one line and create nothing. An honest quiet review is a good review.',
-      '5. Irreversible actions (deploys, external sends, schema changes, financial) stay human-approved —',
-      '   propose and queue them, do not execute.',
+      '3. ACT ONLY ON CURRENT FAILURES. Items in branchFailuresLast24h need a corrected delegation, a fix, or',
+      '   an escalation. recoveredProviderFailuresLast24h is historical context: do not re-delegate or',
+      '   escalate it unless a fresh health_check proves the provider chain is still failing.',
+      '4. RESPECT THE MANAGEMENT CHAIN. Delegate through direct reports and check for equivalent open work',
+      '   first. The CTO delegates engineering only to the Lead Developer; it must never also assign the same',
+      '   work directly to Frontend, Backend, DevOps, or QA.',
+      '5. RESPECT PROJECT BOUNDARIES. readFile/listDir inspect the Apex container workspace only. Never use',
+      '   them as evidence about BuildMyBot2. BuildMyBot work must retain project/repository context and use',
+      '   its repo-scoped dispatch, PR, deploy, and health-check path.',
+      '6. RESTRAINT. If the branch is healthy and has no goal-backed work, say so in one line and create',
+      '   nothing. An honest quiet review is a good review.',
+      '7. APPROVAL IS PER TOOL, never a global switch. Human approval is independently required before',
+      '   each use of: runShell, deploy_to_environment, rollback_deployment, push_to_remote,',
+      '   create_pull_request, register_application, delegate_to_application, make_outbound_call,',
+      '   buildmybot_send_briefing, buildmybot_run_workforce, buildmybot_resolve_error,',
+      '   buildmybot_deploy, and casebuddy_deploy_firm.',
+      '   Irreversible actions (deploys, external sends, schema changes, financial) also stay',
+      '   human-approved — propose and queue them; do not execute.',
     ].join('\n');
 
     const taskId = await enqueueSystemTask({
@@ -1257,18 +1322,19 @@ export class BranchReviewJob implements JobHandler {
       assignedTo: targetAgentId,
       subordinates: subordinates.length,
       openInBranch: branchOpen.reduce((n, r) => n + r.count, 0),
-      failuresLast24h: branchFailures.length,
+      failuresLast24h: actionableFailures.length,
+      recoveredProviderFailuresLast24h: recoveredProviderFailures.length,
       completedLast24h: branchCompleted.length,
     };
   }
 }
 
-// ── StalledWorkRecoveryJob: capacity failures must not be permanent ────────
+// ── StalledWorkRecoveryJob: provider outages must not be permanent ─────────
 //
-// `TaskQueue.fail()` deliberately refuses to retry a whole-chain LLM capacity
-// exhaustion (`isCapacityExhaustion`), and that call is correct on its own
-// terms: retrying on a 2s→300s backoff just hammers providers that are already
-// 429ing and floods the dashboard.
+// `TaskQueue.fail()` deliberately refuses to immediately retry any whole-chain
+// LLM failure. That call is correct on its own terms: retrying on a 2s→300s
+// backoff just repeats the same broken provider/model/key state and floods the
+// dashboard.
 //
 // But nothing ever revisited those tasks afterwards. A task killed by a
 // transient provider outage was dead FOREVER — the work simply vanished. On
@@ -1278,8 +1344,8 @@ export class BranchReviewJob implements JobHandler {
 // returned, because no code path existed to bring it back. The Task Board sat
 // at 0 pending / 0 in-progress with 22 dead tasks beside it.
 //
-// This handler is that missing path. It requeues capacity-failed work on a
-// widening backoff, bounded so a genuinely dead task cannot loop forever:
+// This handler is that missing path. It requeues recoverable provider-failed
+// work on a widening backoff, bounded so a genuinely dead task cannot loop forever:
 // if the chain is still exhausted the task fails again, comes back with a
 // longer delay, and after `maxRequeues` is left alone for a human.
 
@@ -1287,18 +1353,6 @@ export class StalledWorkRecoveryJob implements JobHandler {
   /** Backoff before each successive requeue attempt. Widening, so a prolonged
    *  outage costs a handful of probe calls rather than a hot loop. */
   private static readonly BACKOFF_MS = [10 * 60_000, 45 * 60_000, 180 * 60_000];
-
-  /** Mirrors TaskQueue.isCapacityExhaustion — the signature of "every provider
-   *  in the chain refused", which is recoverable once capacity returns, as
-   *  opposed to a real defect in the task itself. */
-  private isCapacityFailure(error: string | null): boolean {
-    if (!error || !error.includes('All LLM providers failed')) return false;
-    // 401/403 are credential/config issues, not capacity. Requeuing them
-    // wastes retries on permanently broken work.
-    return /(\b429\b|\b402\b|\b413\b|rate limit|insufficient credits|quota|tokens per day|request too large)/i.test(
-      error,
-    );
-  }
 
   async execute(job: ScheduledJob): Promise<unknown> {
     const { db, tasks } = await import('@workspace/db');
@@ -1322,14 +1376,14 @@ export class StalledWorkRecoveryJob implements JobHandler {
       .where(and(eq(tasks.status, 'failed'), gte(tasks.updatedAt, since)))
       .limit(200);
 
-    const recoverable = failedTasks.filter((t) => this.isCapacityFailure(t.errorMessage));
+    const recoverable = failedTasks.filter((t) => isRecoverableLLMProviderFailure(t.errorMessage));
     if (recoverable.length === 0) {
       return {
         windowHours,
         failedInWindow: failedTasks.length,
-        capacityFailures: 0,
+        recoverableProviderFailures: 0,
         requeued: 0,
-        note: 'No capacity-related failures to recover. Any failures in this window are real defects, not provider outages — they are left alone for FailureReviewJob to triage.',
+        note: 'No recoverable provider-chain failures. Any other failures are left for FailureReviewJob to triage.',
       };
     }
 
@@ -1383,7 +1437,7 @@ export class StalledWorkRecoveryJob implements JobHandler {
     return {
       windowHours,
       failedInWindow: failedTasks.length,
-      capacityFailures: recoverable.length,
+      recoverableProviderFailures: recoverable.length,
       requeued,
       exhaustedGiveUp: exhausted,
       requeuedTasks,

@@ -2,7 +2,7 @@
  * Verifies the two fixes for the 2026-07-28 outage, against real code and a
  * real Postgres:
  *   1. request-size control (the groq 413 that broke the whole fallback chain)
- *   2. capacity-failure recovery (22 tasks left permanently dead)
+ *   2. provider-failure recovery (22 tasks left permanently dead)
  *
  * DESTRUCTIVE — truncates tasks/agents. Scratch DB only, never production.
  *   DATABASE_URL=postgres://user@host:port/scratch \
@@ -40,6 +40,15 @@ const REAL_CAPACITY_ERROR =
   '  • cerebras (model: gpt-oss-120b, status: 429): 429 status code (no body)\n' +
   '  • groq (model: llama-3.3-70b-versatile, status: 413): 413 Request too large for model ' +
   '`llama-3.3-70b-versatile` in organization `org_01k8` service tier `on_demand` on tokens per minute (TPM)';
+
+// Real failures from the 2026-08-22 outage. These are configuration/model
+// failures rather than quota failures, but become recoverable after a key or
+// deployment repair and therefore must not leave the work permanently dead.
+const RETIRED_MODEL_ERROR =
+  'All LLM providers failed. • openrouter-free (model: openai/gpt-oss-20b:free, status: 404): ' +
+  '404 This model is unavailable for free.';
+const NO_CONFIGURED_PROVIDER_ERROR =
+  'All LLM providers failed. (no providers were configured or had API keys)';
 
 async function main() {
   console.log('── 1. Request-size control (the 413 that broke the chain) ──');
@@ -93,12 +102,24 @@ async function main() {
   await db.insert(agents).values({ id: 'apex-coo-001', name: 'COO', role: 'COO', tier: 1, status: 'idle', systemPrompt: 'x', model: 'm', provider: 'p', createdAt: now });
 
   const capacityDead = randomUUID();
+  const retiredModelDead = randomUUID();
+  const missingKeysDead = randomUUID();
   const realDefect = randomUUID();
   await db.insert(tasks).values([
     {
       id: capacityDead, title: 'Lead Generation & Outreach Campaign for BuildMyBot2', description: 'd',
       status: 'failed', priority: 5, assignedAgentId: 'apex-coo-001', createdByAgentId: 'apex-ceo-001',
       createdAt: now, updatedAt: now, retryCount: 3, maxRetries: 3, errorMessage: REAL_CAPACITY_ERROR,
+    },
+    {
+      id: retiredModelDead, title: 'Peer review killed by retired model', description: 'd',
+      status: 'failed', priority: 5, assignedAgentId: 'apex-coo-001', createdByAgentId: 'apex-ceo-001',
+      createdAt: now, updatedAt: now, retryCount: 3, maxRetries: 3, errorMessage: RETIRED_MODEL_ERROR,
+    },
+    {
+      id: missingKeysDead, title: 'Branch review killed by missing provider config', description: 'd',
+      status: 'failed', priority: 5, assignedAgentId: 'apex-coo-001', createdByAgentId: 'apex-ceo-001',
+      createdAt: now, updatedAt: now, retryCount: 3, maxRetries: 3, errorMessage: NO_CONFIGURED_PROVIDER_ERROR,
     },
     {
       id: realDefect, title: 'Genuinely broken task', description: 'd',
@@ -109,8 +130,8 @@ async function main() {
   ]);
 
   const r1 = (await new StalledWorkRecoveryJob().execute(job({}))) as Record<string, number>;
-  check('recovers the capacity-killed task', r1.requeued === 1, r1);
-  check('leaves the real defect alone (not a provider outage)', r1.capacityFailures === 1, r1);
+  check('recovers quota, retired-model, and missing-config provider failures', r1.requeued === 3, r1);
+  check('leaves the real defect alone (not a provider outage)', r1.recoverableProviderFailures === 3, r1);
 
   const [revived] = await db.select().from(tasks).where(eq(tasks.id, capacityDead));
   check('task is pending again', revived.status === 'pending', revived.status);
@@ -118,6 +139,11 @@ async function main() {
   check('stale error cleared', revived.errorMessage === null);
   check('scheduled with backoff, not immediately', (revived.nextRetryAt?.getTime() ?? 0) > Date.now() + 60_000);
   check('requeue attempt recorded in context', (revived.context as Record<string, unknown>)?.capacityRequeueCount === 1);
+
+  const [retiredModelRevived] = await db.select().from(tasks).where(eq(tasks.id, retiredModelDead));
+  check('retired-model 404 work is pending after a deployment can repair it', retiredModelRevived.status === 'pending');
+  const [missingKeysRevived] = await db.select().from(tasks).where(eq(tasks.id, missingKeysDead));
+  check('no-provider-config work is pending after a restart can repair it', missingKeysRevived.status === 'pending');
 
   const [defect] = await db.select().from(tasks).where(eq(tasks.id, realDefect));
   check('real defect still failed, untouched', defect.status === 'failed');

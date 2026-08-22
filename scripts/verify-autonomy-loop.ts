@@ -323,12 +323,15 @@ async function main() {
       targetAgentId: 'apex-coo-001',
       payload: { subordinates: ['apex-lead-research-001'], focus: 'Keep the pipeline moving.' },
     }),
-  )) as { taskId: string; failuresLast24h: number };
+  )) as { taskId: string; failuresLast24h: number; recoveredProviderFailuresLast24h: number };
   check('creates a branch review for the COO', !!br.taskId);
-  check('sees its subordinate real failures', br.failuresLast24h === 4, br);
+  check('keeps the subordinate real defect actionable', br.failuresLast24h === 1, br);
+  check('classifies older provider failures as recovered after later success', br.recoveredProviderFailuresLast24h === 3, br);
   const [brTask] = await db.select().from(tasks).where(eq(tasks.id, br.taskId));
   check('carries the role-specific focus', (brTask?.description ?? '').includes('Keep the pipeline moving.'));
   check('enforces the no-busywork rule', (brTask?.description ?? '').includes('RESTRAINT'));
+  check('forbids CTO bypass/duplicate specialist delegation', (brTask?.description ?? '').includes('CTO delegates engineering only to the Lead Developer'));
+  check('warns that filesystem tools are Apex-scoped', (brTask?.description ?? '').includes('readFile/listDir inspect the Apex container workspace only'));
   const br2 = (await new BranchReviewJob().execute(
     job({ jobType: 'branch_review', targetAgentId: 'apex-coo-001', payload: { subordinates: [] } }),
   )) as { skipped?: boolean };

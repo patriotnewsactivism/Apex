@@ -10,7 +10,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { db, migrate, tasks, componentHealth, healthMetrics } from '@workspace/db';
-import { and, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
@@ -54,8 +54,10 @@ process.on('unhandledRejection', (reason) => {
 // currently stuck in 'failed' status: a transient outage (LLM exhaustion, DB
 // blip) must never permanently silence autonomous work. Jobs an operator
 // disabled via /api/jobs/:id/toggle stay disabled (enabled=false is untouched;
-// only status='failed' rows are reset to 'active'). The CEO can further
-// create/adjust crons at runtime via the schedule_task tool.
+// only status='failed' rows are reset to 'active'). Versioned system
+// definitions are also synchronized on startup so a prompt/cron safety fix
+// actually reaches existing production rows instead of applying only to a
+// fresh database. The CEO can create separate crons via schedule_task.
 async function seedDefaultJobs(): Promise<void> {
   try {
     const { db, scheduledJobs } = await import('@workspace/db');
@@ -166,24 +168,26 @@ async function seedDefaultJobs(): Promise<void> {
         id: 'system-coo-branch-review',
         name: 'COO operations branch review',
         jobType: 'branch_review',
-        cronExpression: '0 * * * *', // hourly
+        cronExpression: '5 * * * *', // hourly, after :00 provider-work recovery
         targetAgentId: 'apex-coo-001' as string | null,
         priority: 4,
         payload: {
+          systemDefinitionVersion: 2,
           subordinates: ['apex-lead-research-001', 'apex-sales-001', 'apex-marketing-001', 'apex-success-001'],
           includeBuildMyBot2: true,
           focus:
-            'You run BuildMyBot.App day-to-day operations. Priorities in order: (1) BuildMyBot2 health — if snapshot.buildmybot2 shows open critical errors, flagged/escalated shifts, or leads stalling without a reply, act: read buildmybot_status, then send a corrective briefing with buildmybot_send_briefing or file a real ticket with buildmybot_dispatch_engineering. (2) Pipeline — leads researched but never worked are wasted spend; make sure the Lead Researcher is covering new industries/regions rather than re-covering the same ones, and that Sales is actually reviewing what was found. (3) Content and support cadence. Be honest about what is genuinely not wired yet (real outbound email/SMS and payments are not) — never report outreach that did not happen.',
+            'You run BuildMyBot.App day-to-day operations. Priorities in order: (1) BuildMyBot2 health — if snapshot.buildmybot2 shows current open critical errors, flagged/escalated shifts, or leads stalling without a reply, act: read buildmybot_status, then send a corrective briefing with buildmybot_send_briefing or file one real ticket with buildmybot_dispatch_engineering. Historical provider failures listed as recovered are not current incidents. (2) Pipeline — leads researched but never worked are wasted spend; make sure the Lead Researcher is covering new industries/regions rather than re-covering the same ones, and that Sales is actually reviewing what was found. (3) Content and support cadence. Be honest about what is genuinely not wired yet (real outbound email/SMS and payments are not) — never report outreach that did not happen.',
         } as Record<string, unknown>,
       },
       {
         id: 'system-cto-branch-review',
         name: 'CTO engineering branch review',
         jobType: 'branch_review',
-        cronExpression: '30 */2 * * *', // every 2 h, offset off the COO review
+        cronExpression: '35 */2 * * *', // every 2 h, after :30 provider-work recovery
         targetAgentId: 'apex-cto-001' as string | null,
         priority: 4,
         payload: {
+          systemDefinitionVersion: 2,
           subordinates: [
             'apex-lead-dev-001',
             'apex-frontend-001',
@@ -192,7 +196,7 @@ async function seedDefaultJobs(): Promise<void> {
             'apex-qa-001',
           ],
           focus:
-            'You run engineering for Apex itself and for buildmybot2. Priorities in order: (1) Stability over features — if a component is degraded or a deploy is unhealthy, that outranks all new work; call health_check and act on what it says. (2) Repeated task failures in your branch are engineering defects until proven otherwise — diagnose the real root cause rather than re-running the same work. (3) Ship real changes through PRs, never direct pushes; deploys stay approval-gated. (4) If a capability is missing because a credential or integration is not provisioned (for example GITHUB_TOKEN for the PR loop), escalate_to_human with exactly what is needed instead of repeatedly attempting work that cannot succeed.',
+            'You run engineering for Apex itself and for buildmybot2. Priorities in order: (1) Stability over features — call health_check first and act only on current degradation. A successful task newer than an old provider-chain failure means that outage recovered; do not request credits or keys from historical errors alone. (2) Repeated current failures are engineering defects until proven otherwise — diagnose the root cause rather than re-running the same work. (3) Delegate exactly once through apex-lead-dev-001; never also assign its Frontend, Backend, DevOps, or QA reports directly. Idle agents need no invented work. (4) BuildMyBot2 work must keep its repository context; do not inspect the Apex filesystem as if it were BuildMyBot2. (5) Ship through PRs, never direct pushes; deploys stay approval-gated. Escalate a missing capability only after a current tool or health check proves it is missing.',
         } as Record<string, unknown>,
       },
     ];
@@ -229,6 +233,34 @@ async function seedDefaultJobs(): Promise<void> {
           },
           where: eq(scheduledJobs.status, 'failed'),
         });
+
+      // Existing active rows were historically never updated, which left old
+      // prompts and colliding cron expressions live forever after code fixes.
+      // Only explicitly versioned code-owned definitions are synchronized;
+      // unversioned/user-created schedules remain operator-controlled.
+      const desiredDefinitionVersion = Number(def.payload.systemDefinitionVersion ?? 0);
+      if (desiredDefinitionVersion > 0) {
+        // Keep the version comparison in the UPDATE predicate. An older
+        // deployment can never overwrite a newer definition after a stale read.
+        await db
+          .update(scheduledJobs)
+          .set({
+            name: def.name,
+            jobType: def.jobType,
+            cronExpression: def.cronExpression,
+            targetAgentId: def.targetAgentId,
+            payload: def.payload,
+            priority: def.priority,
+            nextRunAt,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(scheduledJobs.id, def.id),
+              sql`coalesce((${scheduledJobs.payload} ->> 'systemDefinitionVersion')::int, 0) < ${desiredDefinitionVersion}`,
+            ),
+          );
+      }
     }
     console.log(
       '✅ Seeded default system jobs (goal review, lead-gen sweep, daily report, maintenance, learning, delegation follow-up, goal progress, failure triage, COO/CTO branch reviews)',
