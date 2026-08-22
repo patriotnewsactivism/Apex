@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write  # required for OIDC -> AWS role assumption (no static keys)
 
 concurrency:
   group: deploy-production
@@ -26,13 +27,11 @@ jobs:
 
       - name: Validate deployment configuration
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           APEX_DEPLOY_ENABLED: ${{ vars.APEX_DEPLOY_ENABLED }}
         run: |
           missing=()
-          test -n "$AWS_ACCESS_KEY_ID" || missing+=(AWS_ACCESS_KEY_ID)
-          test -n "$AWS_SECRET_ACCESS_KEY" || missing+=(AWS_SECRET_ACCESS_KEY)
+          test -n "$AWS_DEPLOY_ROLE_ARN" || missing+=(AWS_DEPLOY_ROLE_ARN)
           test -n "$APEX_DEPLOY_ENABLED" || missing+=(APEX_DEPLOY_ENABLED)
           if (( ${#missing[@]} )); then
             printf 'Missing GitHub production configuration: %s\n' "${missing[*]}" >&2
@@ -47,6 +46,12 @@ jobs:
               exit 2
               ;;
           esac
+
+      - name: Configure AWS credentials via OIDC (no long-lived keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -69,8 +74,6 @@ jobs:
 
       - name: Build, deploy, and verify Lightsail
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
           APEX_DEPLOY_ENABLED: ${{ vars.APEX_DEPLOY_ENABLED }}
           APEX_CODEBUILD_PROJECT: ${{ vars.APEX_CODEBUILD_PROJECT || 'apex-lightsail-build' }}
