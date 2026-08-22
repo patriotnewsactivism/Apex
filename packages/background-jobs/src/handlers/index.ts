@@ -4,10 +4,7 @@
 // Handlers are stateless — they receive the job row and execute against the DB.
 
 import type { ScheduledJob } from '@workspace/db';
-import {
-  isLLMProviderChainFailure,
-  isRecoverableLLMProviderFailure,
-} from '@workspace/core';
+import { isRecoverableLLMProviderFailure } from '@workspace/core';
 
 export interface JobHandler {
   execute(job: ScheduledJob, signal?: AbortSignal): Promise<unknown>;
@@ -27,7 +24,7 @@ export function partitionRecoveredProviderFailures<
   if (!latestSuccessfulTaskAt) return { actionable: failures, recovered: [] };
   const recovered = failures.filter(
     (failure) =>
-      isLLMProviderChainFailure(failure.errorMessage) &&
+      isRecoverableLLMProviderFailure(failure.errorMessage) &&
       failure.updatedAt.getTime() < latestSuccessfulTaskAt.getTime(),
   );
   const recoveredIds = new Set(recovered.map((failure) => failure.id));
@@ -1210,8 +1207,7 @@ export class BranchReviewJob implements JobHandler {
       })
       .from(tasks)
       .where(and(inArray(tasks.assignedAgentId, branchIds), eq(tasks.status, 'failed'), gte(tasks.updatedAt, since)))
-      .orderBy(desc(tasks.updatedAt))
-      .limit(10);
+      .orderBy(desc(tasks.updatedAt));
 
     const branchCompleted = await db
       .select({
@@ -1251,7 +1247,7 @@ export class BranchReviewJob implements JobHandler {
       subordinates,
       myOpenTasks: ownOpen,
       branchOpenByAgent: branchOpen,
-      branchFailuresLast24h: actionableFailures.map((f) => ({
+      branchFailuresLast24h: actionableFailures.slice(0, 10).map((f) => ({
         taskId: f.id,
         title: f.title,
         agent: f.assignedAgentId,
@@ -1304,8 +1300,13 @@ export class BranchReviewJob implements JobHandler {
       '   its repo-scoped dispatch, PR, deploy, and health-check path.',
       '6. RESTRAINT. If the branch is healthy and has no goal-backed work, say so in one line and create',
       '   nothing. An honest quiet review is a good review.',
-      '7. Irreversible actions (deploys, external sends, schema changes, financial) stay human-approved —',
-      '   propose and queue them, do not execute.',
+      '7. APPROVAL IS PER TOOL, never a global switch. Human approval is independently required before',
+      '   each use of: runShell, deploy_to_environment, rollback_deployment, push_to_remote,',
+      '   create_pull_request, register_application, delegate_to_application, make_outbound_call,',
+      '   buildmybot_send_briefing, buildmybot_run_workforce, buildmybot_resolve_error,',
+      '   buildmybot_deploy, and casebuddy_deploy_firm.',
+      '   Irreversible actions (deploys, external sends, schema changes, financial) also stay',
+      '   human-approved — propose and queue them; do not execute.',
     ].join('\n');
 
     const taskId = await enqueueSystemTask({
@@ -1380,7 +1381,6 @@ export class StalledWorkRecoveryJob implements JobHandler {
       return {
         windowHours,
         failedInWindow: failedTasks.length,
-        capacityFailures: 0,
         recoverableProviderFailures: 0,
         requeued: 0,
         note: 'No recoverable provider-chain failures. Any other failures are left for FailureReviewJob to triage.',
@@ -1437,7 +1437,6 @@ export class StalledWorkRecoveryJob implements JobHandler {
     return {
       windowHours,
       failedInWindow: failedTasks.length,
-      capacityFailures: recoverable.length,
       recoverableProviderFailures: recoverable.length,
       requeued,
       exhaustedGiveUp: exhausted,

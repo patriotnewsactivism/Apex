@@ -10,7 +10,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { db, migrate, tasks, componentHealth, healthMetrics } from '@workspace/db';
-import { and, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
@@ -240,28 +240,26 @@ async function seedDefaultJobs(): Promise<void> {
       // unversioned/user-created schedules remain operator-controlled.
       const desiredDefinitionVersion = Number(def.payload.systemDefinitionVersion ?? 0);
       if (desiredDefinitionVersion > 0) {
-        const [stored] = await db
-          .select({ payload: scheduledJobs.payload })
-          .from(scheduledJobs)
-          .where(eq(scheduledJobs.id, def.id))
-          .limit(1);
-        const storedPayload = (stored?.payload ?? {}) as Record<string, unknown>;
-        const storedDefinitionVersion = Number(storedPayload.systemDefinitionVersion ?? 0);
-        if (storedDefinitionVersion < desiredDefinitionVersion) {
-          await db
-            .update(scheduledJobs)
-            .set({
-              name: def.name,
-              jobType: def.jobType,
-              cronExpression: def.cronExpression,
-              targetAgentId: def.targetAgentId,
-              payload: def.payload,
-              priority: def.priority,
-              nextRunAt,
-              updatedAt: now,
-            })
-            .where(eq(scheduledJobs.id, def.id));
-        }
+        // Keep the version comparison in the UPDATE predicate. An older
+        // deployment can never overwrite a newer definition after a stale read.
+        await db
+          .update(scheduledJobs)
+          .set({
+            name: def.name,
+            jobType: def.jobType,
+            cronExpression: def.cronExpression,
+            targetAgentId: def.targetAgentId,
+            payload: def.payload,
+            priority: def.priority,
+            nextRunAt,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(scheduledJobs.id, def.id),
+              sql`coalesce((${scheduledJobs.payload} ->> 'systemDefinitionVersion')::int, 0) < ${desiredDefinitionVersion}`,
+            ),
+          );
       }
     }
     console.log(

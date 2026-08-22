@@ -31,10 +31,22 @@ const noProviders =
   'All LLM providers failed. (no providers were configured or had API keys)';
 const quotaFailure =
   'All LLM providers failed. • groq (status: 429): rate limit • openrouter (status: 402): insufficient credits';
+const mixedCredentialFailure =
+  'All LLM providers failed. • mistral (status: 401): unauthorized • groq (status: 429): rate limit';
+const taskSpecificChainFailure =
+  'All LLM providers failed. • mistral (status: 400): malformed tool payload';
 
 check('retired-model 404 is recoverable after a deploy', isRecoverableLLMProviderFailure(retiredModel));
 check('missing provider configuration is recoverable after a restart', isRecoverableLLMProviderFailure(noProviders));
 check('quota exhaustion remains recoverable', isRecoverableLLMProviderFailure(quotaFailure));
+check(
+  'credential-denied chains remain human-actionable even when another provider is rate-limited',
+  !isRecoverableLLMProviderFailure(mixedCredentialFailure),
+);
+check(
+  'task-specific provider-chain failures remain actionable',
+  !isRecoverableLLMProviderFailure(taskSpecificChainFailure),
+);
 check('all-provider failure suppresses immediate task retries', isLLMProviderChainFailure(retiredModel));
 check(
   'a real task defect is not classified as provider recovery',
@@ -45,6 +57,7 @@ const partitioned = partitionRecoveredProviderFailures(
   [
     { id: 'old-provider', errorMessage: retiredModel, updatedAt: oldAt },
     { id: 'real-defect', errorMessage: 'TypeError: broken task', updatedAt: oldAt },
+    { id: 'task-specific-chain', errorMessage: taskSpecificChainFailure, updatedAt: oldAt },
     { id: 'fresh-provider', errorMessage: quotaFailure, updatedAt: newAt },
   ],
   recoveredAt,
@@ -57,7 +70,8 @@ check(
 );
 check(
   'real defects and provider failures newer than the success remain actionable',
-  partitioned.actionable.map((failure) => failure.id).join(',') === 'real-defect,fresh-provider',
+  partitioned.actionable.map((failure) => failure.id).join(',') ===
+    'real-defect,task-specific-chain,fresh-provider',
   partitioned,
 );
 
