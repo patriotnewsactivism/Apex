@@ -1340,12 +1340,31 @@ export function getProviderCatalog(): Array<{
   }));
 }
 
-/** The full set of env var names this LLM client will ever read an API key
- * from. Used by the Settings API as a strict allowlist so a client can only
- * ever set/clear a key this client actually consumes — never an arbitrary
- * environment variable. */
-export function getKnownApiKeyEnvs(): string[] {
-  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'STRIPE_SECRET_KEY', 'APEX_APPROVAL_MODE'];
+/** Read-only view of the live LLM provider chain. Consumed by
+ * integration-catalog.ts (the single source of truth for the Settings
+ * allowlist and probe config) so the LLM keys the system accepts can never
+ * drift from the providers the runtime actually tries. Never includes API
+ * key values. */
+export function listLLMProviderEntries(): Array<{
+  name: string;
+  apiKeyEnv: string;
+  baseURL: string;
+  fallbackModel: string;
+  tier: number;
+  paid: boolean;
+  toolCallingReliable: boolean;
+  extraHeaders?: Record<string, string>;
+}> {
+  return PROVIDERS.map((p) => ({
+    name: p.name,
+    apiKeyEnv: p.apiKeyEnv,
+    baseURL: p.baseURL,
+    fallbackModel: p.fallbackModel ?? '',
+    tier: p.tier ?? 0,
+    paid: p.paid === true,
+    toolCallingReliable: p.toolCallingReliable !== false,
+    extraHeaders: p.extraHeaders,
+  }));
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {

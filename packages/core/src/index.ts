@@ -11,6 +11,7 @@ export * from './non-completion.js';
 export * from './token-ledger.js';
 export * from './runtime-health.js';
 export * from './provider-failure.js';
+export * from './integration-catalog.js';
 
 export { optimizePrompt } from './prompt-forge.js';
 export type { OptimizePromptInput, OptimizePromptResult, PromptCandidateResult } from './prompt-forge.js';

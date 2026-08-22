@@ -91,14 +91,22 @@ export const api = {
     // Never returns plaintext values — status only (configured: boolean).
     listIntegrations: () =>
       apiFetch<{ integrations: { key: string; configured: boolean }[] }>('/settings/integrations').then((r) => r.integrations),
+    // The single source of truth for what APEX supports — fetched so the UI
+    // never maintains its own provider list.
+    listIntegrationCatalog: () =>
+      apiFetch<{ catalog: IntegrationCatalogEntry[] }>('/settings/integrations/catalog').then((r) => r.catalog),
     saveIntegration: (key: string, value: string) =>
-      apiFetch<{ ok: boolean; key: string; configured: boolean }>('/settings/integrations', {
+      apiFetch<{ ok: boolean; key: string; configured: boolean; probe?: IntegrationProbeResult }>('/settings/integrations', {
         method: 'POST',
         body: JSON.stringify({ key, value }),
       }),
     clearIntegration: (key: string) =>
       apiFetch<{ ok: boolean; key: string; configured: boolean }>(`/settings/integrations/${encodeURIComponent(key)}`, {
         method: 'DELETE',
+      }),
+    recoverWorkforce: () =>
+      apiFetch<{ ok: boolean; requeuedTasks: number; resetAgents: number }>('/settings/recover-workforce', {
+        method: 'POST',
       }),
   },
 
@@ -264,6 +272,41 @@ export interface ToolInfo {
   name: string;
   description: string;
   requiresApproval: boolean;
+}
+
+// ─── Integration Catalog Types ──────────────────────────────────────────────
+
+export type IntegrationProbeStatus =
+  | 'connected'
+  | 'rate_limited'
+  | 'invalid_key'
+  | 'billing_required'
+  | 'error'
+  | 'not_probed';
+
+export interface IntegrationProbeResult {
+  status: IntegrationProbeStatus;
+  httpStatus?: number;
+  detail?: string;
+}
+
+export interface IntegrationCatalogEnvVar {
+  key: string;
+  label: string;
+  placeholder?: string;
+  secret?: boolean;
+  configured: boolean;
+}
+
+export interface IntegrationCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  category: 'ai' | 'comms' | 'dev' | 'data';
+  docsUrl?: string;
+  state: 'active' | 'disabled';
+  stateReason?: string;
+  envVars: IntegrationCatalogEnvVar[];
 }
 
 // ─── Health Types ─────────────────────────────────────────────────────────────

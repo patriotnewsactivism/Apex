@@ -2,18 +2,15 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
+import type { IntegrationCatalogEntry, IntegrationProbeResult } from '../lib/api.js';
 import {
-  Settings as SettingsIcon,
-  Key,
+  Cpu,
   Webhook,
-  Link2,
   ExternalLink,
   Check,
   Copy,
   Eye,
   EyeOff,
-  Cpu,
-  Globe,
   Mail,
   MessageSquare,
   Phone,
@@ -22,151 +19,10 @@ import {
   Shield,
   Zap,
   ChevronRight,
+  RefreshCw,
 } from 'lucide-react';
 
-interface IntegrationConfig {
-  id: string;
-  name: string;
-  description: string;
-  icon: React.ReactNode;
-  category: 'ai' | 'comms' | 'dev' | 'data';
-  envVars: { key: string; label: string; placeholder: string; secret?: boolean }[];
-  docsUrl?: string;
-}
-
-const INTEGRATIONS: IntegrationConfig[] = [
-  {
-    id: 'groq',
-    name: 'Groq',
-    description: 'Ultra-fast LLM inference (free tier)',
-    icon: <Zap size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'GROQ_API_KEY', label: 'API Key', placeholder: 'gsk_...', secret: true }],
-    docsUrl: 'https://console.groq.com',
-  },
-  {
-    id: 'google-gemini',
-    name: 'Google Gemini',
-    description: 'Gemini 2.0 Flash — free, reliable tool calling (1,500 req/day)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'GEMINI_API_KEY', label: 'API Key', placeholder: 'AIza...', secret: true }],
-    docsUrl: 'https://aistudio.google.com',
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    description: 'DeepSeek-V3 chat model, reliable tool calling (free credits)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'DEEPSEEK_API_KEY', label: 'API Key', placeholder: 'sk-...', secret: true }],
-    docsUrl: 'https://platform.deepseek.com',
-  },
-  {
-    id: 'cerebras',
-    name: 'Cerebras',
-    description: 'High-speed AI inference',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'CEREBRAS_API_KEY', label: 'API Key', placeholder: 'csk-...', secret: true }],
-    docsUrl: 'https://cloud.cerebras.ai',
-  },
-  {
-    id: 'mistral',
-    name: 'Mistral',
-    description: 'La Plateforme (free tier, 1B tokens/month)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'MISTRAL_API_KEY', label: 'API Key', placeholder: 'Bearer token from console.mistral.ai', secret: true }],
-    docsUrl: 'https://console.mistral.ai',
-  },
-  {
-    id: 'cohere',
-    name: 'Cohere',
-    description: 'Command R+ model for agents',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    // COHERE_TRIAL_API_KEY field removed 2026-08-05 — it was never a real
-    // key the backend allowlist recognized (getKnownApiKeyEnvs() only ever
-    // exposed COHERE_API_KEY), so it silently 400'd on save. There is only
-    // one Cohere key this app actually uses.
-    envVars: [
-      { key: 'COHERE_API_KEY', label: 'API Key', placeholder: 'cohere_...', secret: true },
-    ],
-    docsUrl: 'https://dashboard.cohere.com/api-keys',
-  },
-  {
-    id: 'poolside',
-    name: 'Poolside',
-    description: 'Laguna-S 2.1 model for code generation',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'POOLSIDE_API_KEY', label: 'API Key', placeholder: 'sky_...', secret: true }],
-    docsUrl: 'https://platform.poolside.ai',
-  },
-  {
-    id: 'vapi',
-    name: 'Vapi',
-    description: 'AI voice agent outbound calling (make_outbound_call tool)',
-    icon: <Phone size={18} />,
-    category: 'ai',
-    envVars: [
-      { key: 'VAPI_API_KEY', label: 'API Key', placeholder: 'Private key from dashboard.vapi.ai', secret: true },
-      { key: 'VAPI_PHONE_NUMBER_ID', label: 'Phone Number ID', placeholder: 'ID of purchased Vapi number', secret: false },
-    ],
-    docsUrl: 'https://dashboard.vapi.ai',
-  },
-  {
-    id: 'qwen',
-    name: 'Qwen Cloud',
-    description: 'Alibaba Model Studio -- qwen3-coder-plus (pay-as-you-go)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'QWENCLOUD_API_KEY', label: 'API Key', placeholder: 'sk-ws-...', secret: true }],
-    docsUrl: 'https://modelstudio.console.alibabacloud.com',
-  },
-  {
-    id: 'slack',
-    name: 'Slack Webhook',
-    description: 'Send notifications to Slack',
-    icon: <MessageSquare size={18} />,
-    category: 'comms',
-    envVars: [
-      { key: 'SLACK_NOTIFY_WEBHOOK', label: 'Webhook URL', placeholder: 'https://hooks.slack.com/...' },
-    ],
-    docsUrl: 'https://api.slack.com/messaging/webhooks',
-  },
-  {
-    id: 'resend',
-    name: 'Resend',
-    description: 'Transactional email delivery',
-    icon: <Mail size={18} />,
-    category: 'comms',
-    envVars: [{ key: 'RESEND_API_KEY', label: 'API Key', placeholder: 're_...', secret: true }],
-    docsUrl: 'https://resend.com/api-keys',
-  },
-  {
-    id: 'github',
-    name: 'GitHub',
-    description: 'Repo access for code agents',
-    icon: <GitBranch size={18} />,
-    category: 'dev',
-    envVars: [{ key: 'GITHUB_TOKEN', label: 'Personal Access Token', placeholder: 'ghp_...', secret: true }],
-    docsUrl: 'https://github.com/settings/tokens',
-  },
-  {
-    id: 'supabase',
-    name: 'Supabase',
-    description: 'Database & auth backend',
-    icon: <Database size={18} />,
-    category: 'data',
-    envVars: [
-      { key: 'SUPABASE_URL', label: 'Project URL', placeholder: 'https://xxx.supabase.co' },
-      { key: 'SUPABASE_SERVICE_ROLE_KEY', label: 'Service Role Key', placeholder: 'eyJ...', secret: true },
-    ],
-    docsUrl: 'https://supabase.com/dashboard',
-  },
-];
+// ─── Category map ─────────────────────────────────────────────────────────────
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   ai: { label: 'AI Models', color: '#8b7ec8' },
@@ -175,13 +31,55 @@ const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   data: { label: 'Data & Storage', color: '#c9a84a' },
 };
 
+function categoryIcon(category: string) {
+  switch (category) {
+    case 'ai':
+      return <Cpu size={18} />;
+    case 'comms':
+      return <MessageSquare size={18} />;
+    case 'dev':
+      return <GitBranch size={18} />;
+    case 'data':
+      return <Database size={18} />;
+    default:
+      return <Zap size={18} />;
+  }
+}
+
+function enrichCategoryIcon(integration: IntegrationCatalogEntry) {
+  // Per-identity icons for a few well-known integrations; category fallback otherwise.
+  switch (integration.id) {
+    case 'vapi':
+      return <Phone size={18} />;
+    case 'github':
+      return <GitBranch size={18} />;
+    case 'stripe':
+      return <Shield size={18} />;
+    case 'resend':
+      return <Mail size={18} />;
+    case 'slack':
+      return <MessageSquare size={18} />;
+    default:
+      return categoryIcon(integration.category);
+  }
+}
+
+const PROBE_META: Record<IntegrationProbeResult['status'], { label: string; color: string }> = {
+  connected: { label: 'Connected', color: '#6a9f78' },
+  rate_limited: { label: 'Rate Limited', color: '#c9a84a' },
+  invalid_key: { label: 'Invalid Key', color: '#c45c66' },
+  billing_required: { label: 'Billing Required', color: '#c45c66' },
+  error: { label: 'Probe Failed', color: '#c45c66' },
+  not_probed: { label: 'Saved', color: '#6a9f78' },
+};
+
+// ─── Integration card ─────────────────────────────────────────────────────────
+
 function IntegrationCard({
   integration,
-  configuredKeys,
   onChanged,
 }: {
-  integration: IntegrationConfig;
-  configuredKeys: Set<string>;
+  integration: IntegrationCatalogEntry;
   onChanged: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -189,22 +87,24 @@ function IntegrationCard({
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [probes, setProbes] = useState<Record<string, IntegrationProbeResult>>({});
 
   const cat = CATEGORY_LABELS[integration.category];
+  const disabled = integration.state !== 'active';
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      // Real server-side persistence — writes to the DB-backed
-      // integration_settings table AND applies live to the running
-      // server's process.env (see settingsLoader.ts). Replaces the
-      // previous localStorage-only no-op.
       const entries = Object.entries(values).filter(([, v]) => v);
+      const results: Record<string, IntegrationProbeResult> = {};
       for (const [key, val] of entries) {
-        await api.settings.saveIntegration(key, val);
+        const r = await api.settings.saveIntegration(key, val);
+        if (r.probe) results[key] = r.probe;
       }
+      return results;
     },
-    onSuccess: () => {
+    onSuccess: (results) => {
       setSaveError(null);
+      setProbes(results);
       setSaved(true);
       setValues({});
       onChanged();
@@ -213,16 +113,12 @@ function IntegrationCard({
     onError: (err: Error) => setSaveError(err.message),
   });
 
-  const handleSave = () => saveMutation.mutate();
-
-  const hasValues = integration.envVars.some(
-    (v) => values[v.key] || configuredKeys.has(v.key)
-  );
+  const hasValues = integration.envVars.some((v) => v.configured || values[v.key]);
 
   return (
     <motion.div
       className="glass-card"
-      style={{ overflow: 'hidden' }}
+      style={{ overflow: 'hidden', opacity: disabled ? 0.55 : 1 }}
       initial={false}
     >
       <button
@@ -255,28 +151,43 @@ function IntegrationCard({
             flexShrink: 0,
           }}
         >
-          {integration.icon}
+          {enrichCategoryIcon(integration)}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             {integration.name}
-            {hasValues && (
+            {disabled ? (
               <span
                 style={{
                   fontSize: 9,
                   padding: '1px 6px',
                   borderRadius: 3,
-                  background: 'rgba(106,159,120,0.1)',
-                  color: '#6a9f78',
+                  background: 'rgba(255,255,255,0.06)',
+                  color: 'var(--color-apex-muted)',
                   fontWeight: 600,
                 }}
               >
-                CONFIGURED
+                NOT WIRED
               </span>
+            ) : (
+              hasValues && (
+                <span
+                  style={{
+                    fontSize: 9,
+                    padding: '1px 6px',
+                    borderRadius: 3,
+                    background: 'rgba(106,159,120,0.1)',
+                    color: '#6a9f78',
+                    fontWeight: 600,
+                  }}
+                >
+                  CONFIGURED
+                </span>
+              )
             )}
           </div>
           <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginTop: 2 }}>
-            {integration.description}
+            {disabled && integration.stateReason ? integration.stateReason : integration.description}
           </div>
         </div>
         <ChevronRight
@@ -294,16 +205,15 @@ function IntegrationCard({
         <motion.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          style={{
-            padding: '0 16px 16px',
-            borderTop: '1px solid rgba(255,255,255,0.04)',
-          }}
+          style={{ padding: '0 16px 16px', borderTop: '1px solid rgba(255,255,255,0.04)' }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
             {integration.envVars.map((envVar) => {
-              const storedVal = configuredKeys.has(envVar.key) ? '(configured)' : null;
+              const storedVal = envVar.configured ? '(configured)' : null;
               const isSecret = envVar.secret;
               const show = showSecrets[envVar.key];
+              const probe = probes[envVar.key];
+              const probeMeta = probe ? PROBE_META[probe.status] : undefined;
 
               return (
                 <div key={envVar.key}>
@@ -330,6 +240,7 @@ function IntegrationCard({
                       placeholder={storedVal ? '••••••••  (saved)' : envVar.placeholder}
                       value={values[envVar.key] || ''}
                       onChange={(e) => setValues((prev) => ({ ...prev, [envVar.key]: e.target.value }))}
+                      disabled={disabled}
                       style={{ flex: 1 }}
                     />
                     {isSecret && (
@@ -353,50 +264,63 @@ function IntegrationCard({
                       </button>
                     )}
                   </div>
+                  {probeMeta && (
+                    <div style={{ fontSize: 11, color: probeMeta.color, marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <Check size={11} /> {probeMeta.label}
+                      {probe?.detail && (
+                        <span style={{ opacity: 0.7 }}>— {probe.detail.slice(0, 120)}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-            {saveError && (
-              <div style={{ fontSize: 11, color: '#c45c66' }}>⚠ Save failed: {saveError}</div>
-            )}
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn-primary"
-                onClick={handleSave}
-                disabled={saveMutation.isPending}
-                style={{ fontSize: 12, padding: '8px 16px', opacity: saveMutation.isPending ? 0.6 : 1 }}
-              >
-                {saved ? (
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Check size={14} /> Saved
-                  </span>
-                ) : saveMutation.isPending ? (
-                  'Saving…'
-                ) : (
-                  'Save'
-                )}
-              </button>
-              {integration.docsUrl && (
-                <a
-                  href={integration.docsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn-secondary"
+              {saveError && (
+                <div style={{ fontSize: 11, color: '#c45c66' }}>Save failed: {saveError}</div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="btn-primary"
+                  onClick={() => saveMutation.mutate()}
+                  disabled={saveMutation.isPending || disabled}
+                  title={disabled ? integration.stateReason : undefined}
                   style={{
                     fontSize: 12,
                     padding: '8px 16px',
-                    textDecoration: 'none',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
+                    opacity: saveMutation.isPending || disabled ? 0.6 : 1,
                   }}
                 >
-                  Docs <ExternalLink size={12} />
-                </a>
-              )}
-            </div>
+                  {saved ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <Check size={14} /> Saved
+                    </span>
+                  ) : saveMutation.isPending ? (
+                    'Saving…'
+                  ) : (
+                    'Save'
+                  )}
+                </button>
+                {integration.docsUrl && (
+                  <a
+                    href={integration.docsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-secondary"
+                    style={{
+                      fontSize: 12,
+                      padding: '8px 16px',
+                      textDecoration: 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    Docs <ExternalLink size={12} />
+                  </a>
+                )}
+              </div>
             </div>
           </div>
         </motion.div>
@@ -404,6 +328,8 @@ function IntegrationCard({
     </motion.div>
   );
 }
+
+// ─── Settings screen ──────────────────────────────────────────────────────────
 
 export function Settings() {
   const queryClient = useQueryClient();
@@ -433,25 +359,31 @@ export function Settings() {
     queryFn: () => api.tools.list(),
   });
 
-  // Real server-side configured status — never the plaintext values.
-  const { data: integrationStatus = [] } = useQuery({
-    queryKey: ['settings', 'integrations'],
-    queryFn: () => api.settings.listIntegrations(),
+  // The backend integration catalog — the single source of truth for what
+  // APEX supports. No hard-coded provider list lives in this component.
+  const { data: catalog = [] } = useQuery({
+    queryKey: ['settings', 'integration-catalog'],
+    queryFn: () => api.settings.listIntegrationCatalog(),
   });
-  const configuredKeys = new Set(integrationStatus.filter((s) => s.configured).map((s) => s.key));
-  const refetchIntegrations = () => queryClient.invalidateQueries({ queryKey: ['settings', 'integrations'] });
+  const refetchCatalog = () => queryClient.invalidateQueries({ queryKey: ['settings', 'integration-catalog'] });
+
+  const recoverMutation = useMutation({
+    mutationFn: () => api.settings.recoverWorkforce(),
+  });
 
   const categories = ['ai', 'comms', 'dev', 'data'] as const;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* Autonomy Level */}
-      <div style={{
-        background: 'var(--color-apex-card)',
-        border: '1px solid rgba(90,158,174,0.15)',
-        borderRadius: 12,
-        padding: 20,
-      }}>
+      <div
+        style={{
+          background: 'var(--color-apex-card)',
+          border: '1px solid rgba(90,158,174,0.15)',
+          borderRadius: 12,
+          padding: 20,
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
           <Shield size={20} color="#5a9eae" />
           <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>Autonomy Level</span>
@@ -486,25 +418,73 @@ export function Settings() {
                   transition: 'all 0.15s',
                 }}
               >
-                <span style={{
-                  fontSize: 13,
-                  fontWeight: isActive ? 700 : 500,
-                  color: isActive ? 'var(--color-apex-cyan)' : 'var(--color-apex-text)',
-                }}>
+                <span
+                  style={{
+                    fontSize: 13,
+                    fontWeight: isActive ? 700 : 500,
+                    color: isActive ? 'var(--color-apex-cyan)' : 'var(--color-apex-text)',
+                  }}
+                >
                   {opt.label}
                 </span>
-                <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>
-                  {opt.desc}
-                </span>
+                <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>{opt.desc}</span>
               </button>
             );
           })}
         </div>
         {autonomyMutation.isSuccess && (
-          <div style={{ fontSize: 11, color: 'var(--color-apex-green)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <div
+            style={{
+              fontSize: 11,
+              color: 'var(--color-apex-green)',
+              marginTop: 8,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
             <Check size={12} /> Applied — goal review cadence updated
           </div>
         )}
+      </div>
+
+      {/* Recover Workforce */}
+      <div
+        className="glass-card"
+        style={{
+          padding: 16,
+          border: '1px solid rgba(201,168,74,0.25)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <RefreshCw size={16} color="#c9a84a" />
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-apex-text)' }}>Recover Workforce</span>
+        </div>
+        <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '0 0 12px', lineHeight: 1.4 }}>
+          When LLM providers run out of quota or are billing-blocked, APEX fails tasks with "All LLM providers
+          failed" and affected agents turn red (ERROR). After you've saved/restored working keys above, run this
+          to requeue those tasks and reset the affected agents.
+        </p>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            className="btn-primary"
+            onClick={() => recoverMutation.mutate()}
+            disabled={recoverMutation.isPending}
+            style={{ fontSize: 12, padding: '8px 16px', opacity: recoverMutation.isPending ? 0.6 : 1 }}
+          >
+            {recoverMutation.isPending ? 'Recovering…' : 'Recover Workforce'}
+          </button>
+          {recoverMutation.isSuccess && recoverMutation.data && (
+            <span style={{ fontSize: 11, color: '#6a9f78', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Check size={12} /> {recoverMutation.data.requeuedTasks} task(s) requeued, {recoverMutation.data.resetAgents} agent(s) reset
+            </span>
+          )}
+          {recoverMutation.isError && (
+            <span style={{ fontSize: 11, color: '#c45c66' }}>
+              {(recoverMutation.error as Error).message}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* System overview */}
@@ -514,19 +494,13 @@ export function Settings() {
           { label: 'Tools', value: tools.length, color: '#5a9eae', icon: <Zap size={14} /> },
           {
             label: 'Configured',
-            value: INTEGRATIONS.filter((i) =>
-              i.envVars.some((v) => configuredKeys.has(v.key))
-            ).length,
+            value: catalog.filter((i) => i.state === 'active' && i.envVars.some((v) => v.configured)).length,
             color: '#6a9f78',
             icon: <Check size={14} />,
           },
           {
             label: 'Missing',
-            value:
-              INTEGRATIONS.length -
-              INTEGRATIONS.filter((i) =>
-                i.envVars.some((v) => configuredKeys.has(v.key))
-              ).length,
+            value: catalog.filter((i) => i.state === 'active' && !i.envVars.some((v) => v.configured)).length,
             color: '#c45c66',
             icon: <Shield size={14} />,
           },
@@ -542,9 +516,7 @@ export function Settings() {
               }}
             >
               {stat.icon}
-              <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase' }}>
-                {stat.label}
-              </span>
+              <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase' }}>{stat.label}</span>
             </div>
             <div
               style={{
@@ -632,7 +604,8 @@ export function Settings() {
 
       {/* Integrations by category */}
       {categories.map((cat) => {
-        const catIntegrations = INTEGRATIONS.filter((i) => i.category === cat);
+        const catIntegrations = catalog.filter((i) => i.category === cat);
+        if (catIntegrations.length === 0) return null;
         const catInfo = CATEGORY_LABELS[cat];
         return (
           <div key={cat}>
@@ -670,8 +643,7 @@ export function Settings() {
                 <IntegrationCard
                   key={integration.id}
                   integration={integration}
-                  configuredKeys={configuredKeys}
-                  onChanged={refetchIntegrations}
+                  onChanged={refetchCatalog}
                 />
               ))}
             </div>

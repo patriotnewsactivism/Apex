@@ -135,6 +135,14 @@ export abstract class BaseAgent {
     }
   }
 
+  /** Operator-triggered recovery (Recover Workforce): clear the error state
+   *  so the persisted red ERROR on the dashboard returns to idle. The run
+   *  loop does not block on status — it always keeps polling — so this only
+   *  needs to reset the visible/persisted state, not restart execution. */
+  recover(): void {
+    this.setStatus('idle');
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   async initialize(): Promise<void> {
