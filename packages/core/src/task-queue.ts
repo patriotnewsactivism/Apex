@@ -4,7 +4,8 @@ import { eq, and, asc, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task, NewTask } from '@workspace/db';
 import type { TaskInput, TaskStatus } from './types.js';
 import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure } from './runtime-health.js';
-import { isLLMProviderChainFailure } from './provider-failure.js';
+import { isLLMDailyBudgetPause, shouldSuppressImmediateLLMRetry } from './provider-failure.js';
+import { msUntilDailyReset } from './token-ledger.js';
 
 // ─── Task Queue ───────────────────────────────────────────────────────────────
 
@@ -134,7 +135,10 @@ export class TaskQueue {
       }
     }
 
-    const nextMemIdx = this.memoryQueue.findIndex((t) => t.status === 'pending');
+    const nowMs = Date.now();
+    const nextMemIdx = this.memoryQueue.findIndex(
+      (t) => t.status === 'pending' && (!t.nextRetryAt || t.nextRetryAt.getTime() <= nowMs),
+    );
     if (nextMemIdx !== -1) {
       const task = this.memoryQueue[nextMemIdx];
       task.status = 'in_progress';
@@ -150,7 +154,15 @@ export class TaskQueue {
     try {
       await db
         .update(tasks)
-        .set({ status: 'done', result, completedAt: new Date(), updatedAt: new Date() })
+        .set({
+          status: 'done',
+          result,
+          errorMessage: null,
+          nextRetryAt: null,
+          leasedAt: null,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
         .where(eq(tasks.id, taskId));
     } catch (err) {
       // DB offline: update in memory
@@ -160,21 +172,46 @@ export class TaskQueue {
     if (memTask) {
       memTask.status = 'done';
       memTask.result = result;
+      memTask.errorMessage = null;
+      memTask.nextRetryAt = null;
+      memTask.leasedAt = null;
       memTask.completedAt = new Date();
     }
   }
 
   /** Fail a task, optionally retry with exponential backoff */
   async fail(taskId: string, error: string): Promise<void> {
+    // The workspace-wide daily ledger cannot recover on a seconds-long retry.
+    // Preserve the work and defer it to just after the exact UTC reset without
+    // consuming its task-specific retry budget.
+    const dailyBudgetRetryAt = isLLMDailyBudgetPause(error)
+      ? new Date(Date.now() + msUntilDailyReset() + 5_000)
+      : null;
+
     try {
       const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
       if (task) {
+        if (dailyBudgetRetryAt) {
+          await db
+            .update(tasks)
+            .set({
+              status: 'pending',
+              retryCount: 0,
+              errorMessage: error,
+              nextRetryAt: dailyBudgetRetryAt,
+              leasedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(tasks.id, taskId));
+          return;
+        }
+
         // Once the complete provider chain has failed, a 2s/4s/8s task retry
         // just repeats the same chain and floods the log. This includes the
         // 2026-08-22 retired-model 404 and no-configured-key failures, not only
         // quota responses. Fail it once; StalledWorkRecoveryJob handles the
         // recoverable subset later with a long, bounded backoff.
-        const canRetry = task.retryCount < task.maxRetries && !isLLMProviderChainFailure(error);
+        const canRetry = task.retryCount < task.maxRetries && !shouldSuppressImmediateLLMRetry(error);
         if (canRetry) {
           // Exponential backoff: 2s, 4s, 8s … capped at 5 minutes (300s).
           // nextRetryAt is written to the DB so ALL workers respect the window —
@@ -204,6 +241,14 @@ export class TaskQueue {
 
     const memTask = this.memoryQueue.find((t) => t.id === taskId);
     if (memTask) {
+      if (dailyBudgetRetryAt) {
+        memTask.status = 'pending';
+        memTask.retryCount = 0;
+        memTask.errorMessage = error;
+        memTask.nextRetryAt = dailyBudgetRetryAt;
+        memTask.leasedAt = null;
+        return;
+      }
       memTask.status = 'failed';
       memTask.errorMessage = error;
     }

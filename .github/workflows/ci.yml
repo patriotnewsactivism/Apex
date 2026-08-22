@@ -36,6 +36,7 @@ jobs:
       - name: Run deterministic agent guards
         run: |
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-provider-routing.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-budget-pause.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-malformed-tool-calls.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-non-completion.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-branch-review-guards.ts"
