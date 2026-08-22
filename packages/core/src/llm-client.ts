@@ -19,7 +19,7 @@ import {
 //   4. Per-provider circuit breakers stop concurrent agents from stampeding a
 //      key that is rate-limited, unfunded, or temporarily unavailable.
 //
-// Chain order (13 entries, 4 tiers as of 2026-08-21 — see `tier` field on
+// Chain order (11 entries, 4 tiers as of 2026-08-21 — see `tier` field on
 // each PROVIDERS entry; tier is now enforced in code, not just documented):
 //
 //   Tier 0 (live, tool-reliable, ordered by daily capacity):
@@ -34,7 +34,7 @@ import {
 //     OpenRouter → anthropic/claude-sonnet-5 (real per-call cost)
 //
 //   Tier 3 (last resort — unreliable tool calling):
-//     OpenRouter/free router → OpenRouter-free ×2
+//     OpenRouter/free router (dynamic zero-cost model selection)
 //
 // ROOT-CAUSE FIX 2026-08-19: rrStartIndex used to rotate across the entire
 // flat array, defeating this tier ordering on all but 1 call in N (see
@@ -116,8 +116,8 @@ const PROVIDERS: Array<{
   // it was the designed behavior of a chain made entirely of free quotas with
   // no paid floor under it. anthropic/claude-sonnet-5 via OpenRouter is a
   // zero-code-change frontier path: OPENROUTER_API_KEY, baseURL, headers, and
-  // wire format are already wired up for the Tier C openrouter-free* entries
-  // below — this just points the SAME client at a paid, non-":free" model.
+  // wire format are already wired up for the OpenRouter free router below —
+  // this just points the SAME client at a paid model.
   // Confirmed live, tool-calling capable, $2/$10 per M tokens. This is a real
   // (small) per-call cost, unlike every other entry in this file — that's the
   // point: one reliable rung stops the whole workforce going dead whenever
@@ -248,15 +248,14 @@ const PROVIDERS: Array<{
   // tool quality varies across underlying models.
   { name: 'openrouter-free-router', tier: 3, toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openrouter/free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
 
-  // OpenRouter FREE tier — explicit free models, daily-quota 429s self-reset.
-  { name: 'openrouter-free', tier: 3, toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
-  { name: 'openrouter-free-2', tier: 3, toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
-
 ];
 
-function paidLLMFallbackEnabled(): boolean {
-  const mode = (process.env.APEX_PAID_LLM_MODE ?? 'fallback').trim().toLowerCase();
-  return !['0', 'false', 'off', 'disabled'].includes(mode);
+/** Paid inference is fail-closed: an unset, misspelled, or unknown value stays
+ * off. This prevents a missing Lightsail env var from silently turning a
+ * zero-cost deployment into metered traffic. */
+export function paidLLMFallbackEnabled(mode?: string): boolean {
+  const normalized = (mode ?? 'off').trim().toLowerCase();
+  return ['1', 'true', 'on', 'enabled', 'fallback'].includes(normalized);
 }
 
 // ─── Request size control ─────────────────────────────────────────────────────
@@ -662,8 +661,8 @@ class MultiProviderClient {
       }
     const orderedProviders = lastResortMode ? unreliableProviders : reliableProviders;
     for (const provider of orderedProviders) {
-      if (provider.paid && !paidLLMFallbackEnabled()) {
-        console.warn(`[LLM] Skipping ${provider.name}: paid fallback disabled (APEX_PAID_LLM_MODE=off)`);
+      if (provider.paid && !paidLLMFallbackEnabled(process.env.APEX_PAID_LLM_MODE)) {
+        console.warn(`[LLM] Skipping ${provider.name}: paid fallback requires explicit APEX_PAID_LLM_MODE=fallback`);
         continue;
       }
       const apiKey = process.env[provider.apiKeyEnv];
@@ -1063,7 +1062,7 @@ const providerFailureEvents: Array<{
 // first-in-chain provider.
 const providerCooldowns = new Map<string, number>(); // provider name → epoch ms
 const COOLDOWN_429_MS = 30_000;   // 30s for ordinary short-window rate limits (resets quickly)
-const COOLDOWN_402_MS = 300_000;  // 5min for billing blocks (won't recover soon)
+const COOLDOWN_402_MS = 6 * 60 * 60 * 1000; // 6hr: Payment Required needs account action, not request retries
 const COOLDOWN_401_MS = 600_000;  // 10min for auth failures (key won't fix itself)
 // 413 reaching THIS function means even the in-request emergency retry
 // (EMERGENCY_HISTORY_CHAR_BUDGET, and now the pre-emptive maxRequestChars
@@ -1236,7 +1235,7 @@ function releaseLLMConcurrencySlot(): void {
 //
 // BUG FIX 2026-08-14: this was a flat 15s regardless of WHY providers were
 // exhausted. But the circuit breaker's own cooldown tiers are 30s (429) /
-// 5min (402) / 10min (401/403) / 4hr (daily quota) — every one of those is
+// 6hr (402) / 10min (401/403) / 4hr (daily quota) — every one of those is
 // LONGER than 15s. So under sustained load the loop retried every ~15-20s
 // into a chain it had already proven was still cooling down, and because
 // task-queue.ts's fail() correctly refuses to retry capacity-exhaustion
@@ -1323,6 +1322,24 @@ export function getDegradedToolCallingReport(windowMs = 3_600_000): {
 
 export function getConfiguredProviders(): Array<{ name: string; configured: boolean }> {
   return PROVIDERS.map((p) => ({ name: p.name, configured: Boolean(process.env[p.apiKeyEnv]) }));
+}
+
+/** Sanitized provider metadata for deterministic routing-policy checks. Never
+ * includes API key values. */
+export function getProviderCatalog(): Array<{
+  name: string;
+  model: string;
+  tier: number;
+  paid: boolean;
+  toolCallingReliable: boolean;
+}> {
+  return PROVIDERS.map((p) => ({
+    name: p.name,
+    model: p.fallbackModel ?? '',
+    tier: p.tier ?? 0,
+    paid: p.paid === true,
+    toolCallingReliable: p.toolCallingReliable !== false,
+  }));
 }
 
 /** The full set of env var names this LLM client will ever read an API key
