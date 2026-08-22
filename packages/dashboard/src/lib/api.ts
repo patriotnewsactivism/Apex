@@ -73,12 +73,19 @@ export const api = {
   },
 
   approvals: {
-    list: (status?: string) =>
-      apiFetch<{ approvals: Approval[] }>(`/approvals${status ? `?status=${status}` : ''}`).then((r) => r.approvals),
+    // kind defaults server-side to 'approval' — gated calls where an agent is
+    // actually blocked. Pass 'escalation' for the ask-Don messages.
+    list: (status = 'pending', kind: ApprovalKind = 'approval') =>
+      apiFetch<{ approvals: Approval[] }>(
+        `/approvals?status=${encodeURIComponent(status)}&kind=${encodeURIComponent(kind)}`,
+      ).then((r) => r.approvals),
+    counts: () => apiFetch<{ approval: number; escalation: number }>('/approvals/counts'),
     approve: (id: string, note?: string) =>
       apiFetch(`/approvals/${id}/approve`, { method: 'POST', body: JSON.stringify({ note }) }),
     reject: (id: string, note?: string) =>
       apiFetch(`/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
+    acknowledge: (id: string, note?: string) =>
+      apiFetch(`/approvals/${id}/acknowledge`, { method: 'POST', body: JSON.stringify({ note }) }),
   },
 
   tools: {
@@ -249,6 +256,8 @@ export interface LogEntry {
   timestamp: string;
 }
 
+export type ApprovalKind = 'approval' | 'escalation' | 'all';
+
 export interface Approval {
   id: string;
   taskId: string;
@@ -258,6 +267,12 @@ export interface Approval {
   reason: string;
   status: string;
   createdAt: string;
+  /** 'approval' = a gated tool call, an agent is blocked.
+   *  'escalation' = escalate_to_human, a message asking for a decision. */
+  kind?: string;
+  /** How many times this same escalation has been re-raised. */
+  occurrences?: number;
+  lastOccurredAt?: string | null;
 }
 
 export interface ToolInfo {

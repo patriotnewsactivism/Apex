@@ -23,7 +23,7 @@
 // Deploys, external sends, schema changes, and financial actions keep their
 // existing per-tool human-approval gates untouched.
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import { db, tasks, goals, approvals, memories } from '@workspace/db';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -40,6 +40,28 @@ export const OPEN_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'awaitin
 function excerpt(value: string | null | undefined, max = 600): string | null {
   if (!value) return null;
   return value.length <= max ? value : `${value.slice(0, max)}… [truncated — call get_task_details for the full text]`;
+}
+
+/**
+ * Stable identity for a repeated escalation. Subject is normalized (case,
+ * whitespace, trailing punctuation) so trivially-reworded restatements of the
+ * same blocker still collapse onto one row.
+ */
+export function escalationDedupeKey(agentId: string, goalId: string | undefined, subject: string): string {
+  const normalizedSubject = subject
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    // trim BEFORE stripping trailing punctuation: "cannot bill!!  " ends in a
+    // space, so the punctuation anchor would never match and the reworded
+    // restatement would hash to a different key than the original.
+    .trim()
+    .replace(/[.!?…]+$/, '')
+    .trim()
+    .slice(0, 160);
+  return createHash('sha256')
+    .update(`${agentId}\u0000${goalId ?? ''}\u0000${normalizedSubject}`)
+    .digest('hex')
+    .slice(0, 32);
 }
 
 export function createOrchestrationTools(): ToolDefinition[] {
@@ -311,8 +333,59 @@ export function createOrchestrationTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ subject, detail, urgency, category }, ctx) {
-        const escalationId = randomUUID();
         const now = new Date();
+        const resolvedUrgency = urgency ?? 'normal';
+        const resolvedCategory = category ?? 'other';
+
+        // Same agent + same goal + same subject = the same blocker raised
+        // again, not a new one. Agents re-raise a blocker every shift for as
+        // long as it stands, which is how this table reached 8,683 pending
+        // escalations covering a handful of distinct problems. Bumping a
+        // counter keeps the "still blocked, 340 shifts running" signal while
+        // leaving one row to actually read and act on.
+        const dedupeKey = escalationDedupeKey(ctx.agentId, ctx.goalId, subject);
+
+        const [existing] = await db
+          .select({ id: approvals.id, occurrences: approvals.occurrences })
+          .from(approvals)
+          .where(
+            and(
+              eq(approvals.kind, 'escalation'),
+              eq(approvals.status, 'pending'),
+              eq(approvals.dedupeKey, dedupeKey),
+            ),
+          )
+          .limit(1);
+
+        if (existing) {
+          const occurrences = (existing.occurrences ?? 1) + 1;
+          await db
+            .update(approvals)
+            .set({
+              occurrences,
+              lastOccurredAt: now,
+              // Keep the newest detail — the situation may have moved on even
+              // though the ask has not.
+              toolArgs: { subject, detail, urgency: resolvedUrgency, category: resolvedCategory },
+              reason: `[${resolvedUrgency.toUpperCase()} · ${resolvedCategory}] ${subject} (raised ${occurrences}×)`,
+            })
+            .where(eq(approvals.id, existing.id));
+
+          return {
+            escalated: true,
+            escalationId: existing.id,
+            subject,
+            urgency: resolvedUrgency,
+            duplicate: true,
+            occurrences,
+            note:
+              `This exact escalation is already open and awaiting Don (raised ${occurrences}× now). ` +
+              'It was NOT duplicated. Do not raise it again this task — continue with the work you can ' +
+              'still do and state clearly in your final report what is blocked pending his decision.',
+          };
+        }
+
+        const escalationId = randomUUID();
 
         // Lands in the existing approvals queue, which the dashboard already
         // surfaces — a human sees it without any new UI or notification wiring.
@@ -321,9 +394,13 @@ export function createOrchestrationTools(): ToolDefinition[] {
           taskId: ctx.taskId ?? 'system',
           agentId: ctx.agentId,
           toolName: 'escalate_to_human',
-          toolArgs: { subject, detail, urgency: urgency ?? 'normal', category: category ?? 'other' },
-          reason: `[${(urgency ?? 'normal').toUpperCase()} · ${category ?? 'other'}] ${subject}`,
+          toolArgs: { subject, detail, urgency: resolvedUrgency, category: resolvedCategory },
+          reason: `[${resolvedUrgency.toUpperCase()} · ${resolvedCategory}] ${subject}`,
           status: 'pending',
+          kind: 'escalation',
+          dedupeKey,
+          occurrences: 1,
+          lastOccurredAt: now,
           createdAt: now,
         });
 
@@ -334,9 +411,9 @@ export function createOrchestrationTools(): ToolDefinition[] {
           agentId: ctx.agentId,
           scope: 'global',
           key: `escalation:${now.toISOString()}`,
-          value: JSON.stringify({ subject, detail, urgency: urgency ?? 'normal', category: category ?? 'other' }),
+          value: JSON.stringify({ subject, detail, urgency: resolvedUrgency, category: resolvedCategory }),
           importance: 0.9,
-          tags: ['escalation', category ?? 'other'],
+          tags: ['escalation', resolvedCategory],
           createdAt: now,
           updatedAt: now,
         });
@@ -345,8 +422,10 @@ export function createOrchestrationTools(): ToolDefinition[] {
           escalated: true,
           escalationId,
           subject,
-          urgency: urgency ?? 'normal',
-          note: 'Raised to Don in the approval queue. Do NOT block waiting on an answer — continue with the work you can still do, and state clearly in your final report what is blocked pending his decision.',
+          urgency: resolvedUrgency,
+          duplicate: false,
+          occurrences: 1,
+          note: 'Raised to Don in the escalations queue. Do NOT block waiting on an answer — continue with the work you can still do, and state clearly in your final report what is blocked pending his decision.',
         };
       },
     },
