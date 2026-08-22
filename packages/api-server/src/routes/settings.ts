@@ -1,30 +1,58 @@
 import { Router } from 'express';
 import { db, integrationSettings } from '@workspace/db';
 import { eq } from 'drizzle-orm';
-import { getKnownApiKeyEnvs } from '@workspace/core';
+import {
+  getIntegrationCatalog,
+  getKnownApiKeyEnvs,
+  findIntegrationByKey,
+  probeIntegrationKey,
+  isRecoverableLLMProviderFailure,
+} from '@workspace/core';
+import type { BaseAgent } from '@workspace/core';
 import { CronParser } from '@workspace/background-jobs';
 
 /**
  * Integration Settings API — real server-side persistence for the
- * dashboard's "Save" button, replacing the previous localStorage-only
- * no-op (see settingsLoader.ts for the full context).
+ * dashboard's "Save" button (see settingsLoader.ts for the full context).
+ *
+ * Target state (post single-catalog refactor): the server no longer keeps its
+ * own allowlist. The catalog in @workspace/core/integration-catalog.ts is the
+ * single source of truth — the Settings screen fetches it, and this route
+ * derives its allowlist from it via getKnownApiKeyEnvs().
  *
  * Security posture:
  *  - Mounted under /api, which is entirely behind requireAdminAuth
  *    (see index.ts) — same trust boundary as every other admin route.
- *  - The `key` a client can set/clear is strictly allowlisted against
- *    getKnownApiKeyEnvs() (the real provider env var names llm-client.ts
- *    reads) — a request can never set an arbitrary environment variable.
- *  - GET never returns the plaintext value, only configured:boolean —
- *    consistent with secrets-hygiene: reference by name, never echo value.
+ *  - The `key` a client can set/clear is strictly allowlisted against the
+ *    catalog's active entries (the real env var names the runtime reads).
+ *  - GET never returns the plaintext value, only configured:boolean.
+ *  - Saving a key returns a real provider probe (Connected / Rate Limited /
+ *    Invalid Key / Billing Required) instead of merely "configured".
  */
-export function createSettingsRouter(): Router {
+export function createSettingsRouter(workforce: Map<string, BaseAgent>): Router {
   const router = Router();
 
+  // GET /api/settings/integrations/catalog — the full single-source-of-truth
+  // catalog, with `configured` computed live per env var. Disabled entries
+  // are included so the UI can grey them out rather than silently dropping
+  // or misrepresenting them.
+  router.get('/integrations/catalog', async (_req, res) => {
+    try {
+      const catalog = getIntegrationCatalog().map((integration) => ({
+        ...integration,
+        envVars: integration.envVars.map((v) => ({
+          ...v,
+          configured: Boolean(process.env[v.key]),
+        })),
+      }));
+      res.json({ catalog });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // GET /api/settings/integrations — status only, never the actual value.
-  // "configured" is true whether the source is this DB table OR a
-  // platform-level (Railway) env var — process.env is the single source
-  // of truth once loadSettingsIntoEnv() has run at boot.
+  // Retained for backward compatibility; the dashboard now uses /catalog.
   router.get('/integrations', async (_req, res) => {
     try {
       const knownKeys = getKnownApiKeyEnvs();
@@ -43,9 +71,20 @@ export function createSettingsRouter(): Router {
         res.status(400).json({ error: 'key and non-empty value are required' });
         return;
       }
-      const knownKeys = getKnownApiKeyEnvs();
-      if (!knownKeys.includes(key)) {
-        res.status(400).json({ error: `Unknown integration key '${key}' — must be one of: ${knownKeys.join(', ')}` });
+
+      const match = findIntegrationByKey(key);
+      if (!match) {
+        const knownKeys = getKnownApiKeyEnvs();
+        res.status(400).json({
+          error: `Unknown integration key '${key}' — not part of the APEX integration catalog.`,
+          knownKeys,
+        });
+        return;
+      }
+      if (match.integration.state !== 'active') {
+        res.status(400).json({
+          error: `'${key}' belongs to "${match.integration.name}", which is not wired into the APEX runtime. ${match.integration.stateReason ?? ''}`.trim(),
+        });
         return;
       }
 
@@ -61,15 +100,20 @@ export function createSettingsRouter(): Router {
       // without waiting for a restart/redeploy.
       process.env[key] = value;
 
-      res.json({ ok: true, key, configured: true });
+      // Probe the provider now that the key is live, so the UI can show the
+      // real result (Connected / Rate Limited / Invalid Key / Billing
+      // Required) rather than merely "configured".
+      const probe = await probeIntegrationKey(match.integration, key, value);
+
+      res.json({ ok: true, key, configured: true, probe });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
   // DELETE /api/settings/integrations/:key — clears the DB override only.
-  // If the same var is ALSO set as a real platform-level env var on
-  // Railway, this cannot remove that — only the DB-sourced override.
+  // If the same var is ALSO set as a real platform-level env var, this cannot
+  // remove that — only the DB-sourced override.
   router.delete('/integrations/:key', async (req, res) => {
     try {
       const { key } = req.params;
@@ -81,6 +125,56 @@ export function createSettingsRouter(): Router {
       await db.delete(integrationSettings).where(eq(integrationSettings.key, key));
       delete process.env[key];
       res.json({ ok: true, key, configured: false });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // POST /api/settings/recover-workforce — operator-triggered recovery after
+  // LLM capacity is restored. Requeues tasks that died on "All LLM providers
+  // failed" and resets agents stuck in the error state.
+  router.post('/recover-workforce', async (_req, res) => {
+    try {
+      const { tasks } = await import('@workspace/db');
+
+      const failed = await db
+        .select({ id: tasks.id, errorMessage: tasks.errorMessage })
+        .from(tasks)
+        .where(eq(tasks.status, 'failed'));
+
+      const recoverable = failed.filter((t) => isRecoverableLLMProviderFailure(t.errorMessage));
+      let requeued = 0;
+      for (const task of recoverable) {
+        await db
+          .update(tasks)
+          .set({
+            status: 'pending',
+            retryCount: 0,
+            errorMessage: null,
+            nextRetryAt: null,
+            leasedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, task.id));
+        requeued++;
+      }
+
+      // Reset agents stuck in the error state — both the DB row and the live
+      // instance (so the red ERROR clears and the loop picks work back up).
+      const { agents } = await import('@workspace/db');
+      const errored = await db.select({ id: agents.id }).from(agents).where(eq(agents.status, 'error'));
+      let resetAgents = 0;
+      for (const agent of errored) {
+        await db
+          .update(agents)
+          .set({ status: 'idle', lastActiveAt: new Date() })
+          .where(eq(agents.id, agent.id));
+        const live = workforce.get(agent.id);
+        if (live) live.recover();
+        resetAgents++;
+      }
+
+      res.json({ ok: true, requeuedTasks: requeued, resetAgents });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

@@ -497,7 +497,7 @@ await recoverStaleLeasedTasks();
   app.use('/api/cicd', createCicdRouter());
   app.use('/api/applications', createMultiappRouter());
   app.use('/api/predictive', createPredictiveRouter());
-  app.use('/api/settings', createSettingsRouter());
+  app.use('/api/settings', createSettingsRouter(workforce));
   app.use('/api/leads', createLeadsRouter());
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
