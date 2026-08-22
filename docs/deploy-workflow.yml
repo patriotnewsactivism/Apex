@@ -31,6 +31,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate deployment configuration
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          APEX_DEPLOY_ENABLED: ${{ vars.APEX_DEPLOY_ENABLED }}
+        run: |
+          missing=()
+          test -n "$AWS_ACCESS_KEY_ID" || missing+=(AWS_ACCESS_KEY_ID)
+          test -n "$AWS_SECRET_ACCESS_KEY" || missing+=(AWS_SECRET_ACCESS_KEY)
+          test -n "$APEX_DEPLOY_ENABLED" || missing+=(APEX_DEPLOY_ENABLED)
+          if (( ${#missing[@]} )); then
+            printf 'Missing GitHub deployment configuration: %s\n' "${missing[*]}" >&2
+            exit 2
+          fi
+
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -54,7 +69,8 @@ jobs:
           APEX_CODEBUILD_PROJECT: ${{ vars.APEX_CODEBUILD_PROJECT || 'apex-lightsail-build' }}
           APEX_LIGHTSAIL_SERVICE: ${{ vars.APEX_LIGHTSAIL_SERVICE || 'apex-service' }}
         run: >
-          pnpm dlx tsx@4.19.2 packages/cicd-automation/scripts/deploy.mts
+          pnpm --filter @workspace/core exec tsx
+          "$GITHUB_WORKSPACE/packages/cicd-automation/scripts/deploy.mts"
           "${{ github.event.inputs.environment }}" --expect-sha "${{ github.sha }}"
 
 # ─────────────────────────────────────────────────────────────────────────────
