@@ -667,13 +667,11 @@ export abstract class BaseAgent {
       return { success: false, error: 'Max iterations exceeded' };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // The reason goes in the MESSAGE, not only in `data`. AgentLogger.error
-      // stashes the Error in the log row's `data` column, but the dashboard's
-      // Log Stream renders `message` — so every failure read as a bare
-      // "Task failed: <title>" with no cause, making live triage impossible
-      // (observed 2026-07-28: Lead Developer failed mid-delegation and the
-      // stream showed nothing about why).
-      await this.logger.error(`Task failed: ${title} — ${msg}`, err, taskId);
+      // AgentLogger.error appends the Error text to the visible message and
+      // stores its stack in `data`. Pass the title only here; including `msg`
+      // in both arguments duplicated the entire provider failure chain in the
+      // dashboard (the exact double error reported on 2026-08-21).
+      await this.logger.error(`Task failed: ${title}`, err, taskId);
       await this.taskQueue.fail(taskId, msg);
       this.setStatus('error');
       recordMetricsAsync(false, msg);

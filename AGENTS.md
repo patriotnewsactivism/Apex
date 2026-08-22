@@ -97,25 +97,17 @@ code, do not delegate to it or treat it as part of the real org chart.
   the (now-retired) Railway project (service `1ab5efa2-...`) -- unused, no
   volume, DO NOT USE even if it's somehow still reachable.
 - **LLM fallback chain** (`packages/core/src/llm-client.ts`, re-verified
-  2026-08-04): Cerebras(×3) -> Google Gemini(×2) -> Groq(×2) -> NVIDIA NIM ->
-  Poolside -> Together AI -> DeepSeek -> Qwen Cloud -> GLM-Aliyun ->
-  Qwen Cloud (Anthropic protocol) -> GLM-Z.ai ->
-  Cohere (toolCallingReliable:false) -> OpenRouter-free ×2
-  (toolCallingReliable:false). Ordered by the 2026-08-04 live+local audit
-  (scripts/llm-probe.mjs): live/self-resetting providers first; 401/402-dead
-  entries (cerebras-2/3, together, deepseek, the three qwen entries) demoted
-  but kept for zero-code-change recovery. Mistral was REMOVED (all keys
-  401). Two-pass
-  fallback: toolCallingReliable:false providers are skipped on tool-bearing
-  requests and only tried as last resort after all reliable providers fail.
-  Circuit breaker (30s/429, 5min/402, 10min/401 cooldowns) + round-robin
-  start index spread concurrent load. Request history budget is 60k chars
-  (~15k tokens) on purpose — free-tier TPD caps make request size the
-  capacity ceiling. OpenRouter is the last-resort free tier, NOT the
-  primary. Duplicate-key slots (CEREBRAS_API_KEY_2/3, GROQ_API_KEY_2,
-  GEMINI_API_KEY_2) multiply free-tier rate limits. As of 2026-08-04 the
-  QWENCLOUD_API_KEY is 401-dead on live AND local — needs rotation before
-  the paid tier works again.
+  2026-08-21): free/tool-reliable tier first — Mistral -> Gemini ×2 ->
+  Cerebras -> Groq ×2 -> SambaNova -> Hugging Face; NVIDIA NIM is the
+  demoted free tier. The metered OpenRouter/Claude anchor is disabled by
+  default and only enters the chain when `APEX_PAID_LLM_MODE=fallback` is
+  explicitly set. The last resort is OpenRouter's dynamic `openrouter/free`
+  router; do not pin rotating `:free` slugs because the 2026-08-21 live
+  outage was caused by a retired `openai/gpt-oss-20b:free` route. Two-pass
+  fallback defers tool-unreliable capacity until reliable providers fail.
+  Circuit breakers use 30s for ordinary 429s, 6h for 402 Payment Required,
+  10min for 401s, and 4h for detected daily quotas. Request history is capped
+  at 60k chars and process-wide LLM concurrency defaults to 3.
 
 ## Token budget governor (added 2026-08-19)
 Everything that protected token spend before this was REACTIVE — the circuit

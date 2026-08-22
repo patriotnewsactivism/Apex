@@ -1,86 +1,154 @@
-// Live-probe every provider in the current fallback chain
-// (packages/core/src/llm-client.ts PROVIDERS order) using the LOCAL .env keys.
-// Prints status only — never key values. Safe to commit.
+// Live-probe every provider in the production Postgres/Lightsail fallback
+// chain using LOCAL .env keys. Prints status only — never key values.
 //
 // Usage: node scripts/llm-probe.mjs   (from repo root)
 
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from "fs";
 
-const env = readFileSync('.env', 'utf8');
-const getKey = (name) => env.match(new RegExp(`^${name}=(.+)$`, 'm'))?.[1]?.trim() || '';
+const env = existsSync(".env") ? readFileSync(".env", "utf8") : "";
+const getValue = (name) =>
+  env.match(new RegExp(`^${name}=(.+)$`, "m"))?.[1]?.trim() || "";
+const openRouterHeaders = {
+  "HTTP-Referer": "https://apex.donmatthews.live",
+  "X-Title": "Apex",
+};
 
 const openaiProbe = async (name, url, key, model, headers = {}) => {
-  if (!key) { console.log(`⚪ ${name} — skipped (no key set in .env; chain entry is a no-op)`); return; }
-  const r = await fetch(`${url}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}`, ...headers },
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 16 }),
+  if (!key) {
+    console.log(
+      `⚪ ${name} — skipped (no key set in .env; chain entry is a no-op)`,
+    );
+    return;
+  }
+
+  const response = await fetch(`${url}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+      ...headers,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: "Reply with the single word: ok" }],
+      max_tokens: 16,
+    }),
     signal: AbortSignal.timeout(30_000),
   });
-  const text = await r.text();
-  let detail = '';
+  const body = await response.text();
+  let detail = "";
   try {
-    const j = JSON.parse(text);
-    detail = j?.content?.[0]?.text || j?.error?.message || j?.message || text.slice(0, 120);
+    const parsed = JSON.parse(body);
+    detail =
+      parsed?.choices?.[0]?.message?.content ||
+      parsed?.error?.message ||
+      parsed?.message ||
+      body.slice(0, 120);
   } catch {
-    detail = text.slice(0, 120);
+    detail = body.slice(0, 120);
   }
-  console.log(`${r.ok ? '✅' : '❌'} ${name} [${model}] -> ${r.status}${r.ok ? '' : ` :: ${String(detail).slice(0, 160)}`}`);
+  console.log(
+    `${response.ok ? "✅" : "❌"} ${name} [${model}] -> ${response.status}${response.ok ? "" : ` :: ${String(detail).slice(0, 160)}`}`,
+  );
 };
 
-const anthropicProbe = async (name, url, key, model) => {
-  if (!key) { console.log(`⚪ ${name} — skipped (no key set in .env; chain entry is a no-op)`); return; }
-  const r = await fetch(`${url}/v1/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply with the single word: ok' }] }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  const text = await r.text();
-  let detail = '';
-  try {
-    const j = JSON.parse(text);
-    detail = j?.content?.[0]?.text || j?.error?.message || text.slice(0, 120);
-  } catch {
-    detail = text.slice(0, 120);
-  }
-  console.log(`${r.ok ? '✅' : '❌'} ${name} [${model}] -> ${r.status}${r.ok ? '' : ` :: ${String(detail).slice(0, 160)}`}`);
-};
-
-const qwenKey = getKey('QWENCLOUD_API_KEY');
-
-// MUST mirror PROVIDERS in packages/core/src/llm-client.ts one-for-one, in
-// chain order — every chain entry gets probed here, no orphans either side.
 const tests = [
-  () => openaiProbe('cerebras', 'https://api.cerebras.ai/v1', getKey('CEREBRAS_API_KEY'), 'gpt-oss-120b'),
-  () => openaiProbe('cerebras-2', 'https://api.cerebras.ai/v1', getKey('CEREBRAS_API_KEY_2'), 'gpt-oss-120b'),
-  () => openaiProbe('cerebras-3', 'https://api.cerebras.ai/v1', getKey('CEREBRAS_API_KEY_3'), 'gpt-oss-120b'),
-  () => openaiProbe('google-gemini', 'https://generativelanguage.googleapis.com/v1beta/openai', getKey('GEMINI_API_KEY'), 'gemini-3.7-flash'),
-  () => openaiProbe('google-gemini-2', 'https://generativelanguage.googleapis.com/v1beta/openai', getKey('GEMINI_API_KEY_2'), 'gemini-3.7-flash'),
-  () => openaiProbe('groq', 'https://api.groq.com/openai/v1', getKey('GROQ_API_KEY'), 'openai/gpt-oss-120b'),
-  () => openaiProbe('groq-2', 'https://api.groq.com/openai/v1', getKey('GROQ_API_KEY_2'), 'openai/gpt-oss-120b'),
-  () => openaiProbe('nvidia', 'https://integrate.api.nvidia.com/v1', getKey('NVIDIA_API_KEY'), 'meta/llama-3.3-70b-instruct'),
-  () => openaiProbe('poolside', 'https://inference.poolside.ai/v1', getKey('POOLSIDE_API_KEY'), 'poolside/laguna-s-2.1'),
-  () => openaiProbe('together', 'https://api.together.xyz/v1', getKey('TOGETHER_API_KEY'), 'meta-llama/Llama-3.3-70B-Instruct-Turbo'),
-  () => openaiProbe('deepseek', 'https://api.deepseek.com/v1', getKey('DEEPSEEK_API_KEY'), 'deepseek-chat'),
-  // Qwen Cloud — test BOTH models: the standard default AND the premium model
-  // the live system is observed using (qwen3.8-max-preview), so we can tell
-  // apart "key invalid" from "model id not on Token Plan".
-  () => openaiProbe('qwen-cloud', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', qwenKey, 'qwen3.7-plus'),
-  () => openaiProbe('qwen-cloud(premium)', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', qwenKey, 'qwen3.8-max-preview'),
-  () => openaiProbe('glm-aliyun', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', qwenKey, 'glm-5.2'),
-  () => anthropicProbe('qwen-cloud-anthropic', 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', qwenKey, 'qwen3.7-plus'),
-  () => openaiProbe('glm-zai', 'https://api.z.ai/api/paas/v4', getKey('ZAI_API_KEY'), 'glm-5.2'),
-  // xai and cohere/cohere-trial removed 2026-08-16 (403 credits exhausted /
-  // 402+429 billing-dead) — see packages/core/src/llm-client.ts.
-  () => openaiProbe('openrouter-free', 'https://openrouter.ai/api/v1', getKey('OPENROUTER_API_KEY'), 'openai/gpt-oss-20b:free', { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' }),
-  () => openaiProbe('openrouter-free-2', 'https://openrouter.ai/api/v1', getKey('OPENROUTER_API_KEY'), 'nvidia/nemotron-3-super-120b-a12b:free', { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' }),
+  () =>
+    openaiProbe(
+      "mistral",
+      "https://api.mistral.ai/v1",
+      getValue("MISTRAL_API_KEY"),
+      "mistral-small-latest",
+    ),
+  () =>
+    openaiProbe(
+      "google-gemini",
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+      getValue("GEMINI_API_KEY"),
+      "gemini-3.7-flash",
+    ),
+  () =>
+    openaiProbe(
+      "google-gemini-2",
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+      getValue("GEMINI_API_KEY_2"),
+      "gemini-3.7-flash",
+    ),
+  () =>
+    openaiProbe(
+      "cerebras",
+      "https://api.cerebras.ai/v1",
+      getValue("CEREBRAS_API_KEY"),
+      "gpt-oss-120b",
+    ),
+  () =>
+    openaiProbe(
+      "groq",
+      "https://api.groq.com/openai/v1",
+      getValue("GROQ_API_KEY"),
+      "openai/gpt-oss-120b",
+    ),
+  () =>
+    openaiProbe(
+      "groq-2",
+      "https://api.groq.com/openai/v1",
+      getValue("GROQ_API_KEY_2"),
+      "openai/gpt-oss-120b",
+    ),
+  () =>
+    openaiProbe(
+      "sambanova",
+      "https://api.sambanova.ai/v1",
+      getValue("SAMBANOVA_API_KEY"),
+      "gpt-oss-120b",
+    ),
+  () =>
+    openaiProbe(
+      "huggingface",
+      "https://router.huggingface.co/v1",
+      getValue("HF_TOKEN"),
+      "meta-llama/Llama-3.3-70B-Instruct",
+    ),
+  () =>
+    openaiProbe(
+      "nvidia",
+      "https://integrate.api.nvidia.com/v1",
+      getValue("NVIDIA_API_KEY"),
+      "nvidia/nemotron-3-nano-30b-a3b",
+    ),
 ];
 
-for (const t of tests) {
+const paidMode = getValue("APEX_PAID_LLM_MODE").toLowerCase();
+if (["1", "true", "on", "enabled", "fallback"].includes(paidMode)) {
+  tests.push(() =>
+    openaiProbe(
+      "openrouter-paid-anchor",
+      "https://openrouter.ai/api/v1",
+      getValue("OPENROUTER_API_KEY"),
+      "anthropic/claude-sonnet-5",
+      openRouterHeaders,
+    ),
+  );
+} else {
+  console.log(
+    "⚪ openrouter-paid-anchor — skipped (paid fallback is not explicitly enabled)",
+  );
+}
+
+tests.push(() =>
+  openaiProbe(
+    "openrouter-free-router",
+    "https://openrouter.ai/api/v1",
+    getValue("OPENROUTER_API_KEY"),
+    "openrouter/free",
+    openRouterHeaders,
+  ),
+);
+
+for (const test of tests) {
   try {
-    await t();
-  } catch (e) {
-    console.log(`⚠️ ${e.message}`);
+    await test();
+  } catch (error) {
+    console.log(`⚠️ ${error instanceof Error ? error.message : String(error)}`);
   }
 }
