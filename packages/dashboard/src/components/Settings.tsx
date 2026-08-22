@@ -1,187 +1,78 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import {
-  Settings as SettingsIcon,
-  Key,
-  Webhook,
-  Link2,
-  ExternalLink,
   Check,
+  ChevronRight,
   Copy,
+  Cpu,
+  Database,
+  ExternalLink,
   Eye,
   EyeOff,
-  Cpu,
-  Globe,
-  Mail,
-  MessageSquare,
-  Phone,
   GitBranch,
-  Database,
+  Globe,
+  Phone,
   Shield,
+  Webhook,
   Zap,
-  ChevronRight,
 } from 'lucide-react';
-
-interface IntegrationConfig {
-  id: string;
-  name: string;
-  description: string;
-  icon: React.ReactNode;
-  category: 'ai' | 'comms' | 'dev' | 'data';
-  envVars: { key: string; label: string; placeholder: string; secret?: boolean }[];
-  docsUrl?: string;
-}
-
-const INTEGRATIONS: IntegrationConfig[] = [
-  {
-    id: 'groq',
-    name: 'Groq',
-    description: 'Ultra-fast LLM inference (free tier)',
-    icon: <Zap size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'GROQ_API_KEY', label: 'API Key', placeholder: 'gsk_...', secret: true }],
-    docsUrl: 'https://console.groq.com',
-  },
-  {
-    id: 'google-gemini',
-    name: 'Google Gemini',
-    description: 'Gemini 2.0 Flash — free, reliable tool calling (1,500 req/day)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'GEMINI_API_KEY', label: 'API Key', placeholder: 'AIza...', secret: true }],
-    docsUrl: 'https://aistudio.google.com',
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    description: 'DeepSeek-V3 chat model, reliable tool calling (free credits)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'DEEPSEEK_API_KEY', label: 'API Key', placeholder: 'sk-...', secret: true }],
-    docsUrl: 'https://platform.deepseek.com',
-  },
-  {
-    id: 'cerebras',
-    name: 'Cerebras',
-    description: 'High-speed AI inference',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'CEREBRAS_API_KEY', label: 'API Key', placeholder: 'csk-...', secret: true }],
-    docsUrl: 'https://cloud.cerebras.ai',
-  },
-  {
-    id: 'mistral',
-    name: 'Mistral',
-    description: 'La Plateforme (free tier, 1B tokens/month)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'MISTRAL_API_KEY', label: 'API Key', placeholder: 'Bearer token from console.mistral.ai', secret: true }],
-    docsUrl: 'https://console.mistral.ai',
-  },
-  {
-    id: 'cohere',
-    name: 'Cohere',
-    description: 'Command R+ model for agents',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    // COHERE_TRIAL_API_KEY field removed 2026-08-05 — it was never a real
-    // key the backend allowlist recognized (getKnownApiKeyEnvs() only ever
-    // exposed COHERE_API_KEY), so it silently 400'd on save. There is only
-    // one Cohere key this app actually uses.
-    envVars: [
-      { key: 'COHERE_API_KEY', label: 'API Key', placeholder: 'cohere_...', secret: true },
-    ],
-    docsUrl: 'https://dashboard.cohere.com/api-keys',
-  },
-  {
-    id: 'poolside',
-    name: 'Poolside',
-    description: 'Laguna-S 2.1 model for code generation',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'POOLSIDE_API_KEY', label: 'API Key', placeholder: 'sky_...', secret: true }],
-    docsUrl: 'https://platform.poolside.ai',
-  },
-  {
-    id: 'vapi',
-    name: 'Vapi',
-    description: 'AI voice agent outbound calling (make_outbound_call tool)',
-    icon: <Phone size={18} />,
-    category: 'ai',
-    envVars: [
-      { key: 'VAPI_API_KEY', label: 'API Key', placeholder: 'Private key from dashboard.vapi.ai', secret: true },
-      { key: 'VAPI_PHONE_NUMBER_ID', label: 'Phone Number ID', placeholder: 'ID of purchased Vapi number', secret: false },
-    ],
-    docsUrl: 'https://dashboard.vapi.ai',
-  },
-  {
-    id: 'qwen',
-    name: 'Qwen Cloud',
-    description: 'Alibaba Model Studio -- qwen3-coder-plus (pay-as-you-go)',
-    icon: <Cpu size={18} />,
-    category: 'ai',
-    envVars: [{ key: 'QWENCLOUD_API_KEY', label: 'API Key', placeholder: 'sk-ws-...', secret: true }],
-    docsUrl: 'https://modelstudio.console.alibabacloud.com',
-  },
-  {
-    id: 'slack',
-    name: 'Slack Webhook',
-    description: 'Send notifications to Slack',
-    icon: <MessageSquare size={18} />,
-    category: 'comms',
-    envVars: [
-      { key: 'SLACK_NOTIFY_WEBHOOK', label: 'Webhook URL', placeholder: 'https://hooks.slack.com/...' },
-    ],
-    docsUrl: 'https://api.slack.com/messaging/webhooks',
-  },
-  {
-    id: 'resend',
-    name: 'Resend',
-    description: 'Transactional email delivery',
-    icon: <Mail size={18} />,
-    category: 'comms',
-    envVars: [{ key: 'RESEND_API_KEY', label: 'API Key', placeholder: 're_...', secret: true }],
-    docsUrl: 'https://resend.com/api-keys',
-  },
-  {
-    id: 'github',
-    name: 'GitHub',
-    description: 'Repo access for code agents',
-    icon: <GitBranch size={18} />,
-    category: 'dev',
-    envVars: [{ key: 'GITHUB_TOKEN', label: 'Personal Access Token', placeholder: 'ghp_...', secret: true }],
-    docsUrl: 'https://github.com/settings/tokens',
-  },
-  {
-    id: 'supabase',
-    name: 'Supabase',
-    description: 'Database & auth backend',
-    icon: <Database size={18} />,
-    category: 'data',
-    envVars: [
-      { key: 'SUPABASE_URL', label: 'Project URL', placeholder: 'https://xxx.supabase.co' },
-      { key: 'SUPABASE_SERVICE_ROLE_KEY', label: 'Service Role Key', placeholder: 'eyJ...', secret: true },
-    ],
-    docsUrl: 'https://supabase.com/dashboard',
-  },
-];
+import {
+  settingsApi,
+  type IntegrationCatalogItem,
+  type IntegrationProbeResult,
+} from '../lib/settingsApi.js';
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   ai: { label: 'AI Models', color: '#8b7ec8' },
-  comms: { label: 'Communications', color: '#5a9eae' },
+  search: { label: 'Search & Lead Data', color: '#5a9eae' },
+  voice: { label: 'Voice & Communications', color: '#c9a84a' },
   dev: { label: 'Development', color: '#6a9f78' },
-  data: { label: 'Data & Storage', color: '#c9a84a' },
+  data: { label: 'Managed Projects & Data', color: '#6d8fc2' },
+  business: { label: 'Business & Payments', color: '#b978a6' },
 };
+
+const CATEGORY_ORDER = ['ai', 'search', 'voice', 'dev', 'data', 'business'];
+
+function integrationIcon(integration: IntegrationCatalogItem) {
+  switch (integration.category) {
+    case 'search':
+      return <Globe size={18} />;
+    case 'voice':
+      return <Phone size={18} />;
+    case 'dev':
+      return <GitBranch size={18} />;
+    case 'data':
+      return <Database size={18} />;
+    case 'business':
+      return <Zap size={18} />;
+    default:
+      return <Cpu size={18} />;
+  }
+}
+
+function probeColor(status: IntegrationProbeResult['status']) {
+  switch (status) {
+    case 'connected':
+      return '#6a9f78';
+    case 'configured':
+      return '#5a9eae';
+    case 'rate_limited':
+      return '#c9a84a';
+    case 'billing_required':
+    case 'invalid_key':
+      return '#c45c66';
+    default:
+      return '#b978a6';
+  }
+}
 
 function IntegrationCard({
   integration,
-  configuredKeys,
   onChanged,
 }: {
-  integration: IntegrationConfig;
-  configuredKeys: Set<string>;
+  integration: IntegrationCatalogItem;
   onChanged: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -189,42 +80,78 @@ function IntegrationCard({
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [probeResults, setProbeResults] = useState<Record<string, IntegrationProbeResult>>({});
+  const [probingKey, setProbingKey] = useState<string | null>(null);
+  const [clearingKey, setClearingKey] = useState<string | null>(null);
 
-  const cat = CATEGORY_LABELS[integration.category];
+  const cat = CATEGORY_LABELS[integration.category] ?? {
+    label: integration.category,
+    color: '#5a9eae',
+  };
+  const hasConfigured = integration.envVars.some((envVar) => envVar.configured);
+  const hasEnteredValue = integration.envVars.some((envVar) => Boolean(values[envVar.key]?.trim()));
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      // Real server-side persistence — writes to the DB-backed
-      // integration_settings table AND applies live to the running
-      // server's process.env (see settingsLoader.ts). Replaces the
-      // previous localStorage-only no-op.
-      const entries = Object.entries(values).filter(([, v]) => v);
-      for (const [key, val] of entries) {
-        await api.settings.saveIntegration(key, val);
+      const entries = integration.envVars
+        .map((envVar) => [envVar.key, values[envVar.key]?.trim()] as const)
+        .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
+
+      if (entries.length === 0) {
+        throw new Error('Enter at least one value before saving.');
       }
+
+      const results: Record<string, IntegrationProbeResult> = {};
+      for (const [key, value] of entries) {
+        await settingsApi.save(key, value);
+        results[key] = await settingsApi.probe(key);
+      }
+      return results;
     },
-    onSuccess: () => {
+    onSuccess: (results) => {
       setSaveError(null);
+      setProbeResults((previous) => ({ ...previous, ...results }));
       setSaved(true);
       setValues({});
       onChanged();
-      setTimeout(() => setSaved(false), 2000);
+      setTimeout(() => setSaved(false), 2500);
     },
     onError: (err: Error) => setSaveError(err.message),
   });
 
-  const handleSave = () => saveMutation.mutate();
+  const handleProbe = async (key: string) => {
+    setProbingKey(key);
+    setSaveError(null);
+    try {
+      const result = await settingsApi.probe(key);
+      setProbeResults((previous) => ({ ...previous, [key]: result }));
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProbingKey(null);
+    }
+  };
 
-  const hasValues = integration.envVars.some(
-    (v) => values[v.key] || configuredKeys.has(v.key)
-  );
+  const handleClear = async (key: string) => {
+    setClearingKey(key);
+    setSaveError(null);
+    try {
+      await settingsApi.clear(key);
+      setProbeResults((previous) => {
+        const next = { ...previous };
+        delete next[key];
+        return next;
+      });
+      onChanged();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClearingKey(null);
+    }
+  };
 
   return (
-    <motion.div
-      className="glass-card"
-      style={{ overflow: 'hidden' }}
-      initial={false}
-    >
+    <motion.div className="glass-card" style={{ overflow: 'hidden' }} initial={false}>
       <button
         onClick={() => setIsOpen(!isOpen)}
         style={{
@@ -255,12 +182,12 @@ function IntegrationCard({
             flexShrink: 0,
           }}
         >
-          {integration.icon}
+          {integrationIcon(integration)}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
             {integration.name}
-            {hasValues && (
+            {hasConfigured && (
               <span
                 style={{
                   fontSize: 9,
@@ -294,17 +221,12 @@ function IntegrationCard({
         <motion.div
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
-          style={{
-            padding: '0 16px 16px',
-            borderTop: '1px solid rgba(255,255,255,0.04)',
-          }}
+          style={{ padding: '0 16px 16px', borderTop: '1px solid rgba(255,255,255,0.04)' }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
             {integration.envVars.map((envVar) => {
-              const storedVal = configuredKeys.has(envVar.key) ? '(configured)' : null;
-              const isSecret = envVar.secret;
               const show = showSecrets[envVar.key];
-
+              const probeResult = probeResults[envVar.key];
               return (
                 <div key={envVar.key}>
                   <label
@@ -312,6 +234,7 @@ function IntegrationCard({
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
+                      gap: 8,
                       fontSize: 10,
                       color: 'var(--color-apex-muted)',
                       marginBottom: 4,
@@ -323,20 +246,19 @@ function IntegrationCard({
                     <span>{envVar.label}</span>
                     <span style={{ fontFamily: 'var(--font-mono)', opacity: 0.5 }}>{envVar.key}</span>
                   </label>
+
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input
                       className="apex-input"
-                      type={isSecret && !show ? 'password' : 'text'}
-                      placeholder={storedVal ? '••••••••  (saved)' : envVar.placeholder}
+                      type={envVar.secret && !show ? 'password' : 'text'}
+                      placeholder={envVar.configured ? '••••••••  (saved)' : envVar.placeholder}
                       value={values[envVar.key] || ''}
-                      onChange={(e) => setValues((prev) => ({ ...prev, [envVar.key]: e.target.value }))}
+                      onChange={(e) => setValues((previous) => ({ ...previous, [envVar.key]: e.target.value }))}
                       style={{ flex: 1 }}
                     />
-                    {isSecret && (
+                    {envVar.secret && (
                       <button
-                        onClick={() =>
-                          setShowSecrets((prev) => ({ ...prev, [envVar.key]: !prev[envVar.key] }))
-                        }
+                        onClick={() => setShowSecrets((previous) => ({ ...previous, [envVar.key]: !previous[envVar.key] }))}
                         style={{
                           background: 'rgba(255,255,255,0.04)',
                           border: '1px solid var(--color-apex-border)',
@@ -346,37 +268,63 @@ function IntegrationCard({
                           color: 'var(--color-apex-muted)',
                           display: 'flex',
                           alignItems: 'center',
-                          flexShrink: 0,
                         }}
+                        aria-label={show ? 'Hide secret' : 'Show secret'}
                       >
                         {show ? <EyeOff size={14} /> : <Eye size={14} />}
                       </button>
                     )}
                   </div>
+
+                  {envVar.configured && (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => handleProbe(envVar.key)}
+                        disabled={probingKey === envVar.key}
+                        style={{ fontSize: 10, padding: '5px 9px' }}
+                      >
+                        {probingKey === envVar.key ? 'Testing…' : envVar.probeable ? 'Test connection' : 'Check status'}
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => handleClear(envVar.key)}
+                        disabled={clearingKey === envVar.key}
+                        style={{ fontSize: 10, padding: '5px 9px' }}
+                      >
+                        {clearingKey === envVar.key ? 'Clearing…' : 'Clear'}
+                      </button>
+                      {probeResult && (
+                        <span style={{ fontSize: 10, color: probeColor(probeResult.status) }}>
+                          {probeResult.status.toUpperCase().replace('_', ' ')} — {probeResult.detail}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
             {saveError && (
-              <div style={{ fontSize: 11, color: '#c45c66' }}>⚠ Save failed: {saveError}</div>
+              <div style={{ fontSize: 11, color: '#c45c66' }}>Save/test failed: {saveError}</div>
             )}
-            <div style={{ display: 'flex', gap: 8 }}>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 className="btn-primary"
-                onClick={handleSave}
-                disabled={saveMutation.isPending}
-                style={{ fontSize: 12, padding: '8px 16px', opacity: saveMutation.isPending ? 0.6 : 1 }}
+                onClick={() => saveMutation.mutate()}
+                disabled={saveMutation.isPending || !hasEnteredValue}
+                style={{
+                  fontSize: 12,
+                  padding: '8px 16px',
+                  opacity: saveMutation.isPending || !hasEnteredValue ? 0.55 : 1,
+                }}
               >
                 {saved ? (
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Check size={14} /> Saved
+                    <Check size={14} /> Saved & checked
                   </span>
-                ) : saveMutation.isPending ? (
-                  'Saving…'
-                ) : (
-                  'Save'
-                )}
+                ) : saveMutation.isPending ? 'Saving & testing…' : 'Save'}
               </button>
               {integration.docsUrl && (
                 <a
@@ -397,7 +345,6 @@ function IntegrationCard({
                 </a>
               )}
             </div>
-            </div>
           </div>
         </motion.div>
       )}
@@ -413,7 +360,11 @@ export function Settings() {
     queryFn: () => api.agents.list(),
   });
 
-  // System settings (autonomy level)
+  const { data: tools = [] } = useQuery({
+    queryKey: ['tools'],
+    queryFn: () => api.tools.list(),
+  });
+
   const { data: systemSettings } = useQuery({
     queryKey: ['system-settings'],
     queryFn: () => api.system.get(),
@@ -428,54 +379,68 @@ export function Settings() {
     },
   });
 
-  const { data: tools = [] } = useQuery({
-    queryKey: ['tools'],
-    queryFn: () => api.tools.list(),
+  const {
+    data: integrationData,
+    isLoading: integrationsLoading,
+    error: integrationsError,
+  } = useQuery({
+    queryKey: ['settings', 'integrations', 'catalog'],
+    queryFn: () => settingsApi.list(),
   });
+  const integrations = integrationData?.catalog ?? [];
+  const configuredCount = integrations.filter((integration) =>
+    integration.envVars.some((envVar) => envVar.configured)
+  ).length;
 
-  // Real server-side configured status — never the plaintext values.
-  const { data: integrationStatus = [] } = useQuery({
-    queryKey: ['settings', 'integrations'],
-    queryFn: () => api.settings.listIntegrations(),
+  const refreshIntegrations = () => {
+    queryClient.invalidateQueries({ queryKey: ['settings', 'integrations', 'catalog'] });
+    queryClient.invalidateQueries({ queryKey: ['settings', 'integrations'] });
+  };
+
+  const recoverMutation = useMutation({
+    mutationFn: () => settingsApi.recoverWorkforce(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['logs'] });
+    },
   });
-  const configuredKeys = new Set(integrationStatus.filter((s) => s.configured).map((s) => s.key));
-  const refetchIntegrations = () => queryClient.invalidateQueries({ queryKey: ['settings', 'integrations'] });
-
-  const categories = ['ai', 'comms', 'dev', 'data'] as const;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      {/* Autonomy Level */}
-      <div style={{
-        background: 'var(--color-apex-card)',
-        border: '1px solid rgba(90,158,174,0.15)',
-        borderRadius: 12,
-        padding: 20,
-      }}>
+      {/* Autonomy level */}
+      <div
+        style={{
+          background: 'var(--color-apex-card)',
+          border: '1px solid rgba(90,158,174,0.15)',
+          borderRadius: 12,
+          padding: 20,
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
           <Shield size={20} color="#5a9eae" />
           <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>Autonomy Level</span>
         </div>
         <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '0 0 16px', lineHeight: 1.4 }}>
-          Controls how aggressively APEX operates. Adjusts the CEO's goal review frequency and overall system throughput.
+          Controls how aggressively APEX operates. This changes the CEO goal-review cadence without bypassing approval gates.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {([
             { value: 'conservative', label: 'Conservative', desc: '30 min reviews' },
             { value: 'balanced', label: 'Balanced', desc: '15 min reviews' },
             { value: 'aggressive', label: 'Aggressive', desc: '10 min reviews' },
-          ] as const).map((opt) => {
-            const isActive = autonomyLevel === opt.value;
+          ] as const).map((option) => {
+            const active = autonomyLevel === option.value;
             return (
               <button
-                key={opt.value}
-                onClick={() => autonomyMutation.mutate(opt.value)}
+                key={option.value}
+                onClick={() => autonomyMutation.mutate(option.value)}
                 style={{
                   flex: '1 1 0',
                   minWidth: 120,
                   minHeight: 56,
-                  background: isActive ? 'rgba(90,158,174,0.12)' : 'rgba(255,255,255,0.03)',
-                  border: `1px solid ${isActive ? 'rgba(90,158,174,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                  background: active ? 'rgba(90,158,174,0.12)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${active ? 'rgba(90,158,174,0.4)' : 'rgba(255,255,255,0.08)'}`,
                   borderRadius: 10,
                   padding: '10px 14px',
                   cursor: 'pointer',
@@ -483,26 +448,45 @@ export function Settings() {
                   flexDirection: 'column',
                   gap: 2,
                   alignItems: 'center',
-                  transition: 'all 0.15s',
                 }}
               >
-                <span style={{
-                  fontSize: 13,
-                  fontWeight: isActive ? 700 : 500,
-                  color: isActive ? 'var(--color-apex-cyan)' : 'var(--color-apex-text)',
-                }}>
-                  {opt.label}
+                <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? 'var(--color-apex-cyan)' : 'var(--color-apex-text)' }}>
+                  {option.label}
                 </span>
-                <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>
-                  {opt.desc}
-                </span>
+                <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>{option.desc}</span>
               </button>
             );
           })}
         </div>
-        {autonomyMutation.isSuccess && (
-          <div style={{ fontSize: 11, color: 'var(--color-apex-green)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Check size={12} /> Applied — goal review cadence updated
+      </div>
+
+      {/* Provider recovery */}
+      <div className="glass-card" style={{ padding: 16, border: '1px solid rgba(196,92,102,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <Zap size={17} color="#c9a84a" />
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-apex-text)' }}>Workforce Recovery</span>
+        </div>
+        <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--color-apex-muted)', marginBottom: 10 }}>
+          After restoring an LLM key, quota, or billing, requeue only tasks that failed because the provider chain was exhausted. APEX releases at most 25 tasks per click so a restored account is not immediately stampede-loaded.
+        </div>
+        <button
+          className="btn-secondary"
+          onClick={() => recoverMutation.mutate()}
+          disabled={recoverMutation.isPending}
+          style={{ fontSize: 12, padding: '8px 14px' }}
+        >
+          {recoverMutation.isPending ? 'Recovering…' : 'Recover provider failures'}
+        </button>
+        {recoverMutation.isSuccess && (
+          <div style={{ fontSize: 11, color: '#6a9f78', marginTop: 8 }}>
+            Requeued {recoverMutation.data.recoveredTasks} task(s); reset {recoverMutation.data.resetAgentRows} agent row(s).
+            {recoverMutation.data.skippedTasks > 0 ? ` ${recoverMutation.data.skippedTasks} more matching task(s) remain for a later batch.` : ''}
+            {' '}{recoverMutation.data.note}
+          </div>
+        )}
+        {recoverMutation.isError && (
+          <div style={{ fontSize: 11, color: '#c45c66', marginTop: 8 }}>
+            Recovery failed: {recoverMutation.error.message}
           </div>
         )}
       </div>
@@ -512,48 +496,15 @@ export function Settings() {
         {[
           { label: 'Agents', value: agents.length, color: '#8b7ec8', icon: <Cpu size={14} /> },
           { label: 'Tools', value: tools.length, color: '#5a9eae', icon: <Zap size={14} /> },
-          {
-            label: 'Configured',
-            value: INTEGRATIONS.filter((i) =>
-              i.envVars.some((v) => configuredKeys.has(v.key))
-            ).length,
-            color: '#6a9f78',
-            icon: <Check size={14} />,
-          },
-          {
-            label: 'Missing',
-            value:
-              INTEGRATIONS.length -
-              INTEGRATIONS.filter((i) =>
-                i.envVars.some((v) => configuredKeys.has(v.key))
-              ).length,
-            color: '#c45c66',
-            icon: <Shield size={14} />,
-          },
+          { label: 'Configured', value: configuredCount, color: '#6a9f78', icon: <Check size={14} /> },
+          { label: 'Missing', value: Math.max(0, integrations.length - configuredCount), color: '#c45c66', icon: <Shield size={14} /> },
         ].map((stat) => (
           <div key={stat.label} className="glass-card" style={{ padding: '12px 14px' }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                color: stat.color,
-                marginBottom: 4,
-              }}
-            >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: stat.color, marginBottom: 4 }}>
               {stat.icon}
-              <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase' }}>
-                {stat.label}
-              </span>
+              <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase' }}>{stat.label}</span>
             </div>
-            <div
-              style={{
-                fontSize: 20,
-                fontWeight: 800,
-                color: stat.color,
-                fontFamily: 'var(--font-mono)',
-              }}
-            >
+            <div style={{ fontSize: 20, fontWeight: 800, color: stat.color, fontFamily: 'var(--font-mono)' }}>
               {stat.value}
             </div>
           </div>
@@ -562,20 +513,12 @@ export function Settings() {
 
       {/* Webhook config */}
       <div className="glass-card" style={{ padding: 16 }}>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            marginBottom: 12,
-            color: 'var(--color-apex-cyan)',
-          }}
-        >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, color: 'var(--color-apex-cyan)' }}>
           <Webhook size={16} />
           <span style={{ fontSize: 13, fontWeight: 600 }}>Inbound Webhook</span>
         </div>
         <div style={{ fontSize: 12, color: 'var(--color-apex-muted)', marginBottom: 10 }}>
-          POST goals to APEX from external services (Slack, Zapier, n8n, etc.)
+          POST goals to APEX from external services.
         </div>
         <div
           style={{
@@ -592,86 +535,47 @@ export function Settings() {
             overflowX: 'auto',
           }}
         >
-          <code style={{ flex: 1, whiteSpace: 'nowrap' }}>
-            POST {window.location.origin}/api/goals
-          </code>
+          <code style={{ flex: 1, whiteSpace: 'nowrap' }}>POST {window.location.origin}/api/goals</code>
           <button
             onClick={() => navigator.clipboard.writeText(`${window.location.origin}/api/goals`)}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              color: 'var(--color-apex-muted)',
-              padding: 4,
-              flexShrink: 0,
-            }}
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--color-apex-muted)', padding: 4 }}
           >
             <Copy size={14} />
           </button>
         </div>
-        <div
-          style={{
-            marginTop: 8,
-            fontSize: 11,
-            color: 'var(--color-apex-muted)',
-            fontFamily: 'var(--font-mono)',
-            padding: '8px 12px',
-            background: 'rgba(255,255,255,0.02)',
-            borderRadius: 6,
-            whiteSpace: 'pre',
-            overflowX: 'auto',
-          }}
-        >
-{`{
-  "title": "Your goal title",
-  "description": "What APEX should do",
-  "priority": 5
-}`}
-        </div>
       </div>
 
-      {/* Integrations by category */}
-      {categories.map((cat) => {
-        const catIntegrations = INTEGRATIONS.filter((i) => i.category === cat);
-        const catInfo = CATEGORY_LABELS[cat];
+      {/* Integrations */}
+      {integrationsLoading && (
+        <div className="glass-card" style={{ padding: 16, color: 'var(--color-apex-muted)', fontSize: 12 }}>
+          Loading the live backend integration catalog…
+        </div>
+      )}
+      {integrationsError && (
+        <div className="glass-card" style={{ padding: 16, color: '#c45c66', fontSize: 12 }}>
+          Could not load integrations: {integrationsError.message}
+        </div>
+      )}
+
+      {CATEGORY_ORDER.map((category) => {
+        const categoryIntegrations = integrations.filter((integration) => integration.category === category);
+        if (categoryIntegrations.length === 0) return null;
+        const categoryInfo = CATEGORY_LABELS[category] ?? { label: category, color: '#5a9eae' };
         return (
-          <div key={cat}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 12,
-              }}
-            >
-              <div
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: catInfo.color,
-                }}
-              />
-              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-                {catInfo.label}
-              </span>
-              <span
-                style={{
-                  fontSize: 10,
-                  color: 'var(--color-apex-muted)',
-                  fontFamily: 'var(--font-mono)',
-                }}
-              >
-                ({catIntegrations.length})
+          <div key={category}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: categoryInfo.color }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>{categoryInfo.label}</span>
+              <span style={{ fontSize: 10, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
+                ({categoryIntegrations.length})
               </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {catIntegrations.map((integration) => (
+              {categoryIntegrations.map((integration) => (
                 <IntegrationCard
                   key={integration.id}
                   integration={integration}
-                  configuredKeys={configuredKeys}
-                  onChanged={refetchIntegrations}
+                  onChanged={refreshIntegrations}
                 />
               ))}
             </div>
@@ -684,23 +588,15 @@ export function Settings() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#5a9eae' }} />
-            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-              Available Tools
-            </span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>Available Tools</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
             {tools.map((tool) => (
-              <div
-                key={tool.name}
-                className="glass-card"
-                style={{ padding: '10px 14px' }}
-              >
+              <div key={tool.name} className="glass-card" style={{ padding: '10px 14px' }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-apex-text)', marginBottom: 4 }}>
                   {tool.name}
                 </div>
-                <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', lineHeight: 1.4 }}>
-                  {tool.description}
-                </div>
+                <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', lineHeight: 1.4 }}>{tool.description}</div>
                 {tool.requiresApproval && (
                   <div
                     style={{
