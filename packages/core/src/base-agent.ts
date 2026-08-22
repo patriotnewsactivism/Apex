@@ -8,6 +8,7 @@ import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
+import { isLLMDailyBudgetPause } from './provider-failure.js';
 import { OutcomeAnalyzer } from '@workspace/learning-system';
 import { applyHistoryBudget, resolveBudget, truncateToolResult } from './context-budget.js';
 import type {
@@ -667,14 +668,22 @@ export abstract class BaseAgent {
       return { success: false, error: 'Max iterations exceeded' };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // AgentLogger.error appends the Error text to the visible message and
-      // stores its stack in `data`. Pass the title only here; including `msg`
-      // in both arguments duplicated the entire provider failure chain in the
-      // dashboard (the exact double error reported on 2026-08-21).
-      await this.logger.error(`Task failed: ${title}`, err, taskId);
+      const dailyBudgetPaused = isLLMDailyBudgetPause(msg);
+
+      if (dailyBudgetPaused) {
+        // This is an intentional cost-control state, not a broken task. The
+        // queue preserves the work until the exact UTC ledger reset.
+        await this.logger.warn(`Task deferred until UTC budget reset: ${title}`, taskId);
+      } else {
+        // AgentLogger.error appends the Error text to the visible message and
+        // stores its stack in `data`. Pass the title only here; including
+        // `msg` in both arguments duplicates the provider failure chain.
+        await this.logger.error(`Task failed: ${title}`, err, taskId);
+      }
+
       await this.taskQueue.fail(taskId, msg);
-      this.setStatus('error');
-      recordMetricsAsync(false, msg);
+      this.setStatus(dailyBudgetPaused ? 'idle' : 'error');
+      if (!dailyBudgetPaused) recordMetricsAsync(false, msg);
       return { success: false, error: msg };
     }
   }
