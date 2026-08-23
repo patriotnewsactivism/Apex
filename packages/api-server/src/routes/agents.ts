@@ -1,19 +1,46 @@
 import { Router } from 'express';
 import { db, agents, memories } from '@workspace/db';
 import { eq, and } from 'drizzle-orm';
-import type { BaseAgent } from '@workspace/core';
+import {
+  getProviderCatalog,
+  paidLLMFallbackEnabled,
+  type BaseAgent,
+} from '@workspace/core';
+
+function getRuntimeRouting() {
+  const catalog = getProviderCatalog();
+  const primary = catalog[0];
+  const paidEnabled = paidLLMFallbackEnabled(process.env.APEX_PAID_LLM_MODE);
+  const routeLabel = catalog
+    .map((provider) =>
+      provider.paid
+        ? `${provider.name} (${paidEnabled ? 'paid enabled' : 'paid off'})`
+        : provider.name,
+    )
+    .join(' → ');
+
+  return {
+    model: primary?.model ?? 'unconfigured',
+    provider: 'free-first-router',
+    routeLabel,
+  };
+}
 
 export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
   const router = Router();
 
-  // GET /api/agents — list all agents with live status
+  // GET /api/agents — list all agents with live status and the CURRENT shared
+  // inference route. Do not expose the historical model/provider columns as if
+  // they were runtime truth: old rows can survive routing migrations for years.
   router.get('/', async (_req, res) => {
+    const routing = getRuntimeRouting();
     try {
       const dbAgents = await db.select().from(agents);
       const agentsWithStatus = dbAgents.map((a) => {
         const live = workforce.get(a.id);
         return {
           ...a,
+          ...routing,
           liveStatus: live?.getStatus() ?? a.status,
           concurrency: live?.currentConcurrency ?? a.metadata?.concurrency ?? 1,
           maxIterations: live?.maxIterations ?? 20,
@@ -30,6 +57,7 @@ export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
         liveStatus: agent.getStatus(),
         concurrency: agent.currentConcurrency,
         maxIterations: agent.maxIterations,
+        ...routing,
       }));
       res.json({ agents: memoryAgents });
     }
@@ -43,6 +71,7 @@ export function createAgentsRouter(workforce: Map<string, BaseAgent>) {
     return res.json({
       agent: {
         ...agent,
+        ...getRuntimeRouting(),
         liveStatus: live?.getStatus() ?? agent.status,
         concurrency: live?.currentConcurrency ?? agent.metadata?.concurrency ?? 1,
         maxIterations: live?.maxIterations ?? 20,
