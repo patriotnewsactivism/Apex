@@ -3,6 +3,7 @@
 //
 // The script WILL NOT probe paid Mistral unless APEX_PAID_LLM_MODE is explicitly
 // enabled, because even a diagnostic request must not create surprise spend.
+// Groq is also fail-closed unless its Free-plan status is explicitly confirmed.
 //
 // Usage: node scripts/llm-probe.mjs
 
@@ -67,6 +68,18 @@ const tests = [
         "gemini-3.7-flash",
       );
     }
+  },
+  async () => {
+    if (!enabled("GROQ_FREE_TIER_CONFIRMED")) {
+      console.log("⚪ groq — skipped (Groq Free plan not explicitly confirmed)");
+      return;
+    }
+    await openaiProbe(
+      "groq/free",
+      "https://api.groq.com/openai/v1",
+      getValue("GROQ_FREE_API_KEY"),
+      "openai/gpt-oss-120b",
+    );
   },
   () => openaiProbe(
     "cohere",
