@@ -1,14 +1,16 @@
-/**
- * Token ledger — proactive per-provider token accounting and daily budget caps.
+/** 
+ * Token ledger — observable per-provider token accounting plus optional caps.
  *
- * Every successful inference call records prompt + completion usage. State is
- * kept in memory, mirrored to a local file as a fast fallback, and reconciled
- * with Postgres so replacing a Lightsail container does not reset the current
- * UTC day's accounting.
+ * Free-first routing lives in llm-client.ts. This module records usage but does
+ * not assume that a large token allowance is free. APEX's default cost control
+ * is provider-side free quotas plus fail-closed paid routing.
  *
- * Routing policy lives in llm-client.ts. This module knows only provider names
- * and budgets; it must never introduce a provider that the router does not
- * allow.
+ * By default there is NO workspace token cap and NO per-provider token cap:
+ *   APEX_TOKEN_CAP_TOTAL=0
+ *   APEX_TOKEN_CAPS=
+ *
+ * Operators may add token caps as secondary operational controls, but paid
+ * Mistral remains independently disabled unless APEX_PAID_LLM_MODE is enabled.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
@@ -57,7 +59,7 @@ function persist(): void {
     mkdirSync(dirname(LEDGER_PATH), { recursive: true });
     writeFileSync(LEDGER_PATH, JSON.stringify(state), 'utf8');
   } catch {
-    // In-memory accounting still enforces caps for this process.
+    // In-memory accounting still works for this process.
   }
 }
 
@@ -69,47 +71,23 @@ function rolloverIfNeeded(): void {
   }
 }
 
-// ─── Caps ─────────────────────────────────────────────────────────────────────
-//
-// APEX's 2026-08-23 intelligence policy gives Mistral the bulk of worker
-// traffic and targets up to 33M tokens/day for that account. The workspace
-// backstop must therefore sit ABOVE 33M or it would stop the entire workforce
-// before Mistral can reach its intended allowance.
-//
-// Environment values can override these defaults without a code deploy:
-//   APEX_TOKEN_CAP_TOTAL=40000000
-//   APEX_TOKEN_CAPS=mistral:33000000,google-gemini:5000000
-//
-// No default caps are guessed for Gemini/Cohere/Qwen/Kilo. Add them only from
-// actual account limits or a deliberate spend budget. Setting a configured cap
-// to 0 (or omitting it) means no APEX-side provider cap.
-
-const DEFAULT_TOTAL_DAILY_CAP = 40_000_000;
-const DEFAULT_PROVIDER_CAPS: Readonly<Record<string, number>> = {
-  mistral: 33_000_000,
-};
-
 function parseCaps(): Record<string, number> {
   const raw = process.env.APEX_TOKEN_CAPS;
-  if (raw === undefined || raw.trim() === '') {
-    return { ...DEFAULT_PROVIDER_CAPS };
-  }
+  if (!raw?.trim()) return {};
 
-  // An explicitly supplied list is authoritative. This makes it possible to
-  // disable/change the Mistral cap deliberately without a code change.
   const out: Record<string, number> = {};
   for (const part of raw.split(',')) {
     const [name, value] = part.split(':').map((piece) => piece?.trim());
     const cap = Number(value);
-    if (!name || !Number.isFinite(cap)) continue;
-    if (cap > 0) out[name] = cap;
+    if (name && Number.isFinite(cap) && cap > 0) out[name] = cap;
   }
   return out;
 }
 
 function totalCap(): number {
   const raw = process.env.APEX_TOKEN_CAP_TOTAL;
-  const cap = raw === undefined || raw.trim() === '' ? DEFAULT_TOTAL_DAILY_CAP : Number(raw);
+  if (raw === undefined || raw.trim() === '') return 0;
+  const cap = Number(raw);
   return Number.isFinite(cap) && cap > 0 ? cap : 0;
 }
 
@@ -142,8 +120,6 @@ async function persistDatabaseDelta(
   }
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
-
 /** Hydrate today's counters from Postgres before agents start. */
 export async function initializeTokenLedgerPersistence(): Promise<boolean> {
   try {
@@ -166,7 +142,6 @@ export async function initializeTokenLedgerPersistence(): Promise<boolean> {
       };
     }
 
-    // Reconcile any larger local counters captured while Postgres was offline.
     await Promise.all(
       Object.entries(state.providers).map(([provider, spend]) =>
         db
@@ -235,19 +210,16 @@ export function totalTokensToday(): number {
   return sum;
 }
 
-/** Skip a provider before making a guaranteed-over-budget HTTP request. */
 export function isProviderOverDailyCap(providerName: string): boolean {
   const cap = parseCaps()[providerName];
   return Boolean(cap && providerTokensToday(providerName) >= cap);
 }
 
-/** Pause workspace-wide inference when the runaway backstop is reached. */
 export function isTotalDailyCapReached(): boolean {
   const cap = totalCap();
   return Boolean(cap && totalTokensToday() >= cap);
 }
 
-/** Milliseconds until next UTC midnight, the natural reset for daily caps. */
 export function msUntilDailyReset(at: number = Date.now()): number {
   const date = new Date(at);
   const next = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1);
@@ -304,7 +276,6 @@ export function getTokenLedgerSnapshot(): TokenLedgerSnapshot {
   };
 }
 
-/** Test/ops escape hatch: wipe today's local and durable counters. */
 export async function resetTokenLedger(): Promise<void> {
   const day = state.day;
   state = emptyState();
