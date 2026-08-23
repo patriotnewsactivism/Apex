@@ -42,6 +42,11 @@ type ProviderSpec = {
   paid?: boolean;
   activationEnv?: string;
   activationDescription?: string;
+  /** Conservative minimum time between request starts for this logical
+   * provider. This is provider-level, not credential-level: Gemini limits are
+   * project-scoped and Groq limits are organization-scoped, so two keys must
+   * not be treated as two independent fire hoses. */
+  minIntervalMs: number;
   toolCallingReliable: true;
 };
 
@@ -51,6 +56,10 @@ const PROVIDERS: readonly ProviderSpec[] = [
     model: 'gemini-3.7-flash',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
     apiKeyEnvs: ['GEMINI_FREE_API_KEY', 'GEMINI_FREE_API_KEY_2'],
+    // Google's exact interactive limits are project-specific and visible in
+    // AI Studio. Start conservatively at 15 RPM until a project-specific
+    // override is deliberately configured.
+    minIntervalMs: 4_000,
     toolCallingReliable: true,
   },
   {
@@ -61,6 +70,8 @@ const PROVIDERS: readonly ProviderSpec[] = [
     activationEnv: 'GROQ_FREE_TIER_CONFIRMED',
     activationDescription:
       'set GROQ_FREE_TIER_CONFIRMED=true only for a Groq Free plan project/key',
+    // Published free limit is 30 RPM; 2.2s leaves a small safety margin.
+    minIntervalMs: 2_200,
     toolCallingReliable: true,
   },
   {
@@ -68,6 +79,8 @@ const PROVIDERS: readonly ProviderSpec[] = [
     model: 'command-a-plus-05-2026',
     baseURL: 'https://api.cohere.ai/compatibility/v1',
     apiKeyEnvs: ['COHERE_API_KEY'],
+    // Published Command A+ trial limit is 20 RPM; 3.2s leaves margin.
+    minIntervalMs: 3_200,
     toolCallingReliable: true,
   },
   {
@@ -78,6 +91,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     activationEnv: 'POOLSIDE_FREE_ACCESS_CONFIRMED',
     activationDescription:
       'set POOLSIDE_FREE_ACCESS_CONFIRMED=true only while this account is on Poolside free access',
+    minIntervalMs: 1_500,
     toolCallingReliable: true,
   },
   {
@@ -90,6 +104,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     activationEnv: 'QWEN_FREE_QUOTA_ONLY',
     activationDescription:
       'enable Alibaba Model Studio Free quota only, then set QWEN_FREE_QUOTA_ONLY=true',
+    minIntervalMs: 1_500,
     toolCallingReliable: true,
   },
   {
@@ -97,6 +112,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     model: 'kilo-auto/free',
     baseURL: 'https://api.kilo.ai/api/gateway',
     apiKeyEnvs: ['KILO_API_KEY'],
+    minIntervalMs: 1_000,
     toolCallingReliable: true,
   },
   {
@@ -105,6 +121,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     baseURL: 'https://api.mistral.ai/v1',
     apiKeyEnvs: ['MISTRAL_API_KEY'],
     paid: true,
+    minIntervalMs: 500,
     toolCallingReliable: true,
   },
 ] as const;
@@ -225,9 +242,16 @@ type ProviderFailureEvent = {
   at: number;
 };
 
+type ProviderRequestError = Error & {
+  status?: number;
+  retryAfterMs?: number;
+};
+
 const providerFailureEvents: ProviderFailureEvent[] = [];
 const degradedToolCallEvents: Array<{ provider: string; model: string; at: number }> = [];
 const credentialCooldowns = new Map<string, number>();
+const providerCooldowns = new Map<ApexProviderName, number>();
+const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
 const COOLDOWN_429_MS = 30_000;
 const COOLDOWN_402_MS = 6 * 60 * 60 * 1000;
@@ -261,6 +285,15 @@ function cooldownMs(status: number | undefined, message: string): number {
   return COOLDOWN_429_MS;
 }
 
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds * 1000));
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
 function credentialInCooldown(id: string): boolean {
   const until = credentialCooldowns.get(id);
   if (!until) return false;
@@ -271,12 +304,64 @@ function credentialInCooldown(id: string): boolean {
   return true;
 }
 
-function setCredentialCooldown(id: string, status: number | undefined, message: string): void {
-  credentialCooldowns.set(id, Date.now() + cooldownMs(status, message));
+function setCredentialCooldown(
+  id: string,
+  status: number | undefined,
+  message: string,
+  retryAfterMs?: number,
+): void {
+  const duration = Math.max(cooldownMs(status, message), retryAfterMs ?? 0);
+  credentialCooldowns.set(id, Date.now() + duration);
 }
 
 function clearCredentialCooldown(id: string): void {
   credentialCooldowns.delete(id);
+}
+
+function providerMinIntervalMs(provider: ProviderSpec): number {
+  const envName = `APEX_LLM_MIN_INTERVAL_MS_${provider.name.toUpperCase().replace(/-/g, '_')}`;
+  const configured = Number(process.env[envName]);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.min(60_000, Math.floor(configured));
+  }
+  return provider.minIntervalMs;
+}
+
+function providerReadyAt(provider: ProviderSpec): number {
+  const now = Date.now();
+  const cooldownUntil = providerCooldowns.get(provider.name) ?? 0;
+  if (cooldownUntil && cooldownUntil <= now) providerCooldowns.delete(provider.name);
+  return Math.max(
+    providerCooldowns.get(provider.name) ?? 0,
+    providerNextAttemptAt.get(provider.name) ?? 0,
+  );
+}
+
+function reserveProviderAttempt(provider: ProviderSpec): void {
+  const now = Date.now();
+  providerNextAttemptAt.set(provider.name, now + providerMinIntervalMs(provider));
+}
+
+function setProviderCooldown(
+  provider: ProviderSpec,
+  status: number | undefined,
+  message: string,
+  retryAfterMs?: number,
+): void {
+  const providerWide =
+    status === 429 ||
+    status === 402 ||
+    status === 404 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    ((status === 401 || status === 403) && DAILY_QUOTA_PATTERN.test(message));
+  if (!providerWide) return;
+  const duration = Math.max(cooldownMs(status, message), retryAfterMs ?? 0);
+  providerCooldowns.set(
+    provider.name,
+    Math.max(providerCooldowns.get(provider.name) ?? 0, Date.now() + duration),
+  );
 }
 
 function providerBaseURL(provider: ProviderSpec): string | undefined {
@@ -337,6 +422,17 @@ function releaseLLMConcurrencySlot(): void {
   activeLLMCalls = Math.max(0, activeLLMCalls - 1);
   const next = llmCallWaitQueue.shift();
   if (next) next();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function capacityWaitBudgetMs(): number {
+  const configured = Number(process.env.APEX_LLM_CAPACITY_WAIT_MS ?? 15_000);
+  return Number.isFinite(configured)
+    ? Math.min(60_000, Math.max(0, Math.floor(configured)))
+    : 15_000;
 }
 
 // ─── OpenAI-compatible wire format ───────────────────────────────────────────
@@ -468,7 +564,10 @@ async function callCompatibleProvider(
         parsed.error?.message ||
         text.slice(0, 500) ||
         `HTTP ${response.status}`;
-      throw Object.assign(new Error(detail), { status: response.status });
+      throw Object.assign(new Error(detail), {
+        status: response.status,
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+      });
     }
 
     const choice = parsed.choices?.[0]?.message;
@@ -508,105 +607,163 @@ class MultiProviderClient {
       }
 
       const trimmed = trimMessageHistory(messages);
-      const providerErrors: string[] = [];
-      const skipReasons: string[] = [];
+      const waitDeadline = Date.now() + capacityWaitBudgetMs();
+      let lastProviderErrors: string[] = [];
+      let lastSkipReasons: string[] = [];
 
-      for (const providerName of getProviderOrderForRole(this.config.role)) {
-        const provider = PROVIDER_BY_NAME.get(providerName);
-        if (!provider) continue;
+      while (true) {
+        const providerErrors: string[] = [];
+        const skipReasons: string[] = [];
+        let earliestReadyAt = Number.POSITIVE_INFINITY;
+        let hasConfiguredProvider = false;
 
-        const activationIssue = providerActivationIssue(provider);
-        if (activationIssue) {
-          skipReasons.push(`${provider.name}: ${activationIssue}`);
-          continue;
-        }
+        for (const providerName of getProviderOrderForRole(this.config.role)) {
+          const provider = PROVIDER_BY_NAME.get(providerName);
+          if (!provider) continue;
 
-        if (isProviderOverDailyCap(provider.name)) {
-          skipReasons.push(`${provider.name}: APEX per-provider daily cap reached`);
-          continue;
-        }
-
-        const baseURL = providerBaseURL(provider);
-        if (!baseURL) {
-          skipReasons.push(`${provider.name}: base URL is not configured`);
-          continue;
-        }
-
-        const credentials = configuredCredentials(provider);
-        if (credentials.length === 0) {
-          skipReasons.push(
-            `${provider.name}: no API key (${provider.apiKeyEnvs.join(' or ')})`,
-          );
-          continue;
-        }
-
-        let providerAttempted = false;
-
-        for (const credential of credentials) {
-          const credentialId = `${provider.name}:${credential.env}`;
-          if (credentialInCooldown(credentialId)) {
-            skipReasons.push(`${credentialId}: credential in cooldown`);
+          const activationIssue = providerActivationIssue(provider);
+          if (activationIssue) {
+            skipReasons.push(`${provider.name}: ${activationIssue}`);
             continue;
           }
 
-          providerAttempted = true;
+          if (isProviderOverDailyCap(provider.name)) {
+            skipReasons.push(`${provider.name}: APEX per-provider daily cap reached`);
+            continue;
+          }
 
-          try {
-            const result = await callCompatibleProvider(
-              provider,
-              credential.key,
-              trimmed.messages,
-              tools,
-              this.config,
-            );
-            clearCredentialCooldown(credentialId);
-            recordTokenUsage(provider.name, result.usage);
-            return result;
-          } catch (error) {
-            const err = error as Error & { status?: number };
-            const status = err.status;
-            const message = err.name === 'AbortError' ? 'request timed out' : err.message;
-            recordProviderFailure(provider.name, provider.model, status, message);
-            setCredentialCooldown(credentialId, status, message);
-            providerErrors.push(
-              `${provider.name}/${provider.model} via ${credential.env}: ` +
-                `${status ? `HTTP ${status} ` : ''}${message}`,
-            );
+          const baseURL = providerBaseURL(provider);
+          if (!baseURL) {
+            skipReasons.push(`${provider.name}: base URL is not configured`);
+            continue;
+          }
 
-            if (isRequestTooLargeError(status, message)) {
-              try {
-                const emergency = trimMessageHistory(
-                  messages,
-                  EMERGENCY_HISTORY_CHAR_BUDGET,
-                );
-                const result = await callCompatibleProvider(
-                  provider,
-                  credential.key,
-                  emergency.messages,
-                  tools,
-                  this.config,
-                );
-                clearCredentialCooldown(credentialId);
-                recordTokenUsage(provider.name, result.usage);
-                return result;
-              } catch {
-                // Continue to the next free credential/provider.
+          const credentials = configuredCredentials(provider);
+          if (credentials.length === 0) {
+            skipReasons.push(
+              `${provider.name}: no API key (${provider.apiKeyEnvs.join(' or ')})`,
+            );
+            continue;
+          }
+
+          hasConfiguredProvider = true;
+          const readyAt = providerReadyAt(provider);
+          if (readyAt > Date.now()) {
+            earliestReadyAt = Math.min(earliestReadyAt, readyAt);
+            const waitMs = Math.max(0, readyAt - Date.now());
+            skipReasons.push(
+              `${provider.name}: provider pacing/cooldown (${Math.ceil(waitMs / 1000)}s)`,
+            );
+            continue;
+          }
+
+          // Reserve the provider before awaiting network I/O. Because this
+          // assignment is synchronous, concurrent complete() calls naturally
+          // fan out to the next free provider instead of all choosing Gemini.
+          reserveProviderAttempt(provider);
+          earliestReadyAt = Math.min(earliestReadyAt, providerReadyAt(provider));
+
+          let providerAttempted = false;
+
+          for (const credential of credentials) {
+            const credentialId = `${provider.name}:${credential.env}`;
+            if (credentialInCooldown(credentialId)) {
+              skipReasons.push(`${credentialId}: credential in cooldown`);
+              continue;
+            }
+
+            providerAttempted = true;
+
+            try {
+              const result = await callCompatibleProvider(
+                provider,
+                credential.key,
+                trimmed.messages,
+                tools,
+                this.config,
+              );
+              clearCredentialCooldown(credentialId);
+              recordTokenUsage(provider.name, result.usage);
+              return result;
+            } catch (error) {
+              const err = error as ProviderRequestError;
+              const status = err.status;
+              const message = err.name === 'AbortError' ? 'request timed out' : err.message;
+              recordProviderFailure(provider.name, provider.model, status, message);
+              setCredentialCooldown(
+                credentialId,
+                status,
+                message,
+                err.retryAfterMs,
+              );
+              setProviderCooldown(
+                provider,
+                status,
+                message,
+                err.retryAfterMs,
+              );
+              earliestReadyAt = Math.min(earliestReadyAt, providerReadyAt(provider));
+              providerErrors.push(
+                `${provider.name}/${provider.model} via ${credential.env}: ` +
+                  `${status ? `HTTP ${status} ` : ''}${message}`,
+              );
+
+              if (isRequestTooLargeError(status, message)) {
+                try {
+                  const emergency = trimMessageHistory(
+                    messages,
+                    EMERGENCY_HISTORY_CHAR_BUDGET,
+                  );
+                  // A 413 retry is for the same logical request. Keep it bounded
+                  // and let the provider's normal pacing govern subsequent work.
+                  const result = await callCompatibleProvider(
+                    provider,
+                    credential.key,
+                    emergency.messages,
+                    tools,
+                    this.config,
+                  );
+                  clearCredentialCooldown(credentialId);
+                  recordTokenUsage(provider.name, result.usage);
+                  return result;
+                } catch {
+                  // Continue to the next free credential/provider.
+                }
               }
             }
           }
+
+          if (!providerAttempted && providerRequirements(provider).length > 0) {
+            skipReasons.push(`${provider.name}: ${providerRequirements(provider).join(', ')}`);
+          }
         }
 
-        if (!providerAttempted && providerRequirements(provider).length > 0) {
-          skipReasons.push(`${provider.name}: ${providerRequirements(provider).join(', ')}`);
+        lastProviderErrors = providerErrors;
+        lastSkipReasons = skipReasons;
+
+        // If a configured provider is merely waiting for its short pacing
+        // window, hold this request briefly instead of converting a few seconds
+        // of backpressure into a task failure. Longer 429/daily cooldowns fall
+        // through to TaskQueue, which preserves and staggers the task.
+        const now = Date.now();
+        if (
+          hasConfiguredProvider &&
+          Number.isFinite(earliestReadyAt) &&
+          earliestReadyAt > now &&
+          earliestReadyAt <= waitDeadline
+        ) {
+          const jitterMs = 50 + Math.floor(Math.random() * 151);
+          await sleep(Math.min(earliestReadyAt - now + jitterMs, waitDeadline - now));
+          continue;
         }
+
+        const details = [...lastProviderErrors, ...lastSkipReasons];
+        throw new Error(
+          `All LLM providers failed or were unavailable. ${
+            details.length ? details.join(' | ') : 'No usable provider credential was configured.'
+          }`,
+        );
       }
-
-      const details = [...providerErrors, ...skipReasons];
-      throw new Error(
-        `All LLM providers failed or were unavailable. ${
-          details.length ? details.join(' | ') : 'No usable provider credential was configured.'
-        }`,
-      );
     } finally {
       releaseLLMConcurrencySlot();
     }
