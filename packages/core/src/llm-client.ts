@@ -8,309 +8,145 @@ import {
   totalTokensToday,
 } from './token-ledger.js';
 
-// ─── Multi-Provider Fallback Client ───────────────────────────────────────────
+// ─── APEX Five-Provider Intelligence Stack ───────────────────────────────────
 //
-// REORDERED 2026-08-15 for maximum exhaustion resistance. Key principles:
-//   1. Providers with the LARGEST daily/monthly budgets go first so the chain
-//      absorbs the most traffic before falling through.
-//   2. Separate Groq and Gemini project keys spread requests across independent
-//      free-tier rate limits.
-//   3. Two-pass fallback: toolCallingReliable:false providers are skipped on
-//      tool-bearing requests and only tried as last resort.
-//   4. Per-provider circuit breakers stop concurrent agents from stampeding a
-//      key that is rate-limited, unfunded, or temporarily unavailable.
+// Policy (2026-08-23): EXACTLY five inference providers are allowed here.
+// There is intentionally no hidden sixth rung, dynamic OpenRouter fallback,
+// legacy recovery provider, or provider-specific side door.
 //
-// Chain order (11 entries, 4 tiers as of 2026-08-21 — see `tier` field on
-// each PROVIDERS entry; tier is now enforced in code, not just documented):
+// Worker/specialist route:
+//   Mistral Medium 3.5 -> Gemini 3.7 Flash -> Cohere Command A+ ->
+//   Qwen 3.7 Max -> Kilo Auto Frontier
 //
-//   Tier 0 (live, tool-reliable, ordered by daily capacity):
-//     Mistral (1B tok/mo) → Gemini ×2 (1,500 RPD each) →
-//     Cerebras ($5 credit) → Groq ×2 (100K TPD each) →
-//     SambaNova ($5 credit + 20M TPD) → Hugging Face (free credits)
+// Manager/executive route (oversight/delegation):
+//   Gemini 3.7 Flash -> Mistral Medium 3.5 -> Cohere Command A+ ->
+//   Qwen 3.7 Max -> Kilo Auto Frontier
 //
-//   Tier 1 (demoted free capacity — no key configured by default):
-//     NVIDIA NIM
-//
-//   Tier 2 (paid fallback — only after free, reliable capacity is spent):
-//     OpenRouter → anthropic/claude-sonnet-5 (real per-call cost)
-//
-//   Tier 3 (last resort — unreliable tool calling):
-//     OpenRouter/free router (dynamic zero-cost model selection)
-//
-// ROOT-CAUSE FIX 2026-08-19: rrStartIndex used to rotate across the entire
-// flat array, defeating this tier ordering on all but 1 call in N (see
-// rrStartIndexByTier below) — tier order is now unconditional; round-robin
-// only spreads load within a tier. A process-wide concurrency semaphore
-// (MAX_CONCURRENT_LLM_CALLS) also caps how many complete() calls can be
-// mid-flight at once, so a large task backlog releasing at boot can't
-// stampede tier 0/1 with ~20 simultaneous requests.
-//
-// 2026-08-16: xAI (403, credits exhausted) and Cohere/Cohere-trial (402/429,
-// no payment method / trial cap reached) REMOVED outright, not demoted —
-// explicit instruction, not the usual "keep for zero-code-change recovery"
-// treatment every other dead entry gets. Re-add only if asked.
-//
-// Each provider uses the standard OpenAI-compatible chat completions shape,
-// so the same request/response mapping logic is reused across all of them.
+// Models are pinned here rather than accepted from stale APEX_MODEL env vars.
+// A model/provider change is therefore a reviewed code change instead of a
+// deployment variable silently reintroducing a removed provider.
 
-const PROVIDERS: Array<{
-  name: string;
-  baseURL: string;
-  apiKeyEnv: string;
-  // Free providers only support specific model IDs — remap on fallback.
-  fallbackModel?: string;
-  // Some providers need specific headers
-  extraHeaders?: Record<string, string>;
-  // 'anthropic' routes through completeViaAnthropic() (Messages API wire
-  // format) instead of the OpenAI-shaped chat.completions path below.
-  // Undefined/omitted = 'openai', today's default for every existing entry.
-  protocol?: 'openai' | 'anthropic';
-  // Cap max_tokens per provider — some models reject requests with
-  // max_tokens higher than their supported output limit (Cohere 400).
-  maxOutputTokens?: number;
-  // Total request budget in characters (messages + stringified tool schemas
-  // combined) — trimmed to BEFORE the first attempt, not just after a 413.
-  // Added 2026-08-16 for Groq: its free tier's TPM (tokens per minute) limit
-  // reserves `max_tokens` against the SAME budget as the prompt, so a
-  // premium-role request used to reserve 16,384 output tokens and exceed Groq's
-  // 12,000 TPM cap before a single prompt token is counted — see
-  // maxOutputTokens on the groq entries below, which fixes the dominant
-  // cause. This field is the second layer: even with output capped, a long
-  // conversation history can still push a single request over a small TPM
-  // budget, and the existing 413-triggered EMERGENCY_HISTORY_CHAR_BUDGET
-  // retry only fires AFTER wasting one guaranteed-fail attempt. Providers
-  // with a known small per-minute/per-request cap should set this so the
-  // first attempt is already sized to fit.
-  maxRequestChars?: number;
-  // FALSE = this provider's model does not reliably emit structured tool
-  // calls. Added 2026-07-29 after persistActualProvider (finally wired up)
-  // revealed 11 of 13 live agents had fallen through to
-  // cohere/command-r-plus and QA Director to gpt-oss-20b:free, because
-  // cerebras and groq were both exhausted. Every symptom that day traced to
-  // it: agents answering "I am unable to access the code" without ever
-  // calling readFile, "I couldn't find any results" without ever calling
-  // searchBusinessDirectory (which returns 20 real businesses when called
-  // directly), tool calls emitted as literal text, and all-N/A reports.
-  // The workforce was not broken — it was running on a tier that cannot
-  // drive tools, and nothing said so.
-  toolCallingReliable?: boolean;
-  // True for providers that can incur a metered charge. Paid providers are
-  // always placed after reliable free capacity and can be disabled globally
-  // with APEX_PAID_LLM_MODE=off.
-  paid?: boolean;
-  // Priority tier — ADDED 2026-08-19 per root-cause finding: rrStartIndex
-  // previously round-robined across the ENTIRE flat array regardless of
-  // this comment block's documented tier structure, so the documented
-  // priority only actually held on 1 call in N. Lower tier = tried
-  // first, always, for every call. Round-robin (load spreading across
-  // concurrent calls) still applies, but only WITHIN a tier — it can no
-  // longer cause an earlier free provider to be skipped in favor of a paid
-  // or unreliable tier just because of where
-  // rrStartIndex happened to land. Omitted = tier 0 (default free/reliable).
-  tier?: number;
-}> = [
-  // ── Tier 2: Paid fallback — used only after reliable free capacity ─────────
-  //
-  // ADDED 2026-08-19 per root-cause finding: every Tier 0 provider below is a
-  // free tier, and free tiers share a correlated failure mode — they all
-  // exhaust on the same busy day. "All providers failed" was never bad luck;
-  // it was the designed behavior of a chain made entirely of free quotas with
-  // no paid floor under it. anthropic/claude-sonnet-5 via OpenRouter is a
-  // zero-code-change frontier path: OPENROUTER_API_KEY, baseURL, headers, and
-  // wire format are already wired up for the OpenRouter free router below —
-  // this just points the SAME client at a paid model.
-  // Confirmed live, tool-calling capable, $2/$10 per M tokens. This is a real
-  // (small) per-call cost, unlike every other entry in this file — that's the
-  // point: one reliable rung stops the whole workforce going dead whenever
-  // Mistral/Gemini/Cerebras/Groq/SambaNova all happen to be tapped out at once.
-  { name: 'openrouter-paid-anchor', tier: 2, paid: true, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'anthropic/claude-sonnet-5', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+export type ApexProviderName =
+  | 'mistral'
+  | 'google-gemini'
+  | 'cohere'
+  | 'qwen'
+  | 'kilo';
 
-  // ── Tier 0: Live, tool-calling reliable, ordered by daily capacity ──────────
-  //
-  // REORDERED 2026-08-15 to maximize exhaustion resistance. Providers with the
-  // LARGEST daily/monthly budgets go first. Round-robin start index spreads
-  // concurrent load across entries WITHIN this tier only (see `tier` field).
+type ProviderSpec = {
+  name: ApexProviderName;
+  model: string;
+  baseURL: string | (() => string | undefined);
+  apiKeyEnvs: readonly string[];
+  requiresEnv?: readonly string[];
+  toolCallingReliable: true;
+};
 
-  // Mistral (La Plateforme) — #1 POSITION: 1B tokens/month free tier (~33M
-  // tokens/day) is by far the largest budget in this entire chain — more than
-  // every other free tier combined. Reliable tool calling via mistral-small-
-  // latest. Free tier: 30 RPM, ~1 RPS global limit.
-  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
+const PROVIDERS: readonly ProviderSpec[] = [
+  {
+    name: 'mistral',
+    model: 'mistral-medium-3-5',
+    baseURL: 'https://api.mistral.ai/v1',
+    apiKeyEnvs: ['MISTRAL_API_KEY'],
+    toolCallingReliable: true,
+  },
+  {
+    name: 'google-gemini',
+    model: 'gemini-3.7-flash',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    // Multiple project keys are treated as one logical Gemini rung. A 429 on
+    // one credential does not skip Gemini until every configured key is tried.
+    apiKeyEnvs: ['GEMINI_API_KEY', 'GEMINI_API_KEY_2'],
+    toolCallingReliable: true,
+  },
+  {
+    name: 'cohere',
+    model: 'command-a-plus-05-2026',
+    baseURL: 'https://api.cohere.ai/compatibility/v1',
+    apiKeyEnvs: ['COHERE_API_KEY'],
+    toolCallingReliable: true,
+  },
+  {
+    name: 'qwen',
+    model: 'qwen3.7-max',
+    // Alibaba Model Studio compatible-mode base URLs are workspace/region
+    // specific. Require the exact deployment URL instead of guessing a region.
+    baseURL: () => process.env.QWEN_BASE_URL?.replace(/\/$/, ''),
+    apiKeyEnvs: ['QWEN_API_KEY'],
+    requiresEnv: ['QWEN_BASE_URL'],
+    toolCallingReliable: true,
+  },
+  {
+    name: 'kilo',
+    model: 'kilo-auto/frontier',
+    baseURL: 'https://api.kilo.ai/api/gateway',
+    apiKeyEnvs: ['KILO_API_KEY'],
+    toolCallingReliable: true,
+  },
+] as const;
 
-  // Google Gemini — permanent free tier: 1,500 RPD, 15 RPM, 250K TPM.
-  //
-  // MODEL ID — 2026-08-16: this string had been changed 4 times across prior
-  // commits (gemini-1.5-flash-latest → gemini-flash-latest → gemini-3.6-flash
-  // → gemini-3.5-flash) by different sessions, none of which verified the
-  // change against a live source before committing — pure guessing, and the
-  // 400s never stopped because nobody confirmed which guess (if any) was
-  // right. Verified this time via a live fetch of ai.google.dev/gemini-api/
-  // docs/models: gemini-3.7-flash is Google's current "New Stable" flash
-  // model, explicitly described as built for "complex coding, agentic
-  // workflows, and reliable multi-step execution" — the exact shape of this
-  // system's workload. A rolling `gemini-flash-latest` alias also exists but
-  // Google's own docs recommend pinning a stable version for production
-  // rather than an alias that can hot-swap underlying models with only two
-  // weeks' notice. DO NOT change this string again without a live probe
-  // (scripts/llm-probe.mjs) or a fresh docs fetch confirming the new value —
-  // the 400s this system has been seeing are NOT proof the model id is
-  // wrong; verify before guessing.
-  { name: 'google-gemini', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY', fallbackModel: 'gemini-3.7-flash' },
+const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
+  PROVIDERS.map((provider) => [provider.name, provider]),
+);
 
-  // Google Gemini (2nd project) — separate Google Cloud project = separate
-  // quota, doubling Gemini's effective daily capacity to 3,000 RPD.
-  { name: 'google-gemini-2', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKeyEnv: 'GEMINI_API_KEY_2', fallbackModel: 'gemini-3.7-flash' },
+/** Roles whose primary job is organization-wide oversight, delegation,
+ * architecture, work allocation, or independent quality governance. */
+const MANAGER_EXECUTIVE_ROLES = new Set([
+  'CEO',
+  'CTO',
+  'COO',
+  'LEAD_DEV',
+  'LEAD_RESEARCH',
+  'QA_DIRECTOR',
+]);
 
-  // Cerebras REMOVED 2026-08-22: account billing-blocked (402 "Payment
-  // required to access this resource") — confirmed dead on the original key
-  // AND on a freshly rotated CEREBRAS_API_KEY_2, so this is an account
-  // balance issue, not a bad/expired key. Re-add only after Don tops up
-  // billing at cloud.cerebras.ai and a live probe confirms 200s again.
-
-  // Groq — permanent free tier: 30 RPM, 14,400 RPD. openai/gpt-oss-120b,
-  // reliable tool calling. Daily token quota resets at midnight UTC.
-  //
-  // 413 FIX — 2026-08-16: live errors showed "TPM Limit 12000, Requested
-  // 19198-27829" on nearly every call, across wildly different history sizes
-  // — the constant wasn't the prompt, it was `max_tokens`. Groq's on_demand
-  // TPM check reserves `max_tokens` against the SAME 12,000-token budget as
-  // the prompt, and premium roles (CEO/COO/CTO/SALES/...) request
-  // the old 16,384-token default — already 4,384 tokens OVER the entire quota
-  // before one prompt token is counted. No amount of message-history
-  // trimming could ever have fixed this; that's why the existing
-  // 413-triggered emergency retry (EMERGENCY_HISTORY_CHAR_BUDGET) kept
-  // re-failing. maxOutputTokens caps the response reservation well under the
-  // quota; maxRequestChars pre-trims the prompt on the FIRST attempt instead
-  // of wasting one guaranteed-fail request to discover it's oversized.
-  // MODEL ID — 2026-08-19: corrected to openai/gpt-oss-120b, VERIFIED against
-  // console.groq.com/docs/models (Production Models) and /docs/deprecations.
-  // Both prior values are decommissioned and 404 on every call:
-  //   • llama-3.3-70b-versatile — deprecated 2026-06-17, SHUT DOWN 2026-08-16.
-  //   • llama-3.1-70b-versatile — SHUT DOWN 2025-01-24, i.e. dead ~19 months
-  //     before the 2026-08-17 commit that "fixed" 3.3 → 3.1. That change swapped
-  //     a freshly-dead model for a long-dead one and was never verified against
-  //     Groq's docs; it made the outage permanent rather than resolving it.
-  // openai/gpt-oss-120b is Groq's own documented migration target for
-  // llama-3.3-70b-versatile and is listed under Production Models with tool-use
-  // support. Same model family already used by the cerebras/sambanova entries
-  // (those are unprefixed 'gpt-oss-120b'; Groq namespaces it as 'openai/...').
-  // DO NOT change this string again without a live probe (scripts/llm-probe.mjs)
-  // or a fresh docs fetch — Groq retires models aggressively and guessing is
-  // exactly how this entry stayed broken across three separate commits.
-  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'openai/gpt-oss-120b', maxOutputTokens: 3072, maxRequestChars: 32_000 },
-
-  // Groq (2nd org) — separate org = 2x daily token capacity (200K TPD total).
-  // Same 12,000 TPM ceiling per org as groq above — same caps apply.
-  { name: 'groq-2', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY_2', fallbackModel: 'openai/gpt-oss-120b', maxOutputTokens: 3072, maxRequestChars: 32_000 },
-
-  // SambaNova — $5 signup credit, 20M TPD developer tier. OpenAI-compatible,
-  // gpt-oss-120b on SambaNova RDU hardware. Tool calling reliable.
-  { name: 'sambanova', baseURL: 'https://api.sambanova.ai/v1', apiKeyEnv: 'SAMBANOVA_API_KEY', fallbackModel: 'gpt-oss-120b' },
-
-  // Hugging Face Inference Providers — free inference credits for new users +
-  // PRO subscribers. OpenAI-compatible router at router.huggingface.co.
-  // Llama 3.3 70B Instruct, tool calling reliable.
-  { name: 'huggingface', baseURL: 'https://router.huggingface.co/v1', apiKeyEnv: 'HF_TOKEN', fallbackModel: 'meta-llama/Llama-3.3-70B-Instruct' },
-
-  // ── Tier 1: Demoted — kept for zero-code-change recovery only ─────────────
-  //
-  // CLEANED UP 2026-08-19: poolside/together/deepseek/qwen-cloud x3/glm-zai
-  // were previously listed here as demoted-but-present entries. All were
-  // actually removed as real PROVIDERS entries in commit 071b47a (2026-08-19,
-  // same-day earlier fix) because each was structurally broken regardless of
-  // key/billing state, not just rate-limited or unfunded:
-  //   • together    — model ID carried a bogus "Meta-" prefix, 404s always.
-  //   • poolside     — api.poolside.ai does not resolve in DNS at all; a
-  //                     connection error has no HTTP status, so it fell into
-  //                     the circuit breaker's 30s cooldown bucket and got
-  //                     retried forever instead of being backed off properly.
-  //   • qwen-cloud-anthropic — baseURL double-appended /v1, so the SDK POSTed
-  //                     to .../compatible-mode/v1/v1/messages — always 404.
-  //   • deepseek, qwen-cloud, qwen-cloud-anthropic (paid), glm-zai — dead
-  //     keys/billing, no path to zero-code-change recovery without Don
-  //     rotating a key anyway, so keeping the broken entry bought nothing.
-  // If Don rotates a fresh QWENCLOUD_API_KEY or fixes any of the above, ADD
-  // A NEW ENTRY with the defect fixed rather than resurrecting the old one.
-  //
-  // NVIDIA NIM — free endpoint at build.nvidia.com. The previous Llama 3.3
-  // endpoint retires 2026-08-25; Nemotron 3 Nano is its current, tool-calling
-  // replacement and has a 1M-token context window.
-  { name: 'nvidia', tier: 1, baseURL: 'https://integrate.api.nvidia.com/v1', apiKeyEnv: 'NVIDIA_API_KEY', fallbackModel: 'nvidia/nemotron-3-nano-30b-a3b' },
-
-  // ── Tier 3: Last resort — unreliable or best-effort tool calling ───────────
-  // Reached only after all reliable providers fail (two-pass fallback).
-
-  // OpenRouter smart router — `openrouter/free` auto-selects a free model that
-  // supports the requested capabilities (including tool calling). Better than
-  // the explicit :free model entries because it filters for tool-capable models.
-  // Still marked unreliable as a safety measure: free-tier models rotate and
-  // tool quality varies across underlying models.
-  { name: 'openrouter-free-router', tier: 3, toolCallingReliable: false, baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openrouter/free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
-
+const WORKER_ORDER: readonly ApexProviderName[] = [
+  'mistral',
+  'google-gemini',
+  'cohere',
+  'qwen',
+  'kilo',
 ];
 
-/** Paid inference is fail-closed: an unset, misspelled, or unknown value stays
- * off. This prevents a missing Lightsail env var from silently turning a
- * zero-cost deployment into metered traffic. */
+const MANAGER_ORDER: readonly ApexProviderName[] = [
+  'google-gemini',
+  'mistral',
+  'cohere',
+  'qwen',
+  'kilo',
+];
+
+export function getProviderOrderForRole(role?: string): ApexProviderName[] {
+  return [...(role && MANAGER_EXECUTIVE_ROLES.has(role) ? MANAGER_ORDER : WORKER_ORDER)];
+}
+
+// Kept for source compatibility with older verification code. Paid routing is
+// no longer a separate opt-in tier: this five-provider allowlist is the whole
+// routing universe, and token/spend controls live in token-ledger.ts.
 export function paidLLMFallbackEnabled(mode?: string): boolean {
   const normalized = (mode ?? 'off').trim().toLowerCase();
   return ['1', 'true', 'on', 'enabled', 'fallback'].includes(normalized);
 }
 
-// ─── Request size control ─────────────────────────────────────────────────────
-//
-// Observed live 2026-07-28: every agent task died with "All LLM providers
-// failed", and the chain read:
-//   • cerebras (gpt-oss-120b, 429): rate limited
-//   • groq (llama-3.3-70b-versatile, 413): Request too large … tokens per minute
-//
-// The 413 is the important one. A 429 is genuinely "come back later", but a
-// 413 means THIS request will never fit — and because every downstream
-// provider was handed the identical oversized `messages` array, one bloated
-// conversation failed the ENTIRE fallback chain. The fallback existed and was
-// structurally incapable of rescuing anything.
-//
-// Histories grow without bound: every tool result is appended, and agents run
-// up to 50 iterations (Lead Research). Tool results are the bulk of it —
-// search results, file contents, snapshot JSON. So trim tool output, not turns.
-//
-// Deliberately truncates message CONTENT rather than dropping messages: an
-// assistant message carrying tool_calls MUST be followed by its matching tool
-// results or the OpenAI-shaped APIs reject the request outright. Dropping
-// messages to save space would trade a 413 for a 400.
+// ─── Request-size control ─────────────────────────────────────────────────────
 
-/** Rough chars-per-token. Deliberately conservative — this is a safety budget,
- *  not an accounting system, and over-trimming costs far less than a 413. */
-const CHARS_PER_TOKEN = 4;
-
-/** Default budget in characters (~15k tokens).
- *
- * Was 120_000 (~30k tokens) until 2026-08-04. That budget was fatal for the
- * free tiers this chain depends on: Groq's TPD limit is 100k tokens, so ONE
- * 30k-token request consumed ~30% of an org's entire day — live logs showed
- * requests of 10k-30k tokens exhausting every provider by mid-afternoon and
- * the workforce degrading to prose-only cohere answers. 60k keeps the system
- * prompt + task + recent context intact while roughly doubling how many tasks
- * the free-tier capacity can serve. */
 export const DEFAULT_HISTORY_CHAR_BUDGET = 60_000;
-
-/** Hard retry budget (~6k tokens) used for the one retry after a 413. */
 export const EMERGENCY_HISTORY_CHAR_BUDGET = 24_000;
 
 export function historySize(messages: LLMMessage[]): number {
   return messages.reduce(
-    (n, m) => n + (m.content?.length ?? 0) + (m.toolCalls ? JSON.stringify(m.toolCalls).length : 0),
+    (total, message) =>
+      total +
+      (message.content?.length ?? 0) +
+      (message.toolCalls ? JSON.stringify(message.toolCalls).length : 0),
     0,
   );
 }
 
 /**
- * Shrink a conversation to fit `maxChars` while keeping it structurally valid.
- *
- * Priority of what survives, highest first: the system prompt, the first user
- * message (the task itself — losing it makes the agent forget what it was
- * asked), and the most recent turns. Oldest tool results are truncated first,
- * since they are both the largest and the least likely to still matter.
+ * Trim content without dropping messages. Keeping the message skeleton avoids
+ * orphaning assistant tool_calls from their corresponding tool results, which
+ * OpenAI-compatible APIs reject as malformed conversations.
  */
 export function trimMessageHistory(
   messages: LLMMessage[],
@@ -321,62 +157,54 @@ export function trimMessageHistory(
     return { messages, trimmed: false, originalChars, finalChars: originalChars };
   }
 
-  const out = messages.map((m) => ({ ...m }));
-  const marker = '\n… [truncated to fit the provider request limit]';
+  const out = messages.map((message) => ({
+    ...message,
+    toolCalls: message.toolCalls?.map((call) => ({ ...call, args: { ...call.args } })),
+  }));
+  const marker = '\n… [truncated to fit provider request budget]';
 
-  // Never touch the last 4 messages — that's the live working context the
-  // model needs to make its next decision.
-  const protectedFrom = Math.max(0, out.length - 4);
+  const trimContent = (message: LLMMessage, keep: number) => {
+    if ((message.content?.length ?? 0) > keep) {
+      message.content = `${message.content.slice(0, keep)}${marker}`;
+    }
+  };
 
-  // Pass 1: oldest tool results down to a stub. Biggest win, least loss.
-  for (let i = 0; i < protectedFrom && historySize(out) > maxChars; i++) {
-    if (out[i].role !== 'tool') continue;
-    const c = out[i].content ?? '';
-    if (c.length > 400) out[i].content = c.slice(0, 400) + marker;
+  // Old tool output is usually the largest and least valuable context.
+  for (const message of out) {
+    if (historySize(out) <= maxChars) break;
+    if (message.role === 'tool') trimContent(message, 1_200);
   }
 
-  // Pass 2: still too big — trim old assistant prose (keep toolCalls intact,
-  // they are structural and small).
-  for (let i = 0; i < protectedFrom && historySize(out) > maxChars; i++) {
-    if (out[i].role !== 'assistant') continue;
-    const c = out[i].content ?? '';
-    if (c.length > 500) out[i].content = c.slice(0, 500) + marker;
+  // Preserve the first system + first user task as long as possible, trimming
+  // older conversational prose before those anchors.
+  let firstUserSeen = false;
+  for (const message of out) {
+    if (historySize(out) <= maxChars) break;
+    if (message.role === 'system') continue;
+    if (message.role === 'user' && !firstUserSeen) {
+      firstUserSeen = true;
+      continue;
+    }
+    trimContent(message, 2_000);
   }
 
-  // Pass 3: squeeze the protected tail too, oldest first, but keep it usable.
-  for (let i = protectedFrom; i < out.length && historySize(out) > maxChars; i++) {
-    const c = out[i].content ?? '';
-    if (out[i].role === 'tool' && c.length > 1_000) out[i].content = c.slice(0, 1_000) + marker;
-  }
-
-  // Pass 4: the emergency floor. Passes 1-3 bottom out around 25k chars on a
-  // long run (40+ tool results at a 400-char stub each), which is ABOVE the
-  // emergency budget — so a 413 retry would have 413'd again. Squeeze every
-  // tool result to a stub and every assistant turn to a summary line.
-  // tool_calls are left intact throughout: they are structural, and dropping
-  // them breaks assistant→tool pairing.
-  for (let i = 0; i < out.length && historySize(out) > maxChars; i++) {
-    const c = out[i].content ?? '';
-    if (out[i].role === 'tool' && c.length > 120) out[i].content = c.slice(0, 120) + marker;
-    else if (out[i].role === 'assistant' && c.length > 200) out[i].content = c.slice(0, 200) + marker;
-  }
-
-  // Pass 5: absolute last resort — the system prompt itself. It carries the
-  // agent's role and org chart at the HEAD, with memory context and learning
-  // insights appended at the TAIL (see BaseAgent.executeTask), so truncating
-  // from the end sheds the accumulated context and keeps the identity. Only
-  // reached when everything else has already been stubbed.
   if (historySize(out) > maxChars && out[0]?.role === 'system') {
-    const c = out[0].content ?? '';
-    if (c.length > 6_000) out[0].content = c.slice(0, 6_000) + marker;
+    trimContent(out[0], 8_000);
   }
 
-  return { messages: out, trimmed: true, originalChars, finalChars: historySize(out) };
+  for (const message of out) {
+    if (historySize(out) <= maxChars) break;
+    trimContent(message, 600);
+  }
+
+  return {
+    messages: out,
+    trimmed: true,
+    originalChars,
+    finalChars: historySize(out),
+  };
 }
 
-/** True when a provider error means "this request is too big" rather than
- *  "you are going too fast". The two demand opposite responses: shrink and
- *  retry vs. back off and wait. */
 export function isRequestTooLargeError(status: unknown, message: string): boolean {
   if (status === 413) return true;
   return /request too large|too many tokens|context length|maximum context|reduce the length|prompt is too long/i.test(
@@ -384,634 +212,371 @@ export function isRequestTooLargeError(status: unknown, message: string): boolea
   );
 }
 
-// ─── Anthropic Messages API conversion helpers ────────────────────────────────
-//
-// The Anthropic wire format differs from OpenAI's chat.completions shape in
-// three load-bearing ways: (1) system prompt is a top-level `system` string
-// field, never a message with role:'system'; (2) every tool_result for a given
-// turn must be batched into ONE role:'user' message's content array — Anthropic
-// docs call splitting them across messages harmful ("silently trains Claude to
-// stop making parallel calls"); (3) tool schemas use `input_schema`, not
-// `parameters`. This function walks the internal LLMMessage[] history once and
-// produces both the extracted system string and the batched message array.
+// ─── Diagnostics + circuit breakers ──────────────────────────────────────────
 
-function buildAnthropicMessages(messages: LLMMessage[]): {
-  system: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }>;
-} {
-  const systemParts: string[] = [];
-  const result: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> = [];
+type ProviderFailureEvent = {
+  provider: string;
+  model: string;
+  status?: string | number;
+  message: string;
+  at: number;
+};
 
-  let i = 0;
-  while (i < messages.length) {
-    const m = messages[i];
+const providerFailureEvents: ProviderFailureEvent[] = [];
+const degradedToolCallEvents: Array<{ provider: string; model: string; at: number }> = [];
+const credentialCooldowns = new Map<string, number>();
 
-    if (m.role === 'system') {
-      systemParts.push(m.content);
-      i++;
-      continue;
-    }
+const COOLDOWN_429_MS = 30_000;
+const COOLDOWN_402_MS = 6 * 60 * 60 * 1000;
+const COOLDOWN_AUTH_MS = 10 * 60 * 1000;
+const COOLDOWN_404_MS = 10 * 60 * 1000;
+const COOLDOWN_413_MS = 15 * 60 * 1000;
+const DAILY_QUOTA_PATTERN = /\b(per[\s-]?day|daily|tokens per day|tpd|quota exhausted|daily limit)\b/i;
 
-    if (m.role === 'tool') {
-      // Batch every consecutive tool result into one user message's content array.
-      const toolResultBlocks: Array<Record<string, unknown>> = [];
-      while (i < messages.length && messages[i].role === 'tool') {
-        const tm = messages[i];
-        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tm.toolCallId ?? '', content: tm.content });
-        i++;
-      }
-      result.push({ role: 'user', content: toolResultBlocks });
-      continue;
-    }
-
-    if (m.role === 'assistant') {
-      const content: Array<Record<string, unknown>> = [];
-      if (m.content) content.push({ type: 'text', text: m.content });
-      for (const tc of m.toolCalls ?? []) {
-        content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
-      }
-      result.push({ role: 'assistant', content });
-      i++;
-      continue;
-    }
-
-    // user
-    result.push({ role: 'user', content: m.content });
-    i++;
-  }
-
-  return { system: systemParts.join('\n\n'), messages: result };
+function recordProviderFailure(
+  provider: string,
+  model: string,
+  status: string | number | undefined,
+  message: string,
+): void {
+  providerFailureEvents.push({ provider, model, status, message, at: Date.now() });
+  if (providerFailureEvents.length > 300) providerFailureEvents.shift();
 }
 
-class MultiProviderClient {
-  private config: LLMClientConfig;
+function cooldownMs(status: number | undefined, message: string): number {
+  if (status === 402) return COOLDOWN_402_MS;
+  if (status === 401 || status === 403) return COOLDOWN_AUTH_MS;
+  if (status === 404) return COOLDOWN_404_MS;
+  if (status === 413) return COOLDOWN_413_MS;
+  if (status === 429 && DAILY_QUOTA_PATTERN.test(message)) return msUntilDailyReset();
+  return COOLDOWN_429_MS;
+}
 
-  constructor(config: LLMClientConfig) {
-    this.config = config;
+function credentialInCooldown(id: string): boolean {
+  const until = credentialCooldowns.get(id);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    credentialCooldowns.delete(id);
+    return false;
   }
+  return true;
+}
 
-  /** Anthropic Messages API path — see buildAnthropicMessages() above for why
-   * this can't just reuse the OpenAI-shaped request builder. Mirrors the same
-   * timeout/AbortController/error-capture scaffolding the OpenAI path uses
-   * below; only the request-building and response-parsing differ. */
-  private async completeViaAnthropic(
-    provider: { name: string; baseURL: string; maxOutputTokens?: number },
-    apiKey: string,
-    model: string,
-    messages: LLMMessage[],
-    tools: LLMTool[] | undefined,
-  ): Promise<LLMResponse> {
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+function setCredentialCooldown(id: string, status: number | undefined, message: string): void {
+  credentialCooldowns.set(id, Date.now() + cooldownMs(status, message));
+}
 
-    const client = new Anthropic({
-      apiKey,
-      baseURL: provider.baseURL,
-      timeout: 75_000,
-      maxRetries: 0,
+function clearCredentialCooldown(id: string): void {
+  credentialCooldowns.delete(id);
+}
+
+function providerBaseURL(provider: ProviderSpec): string | undefined {
+  const raw = typeof provider.baseURL === 'function' ? provider.baseURL() : provider.baseURL;
+  return raw?.replace(/\/$/, '');
+}
+
+function providerRequirements(provider: ProviderSpec): string[] {
+  const missing = new Set<string>();
+  if (!provider.apiKeyEnvs.some((name) => Boolean(process.env[name]))) {
+    missing.add(provider.apiKeyEnvs.join(' or '));
+  }
+  for (const name of provider.requiresEnv ?? []) {
+    if (!process.env[name]) missing.add(name);
+  }
+  return [...missing];
+}
+
+function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key: string }> {
+  return provider.apiKeyEnvs
+    .map((env) => ({ env, key: process.env[env] ?? '' }))
+    .filter((entry) => Boolean(entry.key));
+}
+
+// ─── Process-wide call smoothing ─────────────────────────────────────────────
+
+const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 3);
+const MAX_CONCURRENT_LLM_CALLS = Number.isFinite(configuredLLMConcurrency)
+  ? Math.min(16, Math.max(1, Math.floor(configuredLLMConcurrency)))
+  : 3;
+let activeLLMCalls = 0;
+const llmCallWaitQueue: Array<() => void> = [];
+
+function acquireLLMConcurrencySlot(): Promise<void> {
+  if (activeLLMCalls < MAX_CONCURRENT_LLM_CALLS) {
+    activeLLMCalls++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    llmCallWaitQueue.push(() => {
+      activeLLMCalls++;
+      resolve();
+    });
+  });
+}
+
+function releaseLLMConcurrencySlot(): void {
+  activeLLMCalls = Math.max(0, activeLLMCalls - 1);
+  const next = llmCallWaitQueue.shift();
+  if (next) next();
+}
+
+// ─── OpenAI-compatible wire format ───────────────────────────────────────────
+
+function toWireMessages(messages: LLMMessage[]): unknown[] {
+  return messages.map((message) => {
+    if (message.role === 'tool') {
+      return {
+        role: 'tool',
+        content: message.content,
+        tool_call_id: message.toolCallId ?? '',
+      };
+    }
+    if (message.role === 'assistant') {
+      return {
+        role: 'assistant',
+        content: message.content || null,
+        tool_calls: message.toolCalls?.length
+          ? message.toolCalls.map((call) => ({
+              id: call.id,
+              type: 'function',
+              function: {
+                name: call.name,
+                arguments: JSON.stringify(call.args),
+              },
+            }))
+          : undefined,
+      };
+    }
+    return { role: message.role, content: message.content };
+  });
+}
+
+function toWireTools(tools?: LLMTool[]): unknown[] | undefined {
+  if (!tools?.length) return undefined;
+  return tools.map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }));
+}
+
+function parseToolCalls(raw: any): LLMToolCall[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((call) => call?.function?.name)
+    .map((call) => {
+      let args: Record<string, unknown> = {};
+      try {
+        const parsed = JSON.parse(call.function.arguments ?? '{}');
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed;
+      } catch {
+        args = {};
+      }
+      return {
+        id: call.id ?? `tool-${Math.random().toString(36).slice(2)}`,
+        name: call.function.name,
+        args,
+      };
+    });
+}
+
+type CompatibleResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+      tool_calls?: unknown;
+    };
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
+  error?: { message?: string; type?: string; code?: string | number };
+};
+
+async function callCompatibleProvider(
+  provider: ProviderSpec,
+  key: string,
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+  config: LLMClientConfig,
+): Promise<LLMResponse> {
+  const baseURL = providerBaseURL(provider);
+  if (!baseURL) throw Object.assign(new Error('provider base URL is not configured'), { status: 0 });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 75_000);
+  try {
+    const body: Record<string, unknown> = {
+      model: provider.model,
+      messages: toWireMessages(messages),
+      temperature: config.temperature ?? 0.7,
+      max_tokens: config.maxTokens ?? 2048,
+    };
+    const wireTools = toWireTools(tools);
+    if (wireTools?.length) {
+      body.tools = wireTools;
+      body.tool_choice = 'auto';
+    }
+
+    const response = await fetch(`${baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
     });
 
-    const { system, messages: anthropicMessages } = buildAnthropicMessages(messages);
-    const anthropicTools = tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 75_000);
-    let res;
+    const text = await response.text();
+    let parsed: CompatibleResponse = {};
     try {
-      res = await client.messages.create(
-        {
-          model,
-          system: system || undefined,
-          messages: anthropicMessages as any,
-          tools: anthropicTools && anthropicTools.length > 0 ? (anthropicTools as any) : undefined,
-          max_tokens: Math.min(this.config.maxTokens ?? 4096, provider.maxOutputTokens ?? 32768),
-          temperature: this.config.temperature ?? 0.7,
-        },
-        { signal: controller.signal },
-      );
-    } finally {
-      clearTimeout(timeoutId);
+      parsed = text ? (JSON.parse(text) as CompatibleResponse) : {};
+    } catch {
+      parsed = {};
     }
 
-    let content = '';
-    const toolCalls: LLMToolCall[] = [];
-    for (const block of res.content) {
-      if (block.type === 'text') content += block.text;
-      else if (block.type === 'tool_use') {
-        toolCalls.push({ id: block.id, name: block.name, args: block.input as Record<string, unknown> });
-      }
+    if (!response.ok) {
+      const detail = parsed.error?.message || text.slice(0, 800) || response.statusText;
+      throw Object.assign(new Error(detail), { status: response.status });
     }
+
+    const choice = parsed.choices?.[0]?.message;
+    if (!choice) {
+      throw Object.assign(new Error('provider returned no completion choice'), { status: response.status });
+    }
+
+    const toolCalls = parseToolCalls(choice.tool_calls);
+    const usage = {
+      promptTokens: Number(parsed.usage?.prompt_tokens ?? 0),
+      completionTokens: Number(parsed.usage?.completion_tokens ?? 0),
+    };
 
     return {
-      content,
+      content: choice.content ?? '',
       toolCalls,
-      usage: {
-        promptTokens: res.usage?.input_tokens ?? 0,
-        completionTokens: res.usage?.output_tokens ?? 0,
-      },
-      model: `${provider.name}/${res.model}`,
+      usage,
+      model: `${provider.name}/${provider.model}`,
+      degraded: false,
     };
+  } finally {
+    clearTimeout(timeout);
   }
+}
 
-  // PUBLIC ENTRY POINT — gates on the process-wide LLM concurrency semaphore
-  // (see acquireLLMConcurrencySlot below) before doing any real work. Root-
-  // cause finding 2026-08-19: 345 tasks releasing at once across 13 agents
-  // (several at concurrency 4-5) means up to ~20 concurrent complete() calls
-  // can fire within the same second on a fresh boot or after a backlog
-  // clears — every one of them tries the SAME tier-0/tier-1 provider first,
-  // which is exactly a 429 stampede against a 30 RPM free-tier limit. This
-  // caps how many complete() calls are actually making outbound HTTP
-  // requests at once, process-wide, independent of each agent's own
-  // concurrency setting (which only bounds ONE agent's in-flight tasks, not
-  // the whole process's in-flight LLM calls).
-  async complete(rawMessages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
+// ─── Client ───────────────────────────────────────────────────────────────────
+
+class MultiProviderClient {
+  constructor(private readonly config: LLMClientConfig) {}
+
+  async complete(messages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
     await acquireLLMConcurrencySlot();
     try {
-      return await this.completeInner(rawMessages, tools);
+      if (isTotalDailyCapReached()) {
+        throw new Error(
+          `APEX daily token cap reached (${totalTokensToday()} tokens today). ` +
+            `APEX_TOKEN_CAP_TOTAL has paused LLM spend until the UTC daily reset.`,
+        );
+      }
+
+      const initialTrim = trimMessageHistory(messages, DEFAULT_HISTORY_CHAR_BUDGET);
+      const providerErrors: string[] = [];
+      const skipReasons: string[] = [];
+      const order = getProviderOrderForRole(this.config.role);
+
+      for (const providerName of order) {
+        const provider = PROVIDER_BY_NAME.get(providerName)!;
+
+        const missing = providerRequirements(provider);
+        if (missing.length) {
+          skipReasons.push(`${provider.name}: missing ${missing.join(', ')}`);
+          continue;
+        }
+
+        if (isProviderOverDailyCap(provider.name)) {
+          skipReasons.push(
+            `${provider.name}: APEX_TOKEN_CAPS daily cap reached (${providerTokensToday(provider.name)} tokens)`,
+          );
+          continue;
+        }
+
+        const credentials = configuredCredentials(provider);
+        let providerAttempted = false;
+
+        for (const credential of credentials) {
+          const credentialId = `${provider.name}:${credential.env}`;
+          if (credentialInCooldown(credentialId)) {
+            skipReasons.push(`${provider.name}/${credential.env}: credential cooling down`);
+            continue;
+          }
+          providerAttempted = true;
+
+          let requestMessages = initialTrim.messages;
+          let retriedForSize = false;
+
+          while (true) {
+            try {
+              const result = await callCompatibleProvider(
+                provider,
+                credential.key,
+                requestMessages,
+                tools,
+                this.config,
+              );
+              clearCredentialCooldown(credentialId);
+              recordTokenUsage(provider.name, result.usage);
+              return result;
+            } catch (error) {
+              const status = Number((error as any)?.status) || undefined;
+              const message = error instanceof Error ? error.message : String(error);
+
+              if (
+                !retriedForSize &&
+                isRequestTooLargeError(status, message) &&
+                historySize(requestMessages) > EMERGENCY_HISTORY_CHAR_BUDGET
+              ) {
+                retriedForSize = true;
+                requestMessages = trimMessageHistory(
+                  requestMessages,
+                  EMERGENCY_HISTORY_CHAR_BUDGET,
+                ).messages;
+                continue;
+              }
+
+              recordProviderFailure(provider.name, provider.model, status, message);
+              setCredentialCooldown(credentialId, status, message);
+              providerErrors.push(
+                `${provider.name}/${provider.model} (${credential.env})` +
+                  `${status ? ` HTTP ${status}` : ''}: ${message}`,
+              );
+              break;
+            }
+          }
+        }
+
+        if (!providerAttempted && credentials.length > 0) {
+          skipReasons.push(`${provider.name}: every configured credential is cooling down`);
+        }
+      }
+
+      const attempted = providerErrors.length ? providerErrors.join('\n- ') : '(none)';
+      const skipped = skipReasons.length ? skipReasons.join('\n- ') : '(none)';
+      throw new Error(
+        `All LLM providers failed. Only the five approved providers are eligible.\n` +
+          `Attempted:\n- ${attempted}\n` +
+          `Skipped:\n- ${skipped}`,
+      );
     } finally {
       releaseLLMConcurrencySlot();
     }
   }
-
-  private async completeInner(rawMessages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
-    const OpenAI = (await import('openai')).default;
-
-    // ── Workspace-wide daily token cap (token-ledger.ts) ────────────────────
-    // Fail fast and honestly instead of walking 15 providers to collect 15
-    // 429s. Unset/0 = no cap, i.e. exactly the pre-2026-08-19 behavior.
-    if (isTotalDailyCapReached()) {
-      // State the actual numbers. On 2026-08-22 this fired at ~07:00 UTC and
-      // paused the whole workforce for 17 hours against a cap set to 2M — well
-      // under what the configured free tiers hand out — and the message gave a
-      // reader no way to tell whether the cap was reasonable or absurd without
-      // querying the ledger by hand.
-      throw new Error(
-        `APEX daily token cap reached — ${totalTokensToday().toLocaleString()} tokens spent today vs ` +
-          `APEX_TOKEN_CAP_TOTAL=${process.env.APEX_TOKEN_CAP_TOTAL ?? '(unset)'}. LLM spend is paused until ` +
-          `the UTC daily reset in ~${Math.round(msUntilDailyReset() / 60000)} min. If the workforce is idle ` +
-          `while providers still have free quota, this cap is set too low — raise APEX_TOKEN_CAP_TOTAL and ` +
-          `use per-provider APEX_TOKEN_CAPS to spread load instead.`,
-      );
-    }
-
-    // Cap the conversation BEFORE any provider sees it. Previously an
-    // overgrown history was handed unchanged to every provider in turn, so a
-    // single bloated task could 413 its way through the entire chain and
-    // report "All LLM providers failed" — making a size problem look like a
-    // capacity outage.
-    const trim = trimMessageHistory(rawMessages);
-    if (trim.trimmed) {
-      console.warn(
-        `[LLM] History trimmed ${trim.originalChars} → ${trim.finalChars} chars to stay under the request limit`,
-      );
-    }
-    const messages = trim.messages;
-
-    const buildOpenAIMessages = (msgs: LLMMessage[]) => msgs.map((m) => {
-      if (m.role === 'tool') {
-        return { role: 'tool' as const, content: m.content, tool_call_id: m.toolCallId ?? '' };
-      }
-      if (m.role === 'assistant') {
-        return {
-          role: 'assistant' as const,
-          content: m.content || null,
-          tool_calls: m.toolCalls && m.toolCalls.length > 0
-            ? m.toolCalls.map((tc) => ({
-                id: tc.id,
-                type: 'function' as const,
-                function: { name: tc.name, arguments: JSON.stringify(tc.args) },
-              }))
-            : undefined,
-        };
-      }
-      return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
-    });
-
-    const openaiMessages = buildOpenAIMessages(messages);
-
-    const openaiTools = tools?.map((t) => ({
-      type: 'function' as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
-    }));
-
-    const providerErrors: Array<{ provider: string; model: string; status?: number; message: string }> = [];
-
-    // Every provider the chain declined to even CALL, and why. Before
-    // 2026-08-22 these skips were silent: a provider with no key, in
-    // cooldown, or over its daily cap just `continue`d without recording
-    // anything, so when every provider was skipped the chain reported
-    // "(no providers were configured or had API keys)" — naming the wrong
-    // cause. 2,256 failed tasks carried that message while keys WERE
-    // configured and working, which is how a config gap read as a quota
-    // outage for weeks. A skip is diagnostic information, not nothing.
-    const skipReasons: Array<{ provider: string; reason: string }> = [];
-
-    // Two-pass fallback: first try only reliable providers, then fall to
-    // unreliable ones as last resort if everything else fails.
-    let lastResortMode = false;
-    // If the last request totally exhausted all providers, wait before trying
-    // again — stampeding 13 agents into a dead provider chain wastes tokens
-    // and generates noise. Let the providers recover.
-    const sinceTotalFailure = Date.now() - lastTotalFailureAt;
-    const dynamicBackoffMs = Math.min(
-      Math.max(GLOBAL_BACKOFF_FLOOR_MS, getShortestActiveCooldownMs()),
-      GLOBAL_BACKOFF_CAP_MS,
-    );
-    if (sinceTotalFailure < dynamicBackoffMs) {
-      const waitMs = dynamicBackoffMs - sinceTotalFailure;
-      console.warn(`[LLM] Global backoff: waiting ${Math.round(waitMs / 1000)}s before retrying — all providers recently exhausted (sized to shortest active cooldown, floor ${GLOBAL_BACKOFF_FLOOR_MS / 1000}s, cap ${GLOBAL_BACKOFF_CAP_MS / 1000}s)`);
-      await new Promise(r => setTimeout(r, waitMs));
-    }
-
-    // Build a round-robin ordered provider list.
-    //
-    // FIXED 2026-08-19 — root-cause finding: this used to rotate the start
-    // index across the ENTIRE flat PROVIDERS array, so the documented
-    // documented priority ordering only actually held
-    // on 1 call in PROVIDERS.length; the rest of the time a later-tier
-    // provider got tried before an earlier, higher-priority one purely
-    // because of where rrStartIndex happened to land that call. Tiers now
-    // determine priority ORDER unconditionally (tier 0 free capacity is
-    // considered before tier 1, then the paid tier, then unreliable tier 3);
-    // round-robin only spreads concurrent load WITHIN a tier, by rotating a
-    // separate start index per tier so it can't cross a tier boundary.
-    const byTier = new Map<number, typeof PROVIDERS>();
-    for (const p of PROVIDERS) {
-      const t = p.tier ?? 0;
-      if (!byTier.has(t)) byTier.set(t, []);
-      byTier.get(t)!.push(p);
-    }
-    const sortedTiers = [...byTier.keys()].sort((a, b) => a - b);
-    const reliableProviders: typeof PROVIDERS = [];
-    const unreliableProviders: typeof PROVIDERS = [];
-    for (const t of sortedTiers) {
-      const group = byTier.get(t)!;
-      const startIdx = rrStartIndexByTier.get(t) ?? 0;
-      for (let i = 0; i < group.length; i++) {
-        const p = group[(startIdx + i) % group.length];
-        if (p.toolCallingReliable === false) {
-          unreliableProviders.push(p);
-        } else {
-          reliableProviders.push(p);
-        }
-      }
-      rrStartIndexByTier.set(t, (startIdx + 1) % group.length); // rotate this tier for next call
-    }
-
-    for (let pass = 0; pass <= 1; pass++) {
-      if (pass === 1) {
-        // BUG FIX 2026-08-12: this used to `break` when providerErrors was
-        // empty, on the theory that empty errors meant "pass 0 already
-        // succeeded." That's wrong — if pass 0 had succeeded, the function
-        // would already have `return`ed above, so execution never reaches
-        // here at all. Empty providerErrors at this point almost always
-        // means every reliable provider was silently *skipped* (missing key
-        // or circuit-breaker cooldown — neither path pushes to
-        // providerErrors), NOT that the request succeeded. The old code
-        // then skipped the last-resort unreliable-provider pass entirely,
-        // surfacing a misleading "(no providers were configured or had API
-        // keys)" error even when live last-resort providers (openrouter-free,
-        // cohere-trial) were available and never got a chance to try.
-        // Only skip pass 1 if there is genuinely nothing to try in it.
-        if (unreliableProviders.length === 0) break;
-        lastResortMode = true;
-        console.warn(`[LLM] All reliable providers exhausted or in cooldown — starting last-resort pass with unreliable tool-calling providers`);
-      }
-    const orderedProviders = lastResortMode ? unreliableProviders : reliableProviders;
-    for (const provider of orderedProviders) {
-      if (provider.paid && !paidLLMFallbackEnabled(process.env.APEX_PAID_LLM_MODE)) {
-        console.warn(`[LLM] Skipping ${provider.name}: paid fallback requires explicit APEX_PAID_LLM_MODE=fallback`);
-        skipReasons.push({
-          provider: provider.name,
-          reason: 'paid provider — set APEX_PAID_LLM_MODE=fallback to allow metered spend',
-        });
-        continue;
-      }
-      const apiKey = process.env[provider.apiKeyEnv];
-      if (!apiKey) {
-        skipReasons.push({
-          provider: provider.name,
-          reason: `no API key — ${provider.apiKeyEnv} is not set`,
-        });
-        continue;
-      }
-
-      // Circuit breaker: skip providers in cooldown
-      if (isProviderInCooldown(provider.name)) {
-        const remainingMin = Math.max(1, Math.round(providerCooldownRemainingMs(provider.name) / 60_000));
-        console.warn(`[LLM] Skipping ${provider.name}: in cooldown (circuit breaker)`);
-        skipReasons.push({
-          provider: provider.name,
-          reason: `in circuit-breaker cooldown for ~${remainingMin} more min after a recent failure`,
-        });
-        continue;
-      }
-
-      // Budget governor (token-ledger.ts): skip a provider that has already
-      // spent its configured daily token allowance. This is the PROACTIVE
-      // counterpart to the circuit breaker — the breaker can only react after
-      // a 429 has already been paid for out of the provider's per-day REQUEST
-      // quota, whereas this never sends the request at all. No configured cap
-      // for a provider = never skipped here.
-      if (isProviderOverDailyCap(provider.name)) {
-        console.warn(
-          `[LLM] Skipping ${provider.name}: daily token budget spent (${providerTokensToday(provider.name)} tokens today, ` +
-            `APEX_TOKEN_CAPS) — resets in ~${Math.round(msUntilDailyReset() / 60000)} min`,
-        );
-        setProviderCooldown(provider.name, 'daily-cap', undefined);
-        skipReasons.push({
-          provider: provider.name,
-          reason:
-            `daily token cap spent (${providerTokensToday(provider.name)} tokens today, APEX_TOKEN_CAPS) — ` +
-            `resets in ~${Math.round(msUntilDailyReset() / 60_000)} min`,
-        });
-        continue;
-      }
-
-      // Defer unreliable providers for tool-bearing requests. They answer in
-      // prose instead of emitting structured tool calls, which creates fake
-      // "success" responses. On the first pass, skip them entirely so reliable
-      // providers are preferred. If ALL reliable providers fail, we restart
-      // the loop in lastResort mode and try them anyway — a prose-only answer
-      // is better than the entire workforce going dead for hours.
-      // (2026-08-04: 200+ requests fell through to cohere/openrouter-free
-      // during provider exhaustion, producing pages of prose-only answers
-      // that clogged the task backlog. But the opposite extreme — skipping
-      // them entirely — caused total workforce failure when ALL reliable
-      // providers hit daily caps. The two-pass approach gets the best of
-      // both: prefer reliable providers, fall to unreliable as last resort.)
-      if (provider.toolCallingReliable === false && openaiTools && openaiTools.length > 0) {
-        if (!lastResortMode) {
-          console.warn(`[LLM] Deferring ${provider.name}: toolCallingReliable=false and ${openaiTools.length} tool(s) offered — will retry as last resort if all reliable providers fail`);
-          skipReasons.push({
-            provider: provider.name,
-            reason: 'deferred on the reliable pass — cannot reliably emit tool calls',
-          });
-          continue;
-        }
-        console.warn(`[LLM] LAST RESORT: trying ${provider.name} with unreliable tool calling — all reliable providers exhausted`);
-      }
-
-      // The configured primary provider can honor APEX_MODEL/per-role model
-      // overrides. Other fallback providers keep their verified, provider-
-      // specific model IDs so one override cannot break the entire chain.
-      const model: string = provider.name === this.config.provider
-        ? this.config.model
-        : (provider.fallbackModel ?? this.config.model);
-
-      if (provider.protocol === 'anthropic') {
-        try {
-          const response = await this.completeViaAnthropic(provider, apiKey, model, messages, tools);
-          recordTokenUsage(provider.name, response.usage);
-          clearProviderCooldown(provider.name);
-          if (providerErrors.length > 0) {
-            console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
-          }
-          return response;
-        } catch (err) {
-          const status = (err as any)?.status ?? (err as any)?.response?.status ?? (err as any)?.code;
-          const errMessage = err instanceof Error ? err.message : String(err);
-          const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
-          console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
-          providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
-          recordProviderFailure(provider.name, model, status, truncatedMsg);
-          setProviderCooldown(provider.name, status, truncatedMsg);
-          continue;
-        }
-      }
-
-      // Pre-emptive per-provider trim: for providers with a known small
-      // request budget (e.g. Groq's 12,000 TPM), shrink the FIRST attempt to
-      // fit instead of wasting a guaranteed-fail round trip discovering it's
-      // oversized (that's what the 413-triggered emergency retry further
-      // down already does, but only after paying for one failure first).
-      // Tool schemas count against the same budget on every provider here
-      // but aren't part of `messages`, so they're measured and subtracted
-      // from the budget before trimming.
-      let providerOpenaiMessages = openaiMessages;
-      if (provider.maxRequestChars) {
-        const toolsChars = openaiTools ? JSON.stringify(openaiTools).length : 0;
-        const budget = Math.max(EMERGENCY_HISTORY_CHAR_BUDGET, provider.maxRequestChars - toolsChars);
-        if (historySize(messages) > budget) {
-          const preTrim = trimMessageHistory(messages, budget);
-          providerOpenaiMessages = buildOpenAIMessages(preTrim.messages);
-          console.warn(
-            `[LLM] Pre-trimming for ${provider.name}: ${preTrim.originalChars} → ${preTrim.finalChars} chars ` +
-              `(provider budget ${provider.maxRequestChars}, ~${toolsChars} chars of tool schemas)`,
-          );
-        }
-      }
-
-      try {
-        const defaultHeaders: Record<string, string> = {};
-        if (provider.extraHeaders) {
-          Object.assign(defaultHeaders, provider.extraHeaders);
-        }
-
-        const client = new OpenAI({
-          apiKey,
-          baseURL: provider.baseURL,
-          defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
-          timeout: 75_000, // hard cap: a hung provider must not freeze the whole agent forever
-          maxRetries: 0, // we handle fallback across providers ourselves; don't double-retry inside one provider
-        });
-
-        // Belt-and-suspenders timeout: the client-level `timeout` above should abort
-        // the underlying HTTP request, but wrap the call in our own race too so a
-        // provider that hangs somewhere the SDK's own timeout doesn't cover (e.g. a
-        // stalled stream, a hung DNS lookup) can never block this agent's loop forever.
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 75_000);
-        let res;
-        try {
-          const send = (msgs: typeof openaiMessages) =>
-            client.chat.completions.create(
-              {
-                model,
-                messages: msgs,
-                tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
-                temperature: this.config.temperature ?? 0.7,
-                max_tokens: Math.min(this.config.maxTokens ?? 4096, provider.maxOutputTokens ?? 32768),
-              },
-              { signal: controller.signal },
-            );
-
-          try {
-            res = await send(providerOpenaiMessages);
-          } catch (err) {
-            const status = (err as any)?.status ?? (err as any)?.response?.status;
-            const msg = err instanceof Error ? err.message : String(err);
-
-            if (status === 429 && isDailyQuotaError(msg)) {
-              // 2026-08-13 fix: this provider's own error body says the
-              // limit is a DAILY one (e.g. Groq "tokens per day (TPD)") —
-              // it will not recover in the next 12 seconds. Skip the
-              // in-request retry entirely and fall straight through to the
-              // next provider; setProviderCooldown (below, in the catch
-              // block at the outer scope) will also park this provider for
-              // hours instead of the usual 30s.
-              throw err;
-            } else if (status === 429) {
-              // Rate limited — retry this provider with backoff instead of
-              // immediately falling through. Gemini free tier (15 RPM) and
-              // Groq both 429 under concurrent agent load; retrying keeps
-              // the request on a tool-calling provider instead of cascading
-              // to cohere/openrouter-free which answer in prose.
-              let recovered = false;
-              for (let attempt = 1; attempt <= 2 && !recovered; attempt++) {
-                const delayMs = 4000 * attempt;
-                console.warn(`[LLM] ${provider.name}/${model} 429 rate limited, retry ${attempt}/2 in ${delayMs / 1000}s`);
-                await new Promise(r => setTimeout(r, delayMs));
-                try {
-                  res = await send(providerOpenaiMessages);
-                  recovered = true;
-                } catch (retryErr) {
-                  const retryStatus = (retryErr as any)?.status ?? (retryErr as any)?.response?.status;
-                  if (isRequestTooLargeError(retryStatus, retryErr instanceof Error ? retryErr.message : String(retryErr))) {
-                    const hard = trimMessageHistory(messages, EMERGENCY_HISTORY_CHAR_BUDGET);
-                    res = await send(buildOpenAIMessages(hard.messages));
-                    recovered = true;
-                  } else if (attempt === 2 || retryStatus !== 429) {
-                    throw retryErr;
-                  }
-                }
-              }
-              if (!recovered) throw err;
-            } else if (isRequestTooLargeError(status, msg)) {
-              // A 413 is recoverable HERE and nowhere else: moving to the next
-              // provider carries the same oversized payload and earns the same
-              // 413. Shrink hard and retry this provider once before giving up
-              // on it. This is exactly what turned a transient cerebras 429 into
-              // a total chain failure on 2026-07-28.
-              const hard = trimMessageHistory(messages, EMERGENCY_HISTORY_CHAR_BUDGET);
-              console.warn(
-                `[LLM] ${provider.name} rejected the request as too large; retrying once at ` +
-                  `${hard.finalChars} chars (was ${hard.originalChars}).`,
-              );
-              res = await send(buildOpenAIMessages(hard.messages));
-            } else {
-              throw err;
-            }
-          }
-        } finally {
-          clearTimeout(timeoutId);
-        }
-
-        if (!res) throw new Error(`Unexpected: ${provider.name} returned no response`);
-        const choice = res.choices[0];
-        const toolCalls: LLMToolCall[] = (choice.message.tool_calls ?? []).flatMap((tc) => {
-          if (tc.type !== 'function') return [];
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(tc.function.arguments);
-          } catch {
-            parsed = null;
-          }
-          // Providers may emit "null", empty strings, or arrays for arguments.
-          // Coerce anything non-object to an empty object so schema validation
-          // can surface a meaningful error instead of a cryptic Zod failure.
-          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            parsed = {};
-          }
-          return [{ id: tc.id, name: tc.function.name, args: parsed as Record<string, unknown> }];
-        });
-
-        // Real spend accounting — usage was parsed on every call since the
-        // multi-provider chain was written, but never recorded anywhere, so
-        // nothing in the system knew how many tokens the workforce had burned
-        // today. See token-ledger.ts.
-        recordTokenUsage(provider.name, {
-          promptTokens: res.usage?.prompt_tokens ?? 0,
-          completionTokens: res.usage?.completion_tokens ?? 0,
-        });
-
-        // Log success so it's visible which provider actually served the request
-        clearProviderCooldown(provider.name); // provider recovered — clear circuit breaker
-        if (providerErrors.length > 0) {
-          console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
-        }
-        // The condition that silently stopped the business on 2026-07-29:
-        // tools were offered, but the provider the chain fell through to
-        // cannot reliably call them. The request "succeeds" and the agent
-        // answers in prose ("I couldn't find any results"), so nothing
-        // upstream can tell this apart from a genuine empty result.
-        if (provider.toolCallingReliable === false && openaiTools && openaiTools.length > 0) {
-          recordDegradedToolCalling(provider.name, model);
-          console.warn(
-            `[LLM] DEGRADED TOOL CALLING: ${provider.name}/${model} served a request with ` +
-              `${openaiTools.length} tool(s) offered, but this provider does not reliably emit ` +
-              `structured tool calls. Expect agents to answer in prose instead of acting. ` +
-              `Restore capacity on an earlier provider in the chain.`,
-          );
-        }
-
-        return {
-          content: choice.message.content ?? '',
-          toolCalls,
-          usage: {
-            promptTokens: res.usage?.prompt_tokens ?? 0,
-            completionTokens: res.usage?.completion_tokens ?? 0,
-          },
-          model: `${provider.name}/${res.model}`,
-          degraded: provider.toolCallingReliable === false && !!openaiTools && openaiTools.length > 0,
-        };
-      } catch (err) {
-        // Extract status code and message for clear diagnostics
-        const status = (err as any)?.status ?? (err as any)?.response?.status ?? (err as any)?.code;
-        const errMessage = err instanceof Error ? err.message : String(err);
-        const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
-
-        console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
-
-        providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
-        recordProviderFailure(provider.name, model, status, truncatedMsg);
-        setProviderCooldown(provider.name, status, truncatedMsg);
-        continue; // try next provider in the chain
-      }
-    }
-    } // end pass loop
-
-    // Record total failure for global backoff
-    lastTotalFailureAt = Date.now();
-
-    // All providers failed — build a detailed error showing every attempt AND
-    // every provider that was never attempted, with the reason it was skipped.
-    // Reporting only the attempts is what made a config gap ("no key set")
-    // indistinguishable from a capacity outage ("everyone 429'd").
-    const attemptLines = providerErrors.map(
-      (e) => `  • ${e.provider} (model: ${e.model}, status: ${e.status ?? 'N/A'}): ${e.message}`,
-    );
-
-    // Last reason wins per provider, so a provider visited on both passes
-    // reports its final disposition rather than appearing twice.
-    const skipsByProvider = new Map<string, string>();
-    for (const skip of skipReasons) skipsByProvider.set(skip.provider, skip.reason);
-    const skipLines = [...skipsByProvider].map(([name, reason]) => `  ∘ ${name}: skipped — ${reason}`);
-
-    const sections: string[] = [];
-    if (attemptLines.length > 0) sections.push(`Attempted (${attemptLines.length}):\n${attemptLines.join('\n')}`);
-    if (skipLines.length > 0) sections.push(`Not attempted (${skipLines.length}):\n${skipLines.join('\n')}`);
-    if (sections.length === 0) {
-      sections.push('  (the provider roster is empty — PROVIDERS has no entries at all)');
-    }
-
-    const errorSummary = sections.join('\n');
-
-    // A chain where nothing was even tried is a configuration problem, not a
-    // capacity one. Say so in the first line so it is legible in a task's
-    // error_message without reading the whole breakdown.
-    const headline =
-      attemptLines.length === 0 && skipLines.length > 0
-        ? `All ${skipLines.length} LLM provider(s) were skipped without being called — this is a configuration/cooldown problem, not a provider outage.`
-        : 'All LLM providers failed.';
-
-    const finalError = new Error(`${headline}\n${errorSummary}`);
-
-    console.error(`[LLM] ${headline}\n${errorSummary}`);
-    throw finalError;
-  }
 }
 
-// ─── Factory ──────────────────────────────────────────────────────────────────
+// ─── Factory + role defaults ─────────────────────────────────────────────────
 
 export function createLLMClient(config: LLMClientConfig): MultiProviderClient {
   return new MultiProviderClient(config);
@@ -1019,15 +584,7 @@ export function createLLMClient(config: LLMClientConfig): MultiProviderClient {
 
 export type LLMClient = MultiProviderClient;
 
-// ─── Default model configs per agent tier ────────────────────────────────────
-//
-// Each provider selects its verified provider-specific fallback model; these
-// defaults only carry role metadata and per-turn output budgets.
-
 export function getDefaultLLMConfig(role: string): LLMClientConfig {
-  // Per-role token budgets — each turn in the agentic loop gets this budget,
-  // and agents iterate up to maxIterations (20-25), so total output per task
-  // can be much larger than these per-turn numbers.
   const tokenBudgets: Record<string, number> = {
     CEO: 4096,
     CTO: 4096,
@@ -1045,9 +602,6 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     CUSTOMER_SUCCESS: 2048,
     DOCS: 2048,
     OPS: 2048,
-    // Community Watch (comment classification/drafting, ported from
-    // APEX-Stream's agent-warden) — output is a small JSON verdict or a
-    // one/two-sentence draft, nowhere near the standard-role default.
     COMMUNITY_WATCH: 1024,
   };
   const defaultMaxTokens = tokenBudgets[role] ?? 2048;
@@ -1060,24 +614,173 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
     : defaultMaxTokens;
 
-  const envKey = `APEX_MODEL_${role}`;
-  const envOverride = process.env[envKey];
-  if (envOverride) {
-    return { provider: 'groq', model: envOverride, temperature: 0.7, maxTokens, role };
-  }
-
-  const globalModel = process.env.APEX_MODEL;
-  if (globalModel) {
-    return { provider: 'groq', model: globalModel, temperature: 0.7, maxTokens, role };
-  }
-
-  // Every configured provider currently supplies a verified provider-specific
-  // fallbackModel; this is only a neutral default for a future provider that
-  // does not.
-  return { provider: 'groq', model: 'openai/gpt-oss-120b', temperature: 0.7, maxTokens, role };
+  const primaryName = getProviderOrderForRole(role)[0];
+  const primary = PROVIDER_BY_NAME.get(primaryName)!;
+  return {
+    provider: primary.name,
+    model: primary.model,
+    temperature: 0.7,
+    maxTokens,
+    role,
+  };
 }
 
-// ─── Embedding Generation ─────────────────────────────────────────────────────
+// ─── Diagnostics API ─────────────────────────────────────────────────────────
+
+export function getProviderFailureReport(windowMs = 3_600_000): Array<{
+  provider: string;
+  model: string;
+  status?: string | number;
+  message: string;
+  count: number;
+  lastAt: string;
+}> {
+  const cutoff = Date.now() - windowMs;
+  const byProvider = new Map<string, { event: ProviderFailureEvent; count: number }>();
+  for (const event of providerFailureEvents) {
+    if (event.at < cutoff) continue;
+    const previous = byProvider.get(event.provider);
+    byProvider.set(event.provider, { event, count: (previous?.count ?? 0) + 1 });
+  }
+  return [...byProvider.values()]
+    .map(({ event, count }) => ({
+      provider: event.provider,
+      model: event.model,
+      status: event.status,
+      message: event.message,
+      count,
+      lastAt: new Date(event.at).toISOString(),
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export function getDegradedToolCallingReport(windowMs = 3_600_000): {
+  degraded: boolean;
+  count: number;
+  providers: string[];
+  since: string | null;
+} {
+  const cutoff = Date.now() - windowMs;
+  const recent = degradedToolCallEvents.filter((event) => event.at >= cutoff);
+  return {
+    degraded: recent.length > 0,
+    count: recent.length,
+    providers: [...new Set(recent.map((event) => `${event.provider}/${event.model}`))],
+    since: recent.length ? new Date(recent[0].at).toISOString() : null,
+  };
+}
+
+function isProviderConfigured(provider: ProviderSpec): boolean {
+  return providerRequirements(provider).length === 0;
+}
+
+export function getConfiguredProviders(): Array<{ name: string; configured: boolean }> {
+  return PROVIDERS.map((provider) => ({
+    name: provider.name,
+    configured: isProviderConfigured(provider),
+  }));
+}
+
+export function getProviderRoster(): {
+  providers: Array<{
+    name: string;
+    envVar: string;
+    configured: boolean;
+    tier: number;
+    paid: boolean;
+    toolCallingReliable: boolean;
+  }>;
+  totalSlots: number;
+  configuredSlots: number;
+  missingRequirements: string[];
+  /** Backward-compatible aliases consumed by existing health/diagnostic UI. */
+  freeSlots: number;
+  freeSlotsConfigured: number;
+  emptyFreeSlots: string[];
+} {
+  const providers = PROVIDERS.map((provider, index) => ({
+    name: provider.name,
+    envVar: provider.apiKeyEnvs.join(' or '),
+    configured: isProviderConfigured(provider),
+    tier: index,
+    paid: true,
+    toolCallingReliable: true,
+  }));
+  const missingRequirements = [
+    ...new Set(PROVIDERS.flatMap((provider) => providerRequirements(provider))),
+  ];
+  const configuredSlots = providers.filter((provider) => provider.configured).length;
+  return {
+    providers,
+    totalSlots: providers.length,
+    configuredSlots,
+    missingRequirements,
+    freeSlots: providers.length,
+    freeSlotsConfigured: configuredSlots,
+    emptyFreeSlots: missingRequirements,
+  };
+}
+
+export function logProviderRoster(): void {
+  const roster = getProviderRoster();
+  const configuredNames = roster.providers
+    .filter((provider) => provider.configured)
+    .map((provider) => provider.name);
+  console.log(
+    `[LLM] Approved provider roster: ${roster.configuredSlots}/${roster.totalSlots} configured ` +
+      `(${configuredNames.join(', ') || 'none'})`,
+  );
+  if (roster.missingRequirements.length) {
+    console.warn(
+      `[LLM] Missing configuration for approved provider stack: ${roster.missingRequirements.join(', ')}`,
+    );
+  }
+}
+
+export function getProviderCatalog(): Array<{
+  name: string;
+  model: string;
+  tier: number;
+  paid: boolean;
+  toolCallingReliable: boolean;
+}> {
+  return PROVIDERS.map((provider, index) => ({
+    name: provider.name,
+    model: provider.model,
+    tier: index,
+    paid: true,
+    toolCallingReliable: true,
+  }));
+}
+
+/** Settings API allowlist. LLM inference configuration contains only the five
+ * approved providers; the remaining entries are non-LLM business/tool keys. */
+export function getKnownApiKeyEnvs(): string[] {
+  return [
+    'MISTRAL_API_KEY',
+    'GEMINI_API_KEY',
+    'GEMINI_API_KEY_2',
+    'COHERE_API_KEY',
+    'QWEN_API_KEY',
+    'QWEN_BASE_URL',
+    'KILO_API_KEY',
+    'YELP_API_KEY',
+    'GOOGLE_PLACES_API_KEY',
+    'TAVILY_API_KEY',
+    'BRAVE_SEARCH_API_KEY',
+    'VAPI_API_KEY',
+    'VAPI_PHONE_NUMBER_ID',
+    'CASEBUDDY_SUPABASE_URL',
+    'CASEBUDDY_SUPABASE_SERVICE_KEY',
+    'CASEBUDDY_SYSTEM_USER_ID',
+    'STRIPE_SECRET_KEY',
+    'APEX_APPROVAL_MODE',
+  ];
+}
+
+// ─── Embeddings ───────────────────────────────────────────────────────────────
+// Keep embeddings inside the same allowlist: use Mistral when configured and
+// fall back to the local MiniLM pipeline. No OpenAI/OpenRouter embedding path.
 
 let localPipeline: any = null;
 
@@ -1089,436 +792,38 @@ async function getLocalPipeline() {
   return localPipeline;
 }
 
-/** Which LLM fallback providers currently have an API key configured.
- * Read-only, no network calls — used by health_check to report LLM
- * connectivity config without burning real API requests on every check. */
-// ─── Degraded-tool-calling tracker ───────────────────────────────────────────
-// Remembers the most recent occasions the chain served a tool-bearing request
-// from a provider that cannot reliably call tools, so the condition is
-// queryable (health checks, reports) instead of only being a log line nobody
-// reads. Bounded and in-memory by design — it describes the CURRENT process.
-
-const degradedToolCallEvents: Array<{ provider: string; model: string; at: number }> = [];
-
-// Why each provider in the chain was passed over. Until now these errors went
-// only to console.warn, which is unreadable from anywhere but the container's
-// stdout — so "qwen-cloud is configured and healthy but never serves" was
-// undiagnosable from the API. Bounded and in-memory: it describes the CURRENT
-// process, exactly like the degraded tracker above.
-const providerFailureEvents: Array<{
-  provider: string;
-  model: string;
-  status?: string | number;
-  message: string;
-  at: number;
-}> = [];
-
-// ─── Provider Circuit Breaker ─────────────────────────────────────────────────
-// When a provider returns 429 (rate limited) or 402 (billing), it's not just
-// THIS request that will fail — every concurrent request from every agent will
-// fail too, because they all hit the same provider first. Without a circuit
-// breaker, 13 agents × 5 concurrency = 65 simultaneous requests all hammer
-// Cerebras at once, all get 429, all cascade to Groq, all get 429, etc.
-//
-// The breaker sets a per-provider cooldown after a 429/402. During cooldown,
-// the provider is skipped entirely (not tried, not retried). This spreads
-// load across remaining providers instead of all agents stampeding the same
-// first-in-chain provider.
-const providerCooldowns = new Map<string, number>(); // provider name → epoch ms
-const COOLDOWN_429_MS = 30_000;   // 30s for ordinary short-window rate limits (resets quickly)
-const COOLDOWN_402_MS = 6 * 60 * 60 * 1000; // 6hr: Payment Required needs account action, not request retries
-const COOLDOWN_401_MS = 600_000;  // 10min for auth failures (key won't fix itself)
-// 413 reaching THIS function means even the in-request emergency retry
-// (EMERGENCY_HISTORY_CHAR_BUDGET, and now the pre-emptive maxRequestChars
-// trim above) still didn't fit — a structural mismatch between this
-// provider's request-size cap and this workload, not a transient blip.
-// Retrying it every ~30s (the old default-bucket behavior, since 413 had no
-// explicit branch here) just re-burns the provider's real per-day request
-// quota for a guaranteed-fail. Give it room to be fixed by config/plan
-// changes without hammering it meanwhile.
-const COOLDOWN_413_MS = 900_000;  // 15min for "this request structurally does not fit"
-// 2026-08-13 fix: a 429 whose OWN error body says the limit is a DAILY one
-// (Groq/Cerebras/Gemini/OpenRouter-free all phrase it as "per day"/"TPD"/
-// "daily"/"free-models-per-day") will not recover in 30s — that provider is
-// done until its actual daily reset. Before this fix every provider got the
-// same blanket 30s cooldown regardless of WHY it 429'd, so once a provider's
-// day-quota was blown the retry loop kept re-hitting it every ~30-90s for the
-// rest of the day: guaranteed-fail requests that burn real per-day REQUEST
-// budgets (e.g. Cerebras's 2400 req/day) for zero benefit, and starve
-// still-live providers (e.g. Mistral) of a fair shot in the rotation.
-const COOLDOWN_DAILY_MS = 4 * 60 * 60 * 1000; // 4hr — long enough to stop the retry-storm, short enough to self-heal without a redeploy if the message-sniff ever misses a case
-const DAILY_QUOTA_PATTERN = /\b(per[\s-]?day|daily|tokens per day|tpd|free-models-per-day)\b/i;
-
-function isDailyQuotaError(message: string | undefined): boolean {
-  return !!message && DAILY_QUOTA_PATTERN.test(message);
-}
-
-// 2026-08-14 fix: some providers (confirmed: Cerebras) return a bare
-// "429 status code (no body)" with zero descriptive text — isDailyQuotaError
-// can never match on an empty message, so these always fell through to the
-// short 30s cooldown regardless of the REAL cause. Under 13-agent concurrent
-// load this reproduced the exact same retry-storm the keyword fix was meant
-// to stop, just for providers that don't bother describing their own 429s.
-// Fix: track a rolling count of UNCLASSIFIED 429s (no keyword match) per
-// provider. If 3+ land within a 2-minute window, treat that streak itself as
-// evidence of a real (not transient) exhaustion and escalate to the long
-// cooldown — a real one-off burst self-heals in under 2 minutes and never
-// accumulates 3 hits, so this doesn't punish genuine brief spikes.
-const UNCLASSIFIED_429_WINDOW_MS = 2 * 60 * 1000;
-const UNCLASSIFIED_429_STREAK_THRESHOLD = 3;
-const recentUnclassified429s = new Map<string, number[]>();
-
-function isRepeatedUnclassified429(name: string): boolean {
-  const now = Date.now();
-  const history = (recentUnclassified429s.get(name) ?? []).filter((t) => now - t < UNCLASSIFIED_429_WINDOW_MS);
-  history.push(now);
-  recentUnclassified429s.set(name, history);
-  return history.length >= UNCLASSIFIED_429_STREAK_THRESHOLD;
-}
-
-function setProviderCooldown(
-  name: string,
-  status: number | 'daily-cap' | undefined,
-  message?: string,
-): void {
-  // 'daily-cap' is not a provider error at all — it's OUR ledger saying this
-  // provider's configured daily token allowance is spent. The correct cooldown
-  // is until the actual UTC daily reset, not a 4h heuristic.
-  if (status === 'daily-cap') {
-    providerCooldowns.set(name, Date.now() + msUntilDailyReset());
-    return;
-  }
-  let ms = COOLDOWN_429_MS;
-  let escalatedViaStreak = false;
-  if (status === 402) ms = COOLDOWN_402_MS;
-  else if (status === 401 || status === 403) ms = COOLDOWN_401_MS;
-  else if (status === 413) ms = COOLDOWN_413_MS;
-  else if (status === 429) {
-    if (isDailyQuotaError(message)) {
-      ms = COOLDOWN_DAILY_MS;
-    } else if (isRepeatedUnclassified429(name)) {
-      ms = COOLDOWN_DAILY_MS;
-      escalatedViaStreak = true;
-    } else {
-      ms = COOLDOWN_429_MS;
-    }
-  }
-  providerCooldowns.set(name, Date.now() + ms);
-  if (status === 413) {
-    console.warn(`[LLM] ${name}: request too large even after the emergency trim — this is a structural size mismatch, not a transient blip. Cooling down ${ms / 60000}min instead of the usual 30s.`);
-  } else if (status === 429 && isDailyQuotaError(message)) {
-    console.warn(`[LLM] ${name}: 429 is a DAILY quota exhaustion, not a short burst — cooling down ${ms / 60000}min instead of the usual 30s`);
-  } else if (status === 429 && escalatedViaStreak) {
-    console.warn(`[LLM] ${name}: ${UNCLASSIFIED_429_STREAK_THRESHOLD}+ unclassified 429s (no body/keyword) within ${UNCLASSIFIED_429_WINDOW_MS / 60000}min — treating as real exhaustion, cooling down ${ms / 60000}min instead of the usual 30s`);
-  }
-  if (status === 429 && !isDailyQuotaError(message) && !escalatedViaStreak) {
-    // Genuine short-window rate limit (or first/second unclassified 429 in this
-    // provider's rolling window) — clear its streak isn't reset here on
-    // purpose: clearProviderCooldown() (called on success) is what actually
-    // resets the provider to a clean slate.
-  }
-}
-
-/** Milliseconds left on a provider's cooldown, or 0 if it is not in one. */
-function providerCooldownRemainingMs(name: string): number {
-  const until = providerCooldowns.get(name);
-  if (until === undefined) return 0;
-  return Math.max(0, until - Date.now());
-}
-
-function isProviderInCooldown(name: string): boolean {
-  const until = providerCooldowns.get(name);
-  if (!until) return false;
-  if (Date.now() >= until) {
-    providerCooldowns.delete(name);
-    return false;
-  }
-  return true;
-}
-
-/** Shortest remaining cooldown (ms) across all providers currently in
- *  cooldown, or 0 if none are active. Used to size the global backoff to
- *  reality instead of a flat guess — see GLOBAL_BACKOFF_FLOOR_MS/CAP_MS. */
-function getShortestActiveCooldownMs(): number {
-  const now = Date.now();
-  let shortest = Infinity;
-  for (const until of providerCooldowns.values()) {
-    if (until > now) shortest = Math.min(shortest, until - now);
-  }
-  return shortest === Infinity ? 0 : shortest;
-}
-
-function clearProviderCooldown(name: string): void {
-  providerCooldowns.delete(name);
-  recentUnclassified429s.delete(name);
-}
-
-// ─── Round-Robin Starting Provider ─────────────────────────────────────────────
-// Instead of every request always starting from Cerebras (index 0), rotate
-// the starting index per request. This spreads concurrent load across all
-// available providers instead of stampeding the first one. Combined with the
-// circuit breaker, this means when Cerebras is in cooldown, the next request
-// naturally starts from Groq, then Gemini, etc.
-const rrStartIndexByTier = new Map<number, number>(); // rotation index PER TIER — see complete() for why
-
-// ─── Process-wide LLM call concurrency cap ─────────────────────────────────
-//
-// ADDED 2026-08-19 per root-cause finding: 345 tasks releasing at once
-// across 13 agents (some at concurrency 4-5) means the process can attempt
-// ~20 simultaneous outbound LLM calls the instant a backlog clears or right
-// after boot — all racing into the SAME first tier/provider, a guaranteed
-// 429 stampede against free-tier per-minute limits. This is a simple
-// counting semaphore: only MAX_CONCURRENT_LLM_CALLS complete() calls are
-// ever doing real work at once; the rest await their turn in FIFO order.
-// Deliberately generous (not 1-2) — the goal is smoothing a stampede into a
-// steady stream, not serializing the whole workforce.
-const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 3);
-const MAX_CONCURRENT_LLM_CALLS = Number.isFinite(configuredLLMConcurrency)
-  ? Math.min(16, Math.max(1, Math.floor(configuredLLMConcurrency)))
-  : 3;
-let activeLLMCalls = 0;
-const llmCallWaitQueue: Array<() => void> = [];
-
-function acquireLLMConcurrencySlot(): Promise<void> {
-  if (activeLLMCalls < MAX_CONCURRENT_LLM_CALLS) {
-    activeLLMCalls++;
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    llmCallWaitQueue.push(() => {
-      activeLLMCalls++;
-      resolve();
-    });
-  });
-}
-
-function releaseLLMConcurrencySlot(): void {
-  activeLLMCalls--;
-  const next = llmCallWaitQueue.shift();
-  if (next) next();
-}
-
-// ─── Global Backoff ───────────────────────────────────────────────────────────
-// When ALL providers fail in a single pass, the entire system is under
-// pressure. Rather than immediately failing and letting the agent pick up
-// the next task (which triggers another immediate round of provider calls),
-// track the last total-failure timestamp and add a backoff delay.
-//
-// BUG FIX 2026-08-14: this was a flat 15s regardless of WHY providers were
-// exhausted. But the circuit breaker's own cooldown tiers are 30s (429) /
-// 6hr (402) / 10min (401/403) / 4hr (daily quota) — every one of those is
-// LONGER than 15s. So under sustained load the loop retried every ~15-20s
-// into a chain it had already proven was still cooling down, and because
-// task-queue.ts's fail() correctly refuses to retry capacity-exhaustion
-// errors (retrying a guaranteed-fail just hammers dead providers), each of
-// those doomed 15s-early retries permanently failed whatever real task
-// triggered it. Live evidence from the 2026-08-14 12:51-12:59 log window:
-// 1 successful completion vs 48 permanently-failed tasks and 24
-// "all providers exhausted" cascades in 8 minutes — the backoff was
-// actively destroying real work, not just being noisy.
-// Fix: wait for the SHORTEST remaining real cooldown across providers
-// currently in cooldown (not a flat guess), floored at the old 15s (so a
-// transient one-off failure with no active cooldown still gets a small
-// courtesy pause) and capped at 90s (so a single request never blocks for
-// the full 4hr daily-quota tier — that long-horizon case is what the
-// capacity-exhaustion permanent-fail path in task-queue.ts is already for;
-// this backoff only exists to de-stampede short-window retries).
-let lastTotalFailureAt = 0;
-const GLOBAL_BACKOFF_FLOOR_MS = 15_000;
-const GLOBAL_BACKOFF_CAP_MS = 90_000;
-
-function recordProviderFailure(
-  provider: string,
-  model: string,
-  status: string | number | undefined,
-  message: string,
-): void {
-  providerFailureEvents.push({ provider, model, status, message, at: Date.now() });
-  if (providerFailureEvents.length > 300) providerFailureEvents.shift();
-}
-
-/** Most recent failure per provider in the last `windowMs` (default 1h).
- *  This is how you find out that the provider you promoted to the top of the
- *  chain is 404ing on its model id rather than actually being used. */
-export function getProviderFailureReport(windowMs = 3_600_000): Array<{
-  provider: string;
-  model: string;
-  status?: string | number;
-  message: string;
-  count: number;
-  lastAt: string;
-}> {
-  const cutoff = Date.now() - windowMs;
-  const byProvider = new Map<string, { e: (typeof providerFailureEvents)[number]; count: number }>();
-  for (const e of providerFailureEvents) {
-    if (e.at < cutoff) continue;
-    const prev = byProvider.get(e.provider);
-    byProvider.set(e.provider, { e, count: (prev?.count ?? 0) + 1 });
-  }
-  return [...byProvider.values()]
-    .map(({ e, count }) => ({
-      provider: e.provider,
-      model: e.model,
-      status: e.status,
-      message: e.message,
-      count,
-      lastAt: new Date(e.at).toISOString(),
-    }))
-    .sort((a, b) => b.count - a.count);
-}
-
-function recordDegradedToolCalling(provider: string, model: string): void {
-  degradedToolCallEvents.push({ provider, model, at: Date.now() });
-  if (degradedToolCallEvents.length > 200) degradedToolCallEvents.shift();
-}
-
-/** Tool-bearing requests served by a tool-unreliable provider in the last
- *  `windowMs` (default 1h). Non-zero means agents are very likely answering in
- *  prose instead of acting — the business looks busy and produces nothing. */
-export function getDegradedToolCallingReport(windowMs = 3_600_000): {
-  degraded: boolean;
-  count: number;
-  providers: string[];
-  since: string | null;
-} {
-  const cutoff = Date.now() - windowMs;
-  const recent = degradedToolCallEvents.filter((e) => e.at >= cutoff);
-  return {
-    degraded: recent.length > 0,
-    count: recent.length,
-    providers: [...new Set(recent.map((e) => `${e.provider}/${e.model}`))],
-    since: recent.length > 0 ? new Date(recent[0].at).toISOString() : null,
-  };
-}
-
-export function getConfiguredProviders(): Array<{ name: string; configured: boolean }> {
-  return PROVIDERS.map((p) => ({ name: p.name, configured: Boolean(process.env[p.apiKeyEnv]) }));
-}
-
-/**
- * The full provider roster with, for each slot, whether a key is actually
- * present. Never includes a key VALUE — only the env var name and a boolean.
- *
- * Added 2026-08-22. The roster carries 8 free-tier slots but only 4 held a
- * key, so Mistral absorbed ~87% of a day's traffic and the chain had nothing
- * to fall through to when it capped. Nothing surfaced that: an empty slot is
- * indistinguishable from a slot that simply wasn't reached. This makes the
- * gap a first-class, queryable fact.
- */
-export function getProviderRoster(): {
-  providers: Array<{
-    name: string;
-    envVar: string;
-    configured: boolean;
-    tier: number;
-    paid: boolean;
-    toolCallingReliable: boolean;
-  }>;
-  freeSlots: number;
-  freeSlotsConfigured: number;
-  emptyFreeSlots: string[];
-} {
-  const providers = PROVIDERS.map((p) => ({
-    name: p.name,
-    envVar: p.apiKeyEnv,
-    configured: Boolean(process.env[p.apiKeyEnv]),
-    tier: p.tier ?? 0,
-    paid: p.paid === true,
-    toolCallingReliable: p.toolCallingReliable !== false,
-  }));
-  const free = providers.filter((p) => !p.paid);
-  return {
-    providers,
-    freeSlots: free.length,
-    freeSlotsConfigured: free.filter((p) => p.configured).length,
-    // Deduped: openrouter-free-router and openrouter-paid-anchor read the same
-    // OPENROUTER_API_KEY, so listing it twice would overstate how many
-    // distinct keys are actually missing.
-    emptyFreeSlots: [...new Set(free.filter((p) => !p.configured).map((p) => p.envVar))],
-  };
-}
-
-/**
- * Print the roster at boot. A warning line naming the exact env vars that
- * would widen the pool is far more actionable than discovering weeks later
- * that half the chain was never callable.
- */
-export function logProviderRoster(): void {
-  const roster = getProviderRoster();
-  console.log(
-    `[LLM] Provider roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} free-tier slots have a key ` +
-      `(${roster.providers.filter((p) => p.configured).map((p) => p.name).join(', ') || 'none'})`,
-  );
-  if (roster.emptyFreeSlots.length > 0) {
-    console.warn(
-      `[LLM] ${roster.emptyFreeSlots.length} free provider slot(s) are EMPTY and can never be called: ` +
-        `${roster.emptyFreeSlots.join(', ')}. Each one you fill widens the fallback chain before ` +
-        `the workforce starts failing tasks with "All LLM providers failed".`,
-    );
-  }
-}
-
-/** Sanitized provider metadata for deterministic routing-policy checks. Never
- * includes API key values. */
-export function getProviderCatalog(): Array<{
-  name: string;
-  model: string;
-  tier: number;
-  paid: boolean;
-  toolCallingReliable: boolean;
-}> {
-  return PROVIDERS.map((p) => ({
-    name: p.name,
-    model: p.fallbackModel ?? '',
-    tier: p.tier ?? 0,
-    paid: p.paid === true,
-    toolCallingReliable: p.toolCallingReliable !== false,
-  }));
-}
-
-/** The full set of env var names this LLM client will ever read an API key
- * from. Used by the Settings API as a strict allowlist so a client can only
- * ever set/clear a key this client actually consumes — never an arbitrary
- * environment variable. */
-export function getKnownApiKeyEnvs(): string[] {
-  return [...PROVIDERS.map((p) => p.apiKeyEnv), 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'VAPI_API_KEY', 'VAPI_PHONE_NUMBER_ID', 'CASEBUDDY_SUPABASE_URL', 'CASEBUDDY_SUPABASE_SERVICE_KEY', 'CASEBUDDY_SYSTEM_USER_ID', 'STRIPE_SECRET_KEY', 'APEX_APPROVAL_MODE'];
+async function createLocalEmbedding(text: string): Promise<number[]> {
+  const extractor = await getLocalPipeline();
+  const output = await extractor(text, { pooling: 'mean', normalize: true });
+  return Array.from(output.data) as number[];
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {
-  const openaiKey = process.env.OPENAI_API_KEY;
-  // OpenRouter has no embedding path here; local embeddings are the default
-  // whenever OPENAI_API_KEY isn't set.
-  const useLocal = process.env.APEX_EMBEDDING_PROVIDER === 'local' || !openaiKey;
-
-  if (useLocal) {
+  const mistralKey = process.env.MISTRAL_API_KEY;
+  if (mistralKey) {
     try {
-      const extractor = await getLocalPipeline();
-      const output = await extractor(text, { pooling: 'mean', normalize: true });
-      return Array.from(output.data);
-    } catch (localErr) {
-      console.warn('Local embedding generation failed, trying API fallback...', localErr);
+      const response = await fetch('https://api.mistral.ai/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${mistralKey}`,
+        },
+        body: JSON.stringify({
+          model: 'mistral-embed',
+          input: [text.replace(/\n/g, ' ')],
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (response.ok) {
+        const parsed = (await response.json()) as {
+          data?: Array<{ embedding?: number[] }>;
+        };
+        const embedding = parsed.data?.[0]?.embedding;
+        if (Array.isArray(embedding)) return embedding;
+      }
+    } catch {
+      // Local fallback below.
     }
   }
-
-  const OpenAI = (await import('openai')).default;
-
-  let apiKey = openaiKey || '';
-  let baseURL: string | undefined = undefined;
-  let model = 'text-embedding-3-small';
-
-  const client = new OpenAI({
-    apiKey,
-    baseURL,
-    defaultHeaders: {
-      'HTTP-Referer': 'https://github.com/apex-agent',
-      'X-Title': 'APEX Autonomous AI Workforce',
-    },
-  });
-
-  const response = await client.embeddings.create({
-    model,
-    input: text.replace(/\n/g, ' '),
-  });
-
-  return response.data[0].embedding;
+  return createLocalEmbedding(text);
 }
