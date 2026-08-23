@@ -69,25 +69,34 @@ Use this exact order:
    - only dedicated `GEMINI_FREE_API_KEY` / `_2` credentials are accepted;
    - those credentials must belong to genuinely free-tier Google projects;
    - do not substitute a billing-enabled `GEMINI_API_KEY`.
-2. **Cohere** — `command-a-plus-05-2026`
-   - second choice;
+2. **Groq** — `openai/gpt-oss-120b`
+   - second choice for every agent;
+   - Groq currently publishes Free-plan limits of 30 RPM, 1,000 RPD and
+     200,000 TPD for GPT-OSS 120B;
+   - use only dedicated `GROQ_FREE_API_KEY` credentials from a genuinely free
+     Groq project/account;
+   - `GROQ_FREE_TIER_CONFIRMED=true` is required before APEX will call it;
+   - if the Groq account is upgraded to a paid Developer plan, turn this gate
+     off before using that key because paid Groq is metered from usage.
+3. **Cohere** — `command-a-plus-05-2026`
+   - third choice;
    - Cohere currently states Command A+ is free until its applicable API rate
      limit is reached.
-3. **Poolside** — `poolside/laguna-s-2.1`
-   - third choice;
+4. **Poolside** — `poolside/laguna-s-2.1`
+   - fourth choice;
    - Poolside currently advertises limited-time free access;
    - APEX requires `POOLSIDE_FREE_ACCESS_CONFIRMED=true` so a stale config
      cannot silently assume a temporary promotion is permanent.
-4. **Qwen** — `qwen3.7-max`
-   - fourth choice;
+5. **Qwen** — `qwen3.7-max`
+   - fifth choice;
    - Alibaba Model Studio can automatically become PAYG after a free quota;
    - provider-side **Free quota only** must be enabled first, then
      `QWEN_FREE_QUOTA_ONLY=true` confirms that protection to APEX.
-5. **Kilo Code** — `kilo-auto/free`
-   - fifth choice;
+6. **Kilo Code** — `kilo-auto/free`
+   - sixth choice;
    - use Kilo Auto **Free**, never `kilo-auto/frontier`, for autonomous default
      routing.
-6. **Mistral** — `mistral-medium-3-5`
+7. **Mistral** — `mistral-medium-3-5`
    - absolute last emergency fallback;
    - it is a paid rung;
    - it is unreachable while `APEX_PAID_LLM_MODE=off`, even if
@@ -99,7 +108,15 @@ Do **not** hard-code “1,500 requests/day” for Gemini 3.7 Flash. Google confi
 Gemini 3.7 Flash has free input/output tokens on the Free tier, but current
 RPM/TPM/RPD limits are project/model specific and must be read from the AI
 Studio Rate Limit page. Treat a provider 429/quota response as authoritative
-and fall through to Cohere rather than assuming a stale numeric quota.
+and fall through to Groq rather than assuming a stale numeric quota.
+
+### Groq quota facts
+
+Groq's current Free-plan table for `openai/gpt-oss-120b` lists 30 RPM,
+1,000 RPD, 8,000 TPM and 200,000 TPD. Treat provider responses as authoritative
+if those limits change. The `.env.example` sets `APEX_TOKEN_CAPS=groq:200000`
+as a proactive mirror of the current published daily free token ceiling, but
+that token cap is not proof that a billing-enabled Groq account is free.
 
 ### Provider configuration
 
@@ -107,6 +124,8 @@ Inference-related runtime variables:
 
 - `GEMINI_FREE_API_KEY`
 - `GEMINI_FREE_API_KEY_2` (optional second genuinely-free project)
+- `GROQ_FREE_API_KEY`
+- `GROQ_FREE_TIER_CONFIRMED`
 - `COHERE_API_KEY`
 - `POOLSIDE_API_KEY`
 - `POOLSIDE_FREE_ACCESS_CONFIRMED`
@@ -118,10 +137,10 @@ Inference-related runtime variables:
 - `MISTRAL_API_KEY`
 - `APEX_PAID_LLM_MODE` (default `off`)
 
-Do not restore Groq, OpenRouter, Cerebras, SambaNova, Hugging Face, NVIDIA, or
-OpenAI as inference fallback providers unless the user explicitly changes the
-policy after verifying current cost/quality. Embeddings are local MiniLM only,
-so they cannot create a hidden paid inference path.
+Do not restore OpenRouter, Cerebras, SambaNova, Hugging Face, NVIDIA, or other
+removed paid/legacy inference fallback providers unless the user explicitly
+changes the policy after verifying current cost/quality. Embeddings are local
+MiniLM only, so they cannot create a hidden paid inference path.
 
 Model IDs are pinned in reviewed source. Stale `APEX_MODEL` or
 `APEX_MODEL_<ROLE>` environment values must not override this policy.
@@ -133,7 +152,8 @@ Model IDs are pinned in reviewed source. Stale `APEX_MODEL` or
 - Multiple free Gemini keys are credentials for one logical Gemini rung. A
   rate-limited key can fall through to the second configured free key before
   leaving Gemini.
-- Poolside and Qwen activation confirmations are deliberate economic gates.
+- Groq, Poolside and Qwen activation confirmations are deliberate economic
+  gates.
 - Mistral is a paid emergency gate, not normal capacity.
 - Preserve structured tool calling. A provider response that merely describes
   a tool call is not successful execution.
@@ -143,8 +163,9 @@ Model IDs are pinned in reviewed source. Stale `APEX_MODEL` or
   skeletons.
 
 `scripts/verify-provider-routing.ts` is the deterministic guard. It must fail if
-the provider/model order drifts, if Kilo changes away from Auto Free, or if
-Mistral stops being the only paid and final rung.
+the provider/model order drifts, if Groq stops being the second free rung, if
+Kilo changes away from Auto Free, or if Mistral stops being the only paid and
+final rung.
 
 ## Token and spend governor
 
@@ -155,10 +176,10 @@ must not reset the day's accounting.
 **Token capacity is not a spending allowance.** The old 33M/day Mistral target
 was removed because it confused a rate-limit ceiling with free usage.
 
-Current defaults:
+Current `.env.example` defaults:
 
 - `APEX_TOKEN_CAP_TOTAL=0`
-- `APEX_TOKEN_CAPS=`
+- `APEX_TOKEN_CAPS=groq:200000`
 - `APEX_PAID_LLM_MODE=off`
 
 Provider-side free quota controls and fail-closed paid routing are the primary
