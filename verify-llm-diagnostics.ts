@@ -10,6 +10,8 @@ async function main() {
   for (const key of [
     'GEMINI_FREE_API_KEY',
     'GEMINI_FREE_API_KEY_2',
+    'GROQ_FREE_API_KEY',
+    'GROQ_FREE_TIER_CONFIRMED',
     'COHERE_API_KEY',
     'POOLSIDE_API_KEY',
     'POOLSIDE_FREE_ACCESS_CONFIRMED',
@@ -36,17 +38,19 @@ async function main() {
     const msg = (err as Error).message;
     const namesEveryApprovedProvider = [
       'google-gemini',
+      'groq',
       'cohere',
       'poolside',
       'qwen',
       'kilo',
       'mistral',
     ].every((name) => msg.includes(name));
-    const namesLegacyProvider = /groq|openrouter|cerebras|sambanova|huggingface|nvidia/i.test(msg);
+    const namesLegacyProvider = /openrouter|cerebras|sambanova|huggingface|nvidia/i.test(msg);
     console.log('\nheadline: ' + msg.split('\n')[0]);
-    console.log('names all six approved providers: ' + (namesEveryApprovedProvider ? 'PASS' : 'FAIL'));
-    console.log('names no removed legacy provider: ' + (!namesLegacyProvider ? 'PASS' : 'FAIL'));
+    console.log('names all seven approved providers: ' + (namesEveryApprovedProvider ? 'PASS' : 'FAIL'));
+    console.log('names no removed legacy provider:   ' + (!namesLegacyProvider ? 'PASS' : 'FAIL'));
     console.log('shows Mistral paid fallback disabled: ' + (msg.includes('paid fallback disabled') ? 'PASS' : 'FAIL'));
+    console.log('shows Groq free-tier confirmation gate: ' + (msg.includes('Groq Free plan') ? 'PASS' : 'FAIL'));
   }
 
   const a = escalationDedupeKey('apex-coo-001', 'g1', 'Stripe key missing, cannot bill');
