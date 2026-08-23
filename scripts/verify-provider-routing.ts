@@ -2,6 +2,7 @@ import {
   getProviderCatalog,
   getProviderOrderForRole,
   getDefaultLLMConfig,
+  paidLLMFallbackEnabled,
 } from "../packages/core/src/llm-client.js";
 
 let failures = 0;
@@ -16,26 +17,27 @@ const check = (label: string, condition: boolean, detail?: unknown) => {
 
 const catalog = getProviderCatalog();
 const expectedProviders = [
-  "mistral",
   "google-gemini",
   "cohere",
+  "poolside",
   "qwen",
   "kilo",
+  "mistral",
 ];
 const expectedModels = [
-  "mistral-medium-3-5",
   "gemini-3.7-flash",
   "command-a-plus-05-2026",
+  "poolside/laguna-s-2.1",
   "qwen3.7-max",
-  "kilo-auto/frontier",
+  "kilo-auto/free",
+  "mistral-medium-3-5",
 ];
-const workerOrder = ["mistral", "google-gemini", "cohere", "qwen", "kilo"];
-const managerOrder = ["google-gemini", "mistral", "cohere", "qwen", "kilo"];
+const expectedOrder = [...expectedProviders];
 
-console.log("── Five-provider allowlist ──");
-check("exactly five providers exist", catalog.length === 5, catalog);
+console.log("── Free-first provider allowlist ──");
+check("exactly six approved providers exist", catalog.length === 6, catalog);
 check(
-  "provider allowlist and order are exact",
+  "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
   catalog,
 );
@@ -45,41 +47,55 @@ check(
   catalog,
 );
 check(
-  "no legacy provider is reachable",
+  "Mistral is the only paid rung and is last",
+  catalog.filter((provider) => provider.paid).length === 1 &&
+    catalog[catalog.length - 1]?.name === "mistral" &&
+    catalog[catalog.length - 1]?.paid === true,
+  catalog,
+);
+check(
+  "Kilo uses Auto Free, never Auto Frontier",
+  catalog.find((provider) => provider.name === "kilo")?.model === "kilo-auto/free",
+  catalog,
+);
+check(
+  "no removed legacy inference route is reachable",
   catalog.every((provider) =>
     !/groq|openrouter|cerebras|sambanova|huggingface|nvidia|anthropic|openai/i.test(provider.name),
   ),
   catalog,
 );
 check(
-  "all five routes require structured tool calling",
+  "all approved routes require structured tool calling",
   catalog.every((provider) => provider.toolCallingReliable),
   catalog,
 );
 
-console.log("\n── Worker routing ──");
-for (const role of ["FRONTEND", "BACKEND", "DEVOPS", "QA", "SALES", "MARKETING", "CUSTOMER_SUCCESS", "RESEARCH", "OPS", "DOCS"]) {
-  check(
-    `${role} starts Mistral then follows exact fallback order`,
-    JSON.stringify(getProviderOrderForRole(role)) === JSON.stringify(workerOrder),
-    getProviderOrderForRole(role),
-  );
-  const config = getDefaultLLMConfig(role);
-  check(`${role} default model is Mistral Medium 3.5`, config.provider === "mistral" && config.model === "mistral-medium-3-5", config);
-}
+console.log("\n── Cost safety ──");
+check("paid fallback is off when unset", paidLLMFallbackEnabled(undefined) === false);
+check("paid fallback is off for explicit off", paidLLMFallbackEnabled("off") === false);
+check("paid fallback requires explicit enablement", paidLLMFallbackEnabled("fallback") === true);
 
-console.log("\n── Manager/executive routing ──");
-for (const role of ["CEO", "CTO", "COO", "LEAD_DEV", "LEAD_RESEARCH", "QA_DIRECTOR"]) {
+console.log("\n── All-unit routing ──");
+for (const role of [
+  "CEO", "CTO", "COO", "LEAD_DEV", "LEAD_RESEARCH", "QA_DIRECTOR",
+  "FRONTEND", "BACKEND", "DEVOPS", "QA", "SALES", "MARKETING",
+  "CUSTOMER_SUCCESS", "RESEARCH", "OPS", "DOCS",
+]) {
   check(
-    `${role} starts Gemini then follows exact oversight order`,
-    JSON.stringify(getProviderOrderForRole(role)) === JSON.stringify(managerOrder),
+    `${role} follows the exact free-first order`,
+    JSON.stringify(getProviderOrderForRole(role)) === JSON.stringify(expectedOrder),
     getProviderOrderForRole(role),
   );
   const config = getDefaultLLMConfig(role);
-  check(`${role} default model is Gemini 3.7 Flash`, config.provider === "google-gemini" && config.model === "gemini-3.7-flash", config);
+  check(
+    `${role} defaults to Gemini 3.7 Flash`,
+    config.provider === "google-gemini" && config.model === "gemini-3.7-flash",
+    config,
+  );
 }
 
 console.log(
-  `\n${failures === 0 ? "✅ FIVE-PROVIDER ROUTING GUARDS PASSED" : `❌ ${failures} PROVIDER ROUTING GUARD(S) FAILED`}`,
+  `\n${failures === 0 ? "✅ FREE-FIRST ROUTING GUARDS PASSED" : `❌ ${failures} PROVIDER ROUTING GUARD(S) FAILED`}`,
 );
 process.exit(failures === 0 ? 0 : 1);
