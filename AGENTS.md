@@ -1,277 +1,222 @@
 # Repository Guidelines — Apex
-_Last verified against live system: 2026-08-04. Single canonical instructions
-file for any AI coding tool (Claude Code, Gemini CLI, Codex, Replit Agent,
-etc.) — the separate CLAUDE.md/GEMINI.md/replit.md/BASE44.md files were
-deleted 2026-07-20 as stale duplicates from 2026-07-12 that had drifted out
-of sync with reality (wrong agent count, wrong LLM provider setup, a
-dashboard bug that was long since fixed). Keep THIS file current instead of
-letting per-tool copies re-diverge._
+_Last verified against source/CI: 2026-08-23._
 
-> **2026-08-16: RAILWAY RETIRED — replaced by AWS Lightsail.** Production
-> is fully off Railway (`railway.toml` removed, all `'railway'` deploy-
-> platform options stripped from code/schemas — do not re-add a `railway`
-> case anywhere without a real reason). Real production runtime:
-> **AWS Lightsail container service `apex-service`**
-> (`535203103662.dkr.ecr.us-east-1.amazonaws.com/apex-lightsail:latest`),
-> built by CodeBuild project `apex-lightsail-build` (pulls from GitHub
-> `main` when triggered — pushing to `main` alone does NOT deploy).
-> To ship a real change: (1) push/merge to `main`, (2)
-> `aws codebuild start-build --project-name apex-lightsail-build --region
-> us-east-1` and wait for `buildStatus: SUCCEEDED` (this builds + pushes the
-> new image to ECR), (3)
-> `aws lightsail create-container-service-deployment` for service
-> `apex-service` with the current container/env spec (pull it first via
-> `aws lightsail get-container-service-deployments --service-name
-> apex-service` and only change what you intend to) — a bare CodeBuild
-> success does NOT redeploy the running service. (4) Poll
-> `aws lightsail get-container-service-deployments --service-name
-> apex-service --query 'deployments[0].state'` until `ACTIVE`, then hit the
-> service's real health endpoint (`aws lightsail get-container-services
-> --service-name apex-service --query 'containerServices[0].url'`, then
-> `curl <url>health`) for direct proof, not just deployment state.
->
-> **Differentiating the deploy targets (2026-08-19):** Apex ITSELF runs only on
-> Lightsail. Vercel and Railway still appear throughout this repo — in the
-> CI/CD tooling, the BuildMyBot/TubeScribe connectors, and older planning docs
-> — as deploy targets for **client projects** Apex manages, or as history. Do
-> not read those as Apex's hosting, and never repoint Apex at one of them.
-> **Verifying what's live:** `GET /health` reports the commit baked into the
-> running image (`build.sha`), process uptime, and task-queue liveness, and
-> returns 503 when `dequeue()` is failing repeatedly. Check it before theorising
-> about production behaviour — on 2026-08-19 hours went into a bug that was
-> actually a stale image, because nothing could answer "is my fix running?".
-> See `docs/deploy-provenance.md`. Deploys run via the **Deploy** GitHub Actions
-> workflow (manual trigger); it fails the run if the live commit is not the
-> commit deployed, so a cached `:latest` digest can no longer pass as green.
->
-> **Self-deploy is now implemented (2026-08-19, second pass).**
-> `deploy_to_environment` runs the four steps above for real via
-> `packages/cicd-automation/src/lightsail-deployer.ts` (CodeBuild StartBuild →
-> poll → CreateContainerServiceDeployment reusing the CURRENT spec → poll to
-> ACTIVE → verify the live `/health` endpoint) and `rollback_deployment` rolls
-> the service back to the previous ACTIVE spec, also health-verified. Both are
-> approval-gated. Earlier the same day they threw; before that they returned a
-> fabricated `status: 'healthy'` plus a fake `apex.vercel.app` URL, which let
-> agents report releases that never happened — never reintroduce that shape.
-> Requirements, both mandatory or the tool refuses (it never fakes):
-> `APEX_DEPLOY_ENABLED=production` (or `staging` / `all` — credentials existing
-> is not consent to ship) and scoped AWS credentials. Use a dedicated IAM
-> identity with the five actions in `docs/aws-deploy-iam-policy.json`, never
-> root-account keys. Optional: `APEX_CODEBUILD_PROJECT`,
-> `APEX_LIGHTSAIL_SERVICE`, `APEX_DEPLOY_BUILD_TIMEOUT_MS`,
-> `APEX_DEPLOY_ACTIVATION_TIMEOUT_MS`, `APEX_DEPLOY_POLL_INTERVAL_MS`.
-> A throw from either tool means NOTHING shipped.
+This is the single canonical instruction file for AI coding tools working in
+this repository. Keep it current. Do not recreate per-tool copies that can
+drift out of sync.
 
-## What this is
-A persistent, hierarchical **13-agent** autonomous workforce (CEO -> CTO/COO
--> specialists -> QA Director), deployed as an always-on Node process --
-not a request/response serverless app. (Formerly hosted on Railway at
-`apex-production-731c.up.railway.app` / `apex.donmatthews.live` — retired
-2026-08-16, see banner above. Now runs on AWS Lightsail as `apex-service`;
-`apex.donmatthews.live` is repointed at the Lightsail service URL.)
+## Current production runtime
 
+APEX itself runs on **AWS Lightsail container service `apex-service`**. Railway
+was retired for APEX on 2026-08-16. Railway and Vercel can still appear as
+client-project deployment targets or in historical documentation; neither is
+the APEX production host.
+
+The production image is built by CodeBuild project `apex-lightsail-build` and
+stored in ECR. Pushing or merging to `main` does **not** prove a release is
+running. A production release is complete only after all of these are true:
+
+1. the intended commit is on `main`;
+2. CodeBuild succeeds and pushes the image;
+3. Lightsail creates and activates a deployment for `apex-service`;
+4. the real `/health` endpoint reports the expected `build.sha` and healthy
+   task-queue state;
+5. the changed feature is smoke-tested through its real production path.
+
+`deploy_to_environment` and `rollback_deployment` implement the Lightsail flow
+in `packages/cicd-automation/src/lightsail-deployer.ts`. Both remain
+approval-gated. `APEX_DEPLOY_ENABLED` is explicit consent to target an
+environment; credentials alone are never consent to ship. Use scoped AWS IAM
+credentials, never root keys.
+
+## What APEX is
+
+APEX is a persistent hierarchical autonomous workforce, not a request/response
+serverless app.
+
+```text
+APEX CEO
+├── CTO -> Lead Developer -> Frontend / Backend / DevOps / QA
+└── COO -> Lead Researcher / Sales / Marketing / Customer Success
+QA Director -- independent quality/oversight role
 ```
-APEX CEO (Tier 0)
-├── CTO (Tier 1) -> Lead Developer (Tier 2) -> Frontend/Backend/DevOps/QA (Tier 3)
-└── COO (Tier 1) -> Lead Researcher / Sales / Marketing / Customer Success (Tier 3)
-QA Director -- 13th agent, sits outside the two branches
-```
-A generic Research/Documentation/Operations trio also exists in
-`packages/agents/src/specialists.ts` but is **never instantiated** -- dead
-code, do not delegate to it or treat it as part of the real org chart.
 
-## Stack & conventions
-- **Package manager: pnpm** (workspace, `pnpm-workspace.yaml`). Never
-  introduce npm/bun lockfiles.
-- **ESM via `tsx`**, not CommonJS -- use `import`, never `require()`.
-- TypeScript strict mode throughout, 16 directories under packages/ (core,
-  agents, api-server, dashboard, health-monitor, background-jobs,
-  learning-system, cicd-automation, cicd-worker, convex-backend, cli,
-  buildmybot-ops, orchestrator, frontend, multiapp, predictive) plus lib/db.
-  convex-backend does NOT typecheck (never codegen'd — apexplan.md) and
-  dashboard + cicd-worker depend on it; packages/frontend is a stray src/
-  with no package.json (not a real package).
-- DB: Drizzle ORM over **Postgres (Supabase)** via `DATABASE_URL`; schema
-  bootstrapped idempotently at startup (lib/db/src/client.ts). The old
-  SQLite setup is dead. A separate raw-container Postgres also existed in
-  the (now-retired) Railway project (service `1ab5efa2-...`) -- unused, no
-  volume, DO NOT USE even if it's somehow still reachable.
-- **LLM fallback chain** (`packages/core/src/llm-client.ts`, re-verified
-  2026-08-21): free/tool-reliable tier first — Mistral -> Gemini ×2 ->
-  Cerebras -> Groq ×2 -> SambaNova -> Hugging Face; NVIDIA NIM is the
-  demoted free tier. The metered OpenRouter/Claude anchor is disabled by
-  default and only enters the chain when `APEX_PAID_LLM_MODE=fallback` is
-  explicitly set. The last resort is OpenRouter's dynamic `openrouter/free`
-  router; do not pin rotating `:free` slugs because the 2026-08-21 live
-  outage was caused by a retired `openai/gpt-oss-20b:free` route. Two-pass
-  fallback defers tool-unreliable capacity until reliable providers fail.
-  Circuit breakers use 30s for ordinary 429s, 6h for 402 Payment Required,
-  10min for 401s, and 4h for detected daily quotas. Request history is capped
-  at 60k chars and process-wide LLM concurrency defaults to 3.
+The production workforce is 13 agents. A generic Research/Documentation/
+Operations trio exists in `packages/agents/src/specialists.ts` but is not part
+of the instantiated production org unless that changes explicitly.
 
-## Token budget governor (added 2026-08-19)
-Everything that protected token spend before this was REACTIVE — the circuit
-breaker, the daily-quota keyword sniff, the unclassified-429 streak
-escalation and the global backoff all only fire after a provider has already
-refused a request. `LLMResponse.usage` was parsed on every call and thrown
-away, so nothing knew how many tokens the workforce had spent today.
-`packages/core/src/token-ledger.ts` now records real per-provider spend
-(persisted to `APEX_TOKEN_LEDGER_PATH`, default `/tmp/apex/token-ledger.json`,
-so a Lightsail redeploy doesn't reset the day), keyed by UTC day.
-- `APEX_TOKEN_CAPS=mistral:30000000,groq:400000` — per-provider daily token
-  caps. A provider at/over its cap is skipped BEFORE the HTTP call and put in
-  cooldown until the real UTC daily reset (not the 4h heuristic).
-- `APEX_TOKEN_CAP_TOTAL=8000000` — workspace-wide daily cap; `complete()`
-  fails fast with a clear "spend paused until UTC reset" error instead of
-  walking 15 providers to collect 15 429s.
-- Unset/0 = no cap (exactly the pre-2026-08-19 behavior). Caps count prompt +
-  completion tokens, since every free tier with a TPD limit counts both.
-- `GET /api/tokens` (behind `requireAdminAuth`) returns today's spend per
-  provider with cap percentages — the answer to "are we about to run out?"
-  that previously only existed in error logs after the fact.
-- Idle agents now back off 5s → 60s between empty dequeues
-  (`base-agent.ts`, reset to 5s the moment a task arrives), so an idle
-  workforce stops converting every speculative task into instant LLM spend.
+## Stack and conventions
 
-## Capacity: why the workforce was starving (2026-08-22)
+- Package manager: **pnpm** workspace. Do not introduce npm/bun lockfiles.
+- TypeScript strict mode; ESM via `tsx`. Use `import`, not CommonJS `require()`.
+- Postgres/Supabase through Drizzle ORM and `DATABASE_URL`.
+- Schema bootstrap is idempotent at startup through `lib/db/src/client.ts`.
+- The old SQLite runtime and retired Railway Postgres are not production data
+  stores and must not be revived.
+- `packages/convex-backend` is experimental/unfinished and production Convex
+  autonomy remains disabled unless `APEX_CONVEX_AUTONOMY_ENABLED=true` is an
+  intentional architecture change.
 
-Three independent causes, all measured live, all of which presented as
-"All LLM providers failed" and were read for weeks as quota exhaustion:
+## LLM intelligence policy — 2026-08-23
 
-1. **The roster was half empty.** 9 free provider slots, 4 with keys
-   (`MISTRAL_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `GROQ_API_KEY_2`).
-   `GEMINI_API_KEY_2`, `SAMBANOVA_API_KEY`, `HF_TOKEN` and `NVIDIA_API_KEY`
-   were never set, so Mistral absorbed 87% of a day's traffic and the chain
-   had nothing to fall through to when it capped.
-2. **`APEX_TOKEN_CAP_TOTAL=2000000` was throttling production.** Actual spend
-   on 2026-08-22 was 2,160,261 tokens; the cap was hit at ~07:00 UTC and every
-   later `complete()` failed fast for 17 hours. Mistral's free tier alone is
-   ~33M tokens/day — the cap was set to roughly 6% of capacity already
-   available. Per-provider `APEX_TOKEN_CAPS` is the right tool for spreading
-   load; the workspace total should reflect real free-tier headroom.
-3. **The error named the wrong cause.** When every provider was *skipped*
-   (no key / in cooldown / over cap) nothing was pushed to `providerErrors`,
-   so the chain reported `(no providers were configured or had API keys)`.
-   2,256 failed tasks carried that message while keys were configured and
-   working. `skipReasons` now records every skip, and a chain where nothing
-   was attempted says so in the first line.
+`packages/core/src/llm-client.ts` is the source of truth. APEX has an **exact
+five-provider inference allowlist**. Do not add a sixth provider, dynamic
+router, hidden rescue path, legacy paid anchor, or provider-specific side door.
 
-Two things make this visible instead of archaeological:
-`logProviderRoster()` runs at boot and warns with the exact env var names of
-empty slots, and `GET /api/tokens` returns `roster` alongside today's spend.
-`verify-llm-diagnostics.ts` (repo root, `tsx verify-llm-diagnostics.ts`)
-exercises both paths without needing a live key.
+### Worker and specialist units
 
-**Escalations are not approvals.** `escalate_to_human` writes to `approvals`
-as the "tell Don" channel but gates nothing — the agent carries on. Nothing
-drained it, so 8,683 escalations buried the 16 genuinely gated calls under one
-`status='pending'` filter. `approvals.kind` (`'approval' | 'escalation'`) now
-separates them; repeated escalations dedupe onto one row via
-`dedupe_key` and bump `occurrences` instead of inserting again; escalations
-older than 7 days sweep to `stale` (a gated approval is NEVER auto-closed —
-something is blocked on it).
+Use this exact order:
 
-## Security
-- All routes under `/api/*` except `/api/auth/login` and `/health` require
-  `Authorization: Bearer <token>` (`requireAdminAuth`). `/api/auth/login`
-  exchanges `APEX_ADMIN_PASSWORD` for that token. Do not add routes outside
-  this middleware stack. This was a real, live open exposure until
-  2026-07-12 (no auth, `cors({origin:'*'})`) -- never regress it.
-- Approval is **per-tool**, not a global on/off switch: 13 tools require it
-  system-wide (verified 2026-07-31) -- `runShell`, `deploy_to_environment`,
-  `rollback_deployment`, `push_to_remote`, `create_pull_request`,
-  `register_application`, `delegate_to_application`, `make_outbound_call`,
-  `buildmybot_send_briefing`, `buildmybot_run_workforce`,
-  `buildmybot_resolve_error`, `buildmybot_deploy`, `casebuddy_deploy_firm`.
-  `writeFile` (2026-07-19), `runInSandbox`, and `create_feature_branch`
-  (2026-07-22) are all auto-approved now (git-reversible / local only). Never
-  remove gating from `runShell` or production/deploy/PR/push/outbound-call
-  actions without Don's explicit sign-off.
-- Secrets referenced by name only, never by value, in any log/report/commit
-  message. GitHub writes use `GITHUB_TOKEN_12` (the current standing token
-  per portfolio convention; `GITHUB_TOKEN_4` is superseded). Confirmed
-  present on the current Lightsail `apex-service` host as of 2026-08-16
-  (both `GITHUB_TOKEN` and `GITHUB_TOKEN_4` env vars exist there) -- this
-  replaces the old note about the retired Railway host having none, so
-  in-app `create_feature_branch`/`create_pull_request` tools should work if
-  invoked. Still verify live rather than trusting this note forever.
+1. **Mistral** — `mistral-medium-3-5`
+2. **Google Gemini** — `gemini-3.7-flash`
+3. **Cohere** — `command-a-plus-05-2026`
+4. **Qwen** — `qwen3.7-max`
+5. **Kilo Code** — `kilo-auto/frontier`
 
-## The order that reliably reproduces success (verified 2026-07-20)
-Every real fix this repo has needed followed this exact sequence -- skipping
-steps is what let a false "100% complete, all clean" claim get written into
-CHECKLIST.md while `packages/core` was actually broken:
-1. `git clone`/`git pull` -- always start from a fresh sync, never assume
-   your last local state matches origin/main.
-2. `pnpm run typecheck` -- must show all 12 packages `Done` with zero
-   errors. If any package is silently skipped (check the package list in
-   the output), that's a false pass, not a real one.
-3. `pnpm run build` -- same rule; confirm dashboard actually emits
-   `dist/index.html` + JS/CSS bundles, don't just trust exit code 0.
-4. Commit + push with `GITHUB_TOKEN_12` (the current standing token; `GITHUB_TOKEN_4` is superseded), honest commit message (root cause,
-   what was tried, what was verified -- not just "fixed bug").
-5. Wait for the deploy to land, then confirm it landed on the CURRENT
-   production host: AWS Lightsail service `apex-service`. Railway (and the
-   GraphQL polling steps that used to live here) is retired as of
-   2026-08-16 -- do not poll `backboard.railway.app` or any
-   `*.up.railway.app` host; both are dead. Verify via
-   `aws lightsail get-container-service-deployments --service-name
-   apex-service --query 'deployments[0].state'` (wait for `ACTIVE`), then a
-   real `curl` against the service's health endpoint -- see the banner at
-   the top of this file for the full CodeBuild + Lightsail deploy sequence.
-6. **Functionally smoke-test the actual feature live** -- hit the real API
-   route/tool with a real admin token and confirm real data comes back.
-   Compiling and deploying are necessary but not sufficient; this step is
-   what caught that the CI/CD pipeline was structurally incapable of ever
-   passing (typecheck was being run against prod's `--omit=dev` node_modules
-   -- see `packages/cicd-automation/src/ci-workspace.ts`) even though it had
-   compiled and deployed cleanly.
-7. Update whichever of `CHECKLIST.md`/`ROADMAP.md`/`PLAN.md` is relevant
-   with what was verified vs. what wasn't, before considering the task done.
+### Manager and executive oversight
 
-## Known-good vs. known-gap status (2026-07-20)
-- Phase 1 health monitoring: functionally verified live (`/api/health`
-  returns real tool/WebSocket/task-backlog counts).
-- Phase 3 CI/CD test+build: functionally verified live (9/9 typecheck pass,
-  real vite build) as of commits 55bbb7a/5e9ad99.
-- NOT yet functionally tested: background-jobs, learning-system, multiapp,
-  predictive, and DeploymentManager's actual deploy/rollback trigger (higher
-  risk -- needs Don present per No Unilateral Actions).
+CEO, CTO, COO, Lead Developer, Lead Researcher, and QA Director use Gemini for
+primary oversight/delegation reasoning, then the same remaining stack:
 
-## Other docs in this repo
-- `BUSINESS_PROFILE.md` -- BuildMyBot.app ground truth (pricing/ICP/what's
-  real vs. marketed). Still current, COO-side agents must check it before
-  making product claims.
-- `APEX_CHARTER.md` -- the governance/mission charter APEX runs under. Still
-  current, matches standing rules (no unilateral action, infra stability
-  first, honest reporting, secrets by name only).
-- `APEX_INTEGRATION.md` -- how Apex commands/reads BuildMyBot's AI workforce
-  (no GitHub write access, no deploy authority over BuildMyBot -- reads
-  `ai_team_log`/`leads`/`error_logs`, writes `manager_briefings`). Still
-  accurate.
-- `PLAN.md`, `ROADMAP.md`, `CHECKLIST.md` -- living status docs, updated as
-  work happens. Check these first for current state before starting work.
+1. **Google Gemini** — `gemini-3.7-flash`
+2. **Mistral** — `mistral-medium-3-5`
+3. **Cohere** — `command-a-plus-05-2026`
+4. **Qwen** — `qwen3.7-max`
+5. **Kilo Code** — `kilo-auto/frontier`
 
-## Context budget (token exhaustion)
+Gemini's two project keys are two credentials for one logical provider rung;
+they are not two separate providers. Cohere stays behind Mistral/Gemini unless
+APEX-specific evaluation data demonstrates a task/role where it is materially
+better and the routing policy is deliberately revised.
 
-`packages/core/src/context-budget.ts` bounds what each task re-sends to the model.
-The agent loop keeps one `history` array and re-sends all of it every turn, for up
-to `maxIterations` (20) turns. Tool results used to be appended as uncapped
-`JSON.stringify(result)`, so a single large payload was re-billed on every later
-turn — cost scaled with (turns x accumulated bytes) rather than with useful work.
+### Provider configuration
 
-Two limits, both env-tunable:
+Only these inference variables belong to the active LLM stack:
+
+- `MISTRAL_API_KEY`
+- `GEMINI_API_KEY`
+- `GEMINI_API_KEY_2` (optional second project)
+- `COHERE_API_KEY`
+- `QWEN_API_KEY`
+- `QWEN_BASE_URL` (required because Model Studio compatible URLs are
+  workspace/region specific)
+- `KILO_API_KEY`
+
+Do not restore Groq, OpenRouter, Cerebras, SambaNova, Hugging Face, NVIDIA, or
+OpenAI as inference fallback providers. Embeddings use Mistral when configured
+and otherwise fall back to the local MiniLM pipeline; do not create a hidden
+sixth remote model path through embeddings.
+
+Model IDs are pinned in reviewed source. Stale `APEX_MODEL` or
+`APEX_MODEL_<ROLE>` environment values must not override this allowlist.
+
+### Routing behavior
+
+- Preserve the exact order above; do not round-robin starting providers.
+- Use per-credential cooldowns so a rate-limited Gemini project key can fall
+  through to the other configured Gemini key before leaving the Gemini rung.
+- Preserve structured tool calling. A provider response that merely describes
+  a tool call is not successful execution.
+- Preserve provider failure diagnostics and record the actual serving
+  `provider/model` so the dashboard does not report the configured primary when
+  a fallback served the call.
+- Preserve request-history trimming without deleting tool-call/result message
+  skeletons; orphaned tool results make compatible APIs reject the request.
+
+`scripts/verify-provider-routing.ts` is the deterministic guard. It must fail if
+any provider/model or manager/worker order drifts from this policy.
+
+## Token and spend governor
+
+`packages/core/src/token-ledger.ts` records real prompt + completion usage by UTC
+day and persists it to Postgres with a local-file fallback. A container restart
+must not reset the day's accounting.
+
+Current operating target in `.env.example`:
+
+- `APEX_TOKEN_CAP_TOTAL=40000000` — workspace runaway backstop.
+- `APEX_TOKEN_CAPS=mistral:33000000` — requested Mistral daily ceiling.
+
+The 33M figure is an APEX account/operating target, not a statement that the
+usage is free. Provider billing and account limits remain authoritative. Do not
+invent token caps for Gemini, Cohere, Qwen, or Kilo; add them only when the real
+account limit or budget is known.
+
+`GET /api/tokens` is the operational view of today's measured spend. If a
+configured total cap is lower than the intended Mistral allowance, fix the
+configuration rather than diagnosing the resulting pause as a provider outage.
+
+Process-wide LLM concurrency defaults to 3 via
+`APEX_MAX_CONCURRENT_LLM_CALLS`; change it from measured throughput/rate-limit
+evidence, not intuition.
+
+## Approval and security rules
+
+- All `/api/*` routes except `/api/auth/login` and `/health` must remain behind
+  `requireAdminAuth`.
+- Secrets are referenced by environment-variable name only in logs, reports,
+  commits, and PR descriptions. Never log secret values.
+- Human approval is per tool. Do not create a global bypass.
+- Production deployment/rollback, protected remote writes, outbound calls,
+  externally sent communications, financial actions, and other irreversible
+  effects remain approval-gated unless the user explicitly changes governance.
+- `runShell` remains approval-gated. `writeFile`, sandbox execution, and local/
+  feature-branch work can remain automatically allowed where currently safe.
+- Escalations are notifications, not approvals. Do not treat an acknowledged
+  escalation as authorization for a gated tool call.
+- GitHub engineering work lands through feature branches/PRs, not direct pushes
+  to `main`.
+
+## Verification sequence
+
+For any real code fix or feature, do not report success from source inspection
+alone. Use this order:
+
+1. Start from current origin/main; never assume an old checkout is current.
+2. Run `pnpm run typecheck` and verify every expected production package is
+   actually included.
+3. Run the deterministic guards relevant to the change. LLM work must include
+   `scripts/verify-provider-routing.ts` and `verify-llm-diagnostics.ts` when
+   applicable.
+4. Run `pnpm run build`; for the dashboard, confirm real `dist/index.html` and
+   JS/CSS output rather than trusting only exit code 0.
+5. Commit honestly on a feature branch and open/update a PR.
+6. Require green CI before merge unless the user explicitly accepts a known
+   failure.
+7. If production behavior is part of the task, deploy through the approved
+   Lightsail path and verify the real `/health` `build.sha`.
+8. Smoke-test the actual changed feature against production.
+9. Update living status documentation with what was verified and what was not.
+
+A successful build is not a successful deployment. A successful deployment is
+not a successful feature until the real behavior is verified.
+
+## Context-budget rules
+
+`packages/core/src/context-budget.ts` bounds what each iterative task re-sends.
+Tool results can become expensive because the whole history is re-sent on every
+agent iteration.
+
+Key controls:
 
 | Env var | Default | Effect |
-| --- | --- | --- |
-| `APEX_MAX_TOOL_RESULT_CHARS` | `8000` | Truncates one tool result (keeps head **and** tail, states how much was dropped). |
-| `APEX_MAX_HISTORY_TOKENS` | `60000` | Elides oldest tool results until the whole history fits. |
+| --- | ---: | --- |
+| `APEX_MAX_TOOL_RESULT_CHARS` | `8000` | Truncates one tool result while preserving useful head/tail context. |
+| `APEX_MAX_HISTORY_TOKENS` | `60000` | Elides old tool-result content until history fits. |
 
-This is distinct from `token-ledger.ts`: the ledger caps total spend after the
-fact, this reduces the spend in the first place. Both are wanted.
+Do not optimize context by deleting arbitrary messages. Assistant `tool_calls`
+and matching `tool` messages must stay structurally paired. Preserve the system
+prompt, original task, and recent turns.
 
-**Do not "optimise" this by deleting old messages.** OpenAI-compatible APIs
-reject a request where an assistant `tool_calls` message has no matching `tool`
-result, so elision replaces `content` and keeps `toolCallId`/`name`. Dropping
-messages would produce 400s in exactly the long conversations it aimed to help.
-The system prompt, the first user message (the task) and the most recent turns
-are never elided — an agent that forgets its objective thrashes and costs more.
+## Other source-of-truth documents
+
+- `BUSINESS_PROFILE.md` — BuildMyBot product/pricing/ICP ground truth.
+- `APEX_CHARTER.md` — mission/governance; historical infrastructure/model notes
+  in it do not override this file or live source.
+- `APEX_INTEGRATION.md` — BuildMyBot workforce integration behavior.
+- `PLAN.md`, `ROADMAP.md`, `CHECKLIST.md` — living status/planning documents.
+- `docs/deploy-provenance.md` — proof that the intended commit is the one live.
+
+When documentation conflicts with live runtime evidence, state the conflict and
+prefer the most direct current evidence. Then update the stale documentation so
+the contradiction does not survive the task.
