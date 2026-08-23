@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition } from './types.js';
+import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-taxonomy.js';
 
 // ─── BuildMyBot Connector ─────────────────────────────────────────────────────
 //
@@ -195,17 +196,28 @@ export function createBuildMyBotTools(): ToolDefinition[] {
     {
       name: 'buildmybot_run_workforce',
       description:
-        'Trigger a BuildMyBot worker run immediately instead of waiting for its cron slot: "shifts" runs all role shifts, "lead_followups" runs the autonomous lead follow-up worker. Requires BUILDMYBOT_CRON_SECRET.',
+        'Trigger a BuildMyBot worker run immediately instead of waiting for its cron slot: "shifts" runs all role shifts, "lead_followups" runs the 48h follow-up worker, "sales_outreach" runs the outreach agent that picks up researched leads and initiates first contact, "pulse" runs the 10-minute heartbeat. Use sales_outreach right after buildmybot_push_leads so pushed leads are worked without waiting. Requires BUILDMYBOT_CRON_SECRET.',
       schema: z.object({
         worker: z
-          .enum(['shifts', 'lead_followups'])
+          .enum(['shifts', 'lead_followups', 'sales_outreach', 'pulse'])
           .describe('Which worker to run'),
       }),
       requiresApproval: true,
       async execute({ worker }) {
         const secret = process.env.BUILDMYBOT_CRON_SECRET;
         if (!secret) throw new Error('BUILDMYBOT_CRON_SECRET is not configured');
-        const path = worker === 'shifts' ? '/api/cron/all-shifts' : '/api/cron/lead-followups';
+        // Every one of these resolves through buildmybot2's single dynamic
+        // cron route (api/cron/[job].ts), which exists to stay under Vercel's
+        // Hobby 12-function cap. sales-outreach in particular has NO
+        // vercel.json cron entry, so this tool is the only thing that runs it
+        // short of a manual curl.
+        const paths: Record<typeof worker, string> = {
+          shifts: '/api/cron/all-shifts',
+          lead_followups: '/api/cron/lead-followups',
+          sales_outreach: '/api/cron/sales-outreach',
+          pulse: '/api/cron/pulse',
+        };
+        const path = paths[worker];
         const res = await fetch(`${APP_URL()}${path}`, {
           headers: { Authorization: `Bearer ${secret}` },
         });
@@ -387,6 +399,204 @@ export function createBuildMyBotTools(): ToolDefinition[] {
             error: err?.message ?? String(err),
           };
         }
+      },
+    },
+
+    // ── Bridge: push Apex-researched leads into BuildMyBot's pipeline ──────
+    //
+    // THE gap this closes. Apex and BuildMyBot each have a researched_leads
+    // table in a DIFFERENT Supabase project, with different column names:
+    //
+    //   Apex (zvbypuo…)          BuildMyBot (evkjlnb…)
+    //   fit_reason               why_good_fit
+    //   outreach_angle           suggested_angle
+    //   researched_by_agent_id   researched_by
+    //   —                        source_query, surfaced_to_sales_at
+    //
+    // api/cron/_sales-outreach.ts (Jordan Blake) is the ONLY thing in either
+    // system that sends a real email or places a real call, and it reads
+    // BuildMyBot's table. So every lead Apex ever researched sat somewhere
+    // that worker cannot see — 4,722 of them, all still status='new', while
+    // BuildMyBot's own copy went stale on 2026-07-21.
+    //
+    // Safety: BuildMyBot's SALES_AUTOMATION_DRY_RUN defaults to TRUE, so
+    // pushing queues leads without sending anything. Turning outbound on is a
+    // separate, deliberate act. This tool is approval-gated and batch-capped
+    // regardless — it is the step where Apex's work becomes contact with real
+    // businesses.
+    {
+      name: 'buildmybot_push_leads',
+      description:
+        "Push Apex-researched leads into BuildMyBot's sales pipeline so the outreach agent can work them. Handles the column mapping between the two systems and de-dupes on website. Use source='campaign' with a campaignId to hand off one campaign's output, or source='backlog' for pre-campaign leads (those are filtered to ICP industries with a real website). Nothing is sent to a business by this tool — it queues leads for BuildMyBot's outreach worker, which is itself dry-run gated.",
+      schema: z.object({
+        source: z
+          .enum(['campaign', 'backlog'])
+          .describe("'campaign' pushes one campaign's leads; 'backlog' pushes pre-campaign leads that match the ICP."),
+        campaignId: z.string().optional().describe("Required when source='campaign'."),
+        limit: z
+          .number()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe('Max leads this push (default 50). Deliberately capped — outreach deliverability degrades on bulk dumps.'),
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe('Preview what WOULD be pushed without writing anything. Use this first on the backlog.'),
+      }),
+      requiresApproval: true,
+      async execute({ source, campaignId, limit, dryRun }) {
+        const { db, researchedLeads } = await import('@workspace/db');
+        const { and, eq, isNull, isNotNull, desc } = await import('drizzle-orm');
+
+        if (source === 'campaign' && !campaignId) {
+          throw new Error("source='campaign' requires a campaignId. Use source='backlog' for pre-campaign leads.");
+        }
+        const cap = limit ?? 50;
+
+        // Pull a wider slice than the cap for the backlog: ICP filtering runs
+        // in JS (via the taxonomy) so selection does not depend on whether the
+        // stored industry strings have been normalized yet.
+        const candidates = await db
+          .select()
+          .from(researchedLeads)
+          .where(
+            source === 'campaign'
+              ? and(eq(researchedLeads.campaignId, campaignId!), eq(researchedLeads.status, 'new'))
+              : and(
+                  isNull(researchedLeads.campaignId),
+                  eq(researchedLeads.status, 'new'),
+                  isNotNull(researchedLeads.website),
+                ),
+          )
+          .orderBy(desc(researchedLeads.createdAt))
+          .limit(source === 'backlog' ? cap * 20 : cap);
+
+        const eligible = (source === 'backlog'
+          ? candidates.filter((l) => l.website && isIcpIndustry(l.industry))
+          : candidates
+        ).slice(0, cap);
+
+        if (dryRun) {
+          const byIndustry: Record<string, number> = {};
+          for (const l of eligible) {
+            const key = normalizeIndustry(l.industry) ?? 'Unknown';
+            byIndustry[key] = (byIndustry[key] ?? 0) + 1;
+          }
+          return {
+            dryRun: true,
+            source,
+            candidatesScanned: candidates.length,
+            wouldPush: eligible.length,
+            byIndustry,
+            icpFilter: source === 'backlog' ? ICP_INDUSTRIES : 'not applied (campaign leads are already on-ICP)',
+            sample: eligible.slice(0, 5).map((l) => ({
+              companyName: l.companyName,
+              website: l.website,
+              industry: normalizeIndustry(l.industry),
+              city: l.city,
+            })),
+          };
+        }
+
+        let pushed = 0;
+        let skipped = 0;
+        const failures: string[] = [];
+
+        for (const lead of eligible) {
+          try {
+            // resolution=ignore-duplicates leans on BuildMyBot's UNIQUE index
+            // on website — Postgres does the de-dup, not a read-then-write
+            // race across two databases.
+            await sbFetch('researched_leads', '', {
+              method: 'POST',
+              headers: { Prefer: 'return=minimal,resolution=ignore-duplicates' },
+              body: JSON.stringify({
+                company_name: lead.companyName,
+                website: lead.website,
+                industry: normalizeIndustry(lead.industry),
+                city: lead.city,
+                why_good_fit: lead.fitReason,
+                suggested_angle: lead.outreachAngle,
+                source_query: `apex:${source}${campaignId ? `:${campaignId}` : ''}`,
+                researched_by: lead.researchedByAgentId,
+                status: 'new',
+              }),
+            });
+
+            await db
+              .update(researchedLeads)
+              .set({ status: 'pushed_to_buildmybot' })
+              .where(eq(researchedLeads.id, lead.id));
+            pushed++;
+          } catch (err) {
+            skipped++;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (failures.length < 5) failures.push(`${lead.companyName}: ${msg.slice(0, 120)}`);
+          }
+        }
+
+        return {
+          source,
+          campaignId,
+          candidatesScanned: candidates.length,
+          eligible: eligible.length,
+          pushed,
+          skipped,
+          failures: failures.length > 0 ? failures : undefined,
+          note:
+            `${pushed} lead(s) queued in BuildMyBot's researched_leads. The outreach worker ` +
+            `(api/cron/_sales-outreach.ts) picks these up on its next run. Nothing has been sent yet — ` +
+            `SALES_AUTOMATION_DRY_RUN must be explicitly set to false before any real email or call goes out.`,
+        };
+      },
+    },
+
+    // ── Maintenance: normalize the legacy industry strings ─────────────────
+    {
+      name: 'normalize_lead_industries',
+      description:
+        'Rewrite the industry field on researched leads onto the canonical taxonomy. The pre-campaign rows carry hundreds of distinct spellings of the same handful of industries, which makes every industry filter and count unreliable. Idempotent — running it twice changes nothing the second time.',
+      schema: z.object({
+        dryRun: z.boolean().optional().describe('Report what would change without writing.'),
+      }),
+      requiresApproval: false,
+      async execute({ dryRun }) {
+        const { db, researchedLeads } = await import('@workspace/db');
+        const { eq } = await import('drizzle-orm');
+
+        const rows = await db
+          .select({ id: researchedLeads.id, industry: researchedLeads.industry })
+          .from(researchedLeads);
+
+        const before = new Set(rows.map((r) => r.industry ?? '(null)'));
+        let changed = 0;
+        const changes: Array<{ from: string; to: string }> = [];
+
+        for (const row of rows) {
+          const normalized = normalizeIndustry(row.industry);
+          if (!normalized || normalized === row.industry) continue;
+          if (changes.length < 15) changes.push({ from: row.industry ?? '', to: normalized });
+          changed++;
+          if (!dryRun) {
+            await db
+              .update(researchedLeads)
+              .set({ industry: normalized })
+              .where(eq(researchedLeads.id, row.id));
+          }
+        }
+
+        const after = new Set(
+          rows.map((r) => normalizeIndustry(r.industry) ?? r.industry ?? '(null)'),
+        );
+        return {
+          dryRun: dryRun === true,
+          rowsScanned: rows.length,
+          rowsChanged: changed,
+          distinctIndustriesBefore: before.size,
+          distinctIndustriesAfter: after.size,
+          sampleChanges: changes,
+        };
       },
     },
 
