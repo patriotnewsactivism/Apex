@@ -4,8 +4,47 @@ import { eq, and, asc, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task, NewTask } from '@workspace/db';
 import type { TaskInput, TaskStatus } from './types.js';
 import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure } from './runtime-health.js';
-import { isLLMDailyBudgetPause, shouldSuppressImmediateLLMRetry } from './provider-failure.js';
+import {
+  isLLMDailyBudgetPause,
+  isLLMTransientCapacityFailure,
+  shouldSuppressImmediateLLMRetry,
+} from './provider-failure.js';
 import { msUntilDailyReset } from './token-ledger.js';
+
+// ─── Free-tier capacity backpressure ─────────────────────────────────────────
+//
+// APEX can create work much faster than free LLM tiers accept it. When the
+// complete provider chain is temporarily rate-limited, continuing to dequeue
+// work just turns healthy queued tasks into a wall of identical failures.
+// Pause all queues in this process briefly, preserve the affected tasks, and
+// stagger their retry windows so the workforce ramps back in instead of
+// stampeding the providers at the same millisecond.
+
+const LLM_CAPACITY_GLOBAL_PAUSE_MS = 35_000;
+const LLM_CAPACITY_RETRY_MIN_MS = 45_000;
+const LLM_CAPACITY_RETRY_JITTER_MS = 45_000;
+let llmCapacityPauseUntil = 0;
+
+function deterministicJitterMs(seed: string, rangeMs: number): number {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % Math.max(1, rangeMs);
+}
+
+function scheduleTransientLLMRetry(taskId: string): Date {
+  const now = Date.now();
+  llmCapacityPauseUntil = Math.max(
+    llmCapacityPauseUntil,
+    now + LLM_CAPACITY_GLOBAL_PAUSE_MS,
+  );
+  const jitterMs = deterministicJitterMs(taskId, LLM_CAPACITY_RETRY_JITTER_MS);
+  return new Date(
+    Math.max(llmCapacityPauseUntil, now + LLM_CAPACITY_RETRY_MIN_MS) + jitterMs,
+  );
+}
 
 // ─── Task Queue ───────────────────────────────────────────────────────────────
 
@@ -64,6 +103,15 @@ export class TaskQueue {
    * priority ASC, then created_at ASC so oldest high-priority tasks win. */
   async dequeue(): Promise<Task | null> {
     recordDequeueAttempt();
+
+    // A transient full-chain rate-limit event is process-wide operational
+    // backpressure, not a reason for every other agent to immediately claim
+    // another task and hit the exact same closed capacity window.
+    if (Date.now() < llmCapacityPauseUntil) {
+      recordDequeueSuccess(false);
+      return null;
+    }
+
     try {
       const now = new Date();
       // ROOT CAUSE FOUND 2026-08-19 (via the console.error added earlier
@@ -188,6 +236,14 @@ export class TaskQueue {
       ? new Date(Date.now() + msUntilDailyReset() + 5_000)
       : null;
 
+    // Free-tier RPM/TPM exhaustion is expected to clear on its own. Preserve
+    // the task, do not consume its retry budget, and make the whole process
+    // stop claiming fresh LLM work briefly. Each affected task gets a stable
+    // jittered retry time so recovery is a ramp, not another synchronized wave.
+    const transientCapacityRetryAt = isLLMTransientCapacityFailure(error)
+      ? scheduleTransientLLMRetry(taskId)
+      : null;
+
     try {
       const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
       if (task) {
@@ -206,11 +262,24 @@ export class TaskQueue {
           return;
         }
 
-        // Once the complete provider chain has failed, a 2s/4s/8s task retry
-        // just repeats the same chain and floods the log. This includes the
-        // 2026-08-22 retired-model 404 and no-configured-key failures, not only
-        // quota responses. Fail it once; StalledWorkRecoveryJob handles the
-        // recoverable subset later with a long, bounded backoff.
+        if (transientCapacityRetryAt) {
+          await db
+            .update(tasks)
+            .set({
+              status: 'pending',
+              errorMessage: error,
+              nextRetryAt: transientCapacityRetryAt,
+              leasedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(tasks.id, taskId));
+          return;
+        }
+
+        // Once the complete provider chain has failed for a non-transient
+        // reason, a 2s/4s/8s task retry just repeats the same chain and floods
+        // the log. Fail it once; StalledWorkRecoveryJob handles the recoverable
+        // long-horizon subset later with a bounded backoff.
         const canRetry = task.retryCount < task.maxRetries && !shouldSuppressImmediateLLMRetry(error);
         if (canRetry) {
           // Exponential backoff: 2s, 4s, 8s … capped at 5 minutes (300s).
@@ -246,6 +315,13 @@ export class TaskQueue {
         memTask.retryCount = 0;
         memTask.errorMessage = error;
         memTask.nextRetryAt = dailyBudgetRetryAt;
+        memTask.leasedAt = null;
+        return;
+      }
+      if (transientCapacityRetryAt) {
+        memTask.status = 'pending';
+        memTask.errorMessage = error;
+        memTask.nextRetryAt = transientCapacityRetryAt;
         memTask.leasedAt = null;
         return;
       }
