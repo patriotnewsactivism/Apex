@@ -1,32 +1,36 @@
-// Live-probe every provider in the production Postgres/Lightsail fallback
-// chain using LOCAL .env keys. Prints status only — never key values.
+// Live-probe the approved APEX free-first inference stack using LOCAL .env
+// credentials. Prints status/model only — never key values.
 //
-// Usage: node scripts/llm-probe.mjs   (from repo root)
+// The script WILL NOT probe paid Mistral unless APEX_PAID_LLM_MODE is explicitly
+// enabled, because even a diagnostic request must not create surprise spend.
+//
+// Usage: node scripts/llm-probe.mjs
 
 import { existsSync, readFileSync } from "fs";
 
 const env = existsSync(".env") ? readFileSync(".env", "utf8") : "";
 const getValue = (name) =>
-  env.match(new RegExp(`^${name}=(.+)$`, "m"))?.[1]?.trim() || "";
-const openRouterHeaders = {
-  "HTTP-Referer": "https://apex.donmatthews.live",
-  "X-Title": "Apex",
-};
+  env.match(new RegExp(`^${name}=(.+)$`, "m"))?.[1]?.trim() || process.env[name] || "";
+const enabled = (name) =>
+  ["1", "true", "on", "enabled", "yes", "confirmed", "fallback"].includes(
+    getValue(name).toLowerCase(),
+  );
 
-const openaiProbe = async (name, url, key, model, headers = {}) => {
+const openaiProbe = async (name, baseURL, key, model) => {
   if (!key) {
-    console.log(
-      `⚪ ${name} — skipped (no key set in .env; chain entry is a no-op)`,
-    );
+    console.log(`⚪ ${name} — skipped (credential not configured)`);
+    return;
+  }
+  if (!baseURL) {
+    console.log(`⚪ ${name} — skipped (base URL not configured)`);
     return;
   }
 
-  const response = await fetch(`${url}/chat/completions`, {
+  const response = await fetch(`${baseURL.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${key}`,
-      ...headers,
     },
     body: JSON.stringify({
       model,
@@ -35,103 +39,84 @@ const openaiProbe = async (name, url, key, model, headers = {}) => {
     }),
     signal: AbortSignal.timeout(30_000),
   });
-  console.log(
-    `${response.ok ? "✅" : "❌"} ${name} [${model}] -> ${response.status}`,
-  );
+
+  console.log(`${response.ok ? "✅" : "❌"} ${name} [${model}] -> ${response.status}`);
 };
 
 const tests = [
-  () =>
-    openaiProbe(
-      "mistral",
+  async () => {
+    const primary = getValue("GEMINI_FREE_API_KEY");
+    const secondary = getValue("GEMINI_FREE_API_KEY_2");
+    if (!primary && !secondary) {
+      console.log("⚪ google-gemini — skipped (no FREE-tier Gemini project key configured)");
+      return;
+    }
+    if (primary) {
+      await openaiProbe(
+        "google-gemini/free-primary",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        primary,
+        "gemini-3.7-flash",
+      );
+    }
+    if (secondary) {
+      await openaiProbe(
+        "google-gemini/free-secondary",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        secondary,
+        "gemini-3.7-flash",
+      );
+    }
+  },
+  () => openaiProbe(
+    "cohere",
+    "https://api.cohere.ai/compatibility/v1",
+    getValue("COHERE_API_KEY"),
+    "command-a-plus-05-2026",
+  ),
+  async () => {
+    if (!enabled("POOLSIDE_FREE_ACCESS_CONFIRMED")) {
+      console.log("⚪ poolside — skipped (free access not explicitly confirmed)");
+      return;
+    }
+    await openaiProbe(
+      "poolside",
+      "https://inference.poolside.ai/v1",
+      getValue("POOLSIDE_API_KEY"),
+      "poolside/laguna-s-2.1",
+    );
+  },
+  async () => {
+    if (!enabled("QWEN_FREE_QUOTA_ONLY")) {
+      console.log("⚪ qwen — skipped (Alibaba Free quota only not confirmed)");
+      return;
+    }
+    await openaiProbe(
+      "qwen",
+      getValue("QWEN_BASE_URL") || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      getValue("QWEN_API_KEY"),
+      "qwen3.7-max",
+    );
+  },
+  () => openaiProbe(
+    "kilo",
+    "https://api.kilo.ai/api/gateway",
+    getValue("KILO_API_KEY"),
+    "kilo-auto/free",
+  ),
+  async () => {
+    if (!enabled("APEX_PAID_LLM_MODE")) {
+      console.log("⚪ mistral — skipped (paid emergency fallback is OFF)");
+      return;
+    }
+    await openaiProbe(
+      "mistral/PAID",
       "https://api.mistral.ai/v1",
       getValue("MISTRAL_API_KEY"),
-      "mistral-small-latest",
-    ),
-  () =>
-    openaiProbe(
-      "google-gemini",
-      "https://generativelanguage.googleapis.com/v1beta/openai",
-      getValue("GEMINI_API_KEY"),
-      "gemini-3.7-flash",
-    ),
-  () =>
-    openaiProbe(
-      "google-gemini-2",
-      "https://generativelanguage.googleapis.com/v1beta/openai",
-      getValue("GEMINI_API_KEY_2"),
-      "gemini-3.7-flash",
-    ),
-  () =>
-    openaiProbe(
-      "cerebras",
-      "https://api.cerebras.ai/v1",
-      getValue("CEREBRAS_API_KEY"),
-      "gpt-oss-120b",
-    ),
-  () =>
-    openaiProbe(
-      "groq",
-      "https://api.groq.com/openai/v1",
-      getValue("GROQ_API_KEY"),
-      "openai/gpt-oss-120b",
-    ),
-  () =>
-    openaiProbe(
-      "groq-2",
-      "https://api.groq.com/openai/v1",
-      getValue("GROQ_API_KEY_2"),
-      "openai/gpt-oss-120b",
-    ),
-  () =>
-    openaiProbe(
-      "sambanova",
-      "https://api.sambanova.ai/v1",
-      getValue("SAMBANOVA_API_KEY"),
-      "gpt-oss-120b",
-    ),
-  () =>
-    openaiProbe(
-      "huggingface",
-      "https://router.huggingface.co/v1",
-      getValue("HF_TOKEN"),
-      "meta-llama/Llama-3.3-70B-Instruct",
-    ),
-  () =>
-    openaiProbe(
-      "nvidia",
-      "https://integrate.api.nvidia.com/v1",
-      getValue("NVIDIA_API_KEY"),
-      "nvidia/nemotron-3-nano-30b-a3b",
-    ),
+      "mistral-medium-3-5",
+    );
+  },
 ];
-
-const paidMode = getValue("APEX_PAID_LLM_MODE").toLowerCase();
-if (["1", "true", "on", "enabled", "fallback"].includes(paidMode)) {
-  tests.push(() =>
-    openaiProbe(
-      "openrouter-paid-anchor",
-      "https://openrouter.ai/api/v1",
-      getValue("OPENROUTER_API_KEY"),
-      "anthropic/claude-sonnet-5",
-      openRouterHeaders,
-    ),
-  );
-} else {
-  console.log(
-    "⚪ openrouter-paid-anchor — skipped (paid fallback is not explicitly enabled)",
-  );
-}
-
-tests.push(() =>
-  openaiProbe(
-    "openrouter-free-router",
-    "https://openrouter.ai/api/v1",
-    getValue("OPENROUTER_API_KEY"),
-    "openrouter/free",
-    openRouterHeaders,
-  ),
-);
 
 for (const test of tests) {
   try {
