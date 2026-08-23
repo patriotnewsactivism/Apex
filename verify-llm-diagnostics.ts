@@ -8,20 +8,24 @@ import { escalationDedupeKey } from './packages/core/src/orchestration-tools.js'
 
 async function main() {
   for (const key of [
-    'MISTRAL_API_KEY',
-    'GEMINI_API_KEY',
-    'GEMINI_API_KEY_2',
+    'GEMINI_FREE_API_KEY',
+    'GEMINI_FREE_API_KEY_2',
     'COHERE_API_KEY',
+    'POOLSIDE_API_KEY',
+    'POOLSIDE_FREE_ACCESS_CONFIRMED',
     'QWEN_API_KEY',
     'QWEN_BASE_URL',
+    'QWEN_FREE_QUOTA_ONLY',
     'KILO_API_KEY',
+    'MISTRAL_API_KEY',
+    'APEX_PAID_LLM_MODE',
   ]) delete process.env[key];
 
-  console.log('--- approved roster with all inference credentials cleared ---');
+  console.log('--- free-first roster with all inference credentials cleared ---');
   logProviderRoster();
   const roster = getProviderRoster();
   console.log(
-    `configuredSlots=${roster.configuredSlots}/${roster.totalSlots} missing=${roster.missingRequirements.join(',')}`,
+    `freeSlotsConfigured=${roster.freeSlotsConfigured}/${roster.freeSlots} missing=${roster.emptyFreeSlots.join(',')}`,
   );
 
   const client = createLLMClient(getDefaultLLMConfig('BACKEND'));
@@ -31,16 +35,18 @@ async function main() {
   } catch (err) {
     const msg = (err as Error).message;
     const namesEveryApprovedProvider = [
-      'mistral',
       'google-gemini',
       'cohere',
+      'poolside',
       'qwen',
       'kilo',
+      'mistral',
     ].every((name) => msg.includes(name));
     const namesLegacyProvider = /groq|openrouter|cerebras|sambanova|huggingface|nvidia/i.test(msg);
     console.log('\nheadline: ' + msg.split('\n')[0]);
-    console.log('names all five approved providers: ' + (namesEveryApprovedProvider ? 'PASS' : 'FAIL'));
-    console.log('names no legacy provider:           ' + (!namesLegacyProvider ? 'PASS' : 'FAIL'));
+    console.log('names all six approved providers: ' + (namesEveryApprovedProvider ? 'PASS' : 'FAIL'));
+    console.log('names no removed legacy provider: ' + (!namesLegacyProvider ? 'PASS' : 'FAIL'));
+    console.log('shows Mistral paid fallback disabled: ' + (msg.includes('paid fallback disabled') ? 'PASS' : 'FAIL'));
   }
 
   const a = escalationDedupeKey('apex-coo-001', 'g1', 'Stripe key missing, cannot bill');
