@@ -21,3 +21,7 @@ export {
   StalledWorkRecoveryJob,
 } from './handlers/index.js';
 export type { JobHandler } from './handlers/index.js';
+
+export { CampaignRunner, createCampaign, computeCampaignProgress, STALL_AFTER_MS } from './campaign-runner.js';
+export type { CampaignProgress, CreateCampaignInput } from './campaign-runner.js';
+export { createCampaignTools } from './campaign-tools.js';

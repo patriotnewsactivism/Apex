@@ -12,7 +12,11 @@ export type ApexEvent =
   | { type: 'log'; agentId?: string; taskId?: string; level: string; message: string; timestamp: number }
   | { type: 'approval:requested'; approvalId: string; agentId: string; toolName: string; reason: string }
   | { type: 'approval:resolved'; approvalId: string; status: string }
-  | { type: 'memory:updated'; agentId: string; key: string };
+  | { type: 'memory:updated'; agentId: string; key: string }
+  | { type: 'campaign:started'; campaignId: string; name: string; targetLeads: number; segments: number }
+  | { type: 'campaign:progress'; campaignId: string; leadsSaved: number; targetLeads: number; segmentsDone: number; segmentsTotal: number }
+  | { type: 'campaign:segment'; campaignId: string; segmentId: string; industry: string; city: string; status: string; saved: number; found: number }
+  | { type: 'campaign:completed'; campaignId: string; status: string; leadsSaved: number; targetLeads: number };
 
 // ─── WebSocket Context ───────────────────────────────────────────────────────
 

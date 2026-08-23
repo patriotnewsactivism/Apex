@@ -16,11 +16,13 @@ import { LearningPanel } from './components/LearningPanel.js';
 import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
+import { CampaignsPanel } from './components/CampaignsPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
+  Crosshair,
   Network,
   Kanban,
   Terminal,
@@ -241,6 +243,7 @@ function Sidebar({
     {
       label: 'Business',
       items: [
+        { id: 'campaigns', label: 'Campaigns', icon: <Crosshair size={16} /> },
         { id: 'leads', label: 'Leads', icon: <Search size={16} /> },
         { id: 'suggestions', label: 'Suggestions', icon: <Lightbulb size={16} /> },
         { id: 'multiapp', label: 'Portfolio', icon: <FolderGit2 size={16} /> },
@@ -597,6 +600,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: <MissionControl />,
     agents: <AgentNetwork agents={agents} />,
     tasks: <TaskBoard />,
+    campaigns: <CampaignsPanel />,
     leads: <LeadsPanel />,
     control: <ControlRoom />,
     suggestions: <SuggestionsPanel />,
@@ -625,6 +629,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: { title: 'Mission Control', kicker: 'Command' },
     agents: { title: 'Agent Network', kicker: 'Workforce' },
     tasks: { title: 'Task Board', kicker: 'Workforce' },
+    campaigns: { title: 'Lead Campaigns', kicker: 'Business' },
     leads: { title: 'Lead Pipeline', kicker: 'Business' },
     control: { title: 'Control Room', kicker: 'Systems' },
     suggestions: { title: 'Suggestions', kicker: 'Business' },
