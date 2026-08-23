@@ -43,9 +43,27 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
+    id: 'groq-free',
+    name: 'Groq — Free Tier',
+    description: 'Second rung: GPT-OSS 120B. Use only a key from a confirmed Groq Free-plan project/account.',
+    category: 'ai',
+    docsUrl: 'https://console.groq.com/docs/rate-limits',
+    envVars: [
+      {
+        key: 'GROQ_FREE_API_KEY', label: 'Free Plan API Key', placeholder: 'gsk_...', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://api.groq.com/openai/v1' },
+      },
+      {
+        key: 'GROQ_FREE_TIER_CONFIRMED',
+        label: 'Free Plan Confirmed',
+        placeholder: 'true only while this key belongs to a Groq Free plan',
+      },
+    ],
+  },
+  {
     id: 'cohere',
     name: 'Cohere',
-    description: 'Second rung: Command A+. Cohere currently makes Command A+ free until its applicable API rate limit is reached.',
+    description: 'Third rung: Command A+. Cohere currently makes Command A+ free until its applicable API rate limit is reached.',
     category: 'ai',
     docsUrl: 'https://dashboard.cohere.com/api-keys',
     envVars: [{
@@ -56,7 +74,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'poolside',
     name: 'Poolside',
-    description: 'Third rung: Laguna S 2.1. Poolside currently advertises limited-time free API access; APEX requires an explicit confirmation.',
+    description: 'Fourth rung: Laguna S 2.1. Poolside currently advertises limited-time free API access; APEX requires an explicit confirmation.',
     category: 'ai',
     docsUrl: 'https://poolside.ai/models',
     envVars: [
@@ -74,7 +92,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'qwen',
     name: 'Qwen',
-    description: 'Fourth rung: Qwen 3.7 Max. Enable Alibaba Model Studio “Free quota only” before allowing APEX to use it.',
+    description: 'Fifth rung: Qwen 3.7 Max. Enable Alibaba Model Studio “Free quota only” before allowing APEX to use it.',
     category: 'ai',
     docsUrl: 'https://www.alibabacloud.com/help/en/model-studio',
     envVars: [
@@ -86,7 +104,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'kilo',
     name: 'Kilo Code',
-    description: 'Fifth rung: Kilo Auto Free. This is the free router, not Auto Frontier.',
+    description: 'Sixth rung: Kilo Auto Free. This is the free router, not Auto Frontier.',
     category: 'ai',
     docsUrl: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
     envVars: [{
