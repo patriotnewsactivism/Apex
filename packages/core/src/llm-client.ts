@@ -11,21 +11,23 @@ import {
 // Policy (2026-08-23): all APEX units use the same economics-first route.
 //
 //   1. Gemini 3.7 Flash      — FREE-TIER credential only
-//   2. Cohere Command A+     — API usage free until Cohere's free rate limit
-//   3. Poolside Laguna S 2.1 — limited-time free access; explicit confirmation
-//   4. Qwen 3.7 Max          — only when Alibaba "Free quota only" is confirmed
-//   5. Kilo Auto Free        — Kilo's free model router
-//   6. Mistral Medium 3.5    — PAID emergency fallback, disabled by default
+//   2. Groq GPT-OSS 120B     — FREE-TIER credential only
+//   3. Cohere Command A+     — API usage free until Cohere's free rate limit
+//   4. Poolside Laguna S 2.1 — limited-time free access; explicit confirmation
+//   5. Qwen 3.7 Max          — only when Alibaba "Free quota only" is confirmed
+//   6. Kilo Auto Free        — Kilo's free model router
+//   7. Mistral Medium 3.5    — PAID emergency fallback, disabled by default
 //
 // Mistral is deliberately last. A high rate limit is not free capacity.
 // No provider capable of metered Mistral usage is called unless
 // APEX_PAID_LLM_MODE is explicitly enabled.
 //
-// Gemini uses dedicated GEMINI_FREE_API_KEY variables rather than the generic
-// GEMINI_API_KEY names so a paid Google project cannot be consumed by accident.
+// Gemini and Groq use dedicated FREE API key variables rather than generic key
+// names so a billing-enabled project/account is not selected accidentally.
 
 export type ApexProviderName =
   | 'google-gemini'
+  | 'groq'
   | 'cohere'
   | 'poolside'
   | 'qwen'
@@ -49,6 +51,16 @@ const PROVIDERS: readonly ProviderSpec[] = [
     model: 'gemini-3.7-flash',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
     apiKeyEnvs: ['GEMINI_FREE_API_KEY', 'GEMINI_FREE_API_KEY_2'],
+    toolCallingReliable: true,
+  },
+  {
+    name: 'groq',
+    model: 'openai/gpt-oss-120b',
+    baseURL: 'https://api.groq.com/openai/v1',
+    apiKeyEnvs: ['GROQ_FREE_API_KEY'],
+    activationEnv: 'GROQ_FREE_TIER_CONFIRMED',
+    activationDescription:
+      'set GROQ_FREE_TIER_CONFIRMED=true only for a Groq Free plan project/key',
     toolCallingReliable: true,
   },
   {
@@ -103,6 +115,7 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'google-gemini',
+  'groq',
   'cohere',
   'poolside',
   'qwen',

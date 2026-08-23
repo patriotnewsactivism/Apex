@@ -18,6 +18,7 @@ const check = (label: string, condition: boolean, detail?: unknown) => {
 const catalog = getProviderCatalog();
 const expectedProviders = [
   "google-gemini",
+  "groq",
   "cohere",
   "poolside",
   "qwen",
@@ -26,6 +27,7 @@ const expectedProviders = [
 ];
 const expectedModels = [
   "gemini-3.7-flash",
+  "openai/gpt-oss-120b",
   "command-a-plus-05-2026",
   "poolside/laguna-s-2.1",
   "qwen3.7-max",
@@ -35,7 +37,7 @@ const expectedModels = [
 const expectedOrder = [...expectedProviders];
 
 console.log("── Free-first provider allowlist ──");
-check("exactly six approved providers exist", catalog.length === 6, catalog);
+check("exactly seven approved providers exist", catalog.length === 7, catalog);
 check(
   "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
@@ -44,6 +46,13 @@ check(
 check(
   "approved models are pinned exactly",
   JSON.stringify(catalog.map((provider) => provider.model)) === JSON.stringify(expectedModels),
+  catalog,
+);
+check(
+  "Groq GPT-OSS 120B is the second free rung",
+  catalog[1]?.name === "groq" &&
+    catalog[1]?.model === "openai/gpt-oss-120b" &&
+    catalog[1]?.paid === false,
   catalog,
 );
 check(
@@ -61,7 +70,7 @@ check(
 check(
   "no removed legacy inference route is reachable",
   catalog.every((provider) =>
-    !/groq|openrouter|cerebras|sambanova|huggingface|nvidia|anthropic|openai/i.test(provider.name),
+    !/openrouter|cerebras|sambanova|huggingface|nvidia|anthropic/i.test(provider.name),
   ),
   catalog,
 );
