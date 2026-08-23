@@ -2,6 +2,8 @@ import { motion } from 'framer-motion';
 import type { Agent } from '../lib/api.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 
+type RoutedAgent = Agent & { routeLabel?: string };
+
 /* Hierarchy ink: brass for authority, signal for eng live, green for ops */
 const ROLE_COLORS: Record<string, string> = {
   CEO: '#b8956c',
@@ -49,7 +51,7 @@ function StatusDot({ status }: { status: string }) {
   );
 }
 
-function AgentCard({ agent }: { agent: Agent }) {
+function AgentCard({ agent }: { agent: RoutedAgent }) {
   const { agentStatuses } = useWebSocket();
   const liveStatus = agentStatuses[agent.id] ?? agent.liveStatus ?? agent.status;
   const roleColor = ROLE_COLORS[agent.role] ?? '#64748b';
@@ -94,17 +96,32 @@ function AgentCard({ agent }: { agent: Agent }) {
       <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>
         {agent.model} · {agent.provider}
       </div>
+      {agent.routeLabel && (
+        <div
+          title={agent.routeLabel}
+          style={{
+            fontSize: 9,
+            lineHeight: 1.45,
+            color: 'var(--color-apex-muted)',
+            opacity: 0.8,
+            marginTop: 5,
+            fontFamily: 'var(--font-mono)',
+            overflowWrap: 'anywhere',
+          }}
+        >
+          {agent.routeLabel}
+        </div>
+      )}
     </motion.div>
   );
 }
 
 interface AgentNetworkProps {
-  agents: Agent[];
+  agents: RoutedAgent[];
 }
 
 export function AgentNetwork({ agents }: AgentNetworkProps) {
-
-  const tiers: Record<number, Agent[]> = {};
+  const tiers: Record<number, RoutedAgent[]> = {};
   for (const a of agents) {
     if (!tiers[a.tier]) tiers[a.tier] = [];
     tiers[a.tier].push(a);
