@@ -1,5 +1,5 @@
 # Repository Guidelines — Apex
-_Last verified against source/CI: 2026-08-23._
+_Last verified against source/CI and current provider docs: 2026-08-23._
 
 This is the single canonical instruction file for AI coding tools working in
 this repository. Keep it current. Do not recreate per-tool copies that can
@@ -57,74 +57,94 @@ of the instantiated production org unless that changes explicitly.
   autonomy remains disabled unless `APEX_CONVEX_AUTONOMY_ENABLED=true` is an
   intentional architecture change.
 
-## LLM intelligence policy — 2026-08-23
+## LLM intelligence policy — free first, paid fail-closed
 
-`packages/core/src/llm-client.ts` is the source of truth. APEX has an **exact
-five-provider inference allowlist**. Do not add a sixth provider, dynamic
-router, hidden rescue path, legacy paid anchor, or provider-specific side door.
-
-### Worker and specialist units
+`packages/core/src/llm-client.ts` is the source of truth. **Every APEX unit uses
+one economics-first route.** There is no manager-vs-worker provider split.
 
 Use this exact order:
 
-1. **Mistral** — `mistral-medium-3-5`
-2. **Google Gemini** — `gemini-3.7-flash`
-3. **Cohere** — `command-a-plus-05-2026`
-4. **Qwen** — `qwen3.7-max`
-5. **Kilo Code** — `kilo-auto/frontier`
-
-### Manager and executive oversight
-
-CEO, CTO, COO, Lead Developer, Lead Researcher, and QA Director use Gemini for
-primary oversight/delegation reasoning, then the same remaining stack:
-
 1. **Google Gemini** — `gemini-3.7-flash`
-2. **Mistral** — `mistral-medium-3-5`
-3. **Cohere** — `command-a-plus-05-2026`
+   - first choice for every agent;
+   - only dedicated `GEMINI_FREE_API_KEY` / `_2` credentials are accepted;
+   - those credentials must belong to genuinely free-tier Google projects;
+   - do not substitute a billing-enabled `GEMINI_API_KEY`.
+2. **Cohere** — `command-a-plus-05-2026`
+   - second choice;
+   - Cohere currently states Command A+ is free until its applicable API rate
+     limit is reached.
+3. **Poolside** — `poolside/laguna-s-2.1`
+   - third choice;
+   - Poolside currently advertises limited-time free access;
+   - APEX requires `POOLSIDE_FREE_ACCESS_CONFIRMED=true` so a stale config
+     cannot silently assume a temporary promotion is permanent.
 4. **Qwen** — `qwen3.7-max`
-5. **Kilo Code** — `kilo-auto/frontier`
+   - fourth choice;
+   - Alibaba Model Studio can automatically become PAYG after a free quota;
+   - provider-side **Free quota only** must be enabled first, then
+     `QWEN_FREE_QUOTA_ONLY=true` confirms that protection to APEX.
+5. **Kilo Code** — `kilo-auto/free`
+   - fifth choice;
+   - use Kilo Auto **Free**, never `kilo-auto/frontier`, for autonomous default
+     routing.
+6. **Mistral** — `mistral-medium-3-5`
+   - absolute last emergency fallback;
+   - it is a paid rung;
+   - it is unreachable while `APEX_PAID_LLM_MODE=off`, even if
+     `MISTRAL_API_KEY` exists.
 
-Gemini's two project keys are two credentials for one logical provider rung;
-they are not two separate providers. Cohere stays behind Mistral/Gemini unless
-APEX-specific evaluation data demonstrates a task/role where it is materially
-better and the routing policy is deliberately revised.
+### Gemini quota facts
+
+Do **not** hard-code “1,500 requests/day” for Gemini 3.7 Flash. Google confirms
+Gemini 3.7 Flash has free input/output tokens on the Free tier, but current
+RPM/TPM/RPD limits are project/model specific and must be read from the AI
+Studio Rate Limit page. Treat a provider 429/quota response as authoritative
+and fall through to Cohere rather than assuming a stale numeric quota.
 
 ### Provider configuration
 
-Only these inference variables belong to the active LLM stack:
+Inference-related runtime variables:
 
-- `MISTRAL_API_KEY`
-- `GEMINI_API_KEY`
-- `GEMINI_API_KEY_2` (optional second project)
+- `GEMINI_FREE_API_KEY`
+- `GEMINI_FREE_API_KEY_2` (optional second genuinely-free project)
 - `COHERE_API_KEY`
+- `POOLSIDE_API_KEY`
+- `POOLSIDE_FREE_ACCESS_CONFIRMED`
 - `QWEN_API_KEY`
-- `QWEN_BASE_URL` (required because Model Studio compatible URLs are
-  workspace/region specific)
+- `QWEN_BASE_URL` (optional; Singapore shared compatible endpoint is the
+  fallback, workspace-specific URL preferred)
+- `QWEN_FREE_QUOTA_ONLY`
 - `KILO_API_KEY`
+- `MISTRAL_API_KEY`
+- `APEX_PAID_LLM_MODE` (default `off`)
 
 Do not restore Groq, OpenRouter, Cerebras, SambaNova, Hugging Face, NVIDIA, or
-OpenAI as inference fallback providers. Embeddings use Mistral when configured
-and otherwise fall back to the local MiniLM pipeline; do not create a hidden
-sixth remote model path through embeddings.
+OpenAI as inference fallback providers unless the user explicitly changes the
+policy after verifying current cost/quality. Embeddings are local MiniLM only,
+so they cannot create a hidden paid inference path.
 
 Model IDs are pinned in reviewed source. Stale `APEX_MODEL` or
-`APEX_MODEL_<ROLE>` environment values must not override this allowlist.
+`APEX_MODEL_<ROLE>` environment values must not override this policy.
 
 ### Routing behavior
 
-- Preserve the exact order above; do not round-robin starting providers.
-- Use per-credential cooldowns so a rate-limited Gemini project key can fall
-  through to the other configured Gemini key before leaving the Gemini rung.
+- Preserve the exact free-first order above; do not round-robin starting
+  providers.
+- Multiple free Gemini keys are credentials for one logical Gemini rung. A
+  rate-limited key can fall through to the second configured free key before
+  leaving Gemini.
+- Poolside and Qwen activation confirmations are deliberate economic gates.
+- Mistral is a paid emergency gate, not normal capacity.
 - Preserve structured tool calling. A provider response that merely describes
   a tool call is not successful execution.
 - Preserve provider failure diagnostics and record the actual serving
-  `provider/model` so the dashboard does not report the configured primary when
-  a fallback served the call.
+  `provider/model`.
 - Preserve request-history trimming without deleting tool-call/result message
-  skeletons; orphaned tool results make compatible APIs reject the request.
+  skeletons.
 
 `scripts/verify-provider-routing.ts` is the deterministic guard. It must fail if
-any provider/model or manager/worker order drifts from this policy.
+the provider/model order drifts, if Kilo changes away from Auto Free, or if
+Mistral stops being the only paid and final rung.
 
 ## Token and spend governor
 
@@ -132,19 +152,20 @@ any provider/model or manager/worker order drifts from this policy.
 day and persists it to Postgres with a local-file fallback. A container restart
 must not reset the day's accounting.
 
-Current operating target in `.env.example`:
+**Token capacity is not a spending allowance.** The old 33M/day Mistral target
+was removed because it confused a rate-limit ceiling with free usage.
 
-- `APEX_TOKEN_CAP_TOTAL=40000000` — workspace runaway backstop.
-- `APEX_TOKEN_CAPS=mistral:33000000` — requested Mistral daily ceiling.
+Current defaults:
 
-The 33M figure is an APEX account/operating target, not a statement that the
-usage is free. Provider billing and account limits remain authoritative. Do not
-invent token caps for Gemini, Cohere, Qwen, or Kilo; add them only when the real
-account limit or budget is known.
+- `APEX_TOKEN_CAP_TOTAL=0`
+- `APEX_TOKEN_CAPS=`
+- `APEX_PAID_LLM_MODE=off`
 
-`GET /api/tokens` is the operational view of today's measured spend. If a
-configured total cap is lower than the intended Mistral allowance, fix the
-configuration rather than diagnosing the resulting pause as a provider outage.
+Provider-side free quota controls and fail-closed paid routing are the primary
+cost controls. APEX-side token caps are optional secondary operational limits,
+not an attempt to estimate dollar spend.
+
+`GET /api/tokens` remains the operational view of measured token usage.
 
 Process-wide LLM concurrency defaults to 3 via
 `APEX_MAX_CONCURRENT_LLM_CALLS`; change it from measured throughput/rate-limit
