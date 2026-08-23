@@ -23,32 +23,21 @@ type IntegrationDefinition = {
 };
 
 /** Backend-owned integration catalog. The AI section MUST match the runtime
- * five-provider allowlist in packages/core/src/llm-client.ts. */
+ * free-first allowlist in packages/core/src/llm-client.ts. */
 const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
-    id: 'mistral',
-    name: 'Mistral',
-    description: 'Primary intelligence provider for specialist/worker units: Mistral Medium 3.5.',
-    category: 'ai',
-    docsUrl: 'https://console.mistral.ai',
-    envVars: [{
-      key: 'MISTRAL_API_KEY', label: 'API Key', placeholder: 'Mistral API key', secret: true,
-      probe: { kind: 'openai-models', baseUrl: 'https://api.mistral.ai/v1' },
-    }],
-  },
-  {
-    id: 'gemini',
-    name: 'Google Gemini',
-    description: 'Primary manager/executive oversight model: Gemini 3.7 Flash. A second project key can add quota.',
+    id: 'gemini-free',
+    name: 'Google Gemini — Free Tier',
+    description: 'First APEX rung: Gemini 3.7 Flash. Use only keys from projects that are not billing-enabled.',
     category: 'ai',
     docsUrl: 'https://aistudio.google.com',
     envVars: [
       {
-        key: 'GEMINI_API_KEY', label: 'Primary API Key', placeholder: 'AIza...', secret: true,
+        key: 'GEMINI_FREE_API_KEY', label: 'Free Project API Key', placeholder: 'AIza...', secret: true,
         probe: { kind: 'openai-models', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
       },
       {
-        key: 'GEMINI_API_KEY_2', label: 'Secondary Project Key', placeholder: 'AIza...', secret: true,
+        key: 'GEMINI_FREE_API_KEY_2', label: 'Second Free Project Key', placeholder: 'AIza...', secret: true,
         probe: { kind: 'openai-models', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
       },
     ],
@@ -56,7 +45,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'cohere',
     name: 'Cohere',
-    description: 'Third intelligence rung: Command A+ for agentic/tool work when earlier providers are unavailable.',
+    description: 'Second rung: Command A+. Cohere currently makes Command A+ free until its applicable API rate limit is reached.',
     category: 'ai',
     docsUrl: 'https://dashboard.cohere.com/api-keys',
     envVars: [{
@@ -65,26 +54,63 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     }],
   },
   {
+    id: 'poolside',
+    name: 'Poolside',
+    description: 'Third rung: Laguna S 2.1. Poolside currently advertises limited-time free API access; APEX requires an explicit confirmation.',
+    category: 'ai',
+    docsUrl: 'https://poolside.ai/models',
+    envVars: [
+      {
+        key: 'POOLSIDE_API_KEY', label: 'API Key', placeholder: 'Poolside API key', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://inference.poolside.ai/v1' },
+      },
+      {
+        key: 'POOLSIDE_FREE_ACCESS_CONFIRMED',
+        label: 'Free Access Confirmed',
+        placeholder: 'true only while Poolside free access is active',
+      },
+    ],
+  },
+  {
     id: 'qwen',
     name: 'Qwen',
-    description: 'Fourth intelligence rung: Qwen 3.7 Max through Alibaba Model Studio compatible mode.',
+    description: 'Fourth rung: Qwen 3.7 Max. Enable Alibaba Model Studio “Free quota only” before allowing APEX to use it.',
     category: 'ai',
     docsUrl: 'https://www.alibabacloud.com/help/en/model-studio',
     envVars: [
       { key: 'QWEN_API_KEY', label: 'API Key', placeholder: 'Qwen / Model Studio API key', secret: true },
       { key: 'QWEN_BASE_URL', label: 'Compatible API Base URL', placeholder: 'https://<workspace>.<region>.maas.aliyuncs.com/compatible-mode/v1' },
+      { key: 'QWEN_FREE_QUOTA_ONLY', label: 'Free Quota Only Confirmed', placeholder: 'true after enabling provider-side Free quota only' },
     ],
   },
   {
     id: 'kilo',
     name: 'Kilo Code',
-    description: 'Fifth and final intelligence rung: Kilo Auto Frontier.',
+    description: 'Fifth rung: Kilo Auto Free. This is the free router, not Auto Frontier.',
     category: 'ai',
-    docsUrl: 'https://app.kilo.ai',
+    docsUrl: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
     envVars: [{
       key: 'KILO_API_KEY', label: 'API Key', placeholder: 'Kilo AI Gateway key', secret: true,
       probe: { kind: 'openai-models', baseUrl: 'https://api.kilo.ai/api/gateway' },
     }],
+  },
+  {
+    id: 'mistral-paid',
+    name: 'Mistral — Paid Emergency Only',
+    description: 'Last rung: Mistral Medium 3.5. Disabled by default and unreachable unless paid fallback is explicitly enabled.',
+    category: 'ai',
+    docsUrl: 'https://console.mistral.ai',
+    envVars: [
+      {
+        key: 'MISTRAL_API_KEY', label: 'API Key', placeholder: 'Mistral API key', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://api.mistral.ai/v1' },
+      },
+      {
+        key: 'APEX_PAID_LLM_MODE',
+        label: 'Paid Fallback Mode',
+        placeholder: 'off (set fallback only with explicit spend approval)',
+      },
+    ],
   },
   {
     id: 'business-search',
@@ -201,7 +227,7 @@ async function probeConfiguredKey(key: string): Promise<{
       signal: controller.signal,
     });
     if (response.ok) return { key, status: 'connected', detail: 'Provider accepted the credential.', httpStatus: response.status };
-    if (response.status === 401 || response.status === 403) return { key, status: 'invalid_key', detail: 'Provider rejected the credential.', httpStatus: response.status };
+    if (response.status === 401 || response.status === 403) return { key, status: 'invalid_key', detail: 'Provider rejected the credential or free quota is unavailable.', httpStatus: response.status };
     if (response.status === 402) return { key, status: 'billing_required', detail: 'Credential is recognized, but the provider requires billing/account funding.', httpStatus: response.status };
     if (response.status === 429) return { key, status: 'rate_limited', detail: 'Credential reached the provider, but the account is currently rate/quota limited.', httpStatus: response.status };
     if (response.status === 404 || response.status === 405) return { key, status: 'configured', detail: 'Credential is stored; this provider does not expose the lightweight model-list probe used by APEX.', httpStatus: response.status };
