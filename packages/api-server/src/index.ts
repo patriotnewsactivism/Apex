@@ -15,7 +15,7 @@ import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents
 import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { JobScheduler } from '@workspace/background-jobs';
+import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
 import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
@@ -36,6 +36,7 @@ import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
 import { createLeadsRouter } from './routes/leads.js';
+import { createCampaignsRouter } from './routes/campaigns.js';
 import { requireAdminAuth } from './middleware/auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
@@ -370,6 +371,15 @@ await recoverStaleLeasedTasks();
     mode = 'normal';
   }
   const approvalRequired = mode === 'strict' ? true : undefined;
+  // Campaign tools live in background-jobs (they need the runner's
+  // createCampaign), so they are registered here rather than inside
+  // getToolRegistry() — core cannot import background-jobs without a cycle.
+  // Registered BEFORE the workforce is built so every agent sees them on its
+  // first turn.
+  for (const tool of createCampaignTools()) {
+    getToolRegistry().register(tool);
+  }
+
   const workforce = createWorkforce({ approvalRequired });
   try {
     await initializeWorkforce(workforce);
@@ -476,6 +486,10 @@ await recoverStaleLeasedTasks();
   // Background Job Scheduler setup
   const scheduler = new JobScheduler();
 
+  // Lead campaign runner. Separate from the JobScheduler on purpose: this is a
+  // tight territory-working loop with its own lease semantics, not a cron job.
+  const campaignRunner = new CampaignRunner();
+
   // Login is the front door — not behind requireAdminAuth.
   app.use('/api/auth', createAuthRouter());
 
@@ -504,6 +518,7 @@ await recoverStaleLeasedTasks();
   app.use('/api/predictive', createPredictiveRouter());
   app.use('/api/settings', createSettingsRouter());
   app.use('/api/leads', createLeadsRouter());
+  app.use('/api/campaigns', createCampaignsRouter());
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs
@@ -643,6 +658,8 @@ await recoverStaleLeasedTasks();
   // Stagger agent startup to avoid all 13 agents hitting the first LLM provider
   // simultaneously on deploy. Each agent waits a random 1-5s before starting its
   // loop, spreading the initial burst of LLM calls across a wider window.
+  campaignRunner.start();
+
   console.log('🤖 Starting autonomous agent loops (staggered)...');
   let agentIdx = 0;
   for (const agent of workforce.values()) {
@@ -660,6 +677,7 @@ await recoverStaleLeasedTasks();
     clearInterval(healthInterval);
     clearInterval(leaseRecoveryInterval);
     clearInterval(escalationSweepInterval);
+    campaignRunner.stop();
     scheduler.stop();
     for (const agent of workforce.values()) {
       agent.stop();

@@ -177,10 +177,75 @@ export const researchedLeads = pgTable('researched_leads', {
   city: text('city'),
   fitReason: text('fit_reason').notNull(), // why it matches the ICP pain point
   outreachAngle: text('outreach_angle'),
-  status: text('status').notNull().default('new'), // new | contacted | qualified | rejected
+  status: text('status').notNull().default('new'), // new | contacted | qualified | rejected | pushed_to_buildmybot
   researchedByAgentId: text('researched_by_agent_id').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  // Which campaign produced this lead. Nullable: the 4,722 rows that predate
+  // campaigns keep NULL, and ad-hoc agent research still works without one.
+  campaignId: text('campaign_id'),
+  campaignSegmentId: text('campaign_segment_id'),
 });
+
+// ─── Lead Campaigns ───────────────────────────────────────────────────────────
+//
+// A bounded, resumable, observable lead hunt. Before this (2026-08-22),
+// "go find leads" meant submitting a goal and hoping: no target count, no
+// territory worklist, no progress percentage, no campaign id on the lead row,
+// and no way to pause. 4,722 leads had accumulated with no way to say which
+// brief produced them or whether any brief had finished.
+
+export const leadCampaigns = pgTable('lead_campaigns', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  goalId: text('goal_id'),        // the goal that spawned it, if any
+  projectId: text('project_id'),  // whose pipeline this feeds, e.g. 'buildmybot'
+  icp: jsonb('icp').$type<{ industries: string[]; cities: string[]; notes?: string }>().notNull(),
+  targetLeads: integer('target_leads').notNull().default(100),
+  // running | paused | completed | completed_short | cancelled | failed
+  //
+  // completed_short is deliberately distinct from completed: it means the
+  // territory was fully worked and still came up under target. Collapsing the
+  // two would let a campaign that found 40 of 200 report the same state as one
+  // that found all 200.
+  status: text('status').notNull().default('running'),
+  pushToBuildmybot: boolean('push_to_buildmybot').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+  // Stall detection reads this, not createdAt: a campaign whose runner died is
+  // still 'running' in the table and would otherwise look healthy forever.
+  lastProgressAt: timestamp('last_progress_at', { withTimezone: true, mode: 'date' }),
+  createdByAgentId: text('created_by_agent_id'),
+  result: text('result'),
+});
+
+// One (industry x city) cell — the unit of work AND the unit of progress.
+// A real table rather than a jsonb array on the campaign so several researcher
+// agents can claim segments concurrently under a lease, the way tasks already
+// do (see recoverStaleLeasedTasks in api-server/src/index.ts).
+export const campaignSegments = pgTable('campaign_segments', {
+  id: text('id').primaryKey(),
+  campaignId: text('campaign_id').notNull(),
+  industry: text('industry').notNull(),
+  city: text('city').notNull(),
+  // pending | in_progress | done | exhausted | failed
+  // 'exhausted' means the directory genuinely had nothing new left here —
+  // distinct from 'failed', which means the attempt itself broke.
+  status: text('status').notNull().default('pending'),
+  found: integer('found').notNull().default(0),
+  saved: integer('saved').notNull().default(0),
+  duplicates: integer('duplicates').notNull().default(0),
+  attempts: integer('attempts').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(3),
+  leasedAt: timestamp('leased_at', { withTimezone: true, mode: 'date' }),
+  lastError: text('last_error'),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (t) => ({
+  // A campaign must never enqueue the same territory twice.
+  cellUniq: uniqueIndex('campaign_segments_cell_unique').on(t.campaignId, t.industry, t.city),
+}));
 
 // ─── Health Metrics (time-series) ─────────────────────────────────────────────
 

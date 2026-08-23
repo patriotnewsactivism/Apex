@@ -15,3 +15,4 @@ export * from './provider-failure.js';
 export { optimizePrompt } from './prompt-forge.js';
 export type { OptimizePromptInput, OptimizePromptResult, PromptCandidateResult } from './prompt-forge.js';
 export * from './context-budget.js';
+export * from './industry-taxonomy.js';

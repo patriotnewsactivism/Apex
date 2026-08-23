@@ -163,5 +163,13 @@ export type ApexEvent =
   | { type: 'memory:updated'; agentId: string; key: string }
   | { type: 'message:sent'; messageId: string; fromAgentId: string; toAgentId: string; subject: string }
   | { type: 'health:updated'; overall: string; checks: Record<string, unknown>; timestamp: string }
-  | { type: 'health:alert'; alertId: string; severity: string; message: string; component: string };
+  | { type: 'health:alert'; alertId: string; severity: string; message: string; component: string }
+  // ── Lead campaigns ────────────────────────────────────────────────────────
+  // A lead hunt runs for hours across dozens of territory segments. Polling
+  // alone makes it look static between refreshes; these are what let the
+  // dashboard show a campaign actually moving.
+  | { type: 'campaign:started'; campaignId: string; name: string; targetLeads: number; segments: number }
+  | { type: 'campaign:progress'; campaignId: string; leadsSaved: number; targetLeads: number; segmentsDone: number; segmentsTotal: number }
+  | { type: 'campaign:segment'; campaignId: string; segmentId: string; industry: string; city: string; status: string; saved: number; found: number }
+  | { type: 'campaign:completed'; campaignId: string; status: string; leadsSaved: number; targetLeads: number };
 

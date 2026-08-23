@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
+import { normalizeIndustry } from './industry-taxonomy.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector.js';
 import { createOrchestrationTools } from './orchestration-tools.js';
@@ -522,9 +523,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         city: z.string().optional(),
         fitReason: z.string().describe('Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)'),
         outreachAngle: z.string().optional().describe('Suggested angle for the first outreach message'),
+        campaignId: z.string().optional().describe('Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.'),
       }),
       requiresApproval: false,
-      async execute({ companyName, website, industry, city, fitReason, outreachAngle }, ctx) {
+      async execute({ companyName, website, industry, city, fitReason, outreachAngle, campaignId }, ctx) {
         const { randomUUID } = await import('crypto');
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
@@ -545,12 +547,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           id,
           companyName,
           website,
-          industry,
+          // Normalized on write — the one point where the Yelp, Google Places
+          // and OSM category vocabularies converge. See industry-taxonomy.ts.
+          industry: normalizeIndustry(industry),
           city,
           fitReason,
           outreachAngle,
           status: 'new',
           researchedByAgentId: ctx.agentId,
+          campaignId,
           createdAt: new Date(),
         });
 
@@ -774,9 +779,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           fitReason: z.string().describe('Why this company is a good fit for BuildMyBot'),
           outreachAngle: z.string().optional().describe('Suggested outreach pitch'),
         })).describe('Array of leads to save (10-20 at a time is ideal)'),
+        campaignId: z.string().optional().describe('Attribute every lead in this batch to a lead campaign. Omit for ad-hoc research.'),
       }),
       requiresApproval: false,
-      async execute({ leads }, ctx) {
+      async execute({ leads, campaignId }, ctx) {
         const { randomUUID } = await import('crypto');
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
@@ -804,12 +810,13 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               id: randomUUID(),
               companyName: lead.companyName,
               website: lead.website,
-              industry: lead.industry,
+              industry: normalizeIndustry(lead.industry),
               city: lead.city,
               fitReason: lead.fitReason,
               outreachAngle: lead.outreachAngle,
               status: 'new',
               researchedByAgentId: ctx.agentId,
+              campaignId,
               createdAt: new Date(),
             });
             saved++;

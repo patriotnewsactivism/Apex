@@ -88,6 +88,26 @@ export const api = {
       apiFetch(`/approvals/${id}/acknowledge`, { method: 'POST', body: JSON.stringify({ note }) }),
   },
 
+  campaigns: {
+    list: () => apiFetch<{ campaigns: CampaignProgress[] }>('/campaigns').then((r) => r.campaigns),
+    get: (id: string) =>
+      apiFetch<{ campaign: CampaignProgress & { icp: CampaignIcp; result: string | null }; segments: CampaignSegment[] }>(
+        `/campaigns/${id}`,
+      ),
+    leads: (id: string) =>
+      apiFetch<{ leads: ResearchedLead[] }>(`/campaigns/${id}/leads`).then((r) => r.leads),
+    create: (body: {
+      name: string;
+      industries: string[];
+      cities: string[];
+      targetLeads?: number;
+      pushToBuildmybot?: boolean;
+      notes?: string;
+    }) => apiFetch<{ campaignId: string; segments: number }>('/campaigns', { method: 'POST', body: JSON.stringify(body) }),
+    control: (id: string, action: 'pause' | 'resume' | 'cancel') =>
+      apiFetch<{ status: string }>(`/campaigns/${id}/${action}`, { method: 'POST' }),
+  },
+
   tools: {
     list: () => apiFetch<{ tools: ToolInfo[] }>('/tools').then((r) => r.tools),
     invoke: (name: string, args: Record<string, unknown>) =>
@@ -273,6 +293,49 @@ export interface Approval {
   /** How many times this same escalation has been re-raised. */
   occurrences?: number;
   lastOccurredAt?: string | null;
+}
+
+export interface CampaignIcp {
+  industries: string[];
+  cities: string[];
+  notes?: string;
+}
+
+export interface CampaignProgress {
+  campaignId: string;
+  name: string;
+  status: string;
+  /** What to render. 'stalled' is derived from lastProgressAt, not stored —
+   *  a campaign whose runner died still reads as 'running' in the table. */
+  displayStatus: string;
+  targetLeads: number;
+  leadsSaved: number;
+  leadProgress: number;
+  segmentsTotal: number;
+  segmentsDone: number;
+  segmentsFailed: number;
+  segmentsRemaining: number;
+  coverage: number;
+  duplicatesSkipped: number;
+  /** null until a segment completes — never a fabricated zero. */
+  yieldPerSegment: number | null;
+  etaMs: number | null;
+  lastProgressAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface CampaignSegment {
+  id: string;
+  campaignId: string;
+  industry: string;
+  city: string;
+  status: string;
+  found: number;
+  saved: number;
+  duplicates: number;
+  attempts: number;
+  lastError: string | null;
 }
 
 export interface ToolInfo {
