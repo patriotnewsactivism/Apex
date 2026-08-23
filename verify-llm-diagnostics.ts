@@ -1,29 +1,48 @@
-import { getProviderRoster, logProviderRoster, createLLMClient } from './packages/core/src/llm-client.js';
+import {
+  getProviderRoster,
+  logProviderRoster,
+  createLLMClient,
+  getDefaultLLMConfig,
+} from './packages/core/src/llm-client.js';
 import { escalationDedupeKey } from './packages/core/src/orchestration-tools.js';
 
 async function main() {
-  for (const p of getProviderRoster().providers) delete process.env[p.envVar];
+  for (const key of [
+    'MISTRAL_API_KEY',
+    'GEMINI_API_KEY',
+    'GEMINI_API_KEY_2',
+    'COHERE_API_KEY',
+    'QWEN_API_KEY',
+    'QWEN_BASE_URL',
+    'KILO_API_KEY',
+  ]) delete process.env[key];
 
-  console.log('--- roster with all keys cleared ---');
+  console.log('--- approved roster with all inference credentials cleared ---');
   logProviderRoster();
-  const r = getProviderRoster();
-  console.log('freeSlotsConfigured=' + r.freeSlotsConfigured + '/' + r.freeSlots
-    + '  distinct missing env vars=' + r.emptyFreeSlots.length);
+  const roster = getProviderRoster();
+  console.log(
+    `configuredSlots=${roster.configuredSlots}/${roster.totalSlots} missing=${roster.missingRequirements.join(',')}`,
+  );
 
-  const client = createLLMClient({ provider: 'mistral', model: 'mistral-small-latest' } as any);
+  const client = createLLMClient(getDefaultLLMConfig('BACKEND'));
   try {
     await client.complete([{ role: 'user', content: 'hi' }]);
     console.log('!! UNEXPECTED: call succeeded with no keys');
   } catch (err) {
     const msg = (err as Error).message;
+    const namesEveryApprovedProvider = [
+      'mistral',
+      'google-gemini',
+      'cohere',
+      'qwen',
+      'kilo',
+    ].every((name) => msg.includes(name));
+    const namesLegacyProvider = /groq|openrouter|cerebras|sambanova|huggingface|nvidia/i.test(msg);
     console.log('\nheadline: ' + msg.split('\n')[0]);
-    console.log('names a reason per provider: '
-      + (msg.includes('no API key') && msg.includes('APEX_PAID_LLM_MODE') ? 'PASS' : 'FAIL'));
-    console.log('no longer claims "(no providers were configured or had API keys)": '
-      + (msg.includes('no providers were configured') ? 'FAIL' : 'PASS'));
+    console.log('names all five approved providers: ' + (namesEveryApprovedProvider ? 'PASS' : 'FAIL'));
+    console.log('names no legacy provider:           ' + (!namesLegacyProvider ? 'PASS' : 'FAIL'));
   }
 
-  // Real exported function, not a copy of it.
   const a = escalationDedupeKey('apex-coo-001', 'g1', 'Stripe key missing, cannot bill');
   const b = escalationDedupeKey('apex-coo-001', 'g1', '  STRIPE KEY MISSING, CANNOT BILL!!  ');
   const c = escalationDedupeKey('apex-coo-001', 'g2', 'Stripe key missing, cannot bill');
