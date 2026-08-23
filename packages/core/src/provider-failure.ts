@@ -17,19 +17,13 @@ export function isLLMDailyBudgetPause(error: string | null): boolean {
   );
 }
 
-/** A full-chain failure caused by temporary provider capacity rather than bad
- * credentials or missing configuration. These are normal operating conditions
- * on free tiers: RPM/TPM windows close briefly and then reopen. Treating them
- * as permanent task failures destroys useful queued work and creates a retry
- * stampede when a recovery job later revives many tasks at once. */
+/** A full-chain failure with at least one provider blocked only by temporary
+ * capacity. Free-tier RPM/TPM windows are normal operating conditions: they
+ * close briefly and reopen. Even if another fallback also has a bad key or
+ * missing configuration, the presence of a transiently-limited provider means
+ * the task can succeed later without operator repair, so preserve the work. */
 export function isLLMTransientCapacityFailure(error: string | null): boolean {
   if (!error || !isLLMProviderChainFailure(error) || isLLMDailyBudgetPause(error)) {
-    return false;
-  }
-
-  // Authentication/configuration failures require an operator and should not
-  // be hidden behind autonomous capacity retries.
-  if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid (?:api )?key|authentication failed/i.test(error)) {
     return false;
   }
 
@@ -45,13 +39,15 @@ export function shouldSuppressImmediateLLMRetry(error: string | null): boolean {
 
 /** Provider-chain failures that can recover after quota reset, key repair,
  * model replacement, or a new deploy. Credential-denied 401/403 failures are
- * deliberately excluded from autonomous recovery and remain human-actionable. */
+ * deliberately excluded from the long-horizon recovery job when they are the
+ * only actionable failure; transient capacity is handled directly by TaskQueue. */
 export function isRecoverableLLMProviderFailure(error: string | null): boolean {
   if (!error || !isLLMProviderChainFailure(error)) return false;
+  if (isLLMTransientCapacityFailure(error)) return true;
   if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid (?:api )?key|authentication failed/i.test(error)) {
     return false;
   }
-  return /(\b429\b|\b402\b|\b404\b|\b413\b|rate limit|credential in cooldown|insufficient credits|quota|tokens per day|request too large|model is unavailable|temporarily unavailable|overloaded|no providers were configured|no providers .*api keys)/i.test(
+  return /(\b402\b|\b404\b|\b413\b|insufficient credits|quota|tokens per day|request too large|model is unavailable|no providers were configured|no providers .*api keys)/i.test(
     error,
   );
 }
