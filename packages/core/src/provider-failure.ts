@@ -73,7 +73,7 @@ export function isRecoverableLLMProviderFailure(error: string | null): boolean {
   if (/\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid (?:api )?key|authentication failed/i.test(error)) {
     return false;
   }
-  return /(\b429\b|\b402\b|\b404\b|\b413\b|rate limit|insufficient credits|quota|tokens per day|request too large|model is unavailable|no providers were configured|no providers .*api keys)/i.test(
+  return /(\b429\b|\b402\b|\b404\b|\b413\b|\b50[234]\b|rate limit|credential in cooldown|insufficient credits|quota|tokens per day|request too large|model is unavailable|temporarily unavailable|overloaded|no providers were configured|no providers .*api keys)/i.test(
     error,
   );
 }

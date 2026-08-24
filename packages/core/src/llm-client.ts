@@ -44,6 +44,8 @@ type ProviderSpec = {
   paid?: boolean;
   activationEnv?: string;
   activationDescription?: string;
+  /** Minimum spacing between request starts for this logical provider. */
+  minIntervalMs: number;
   toolCallingReliable: true;
 };
 
@@ -53,6 +55,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     model: 'gemini-3.7-flash',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
     apiKeyEnvs: ['GEMINI_FREE_API_KEY', 'GEMINI_FREE_API_KEY_2'],
+    minIntervalMs: 4_000,
     toolCallingReliable: true,
   },
   {
@@ -63,6 +66,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     activationEnv: 'GROQ_FREE_TIER_CONFIRMED',
     activationDescription:
       'set GROQ_FREE_TIER_CONFIRMED=true only for a Groq Free plan project/key',
+    minIntervalMs: 2_200,
     toolCallingReliable: true,
   },
   {
@@ -70,6 +74,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     model: 'command-a-plus-05-2026',
     baseURL: 'https://api.cohere.ai/compatibility/v1',
     apiKeyEnvs: ['COHERE_API_KEY'],
+    minIntervalMs: 3_200,
     toolCallingReliable: true,
   },
   {
@@ -80,6 +85,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     activationEnv: 'POOLSIDE_FREE_ACCESS_CONFIRMED',
     activationDescription:
       'set POOLSIDE_FREE_ACCESS_CONFIRMED=true only while this account is on Poolside free access',
+    minIntervalMs: 1_500,
     toolCallingReliable: true,
   },
   {
@@ -92,6 +98,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     activationEnv: 'QWEN_FREE_QUOTA_ONLY',
     activationDescription:
       'enable Alibaba Model Studio Free quota only, then set QWEN_FREE_QUOTA_ONLY=true',
+    minIntervalMs: 1_500,
     toolCallingReliable: true,
   },
   {
@@ -99,6 +106,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     model: 'kilo-auto/free',
     baseURL: 'https://api.kilo.ai/api/gateway',
     apiKeyEnvs: ['KILO_API_KEY'],
+    minIntervalMs: 1_000,
     toolCallingReliable: true,
   },
   {
@@ -107,6 +115,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     baseURL: 'https://api.mistral.ai/v1',
     apiKeyEnvs: ['MISTRAL_API_KEY'],
     paid: true,
+    minIntervalMs: 500,
     toolCallingReliable: true,
   },
 ] as const;
@@ -255,6 +264,9 @@ type CredentialCooldown = {
   reason: string;
 };
 const credentialCooldowns = new Map<string, CredentialCooldown>();
+type ProviderRequestError = Error & { status?: number; retryAfterMs?: number };
+const providerCooldowns = new Map<ApexProviderName, number>();
+const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
 const COOLDOWN_429_MS = 30_000;
 const COOLDOWN_402_MS = 6 * 60 * 60 * 1000;
@@ -272,6 +284,15 @@ function recordProviderFailure(
 ): void {
   providerFailureEvents.push({ provider, model, status, message, at: Date.now() });
   if (providerFailureEvents.length > 300) providerFailureEvents.shift();
+}
+
+export function parseRetryAfterMs(value: string | null, now: number = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds * 1000));
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - now);
+  return undefined;
 }
 
 function cooldownMs(status: number | undefined, message: string): number {
@@ -315,9 +336,11 @@ function setCredentialCooldown(
   id: string,
   status: number | undefined,
   message: string,
+  retryAfterMs?: number,
 ): void {
+  const duration = Math.max(cooldownMs(status, message), retryAfterMs ?? 0);
   credentialCooldowns.set(id, {
-    until: Date.now() + cooldownMs(status, message),
+    until: Date.now() + duration,
     capacityPause: isCapacityFailure(status, message),
     reason: message.slice(0, 240),
   });
@@ -325,6 +348,73 @@ function setCredentialCooldown(
 
 function clearCredentialCooldown(id: string): void {
   credentialCooldowns.delete(id);
+}
+
+function providerMinIntervalMs(provider: ProviderSpec): number {
+  const envName = `APEX_LLM_MIN_INTERVAL_MS_${provider.name.toUpperCase().replace(/-/g, '_')}`;
+  const configured = Number(process.env[envName]);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.min(60_000, Math.floor(configured));
+  }
+  return provider.minIntervalMs;
+}
+
+export function getProviderRequestSpacingMs(providerName: ApexProviderName): number {
+  const provider = PROVIDER_BY_NAME.get(providerName);
+  if (!provider) throw new Error(`Unknown APEX provider: ${providerName}`);
+  return providerMinIntervalMs(provider);
+}
+
+function providerReadyAt(provider: ProviderSpec): number {
+  const now = Date.now();
+  const cooldownUntil = providerCooldowns.get(provider.name) ?? 0;
+  if (cooldownUntil && cooldownUntil <= now) providerCooldowns.delete(provider.name);
+  return Math.max(
+    providerCooldowns.get(provider.name) ?? 0,
+    providerNextAttemptAt.get(provider.name) ?? 0,
+  );
+}
+
+function reserveProviderAttempt(provider: ProviderSpec): void {
+  providerNextAttemptAt.set(provider.name, Date.now() + providerMinIntervalMs(provider));
+}
+
+function setProviderCooldown(
+  provider: ProviderSpec,
+  status: number | undefined,
+  message: string,
+  retryAfterMs?: number,
+): void {
+  const providerWide =
+    status === 429 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    ((status === 401 || status === 403) && DAILY_QUOTA_PATTERN.test(message));
+  if (!providerWide) return;
+  const duration = Math.max(cooldownMs(status, message), retryAfterMs ?? 0);
+  providerCooldowns.set(
+    provider.name,
+    Math.max(providerCooldowns.get(provider.name) ?? 0, Date.now() + duration),
+  );
+}
+
+export function getProviderBackpressureSnapshot(): {
+  pausedProviders: string[];
+  nextResumeAt: string | null;
+} {
+  const now = Date.now();
+  const paused: Array<{ provider: string; readyAt: number }> = [];
+  for (const provider of PROVIDERS) {
+    if (!providerConfigured(provider)) continue;
+    const readyAt = providerReadyAt(provider);
+    if (readyAt > now) paused.push({ provider: provider.name, readyAt });
+  }
+  const next = paused.length ? Math.min(...paused.map((entry) => entry.readyAt)) : null;
+  return {
+    pausedProviders: paused.map((entry) => entry.provider),
+    nextResumeAt: next === null ? null : new Date(next).toISOString(),
+  };
 }
 
 function providerBaseURL(provider: ProviderSpec): string | undefined {
@@ -385,6 +475,17 @@ function releaseLLMConcurrencySlot(): void {
   activeLLMCalls = Math.max(0, activeLLMCalls - 1);
   const next = llmCallWaitQueue.shift();
   if (next) next();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function capacityWaitBudgetMs(): number {
+  const configured = Number(process.env.APEX_LLM_CAPACITY_WAIT_MS ?? 15_000);
+  return Number.isFinite(configured)
+    ? Math.min(60_000, Math.max(0, Math.floor(configured)))
+    : 15_000;
 }
 
 // ─── OpenAI-compatible wire format ───────────────────────────────────────────
@@ -516,7 +617,10 @@ async function callCompatibleProvider(
         parsed.error?.message ||
         text.slice(0, 500) ||
         `HTTP ${response.status}`;
-      throw Object.assign(new Error(detail), { status: response.status });
+      throw Object.assign(new Error(detail), {
+        status: response.status,
+        retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+      });
     }
 
     const choice = parsed.choices?.[0]?.message;
@@ -558,7 +662,7 @@ function capacityBlockFromReservation(
   };
 }
 
-function capacityPauseError(blocks: CapacityBlock[]): Error {
+function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []): Error {
   const timestamps = blocks
     .map((block) => (block.resumeAt ? Date.parse(block.resumeAt) : Number.NaN))
     .filter(Number.isFinite);
@@ -572,6 +676,7 @@ function capacityPauseError(blocks: CapacityBlock[]): Error {
         `${block.source}: ${block.reason}`,
       ]),
     ).values(),
+    ...otherDetails,
   ].join(" | ");
   return new Error(
     `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || "configured free capacity is temporarily unavailable"}`,
@@ -612,6 +717,7 @@ class MultiProviderClient {
         const providerErrors: string[] = [];
         const skipReasons: string[] = [];
         const capacityBlocks: CapacityBlock[] = [];
+        let nonCapacityFailureSeen = false;
 
         for (const providerName of getProviderOrderForRole(this.config.role)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
@@ -637,6 +743,24 @@ class MultiProviderClient {
             continue;
           }
 
+          const readyAt = providerReadyAt(provider);
+          if (readyAt > Date.now()) {
+            const waitMs = Math.max(0, readyAt - Date.now());
+            if (waitMs <= capacityWaitBudgetMs()) {
+              await sleep(waitMs);
+            } else {
+              capacityBlocks.push({
+                source: provider.name,
+                resumeAt: new Date(readyAt).toISOString(),
+                reason: 'provider pacing/cooldown',
+              });
+              skipReasons.push(
+                `${provider.name}: provider pacing/cooldown (${Math.ceil(waitMs / 1000)}s)`,
+              );
+              continue;
+            }
+          }
+
           const providerReservation = reserveProviderTokenCapacity(
             provider.name,
             estimatedTokens,
@@ -650,6 +774,8 @@ class MultiProviderClient {
             );
             continue;
           }
+
+          reserveProviderAttempt(provider);
 
           try {
             let providerAttempted = false;
@@ -683,7 +809,7 @@ class MultiProviderClient {
                 recordTokenUsage(provider.name, result.usage);
                 return result;
               } catch (error) {
-                const err = error as Error & { status?: number };
+                const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
                   err.name === "AbortError" ? "request timed out" : err.message;
@@ -693,7 +819,10 @@ class MultiProviderClient {
                   status,
                   message,
                 );
-                setCredentialCooldown(credentialId, status, message);
+                setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
+                setProviderCooldown(provider, status, message, err.retryAfterMs);
+                const capacityFailure = isCapacityFailure(status, message);
+                if (!capacityFailure) nonCapacityFailureSeen = true;
                 const newCooldown = credentialCooldown(credentialId);
                 if (newCooldown?.capacityPause) {
                   capacityBlocks.push({
@@ -706,6 +835,8 @@ class MultiProviderClient {
                   `${provider.name}/${provider.model} via ${credential.env}: ` +
                     `${status ? `HTTP ${status} ` : ""}${message}`,
                 );
+
+                if (capacityFailure) break;
 
                 if (isRequestTooLargeError(status, message)) {
                   try {
@@ -743,9 +874,10 @@ class MultiProviderClient {
           }
         }
 
-        if (capacityBlocks.length > 0) throw capacityPauseError(capacityBlocks);
-
         const details = [...providerErrors, ...skipReasons];
+        if (capacityBlocks.length > 0 && !nonCapacityFailureSeen) {
+          throw capacityPauseError(capacityBlocks, details);
+        }
         throw new Error(
           `All LLM providers failed or were unavailable. ${
             details.length

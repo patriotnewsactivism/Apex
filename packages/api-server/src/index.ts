@@ -16,7 +16,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
@@ -465,17 +465,29 @@ await recoverStaleLeasedTasks();
       return counts;
     }, {});
     const tokenLedger = getTokenLedgerSnapshot();
-    const pausedProviders = tokenLedger.providers
-      .filter((provider) => provider.capReached || !provider.pacing.allowed)
-      .map((provider) => provider.provider);
+    const providerBackpressure = getProviderBackpressureSnapshot();
+    const pausedProviders = [...new Set([
+      ...tokenLedger.providers
+        .filter((provider) => provider.capReached || !provider.pacing.allowed)
+        .map((provider) => provider.provider),
+      ...providerBackpressure.pausedProviders,
+    ])];
     const hardCapped =
       tokenLedger.totalCapReached ||
       tokenLedger.providers.some((provider) => provider.capReached);
+    const aggregatePaused = !tokenLedger.pacing.total.allowed;
     const capacityState = hardCapped
       ? "capped"
-      : pausedProviders.length > 0
+      : aggregatePaused || pausedProviders.length > 0
         ? "paced"
         : "available";
+    const resumeCandidates = [
+      tokenLedger.pacing.nextResumeAt,
+      providerBackpressure.nextResumeAt,
+    ].filter((value): value is string => Boolean(value));
+    const nextResumeAt = resumeCandidates.length
+      ? resumeCandidates.sort((a, b) => Date.parse(a) - Date.parse(b))[0]
+      : null;
     res.status(broken ? 503 : 200).json({
       status: broken ? 'degraded' : 'ok',
       agents: workforce.size,
@@ -497,7 +509,7 @@ await recoverStaleLeasedTasks();
         state: capacityState,
         pacingEnabled: tokenLedger.pacing.enabled,
         pausedProviders,
-        nextResumeAt: tokenLedger.pacing.nextResumeAt,
+        nextResumeAt,
       },
       timestamp: Date.now(),
     });
