@@ -112,9 +112,11 @@ function tokenPacingEnabled(): boolean {
 }
 
 function pacingBurstTokens(cap: number): number {
-  const raw = Number(
-    process.env.APEX_TOKEN_PACING_BURST_TOKENS ?? DEFAULT_PACING_BURST_TOKENS,
-  );
+  const envValue = process.env.APEX_TOKEN_PACING_BURST_TOKENS;
+  const raw =
+    envValue === undefined || envValue.trim() === ''
+      ? DEFAULT_PACING_BURST_TOKENS
+      : Number(envValue);
   const configured = Number.isFinite(raw)
     ? Math.max(0, Math.floor(raw))
     : DEFAULT_PACING_BURST_TOKENS;
