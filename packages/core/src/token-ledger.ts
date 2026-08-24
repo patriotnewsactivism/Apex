@@ -5,9 +5,13 @@
  * not assume that a large token allowance is free. APEX's default cost control
  * is provider-side free quotas plus fail-closed paid routing.
  *
- * By default there is NO workspace token cap and NO per-provider token cap:
+ * By default there is NO workspace token cap. Providers with an explicit cap
+ * are paced across the UTC day so a restart/startup swarm cannot spend the
+ * entire allowance before the rest of the business day begins:
  *   APEX_TOKEN_CAP_TOTAL=0
- *   APEX_TOKEN_CAPS=
+ *   APEX_TOKEN_CAPS=groq:200000
+ *   APEX_TOKEN_PACING_ENABLED=true
+ *   APEX_TOKEN_PACING_BURST_TOKENS=12000
  *
  * Operators may add token caps as secondary operational controls, but paid
  * Mistral remains independently disabled unless APEX_PAID_LLM_MODE is enabled.
@@ -27,7 +31,14 @@ interface LedgerState {
   providers: Record<string, ProviderDaySpend>;
 }
 
-const LEDGER_PATH = process.env.APEX_TOKEN_LEDGER_PATH ?? '/tmp/apex/token-ledger.json';
+const LEDGER_PATH =
+  process.env.APEX_TOKEN_LEDGER_PATH ?? "/tmp/apex/token-ledger.json";
+const UTC_DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_PACING_BURST_TOKENS = 12_000;
+const CAPACITY_PROBE_TOKENS = 4_096;
+
+const providerReservations = new Map<string, number>();
+let totalReservations = 0;
 
 function utcDay(at: number = Date.now()): string {
   return new Date(at).toISOString().slice(0, 10);
@@ -63,10 +74,12 @@ function persist(): void {
   }
 }
 
-function rolloverIfNeeded(): void {
-  const today = utcDay();
+function rolloverIfNeeded(at: number = Date.now()): void {
+  const today = utcDay(at);
   if (state.day !== today) {
     state = emptyState(today);
+    providerReservations.clear();
+    totalReservations = 0;
     persist();
   }
 }
@@ -89,6 +102,226 @@ function totalCap(): number {
   if (raw === undefined || raw.trim() === '') return 0;
   const cap = Number(raw);
   return Number.isFinite(cap) && cap > 0 ? cap : 0;
+}
+
+function tokenPacingEnabled(): boolean {
+  const normalized = (process.env.APEX_TOKEN_PACING_ENABLED ?? "true")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "off", "disabled", "no"].includes(normalized);
+}
+
+function pacingBurstTokens(cap: number): number {
+  const raw = Number(
+    process.env.APEX_TOKEN_PACING_BURST_TOKENS ?? DEFAULT_PACING_BURST_TOKENS,
+  );
+  const configured = Number.isFinite(raw)
+    ? Math.max(0, Math.floor(raw))
+    : DEFAULT_PACING_BURST_TOKENS;
+  return Math.min(cap, configured);
+}
+
+export type TokenCapacityReason =
+  | "uncapped"
+  | "available"
+  | "paced"
+  | "daily_cap";
+
+export interface TokenCapacityWindow {
+  cap: number;
+  usedTokens: number;
+  reservedTokens: number;
+  requestedTokens: number;
+  pacingAllowance: number;
+  availableTokens: number | null;
+  allowed: boolean;
+  reason: TokenCapacityReason;
+  resumeAt: string | null;
+}
+
+/** Pure UTC-day pacing calculation used by the runtime and deterministic CI.
+ * The allowance grows continuously from one small burst through the full cap.
+ * `reservedTokens` closes the concurrency race where several agents used to
+ * pass the same cap check before any of their responses were recorded. */
+export function calculateTokenCapacityWindow(input: {
+  cap: number;
+  usedTokens: number;
+  reservedTokens?: number;
+  requestedTokens?: number;
+  at?: number;
+  pacingEnabled?: boolean;
+  burstTokens?: number;
+}): TokenCapacityWindow {
+  const at = input.at ?? Date.now();
+  const cap = Number.isFinite(input.cap)
+    ? Math.max(0, Math.floor(input.cap))
+    : 0;
+  const usedTokens = Number.isFinite(input.usedTokens)
+    ? Math.max(0, Math.floor(input.usedTokens))
+    : 0;
+  const reservedTokens = Number.isFinite(input.reservedTokens)
+    ? Math.max(0, Math.floor(input.reservedTokens ?? 0))
+    : 0;
+  const requestedTokens = Number.isFinite(input.requestedTokens)
+    ? Math.max(0, Math.floor(input.requestedTokens ?? 0))
+    : 0;
+
+  if (cap === 0) {
+    return {
+      cap,
+      usedTokens,
+      reservedTokens,
+      requestedTokens,
+      pacingAllowance: 0,
+      availableTokens: null,
+      allowed: true,
+      reason: "uncapped",
+      resumeAt: null,
+    };
+  }
+
+  const date = new Date(at);
+  const dayStart = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+  );
+  const nextDay = dayStart + UTC_DAY_MS;
+  const elapsed = Math.min(UTC_DAY_MS, Math.max(0, at - dayStart));
+  const burst = Math.min(
+    cap,
+    Number.isFinite(input.burstTokens)
+      ? Math.max(0, Math.floor(input.burstTokens ?? 0))
+      : pacingBurstTokens(cap),
+  );
+  const pacing = input.pacingEnabled ?? tokenPacingEnabled();
+  const tokensToAccrue = Math.max(0, cap - burst);
+  const pacingAllowance = pacing
+    ? Math.min(cap, Math.floor(burst + (tokensToAccrue * elapsed) / UTC_DAY_MS))
+    : cap;
+  const committed = usedTokens + reservedTokens;
+  const target = committed + requestedTokens;
+  const availableTokens = Math.max(0, pacingAllowance - committed);
+
+  if (committed >= cap || target > cap) {
+    return {
+      cap,
+      usedTokens,
+      reservedTokens,
+      requestedTokens,
+      pacingAllowance,
+      availableTokens,
+      allowed: false,
+      reason: "daily_cap",
+      resumeAt: new Date(nextDay).toISOString(),
+    };
+  }
+
+  if (target > pacingAllowance) {
+    const requiredElapsed =
+      tokensToAccrue > 0
+        ? Math.ceil((Math.max(0, target - burst) * UTC_DAY_MS) / tokensToAccrue)
+        : UTC_DAY_MS;
+    const resumeAt = Math.min(nextDay, dayStart + requiredElapsed);
+    return {
+      cap,
+      usedTokens,
+      reservedTokens,
+      requestedTokens,
+      pacingAllowance,
+      availableTokens,
+      allowed: false,
+      reason: "paced",
+      resumeAt: new Date(Math.max(at + 1_000, resumeAt)).toISOString(),
+    };
+  }
+
+  return {
+    cap,
+    usedTokens,
+    reservedTokens,
+    requestedTokens,
+    pacingAllowance,
+    availableTokens,
+    allowed: true,
+    reason: "available",
+    resumeAt: null,
+  };
+}
+
+export interface TokenCapacityReservation extends TokenCapacityWindow {
+  release: () => void;
+}
+
+function makeReservation(
+  window: TokenCapacityWindow,
+  reserve: () => void,
+  release: () => void,
+): TokenCapacityReservation {
+  let released = false;
+  if (window.allowed && window.cap > 0 && window.requestedTokens > 0) reserve();
+  return {
+    ...window,
+    release: () => {
+      if (released) return;
+      released = true;
+      if (window.allowed && window.cap > 0 && window.requestedTokens > 0)
+        release();
+    },
+  };
+}
+
+/** Atomically reserves expected workspace capacity for one in-flight request. */
+export function reserveTotalTokenCapacity(
+  requestedTokens: number,
+): TokenCapacityReservation {
+  rolloverIfNeeded();
+  const requested = Math.max(0, Math.floor(requestedTokens));
+  const window = calculateTokenCapacityWindow({
+    cap: totalCap(),
+    usedTokens: totalTokensToday(),
+    reservedTokens: totalReservations,
+    requestedTokens: requested,
+  });
+  return makeReservation(
+    window,
+    () => {
+      totalReservations += requested;
+    },
+    () => {
+      totalReservations = Math.max(0, totalReservations - requested);
+    },
+  );
+}
+
+/** Atomically reserves expected capacity for one provider request. */
+export function reserveProviderTokenCapacity(
+  providerName: string,
+  requestedTokens: number,
+): TokenCapacityReservation {
+  rolloverIfNeeded();
+  const requested = Math.max(0, Math.floor(requestedTokens));
+  const reserved = providerReservations.get(providerName) ?? 0;
+  const window = calculateTokenCapacityWindow({
+    cap: parseCaps()[providerName] ?? 0,
+    usedTokens: providerTokensToday(providerName),
+    reservedTokens: reserved,
+    requestedTokens: requested,
+  });
+  return makeReservation(
+    window,
+    () => {
+      providerReservations.set(providerName, reserved + requested);
+    },
+    () => {
+      const remaining = Math.max(
+        0,
+        (providerReservations.get(providerName) ?? 0) - requested,
+      );
+      if (remaining === 0) providerReservations.delete(providerName);
+      else providerReservations.set(providerName, remaining);
+    },
+  );
 }
 
 async function persistDatabaseDelta(
@@ -232,6 +465,12 @@ export interface TokenLedgerSnapshot {
   totalTokens: number;
   totalCap: number;
   totalCapReached: boolean;
+  pacing: {
+    enabled: boolean;
+    burstTokens: number;
+    total: TokenCapacityWindow;
+    nextResumeAt: string | null;
+  };
   providers: Array<{
     provider: string;
     promptTokens: number;
@@ -241,16 +480,33 @@ export interface TokenLedgerSnapshot {
     cap: number;
     capReached: boolean;
     percentOfCap: number | null;
+    pacing: TokenCapacityWindow;
   }>;
 }
 
 export function getTokenLedgerSnapshot(): TokenLedgerSnapshot {
   rolloverIfNeeded();
   const caps = parseCaps();
-  const providers = Object.entries(state.providers)
-    .map(([provider, entry]) => {
+  const providerNames = new Set([
+    ...Object.keys(state.providers),
+    ...Object.keys(caps),
+    ...providerReservations.keys(),
+  ]);
+  const providers = [...providerNames]
+    .map((provider) => {
+      const entry = state.providers[provider] ?? {
+        promptTokens: 0,
+        completionTokens: 0,
+        calls: 0,
+      };
       const totalTokens = entry.promptTokens + entry.completionTokens;
       const cap = caps[provider] ?? 0;
+      const pacing = calculateTokenCapacityWindow({
+        cap,
+        usedTokens: totalTokens,
+        reservedTokens: providerReservations.get(provider) ?? 0,
+        requestedTokens: CAPACITY_PROBE_TOKENS,
+      });
       return {
         provider,
         promptTokens: entry.promptTokens,
@@ -259,19 +515,42 @@ export function getTokenLedgerSnapshot(): TokenLedgerSnapshot {
         calls: entry.calls,
         cap,
         capReached: cap > 0 && totalTokens >= cap,
-        percentOfCap: cap > 0 ? Math.round((totalTokens / cap) * 1000) / 10 : null,
+        percentOfCap:
+          cap > 0 ? Math.round((totalTokens / cap) * 1000) / 10 : null,
+        pacing,
       };
     })
     .sort((a, b) => b.totalTokens - a.totalTokens);
 
   const cap = totalCap();
-  const totalTokens = providers.reduce((sum, provider) => sum + provider.totalTokens, 0);
+  const totalTokens = providers.reduce(
+    (sum, provider) => sum + provider.totalTokens,
+    0,
+  );
+  const totalPacing = calculateTokenCapacityWindow({
+    cap,
+    usedTokens: totalTokens,
+    reservedTokens: totalReservations,
+    requestedTokens: CAPACITY_PROBE_TOKENS,
+  });
+  const nextResumeAt =
+    [totalPacing, ...providers.map((provider) => provider.pacing)]
+      .filter((window) => !window.allowed && window.resumeAt)
+      .map((window) => window.resumeAt as string)
+      .sort()[0] ?? null;
   return {
     day: state.day,
     persistence: databasePersistenceReady ? 'postgres+memory' : 'memory-only',
     totalTokens,
     totalCap: cap,
     totalCapReached: cap > 0 && totalTokens >= cap,
+    pacing: {
+      enabled: tokenPacingEnabled(),
+      burstTokens:
+        cap > 0 ? pacingBurstTokens(cap) : DEFAULT_PACING_BURST_TOKENS,
+      total: totalPacing,
+      nextResumeAt,
+    },
     providers,
   };
 }
@@ -279,6 +558,8 @@ export function getTokenLedgerSnapshot(): TokenLedgerSnapshot {
 export async function resetTokenLedger(): Promise<void> {
   const day = state.day;
   state = emptyState();
+  providerReservations.clear();
+  totalReservations = 0;
   persist();
   try {
     const [{ db, llmTokenUsageDaily }, { eq }] = await Promise.all([

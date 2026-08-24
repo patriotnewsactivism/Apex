@@ -4,8 +4,10 @@ import { eq, and, asc, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task, NewTask } from '@workspace/db';
 import type { TaskInput, TaskStatus } from './types.js';
 import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure } from './runtime-health.js';
-import { isLLMDailyBudgetPause, shouldSuppressImmediateLLMRetry } from './provider-failure.js';
-import { msUntilDailyReset } from './token-ledger.js';
+import {
+  getLLMPauseRetryAt,
+  shouldSuppressImmediateLLMRetry,
+} from './provider-failure.js';
 
 // ─── Task Queue ───────────────────────────────────────────────────────────────
 
@@ -181,24 +183,22 @@ export class TaskQueue {
 
   /** Fail a task, optionally retry with exponential backoff */
   async fail(taskId: string, error: string): Promise<void> {
-    // The workspace-wide daily ledger cannot recover on a seconds-long retry.
-    // Preserve the work and defer it to just after the exact UTC reset without
-    // consuming its task-specific retry budget.
-    const dailyBudgetRetryAt = isLLMDailyBudgetPause(error)
-      ? new Date(Date.now() + msUntilDailyReset() + 5_000)
-      : null;
+    // Quota/capacity pauses cannot recover on a seconds-long retry. Preserve
+    // the work without consuming its task-specific retry budget. A small,
+    // deterministic task-ID jitter prevents every parked agent from waking in
+    // the same millisecond at a provider/UTC reset.
+    const capacityRetryAt = getLLMPauseRetryAt(error, taskId);
 
     try {
       const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
       if (task) {
-        if (dailyBudgetRetryAt) {
+        if (capacityRetryAt) {
           await db
             .update(tasks)
             .set({
               status: 'pending',
-              retryCount: 0,
               errorMessage: error,
-              nextRetryAt: dailyBudgetRetryAt,
+              nextRetryAt: capacityRetryAt,
               leasedAt: null,
               updatedAt: new Date(),
             })
@@ -241,11 +241,10 @@ export class TaskQueue {
 
     const memTask = this.memoryQueue.find((t) => t.id === taskId);
     if (memTask) {
-      if (dailyBudgetRetryAt) {
+      if (capacityRetryAt) {
         memTask.status = 'pending';
-        memTask.retryCount = 0;
         memTask.errorMessage = error;
-        memTask.nextRetryAt = dailyBudgetRetryAt;
+        memTask.nextRetryAt = capacityRetryAt;
         memTask.leasedAt = null;
         return;
       }

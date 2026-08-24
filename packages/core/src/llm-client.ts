@@ -1,9 +1,11 @@
 import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } from './types.js';
 import {
-  isProviderOverDailyCap,
   isTotalDailyCapReached,
   msUntilDailyReset,
   recordTokenUsage,
+  reserveProviderTokenCapacity,
+  reserveTotalTokenCapacity,
+  type TokenCapacityReservation,
 } from './token-ledger.js';
 
 // ─── APEX Free-First Intelligence Stack ──────────────────────────────────────
@@ -154,6 +156,22 @@ export function historySize(messages: LLMMessage[]): number {
   );
 }
 
+/** Conservative pre-call reservation. Actual provider usage replaces this
+ * in-flight estimate after the response is recorded. */
+export function estimateLLMRequestTokens(
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+  maxOutputTokens: number,
+): number {
+  const messageChars = historySize(messages);
+  const toolChars = tools?.length ? JSON.stringify(tools).length : 0;
+  const promptEstimate = Math.ceil((messageChars + toolChars) / 4);
+  return Math.max(
+    512,
+    promptEstimate + Math.max(0, Math.floor(maxOutputTokens)),
+  );
+}
+
 export function trimMessageHistory(
   messages: LLMMessage[],
   maxChars: number = DEFAULT_HISTORY_CHAR_BUDGET,
@@ -226,8 +244,17 @@ type ProviderFailureEvent = {
 };
 
 const providerFailureEvents: ProviderFailureEvent[] = [];
-const degradedToolCallEvents: Array<{ provider: string; model: string; at: number }> = [];
-const credentialCooldowns = new Map<string, number>();
+const degradedToolCallEvents: Array<{
+  provider: string;
+  model: string;
+  at: number;
+}> = [];
+type CredentialCooldown = {
+  until: number;
+  capacityPause: boolean;
+  reason: string;
+};
+const credentialCooldowns = new Map<string, CredentialCooldown>();
 
 const COOLDOWN_429_MS = 30_000;
 const COOLDOWN_402_MS = 6 * 60 * 60 * 1000;
@@ -261,18 +288,39 @@ function cooldownMs(status: number | undefined, message: string): number {
   return COOLDOWN_429_MS;
 }
 
-function credentialInCooldown(id: string): boolean {
-  const until = credentialCooldowns.get(id);
-  if (!until) return false;
-  if (Date.now() >= until) {
-    credentialCooldowns.delete(id);
-    return false;
-  }
-  return true;
+function isCapacityFailure(
+  status: number | undefined,
+  message: string,
+): boolean {
+  return (
+    status === 429 ||
+    ((status === 401 || status === 403) &&
+      /free.?tier.?only|allocationquota|free quota|quota exhausted/i.test(
+        message,
+      ))
+  );
 }
 
-function setCredentialCooldown(id: string, status: number | undefined, message: string): void {
-  credentialCooldowns.set(id, Date.now() + cooldownMs(status, message));
+function credentialCooldown(id: string): CredentialCooldown | null {
+  const cooldown = credentialCooldowns.get(id);
+  if (!cooldown) return null;
+  if (Date.now() >= cooldown.until) {
+    credentialCooldowns.delete(id);
+    return null;
+  }
+  return cooldown;
+}
+
+function setCredentialCooldown(
+  id: string,
+  status: number | undefined,
+  message: string,
+): void {
+  credentialCooldowns.set(id, {
+    until: Date.now() + cooldownMs(status, message),
+    capacityPause: isCapacityFailure(status, message),
+    reason: message.slice(0, 240),
+  });
 }
 
 function clearCredentialCooldown(id: string): void {
@@ -490,6 +538,46 @@ async function callCompatibleProvider(
 
 // ─── Client ──────────────────────────────────────────────────────────────────
 
+type CapacityBlock = {
+  source: string;
+  resumeAt: string | null;
+  reason: string;
+};
+
+function capacityBlockFromReservation(
+  source: string,
+  reservation: TokenCapacityReservation,
+): CapacityBlock {
+  return {
+    source,
+    resumeAt: reservation.resumeAt,
+    reason:
+      reservation.reason === "daily_cap"
+        ? "daily cap reached"
+        : "daily allowance pacing",
+  };
+}
+
+function capacityPauseError(blocks: CapacityBlock[]): Error {
+  const timestamps = blocks
+    .map((block) => (block.resumeAt ? Date.parse(block.resumeAt) : Number.NaN))
+    .filter(Number.isFinite);
+  const resumeAt = timestamps.length
+    ? new Date(Math.min(...timestamps)).toISOString()
+    : new Date(Date.now() + 60_000).toISOString();
+  const detail = [
+    ...new Map(
+      blocks.map((block) => [
+        `${block.source}:${block.reason}`,
+        `${block.source}: ${block.reason}`,
+      ]),
+    ).values(),
+  ].join(" | ");
+  return new Error(
+    `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || "configured free capacity is temporarily unavailable"}`,
+  );
+}
+
 class MultiProviderClient {
   private config: LLMClientConfig;
 
@@ -508,105 +596,166 @@ class MultiProviderClient {
       }
 
       const trimmed = trimMessageHistory(messages);
-      const providerErrors: string[] = [];
-      const skipReasons: string[] = [];
+      const estimatedTokens = estimateLLMRequestTokens(
+        trimmed.messages,
+        tools,
+        this.config.maxTokens ?? 2048,
+      );
+      const totalReservation = reserveTotalTokenCapacity(estimatedTokens);
+      if (!totalReservation.allowed) {
+        throw capacityPauseError([
+          capacityBlockFromReservation("workspace", totalReservation),
+        ]);
+      }
 
-      for (const providerName of getProviderOrderForRole(this.config.role)) {
-        const provider = PROVIDER_BY_NAME.get(providerName);
-        if (!provider) continue;
+      try {
+        const providerErrors: string[] = [];
+        const skipReasons: string[] = [];
+        const capacityBlocks: CapacityBlock[] = [];
 
-        const activationIssue = providerActivationIssue(provider);
-        if (activationIssue) {
-          skipReasons.push(`${provider.name}: ${activationIssue}`);
-          continue;
-        }
+        for (const providerName of getProviderOrderForRole(this.config.role)) {
+          const provider = PROVIDER_BY_NAME.get(providerName);
+          if (!provider) continue;
 
-        if (isProviderOverDailyCap(provider.name)) {
-          skipReasons.push(`${provider.name}: APEX per-provider daily cap reached`);
-          continue;
-        }
-
-        const baseURL = providerBaseURL(provider);
-        if (!baseURL) {
-          skipReasons.push(`${provider.name}: base URL is not configured`);
-          continue;
-        }
-
-        const credentials = configuredCredentials(provider);
-        if (credentials.length === 0) {
-          skipReasons.push(
-            `${provider.name}: no API key (${provider.apiKeyEnvs.join(' or ')})`,
-          );
-          continue;
-        }
-
-        let providerAttempted = false;
-
-        for (const credential of credentials) {
-          const credentialId = `${provider.name}:${credential.env}`;
-          if (credentialInCooldown(credentialId)) {
-            skipReasons.push(`${credentialId}: credential in cooldown`);
+          const activationIssue = providerActivationIssue(provider);
+          if (activationIssue) {
+            skipReasons.push(`${provider.name}: ${activationIssue}`);
             continue;
           }
 
-          providerAttempted = true;
+          const baseURL = providerBaseURL(provider);
+          if (!baseURL) {
+            skipReasons.push(`${provider.name}: base URL is not configured`);
+            continue;
+          }
+
+          const credentials = configuredCredentials(provider);
+          if (credentials.length === 0) {
+            skipReasons.push(
+              `${provider.name}: no API key (${provider.apiKeyEnvs.join(" or ")})`,
+            );
+            continue;
+          }
+
+          const providerReservation = reserveProviderTokenCapacity(
+            provider.name,
+            estimatedTokens,
+          );
+          if (!providerReservation.allowed) {
+            capacityBlocks.push(
+              capacityBlockFromReservation(provider.name, providerReservation),
+            );
+            skipReasons.push(
+              `${provider.name}: APEX ${providerReservation.reason === "daily_cap" ? "per-provider daily cap reached" : "daily allowance pacing active"}`,
+            );
+            continue;
+          }
 
           try {
-            const result = await callCompatibleProvider(
-              provider,
-              credential.key,
-              trimmed.messages,
-              tools,
-              this.config,
-            );
-            clearCredentialCooldown(credentialId);
-            recordTokenUsage(provider.name, result.usage);
-            return result;
-          } catch (error) {
-            const err = error as Error & { status?: number };
-            const status = err.status;
-            const message = err.name === 'AbortError' ? 'request timed out' : err.message;
-            recordProviderFailure(provider.name, provider.model, status, message);
-            setCredentialCooldown(credentialId, status, message);
-            providerErrors.push(
-              `${provider.name}/${provider.model} via ${credential.env}: ` +
-                `${status ? `HTTP ${status} ` : ''}${message}`,
-            );
+            let providerAttempted = false;
 
-            if (isRequestTooLargeError(status, message)) {
+            for (const credential of credentials) {
+              const credentialId = `${provider.name}:${credential.env}`;
+              const activeCooldown = credentialCooldown(credentialId);
+              if (activeCooldown) {
+                skipReasons.push(`${credentialId}: credential in cooldown`);
+                if (activeCooldown.capacityPause) {
+                  capacityBlocks.push({
+                    source: credentialId,
+                    resumeAt: new Date(activeCooldown.until).toISOString(),
+                    reason: activeCooldown.reason,
+                  });
+                }
+                continue;
+              }
+
+              providerAttempted = true;
+
               try {
-                const emergency = trimMessageHistory(
-                  messages,
-                  EMERGENCY_HISTORY_CHAR_BUDGET,
-                );
                 const result = await callCompatibleProvider(
                   provider,
                   credential.key,
-                  emergency.messages,
+                  trimmed.messages,
                   tools,
                   this.config,
                 );
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
                 return result;
-              } catch {
-                // Continue to the next free credential/provider.
+              } catch (error) {
+                const err = error as Error & { status?: number };
+                const status = err.status;
+                const message =
+                  err.name === "AbortError" ? "request timed out" : err.message;
+                recordProviderFailure(
+                  provider.name,
+                  provider.model,
+                  status,
+                  message,
+                );
+                setCredentialCooldown(credentialId, status, message);
+                const newCooldown = credentialCooldown(credentialId);
+                if (newCooldown?.capacityPause) {
+                  capacityBlocks.push({
+                    source: credentialId,
+                    resumeAt: new Date(newCooldown.until).toISOString(),
+                    reason: message.slice(0, 240),
+                  });
+                }
+                providerErrors.push(
+                  `${provider.name}/${provider.model} via ${credential.env}: ` +
+                    `${status ? `HTTP ${status} ` : ""}${message}`,
+                );
+
+                if (isRequestTooLargeError(status, message)) {
+                  try {
+                    const emergency = trimMessageHistory(
+                      messages,
+                      EMERGENCY_HISTORY_CHAR_BUDGET,
+                    );
+                    const result = await callCompatibleProvider(
+                      provider,
+                      credential.key,
+                      emergency.messages,
+                      tools,
+                      this.config,
+                    );
+                    clearCredentialCooldown(credentialId);
+                    recordTokenUsage(provider.name, result.usage);
+                    return result;
+                  } catch {
+                    // Continue to the next free credential/provider.
+                  }
+                }
               }
             }
+
+            if (
+              !providerAttempted &&
+              providerRequirements(provider).length > 0
+            ) {
+              skipReasons.push(
+                `${provider.name}: ${providerRequirements(provider).join(", ")}`,
+              );
+            }
+          } finally {
+            providerReservation.release();
           }
         }
 
-        if (!providerAttempted && providerRequirements(provider).length > 0) {
-          skipReasons.push(`${provider.name}: ${providerRequirements(provider).join(', ')}`);
-        }
-      }
+        if (capacityBlocks.length > 0) throw capacityPauseError(capacityBlocks);
 
-      const details = [...providerErrors, ...skipReasons];
-      throw new Error(
-        `All LLM providers failed or were unavailable. ${
-          details.length ? details.join(' | ') : 'No usable provider credential was configured.'
-        }`,
-      );
+        const details = [...providerErrors, ...skipReasons];
+        throw new Error(
+          `All LLM providers failed or were unavailable. ${
+            details.length
+              ? details.join(" | ")
+              : "No usable provider credential was configured."
+          }`,
+        );
+      } finally {
+        totalReservation.release();
+      }
     } finally {
       releaseLLMConcurrencySlot();
     }
