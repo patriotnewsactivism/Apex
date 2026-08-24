@@ -1,0 +1,347 @@
+name: Apply provider backpressure integration v2
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'fix/provider-backpressure-on-quota-pacing' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply exact integration patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}\n--- needle ---\n{old}")
+              p.write_text(text.replace(old, new, 1))
+
+          def insert_after(path: str, needle: str, addition: str) -> None:
+              replace_once(path, needle, needle + addition)
+
+          llm = 'packages/core/src/llm-client.ts'
+
+          insert_after(llm, "  activationDescription?: string;\n",
+                       "  /** Minimum spacing between request starts for this logical provider. */\n  minIntervalMs: number;\n")
+          insert_after(llm, "    apiKeyEnvs: ['GEMINI_FREE_API_KEY', 'GEMINI_FREE_API_KEY_2'],\n", "    minIntervalMs: 4_000,\n")
+          insert_after(llm, "      'set GROQ_FREE_TIER_CONFIRMED=true only for a Groq Free plan project/key',\n", "    minIntervalMs: 2_200,\n")
+          insert_after(llm, "    apiKeyEnvs: ['COHERE_API_KEY'],\n", "    minIntervalMs: 3_200,\n")
+          insert_after(llm, "      'set POOLSIDE_FREE_ACCESS_CONFIRMED=true only while this account is on Poolside free access',\n", "    minIntervalMs: 1_500,\n")
+          insert_after(llm, "      'enable Alibaba Model Studio Free quota only, then set QWEN_FREE_QUOTA_ONLY=true',\n", "    minIntervalMs: 1_500,\n")
+          insert_after(llm, "    apiKeyEnvs: ['KILO_API_KEY'],\n", "    minIntervalMs: 1_000,\n")
+          insert_after(llm, "    paid: true,\n", "    minIntervalMs: 500,\n")
+
+          insert_after(llm, "const credentialCooldowns = new Map<string, CredentialCooldown>();\n",
+          """type ProviderRequestError = Error & { status?: number; retryAfterMs?: number };
+          const providerCooldowns = new Map<ApexProviderName, number>();
+          const providerNextAttemptAt = new Map<ApexProviderName, number>();
+          """)
+
+          replace_once(llm, "function cooldownMs(status: number | undefined, message: string): number {",
+          """export function parseRetryAfterMs(value: string | null, now: number = Date.now()): number | undefined {
+            if (!value) return undefined;
+            const seconds = Number(value);
+            if (Number.isFinite(seconds)) return Math.max(0, Math.ceil(seconds * 1000));
+            const dateMs = Date.parse(value);
+            if (Number.isFinite(dateMs)) return Math.max(0, dateMs - now);
+            return undefined;
+          }
+
+          function cooldownMs(status: number | undefined, message: string): number {""")
+
+          replace_once(llm,
+          """function setCredentialCooldown(
+            id: string,
+            status: number | undefined,
+            message: string,
+          ): void {
+            credentialCooldowns.set(id, {
+              until: Date.now() + cooldownMs(status, message),""",
+          """function setCredentialCooldown(
+            id: string,
+            status: number | undefined,
+            message: string,
+            retryAfterMs?: number,
+          ): void {
+            const duration = Math.max(cooldownMs(status, message), retryAfterMs ?? 0);
+            credentialCooldowns.set(id, {
+              until: Date.now() + duration,""")
+
+          insert_after(llm,
+          """function clearCredentialCooldown(id: string): void {
+            credentialCooldowns.delete(id);
+          }
+          """,
+          """
+          function providerMinIntervalMs(provider: ProviderSpec): number {
+            const envName = `APEX_LLM_MIN_INTERVAL_MS_${provider.name.toUpperCase().replace(/-/g, '_')}`;
+            const configured = Number(process.env[envName]);
+            if (Number.isFinite(configured) && configured >= 0) {
+              return Math.min(60_000, Math.floor(configured));
+            }
+            return provider.minIntervalMs;
+          }
+
+          export function getProviderRequestSpacingMs(providerName: ApexProviderName): number {
+            const provider = PROVIDER_BY_NAME.get(providerName);
+            if (!provider) throw new Error(`Unknown APEX provider: ${providerName}`);
+            return providerMinIntervalMs(provider);
+          }
+
+          function providerReadyAt(provider: ProviderSpec): number {
+            const now = Date.now();
+            const cooldownUntil = providerCooldowns.get(provider.name) ?? 0;
+            if (cooldownUntil && cooldownUntil <= now) providerCooldowns.delete(provider.name);
+            return Math.max(
+              providerCooldowns.get(provider.name) ?? 0,
+              providerNextAttemptAt.get(provider.name) ?? 0,
+            );
+          }
+
+          function reserveProviderAttempt(provider: ProviderSpec): void {
+            providerNextAttemptAt.set(provider.name, Date.now() + providerMinIntervalMs(provider));
+          }
+
+          function setProviderCooldown(
+            provider: ProviderSpec,
+            status: number | undefined,
+            message: string,
+            retryAfterMs?: number,
+          ): void {
+            const providerWide =
+              status === 429 ||
+              status === 502 ||
+              status === 503 ||
+              status === 504 ||
+              ((status === 401 || status === 403) && DAILY_QUOTA_PATTERN.test(message));
+            if (!providerWide) return;
+            const duration = Math.max(cooldownMs(status, message), retryAfterMs ?? 0);
+            providerCooldowns.set(
+              provider.name,
+              Math.max(providerCooldowns.get(provider.name) ?? 0, Date.now() + duration),
+            );
+          }
+
+          export function getProviderBackpressureSnapshot(): {
+            pausedProviders: string[];
+            nextResumeAt: string | null;
+          } {
+            const now = Date.now();
+            const paused: Array<{ provider: string; readyAt: number }> = [];
+            for (const provider of PROVIDERS) {
+              if (!providerConfigured(provider)) continue;
+              const readyAt = providerReadyAt(provider);
+              if (readyAt > now) paused.push({ provider: provider.name, readyAt });
+            }
+            const next = paused.length ? Math.min(...paused.map((entry) => entry.readyAt)) : null;
+            return {
+              pausedProviders: paused.map((entry) => entry.provider),
+              nextResumeAt: next === null ? null : new Date(next).toISOString(),
+            };
+          }
+          """)
+
+          insert_after(llm,
+          """function releaseLLMConcurrencySlot(): void {
+            activeLLMCalls = Math.max(0, activeLLMCalls - 1);
+            const next = llmCallWaitQueue.shift();
+            if (next) next();
+          }
+          """,
+          """
+          function sleep(ms: number): Promise<void> {
+            return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+          }
+
+          function capacityWaitBudgetMs(): number {
+            const configured = Number(process.env.APEX_LLM_CAPACITY_WAIT_MS ?? 15_000);
+            return Number.isFinite(configured)
+              ? Math.min(60_000, Math.max(0, Math.floor(configured)))
+              : 15_000;
+          }
+          """)
+
+          replace_once(llm,
+              "      throw Object.assign(new Error(detail), { status: response.status });",
+              """      throw Object.assign(new Error(detail), {
+                status: response.status,
+                retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+              });""")
+
+          replace_once(llm, "function capacityPauseError(blocks: CapacityBlock[]): Error {",
+                       "function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []): Error {")
+          replace_once(llm, "    ).values(),\n  ].join(\" | \");",
+                       "    ).values(),\n    ...otherDetails,\n  ].join(\" | \");")
+
+          insert_after(llm, "        const capacityBlocks: CapacityBlock[] = [];\n",
+                       "        let nonCapacityFailureSeen = false;\n")
+
+          replace_once(llm,
+          """          const providerReservation = reserveProviderTokenCapacity(
+                    provider.name,
+                    estimatedTokens,
+                  );""",
+          """          const readyAt = providerReadyAt(provider);
+                  if (readyAt > Date.now()) {
+                    const waitMs = Math.max(0, readyAt - Date.now());
+                    if (waitMs <= capacityWaitBudgetMs()) {
+                      await sleep(waitMs);
+                    } else {
+                      capacityBlocks.push({
+                        source: provider.name,
+                        resumeAt: new Date(readyAt).toISOString(),
+                        reason: 'provider pacing/cooldown',
+                      });
+                      skipReasons.push(`${provider.name}: provider pacing/cooldown (${Math.ceil(waitMs / 1000)}s)`);
+                      continue;
+                    }
+                  }
+
+                  const providerReservation = reserveProviderTokenCapacity(
+                    provider.name,
+                    estimatedTokens,
+                  );""")
+
+          replace_once(llm,
+                       "          try {\n            let providerAttempted = false;",
+                       "          reserveProviderAttempt(provider);\n\n          try {\n            let providerAttempted = false;")
+          replace_once(llm, "                const err = error as Error & { status?: number };",
+                       "                const err = error as ProviderRequestError;")
+          replace_once(llm,
+                       "                setCredentialCooldown(credentialId, status, message);\n                const newCooldown = credentialCooldown(credentialId);",
+                       "                setCredentialCooldown(credentialId, status, message, err.retryAfterMs);\n                setProviderCooldown(provider, status, message, err.retryAfterMs);\n                const capacityFailure = isCapacityFailure(status, message);\n                if (!capacityFailure) nonCapacityFailureSeen = true;\n                const newCooldown = credentialCooldown(credentialId);")
+          replace_once(llm,
+                       "                if (isRequestTooLargeError(status, message)) {",
+                       "                if (capacityFailure) break;\n\n                if (isRequestTooLargeError(status, message)) {")
+          replace_once(llm,
+                       "        if (capacityBlocks.length > 0) throw capacityPauseError(capacityBlocks);\n\n        const details = [...providerErrors, ...skipReasons];",
+                       "        const details = [...providerErrors, ...skipReasons];\n        if (capacityBlocks.length > 0 && !nonCapacityFailureSeen) {\n          throw capacityPauseError(capacityBlocks, details);\n        }")
+
+          api = 'packages/api-server/src/index.ts'
+          replace_once(api,
+          "import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster } from '@workspace/core';",
+          "import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot } from '@workspace/core';")
+          insert_after(api, "    const tokenLedger = getTokenLedgerSnapshot();\n",
+                       "    const providerBackpressure = getProviderBackpressureSnapshot();\n")
+          replace_once(api,
+          """    const pausedProviders = tokenLedger.providers
+              .filter((provider) => provider.capReached || !provider.pacing.allowed)
+              .map((provider) => provider.provider);""",
+          """    const pausedProviders = [...new Set([
+              ...tokenLedger.providers
+                .filter((provider) => provider.capReached || !provider.pacing.allowed)
+                .map((provider) => provider.provider),
+              ...providerBackpressure.pausedProviders,
+            ])];""")
+          insert_after(api,
+                       "      tokenLedger.providers.some((provider) => provider.capReached);\n",
+                       "    const aggregatePaused = !tokenLedger.pacing.total.allowed;\n")
+          replace_once(api, "      : pausedProviders.length > 0\n", "      : aggregatePaused || pausedProviders.length > 0\n")
+          insert_after(api, "        : \"available\";\n",
+          """    const resumeCandidates = [
+              tokenLedger.pacing.nextResumeAt,
+              providerBackpressure.nextResumeAt,
+            ].filter((value): value is string => Boolean(value));
+            const nextResumeAt = resumeCandidates.length
+              ? resumeCandidates.sort((a, b) => Date.parse(a) - Date.parse(b))[0]
+              : null;
+          """)
+          replace_once(api, "        nextResumeAt: tokenLedger.pacing.nextResumeAt,", "        nextResumeAt,")
+
+          ledger = 'packages/core/src/token-ledger.ts'
+          replace_once(ledger,
+          """function pacingBurstTokens(cap: number): number {
+            const raw = Number(
+              process.env.APEX_TOKEN_PACING_BURST_TOKENS ?? DEFAULT_PACING_BURST_TOKENS,
+            );
+            const configured = Number.isFinite(raw)
+              ? Math.max(0, Math.floor(raw))
+              : DEFAULT_PACING_BURST_TOKENS;
+            return Math.min(cap, configured);
+          }""",
+          """function pacingBurstTokens(cap: number): number {
+            const envValue = process.env.APEX_TOKEN_PACING_BURST_TOKENS;
+            const raw =
+              envValue === undefined || envValue.trim() === ''
+                ? DEFAULT_PACING_BURST_TOKENS
+                : Number(envValue);
+            const configured = Number.isFinite(raw)
+              ? Math.max(0, Math.floor(raw))
+              : DEFAULT_PACING_BURST_TOKENS;
+            return Math.min(cap, configured);
+          }""")
+
+          failure = 'packages/core/src/provider-failure.ts'
+          replace_once(failure,
+              "  return /(\\b429\\b|\\b402\\b|\\b404\\b|\\b413\\b|rate limit|insufficient credits|quota|tokens per day|request too large|model is unavailable|no providers were configured|no providers .*api keys)/i.test(",
+              "  return /(\\b429\\b|\\b402\\b|\\b404\\b|\\b413\\b|\\b50[234]\\b|rate limit|credential in cooldown|insufficient credits|quota|tokens per day|request too large|model is unavailable|temporarily unavailable|overloaded|no providers were configured|no providers .*api keys)/i.test(")
+
+          env = '.env.example'
+          insert_after(env, "APEX_MAX_CONCURRENT_LLM_CALLS=3\n",
+          """APEX_LLM_CAPACITY_WAIT_MS=15000
+          # Provider spacing defaults can be overridden only from measured account/project limits.
+          # APEX_LLM_MIN_INTERVAL_MS_GOOGLE_GEMINI=4000
+          # APEX_LLM_MIN_INTERVAL_MS_GROQ=2200
+          # APEX_LLM_MIN_INTERVAL_MS_COHERE=3200
+          """)
+
+          Path('scripts/verify-provider-backpressure.ts').write_text("""import { getProviderRequestSpacingMs, parseRetryAfterMs } from '../packages/core/src/llm-client.js';
+
+          let failures = 0;
+          function check(label: string, condition: boolean, detail?: unknown): void {
+            if (condition) console.log(`  ✅ ${label}`);
+            else { failures++; console.error(`  ❌ ${label}`, detail ?? ''); }
+          }
+
+          check('Gemini default spacing is 4s', getProviderRequestSpacingMs('google-gemini') === 4000);
+          check('Groq default spacing leaves margin under 30 RPM', getProviderRequestSpacingMs('groq') === 2200);
+          check('Cohere default spacing leaves margin under 20 RPM', getProviderRequestSpacingMs('cohere') === 3200);
+          check('Retry-After numeric seconds are honored', parseRetryAfterMs('2', 0) === 2000);
+          check('Retry-After HTTP dates are honored', parseRetryAfterMs('Thu, 01 Jan 1970 00:00:05 GMT', 1000) === 4000);
+          check('invalid Retry-After is ignored', parseRetryAfterMs('nonsense', 0) === undefined);
+
+          console.log(failures === 0 ? '✅ ALL PROVIDER BACKPRESSURE GUARDS PASSED' : `❌ ${failures} CHECK(S) FAILED`);
+          process.exit(failures === 0 ? 0 : 1);
+          """)
+
+          ci = '.github/workflows/ci.yml'
+          insert_after(ci,
+                       '          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-provider-routing.ts"\n',
+                       '          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-provider-backpressure.ts"\n')
+
+          for workflow in [
+              '.github/workflows/apply-backpressure-integration.yml',
+              '.github/workflows/apply-backpressure-integration-v2.yml',
+          ]:
+              p = Path(workflow)
+              if p.exists(): p.unlink()
+          PY
+
+          git diff --check
+          git status --short
+
+      - name: Commit integrated patch to PR branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Integrate provider backpressure with quota pacing"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
