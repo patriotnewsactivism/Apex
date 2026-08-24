@@ -1,0 +1,214 @@
+name: Apply atomic backpressure hardening
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'fix/provider-backpressure-on-quota-pacing' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply source hardening
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}\n--- needle ---\n{old}")
+              p.write_text(text.replace(old, new, 1))
+
+          llm = 'packages/core/src/llm-client.ts'
+
+          replace_once(llm,
+          """function providerMinIntervalMs(provider: ProviderSpec): number {
+            const envName = `APEX_LLM_MIN_INTERVAL_MS_${provider.name.toUpperCase().replace(/-/g, '_')}`;
+            const configured = Number(process.env[envName]);
+            if (Number.isFinite(configured) && configured >= 0) {
+              return Math.min(60_000, Math.floor(configured));
+            }
+            return provider.minIntervalMs;
+          }""",
+          """function providerMinIntervalMs(provider: ProviderSpec): number {
+            const envName = `APEX_LLM_MIN_INTERVAL_MS_${provider.name.toUpperCase().replace(/-/g, '_')}`;
+            const raw = process.env[envName];
+            if (raw === undefined || raw.trim() === '') return provider.minIntervalMs;
+            const configured = Number(raw);
+            if (Number.isFinite(configured) && configured >= 0) {
+              return Math.min(60_000, Math.floor(configured));
+            }
+            return provider.minIntervalMs;
+          }""")
+
+          replace_once(llm,
+          """function reserveProviderAttempt(provider: ProviderSpec): void {
+            providerNextAttemptAt.set(provider.name, Date.now() + providerMinIntervalMs(provider));
+          }""",
+          """function tryReserveProviderAttempt(provider: ProviderSpec): { reserved: boolean; readyAt: number } {
+            const now = Date.now();
+            const readyAt = providerReadyAt(provider);
+            if (readyAt > now) return { reserved: false, readyAt };
+            // No await occurs between readiness and reservation, so concurrent
+            // complete() calls cannot claim the same provider start window.
+            providerNextAttemptAt.set(provider.name, now + providerMinIntervalMs(provider));
+            return { reserved: true, readyAt: now };
+          }""")
+
+          replace_once(llm,
+          """function isCapacityFailure(
+            status: number | undefined,
+            message: string,
+          ): boolean {
+            return (
+              status === 429 ||
+              ((status === 401 || status === 403) &&
+                /free.?tier.?only|allocationquota|free quota|quota exhausted/i.test(
+                  message,
+                ))
+            );
+          }""",
+          """function isCapacityFailure(
+            status: number | undefined,
+            message: string,
+          ): boolean {
+            return (
+              status === 429 ||
+              status === 502 ||
+              status === 503 ||
+              status === 504 ||
+              ((status === 401 || status === 403) &&
+                /free.?tier.?only|allocationquota|free quota|quota exhausted/i.test(
+                  message,
+                ))
+            );
+          }""")
+
+          replace_once(llm,
+          """export function getProviderBackpressureSnapshot(): {
+            pausedProviders: string[];
+            nextResumeAt: string | null;
+          } {
+            const now = Date.now();
+            const paused: Array<{ provider: string; readyAt: number }> = [];
+            for (const provider of PROVIDERS) {
+              if (!providerConfigured(provider)) continue;
+              const readyAt = providerReadyAt(provider);
+              if (readyAt > now) paused.push({ provider: provider.name, readyAt });
+            }
+            const next = paused.length ? Math.min(...paused.map((entry) => entry.readyAt)) : null;
+            return {
+              pausedProviders: paused.map((entry) => entry.provider),
+              nextResumeAt: next === null ? null : new Date(next).toISOString(),
+            };
+          }""",
+          """export function getProviderBackpressureSnapshot(): {
+            pausedProviders: string[];
+            nextResumeAt: string | null;
+          } {
+            const now = Date.now();
+            const paused: Array<{ provider: string; readyAt: number }> = [];
+            for (const provider of PROVIDERS) {
+              if (!providerConfigured(provider)) continue;
+              const readyAt = providerCooldowns.get(provider.name) ?? 0;
+              if (readyAt > now) paused.push({ provider: provider.name, readyAt });
+              else if (readyAt) providerCooldowns.delete(provider.name);
+            }
+            const next = paused.length ? Math.min(...paused.map((entry) => entry.readyAt)) : null;
+            return {
+              pausedProviders: paused.map((entry) => entry.provider),
+              nextResumeAt: next === null ? null : new Date(next).toISOString(),
+            };
+          }""")
+
+          replace_once(llm,
+          """function sleep(ms: number): Promise<void> {
+            return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+          }
+
+          function capacityWaitBudgetMs(): number {
+            const configured = Number(process.env.APEX_LLM_CAPACITY_WAIT_MS ?? 15_000);
+            return Number.isFinite(configured)
+              ? Math.min(60_000, Math.max(0, Math.floor(configured)))
+              : 15_000;
+          }
+
+          """, "")
+
+          replace_once(llm,
+          """          const readyAt = providerReadyAt(provider);
+                    if (readyAt > Date.now()) {
+                      const waitMs = Math.max(0, readyAt - Date.now());
+                      if (waitMs <= capacityWaitBudgetMs()) {
+                        await sleep(waitMs);
+                      } else {
+                        capacityBlocks.push({
+                          source: provider.name,
+                          resumeAt: new Date(readyAt).toISOString(),
+                          reason: 'provider pacing/cooldown',
+                        });
+                        skipReasons.push(
+                          `${provider.name}: provider pacing/cooldown (${Math.ceil(waitMs / 1000)}s)`,
+                        );
+                        continue;
+                      }
+                    }
+
+                    const providerReservation = reserveProviderTokenCapacity(""",
+          """          const providerAttempt = tryReserveProviderAttempt(provider);
+                    if (!providerAttempt.reserved) {
+                      const waitMs = Math.max(0, providerAttempt.readyAt - Date.now());
+                      capacityBlocks.push({
+                        source: provider.name,
+                        resumeAt: new Date(providerAttempt.readyAt).toISOString(),
+                        reason: 'provider pacing/cooldown',
+                      });
+                      skipReasons.push(
+                        `${provider.name}: provider pacing/cooldown (${Math.ceil(waitMs / 1000)}s)`,
+                      );
+                      continue;
+                    }
+
+                    const providerReservation = reserveProviderTokenCapacity(""")
+
+          replace_once(llm, "\n          reserveProviderAttempt(provider);\n", "\n")
+
+          env = '.env.example'
+          replace_once(env, 'APEX_LLM_CAPACITY_WAIT_MS=15000\n', '')
+
+          guard = 'scripts/verify-provider-backpressure.ts'
+          replace_once(guard,
+          """check('Cohere default spacing leaves margin under 20 RPM', getProviderRequestSpacingMs('cohere') === 3200);
+          check('Retry-After numeric seconds are honored', parseRetryAfterMs('2', 0) === 2000);""",
+          """check('Cohere default spacing leaves margin under 20 RPM', getProviderRequestSpacingMs('cohere') === 3200);
+          process.env.APEX_LLM_MIN_INTERVAL_MS_GROQ = '';
+          check('empty spacing override falls back safely', getProviderRequestSpacingMs('groq') === 2200);
+          delete process.env.APEX_LLM_MIN_INTERVAL_MS_GROQ;
+          check('Retry-After numeric seconds are honored', parseRetryAfterMs('2', 0) === 2000);""")
+          PY
+
+          git restore --source=HEAD -- .github/workflows
+          git diff --check
+          git status --short
+
+      - name: Commit hardened source to PR branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Make provider pacing atomic"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
