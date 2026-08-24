@@ -22,6 +22,10 @@ jobs:
       - name: Apply deterministic source integration
         run: python scripts/apply-provider-backpressure-integration.py
 
+      - name: Leave workflow changes for authorized connector cleanup
+        run: |
+          git restore --source=HEAD -- .github/workflows scripts/apply-provider-backpressure-integration.py
+
       - name: Verify patch shape
         run: |
           git diff --check
