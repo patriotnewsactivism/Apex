@@ -53,6 +53,7 @@ const BUILD_TIMEOUT_MS = Number(process.env.APEX_DEPLOY_BUILD_TIMEOUT_MS ?? 20 *
 const ACTIVATION_TIMEOUT_MS = Number(process.env.APEX_DEPLOY_ACTIVATION_TIMEOUT_MS ?? 15 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.APEX_DEPLOY_POLL_INTERVAL_MS ?? 15_000);
 const HEALTH_TIMEOUT_MS = 20_000;
+export const MAX_HEALTH_BODY_CHARS = 64_000;
 
 export interface LightsailDeployResult {
   buildId: string;
@@ -69,6 +70,19 @@ export interface DeployLogger {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Keep the complete, bounded health response for provenance parsing. The
+ * response used to be sliced to 500 characters before JSON.parse; once health
+ * gained legitimate fields, that converted valid JSON into a truncated string
+ * and falsely marked an ACTIVE, healthy deployment failed. */
+export function retainHealthResponseBody(body: string): string {
+  if (body.length > MAX_HEALTH_BODY_CHARS) {
+    throw new Error(
+      `/health response exceeded ${MAX_HEALTH_BODY_CHARS} characters; refusing to retain an unbounded body.`,
+    );
+  }
+  return body;
+}
 
 /** True when deploys are explicitly enabled for this environment. */
 export function isDeployEnabled(environment: 'staging' | 'production'): boolean {
@@ -245,11 +259,11 @@ async function verifyHealth(log: DeployLogger): Promise<{ serviceUrl: string; st
   const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
   try {
     const res = await fetch(healthUrl, { signal: controller.signal });
-    const body = (await res.text()).slice(0, 500);
+    const body = retainHealthResponseBody(await res.text());
     log(`Health check ${healthUrl} -> ${res.status}`);
     if (!res.ok) {
       throw new Error(
-        `Deployment is ACTIVE but ${healthUrl} returned ${res.status}: ${body}. The new ` +
+        `Deployment is ACTIVE but ${healthUrl} returned ${res.status}: ${body.slice(0, 500)}. The new ` +
           `release is live and unhealthy — roll back.`,
       );
     }
