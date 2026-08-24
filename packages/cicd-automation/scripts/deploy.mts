@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   const { environment, expectSha } = parseArgs(process.argv.slice(2));
   const log = (m: string) => console.log(`[deploy] ${m}`);
   try {
-    const result = await deployToLightsail(environment, log);
+    const result = await deployToLightsail(environment, log, expectSha);
     assertRunningCommit(result.healthBody, expectSha, log);
     log(`Done. build=${result.buildId} deployment=v${result.deploymentVersion} (${result.deploymentState}) health=${result.healthStatus}`);
     log(`Service: ${result.serviceUrl}`);

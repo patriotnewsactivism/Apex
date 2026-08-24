@@ -2,6 +2,7 @@
  * network calls: safe to run on every pull request. */
 import {
   MAX_HEALTH_BODY_CHARS,
+  immutableImageRef,
   retainHealthResponseBody,
 } from '../packages/cicd-automation/src/lightsail-deployer.js';
 
@@ -35,6 +36,30 @@ try {
   console.error(error);
 }
 check('expanded health response preserves the expected live commit', runningSha === expectedSha);
+check(
+  'mutable latest image is rewritten to the immutable short SHA tag',
+  immutableImageRef('535203103662.dkr.ecr.us-east-1.amazonaws.com/apex:latest', expectedSha) ===
+    '535203103662.dkr.ecr.us-east-1.amazonaws.com/apex:289c8ce52d2d',
+);
+check(
+  'digest image is rewritten to the immutable short SHA tag',
+  immutableImageRef(
+    '535203103662.dkr.ecr.us-east-1.amazonaws.com/apex@sha256:' + 'a'.repeat(64),
+    expectedSha,
+  ) === '535203103662.dkr.ecr.us-east-1.amazonaws.com/apex:289c8ce52d2d',
+);
+check(
+  'untagged image receives the immutable short SHA tag',
+  immutableImageRef('example/apex', expectedSha) === 'example/apex:289c8ce52d2d',
+);
+
+let invalidShaRejected = false;
+try {
+  immutableImageRef('example/apex:latest', 'not-a-sha');
+} catch {
+  invalidShaRejected = true;
+}
+check('invalid immutable image SHA is rejected', invalidShaRejected);
 
 let oversizedRejected = false;
 try {
