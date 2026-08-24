@@ -12,11 +12,10 @@
 //      A bare CodeBuild success does NOT redeploy the running service, so:
 //   3. Read the CURRENT deployment spec via
 //      `lightsail:GetContainerServiceDeployments` and resubmit it via
-//      `lightsail:CreateContainerServiceDeployment`. The spec is reused
-//      as-is — same containers, same env, same ports — because the image tag
-//      is `:latest` and the point is to pull the freshly built image, not to
-//      change configuration. Anything this code doesn't understand about the
-//      running spec is preserved rather than dropped.
+//      `lightsail:CreateContainerServiceDeployment`. The current spec is
+//      preserved, but the application container is pinned to the immutable
+//      `:<sha>` tag produced by CodeBuild so Lightsail cannot reuse a cached
+//      mutable `:latest` digest. Other env, ports, and sidecars are preserved.
 //   4. Poll `lightsail:GetContainerServiceDeployments` until the newest
 //      deployment leaves ACTIVATING.
 //   5. Prove it with the service's real health endpoint, not just deployment
@@ -143,12 +142,33 @@ async function lightsailClient() {
   }
 }
 
-/** Step 1-2: build the image and wait for the real terminal status. */
-async function runCodeBuild(log: DeployLogger): Promise<{ buildId: string; buildStatus: string }> {
+export function immutableImageRef(image: string, sourceSha: string): string {
+  const sha = sourceSha.trim();
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) {
+    throw new Error(`Cannot create immutable image tag from invalid source SHA: ${sourceSha}`);
+  }
+  const tag = sha.slice(0, 12);
+  const withoutDigest = image.replace(/@sha256:[0-9a-f]+$/i, '');
+  const lastSlash = withoutDigest.lastIndexOf('/');
+  const lastColon = withoutDigest.lastIndexOf(':');
+  if (lastColon > lastSlash) return `${withoutDigest.slice(0, lastColon)}:${tag}`;
+  return `${withoutDigest}:${tag}`;
+}
+
+/** Step 1-2: build the exact requested source and wait for the real terminal status. */
+async function runCodeBuild(
+  log: DeployLogger,
+  expectedSha?: string,
+): Promise<{ buildId: string; buildStatus: string; resolvedSourceVersion: string }> {
   const client = await codebuildClient();
   const { StartBuildCommand, BatchGetBuildsCommand } = await import('@aws-sdk/client-codebuild');
 
-  const started = await client.send(new StartBuildCommand({ projectName: CODEBUILD_PROJECT }));
+  const started = await client.send(
+    new StartBuildCommand({
+      projectName: CODEBUILD_PROJECT,
+      sourceVersion: expectedSha,
+    }),
+  );
   const buildId = started.build?.id;
   if (!buildId) {
     throw new Error(`CodeBuild StartBuild returned no build id for project ${CODEBUILD_PROJECT}`);
@@ -159,17 +179,34 @@ async function runCodeBuild(log: DeployLogger): Promise<{ buildId: string; build
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
     const { builds } = await client.send(new BatchGetBuildsCommand({ ids: [buildId] }));
-    const status = builds?.[0]?.buildStatus ?? 'UNKNOWN';
+    const build = builds?.[0];
+    const status = build?.buildStatus ?? 'UNKNOWN';
     if (status !== 'IN_PROGRESS') {
       log(`CodeBuild ${buildId} finished: ${status}`);
       if (status !== 'SUCCEEDED') {
-        const phase = builds?.[0]?.currentPhase ?? 'unknown phase';
+        const phase = build?.currentPhase ?? 'unknown phase';
         throw new Error(
           `CodeBuild ${buildId} ended ${status} during ${phase} — image not published, ` +
             `so nothing was deployed. Check the build log in the AWS console.`,
         );
       }
-      return { buildId, buildStatus: status };
+      const resolvedSourceVersion = build?.resolvedSourceVersion;
+      if (!resolvedSourceVersion) {
+        throw new Error(
+          `CodeBuild ${buildId} succeeded but returned no resolvedSourceVersion; ` +
+            `cannot select the immutable image tag safely.`,
+        );
+      }
+      if (
+        expectedSha &&
+        resolvedSourceVersion.slice(0, 12) !== expectedSha.slice(0, 12)
+      ) {
+        throw new Error(
+          `CodeBuild built ${resolvedSourceVersion.slice(0, 12)}, not requested ` +
+            `${expectedSha.slice(0, 12)}; refusing to deploy the wrong image.`,
+        );
+      }
+      return { buildId, buildStatus: status, resolvedSourceVersion };
     }
   }
   throw new Error(
@@ -178,8 +215,11 @@ async function runCodeBuild(log: DeployLogger): Promise<{ buildId: string; build
   );
 }
 
-/** Step 3-4: redeploy the service with its existing spec, then wait for it. */
-async function redeployService(log: DeployLogger): Promise<{ version: number; state: string }> {
+/** Step 3-4: redeploy the service with the freshly built immutable image tag. */
+async function redeployService(
+  log: DeployLogger,
+  sourceSha: string,
+): Promise<{ version: number; state: string }> {
   const client = await lightsailClient();
   const { GetContainerServiceDeploymentsCommand, CreateContainerServiceDeploymentCommand } = await import(
     '@aws-sdk/client-lightsail'
@@ -197,12 +237,33 @@ async function redeployService(log: DeployLogger): Promise<{ version: number; st
     );
   }
   const previousVersion = latest.version;
-  log(`Reusing deployment spec from version ${previousVersion} (containers: ${Object.keys(latest.containers).join(', ')})`);
+  const containerNames = Object.keys(latest.containers);
+  const targetContainerName =
+    latest.publicEndpoint?.containerName ??
+    (containerNames.length === 1 ? containerNames[0] : undefined);
+  if (!targetContainerName || !latest.containers[targetContainerName]?.image) {
+    throw new Error(
+      `Could not identify the application container image in deployment v${previousVersion}; ` +
+        `refusing to guess which container should receive the immutable build tag.`,
+    );
+  }
+
+  const containers = {
+    ...latest.containers,
+    [targetContainerName]: {
+      ...latest.containers[targetContainerName],
+      image: immutableImageRef(latest.containers[targetContainerName]!.image!, sourceSha),
+    },
+  };
+  log(
+    `Reusing deployment spec from version ${previousVersion} while pinning ` +
+      `${targetContainerName} to ${containers[targetContainerName]!.image}`,
+  );
 
   await client.send(
     new CreateContainerServiceDeploymentCommand({
       serviceName: LIGHTSAIL_SERVICE,
-      containers: latest.containers,
+      containers,
       publicEndpoint: latest.publicEndpoint
         ? {
             containerName: latest.publicEndpoint.containerName,
@@ -282,12 +343,13 @@ async function verifyHealth(log: DeployLogger): Promise<{ serviceUrl: string; st
 export async function deployToLightsail(
   environment: 'staging' | 'production',
   log: DeployLogger = (m) => console.log(`[deploy] ${m}`),
+  expectedSha?: string,
 ): Promise<LightsailDeployResult> {
   assertConfigured(environment);
   log(`Deploying ${environment} — CodeBuild ${CODEBUILD_PROJECT} → Lightsail ${LIGHTSAIL_SERVICE} (${DEFAULT_REGION})`);
 
-  const { buildId, buildStatus } = await runCodeBuild(log);
-  const { version, state } = await redeployService(log);
+  const { buildId, buildStatus, resolvedSourceVersion } = await runCodeBuild(log, expectedSha);
+  const { version, state } = await redeployService(log, resolvedSourceVersion);
   const health = await verifyHealth(log);
 
   return {
