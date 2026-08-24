@@ -315,6 +315,9 @@ function isCapacityFailure(
 ): boolean {
   return (
     status === 429 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
     ((status === 401 || status === 403) &&
       /free.?tier.?only|allocationquota|free quota|quota exhausted/i.test(
         message,
@@ -352,7 +355,9 @@ function clearCredentialCooldown(id: string): void {
 
 function providerMinIntervalMs(provider: ProviderSpec): number {
   const envName = `APEX_LLM_MIN_INTERVAL_MS_${provider.name.toUpperCase().replace(/-/g, '_')}`;
-  const configured = Number(process.env[envName]);
+  const raw = process.env[envName];
+  if (raw === undefined || raw.trim() === '') return provider.minIntervalMs;
+  const configured = Number(raw);
   if (Number.isFinite(configured) && configured >= 0) {
     return Math.min(60_000, Math.floor(configured));
   }
@@ -375,8 +380,14 @@ function providerReadyAt(provider: ProviderSpec): number {
   );
 }
 
-function reserveProviderAttempt(provider: ProviderSpec): void {
-  providerNextAttemptAt.set(provider.name, Date.now() + providerMinIntervalMs(provider));
+function tryReserveProviderAttempt(provider: ProviderSpec): { reserved: boolean; readyAt: number } {
+  const now = Date.now();
+  const readyAt = providerReadyAt(provider);
+  if (readyAt > now) return { reserved: false, readyAt };
+  // No await occurs between readiness and reservation, so concurrent
+  // complete() calls cannot claim the same provider start window.
+  providerNextAttemptAt.set(provider.name, now + providerMinIntervalMs(provider));
+  return { reserved: true, readyAt: now };
 }
 
 function setProviderCooldown(
@@ -407,8 +418,9 @@ export function getProviderBackpressureSnapshot(): {
   const paused: Array<{ provider: string; readyAt: number }> = [];
   for (const provider of PROVIDERS) {
     if (!providerConfigured(provider)) continue;
-    const readyAt = providerReadyAt(provider);
+    const readyAt = providerCooldowns.get(provider.name) ?? 0;
     if (readyAt > now) paused.push({ provider: provider.name, readyAt });
+    else if (readyAt) providerCooldowns.delete(provider.name);
   }
   const next = paused.length ? Math.min(...paused.map((entry) => entry.readyAt)) : null;
   return {
@@ -475,17 +487,6 @@ function releaseLLMConcurrencySlot(): void {
   activeLLMCalls = Math.max(0, activeLLMCalls - 1);
   const next = llmCallWaitQueue.shift();
   if (next) next();
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
-}
-
-function capacityWaitBudgetMs(): number {
-  const configured = Number(process.env.APEX_LLM_CAPACITY_WAIT_MS ?? 15_000);
-  return Number.isFinite(configured)
-    ? Math.min(60_000, Math.max(0, Math.floor(configured)))
-    : 15_000;
 }
 
 // ─── OpenAI-compatible wire format ───────────────────────────────────────────
@@ -743,22 +744,18 @@ class MultiProviderClient {
             continue;
           }
 
-          const readyAt = providerReadyAt(provider);
-          if (readyAt > Date.now()) {
-            const waitMs = Math.max(0, readyAt - Date.now());
-            if (waitMs <= capacityWaitBudgetMs()) {
-              await sleep(waitMs);
-            } else {
-              capacityBlocks.push({
-                source: provider.name,
-                resumeAt: new Date(readyAt).toISOString(),
-                reason: 'provider pacing/cooldown',
-              });
-              skipReasons.push(
-                `${provider.name}: provider pacing/cooldown (${Math.ceil(waitMs / 1000)}s)`,
-              );
-              continue;
-            }
+          const providerAttempt = tryReserveProviderAttempt(provider);
+          if (!providerAttempt.reserved) {
+            const waitMs = Math.max(0, providerAttempt.readyAt - Date.now());
+            capacityBlocks.push({
+              source: provider.name,
+              resumeAt: new Date(providerAttempt.readyAt).toISOString(),
+              reason: 'provider pacing/cooldown',
+            });
+            skipReasons.push(
+              `${provider.name}: provider pacing/cooldown (${Math.ceil(waitMs / 1000)}s)`,
+            );
+            continue;
           }
 
           const providerReservation = reserveProviderTokenCapacity(
@@ -775,7 +772,6 @@ class MultiProviderClient {
             continue;
           }
 
-          reserveProviderAttempt(provider);
 
           try {
             let providerAttempted = false;
