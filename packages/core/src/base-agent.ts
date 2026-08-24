@@ -8,7 +8,11 @@ import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
-import { isLLMDailyBudgetPause } from './provider-failure.js';
+import {
+  getLLMCapacityResumeAt,
+  isLLMDailyBudgetPause,
+  isLLMIntentionalPause,
+} from './provider-failure.js';
 import { OutcomeAnalyzer } from '@workspace/learning-system';
 import { applyHistoryBudget, resolveBudget, truncateToolResult } from './context-budget.js';
 import type {
@@ -669,11 +673,18 @@ export abstract class BaseAgent {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const dailyBudgetPaused = isLLMDailyBudgetPause(msg);
+      const capacityPaused = isLLMIntentionalPause(msg);
 
-      if (dailyBudgetPaused) {
+      if (capacityPaused) {
         // This is an intentional cost-control state, not a broken task. The
-        // queue preserves the work until the exact UTC ledger reset.
-        await this.logger.warn(`Task deferred until UTC budget reset: ${title}`, taskId);
+        // queue preserves the work until the exact pacing/cooldown/reset time.
+        const resumeAt = getLLMCapacityResumeAt(msg)?.toISOString();
+        await this.logger.warn(
+          dailyBudgetPaused
+            ? `Task deferred until UTC budget reset: ${title}`
+            : `Task deferred until LLM capacity resumes${resumeAt ? ` at ${resumeAt}` : ''}: ${title}`,
+          taskId,
+        );
       } else {
         // AgentLogger.error appends the Error text to the visible message and
         // stores its stack in `data`. Pass the title only here; including
@@ -682,8 +693,8 @@ export abstract class BaseAgent {
       }
 
       await this.taskQueue.fail(taskId, msg);
-      this.setStatus(dailyBudgetPaused ? 'idle' : 'error');
-      if (!dailyBudgetPaused) recordMetricsAsync(false, msg);
+      this.setStatus(capacityPaused ? 'idle' : 'error');
+      if (!capacityPaused) recordMetricsAsync(false, msg);
       return { success: false, error: msg };
     }
   }

@@ -457,9 +457,29 @@ await recoverStaleLeasedTasks();
   app.get('/health', (_req, res) => {
     const queue = getDequeueHealth();
     const broken = isTaskQueueBroken();
+    const agentStatusCounts = [...workforce.values()].reduce<
+      Record<string, number>
+    >((counts, agent) => {
+      const status = agent.getStatus();
+      counts[status] = (counts[status] ?? 0) + 1;
+      return counts;
+    }, {});
+    const tokenLedger = getTokenLedgerSnapshot();
+    const pausedProviders = tokenLedger.providers
+      .filter((provider) => provider.capReached || !provider.pacing.allowed)
+      .map((provider) => provider.provider);
+    const hardCapped =
+      tokenLedger.totalCapReached ||
+      tokenLedger.providers.some((provider) => provider.capReached);
+    const capacityState = hardCapped
+      ? "capped"
+      : pausedProviders.length > 0
+        ? "paced"
+        : "available";
     res.status(broken ? 503 : 200).json({
       status: broken ? 'degraded' : 'ok',
       agents: workforce.size,
+      agentStatusCounts,
       build: getBuildInfo(),
       taskQueue: {
         ...queue,
@@ -469,6 +489,15 @@ await recoverStaleLeasedTasks();
           : queue.failures > 0
             ? 'recovered — dequeue is succeeding now, but has failed before (see counters)'
             : 'ok',
+      },
+      // Non-secret capacity state makes a healthy HTTP listener distinguishable
+      // from a workforce intentionally parked by quota pacing. Detailed usage
+      // and provider roster remain behind admin auth at GET /api/tokens.
+      llmCapacity: {
+        state: capacityState,
+        pacingEnabled: tokenLedger.pacing.enabled,
+        pausedProviders,
+        nextResumeAt: tokenLedger.pacing.nextResumeAt,
       },
       timestamp: Date.now(),
     });

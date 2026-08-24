@@ -180,13 +180,31 @@ Current `.env.example` defaults:
 
 - `APEX_TOKEN_CAP_TOTAL=0`
 - `APEX_TOKEN_CAPS=groq:200000`
+- `APEX_TOKEN_PACING_ENABLED=true`
+- `APEX_TOKEN_PACING_BURST_TOKENS=12000`
 - `APEX_PAID_LLM_MODE=off`
 
 Provider-side free quota controls and fail-closed paid routing are the primary
 cost controls. APEX-side token caps are optional secondary operational limits,
 not an attempt to estimate dollar spend.
 
+Every nonzero APEX token cap is paced across the UTC day. The initial burst
+funds one useful task after reset, and the remaining allowance accrues
+continuously. In-flight token reservations are mandatory: without them,
+concurrent agents can all pass the same pre-call check before any response is
+recorded and oversubscribe a supposedly enforced cap.
+
+APEX pacing, an APEX per-provider cap, and a provider 429/quota cooldown are
+intentional capacity pauses. They must park work until the machine-readable
+`resume-at` time without consuming retries or leaving agent cards red. Missing,
+invalid, or billing-required credentials remain real errors and must not be
+misreported as healthy capacity pauses.
+
 `GET /api/tokens` remains the operational view of measured token usage.
+The public `/health` response exposes only the non-secret aggregate capacity
+state (`available`, `paced`, or `capped`), the next resume time, and aggregate
+agent-status counts so deploy verification can distinguish a healthy-but-parked
+workforce from a dead one.
 
 Process-wide LLM concurrency defaults to 3 via
 `APEX_MAX_CONCURRENT_LLM_CALLS`; change it from measured throughput/rate-limit
