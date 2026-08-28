@@ -1,177 +1,101 @@
-# Apex Completion Roadmap (v2 — supersedes v1 ordering)
+# APEX Production Roadmap
 
-> **⚠️ 2026-08-28 — CURRENT INFRASTRUCTURE NOTE (read before acting on anything below).**
-> Deployment/hosting references inside this planning document may be historical.
-> **APEX production runs on the existing Google Cloud Run service behind
-> `https://apex.donmatthews.live`.** AWS Lightsail/CodeBuild and Railway are
-> retired APEX hosting paths. Vercel and other platforms may still be client
-> deployment targets, but they are not the APEX control-plane host. Current
-> authority is `AGENTS.md`, `README.md`, `docs/ARCHITECTURE_DECISIONS.md`, and
-> `docs/PRODUCTION_OPERATIONS.md`.
+_Last reset to current source/operations: 2026-08-28._
 
-Captured 2026-07-19. Don sent a refined "Direct Path Forward" that reorders
-priority vs. the original analysis (Learning now comes before CI/CD;
-Background Jobs merged into Phase 1 alongside Health Monitoring). This
-version is authoritative for build order. Each item below is its own
-multi-file effort (new package, DB tables, tool registry entries, API
-routes, dashboard widgets, tests) — NOT a single-session task. Build one
-deliverable at a time, verify (typecheck/build/test) before moving on, per
-standing "vibe code to completion" discipline: stop immediately on failure.
+This is the living roadmap. It intentionally replaces the accumulated July/August historical build-plan narrative that previously lived here.
 
-## Phase 1 — Foundation (build first, in this order) — "critical, blocks everything else"
+Canonical production facts:
 
-### 1. Self-Monitoring & Health System (build THIS first)
-- Schema: `health_metrics` (timestamp, component, status healthy/degraded/
-  critical, response_time_ms, error_message), `component_health` (per-
-  component real-time status + last_check_time).
-- `packages/health-monitor/`: HealthMonitor (checkDatabase, checkLLMProviders,
-  checkMemorySystem, checkToolRegistry, checkWebSocket — each <5s);
-  AlertManager (rules: error_rate>5%, task_backlog>50, approval_backlog>10;
-  persists alerts w/ severity).
-- Tools (all approval:false): `health_check`, `get_system_status`,
-  `get_active_alerts`.
-- Routes: `GET /api/health`, `/api/health/components`, `/api/health/alerts`,
-  `POST /api/health/alerts/:id/acknowledge`.
-- Dashboard: overall health indicator, per-component status, active alerts,
-  historical metrics.
-- Runs in main server: health checks + alert eval every 60s, live via
-  WebSocket, must not block agent operations.
-- Success bar: DB issues detected <2min, LLM failures trigger alerts
-  immediately, `/api/health` queryable externally, tests cover all checks.
-- Est. 3-5 days.
+- APEX production runs on the **existing Google Cloud Run service** behind `https://apex.donmatthews.live`.
+- AWS Lightsail/CodeBuild and Railway are retired APEX hosting paths.
+- Production inference routes through OpenRouter; `packages/core/src/llm-client.ts` is the model-routing source of truth.
+- Production releases are existing-service-only and require exact build-SHA verification.
+- Production database/Supabase management changes require separate target-specific verification and authorization; runtime DB access is not blanket management authority.
 
-### 2. Background Job & Scheduling System
-- Schema: `scheduled_jobs` (id, name, recurrence cron, scheduled_at, enabled,
-  job_type, target_agent_id, payload, priority, status, retry_count, error,
-  next_run_at), `job_execution_log` (job_id, execution_id, started/completed_at,
-  duration_ms, status, output, error).
-- `packages/background-jobs/`: CronParser (standard 5-part, wildcards/
-  ranges/intervals/lists, clear errors on invalid); JobScheduler (poll every
-  60s, calculateNextRun, start/stop graceful); JobExecutor (timeout+retry
-  w/ backoff, logs every attempt); JobHandlers (TaskDelegationJob,
-  HealthCheckJob, ReportGenerationJob, MaintenanceJob).
-- Tools: `schedule_task` (approval:true), `list_scheduled_tasks` (false),
-  `cancel_scheduled_task` (true), `get_job_history` (false).
-- Routes: `GET/POST /api/jobs`, `POST /api/jobs/:id/toggle`,
-  `DELETE /api/jobs/:id`, `GET /api/jobs/:id/history`.
-- Governance: max 3 retries w/ exponential backoff, max 50 concurrent jobs,
-  scheduler must survive server restarts.
-- Success bar: cron + one-time scheduling both work, concurrent jobs don't
-  block agents, full execution history, tests cover cron parsing/scheduling/
-  retries.
-- Est. 5-7 days.
+For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md`, `docs/PRODUCTION_OPERATIONS.md`, and `SECURITY.md`.
 
-## Phase 2 — Intelligence (only after Phase 1 ships)
+## P0 — Put the current productionized code live on Cloud Run
 
-### 3. Learning & Adaptation System
-- Schema: `task_outcomes` (task_id, agent_id, role, duration_ms, success,
-  quality_score, tool_executions, llm_calls, iterations, required_approvals,
-  error_type, complexity, satisfaction_metric), `learning_insights`
-  (insight_type pattern/improvement/warning, confidence, evidence, expires_at,
-  applied), `strategy_recommendations` (recommendation_type/text,
-  expected_impact, confidence, status pending/approved/rejected/applied),
-  `performance_baselines` (metric_name, baseline_value, measurement_window,
-  sample_size, valid_until).
-- `packages/learning-system/`: OutcomeAnalyzer (analyzeTaskOutcome,
-  calculateComplexity, calculateSatisfactionMetric, generateOutcomeTags,
-  classifyError, recordOutcome); PatternDetector (success/failure/tool-usage/
-  time patterns, tool success rate, error frequency); InsightGenerator
-  (from patterns, vs. baselines, trend insights); StrategyOptimizer
-  (recommendations from failure/success patterns, collaboration/delegation
-  optimization — all advisory, human approval required to apply).
-- Wire into `base-agent.ts` executeTask: capture outcome metrics async after
-  completion, must NOT add >100ms, must not fail the task if learning system
-  errors.
-- Tools: `analyze_performance`, `get_insights`, `get_strategy_recommendations`
-  (all approval:false — observational); `set_performance_baseline`
-  (approval:true).
-- Scheduled (via Phase 1's job system once it exists): weekly performance
-  analysis, per-agent insight generation, baseline recalc every 30 days.
-- Dashboard: performance trends, insights feed, recommendations queue,
-  baseline deviation alerts.
-- Success bar: outcomes auto-captured, patterns need >=5 similar outcomes to
-  fire, insights expire (default 30d), recommendations need approval,
-  measurable improvement over 60 days.
-- Est. 7-10 days.
+The repository has moved to the production OpenRouter/Cloud Run architecture, but source code being on `main` is not proof that Cloud Run is serving it.
 
-## Phase 3 — Autonomy (only after Phase 2 ships)
+Remaining release gate:
 
-### 4. CI/CD & Deployment Automation
-- `packages/cicd-automation/`: TestRunner (runTests/parseTestResults/
-  generateTestReport), LinterRunner (runLint/parseLintResults/
-  generateLintReport), BuildManager (buildProject/monitorBuildProgress/
-  handleBuildErrors), DeploymentManager. The current APEX production deployer
-  targets the exact existing Google Cloud Run service; client-project tooling
-  may support other platforms separately.
-- Tools: `run_tests`, `run_lint`, `build_project` (approval:false);
-  `deploy_to_environment`, `rollback_deployment`, `create_feature_branch`,
-  `create_pull_request` (approval:true).
-- Governance: block deploy if tests fail; lint errors warn (blocking
-  configurable); production deploys always need approval; auto-rollback if
-  deploy health degrades; rate-limit deploy ops; secrets never in logs.
-- Routes: `GET /api/cicd/status`, `POST /api/cicd/test`,
-  `POST /api/cicd/deploy`, `GET /api/cicd/history`.
-- Dashboard: pipeline status, test pass/fail+coverage, deployment health,
-  pending-approval queue.
-- Target repos via GITHUB_TOKEN: Apex, buildmybot2, ARIA, autonomous-coder,
-  casebuddy-ai-law-partner (respect each repo's own standing rules — e.g.
-  repo-romance-46 requires PR/diff, never auto-applied).
-- Success bar: tests/lint/build run reliably, deploys need approval, failed
-  deploys auto-rollback within 2min, full audit trail.
-- Est. 5-7 days.
+1. Obtain authenticated access to the **existing** APEX Google Cloud project/service configuration.
+2. Resolve the exact existing project ID, region, and Cloud Run service name from trusted Google configuration; do not guess.
+3. Confirm required Cloud Run secrets/config are present, including admin auth and OpenRouter credential names, without exposing values.
+4. Run the full production CI gate on the release state.
+5. Build the exact clean release commit through `cloudbuild.apex.yaml` with an immutable SHA tag.
+6. Update only the existing Cloud Run service image.
+7. Verify public `/health.build.sha` equals the release SHA and `taskQueue.verdict` is healthy.
+8. Smoke-test login, dashboard, agent execution, OpenRouter inference/tool calls, scheduling, and the changed production paths.
 
-## Phase 4 — Scale (future, not detailed yet)
-- Multi-Application Orchestration (see v1 roadmap section below for the
-  original detailed spec — still valid, just resequenced to Phase 4).
-- Predictive Intelligence (forecasting, scenario modeling, risk detection —
-  see v1 spec below).
-- Advanced workflow automation (unspecified in v2 prompt — TBD when reached).
+Do not mark this milestone complete until the public service proves the release is live.
 
-## Success metrics (both versions agree)
-Health detection <2min, task completion >95%, avg response <2min, error rate
-<2%, uptime >99.9%, 30+ consecutive autonomous days, proactive detection >80%,
-self-healing success >70%, learning improvements applied >5/month.
+## P1 — Production reliability hardening
 
-## Recommended next concrete step
-Same as v1: smallest, safest, self-contained first slice is just the
-`health_check` tool alone (single tool-registry entry, auto-approved,
-testable in isolation, no new package needed yet). Ship that, verify it,
-THEN build `packages/health-monitor/` (HealthMonitor + AlertManager) around
-it. Do not attempt multiple Phase 1 items in one pass — Health Monitoring
-and Background Jobs are each their own multi-day build even though v2 groups
-them both into "Phase 1."
+After the current release is proven live:
 
----
+- verify scheduled task deduplication under real recurring load;
+- harden multi-instance scheduler claiming so two Cloud Run instances cannot claim the same scheduled job;
+- verify provider-capacity pauses do not consume normal task retry budgets;
+- test manager/delegation follow-through so delegation itself cannot be mistaken for completion;
+- validate graceful shutdown/restart behavior under Cloud Run instance replacement;
+- exercise rollback to a known prior Cloud Run revision and verify health afterward.
 
-## Appendix: v1 detail for Phase 4 items (Multi-App Orchestration, Predictive)
-Kept from the original roadmap since v2's "Direct Path" prompt didn't respec
-these — still the best available detail when Phase 4 is reached.
+Success means repeated work, provider exhaustion, and instance concurrency do not manufacture duplicate tasks or false failures.
 
-**Multi-Repository Orchestration Layer** — `applications`, `application_tasks`
-tables; `packages/multiapp/` (ApplicationManager, OrchestrationEngine,
-KnowledgeBridge — read-only by default); tools `register_application`
-(approval:true), `app_health_check` (false), `delegate_to_application`
-(approval:true), `shared_insights` (false); routes `/api/applications`,
-`/api/applications/:id/health`, `/api/applications/shared-insights`. Target
-repos: buildmybot2, ARIA, autonomous-coder, casebuddy-ai-law-partner,
-repo-romance-46.
+## P2 — Observability and cost control
 
-**Predictive Intelligence & Decision Support** — `packages/predictive/`
-(Forecaster, ScenarioRunner, RiskDetector); tools `forecast_tasks`,
-`risk_assessment`; routes `/api/predictive/tasks-forecast`,
-`/api/predictive/risks`; all forecasts advisory with confidence intervals.
+- expose useful non-secret OpenRouter/provider diagnostics to authenticated operators;
+- confirm actual serving provider/model is recorded for production calls;
+- measure per-role token usage, latency, retries, and failure classes;
+- define operator-approved OpenRouter account spending limits and optional APEX token caps;
+- alert on abnormal queue growth, repeated LLM capacity failures, authentication failure spikes, and unhealthy revisions;
+- keep `/health` small, public, and non-secret while richer diagnostics stay authenticated.
 
----
+Success means an operator can distinguish application failure, provider capacity, spend limits, and deployment staleness quickly.
 
-## Status update — 2026-07-20 (historical snapshot; verification pass, not self-reported)
-All 4 phases' scaffolding now exists (~30 commits, built directly by Don).
-Verified independently this pass: `pnpm run typecheck` and `pnpm run build`
-genuinely clean across all 12 packages (one real compile break found+fixed:
-`TaskQueue.awaitApproval()/resume()` dropped by the task-queue rewrite,
-commit a7a8224), deployed live on Railway at that time, and Phase 1's
-`/api/health` route functionally smoke-tested with a real admin token — returns
-live data (44 tools, real WebSocket client count, real task backlog count), not
-a stub. Phases 2-4 were unverified beyond compiling at that historical point —
-see CHECKLIST.md's "verification pass" note for the breakdown of what was tested
-vs. what only built. This paragraph records the July 2026 state and does not
-override the current Google Cloud Run production architecture above.
+## P3 — Autonomous engineering maturity
+
+- strengthen self-healing CI around reproducible failures;
+- preserve feature-branch/PR review for normal engineering changes;
+- ensure production deploy/rollback remains approval-gated and provenance-verified;
+- improve root-cause analysis and skeptical review loops using measurable outcomes rather than agent narration;
+- validate repository-completion and multi-application orchestration against real projects without broadening production permissions unnecessarily.
+
+Success means APEX can carry approved engineering work from diagnosis through tested implementation and verified release without losing auditability.
+
+## P4 — Business-operations maturity
+
+BuildMyBot and other portfolio operations must use their current live systems as source of truth, not dated repo snapshots.
+
+Priorities:
+
+- validate current BuildMyBot connector contracts against `patriotnewsactivism/buildmybot2` and live endpoints;
+- verify lead research → CRM/outreach handoff end to end before scaling campaigns;
+- measure campaign progress, conversion, failures, and follow-up state rather than counting generated leads as business results;
+- keep external sends, calls, financial effects, and materially risky customer actions within explicit approval/standing-policy boundaries;
+- update `BUSINESS_PROFILE.md` only after current commercial facts are independently verified.
+
+## P5 — Controlled autonomy expansion
+
+Increase autonomy by tightening policies, not deleting controls.
+
+Prefer:
+
+- narrow standing authorizations with numeric limits;
+- idempotent/reversible actions;
+- automatic preflight tests;
+- clear dry-run modes;
+- exact rollback targets;
+- bounded concurrency;
+- automatic verification of external side effects;
+- concise approval packets for genuinely irreversible work.
+
+Do not weaken authentication, approval, audit, provenance, provider backpressure, task deduplication, or secret-handling controls to make APEX look more autonomous.
+
+## Completion standard
+
+A roadmap item is complete only when the intended behavior exists and the relevant layer has been verified.
+
+For production changes, that means live production evidence—not merely code, a commit, a green build, or a Ready-but-unverified revision.
