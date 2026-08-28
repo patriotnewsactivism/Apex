@@ -26,6 +26,28 @@ type IntegrationDefinition = {
  * free-first allowlist in packages/core/src/llm-client.ts. */
 const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
+    id: 'openrouter',
+    name: 'OpenRouter — DeepSeek V4',
+    description: 'Primary APEX LLM: DeepSeek V4 Flash Latest via OpenRouter. Extremely inexpensive at $0.03/$0.10 per million tokens.',
+    category: 'ai',
+    docsUrl: 'https://openrouter.ai',
+    envVars: [
+      {
+        key: 'OPENROUTER_API_KEY_2', label: 'OpenRouter API Key', placeholder: 'sk-or-...', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },
+      },
+      {
+        key: 'OPENROUTER_API_KEY', label: 'Backup OpenRouter API Key', placeholder: 'sk-or-...', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },
+      },
+    ],
+  }];
+};
+
+/** Backend-owned integration catalog. The AI section MUST match the runtime
+ * free-first allowlist in packages/core/src/llm-client.ts. */
+const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
+  {
     id: 'gemini-free',
     name: 'Google Gemini — Free Tier',
     description: 'First APEX rung: Gemini 3.7 Flash. Use only keys from projects that are not billing-enabled.',

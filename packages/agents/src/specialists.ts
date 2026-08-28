@@ -39,7 +39,7 @@ Before taking any tool actions or writing component code, you MUST explicitly co
 
 When given a UI task, implement it completely — don't leave placeholders.
 Always write production-ready code.`,
-      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
+      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
       tools: ['readFile', 'writeFile', 'listDir', 'fetchUrl', 'requestPeerReview'],
       maxIterations: 40,
       approvalRequired: true,
@@ -86,7 +86,7 @@ Before taking any tool actions or writing backend code, you MUST explicitly cond
 
 When given an API task, implement it completely including error handling, 
 validation, and database operations. Write production-ready code.`,
-      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
+      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
       tools: ['readFile', 'writeFile', 'listDir', 'runShell', 'requestPeerReview', 'runInSandbox'],
       maxIterations: 40,
       approvalRequired: true,
@@ -131,7 +131,7 @@ Before taking any tool actions or executing infrastructure commands, you MUST ex
 - Rollback strategies documented
 
 When given a DevOps task, implement it completely with documentation.`,
-      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
+      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
       tools: ['readFile', 'writeFile', 'listDir', 'runShell', 'requestPeerReview', 'runInSandbox'],
       maxIterations: 30,
       approvalRequired: true,
@@ -183,7 +183,7 @@ Before taking any tool actions or writing test suites/audits, you MUST explicitl
 - Missing input validation → add Zod schemas
 
 When reviewing code, be thorough and produce a complete report.`,
-      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
+      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
       tools: ['readFile', 'writeFile', 'listDir', 'runShell', 'requestPeerReview', 'runInSandbox'],
       maxIterations: 30,
       approvalRequired: true,
@@ -241,7 +241,7 @@ Always produce a structured report with:
 - Source List (with URLs and access dates)
 - Confidence Assessment
 - Recommended Next Steps`,
-      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
+      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
       tools: ['webSearch', 'fetchUrl', 'writeFile', 'requestPeerReview'],
       maxIterations: 25,
       approvalRequired: false,
@@ -287,7 +287,7 @@ Before taking any tool actions or writing documentation, you MUST explicitly con
 - Structure with clear headings and navigation
 
 Always read the code/system you're documenting before writing.`,
-      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
+      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
       tools: ['readFile', 'writeFile', 'listDir', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: true,
@@ -328,7 +328,7 @@ Before taking any tool actions or producing operational reports, you MUST explic
 - Weekly Executive Briefing
 - Incident Post-Mortem
 - Process Optimization Proposal`,
-      llm: { provider: 'groq', model: 'openai/gpt-oss-120b' },
+      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
       tools: ['readFile', 'writeFile', 'listDir', 'requestPeerReview'],
       maxIterations: 20,
       approvalRequired: false,

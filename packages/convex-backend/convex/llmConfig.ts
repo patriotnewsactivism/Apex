@@ -10,14 +10,9 @@
 // doesn't need baseURL/fallbackModel/extraHeaders since it never makes a
 // request itself).
 const PROVIDERS = [
-  { name: 'groq', apiKeyEnv: 'GROQ_API_KEY' },
-  { name: 'mistral', apiKeyEnv: 'MISTRAL_API_KEY' },
-  { name: 'qwen-cloud', apiKeyEnv: 'QWENCLOUD_API_KEY' },
-  { name: 'qwen-cloud-anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY' },
-  { name: 'glm-aliyun', apiKeyEnv: 'QWENCLOUD_API_KEY' },
-  { name: 'glm-zai', apiKeyEnv: 'ZAI_API_KEY' },
-  { name: 'openrouter-free', apiKeyEnv: 'OPENROUTER_API_KEY' },
-  { name: 'openrouter-free-2', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  { name: 'openrouter-deepseek-flash', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
+  { name: 'openrouter-deepseek-flash-0731', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
+  { name: 'openrouter-deepseek-pro', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
 ];
 
 const TOKEN_BUDGETS: Record<string, number> = {

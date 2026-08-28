@@ -35,47 +35,14 @@ const PROVIDERS: Array<{
   apiKeyEnv: string;
   fallbackModel?: string;
   extraHeaders?: Record<string, string>;
-  // 'anthropic' routes through completeViaAnthropic() (Messages API wire
-  // format) instead of the OpenAI-shaped chat.completions path. Undefined =
-  // 'openai', today's default for every existing entry.
   protocol?: 'openai' | 'anthropic';
 }> = [
-  // Model fixed 2026-08-19 to match packages/core/src/llm-client.ts. This entry
-  // sat on llama-3.3-70b-versatile (shut down 2026-08-16) and never received
-  // core's Groq model correction at all, despite being the copy that actually
-  // runs in production via agentLoop.ts → internal.llm.complete — so every Groq
-  // call through this path 404'd. Verified against console.groq.com/docs/models:
-  // openai/gpt-oss-120b is Groq's current production model and its own
-  // documented replacement for llama-3.3-70b-versatile. (Note: core's 2026-08-17
-  // "fix" to llama-3.1-70b-versatile was itself wrong — that ID shut down
-  // 2025-01-24 — so it is corrected there too rather than copied here.)
-  { name: 'groq', baseURL: 'https://api.groq.com/openai/v1', apiKeyEnv: 'GROQ_API_KEY', fallbackModel: 'openai/gpt-oss-120b' },
-  // Cohere removed 2026-08-16 (billing-dead / trial cap reached) to match
-  // packages/core/src/llm-client.ts — explicit removal, not the usual demote.
-  { name: 'mistral', baseURL: 'https://api.mistral.ai/v1', apiKeyEnv: 'MISTRAL_API_KEY', fallbackModel: 'mistral-small-latest' },
-  // Model fixed 2026-07-27 to match packages/core/src/llm-client.ts: the Token
-  // Plan (Lite) endpoint uses dotted versioned model IDs (qwen3.7-plus), not
-  // hyphenated public IDs — 'qwen-plus' 404s "Model not exist" here (this
-  // file had drifted from core's already-confirmed fix).
-  { name: 'qwen-cloud', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
-  // Qwen Cloud, second entry (added 2026-07-27): same Token Plan account/key,
-  // exposed through Aliyun's Anthropic-Messages-API-compatible endpoint
-  // instead of the OpenAI-compatible one above. Model ID reused from the
-  // entry above (same underlying model catalog, different wire protocol) —
-  // not independently confirmed live on this specific endpoint, verify with
-  // a real completion call before relying on this entry.
-  { name: 'qwen-cloud-anthropic', protocol: 'anthropic', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'qwen3.7-plus' },
-  // GLM-5.2 (Zhipu), THROUGH THE SAME ALIYUN TOKEN PLAN ACCOUNT — see
-  // packages/core/src/llm-client.ts for the full rationale (Aliyun Model
-  // Studio hosts GLM alongside Qwen; confirmed via Aliyun's own docs).
-  // Reuses QWENCLOUD_API_KEY — no separate account needed.
-  { name: 'glm-aliyun', baseURL: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1', apiKeyEnv: 'QWENCLOUD_API_KEY', fallbackModel: 'glm-5.2' },
-  // GLM-5.2, second path — Zhipu's own direct Z.ai API, independent key/infra
-  // from the Aliyun entry above. General pay-per-token API, not the Coding
-  // Plan endpoint. No-op until ZAI_API_KEY is configured.
-  { name: 'glm-zai', baseURL: 'https://api.z.ai/api/paas/v4', apiKeyEnv: 'ZAI_API_KEY', fallbackModel: 'glm-5.2' },
-  { name: 'openrouter-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-20b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
-  { name: 'openrouter-free-2', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'Apex' } },
+  // Primary: DeepSeek V4 Flash Latest — $0.03/$0.10 per million tokens
+  { name: 'openrouter-deepseek-flash', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'deepseek/deepseek-v4-flash-latest', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  // Fallback: DeepSeek V4 Flash 0731 — $0.06/$0.12 per million tokens
+  { name: 'openrouter-deepseek-flash-0731', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'deepseek/deepseek-v4-flash-0731', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  // Heavy reasoning: DeepSeek V4 Pro 0813 — $0.66/$1.98 per million tokens
+  { name: 'openrouter-deepseek-pro', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'deepseek/deepseek-v4-pro-0813', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
 ];
 
 // Role-aware Qwen Cloud model selection — mirrors packages/core/src/llm-client.ts

@@ -26,7 +26,7 @@ function ensureGroqCap(raw: string | undefined): string {
     const [name, value] = part.split(':').map((piece) => piece?.trim());
     if (name && value) entries.set(name, value);
   }
-  entries.set('groq', '200000');
+  entries.set('openrouter-deepseek-flash', '1048576');
   return [...entries.entries()].map(([name, value]) => `${name}:${value}`).join(',');
 }
 

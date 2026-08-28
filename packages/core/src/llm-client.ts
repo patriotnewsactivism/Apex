@@ -8,33 +8,24 @@ import {
   type TokenCapacityReservation,
 } from './token-ledger.js';
 
-// ─── APEX Free-First Intelligence Stack ──────────────────────────────────────
+// ─── APEX OpenRouter DeepSeek V4 Stack ───────────────────────────────────────
 //
-// Policy (2026-08-23): all APEX units use the same economics-first route.
+// Policy (2026-08-28): all APEX units route through OpenRouter using
+// DeepSeek V4 models — extremely inexpensive, high-quality, 1M+ context.
 //
-//   1. Gemini 3.7 Flash      — FREE-TIER credential only
-//   2. Groq GPT-OSS 120B     — FREE-TIER credential only
-//   3. Cohere Command A+     — API usage free until Cohere's free rate limit
-//   4. Poolside Laguna S 2.1 — limited-time free access; explicit confirmation
-//   5. Qwen 3.7 Max          — only when Alibaba "Free quota only" is confirmed
-//   6. Kilo Auto Free        — Kilo's free model router
-//   7. Mistral Medium 3.5    — PAID emergency fallback, disabled by default
+//   1. DeepSeek V4 Flash Latest  — $0.03/$0.10 per M tokens (primary)
+//   2. DeepSeek V4 Flash 0731    — $0.06/$0.12 per M tokens (fallback)
+//   3. DeepSeek V4 Pro 0813      — $0.66/$1.98 per M tokens (heavy reasoning)
 //
-// Mistral is deliberately last. A high rate limit is not free capacity.
-// No provider capable of metered Mistral usage is called unless
-// APEX_PAID_LLM_MODE is explicitly enabled.
-//
-// Gemini and Groq use dedicated FREE API key variables rather than generic key
-// names so a billing-enabled project/account is not selected accidentally.
+// All three use the same OpenRouter endpoint and API key, but route to
+// different underlying DeepSeek deployments via OpenRouter's routing layer.
+// Circuit breakers treat them as separate providers so a rate limit on one
+// doesn't block fallback to the others.
 
 export type ApexProviderName =
-  | 'google-gemini'
-  | 'groq'
-  | 'cohere'
-  | 'poolside'
-  | 'qwen'
-  | 'kilo'
-  | 'mistral';
+  | 'openrouter-deepseek-flash'
+  | 'openrouter-deepseek-flash-0731'
+  | 'openrouter-deepseek-pro';
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -51,70 +42,26 @@ type ProviderSpec = {
 
 const PROVIDERS: readonly ProviderSpec[] = [
   {
-    name: 'google-gemini',
-    model: 'gemini-3.7-flash',
-    baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    apiKeyEnvs: ['GEMINI_FREE_API_KEY', 'GEMINI_FREE_API_KEY_2'],
-    minIntervalMs: 4_000,
+    name: 'openrouter-deepseek-flash',
+    model: 'deepseek/deepseek-v4-flash-latest',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: ['OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY'],
+    minIntervalMs: 500,
     toolCallingReliable: true,
   },
   {
-    name: 'groq',
-    model: 'openai/gpt-oss-120b',
-    baseURL: 'https://api.groq.com/openai/v1',
-    apiKeyEnvs: ['GROQ_FREE_API_KEY'],
-    activationEnv: 'GROQ_FREE_TIER_CONFIRMED',
-    activationDescription:
-      'set GROQ_FREE_TIER_CONFIRMED=true only for a Groq Free plan project/key',
-    minIntervalMs: 2_200,
+    name: 'openrouter-deepseek-flash-0731',
+    model: 'deepseek/deepseek-v4-flash-0731',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: ['OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY'],
+    minIntervalMs: 500,
     toolCallingReliable: true,
   },
   {
-    name: 'cohere',
-    model: 'command-a-plus-05-2026',
-    baseURL: 'https://api.cohere.ai/compatibility/v1',
-    apiKeyEnvs: ['COHERE_API_KEY'],
-    minIntervalMs: 3_200,
-    toolCallingReliable: true,
-  },
-  {
-    name: 'poolside',
-    model: 'poolside/laguna-s-2.1',
-    baseURL: 'https://inference.poolside.ai/v1',
-    apiKeyEnvs: ['POOLSIDE_API_KEY'],
-    activationEnv: 'POOLSIDE_FREE_ACCESS_CONFIRMED',
-    activationDescription:
-      'set POOLSIDE_FREE_ACCESS_CONFIRMED=true only while this account is on Poolside free access',
-    minIntervalMs: 1_500,
-    toolCallingReliable: true,
-  },
-  {
-    name: 'qwen',
-    model: 'qwen3.7-max',
-    baseURL: () =>
-      process.env.QWEN_BASE_URL?.replace(/\/$/, '') ||
-      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
-    apiKeyEnvs: ['QWEN_API_KEY'],
-    activationEnv: 'QWEN_FREE_QUOTA_ONLY',
-    activationDescription:
-      'enable Alibaba Model Studio Free quota only, then set QWEN_FREE_QUOTA_ONLY=true',
-    minIntervalMs: 1_500,
-    toolCallingReliable: true,
-  },
-  {
-    name: 'kilo',
-    model: 'kilo-auto/free',
-    baseURL: 'https://api.kilo.ai/api/gateway',
-    apiKeyEnvs: ['KILO_API_KEY'],
-    minIntervalMs: 1_000,
-    toolCallingReliable: true,
-  },
-  {
-    name: 'mistral',
-    model: 'mistral-medium-3-5',
-    baseURL: 'https://api.mistral.ai/v1',
-    apiKeyEnvs: ['MISTRAL_API_KEY'],
-    paid: true,
+    name: 'openrouter-deepseek-pro',
+    model: 'deepseek/deepseek-v4-pro-0813',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: ['OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY'],
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
@@ -125,22 +72,20 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 );
 
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  'google-gemini',
-  'groq',
-  'cohere',
-  'poolside',
-  'qwen',
-  'kilo',
-  'mistral',
+  'openrouter-deepseek-flash',
+  'openrouter-deepseek-flash-0731',
+  'openrouter-deepseek-pro',
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
   return [...PROVIDER_ORDER];
 }
 
-/** Paid inference is fail-closed. Mistral cannot run unless this is explicit. */
+/** Paid inference is no longer gated — all OpenRouter/DeepSeek models are
+ * inexpensive enough to run without the fail-closed policy that was needed
+ * for the old Mistral emergency fallback. Kept for backward compat. */
 export function paidLLMFallbackEnabled(mode?: string): boolean {
-  const normalized = (mode ?? 'off').trim().toLowerCase();
+  const normalized = (mode ?? 'on').trim().toLowerCase();
   return ['1', 'true', 'on', 'enabled', 'fallback'].includes(normalized);
 }
 
@@ -152,8 +97,8 @@ function enabled(value: string | undefined): boolean {
 
 // ─── Request-size control ─────────────────────────────────────────────────────
 
-export const DEFAULT_HISTORY_CHAR_BUDGET = 60_000;
-export const EMERGENCY_HISTORY_CHAR_BUDGET = 24_000;
+export const DEFAULT_HISTORY_CHAR_BUDGET = 120_000;
+export const EMERGENCY_HISTORY_CHAR_BUDGET = 48_000;
 
 export function historySize(messages: LLMMessage[]): number {
   return messages.reduce(
@@ -204,7 +149,7 @@ export function trimMessageHistory(
 
   for (const message of out) {
     if (historySize(out) <= maxChars) break;
-    if (message.role === 'tool') trimContent(message, 1_200);
+    if (message.role === 'tool') trimContent(message, 2_400);
   }
 
   let firstUserSeen = false;
@@ -215,16 +160,16 @@ export function trimMessageHistory(
       firstUserSeen = true;
       continue;
     }
-    trimContent(message, 2_000);
+    trimContent(message, 4_000);
   }
 
   if (historySize(out) > maxChars && out[0]?.role === 'system') {
-    trimContent(out[0], 8_000);
+    trimContent(out[0], 16_000);
   }
 
   for (const message of out) {
     if (historySize(out) <= maxChars) break;
-    trimContent(message, 600);
+    trimContent(message, 1_200);
   }
 
   return {
@@ -384,8 +329,6 @@ function tryReserveProviderAttempt(provider: ProviderSpec): { reserved: boolean;
   const now = Date.now();
   const readyAt = providerReadyAt(provider);
   if (readyAt > now) return { reserved: false, readyAt };
-  // No await occurs between readiness and reservation, so concurrent
-  // complete() calls cannot claim the same provider start window.
   providerNextAttemptAt.set(provider.name, now + providerMinIntervalMs(provider));
   return { reserved: true, readyAt: now };
 }
@@ -600,6 +543,8 @@ async function callCompatibleProvider(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
+        'HTTP-Referer': 'https://apex.donmatthews.live',
+        'X-Title': 'APEX Agent Workforce',
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -680,7 +625,7 @@ function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []
     ...otherDetails,
   ].join(" | ");
   return new Error(
-    `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || "configured free capacity is temporarily unavailable"}`,
+    `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || "configured capacity is temporarily unavailable"}`,
   );
 }
 
@@ -772,7 +717,6 @@ class MultiProviderClient {
             continue;
           }
 
-
           try {
             let providerAttempted = false;
 
@@ -851,7 +795,7 @@ class MultiProviderClient {
                     recordTokenUsage(provider.name, result.usage);
                     return result;
                   } catch {
-                    // Continue to the next free credential/provider.
+                    // Continue to the next credential/provider.
                   }
                 }
               }
@@ -900,26 +844,26 @@ export type LLMClient = MultiProviderClient;
 
 export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const tokenBudgets: Record<string, number> = {
-    CEO: 4096,
-    CTO: 4096,
-    COO: 4096,
-    LEAD_DEV: 4096,
-    RESEARCH: 4096,
-    LEAD_RESEARCH: 4096,
-    SALES: 4096,
-    QA_DIRECTOR: 4096,
-    FRONTEND: 2048,
-    BACKEND: 2048,
-    DEVOPS: 2048,
-    QA: 2048,
-    MARKETING: 2048,
-    CUSTOMER_SUCCESS: 2048,
-    DOCS: 2048,
-    OPS: 2048,
-    COMMUNITY_WATCH: 1024,
+    CEO: 8192,
+    CTO: 8192,
+    COO: 8192,
+    LEAD_DEV: 8192,
+    RESEARCH: 8192,
+    LEAD_RESEARCH: 8192,
+    SALES: 8192,
+    QA_DIRECTOR: 8192,
+    FRONTEND: 4096,
+    BACKEND: 4096,
+    DEVOPS: 4096,
+    QA: 4096,
+    MARKETING: 4096,
+    CUSTOMER_SUCCESS: 4096,
+    DOCS: 4096,
+    OPS: 4096,
+    COMMUNITY_WATCH: 2048,
   };
 
-  const defaultMaxTokens = tokenBudgets[role] ?? 2048;
+  const defaultMaxTokens = tokenBudgets[role] ?? 4096;
   const configuredMaxTokens = Number(
     process.env[`APEX_MAX_OUTPUT_TOKENS_${role}`] ??
       process.env.APEX_MAX_OUTPUT_TOKENS ??
@@ -930,8 +874,8 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     : defaultMaxTokens;
 
   return {
-    provider: 'google-gemini',
-    model: 'gemini-3.7-flash',
+    provider: 'openrouter-deepseek-flash',
+    model: 'deepseek/deepseek-v4-flash-latest',
     temperature: 0.7,
     maxTokens,
     role,
@@ -1051,13 +995,11 @@ export function getProviderRoster(): {
     toolCallingReliable: true,
   }));
 
-  const free = providers.filter((provider) => !provider.paid);
-
   return {
     providers,
-    freeSlots: free.length,
-    freeSlotsConfigured: free.filter((provider) => provider.configured).length,
-    emptyFreeSlots: free
+    freeSlots: providers.length,
+    freeSlotsConfigured: providers.filter((provider) => provider.configured).length,
+    emptyFreeSlots: providers
       .filter((provider) => !provider.configured)
       .map((provider) => provider.envVar),
   };
@@ -1066,18 +1008,14 @@ export function getProviderRoster(): {
 export function logProviderRoster(): void {
   const roster = getProviderRoster();
   console.log(
-    `[LLM] Free-first roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} free slots ready; ` +
+    `[LLM] OpenRouter DeepSeek V4 roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} slots ready; ` +
       `order=${PROVIDER_ORDER.join(' -> ')}`,
   );
 
   if (roster.emptyFreeSlots.length) {
     console.warn(
-      `[LLM] Free provider configuration missing/disabled: ${roster.emptyFreeSlots.join(', ')}`,
+      `[LLM] Provider configuration missing: ${roster.emptyFreeSlots.join(', ')}`,
     );
-  }
-
-  if (!paidLLMFallbackEnabled(process.env.APEX_PAID_LLM_MODE)) {
-    console.log('[LLM] Paid Mistral emergency fallback is OFF (fail-closed).');
   }
 }
 
