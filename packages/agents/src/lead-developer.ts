@@ -70,7 +70,7 @@ export class LeadDeveloperAgent extends BaseAgent {
       tier: 2,
       parentId: 'apex-cto-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter-deepseek-flash', model: 'deepseek/deepseek-v4-flash-latest' },
+      llm: { provider: 'openrouter-deepseek-flash', model: '~deepseek/deepseek-v4-flash-latest' },
       tools: [
         'sendMessage',
         'readFile',

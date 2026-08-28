@@ -7,7 +7,7 @@ import { desc } from 'drizzle-orm';
 // ─── Health API Routes ────────────────────────────────────────────────────────
 //
 // These routes expose the HealthMonitor + AlertManager state to external
-// consumers (dashboard, monitoring tools, Railway health checks). All routes
+// consumers (dashboard, monitoring tools, production health checks). All routes
 // are behind requireAdminAuth (mounted under /api in the main server).
 //
 // The HealthMonitor and AlertManager instances are injected by the caller
@@ -27,11 +27,8 @@ export function createHealthRouter(monitor: HealthMonitor, alertManager: AlertMa
     }
   });
 
-  // GET /api/health/providers — why each LLM provider in the fallback chain
-  // was passed over. Added 2026-07-29: qwen-cloud was promoted to the top of
-  // the chain, reported `configured: ok`, and still never served a request —
-  // and the reason existed only in container stdout. This makes the chain's
-  // real behavior inspectable from the API.
+  // GET /api/health/providers — current OpenRouter model-route health,
+  // recent failures, and structured-tool-call degradation telemetry.
   router.get('/providers', async (_req, res) => {
     try {
       const { getProviderFailureReport, getDegradedToolCallingReport, getConfiguredProviders } =

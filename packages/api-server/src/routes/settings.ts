@@ -26,108 +26,24 @@ type IntegrationDefinition = {
  * free-first allowlist in packages/core/src/llm-client.ts. */
 const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
-    id: 'gemini-free',
-    name: 'Google Gemini — Free Tier',
-    description: 'First APEX rung: Gemini 3.7 Flash. Use only keys from projects that are not billing-enabled.',
+    id: 'openrouter',
+    name: 'OpenRouter — Production LLM',
+    description: 'Primary APEX inference layer. Routes DeepSeek V4 Flash/Pro through OpenRouter with provider failover, pacing, and circuit breakers.',
     category: 'ai',
-    docsUrl: 'https://aistudio.google.com',
+    docsUrl: 'https://openrouter.ai',
     envVars: [
       {
-        key: 'GEMINI_FREE_API_KEY', label: 'Free Project API Key', placeholder: 'AIza...', secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+        key: 'OPENROUTER_API_KEY', label: 'Primary API Key', placeholder: 'sk-or-v1-...', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },
       },
       {
-        key: 'GEMINI_FREE_API_KEY_2', label: 'Second Free Project Key', placeholder: 'AIza...', secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+        key: 'OPENROUTER_API_KEY_2', label: 'Secondary API Key', placeholder: 'sk-or-v1-...', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },
       },
-    ],
-  },
-  {
-    id: 'groq-free',
-    name: 'Groq — Free Tier',
-    description: 'Second rung: GPT-OSS 120B. Use only a key from a confirmed Groq Free-plan project/account.',
-    category: 'ai',
-    docsUrl: 'https://console.groq.com/docs/rate-limits',
-    envVars: [
-      {
-        key: 'GROQ_FREE_API_KEY', label: 'Free Plan API Key', placeholder: 'gsk_...', secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://api.groq.com/openai/v1' },
-      },
-      {
-        key: 'GROQ_FREE_TIER_CONFIRMED',
-        label: 'Free Plan Confirmed',
-        placeholder: 'true only while this key belongs to a Groq Free plan',
-      },
-    ],
-  },
-  {
-    id: 'cohere',
-    name: 'Cohere',
-    description: 'Third rung: Command A+. Cohere currently makes Command A+ free until its applicable API rate limit is reached.',
-    category: 'ai',
-    docsUrl: 'https://dashboard.cohere.com/api-keys',
-    envVars: [{
-      key: 'COHERE_API_KEY', label: 'API Key', placeholder: 'Cohere API key', secret: true,
-      probe: { kind: 'openai-models', baseUrl: 'https://api.cohere.ai/compatibility/v1' },
-    }],
-  },
-  {
-    id: 'poolside',
-    name: 'Poolside',
-    description: 'Fourth rung: Laguna S 2.1. Poolside currently advertises limited-time free API access; APEX requires an explicit confirmation.',
-    category: 'ai',
-    docsUrl: 'https://poolside.ai/models',
-    envVars: [
-      {
-        key: 'POOLSIDE_API_KEY', label: 'API Key', placeholder: 'Poolside API key', secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://inference.poolside.ai/v1' },
-      },
-      {
-        key: 'POOLSIDE_FREE_ACCESS_CONFIRMED',
-        label: 'Free Access Confirmed',
-        placeholder: 'true only while Poolside free access is active',
-      },
-    ],
-  },
-  {
-    id: 'qwen',
-    name: 'Qwen',
-    description: 'Fifth rung: Qwen 3.7 Max. Enable Alibaba Model Studio “Free quota only” before allowing APEX to use it.',
-    category: 'ai',
-    docsUrl: 'https://www.alibabacloud.com/help/en/model-studio',
-    envVars: [
-      { key: 'QWEN_API_KEY', label: 'API Key', placeholder: 'Qwen / Model Studio API key', secret: true },
-      { key: 'QWEN_BASE_URL', label: 'Compatible API Base URL', placeholder: 'https://<workspace>.<region>.maas.aliyuncs.com/compatible-mode/v1' },
-      { key: 'QWEN_FREE_QUOTA_ONLY', label: 'Free Quota Only Confirmed', placeholder: 'true after enabling provider-side Free quota only' },
-    ],
-  },
-  {
-    id: 'kilo',
-    name: 'Kilo Code',
-    description: 'Sixth rung: Kilo Auto Free. This is the free router, not Auto Frontier.',
-    category: 'ai',
-    docsUrl: 'https://kilo.ai/docs/getting-started/using-kilo-for-free',
-    envVars: [{
-      key: 'KILO_API_KEY', label: 'API Key', placeholder: 'Kilo AI Gateway key', secret: true,
-      probe: { kind: 'openai-models', baseUrl: 'https://api.kilo.ai/api/gateway' },
-    }],
-  },
-  {
-    id: 'mistral-paid',
-    name: 'Mistral — Paid Emergency Only',
-    description: 'Last rung: Mistral Medium 3.5. Disabled by default and unreachable unless paid fallback is explicitly enabled.',
-    category: 'ai',
-    docsUrl: 'https://console.mistral.ai',
-    envVars: [
-      {
-        key: 'MISTRAL_API_KEY', label: 'API Key', placeholder: 'Mistral API key', secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://api.mistral.ai/v1' },
-      },
-      {
-        key: 'APEX_PAID_LLM_MODE',
-        label: 'Paid Fallback Mode',
-        placeholder: 'off (set fallback only with explicit spend approval)',
-      },
+      { key: 'APEX_MAX_CONCURRENT_LLM_CALLS', label: 'Global LLM Concurrency', placeholder: '6' },
+      { key: 'APEX_LEAD_RESEARCH_CONCURRENCY', label: 'Lead Research Concurrency', placeholder: '3' },
+      { key: 'APEX_TOKEN_CAP_TOTAL', label: 'Optional Daily Token Cap', placeholder: '0 = unlimited' },
+      { key: 'APEX_TOKEN_CAPS', label: 'Optional Per-Model Token Caps', placeholder: 'provider:tokens,...' },
     ],
   },
   {

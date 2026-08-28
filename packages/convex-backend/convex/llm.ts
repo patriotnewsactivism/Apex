@@ -38,7 +38,7 @@ const PROVIDERS: Array<{
   protocol?: 'openai' | 'anthropic';
 }> = [
   // Primary: DeepSeek V4 Flash Latest — $0.03/$0.10 per million tokens
-  { name: 'openrouter-deepseek-flash', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'deepseek/deepseek-v4-flash-latest', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  { name: 'openrouter-deepseek-flash', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: '~deepseek/deepseek-v4-flash-latest', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
   // Fallback: DeepSeek V4 Flash 0731 — $0.06/$0.12 per million tokens
   { name: 'openrouter-deepseek-flash-0731', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'deepseek/deepseek-v4-flash-0731', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
   // Heavy reasoning: DeepSeek V4 Pro 0813 — $0.66/$1.98 per million tokens

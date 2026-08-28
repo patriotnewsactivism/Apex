@@ -22,7 +22,7 @@ const expectedProviders = [
   "openrouter-deepseek-pro",
 ];
 const expectedModels = [
-  "deepseek/deepseek-v4-flash-latest",
+  "~deepseek/deepseek-v4-flash-latest",
   "deepseek/deepseek-v4-flash-0731",
   "deepseek/deepseek-v4-pro-0813",
 ];
@@ -43,7 +43,7 @@ check(
 check(
   "Flash Latest is the primary rung",
   catalog[0]?.name === "openrouter-deepseek-flash" &&
-    catalog[0]?.model === "deepseek/deepseek-v4-flash-latest",
+    catalog[0]?.model === "~deepseek/deepseek-v4-flash-latest",
   catalog,
 );
 check(
@@ -89,7 +89,7 @@ for (const role of [
   check(
     `${role} defaults to DeepSeek V4 Flash Latest via OpenRouter`,
     config.provider === "openrouter-deepseek-flash" &&
-      config.model === "deepseek/deepseek-v4-flash-latest",
+      config.model === "~deepseek/deepseek-v4-flash-latest",
     config,
   );
 }

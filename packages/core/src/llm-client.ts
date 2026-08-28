@@ -43,9 +43,9 @@ type ProviderSpec = {
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'openrouter-deepseek-flash',
-    model: 'deepseek/deepseek-v4-flash-latest',
+    model: '~deepseek/deepseek-v4-flash-latest',
     baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: ['OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY'],
+    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
@@ -53,7 +53,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     name: 'openrouter-deepseek-flash-0731',
     model: 'deepseek/deepseek-v4-flash-0731',
     baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: ['OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY'],
+    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
@@ -61,7 +61,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     name: 'openrouter-deepseek-pro',
     model: 'deepseek/deepseek-v4-pro-0813',
     baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: ['OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY'],
+    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
@@ -405,10 +405,10 @@ function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key
 
 // ─── Process-wide call smoothing ─────────────────────────────────────────────
 
-const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 3);
+const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 6);
 const MAX_CONCURRENT_LLM_CALLS = Number.isFinite(configuredLLMConcurrency)
   ? Math.min(16, Math.max(1, Math.floor(configuredLLMConcurrency)))
-  : 3;
+  : 6;
 
 let activeLLMCalls = 0;
 const llmCallWaitQueue: Array<() => void> = [];
@@ -875,7 +875,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
 
   return {
     provider: 'openrouter-deepseek-flash',
-    model: 'deepseek/deepseek-v4-flash-latest',
+    model: '~deepseek/deepseek-v4-flash-latest',
     temperature: 0.7,
     maxTokens,
     role,

@@ -80,9 +80,17 @@ export function createWorkforce(options: WorkforceOptions = {}): Map<string, Bas
   ];
 
   for (const AgentClass of agentClasses) {
-    const agent = new (AgentClass as new (overrides?: Record<string, unknown>) => BaseAgent)(
-      options.approvalRequired !== undefined ? { approvalRequired: options.approvalRequired } : {},
-    );
+    const overrides: Record<string, unknown> =
+      options.approvalRequired !== undefined ? { approvalRequired: options.approvalRequired } : {};
+
+    if (AgentClass === LeadResearchAgent) {
+      const configured = Number(process.env.APEX_LEAD_RESEARCH_CONCURRENCY ?? 3);
+      overrides.concurrency = Number.isFinite(configured)
+        ? Math.min(5, Math.max(1, Math.floor(configured)))
+        : 3;
+    }
+
+    const agent = new (AgentClass as new (overrides?: Record<string, unknown>) => BaseAgent)(overrides);
     workforce.set(agent.id, agent);
   }
 
