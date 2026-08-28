@@ -1,39 +1,44 @@
 # Repository Guidelines — APEX
 _Last verified against current source, production health, and CI: 2026-08-28._
 
-This is the canonical instruction file for AI coding tools working in this
-repository. Keep it synchronized with live source and production evidence.
-Do not recreate per-tool copies that can drift.
+This is the canonical instruction file for AI coding tools and contributors working in this repository. Keep it synchronized with current source and live production evidence. Do not create per-tool instruction copies that can drift.
+
+## Truth hierarchy
+
+When sources disagree, use this order:
+
+1. direct live production evidence and current source code;
+2. this `AGENTS.md` file;
+3. `docs/ARCHITECTURE_DECISIONS.md` and `docs/PRODUCTION_OPERATIONS.md`;
+4. `README.md` and `docs/deploy-provenance.md`;
+5. `CHECKLIST.md` and `ROADMAP.md`;
+6. historical plans, dated notes, screenshots, and old deployment files.
+
+Never guess a project ID, service name, region, secret name/value, database target, live SHA, or deployment state. If the exact value cannot be established from a trusted source, stop and report what is missing.
+
+If stale documentation is discovered while doing real work, fix it in the same work item when practical. Historical material may remain for context only when it is clearly labeled historical and cannot be mistaken for current instructions.
 
 ## Current production runtime
 
-APEX itself runs on **Google Cloud Run** behind the production domain:
+APEX itself runs on **Google Cloud Run** behind:
 
 `https://apex.donmatthews.live`
 
-The previous AWS Lightsail/CodeBuild deployment path is retired and must not be
-restored. Railway and Vercel may still appear as deployment targets for client
-projects APEX manages; neither is the APEX control-plane host.
+The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Railway is also retired as an APEX host. Vercel, Railway, Render, and other platforms may still appear as deployment targets for client projects APEX manages; none of them is the APEX control-plane host.
 
 A production release is complete only after all of these are true:
 
 1. the intended reviewed commit is on `main`;
-2. CI is green;
+2. CI is green for that code state;
 3. Google Cloud Build builds the exact clean commit with an immutable SHA tag;
-4. the **existing** Cloud Run service is updated to that image;
-5. Cloud Run reports the new revision Ready;
-6. `https://apex.donmatthews.live/health` reports the expected `build.sha` and
-   `taskQueue.verdict: "ok"`;
+4. the **existing** configured Cloud Run service is updated to that image;
+5. the new revision becomes Ready;
+6. `https://apex.donmatthews.live/health` reports the expected `build.sha` and a healthy `taskQueue.verdict`;
 7. the changed feature is smoke-tested through its real production path.
 
 The deployment implementation is `packages/cicd-automation/src/cloud-run-deployer.ts`.
-`deploy_to_environment` and rollback remain approval-gated. Deployment requires
-explicit `APEX_DEPLOY_ENABLED` consent plus the exact existing Google project,
-region, and service identifiers. The deployer uses `gcloud run services update`,
-not `gcloud run deploy`, specifically so it cannot silently create a duplicate
-service and so existing environment variables, Secret Manager refs, runtime
-service account, scaling, ingress, custom-domain mapping, and resource settings
-remain intact.
+
+`deploy_to_environment` and rollback remain approval-gated. Deployment requires explicit `APEX_DEPLOY_ENABLED` consent plus the exact existing Google project, region, and service identifiers. The deployer uses `gcloud run services update`, not `gcloud run deploy`, so it cannot silently create a duplicate service and so existing environment variables, Secret Manager refs, runtime service account, scaling, ingress, domain mapping, CPU/memory, and related service configuration remain intact.
 
 Required deploy configuration:
 
@@ -41,15 +46,15 @@ Required deploy configuration:
 - `APEX_GCP_PROJECT_ID`
 - `APEX_CLOUD_RUN_REGION`
 - `APEX_CLOUD_RUN_SERVICE`
-- authenticated `gcloud` identity (human login or Google Workload Identity;
-  never commit service-account JSON keys)
+- authenticated `gcloud` identity, using a human login or Google Workload Identity rather than committed service-account JSON keys
 
-See `docs/deploy-provenance.md` and `cloudbuild.apex.yaml`.
+The exact project/region/service values are intentionally not guessed or invented in repository documentation. Use the existing production configuration.
+
+See `docs/PRODUCTION_OPERATIONS.md`, `docs/deploy-provenance.md`, and `cloudbuild.apex.yaml`.
 
 ## What APEX is
 
-APEX is a persistent hierarchical autonomous workforce, not a request/response
-chatbot.
+APEX is a persistent hierarchical autonomous workforce, not a request/response chatbot.
 
 ```text
 APEX CEO
@@ -58,29 +63,40 @@ APEX CEO
 QA Director -- independent quality/oversight role
 ```
 
-The production workforce is 13 agents. Generic specialist classes may exist in
-source but are not part of the instantiated production organization unless the
-workforce definition changes explicitly.
+The production workforce is 13 agents. Generic specialist classes may exist in source but are not part of the instantiated production organization unless the workforce definition changes explicitly.
+
+Tasks are expected to progress through real delegation, tools, verification, learning, and measurable completion. Announcing intended work is not completion.
 
 ## Stack and conventions
 
-- Package manager: **pnpm** workspace. Do not introduce npm/bun lockfiles.
-- TypeScript strict mode; ESM via `tsx`. Use `import`, not CommonJS `require()`.
+- Package manager: **pnpm 11.19.0** workspace. Do not introduce npm/yarn/bun lockfiles.
+- Runtime/tooling target: Node.js 22.
+- TypeScript strict mode; ESM via `tsx`. Use `import`, not CommonJS `require()` in production TypeScript.
 - Container runtime: Docker on Google Cloud Run.
-- Database access: Postgres/Supabase through Drizzle ORM and `DATABASE_URL`.
-- Schema bootstrap/migration logic is idempotent at startup through the DB layer.
-- The old SQLite runtime and retired Railway Postgres are not production stores
-  and must not be revived.
-- `packages/convex-backend` remains experimental. Production Convex autonomy is
-  disabled unless `APEX_CONVEX_AUTONOMY_ENABLED=true` is an intentional,
-  reviewed architecture change.
+- Database access: Postgres through Drizzle ORM and `DATABASE_URL`; deployments may use Supabase-hosted Postgres, but runtime database access is not blanket management-plane authorization.
+- Schema bootstrap/migration logic must remain idempotent and reviewable.
+- The old SQLite runtime and retired Railway Postgres are not production stores and must not be revived.
+- `packages/convex-backend` remains experimental. Production Convex autonomy is disabled unless `APEX_CONVEX_AUTONOMY_ENABLED=true` is an intentional, reviewed architecture change.
+
+## Database and management-plane boundary
+
+Treat data-plane access and management-plane access as different permissions.
+
+A runtime `DATABASE_URL`, service-role credential, connector token, or other application credential does **not** authorize autonomous project administration, schema changes, migrations, destructive SQL, credential rotation, or provider-management actions.
+
+Before any production database or Supabase management action:
+
+1. identify the exact APEX project/target;
+2. verify the credential belongs to that target and is intended for that operation;
+3. obtain explicit approval for schema/destructive/management changes;
+4. capture a reversible migration or rollback plan where applicable;
+5. verify the result against the intended environment.
+
+Do not reuse credentials from another application or project. Do not infer that similarly named projects are interchangeable.
 
 ## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the source of truth. Every production APEX
-unit routes through OpenRouter. Do not restore the previous Gemini/Groq/Cohere/
-Poolside/Qwen/Kilo/Mistral free-first chain unless the operator explicitly
-changes policy again.
+`packages/core/src/llm-client.ts` is the source of truth. Every production APEX unit routes through OpenRouter. Do not restore the previous Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first chain unless the operator explicitly changes policy again.
 
 Current logical provider order:
 
@@ -92,156 +108,159 @@ Current logical provider order:
 3. `openrouter-deepseek-pro`
    - heavier DeepSeek V4 Pro fallback for difficult work/capacity recovery.
 
-All use the OpenAI-compatible OpenRouter endpoint:
+All use the OpenAI-compatible endpoint:
 
 `https://openrouter.ai/api/v1`
 
-Credential env vars:
+Credential environment variables:
 
 - `OPENROUTER_API_KEY`
-- `OPENROUTER_API_KEY_2` (optional credential redundancy)
+- `OPENROUTER_API_KEY_2` — optional credential redundancy
 
-Two API keys belonging to the same OpenRouter account do **not** create separate
-account balances or independent account-wide quota. Treat them as credential
-redundancy only.
+Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only.
 
-OpenRouter requests include APEX attribution headers and retain provider pacing,
-retry-after handling, transient cooldowns, circuit breakers, context trimming,
-token reservations, and actual serving-provider diagnostics.
+OpenRouter requests retain provider pacing, retry-after handling, transient cooldowns, circuit breakers, context trimming, token reservations, structured tool calls, and serving-provider diagnostics.
 
 ### Routing behavior
 
 - Preserve the exact reviewed provider/model order in live source.
-- Preserve structured tool calling. A response that merely narrates a tool call
-  is not successful execution.
+- Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
 - Record actual serving provider/model and real provider failures.
 - Preserve tool-call/result message pairing while trimming context.
-- Provider exhaustion is a capacity pause, not an agent failure, when a
-  machine-readable resume time exists.
-- Do not silently route to unrelated legacy providers because an OpenRouter
-  model is temporarily unavailable.
+- Provider exhaustion is a capacity pause, not an agent failure, when a machine-readable resume time exists.
+- Do not silently route to unrelated legacy providers because an OpenRouter model is temporarily unavailable.
 
-`scripts/verify-provider-routing.ts` and
-`scripts/verify-provider-backpressure.ts` are deterministic guards and must stay
-aligned with the production OpenRouter stack.
+`scripts/verify-provider-routing.ts` and `scripts/verify-provider-backpressure.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
 
 ## Production concurrency and spend controls
 
-Current production defaults in `.env.example` are designed for a real workforce,
-not the temporary demo throttle:
+Current production defaults in `.env.example` are intended for a real workforce, not the temporary demo throttle:
 
 - `APEX_MAX_CONCURRENT_LLM_CALLS=6`
 - `APEX_LEAD_RESEARCH_CONCURRENCY=3`
 - `APEX_MAX_OUTPUT_TOKENS=4096`
 - leadership roles may use larger role-specific output ceilings
-- `APEX_TOKEN_CAP_TOTAL=0` means no APEX-wide daily ceiling unless the operator
-  deliberately sets one
+- `APEX_TOKEN_CAP_TOTAL=0` means no APEX-wide daily ceiling unless deliberately configured
 - `APEX_TOKEN_PACING_ENABLED=true`
 - `APEX_TOKEN_PACING_BURST_TOKENS=50000`
 
-The scheduled-task dedupe and provider backpressure fixes are permanent safety
-controls, not demo throttles. Do not remove them to increase throughput.
+The scheduled-task dedupe and provider backpressure fixes are permanent reliability controls, not demo throttles. Do not remove them merely to increase throughput.
 
-Token capacity is not the same thing as a spending allowance. OpenRouter account
-billing controls remain authoritative. If explicit APEX token caps are added,
-they must be treated as hard operational limits and paced/reserved atomically so
-concurrent workers cannot oversubscribe them.
+Token capacity is not the same as a spending allowance. OpenRouter account billing controls remain authoritative. If explicit APEX token caps are added, treat them as hard operational limits and reserve/pace atomically so concurrent workers cannot oversubscribe them.
 
-`GET /api/tokens` is the operational usage view. Public `/health` exposes only
-aggregate non-secret capacity state.
+`GET /api/tokens` is the operational usage view. Public `/health` exposes only aggregate non-secret capacity state.
 
 ## Deployment safety
 
-APEX production deployment must be **existing-service-only**.
+APEX production deployment is **existing-service-only**.
 
-`cloudbuild.apex.yaml` builds an immutable `:<sha>` image and bakes
-`APEX_BUILD_SHA` / `APEX_BUILD_TIME` into the image. The deployment path first
-describes the configured Cloud Run service and refuses to continue if it cannot
-find that exact target. It then uses `gcloud run services update --image ...`.
+`cloudbuild.apex.yaml` builds an immutable `:<sha>` image and bakes `APEX_BUILD_SHA` / `APEX_BUILD_TIME` into the image. The deployment path first describes the configured Cloud Run service and refuses to continue if it cannot find that exact target. It then uses `gcloud run services update --image ...`.
 
 Never:
 
-- create a new Cloud Run service as a fallback when the configured one is not
-  found;
+- create a new Cloud Run service as a fallback when the configured service cannot be found;
+- substitute a different Google Cloud project/region/service because access to the intended target is missing;
 - replace all service environment variables during an image update;
 - expose Secret Manager values in logs;
-- fake `APEX_BUILD_SHA` as a runtime override simply to make health verification
-  pass;
-- report a release successful before `/health.build.sha` matches the requested
-  commit;
-- revive the removed AWS Lightsail/CodeBuild path.
+- fake `APEX_BUILD_SHA` as a runtime override merely to make health verification pass;
+- report a release successful before `/health.build.sha` matches the requested commit;
+- revive the removed AWS Lightsail/CodeBuild production path;
+- claim a deploy occurred when only a build or commit occurred.
 
-Rollback routes traffic to the prior Cloud Run revision and verifies `/health`.
+Rollback routes production traffic to the prior Cloud Run revision and verifies `/health`.
 
 ## Approval and security rules
 
-- All `/api/*` routes except `/api/auth/login` and `/health` remain behind
-  `requireAdminAuth`.
-- Secrets are referenced by environment-variable name only in logs, reports,
-  commits, and PR descriptions. Never log secret values.
+- All `/api/*` routes except `/api/auth/login` and `/health` remain behind `requireAdminAuth`.
+- `APEX_ADMIN_PASSWORD` and `APEX_ADMIN_TOKEN` are deployment secrets; there is no source-code fallback.
+- Secrets are referenced by environment-variable name only in logs, reports, commits, issues, PR descriptions, and documentation. Never log or commit secret values.
 - Human approval is per tool. Do not create a global bypass.
-- Production deploy/rollback, protected remote writes, outbound calls,
-  externally sent communications, financial actions, and other irreversible
-  effects remain approval-gated unless governance is explicitly changed.
-- `runShell` remains approval-gated. Safe local/feature-branch work may remain
-  automatic where current policy allows it.
+- Production deploy/rollback, protected remote writes, outbound calls, externally sent communications, financial actions, schema/destructive database operations, and other irreversible effects remain approval-gated unless governance is explicitly changed.
+- `runShell` remains approval-gated. Safe local or feature-branch work may remain automatic where current policy allows it.
 - Escalations are notifications, not approvals.
-- Normal engineering work lands through feature branches/PRs; emergency direct
-  production fixes must still be validated by deterministic CI and live health.
+- Normal engineering work lands through feature branches/PRs; emergency direct production fixes must still be validated by deterministic CI and live health.
+
+See `SECURITY.md` for the repository-wide security contract.
 
 ## Autonomous work integrity
 
-- A task is not complete because an agent says what it intends to do. The
-  non-completion guard must continue catching announced-but-not-taken tool work.
-- Scheduled delegation must remain deduplicated so multiple scheduler passes do
-  not create the same live LLM task repeatedly.
-- Provider-capacity pauses must release leases and defer work without consuming
-  ordinary task retry budgets.
-- Managers must follow delegated work through to a measurable result rather than
-  treating delegation itself as completion.
-- Repeated current failures are engineering defects until evidence shows they
-  are transient/recovered.
+- A task is not complete because an agent says what it intends to do. The non-completion guard must continue catching announced-but-not-taken tool work.
+- Scheduled delegation must remain deduplicated so multiple scheduler passes do not create the same live LLM task repeatedly.
+- Provider-capacity pauses must release leases and defer work without consuming ordinary task retry budgets.
+- Managers must follow delegated work through to a measurable result rather than treating delegation itself as completion.
+- Repeated current failures are engineering defects until evidence shows they are transient/recovered.
+- Never manufacture metrics, status, deploy evidence, test results, or external side effects.
 
 ## Verification sequence
 
 For any real code fix or feature:
 
 1. Start from current `origin/main`.
-2. Run production typecheck.
-3. Run deterministic guards relevant to the change; LLM changes require routing
-   and backpressure guards.
-4. Build the dashboard and verify real output.
-5. Require green CI before ordinary merge/release.
-6. For production behavior, build an immutable Cloud Run image from the exact
-   reviewed SHA and update the existing service.
-7. Verify `https://apex.donmatthews.live/health` reports that SHA and a healthy
-   queue.
-8. Smoke-test the actual changed feature against production.
-9. Record what was verified and what remains unverified.
+2. Run `pnpm install --frozen-lockfile` when dependencies are involved or the environment is fresh.
+3. Run `pnpm run typecheck:production`.
+4. Run deterministic guards relevant to the change; LLM changes require routing and backpressure guards, deployment changes require the provenance guard.
+5. Build the dashboard and verify real output.
+6. Require green CI before ordinary merge/release.
+7. For production behavior, build an immutable Cloud Run image from the exact reviewed SHA and update the existing service.
+8. Verify `https://apex.donmatthews.live/health` reports that SHA and a healthy queue.
+9. Smoke-test the actual changed feature against production.
+10. Record what was verified and what remains unverified.
 
-A successful build is not a successful deployment. A Ready Cloud Run revision
-is not a successful deployment until the expected commit is answering the
-production health endpoint.
+A successful build is not a successful deployment. A Ready Cloud Run revision is not a successful deployment until the expected commit is answering the production health endpoint.
+
+## CI contract
+
+`.github/workflows/ci.yml` is the ordinary production gate. Keep it deterministic and secret-free where possible.
+
+Production CI currently includes:
+
+- frozen pnpm install;
+- production TypeScript checks;
+- provider routing guard;
+- provider backpressure guard;
+- budget-pause guard;
+- Cloud Run deploy-provenance guard;
+- malformed-tool-call guard;
+- non-completion guard;
+- branch/review guard;
+- dashboard build.
+
+Experimental Convex checks must not silently become production authority merely because they pass.
 
 ## Context-budget rules
 
-`packages/core/src/context-budget.ts` bounds iterative task history. Tool results
-can become expensive because history is re-sent on each model iteration.
+`packages/core/src/context-budget.ts` bounds iterative task history. Tool results can become expensive because history is re-sent on each model iteration.
 
-Do not optimize context by deleting arbitrary messages. Assistant `tool_calls`
-and matching `tool` messages must remain structurally paired. Preserve the
-system prompt, original task, and recent turns.
+Do not optimize context by deleting arbitrary messages. Assistant `tool_calls` and matching `tool` messages must remain structurally paired. Preserve the system prompt, original task, and recent turns.
+
+## Documentation maintenance
+
+Documentation is part of the production system. Keep it truthful.
+
+When a change affects hosting, model routing, secrets, auth, database targets, approval policy, CI, release procedure, workforce composition, or major architecture:
+
+1. update the relevant source code;
+2. update `AGENTS.md` if the canonical operating rule changed;
+3. update `README.md` if contributor/operator expectations changed;
+4. add or amend an entry in `docs/ARCHITECTURE_DECISIONS.md` for durable architecture decisions;
+5. update `docs/PRODUCTION_OPERATIONS.md` / `docs/deploy-provenance.md` for release/operations changes;
+6. update `CHECKLIST.md` / `ROADMAP.md` only with evidence-backed status;
+7. clearly mark old statements historical instead of leaving contradictory “current” instructions.
+
+Do not let a completed code migration leave documentation on the old architecture.
 
 ## Other source-of-truth documents
 
+- `README.md` — contributor/operator orientation and current production summary.
+- `SECURITY.md` — secrets, auth, vulnerability, and high-risk change rules.
+- `docs/ARCHITECTURE_DECISIONS.md` — durable decisions and retired architecture.
+- `docs/PRODUCTION_OPERATIONS.md` — production runbook.
+- `docs/deploy-provenance.md` — source/image/runtime provenance contract.
 - `BUSINESS_PROFILE.md` — BuildMyBot product/pricing/ICP ground truth.
-- `APEX_CHARTER.md` — mission/governance; stale infrastructure/model notes do
-  not override this file or live source.
+- `APEX_CHARTER.md` — mission/governance; dated infrastructure/model notes are historical unless promoted into current canonical docs.
 - `APEX_INTEGRATION.md` — BuildMyBot workforce integration behavior.
-- `PLAN.md`, `ROADMAP.md`, `CHECKLIST.md` — living status/planning documents.
-- `docs/deploy-provenance.md` — production release/provenance contract.
+- `PLAN.md` — historical build plan; not current infrastructure authority.
+- `ROADMAP.md`, `CHECKLIST.md` — living planning/status documents, subordinate to current source and canonical runtime docs.
 - `cloudbuild.apex.yaml` — immutable Google Cloud Build image definition.
 
-When documentation conflicts with current runtime evidence, state the conflict,
-prefer the most direct evidence, then update the stale documentation so the
-contradiction does not survive the task.
+When documentation conflicts with current runtime evidence, state the conflict, prefer the most direct evidence, and update the stale documentation so the contradiction does not survive the task.
