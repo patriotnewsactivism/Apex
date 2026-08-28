@@ -1,6 +1,4 @@
-# Audited AWS Lightsail release. Normally manual; a specially-marked main push
-# may trigger one authorized production deployment when workflow_dispatch is not
-# available to the connected GitHub client. Remove the push trigger after this release.
+# Manual, audited AWS Lightsail release. Pushing main does not deploy by itself.
 name: Deploy
 
 on:
@@ -10,8 +8,6 @@ on:
         description: Type DEPLOY for production
         type: string
         required: true
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -23,9 +19,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, '[deploy-apex-once]')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production
@@ -73,7 +66,7 @@ jobs:
 
       - name: Guard production release
         env:
-          DEPLOY_CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm || 'DEPLOY' }}
+          DEPLOY_CONFIRM: ${{ inputs.confirm }}
           DEPLOY_REF: ${{ github.ref }}
         run: |
           test "$DEPLOY_REF" = "refs/heads/main"
