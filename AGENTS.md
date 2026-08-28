@@ -1,38 +1,55 @@
-# Repository Guidelines — Apex
-_Last verified against source/CI and current provider docs: 2026-08-23._
+# Repository Guidelines — APEX
+_Last verified against current source, production health, and CI: 2026-08-28._
 
-This is the single canonical instruction file for AI coding tools working in
-this repository. Keep it current. Do not recreate per-tool copies that can
-drift out of sync.
+This is the canonical instruction file for AI coding tools working in this
+repository. Keep it synchronized with live source and production evidence.
+Do not recreate per-tool copies that can drift.
 
 ## Current production runtime
 
-APEX itself runs on **AWS Lightsail container service `apex-service`**. Railway
-was retired for APEX on 2026-08-16. Railway and Vercel can still appear as
-client-project deployment targets or in historical documentation; neither is
-the APEX production host.
+APEX itself runs on **Google Cloud Run** behind the production domain:
 
-The production image is built by CodeBuild project `apex-lightsail-build` and
-stored in ECR. Pushing or merging to `main` does **not** prove a release is
-running. A production release is complete only after all of these are true:
+`https://apex.donmatthews.live`
 
-1. the intended commit is on `main`;
-2. CodeBuild succeeds and pushes the image;
-3. Lightsail creates and activates a deployment for `apex-service`;
-4. the real `/health` endpoint reports the expected `build.sha` and healthy
-   task-queue state;
-5. the changed feature is smoke-tested through its real production path.
+The previous AWS Lightsail/CodeBuild deployment path is retired and must not be
+restored. Railway and Vercel may still appear as deployment targets for client
+projects APEX manages; neither is the APEX control-plane host.
 
-`deploy_to_environment` and `rollback_deployment` implement the Lightsail flow
-in `packages/cicd-automation/src/lightsail-deployer.ts`. Both remain
-approval-gated. `APEX_DEPLOY_ENABLED` is explicit consent to target an
-environment; credentials alone are never consent to ship. Use scoped AWS IAM
-credentials, never root keys.
+A production release is complete only after all of these are true:
+
+1. the intended reviewed commit is on `main`;
+2. CI is green;
+3. Google Cloud Build builds the exact clean commit with an immutable SHA tag;
+4. the **existing** Cloud Run service is updated to that image;
+5. Cloud Run reports the new revision Ready;
+6. `https://apex.donmatthews.live/health` reports the expected `build.sha` and
+   `taskQueue.verdict: "ok"`;
+7. the changed feature is smoke-tested through its real production path.
+
+The deployment implementation is `packages/cicd-automation/src/cloud-run-deployer.ts`.
+`deploy_to_environment` and rollback remain approval-gated. Deployment requires
+explicit `APEX_DEPLOY_ENABLED` consent plus the exact existing Google project,
+region, and service identifiers. The deployer uses `gcloud run services update`,
+not `gcloud run deploy`, specifically so it cannot silently create a duplicate
+service and so existing environment variables, Secret Manager refs, runtime
+service account, scaling, ingress, custom-domain mapping, and resource settings
+remain intact.
+
+Required deploy configuration:
+
+- `APEX_DEPLOY_ENABLED=production` (or `all`)
+- `APEX_GCP_PROJECT_ID`
+- `APEX_CLOUD_RUN_REGION`
+- `APEX_CLOUD_RUN_SERVICE`
+- authenticated `gcloud` identity (human login or Google Workload Identity;
+  never commit service-account JSON keys)
+
+See `docs/deploy-provenance.md` and `cloudbuild.apex.yaml`.
 
 ## What APEX is
 
 APEX is a persistent hierarchical autonomous workforce, not a request/response
-serverless app.
+chatbot.
 
 ```text
 APEX CEO
@@ -41,242 +58,190 @@ APEX CEO
 QA Director -- independent quality/oversight role
 ```
 
-The production workforce is 13 agents. A generic Research/Documentation/
-Operations trio exists in `packages/agents/src/specialists.ts` but is not part
-of the instantiated production org unless that changes explicitly.
+The production workforce is 13 agents. Generic specialist classes may exist in
+source but are not part of the instantiated production organization unless the
+workforce definition changes explicitly.
 
 ## Stack and conventions
 
 - Package manager: **pnpm** workspace. Do not introduce npm/bun lockfiles.
 - TypeScript strict mode; ESM via `tsx`. Use `import`, not CommonJS `require()`.
-- Postgres/Supabase through Drizzle ORM and `DATABASE_URL`.
-- Schema bootstrap is idempotent at startup through `lib/db/src/client.ts`.
-- The old SQLite runtime and retired Railway Postgres are not production data
-  stores and must not be revived.
-- `packages/convex-backend` is experimental/unfinished and production Convex
-  autonomy remains disabled unless `APEX_CONVEX_AUTONOMY_ENABLED=true` is an
-  intentional architecture change.
+- Container runtime: Docker on Google Cloud Run.
+- Database access: Postgres/Supabase through Drizzle ORM and `DATABASE_URL`.
+- Schema bootstrap/migration logic is idempotent at startup through the DB layer.
+- The old SQLite runtime and retired Railway Postgres are not production stores
+  and must not be revived.
+- `packages/convex-backend` remains experimental. Production Convex autonomy is
+  disabled unless `APEX_CONVEX_AUTONOMY_ENABLED=true` is an intentional,
+  reviewed architecture change.
 
-## LLM intelligence policy — free first, paid fail-closed
+## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the source of truth. **Every APEX unit uses
-one economics-first route.** There is no manager-vs-worker provider split.
+`packages/core/src/llm-client.ts` is the source of truth. Every production APEX
+unit routes through OpenRouter. Do not restore the previous Gemini/Groq/Cohere/
+Poolside/Qwen/Kilo/Mistral free-first chain unless the operator explicitly
+changes policy again.
 
-Use this exact order:
+Current logical provider order:
 
-1. **Google Gemini** — `gemini-3.7-flash`
-   - first choice for every agent;
-   - only dedicated `GEMINI_FREE_API_KEY` / `_2` credentials are accepted;
-   - those credentials must belong to genuinely free-tier Google projects;
-   - do not substitute a billing-enabled `GEMINI_API_KEY`.
-2. **Groq** — `openai/gpt-oss-120b`
-   - second choice for every agent;
-   - Groq currently publishes Free-plan limits of 30 RPM, 1,000 RPD and
-     200,000 TPD for GPT-OSS 120B;
-   - use only dedicated `GROQ_FREE_API_KEY` credentials from a genuinely free
-     Groq project/account;
-   - `GROQ_FREE_TIER_CONFIRMED=true` is required before APEX will call it;
-   - if the Groq account is upgraded to a paid Developer plan, turn this gate
-     off before using that key because paid Groq is metered from usage.
-3. **Cohere** — `command-a-plus-05-2026`
-   - third choice;
-   - Cohere currently states Command A+ is free until its applicable API rate
-     limit is reached.
-4. **Poolside** — `poolside/laguna-s-2.1`
-   - fourth choice;
-   - Poolside currently advertises limited-time free access;
-   - APEX requires `POOLSIDE_FREE_ACCESS_CONFIRMED=true` so a stale config
-     cannot silently assume a temporary promotion is permanent.
-5. **Qwen** — `qwen3.7-max`
-   - fifth choice;
-   - Alibaba Model Studio can automatically become PAYG after a free quota;
-   - provider-side **Free quota only** must be enabled first, then
-     `QWEN_FREE_QUOTA_ONLY=true` confirms that protection to APEX.
-6. **Kilo Code** — `kilo-auto/free`
-   - sixth choice;
-   - use Kilo Auto **Free**, never `kilo-auto/frontier`, for autonomous default
-     routing.
-7. **Mistral** — `mistral-medium-3-5`
-   - absolute last emergency fallback;
-   - it is a paid rung;
-   - it is unreachable while `APEX_PAID_LLM_MODE=off`, even if
-     `MISTRAL_API_KEY` exists.
+1. `openrouter-deepseek-flash`
+   - primary production route;
+   - DeepSeek V4 Flash latest alias as pinned in source.
+2. `openrouter-deepseek-flash-0731`
+   - fixed-version Flash fallback.
+3. `openrouter-deepseek-pro`
+   - heavier DeepSeek V4 Pro fallback for difficult work/capacity recovery.
 
-### Gemini quota facts
+All use the OpenAI-compatible OpenRouter endpoint:
 
-Do **not** hard-code “1,500 requests/day” for Gemini 3.7 Flash. Google confirms
-Gemini 3.7 Flash has free input/output tokens on the Free tier, but current
-RPM/TPM/RPD limits are project/model specific and must be read from the AI
-Studio Rate Limit page. Treat a provider 429/quota response as authoritative
-and fall through to Groq rather than assuming a stale numeric quota.
+`https://openrouter.ai/api/v1`
 
-### Groq quota facts
+Credential env vars:
 
-Groq's current Free-plan table for `openai/gpt-oss-120b` lists 30 RPM,
-1,000 RPD, 8,000 TPM and 200,000 TPD. Treat provider responses as authoritative
-if those limits change. The `.env.example` sets `APEX_TOKEN_CAPS=groq:200000`
-as a proactive mirror of the current published daily free token ceiling, but
-that token cap is not proof that a billing-enabled Groq account is free.
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_API_KEY_2` (optional credential redundancy)
 
-### Provider configuration
+Two API keys belonging to the same OpenRouter account do **not** create separate
+account balances or independent account-wide quota. Treat them as credential
+redundancy only.
 
-Inference-related runtime variables:
-
-- `GEMINI_FREE_API_KEY`
-- `GEMINI_FREE_API_KEY_2` (optional second genuinely-free project)
-- `GROQ_FREE_API_KEY`
-- `GROQ_FREE_TIER_CONFIRMED`
-- `COHERE_API_KEY`
-- `POOLSIDE_API_KEY`
-- `POOLSIDE_FREE_ACCESS_CONFIRMED`
-- `QWEN_API_KEY`
-- `QWEN_BASE_URL` (optional; Singapore shared compatible endpoint is the
-  fallback, workspace-specific URL preferred)
-- `QWEN_FREE_QUOTA_ONLY`
-- `KILO_API_KEY`
-- `MISTRAL_API_KEY`
-- `APEX_PAID_LLM_MODE` (default `off`)
-
-Do not restore OpenRouter, Cerebras, SambaNova, Hugging Face, NVIDIA, or other
-removed paid/legacy inference fallback providers unless the user explicitly
-changes the policy after verifying current cost/quality. Embeddings are local
-MiniLM only, so they cannot create a hidden paid inference path.
-
-Model IDs are pinned in reviewed source. Stale `APEX_MODEL` or
-`APEX_MODEL_<ROLE>` environment values must not override this policy.
+OpenRouter requests include APEX attribution headers and retain provider pacing,
+retry-after handling, transient cooldowns, circuit breakers, context trimming,
+token reservations, and actual serving-provider diagnostics.
 
 ### Routing behavior
 
-- Preserve the exact free-first order above; do not round-robin starting
-  providers.
-- Multiple free Gemini keys are credentials for one logical Gemini rung. A
-  rate-limited key can fall through to the second configured free key before
-  leaving Gemini.
-- Groq, Poolside and Qwen activation confirmations are deliberate economic
-  gates.
-- Mistral is a paid emergency gate, not normal capacity.
-- Preserve structured tool calling. A provider response that merely describes
-  a tool call is not successful execution.
-- Preserve provider failure diagnostics and record the actual serving
-  `provider/model`.
-- Preserve request-history trimming without deleting tool-call/result message
-  skeletons.
+- Preserve the exact reviewed provider/model order in live source.
+- Preserve structured tool calling. A response that merely narrates a tool call
+  is not successful execution.
+- Record actual serving provider/model and real provider failures.
+- Preserve tool-call/result message pairing while trimming context.
+- Provider exhaustion is a capacity pause, not an agent failure, when a
+  machine-readable resume time exists.
+- Do not silently route to unrelated legacy providers because an OpenRouter
+  model is temporarily unavailable.
 
-`scripts/verify-provider-routing.ts` is the deterministic guard. It must fail if
-the provider/model order drifts, if Groq stops being the second free rung, if
-Kilo changes away from Auto Free, or if Mistral stops being the only paid and
-final rung.
+`scripts/verify-provider-routing.ts` and
+`scripts/verify-provider-backpressure.ts` are deterministic guards and must stay
+aligned with the production OpenRouter stack.
 
-## Token and spend governor
+## Production concurrency and spend controls
 
-`packages/core/src/token-ledger.ts` records real prompt + completion usage by UTC
-day and persists it to Postgres with a local-file fallback. A container restart
-must not reset the day's accounting.
+Current production defaults in `.env.example` are designed for a real workforce,
+not the temporary demo throttle:
 
-**Token capacity is not a spending allowance.** The old 33M/day Mistral target
-was removed because it confused a rate-limit ceiling with free usage.
-
-Current `.env.example` defaults:
-
-- `APEX_TOKEN_CAP_TOTAL=0`
-- `APEX_TOKEN_CAPS=groq:200000`
+- `APEX_MAX_CONCURRENT_LLM_CALLS=6`
+- `APEX_LEAD_RESEARCH_CONCURRENCY=3`
+- `APEX_MAX_OUTPUT_TOKENS=4096`
+- leadership roles may use larger role-specific output ceilings
+- `APEX_TOKEN_CAP_TOTAL=0` means no APEX-wide daily ceiling unless the operator
+  deliberately sets one
 - `APEX_TOKEN_PACING_ENABLED=true`
-- `APEX_TOKEN_PACING_BURST_TOKENS=12000`
-- `APEX_PAID_LLM_MODE=off`
+- `APEX_TOKEN_PACING_BURST_TOKENS=50000`
 
-Provider-side free quota controls and fail-closed paid routing are the primary
-cost controls. APEX-side token caps are optional secondary operational limits,
-not an attempt to estimate dollar spend.
+The scheduled-task dedupe and provider backpressure fixes are permanent safety
+controls, not demo throttles. Do not remove them to increase throughput.
 
-Every nonzero APEX token cap is paced across the UTC day. The initial burst
-funds one useful task after reset, and the remaining allowance accrues
-continuously. In-flight token reservations are mandatory: without them,
-concurrent agents can all pass the same pre-call check before any response is
-recorded and oversubscribe a supposedly enforced cap.
+Token capacity is not the same thing as a spending allowance. OpenRouter account
+billing controls remain authoritative. If explicit APEX token caps are added,
+they must be treated as hard operational limits and paced/reserved atomically so
+concurrent workers cannot oversubscribe them.
 
-APEX pacing, an APEX per-provider cap, and a provider 429/quota cooldown are
-intentional capacity pauses. They must park work until the machine-readable
-`resume-at` time without consuming retries or leaving agent cards red. Missing,
-invalid, or billing-required credentials remain real errors and must not be
-misreported as healthy capacity pauses.
+`GET /api/tokens` is the operational usage view. Public `/health` exposes only
+aggregate non-secret capacity state.
 
-`GET /api/tokens` remains the operational view of measured token usage.
-The public `/health` response exposes only the non-secret aggregate capacity
-state (`available`, `paced`, or `capped`), the next resume time, and aggregate
-agent-status counts so deploy verification can distinguish a healthy-but-parked
-workforce from a dead one.
+## Deployment safety
 
-Process-wide LLM concurrency defaults to 3 via
-`APEX_MAX_CONCURRENT_LLM_CALLS`; change it from measured throughput/rate-limit
-evidence, not intuition.
+APEX production deployment must be **existing-service-only**.
+
+`cloudbuild.apex.yaml` builds an immutable `:<sha>` image and bakes
+`APEX_BUILD_SHA` / `APEX_BUILD_TIME` into the image. The deployment path first
+describes the configured Cloud Run service and refuses to continue if it cannot
+find that exact target. It then uses `gcloud run services update --image ...`.
+
+Never:
+
+- create a new Cloud Run service as a fallback when the configured one is not
+  found;
+- replace all service environment variables during an image update;
+- expose Secret Manager values in logs;
+- fake `APEX_BUILD_SHA` as a runtime override simply to make health verification
+  pass;
+- report a release successful before `/health.build.sha` matches the requested
+  commit;
+- revive the removed AWS Lightsail/CodeBuild path.
+
+Rollback routes traffic to the prior Cloud Run revision and verifies `/health`.
 
 ## Approval and security rules
 
-- All `/api/*` routes except `/api/auth/login` and `/health` must remain behind
+- All `/api/*` routes except `/api/auth/login` and `/health` remain behind
   `requireAdminAuth`.
 - Secrets are referenced by environment-variable name only in logs, reports,
   commits, and PR descriptions. Never log secret values.
 - Human approval is per tool. Do not create a global bypass.
-- Production deployment/rollback, protected remote writes, outbound calls,
+- Production deploy/rollback, protected remote writes, outbound calls,
   externally sent communications, financial actions, and other irreversible
-  effects remain approval-gated unless the user explicitly changes governance.
-- `runShell` remains approval-gated. `writeFile`, sandbox execution, and local/
-  feature-branch work can remain automatically allowed where currently safe.
-- Escalations are notifications, not approvals. Do not treat an acknowledged
-  escalation as authorization for a gated tool call.
-- GitHub engineering work lands through feature branches/PRs, not direct pushes
-  to `main`.
+  effects remain approval-gated unless governance is explicitly changed.
+- `runShell` remains approval-gated. Safe local/feature-branch work may remain
+  automatic where current policy allows it.
+- Escalations are notifications, not approvals.
+- Normal engineering work lands through feature branches/PRs; emergency direct
+  production fixes must still be validated by deterministic CI and live health.
+
+## Autonomous work integrity
+
+- A task is not complete because an agent says what it intends to do. The
+  non-completion guard must continue catching announced-but-not-taken tool work.
+- Scheduled delegation must remain deduplicated so multiple scheduler passes do
+  not create the same live LLM task repeatedly.
+- Provider-capacity pauses must release leases and defer work without consuming
+  ordinary task retry budgets.
+- Managers must follow delegated work through to a measurable result rather than
+  treating delegation itself as completion.
+- Repeated current failures are engineering defects until evidence shows they
+  are transient/recovered.
 
 ## Verification sequence
 
-For any real code fix or feature, do not report success from source inspection
-alone. Use this order:
+For any real code fix or feature:
 
-1. Start from current origin/main; never assume an old checkout is current.
-2. Run `pnpm run typecheck` and verify every expected production package is
-   actually included.
-3. Run the deterministic guards relevant to the change. LLM work must include
-   `scripts/verify-provider-routing.ts` and `verify-llm-diagnostics.ts` when
-   applicable.
-4. Run `pnpm run build`; for the dashboard, confirm real `dist/index.html` and
-   JS/CSS output rather than trusting only exit code 0.
-5. Commit honestly on a feature branch and open/update a PR.
-6. Require green CI before merge unless the user explicitly accepts a known
-   failure.
-7. If production behavior is part of the task, deploy through the approved
-   Lightsail path and verify the real `/health` `build.sha`.
+1. Start from current `origin/main`.
+2. Run production typecheck.
+3. Run deterministic guards relevant to the change; LLM changes require routing
+   and backpressure guards.
+4. Build the dashboard and verify real output.
+5. Require green CI before ordinary merge/release.
+6. For production behavior, build an immutable Cloud Run image from the exact
+   reviewed SHA and update the existing service.
+7. Verify `https://apex.donmatthews.live/health` reports that SHA and a healthy
+   queue.
 8. Smoke-test the actual changed feature against production.
-9. Update living status documentation with what was verified and what was not.
+9. Record what was verified and what remains unverified.
 
-A successful build is not a successful deployment. A successful deployment is
-not a successful feature until the real behavior is verified.
+A successful build is not a successful deployment. A Ready Cloud Run revision
+is not a successful deployment until the expected commit is answering the
+production health endpoint.
 
 ## Context-budget rules
 
-`packages/core/src/context-budget.ts` bounds what each iterative task re-sends.
-Tool results can become expensive because the whole history is re-sent on every
-agent iteration.
-
-Key controls:
-
-| Env var | Default | Effect |
-| --- | ---: | --- |
-| `APEX_MAX_TOOL_RESULT_CHARS` | `8000` | Truncates one tool result while preserving useful head/tail context. |
-| `APEX_MAX_HISTORY_TOKENS` | `60000` | Elides old tool-result content until history fits. |
+`packages/core/src/context-budget.ts` bounds iterative task history. Tool results
+can become expensive because history is re-sent on each model iteration.
 
 Do not optimize context by deleting arbitrary messages. Assistant `tool_calls`
-and matching `tool` messages must stay structurally paired. Preserve the system
-prompt, original task, and recent turns.
+and matching `tool` messages must remain structurally paired. Preserve the
+system prompt, original task, and recent turns.
 
 ## Other source-of-truth documents
 
 - `BUSINESS_PROFILE.md` — BuildMyBot product/pricing/ICP ground truth.
-- `APEX_CHARTER.md` — mission/governance; historical infrastructure/model notes
-  in it do not override this file or live source.
+- `APEX_CHARTER.md` — mission/governance; stale infrastructure/model notes do
+  not override this file or live source.
 - `APEX_INTEGRATION.md` — BuildMyBot workforce integration behavior.
 - `PLAN.md`, `ROADMAP.md`, `CHECKLIST.md` — living status/planning documents.
-- `docs/deploy-provenance.md` — proof that the intended commit is the one live.
+- `docs/deploy-provenance.md` — production release/provenance contract.
+- `cloudbuild.apex.yaml` — immutable Google Cloud Build image definition.
 
-When documentation conflicts with live runtime evidence, state the conflict and
-prefer the most direct current evidence. Then update the stale documentation so
-the contradiction does not survive the task.
+When documentation conflicts with current runtime evidence, state the conflict,
+prefer the most direct evidence, then update the stale documentation so the
+contradiction does not survive the task.
