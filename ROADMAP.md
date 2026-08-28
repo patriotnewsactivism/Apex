@@ -1,12 +1,13 @@
 # Apex Completion Roadmap (v2 — supersedes v1 ordering)
 
-> **⚠️ 2026-08-19 — INFRASTRUCTURE NOTE (read before acting on anything below).**
-> Every deployment/hosting reference in this file is **historical**. Apex
-> production runs on the **AWS Lightsail** container service `apex-service`,
-> image built by CodeBuild project `apex-lightsail-build`. Railway was retired
-> 2026-08-16 and Apex has never run on Vercel. Where this file says "Railway"
-> or implies Apex deploys to Vercel, read it as a record of what was true at
-> the time, not as current state. `README.md` and `AGENTS.md` are authoritative.
+> **⚠️ 2026-08-28 — CURRENT INFRASTRUCTURE NOTE (read before acting on anything below).**
+> Deployment/hosting references inside this planning document may be historical.
+> **APEX production runs on the existing Google Cloud Run service behind
+> `https://apex.donmatthews.live`.** AWS Lightsail/CodeBuild and Railway are
+> retired APEX hosting paths. Vercel and other platforms may still be client
+> deployment targets, but they are not the APEX control-plane host. Current
+> authority is `AGENTS.md`, `README.md`, `docs/ARCHITECTURE_DECISIONS.md`, and
+> `docs/PRODUCTION_OPERATIONS.md`.
 
 Captured 2026-07-19. Don sent a refined "Direct Path Forward" that reorders
 priority vs. the original analysis (Learning now comes before CI/CD;
@@ -99,10 +100,9 @@ standing "vibe code to completion" discipline: stop immediately on failure.
 - `packages/cicd-automation/`: TestRunner (runTests/parseTestResults/
   generateTestReport), LinterRunner (runLint/parseLintResults/
   generateLintReport), BuildManager (buildProject/monitorBuildProgress/
-  handleBuildErrors), DeploymentManager (triggerVercelDeployment,
-  checkDeploymentStatus, rollbackIfNeeded). Railway retired 2026-08-16 —
-  do not build a Railway trigger; confirm the current production platform
-  first (see AGENTS.md).
+  handleBuildErrors), DeploymentManager. The current APEX production deployer
+  targets the exact existing Google Cloud Run service; client-project tooling
+  may support other platforms separately.
 - Tools: `run_tests`, `run_lint`, `build_project` (approval:false);
   `deploy_to_environment`, `rollback_deployment`, `create_feature_branch`,
   `create_pull_request` (approval:true).
@@ -163,18 +163,15 @@ repo-romance-46.
 
 ---
 
-## Status update — 2026-07-20 (verification pass, not self-reported)
+## Status update — 2026-07-20 (historical snapshot; verification pass, not self-reported)
 All 4 phases' scaffolding now exists (~30 commits, built directly by Don).
 Verified independently this pass: `pnpm run typecheck` and `pnpm run build`
 genuinely clean across all 12 packages (one real compile break found+fixed:
 `TaskQueue.awaitApproval()/resume()` dropped by the task-queue rewrite,
-commit a7a8224), deployed live on Railway, and Phase 1's `/api/health`
-route functionally smoke-tested with a real admin token — returns live
-data (44 tools, real WebSocket client count, real task backlog count), not
-a stub. Phases 2-4 are unverified beyond compiling — see CHECKLIST.md's
-"verification pass" note for the honest breakdown of what's tested vs. what
-just builds. The actual next gate is functional testing of each phase's
-runtime behavior, then the previously-deferred Integration & Testing /
-Performance / Security / Production Deployment / Ongoing Ops sections —
-none of those have been started, correctly, since they're gated on the
-phases above being real.
+commit a7a8224), deployed live on Railway at that time, and Phase 1's
+`/api/health` route functionally smoke-tested with a real admin token — returns
+live data (44 tools, real WebSocket client count, real task backlog count), not
+a stub. Phases 2-4 were unverified beyond compiling at that historical point —
+see CHECKLIST.md's "verification pass" note for the breakdown of what was tested
+vs. what only built. This paragraph records the July 2026 state and does not
+override the current Google Cloud Run production architecture above.
