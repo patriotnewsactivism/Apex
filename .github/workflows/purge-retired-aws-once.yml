@@ -1,0 +1,55 @@
+name: Purge retired AWS artifacts once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/purge-retired-aws-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  purge:
+    if: github.event.head_commit.message == 'ops: purge retired AWS artifacts once'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - name: Remove retired AWS package dependencies and artifacts
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'packages/cicd-automation/package.json';
+          const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+          delete pkg.dependencies?.['@aws-sdk/client-codebuild'];
+          delete pkg.dependencies?.['@aws-sdk/client-lightsail'];
+          fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+          NODE
+          rm -f docs/aws-deploy-iam-policy.json
+          rm -f docs/deploy-workflow.yml
+          rm -f .github/workflows/purge-retired-aws-once.yml
+          pnpm install --lockfile-only
+      - name: Validate clean dependency graph
+        run: pnpm install --frozen-lockfile
+      - name: Commit purge
+        shell: bash
+        run: |
+          git config user.name 'Matthew Reardon'
+          git config user.email 'patriotnewsactivism@proton.me'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'Nothing to commit.'
+            exit 0
+          fi
+          git commit -m 'chore: purge retired AWS deployment artifacts'
+          git push origin HEAD:main
