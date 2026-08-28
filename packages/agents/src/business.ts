@@ -87,10 +87,11 @@ businesses per call), then webSearch for additional coverage. Never give up afte
       tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'requestPeerReview'],
       maxIterations: 50,
       approvalRequired: false,
-      // CEO's task-decomposition instructions have it dispatchSwarm one
-      // instance per state/city for broad research asks -- run several at
-      // once instead of one state at a time.
-      concurrency: 5,
+      // Emergency reliability mode: lead sweeps are expensive and were the
+      // source of the observed five-at-once provider pacing storm. Keep this
+      // worker serialized; broad territory fan-out can still create tasks,
+      // but they drain one at a time instead of exhausting shared LLM slots.
+      concurrency: 1,
       ...overrides,
     });
   }
