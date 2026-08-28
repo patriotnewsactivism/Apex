@@ -1,86 +1,63 @@
-// ─── DeploymentManager ────────────────────────────────────────────────────────
+// ─── DeploymentManager ──────────────────────────────────────────────────────
 //
-// Records deployment attempts. Production deployments are approval-gated.
+// Records and executes APEX deployment attempts. Production deployments remain
+// approval-gated by the tool layer. APEX itself runs on Google Cloud Run.
+// Client projects may still use other deployment platforms elsewhere in the
+// broader CI/CD tooling; that is separate from where the APEX control plane is
+// hosted.
 //
-// 2026-08-19: THIS NEVER DEPLOYED ANYTHING. deploy() used to insert a row
-// with status 'healthy' and, for platform 'vercel', deploymentUrl
-// 'https://apex.vercel.app' -- both hardcoded, with no platform API call of
-// any kind. Two things were wrong with that beyond the missing
-// implementation:
-//   1. Apex does NOT run on Vercel. Production is the **AWS Lightsail**
-//      container service `apex-service`, image built by CodeBuild project
-//      `apex-lightsail-build` (see AGENTS.md). 'apex.vercel.app' is not a
-//      real Apex URL and never was, so an agent that called this tool got a
-//      fabricated hostname for a platform Apex isn't hosted on.
-//   2. Returning status 'healthy' unconditionally is the worst possible
-//      failure mode for an autonomous workforce: an agent told to "deploy
-//      and verify" received success, reported the goal complete, and no
-//      human learned that nothing shipped.
-// Deploying now FAILS LOUDLY with the real runbook instead. Vercel/Railway
-// still legitimately appear elsewhere in this repo as deploy targets for
-// CLIENT projects the CI/CD tooling manages -- that is a different thing
-// from where Apex itself is hosted, which is Lightsail, only Lightsail.
+// The manager never fabricates success. It records the attempt as `deploying`,
+// calls the real Cloud Run deployment path, verifies the live health endpoint,
+// and only then records `healthy`. Missing Google auth/configuration is recorded
+// as `blocked`, not as a failed release, because nothing was shipped.
 
 import { db, deployments, type NewDeploymentRow } from '@workspace/db';
-import { deployToLightsail, rollbackLightsail, DeployNotConfiguredError } from './lightsail-deployer.js';
+import { deployToCloudRun, rollbackCloudRun, DeployNotConfiguredError } from './cloud-run-deployer.js';
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 
-/** Where Apex itself runs. 'lightsail' = the real production target (AWS
- *  Lightsail container service `apex-service`); 'local' = a developer box.
- *  'vercel' is deliberately absent: Apex is not hosted on Vercel. */
-export type ApexDeployPlatform = 'lightsail' | 'local';
+/** Where APEX itself runs. `cloud-run` is the production target; `local` is a
+ * developer environment with no remote deployment target. */
+export type ApexDeployPlatform = 'cloud-run' | 'local';
 
 export interface DeploymentConfig {
   environment: 'staging' | 'production';
   platform: ApexDeployPlatform;
   runId?: string;
+  /** Optional exact commit that must be the clean source and become live. */
+  expectSha?: string;
 }
 
-/** The real deploy sequence, kept in one place so the error an agent sees is
- *  the runbook a human would follow (AGENTS.md is the canonical copy). */
-export const LIGHTSAIL_DEPLOY_RUNBOOK =
-  'Apex production runs on AWS Lightsail container service `apex-service` ' +
-  '(image 535203103662.dkr.ecr.us-east-1.amazonaws.com/apex-lightsail:latest). ' +
-  'Deploying requires, in order: (1) `aws codebuild start-build --project-name ' +
-  'apex-lightsail-build --region us-east-1`, (2) wait for SUCCEEDED, ' +
-  '(3) `aws lightsail create-container-service-deployment` for apex-service, ' +
-  '(4) poll `aws lightsail get-container-service-deployments`. No AWS ' +
-  'credentials or platform API are wired into this process, so this tool ' +
-  'cannot perform that sequence — escalate to a human instead of reporting ' +
-  'a deploy as done.';
+export const CLOUD_RUN_DEPLOY_RUNBOOK =
+  'APEX production runs on the existing Google Cloud Run service mapped to ' +
+  '`https://apex.donmatthews.live`. Deployment requires an authenticated gcloud ' +
+  'environment plus APEX_GCP_PROJECT_ID, APEX_CLOUD_RUN_REGION, and ' +
+  'APEX_CLOUD_RUN_SERVICE. The deployer first describes that exact existing ' +
+  'service, builds a clean Git commit through Google Cloud Build using ' +
+  'cloudbuild.apex.yaml, tags the image with the commit SHA, updates the existing ' +
+  'service image with `gcloud run services update`, waits for Ready, and verifies ' +
+  '/health. It never creates a new Cloud Run service or reconstructs its env/secrets.';
 
 export class DeploymentManager {
-  /** Record a deployment attempt. Production deployments require explicit
-   *  approval. NOTE: this does not and never did perform a deployment — it
-   *  records the attempt as `failed` and throws with the real runbook, so no
-   *  agent can mistake it for a shipped release. See the header comment. */
   async deploy(config: DeploymentConfig): Promise<{
     deploymentId: string;
     status: string;
     deploymentUrl?: string;
     buildId?: string;
-    deploymentVersion?: number;
+    revisionName?: string;
   }> {
     const deploymentId = `deploy-${crypto.randomUUID().slice(0, 8)}`;
     const startedAt = new Date();
     const logLines: string[] = [];
-    const log = (m: string) => {
-      logLines.push(m);
-      console.log(`[deploy ${deploymentId}] ${m}`);
+    const log = (message: string) => {
+      logLines.push(message);
+      console.log(`[deploy ${deploymentId}] ${message}`);
     };
 
-    // 'local' has no deploy target and never did. Say so instead of
-    // pretending, and never let it reach AWS.
     if (config.platform === 'local') {
-      throw new Error(
-        `platform 'local' has no deploy target — nothing to ship. Use 'lightsail' for real deploys.`,
-      );
+      throw new Error(`platform 'local' has no remote deploy target — use 'cloud-run' for APEX production.`);
     }
 
-    // Record the attempt BEFORE doing anything, as 'deploying'. If this
-    // process dies mid-deploy, the row shows an in-flight deploy rather than
-    // no evidence at all.
     const record: NewDeploymentRow = {
       id: deploymentId,
       runId: config.runId ?? null,
@@ -99,7 +76,7 @@ export class DeploymentManager {
     }
 
     try {
-      const result = await deployToLightsail(config.environment, log);
+      const result = await deployToCloudRun(config.environment, log, config.expectSha);
       await this.updateRow(deploymentId, {
         status: 'healthy',
         deploymentUrl: result.serviceUrl,
@@ -110,25 +87,20 @@ export class DeploymentManager {
         status: 'healthy',
         deploymentUrl: result.serviceUrl,
         buildId: result.buildId,
-        deploymentVersion: result.deploymentVersion,
+        revisionName: result.revisionName,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // A config/permission problem is not a failed release — nothing was
-      // shipped — so it's recorded distinctly from a genuine bad deploy.
       const status = err instanceof DeployNotConfiguredError ? 'blocked' : 'failed';
       await this.updateRow(deploymentId, {
         status,
-        error: [message, ...logLines.map((l) => `  · ${l}`)].join('\n'),
+        error: [message, ...logLines.map((line) => `  · ${line}`)].join('\n'),
       });
       throw new Error(`${message} (deployment ${deploymentId}, status ${status})`);
     }
   }
 
-  private async updateRow(
-    deploymentId: string,
-    values: Partial<NewDeploymentRow>,
-  ): Promise<void> {
+  private async updateRow(deploymentId: string, values: Partial<NewDeploymentRow>): Promise<void> {
     try {
       await db.update(deployments).set(values).where(eq(deployments.id, deploymentId));
     } catch (err) {
@@ -136,15 +108,11 @@ export class DeploymentManager {
     }
   }
 
-  /** Roll the RUNNING SERVICE back to the previous ACTIVE deployment spec and
-   *  verify health. The DB row is only marked `rolled_back` after Lightsail
-   *  reports ACTIVE and the health endpoint answers — the old implementation
-   *  flipped that flag with no deployment at all, which closed the incident
-   *  while the bad release kept serving traffic. */
+  /** Route traffic back to the previous Cloud Run revision and verify health. */
   async rollback(deploymentId: string): Promise<{
     success: boolean;
     rolledBackId: string;
-    restoredFromVersion: number;
+    restoredRevision: string;
     serviceUrl: string;
   }> {
     const [existing] = await db
@@ -153,25 +121,23 @@ export class DeploymentManager {
       .where(eq(deployments.id, deploymentId))
       .limit(1);
 
-    if (!existing) {
-      throw new Error(`Deployment ${deploymentId} not found`);
-    }
+    if (!existing) throw new Error(`Deployment ${deploymentId} not found`);
 
     const environment = (existing.environment === 'staging' ? 'staging' : 'production') as
       | 'staging'
       | 'production';
-    const result = await rollbackLightsail(environment);
+    const result = await rollbackCloudRun(environment);
 
     await this.updateRow(deploymentId, {
       status: 'rolled_back',
       rolledBack: true,
-      error: `Rolled back to the deployment spec from v${result.restoredFromVersion}; health ${result.healthStatus}`,
+      error: `Traffic rolled back to Cloud Run revision ${result.restoredRevision}; health ${result.healthStatus}`,
     });
 
     return {
       success: true,
       rolledBackId: deploymentId,
-      restoredFromVersion: result.restoredFromVersion,
+      restoredRevision: result.restoredRevision,
       serviceUrl: result.serviceUrl,
     };
   }
