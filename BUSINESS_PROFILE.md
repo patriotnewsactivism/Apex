@@ -1,10 +1,17 @@
-# BuildMyBot.app — Business Profile (Ground Truth for APEX)
+# BuildMyBot.app — Business Profile (Historical Snapshot + ICP Context)
 
-**Compiled:** 2026-07-12, from live site scrape (buildmybot.app/pricing) + verified backend audits.
-**Purpose:** This is the canonical context APEX's 12 AI employees should operate from. It separates
-what is REAL and LIVE from what is MARKETED but not yet delivered — APEX must never assume a
-promised feature works without checking. When in doubt, verify against the actual codebase
-(`patriotnewsactivism/buildmybot2`) or ask Don/BuildMyBot Partner before promising it to a customer.
+**Snapshot compiled:** 2026-07-12 from the then-live pricing site and backend audits.
+
+> **CURRENT-STATE NOTICE — 2026-08-28:** This file preserves useful ICP, product-history,
+> and commercial context, but it is **not current operational ground truth** for BuildMyBot.
+> Pricing, feature availability, payment state, deployment platform, integrations, and
+> production readiness may have changed since this snapshot. Before any customer-facing,
+> financial, deployment, or product-availability decision, verify the current
+> `patriotnewsactivism/buildmybot2` source and the live BuildMyBot system.
+
+**Purpose:** provide dated business context without allowing old implementation claims to
+masquerade as current facts. Any section below that says "live", "verified", "blocking",
+or names a hosting platform describes the 2026-07-12 snapshot unless independently re-verified.
 
 ---
 

@@ -256,9 +256,9 @@ Do not let a completed code migration leave documentation on the old architectur
 - `docs/ARCHITECTURE_DECISIONS.md` — durable decisions and retired architecture.
 - `docs/PRODUCTION_OPERATIONS.md` — production runbook.
 - `docs/deploy-provenance.md` — source/image/runtime provenance contract.
-- `BUSINESS_PROFILE.md` — BuildMyBot product/pricing/ICP ground truth.
+- `BUSINESS_PROFILE.md` — dated BuildMyBot business/ICP snapshot; verify current pricing, features, payment state, and deployment before acting.
 - `APEX_CHARTER.md` — mission/governance; dated infrastructure/model notes are historical unless promoted into current canonical docs.
-- `APEX_INTEGRATION.md` — BuildMyBot workforce integration behavior.
+- `packages/core/src/buildmybot-connector.ts` — current BuildMyBot connector implementation; verify live BuildMyBot state separately.
 - `PLAN.md` — historical build plan; not current infrastructure authority.
 - `ROADMAP.md`, `CHECKLIST.md` — living planning/status documents, subordinate to current source and canonical runtime docs.
 - `cloudbuild.apex.yaml` — immutable Google Cloud Build image definition.
