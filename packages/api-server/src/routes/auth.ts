@@ -1,26 +1,16 @@
 import { Router } from 'express';
 import { z } from 'zod';
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`${name} must be set — no hardcoded fallback is used for admin credentials.`);
-  }
-  return value;
-}
-
 /**
  * POST /api/auth/login — exchange APEX_ADMIN_PASSWORD for APEX_ADMIN_TOKEN.
  * This route is intentionally not behind requireAdminAuth because it is the
  * dashboard's authentication entry point.
  *
  * Both credentials are deployment secrets. There is deliberately no password
- * or token fallback in source; a missing production secret must fail loudly
- * rather than silently activating a credential committed to a public repo.
+ * or token fallback in source. Missing secrets fail authentication closed while
+ * allowing the server and /health to start, so a configuration mistake is
+ * observable without reviving a credential committed to source.
  */
-const configuredPassword = requireEnv('APEX_ADMIN_PASSWORD');
-const configuredToken = requireEnv('APEX_ADMIN_TOKEN');
-
 export function createAuthRouter() {
   const router = Router();
 
@@ -29,6 +19,14 @@ export function createAuthRouter() {
       const parsed = z.object({ password: z.string() }).safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: 'Password required' });
+        return;
+      }
+
+      const configuredPassword = process.env.APEX_ADMIN_PASSWORD;
+      const configuredToken = process.env.APEX_ADMIN_TOKEN;
+      if (!configuredPassword || !configuredToken) {
+        console.error('[auth] APEX_ADMIN_PASSWORD/APEX_ADMIN_TOKEN are not fully configured');
+        res.status(503).json({ error: 'Admin authentication is not configured' });
         return;
       }
 
