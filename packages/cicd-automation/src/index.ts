@@ -11,9 +11,9 @@ export { DeploymentManager } from './deployment-manager.js';
 export type { DeploymentConfig, ApexDeployPlatform } from './deployment-manager.js';
 
 export {
-  deployToLightsail,
-  rollbackLightsail,
+  deployToCloudRun,
+  rollbackCloudRun,
   isDeployEnabled,
   DeployNotConfiguredError,
-} from './lightsail-deployer.js';
-export type { LightsailDeployResult } from './lightsail-deployer.js';
+} from './cloud-run-deployer.js';
+export type { CloudRunDeployResult, CloudRunRollbackResult } from './cloud-run-deployer.js';
