@@ -27,7 +27,7 @@ metadata:
       - "provider capacity"
       - "agent queue"
       - "approval queue"
-      - "Lightsail"
+      - "Cloud Run"
       - "build.sha"
       - "run the business"
       - "fully automate"
@@ -69,7 +69,7 @@ At the beginning of any substantial APEX task, resolve truth in this order:
 
 When sources conflict, state the conflict and prefer the most direct, current evidence.
 
-Never revive Railway as APEX hosting merely because old docs mention it. Current APEX production is AWS Lightsail unless live evidence shows a newer migration.
+Never revive Railway or AWS Lightsail as APEX hosting merely because old docs or history mention them. Current APEX production is the existing Google Cloud Run service behind `https://apex.donmatthews.live` unless direct live evidence and an explicit architecture change establish a newer migration.
 
 ## 3. Autonomy Policy
 

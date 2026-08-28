@@ -421,7 +421,7 @@ complete. That is the closed loop doing its job, not a bug.
 
 **NOT verified (honest):** nothing here has been deployed or run live. The two
 pre-existing typecheck failures — `packages/convex-backend` (subagent-written
-`toolRegistry.ts`, codegen never run, documented as UNVERIFIED in apexplan.md)
+`toolRegistry.ts`, codegen never run, historically unverified during the retired Convex migration)
 and `packages/dashboard` (imports `@workspace/convex-backend/api`, which does not
 build) — were confirmed to fail identically on a clean tree and are untouched by
 this work. They mean `pnpm run build` cannot currently pass end-to-end, so the
