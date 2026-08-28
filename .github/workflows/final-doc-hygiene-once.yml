@@ -1,0 +1,64 @@
+name: Finish documentation hygiene once
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/final-doc-hygiene-once.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove stale integration manual and qualify dated business snapshot
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          agents = Path('AGENTS.md')
+          text = agents.read_text()
+          text = text.replace(
+              '- `BUSINESS_PROFILE.md` — BuildMyBot product/pricing/ICP ground truth.',
+              '- `BUSINESS_PROFILE.md` — dated BuildMyBot business/ICP snapshot; verify current pricing, features, payment state, and deployment before acting.'
+          )
+          text = text.replace(
+              '- `APEX_INTEGRATION.md` — BuildMyBot workforce integration behavior.',
+              '- `packages/core/src/buildmybot-connector.ts` — current BuildMyBot connector implementation; verify live BuildMyBot state separately.'
+          )
+          agents.write_text(text)
+
+          profile = Path('BUSINESS_PROFILE.md')
+          text = profile.read_text()
+          old = '''# BuildMyBot.app — Business Profile (Ground Truth for APEX)\n\n**Compiled:** 2026-07-12, from live site scrape (buildmybot.app/pricing) + verified backend audits.\n**Purpose:** This is the canonical context APEX's 12 AI employees should operate from. It separates\nwhat is REAL and LIVE from what is MARKETED but not yet delivered — APEX must never assume a\npromised feature works without checking. When in doubt, verify against the actual codebase\n(`patriotnewsactivism/buildmybot2`) or ask Don/BuildMyBot Partner before promising it to a customer.\n'''
+          new = '''# BuildMyBot.app — Business Profile (Historical Snapshot + ICP Context)\n\n**Snapshot compiled:** 2026-07-12 from the then-live pricing site and backend audits.\n\n> **CURRENT-STATE NOTICE — 2026-08-28:** This file preserves useful ICP, product-history,\n> and commercial context, but it is **not current operational ground truth** for BuildMyBot.\n> Pricing, feature availability, payment state, deployment platform, integrations, and\n> production readiness may have changed since this snapshot. Before any customer-facing,\n> financial, deployment, or product-availability decision, verify the current\n> `patriotnewsactivism/buildmybot2` source and the live BuildMyBot system.\n\n**Purpose:** provide dated business context without allowing old implementation claims to\nmasquerade as current facts. Any section below that says "live", "verified", "blocking",\nor names a hosting platform describes the 2026-07-12 snapshot unless independently re-verified.\n'''
+          if old not in text:
+              raise SystemExit('Expected BUSINESS_PROFILE.md header not found')
+          profile.write_text(text.replace(old, new, 1))
+          PY
+
+          rm -f APEX_INTEGRATION.md
+          rm -f .github/workflows/final-doc-hygiene-once.yml
+
+      - name: Verify active documentation references
+        shell: bash
+        run: |
+          ! grep -R -n --exclude-dir=.git 'APEX_INTEGRATION.md' .
+          grep -n 'Historical Snapshot' BUSINESS_PROFILE.md
+          grep -n 'buildmybot-connector.ts' AGENTS.md
+
+      - name: Commit hygiene
+        shell: bash
+        run: |
+          git config user.name 'Matthew Reardon'
+          git config user.email 'patriotnewsactivism@proton.me'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: retire stale integration manual and qualify business snapshot'
+          git push origin HEAD:main
