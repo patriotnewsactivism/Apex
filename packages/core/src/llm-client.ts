@@ -888,16 +888,24 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
 // metered spend outside the chat fallback policy.
 
 let localPipeline: any = null;
+let pipelineError: string | null = null;
 
 async function getLocalPipeline() {
-  if (!localPipeline) {
+  if (localPipeline) return localPipeline;
+  if (pipelineError) throw new Error(pipelineError);
+  try {
     const { pipeline } = await import('@xenova/transformers');
     localPipeline = await pipeline(
       'feature-extraction',
       'Xenova/all-MiniLM-L6-v2',
     );
+    return localPipeline;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    pipelineError = `Local embedding pipeline unavailable: ${msg}`;
+    console.warn(`[LLM] ${pipelineError}`);
+    throw new Error(pipelineError);
   }
-  return localPipeline;
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {
