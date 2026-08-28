@@ -1,0 +1,27 @@
+name: OIDC Branch Trust Test Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/oidc-branch-test-once.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Intentionally no GitHub environment. This tests the branch-scoped OIDC
+    # subject repo:patriotnewsactivism/Apex:ref:refs/heads/main.
+    steps:
+      - name: Configure AWS credentials via branch-scoped OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::535203103662:role/apex-lightsail-github-deploy
+          aws-region: us-east-1
+
+      - name: Verify caller identity only
+        run: aws sts get-caller-identity --query Arn --output text
