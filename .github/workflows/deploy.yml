@@ -1,0 +1,54 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build and push image
+        run: |
+          gcloud builds submit . \
+            --project ${{ secrets.APEX_GCP_PROJECT_ID }} \
+            --tag us-central1-docker.pkg.dev/${{ secrets.APEX_GCP_PROJECT_ID }}/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest \
+            --timeout=900
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ secrets.APEX_CLOUD_RUN_SERVICE }} \
+            --project ${{ secrets.APEX_GCP_PROJECT_ID }} \
+            --region ${{ secrets.APEX_CLOUD_RUN_REGION }} \
+            --image us-central1-docker.pkg.dev/${{ secrets.APEX_GCP_PROJECT_ID }}/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest \
+            --no-allow-unauthenticated \
+            --quiet
+
+      - name: Verify deployment
+        run: |
+          sleep 10
+          curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+            "https://${{ secrets.APEX_CLOUD_RUN_SERVICE }}-${{ secrets.APEX_GCP_PROJECT_ID }}.${{ secrets.APEX_CLOUD_RUN_REGION }}.run.app/health" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Health: {d.get(\"status\",\"?\")}  SHA: {d.get(\"build\",{}).get(\"sha\",\"?\")}  Agents: {d.get(\"agents\",\"?\")}')"
