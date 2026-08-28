@@ -17,27 +17,19 @@ const check = (label: string, condition: boolean, detail?: unknown) => {
 
 const catalog = getProviderCatalog();
 const expectedProviders = [
-  "google-gemini",
-  "groq",
-  "cohere",
-  "poolside",
-  "qwen",
-  "kilo",
-  "mistral",
+  "openrouter-deepseek-flash",
+  "openrouter-deepseek-flash-0731",
+  "openrouter-deepseek-pro",
 ];
 const expectedModels = [
-  "gemini-3.7-flash",
-  "openai/gpt-oss-120b",
-  "command-a-plus-05-2026",
-  "poolside/laguna-s-2.1",
-  "qwen3.7-max",
-  "kilo-auto/free",
-  "mistral-medium-3-5",
+  "deepseek/deepseek-v4-flash-latest",
+  "deepseek/deepseek-v4-flash-0731",
+  "deepseek/deepseek-v4-pro-0813",
 ];
 const expectedOrder = [...expectedProviders];
 
-console.log("── Free-first provider allowlist ──");
-check("exactly seven approved providers exist", catalog.length === 7, catalog);
+console.log("── OpenRouter DeepSeek V4 provider allowlist ──");
+check("exactly three approved OpenRouter routes exist", catalog.length === 3, catalog);
 check(
   "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
@@ -49,29 +41,26 @@ check(
   catalog,
 );
 check(
-  "Groq GPT-OSS 120B is the second free rung",
-  catalog[1]?.name === "groq" &&
-    catalog[1]?.model === "openai/gpt-oss-120b" &&
-    catalog[1]?.paid === false,
+  "Flash Latest is the primary rung",
+  catalog[0]?.name === "openrouter-deepseek-flash" &&
+    catalog[0]?.model === "deepseek/deepseek-v4-flash-latest",
   catalog,
 );
 check(
-  "Mistral is the only paid rung and is last",
-  catalog.filter((provider) => provider.paid).length === 1 &&
-    catalog[catalog.length - 1]?.name === "mistral" &&
-    catalog[catalog.length - 1]?.paid === true,
+  "Flash 0731 is the low-cost fallback rung",
+  catalog[1]?.name === "openrouter-deepseek-flash-0731" &&
+    catalog[1]?.model === "deepseek/deepseek-v4-flash-0731",
   catalog,
 );
 check(
-  "Kilo uses Auto Free, never Auto Frontier",
-  catalog.find((provider) => provider.name === "kilo")?.model === "kilo-auto/free",
+  "DeepSeek V4 Pro is the final heavy-reasoning rung",
+  catalog[2]?.name === "openrouter-deepseek-pro" &&
+    catalog[2]?.model === "deepseek/deepseek-v4-pro-0813",
   catalog,
 );
 check(
-  "no removed legacy inference route is reachable",
-  catalog.every((provider) =>
-    !/openrouter|cerebras|sambanova|huggingface|nvidia|anthropic/i.test(provider.name),
-  ),
+  "all approved routes use OpenRouter logical providers",
+  catalog.every((provider) => provider.name.startsWith("openrouter-")),
   catalog,
 );
 check(
@@ -80,10 +69,10 @@ check(
   catalog,
 );
 
-console.log("\n── Cost safety ──");
-check("paid fallback is off when unset", paidLLMFallbackEnabled(undefined) === false);
-check("paid fallback is off for explicit off", paidLLMFallbackEnabled("off") === false);
-check("paid fallback requires explicit enablement", paidLLMFallbackEnabled("fallback") === true);
+console.log("\n── Cost policy ──");
+check("OpenRouter inference is enabled by default", paidLLMFallbackEnabled(undefined) === true);
+check("explicit off still disables paid fallback mode", paidLLMFallbackEnabled("off") === false);
+check("explicit fallback enables inference", paidLLMFallbackEnabled("fallback") === true);
 
 console.log("\n── All-unit routing ──");
 for (const role of [
@@ -92,19 +81,20 @@ for (const role of [
   "CUSTOMER_SUCCESS", "RESEARCH", "OPS", "DOCS",
 ]) {
   check(
-    `${role} follows the exact free-first order`,
+    `${role} follows the exact OpenRouter order`,
     JSON.stringify(getProviderOrderForRole(role)) === JSON.stringify(expectedOrder),
     getProviderOrderForRole(role),
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to Gemini 3.7 Flash`,
-    config.provider === "google-gemini" && config.model === "gemini-3.7-flash",
+    `${role} defaults to DeepSeek V4 Flash Latest via OpenRouter`,
+    config.provider === "openrouter-deepseek-flash" &&
+      config.model === "deepseek/deepseek-v4-flash-latest",
     config,
   );
 }
 
 console.log(
-  `\n${failures === 0 ? "✅ FREE-FIRST ROUTING GUARDS PASSED" : `❌ ${failures} PROVIDER ROUTING GUARD(S) FAILED`}`,
+  `\n${failures === 0 ? "✅ OPENROUTER ROUTING GUARDS PASSED" : `❌ ${failures} PROVIDER ROUTING GUARD(S) FAILED`}`,
 );
 process.exit(failures === 0 ? 0 : 1);
