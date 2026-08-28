@@ -1,10 +1,10 @@
-/** Pure regression checks for the Lightsail health/provenance gate. No AWS or
- * network calls: safe to run on every pull request. */
+/** Pure regression checks for the Cloud Run health/provenance gate.
+ * No Google Cloud or network calls: safe on every CI run. */
 import {
   MAX_HEALTH_BODY_CHARS,
   immutableImageRef,
   retainHealthResponseBody,
-} from '../packages/cicd-automation/src/lightsail-deployer.js';
+} from '../packages/cicd-automation/src/cloud-run-deployer.js';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -26,7 +26,7 @@ const expandedHealth = JSON.stringify({
   llmCapacity: { state: 'available', pacingEnabled: true },
 });
 
-check('fixture proves the old 500-character truncation boundary', expandedHealth.length > 500);
+check('fixture exceeds the historical 500-character truncation boundary', expandedHealth.length > 500);
 const retained = retainHealthResponseBody(expandedHealth);
 check('complete health JSON is retained for provenance parsing', retained === expandedHealth);
 let runningSha: unknown;
@@ -36,26 +36,28 @@ try {
   console.error(error);
 }
 check('expanded health response preserves the expected live commit', runningSha === expectedSha);
+
+const artifactImage = 'us-central1-docker.pkg.dev/apex-project/apex/apex:latest';
+const immutableArtifactImage = 'us-central1-docker.pkg.dev/apex-project/apex/apex:289c8ce52d2d';
 check(
-  'mutable latest image is rewritten to the immutable short SHA tag',
-  immutableImageRef('535203103662.dkr.ecr.us-east-1.amazonaws.com/apex:latest', expectedSha) ===
-    '535203103662.dkr.ecr.us-east-1.amazonaws.com/apex:289c8ce52d2d',
+  'mutable Artifact Registry tag is rewritten to immutable short SHA',
+  immutableImageRef(artifactImage, expectedSha) === immutableArtifactImage,
 );
 check(
-  'digest image is rewritten to the immutable short SHA tag',
+  'Artifact Registry digest is rewritten to immutable short SHA',
   immutableImageRef(
-    '535203103662.dkr.ecr.us-east-1.amazonaws.com/apex@sha256:' + 'a'.repeat(64),
+    'us-central1-docker.pkg.dev/apex-project/apex/apex@sha256:' + 'a'.repeat(64),
     expectedSha,
-  ) === '535203103662.dkr.ecr.us-east-1.amazonaws.com/apex:289c8ce52d2d',
+  ) === immutableArtifactImage,
 );
 check(
-  'untagged image receives the immutable short SHA tag',
-  immutableImageRef('example/apex', expectedSha) === 'example/apex:289c8ce52d2d',
+  'untagged registry image receives immutable short SHA',
+  immutableImageRef('us-central1-docker.pkg.dev/apex-project/apex/apex', expectedSha) === immutableArtifactImage,
 );
 
 let invalidShaRejected = false;
 try {
-  immutableImageRef('example/apex:latest', 'not-a-sha');
+  immutableImageRef(artifactImage, 'not-a-sha');
 } catch {
   invalidShaRejected = true;
 }
@@ -71,7 +73,7 @@ check('unexpectedly large health bodies remain bounded', oversizedRejected);
 
 console.log(
   failures === 0
-    ? '✅ ALL DEPLOY PROVENANCE GUARDS PASSED'
+    ? '✅ ALL CLOUD RUN DEPLOY PROVENANCE GUARDS PASSED'
     : `❌ ${failures} CHECK(S) FAILED`,
 );
 process.exit(failures === 0 ? 0 : 1);
