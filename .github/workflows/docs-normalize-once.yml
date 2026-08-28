@@ -1,0 +1,70 @@
+name: Normalize canonical docs once
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/docs-normalize-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Correct stale infrastructure banners
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          old = '''> **⚠️ 2026-08-19 — INFRASTRUCTURE NOTE (read before acting on anything below).**
+          > Every deployment/hosting reference in this file is **historical**. Apex
+          > production runs on the **AWS Lightsail** container service `apex-service`,
+          > image built by CodeBuild project `apex-lightsail-build`. Railway was retired
+          > 2026-08-16 and Apex has never run on Vercel. Where this file says "Railway"
+          > or implies Apex deploys to Vercel, read it as a record of what was true at
+          > the time, not as current state. `README.md` and `AGENTS.md` are authoritative.
+'''.replace('          ', '')
+
+          new = '''> **⚠️ 2026-08-28 — CURRENT INFRASTRUCTURE NOTE (read before acting on anything below).**
+          > Deployment/hosting references inside this planning document may be historical.
+          > **APEX production runs on the existing Google Cloud Run service behind
+          > `https://apex.donmatthews.live`.** AWS Lightsail/CodeBuild and Railway are
+          > retired APEX hosting paths. Vercel and other platforms may still be client
+          > deployment targets, but they are not the APEX control-plane host. Current
+          > authority is `AGENTS.md`, `README.md`, `docs/ARCHITECTURE_DECISIONS.md`, and
+          > `docs/PRODUCTION_OPERATIONS.md`.
+'''.replace('          ', '')
+
+          for name in ['PLAN.md', 'ROADMAP.md', 'CHECKLIST.md']:
+              p = Path(name)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'Expected stale infrastructure banner not found in {name}')
+              p.write_text(text.replace(old, new, 1))
+          PY
+
+          rm -f .github/workflows/docs-normalize-once.yml
+
+      - name: Guard against stale active banners
+        shell: bash
+        run: |
+          ! grep -n "production runs on the \*\*AWS Lightsail\*\*" PLAN.md ROADMAP.md CHECKLIST.md
+          grep -n "Google Cloud Run" PLAN.md ROADMAP.md CHECKLIST.md
+
+      - name: Commit documentation normalization
+        shell: bash
+        run: |
+          git config user.name 'Matthew Reardon'
+          git config user.email 'patriotnewsactivism@proton.me'
+          git add -A
+          git diff --cached --check
+          git commit -m 'docs: correct historical infrastructure banners'
+          git push origin HEAD:main
