@@ -1,0 +1,36 @@
+name: OIDC Claims Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/oidc-claims-once.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Read non-secret OIDC claims
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")"
+          token="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          TOKEN="$token" python3 <<'PY'
+          import os, json, base64
+          payload = os.environ['TOKEN'].split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          allowed = [
+              'sub','aud','repository','repository_id','repository_owner','repository_owner_id',
+              'ref','environment','workflow','job_workflow_ref','actor','actor_id'
+          ]
+          for key in allowed:
+              if key in claims:
+                  print(f'{key}={claims[key]}')
+          PY
