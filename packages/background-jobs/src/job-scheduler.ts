@@ -4,8 +4,8 @@
 // AND enabled = true, dispatches them to the JobExecutor, and calculates the
 // next run for recurring (cron) jobs. Supports graceful start/stop.
 
-import { db, scheduledJobs } from '@workspace/db';
-import { and, eq, lte, isNotNull } from 'drizzle-orm';
+import { db, scheduledJobs, tasks } from '@workspace/db';
+import { and, asc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
 import { CronParser } from './cron-parser.js';
 import { JobExecutor } from './job-executor.js';
 import {
@@ -22,6 +22,8 @@ import {
   StalledWorkRecoveryJob,
   PromptSelfImproveJob,
 } from './handlers/index.js';
+
+const OPEN_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const;
 
 export interface JobSchedulerConfig {
   pollIntervalMs?: number;  // default 60_000
@@ -131,6 +133,56 @@ export class JobScheduler {
       await db.update(scheduledJobs)
         .set({ nextRunAt: nextRun ?? new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000), updatedAt: now })
         .where(eq(scheduledJobs.id, job.id));
+
+      // A recurring task_delegation job must never manufacture another copy of
+      // the same expensive LLM task while the prior copy is still pending,
+      // running, blocked, awaiting approval, or parked on provider capacity.
+      // This was the direct cause of the observed Lead generation sweep storm:
+      // each cron tick inserted another row, and LEAD_RESEARCH then claimed five
+      // of them concurrently. Keep the oldest live row and cancel accidental
+      // duplicates from the same scheduled job before deciding whether to run.
+      if (job.jobType === 'task_delegation' && job.targetAgentId) {
+        const liveScheduledTasks = await db
+          .select({
+            id: tasks.id,
+            createdAt: tasks.createdAt,
+          })
+          .from(tasks)
+          .where(
+            and(
+              eq(tasks.assignedAgentId, job.targetAgentId),
+              eq(tasks.createdByAgentId, 'system-scheduler'),
+              inArray(tasks.status, [...OPEN_TASK_STATUSES]),
+              sql`${tasks.context}->>'scheduledJobId' = ${job.id}`,
+            ),
+          )
+          .orderBy(asc(tasks.createdAt));
+
+        if (liveScheduledTasks.length > 1) {
+          const duplicateIds = liveScheduledTasks.slice(1).map((row) => row.id);
+          await db
+            .update(tasks)
+            .set({
+              status: 'cancelled',
+              errorMessage: `Superseded duplicate from scheduled job ${job.id}`,
+              nextRetryAt: null,
+              leasedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(inArray(tasks.id, duplicateIds));
+          console.warn(
+            `[JobScheduler] Cancelled ${duplicateIds.length} duplicate task(s) for scheduled job '${job.name}'`,
+          );
+        }
+
+        if (liveScheduledTasks.length > 0) {
+          console.log(
+            `[JobScheduler] Skipping '${job.name}' — prior scheduled task ${liveScheduledTasks[0].id} is still open`,
+          );
+          this.runningJobs.delete(job.id);
+          continue;
+        }
+      }
 
       // Execute asynchronously (don't block the loop for other due jobs)
       this.executor.execute(job.id).then(async (result) => {
