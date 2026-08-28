@@ -1,19 +1,20 @@
 /**
- * Deploy CLI — the entry point CI uses.
- *
- * Deliberately thin: it does argument handling and one extra safety check, then
- * delegates to `deployToLightsail()`. The deploy logic is NOT duplicated in
- * YAML, so a human running this locally and a CI run exercise the same code
- * path, including the post-deploy /health verification.
+ * APEX Deploy CLI — build and update the existing Google Cloud Run service.
  *
  * Usage: tsx scripts/deploy.mts <staging|production> [--expect-sha <sha>]
+ *
+ * The underlying deployer refuses to create a new service. It requires the
+ * exact existing project/region/service identifiers and an authenticated
+ * gcloud environment, builds a clean Git commit through Cloud Build with an
+ * immutable SHA tag, updates only the existing service image, waits for Ready,
+ * and then verifies /health.
  */
 import { pathToFileURL } from 'node:url';
 
-import { deployToLightsail, DeployNotConfiguredError } from '../src/lightsail-deployer.ts';
+import { deployToCloudRun, DeployNotConfiguredError } from '../src/cloud-run-deployer.ts';
 
 export function parseArgs(argv: string[]): { environment: 'staging' | 'production'; expectSha: string | undefined } {
-  const positional = argv.filter((a) => !a.startsWith('--'));
+  const positional = argv.filter((arg) => !arg.startsWith('--'));
   const environment = positional[0];
   if (environment !== 'staging' && environment !== 'production') {
     throw new Error(`Usage: deploy.mts <staging|production> [--expect-sha <sha>]  (got ${environment ?? 'nothing'})`);
@@ -23,14 +24,9 @@ export function parseArgs(argv: string[]): { environment: 'staging' | 'productio
   return { environment, expectSha };
 }
 
-/**
- * The check that closes the stale-image hole. A deployment can report ACTIVE
- * and /health can return 200 while the container still runs an older image —
- * that exact situation burned hours on 2026-08-19. If the commit we asked to
- * build is not the commit answering /health, the deploy has NOT delivered the
- * change and must fail loudly rather than look green.
- */
-export function assertRunningCommit(healthBody: string, expectSha: string | undefined, log: (m: string) => void): void {
+/** A Ready Cloud Run revision is not sufficient evidence: verify that the
+ * exact reviewed commit is what answers the production health endpoint. */
+export function assertRunningCommit(healthBody: string, expectSha: string | undefined, log: (message: string) => void): void {
   if (!expectSha) {
     log('No expected SHA supplied — skipping provenance check.');
     return;
@@ -42,22 +38,18 @@ export function assertRunningCommit(healthBody: string, expectSha: string | unde
     throw new Error(`/health did not return JSON, cannot verify which commit is live. Body: ${healthBody.slice(0, 400)}`);
   }
   if (typeof running !== 'string' || running === '') {
-    throw new Error('/health returned no build.sha. Deploy an image built from a Dockerfile that sets APEX_BUILD_SHA.');
+    throw new Error('/health returned no build.sha. The production image must be built with APEX_BUILD_SHA.');
   }
   if (running === 'unknown') {
-    // Not a hard failure: the Dockerfile defaults to 'unknown' so an
-    // un-updated buildspec still builds. But it means provenance is unproven.
-    log('WARNING: /health reports build.sha=unknown — the CodeBuild buildspec is not passing');
-    log('         --build-arg APEX_BUILD_SHA. Until it does, nothing can confirm which commit is live.');
-    log('         See docs/deploy-provenance.md.');
-    return;
+    throw new Error(
+      '/health reports build.sha=unknown. Cloud Build must use cloudbuild.apex.yaml so the exact Git SHA is baked into the image.',
+    );
   }
-  const short = (s: string) => s.slice(0, 12);
+  const short = (sha: string) => sha.slice(0, 12);
   if (short(running) !== short(expectSha)) {
     throw new Error(
       `STALE IMAGE: expected commit ${short(expectSha)} to be live, but /health reports ${short(running)}. ` +
-        `The build published an image that the service did not pull — commonly a cached ':latest' digest. ` +
-        `Force a genuinely new container spec, or deploy an immutable ':<sha>' tag (docs/deploy-provenance.md).`,
+        `The Cloud Run release is not the requested image; do not report success.`,
     );
   }
   log(`Provenance verified: live commit ${short(running)} matches the deployed commit.`);
@@ -65,11 +57,15 @@ export function assertRunningCommit(healthBody: string, expectSha: string | unde
 
 async function main(): Promise<void> {
   const { environment, expectSha } = parseArgs(process.argv.slice(2));
-  const log = (m: string) => console.log(`[deploy] ${m}`);
+  const log = (message: string) => console.log(`[deploy] ${message}`);
   try {
-    const result = await deployToLightsail(environment, log, expectSha);
+    const result = await deployToCloudRun(environment, log, expectSha);
     assertRunningCommit(result.healthBody, expectSha, log);
-    log(`Done. build=${result.buildId} deployment=v${result.deploymentVersion} (${result.deploymentState}) health=${result.healthStatus}`);
+    log(
+      `Done. build=${result.buildId} revision=${result.revisionName} ` +
+        `(${result.deploymentState}) health=${result.healthStatus}`,
+    );
+    log(`Image: ${result.image}`);
     log(`Service: ${result.serviceUrl}`);
   } catch (err) {
     if (err instanceof DeployNotConfiguredError) {
@@ -81,8 +77,6 @@ async function main(): Promise<void> {
   }
 }
 
-// Only deploy when run as a script — importing this file (e.g. from tests)
-// must never trigger a deployment.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main();
 }
