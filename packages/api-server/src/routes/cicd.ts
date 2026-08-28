@@ -7,44 +7,21 @@ import {
   deployments,
 } from '@workspace/db';
 import { TestRunner, LinterRunner, BuildManager, DeploymentManager } from '@workspace/cicd-automation';
-import { eq, desc } from 'drizzle-orm';
-import crypto from 'crypto';
+import { desc } from 'drizzle-orm';
 
-// ─── CI/CD API Routes ─────────────────────────────────────────────────────────
-//
-// Pipeline management endpoints for tests, builds, linting, and deployment operations.
+// ─── CI/CD API Routes ────────────────────────────────────────────────────────
+// Pipeline management endpoints for tests, builds, linting, and deployment.
 // Protected by requireAdminAuth (mounted under /api in main server).
 
 export function createCicdRouter(): Router {
   const router = Router();
 
-  // GET /api/cicd/status — get current pipeline, test, lint, & deployment status summary
   router.get('/status', async (_req, res) => {
     try {
-      const [latestRun] = await db
-        .select()
-        .from(pipelineRuns)
-        .orderBy(desc(pipelineRuns.startedAt))
-        .limit(1);
-
-      const [latestTest] = await db
-        .select()
-        .from(testResults)
-        .orderBy(desc(testResults.recordedAt))
-        .limit(1);
-
-      const [latestLint] = await db
-        .select()
-        .from(lintResults)
-        .orderBy(desc(lintResults.recordedAt))
-        .limit(1);
-
-      const activeDeployments = await db
-        .select()
-        .from(deployments)
-        .orderBy(desc(deployments.deployedAt))
-        .limit(5);
-
+      const [latestRun] = await db.select().from(pipelineRuns).orderBy(desc(pipelineRuns.startedAt)).limit(1);
+      const [latestTest] = await db.select().from(testResults).orderBy(desc(testResults.recordedAt)).limit(1);
+      const [latestLint] = await db.select().from(lintResults).orderBy(desc(lintResults.recordedAt)).limit(1);
+      const activeDeployments = await db.select().from(deployments).orderBy(desc(deployments.deployedAt)).limit(5);
       res.json({
         latestRun: latestRun ?? null,
         latestTest: latestTest ?? null,
@@ -56,47 +33,47 @@ export function createCicdRouter(): Router {
     }
   });
 
-  // POST /api/cicd/test — trigger an automated test/typecheck run
   router.post('/test', async (_req, res) => {
     try {
       const runner = new TestRunner();
-      const report = await runner.runTests();
-      res.json(report);
+      res.json(await runner.runTests());
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  // POST /api/cicd/lint — trigger a linter run
   router.post('/lint', async (_req, res) => {
     try {
       const runner = new LinterRunner();
-      const report = await runner.runLint();
-      res.json(report);
+      res.json(await runner.runLint());
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  // POST /api/cicd/build — trigger a project build
   router.post('/build', async (_req, res) => {
     try {
       const manager = new BuildManager();
-      const result = await manager.buildProject();
-      res.json(result);
+      res.json(await manager.buildProject());
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  // POST /api/cicd/deploy — trigger a deployment
+  // APEX itself has one production deployment platform: the existing Cloud Run
+  // service. `expectSha` lets an approved operator require exact provenance.
   router.post('/deploy', async (req, res) => {
     try {
-      const { environment, platform } = req.body as { environment?: 'staging' | 'production'; platform?: 'lightsail' | 'local' };
+      const { environment, platform, expectSha } = req.body as {
+        environment?: 'staging' | 'production';
+        platform?: 'cloud-run' | 'local';
+        expectSha?: string;
+      };
       const manager = new DeploymentManager();
       const result = await manager.deploy({
         environment: environment ?? 'production',
-        platform: platform ?? 'lightsail',
+        platform: platform ?? 'cloud-run',
+        expectSha,
       });
       res.json(result);
     } catch (err) {
@@ -104,7 +81,6 @@ export function createCicdRouter(): Router {
     }
   });
 
-  // POST /api/cicd/rollback — rollback a deployment
   router.post('/rollback', async (req, res) => {
     try {
       const { deploymentId } = req.body as { deploymentId: string };
@@ -113,22 +89,16 @@ export function createCicdRouter(): Router {
         return;
       }
       const manager = new DeploymentManager();
-      const result = await manager.rollback(deploymentId);
-      res.json(result);
+      res.json(await manager.rollback(deploymentId));
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  // GET /api/cicd/history — pipeline execution history
   router.get('/history', async (req, res) => {
     try {
       const limit = parseInt(String(req.query.limit ?? '20'), 10);
-      const runs = await db
-        .select()
-        .from(pipelineRuns)
-        .orderBy(desc(pipelineRuns.startedAt))
-        .limit(limit);
+      const runs = await db.select().from(pipelineRuns).orderBy(desc(pipelineRuns.startedAt)).limit(limit);
       res.json(runs);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
