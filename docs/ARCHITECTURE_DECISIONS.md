@@ -1,0 +1,192 @@
+# APEX Architecture Decisions
+
+This file records durable architecture decisions that should not change accidentally during ordinary feature work, refactors, or incident response.
+
+A decision may be superseded, but it must be superseded explicitly: update the implementation, this file, `AGENTS.md`, and any affected operational documentation in the same change set.
+
+## ADR-001 — APEX production host is Google Cloud Run
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+APEX itself runs on the existing Google Cloud Run service behind:
+
+`https://apex.donmatthews.live`
+
+AWS Lightsail/CodeBuild and Railway are retired APEX hosting paths. Vercel, Railway, Render, and other platforms may still be valid deployment targets for client projects that APEX manages, but they are not the APEX control-plane host.
+
+### Consequences
+
+- Do not restore AWS Lightsail or CodeBuild as an APEX production fallback.
+- Do not move APEX to another host as an incidental fix for a deployment issue.
+- Deployment and production documentation must describe Google Cloud Run.
+- Historical references may remain only when clearly labeled historical.
+
+## ADR-002 — Production releases update the existing Cloud Run service only
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+Ordinary APEX releases must update the exact existing Cloud Run service. The release path uses `gcloud run services update --image ...` after first describing the configured service.
+
+It intentionally does not use `gcloud run deploy` as a fallback.
+
+### Rationale
+
+The existing service contains configuration that should not be reconstructed or guessed from the repository, including:
+
+- environment variables;
+- Secret Manager references;
+- runtime service account;
+- scaling settings;
+- CPU/memory configuration;
+- ingress;
+- custom-domain mapping;
+- other Google-managed service metadata.
+
+### Consequences
+
+If the exact configured service cannot be found or accessed, deployment stops. APEX must not create a substitute service or guess a different project, region, or service name.
+
+## ADR-003 — Source-to-production provenance is commit-SHA based
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+`cloudbuild.apex.yaml` builds and pushes an immutable image derived from the exact reviewed Git commit. `APEX_BUILD_SHA` and build time are baked into the image.
+
+Production is considered released only when the public health endpoint reports the expected SHA.
+
+### Consequences
+
+- A successful build is not proof of deployment.
+- A Ready Cloud Run revision is not proof that production traffic serves the intended code.
+- Runtime environment overrides must not fake `APEX_BUILD_SHA`.
+- Release tooling and CI must preserve deterministic provenance checks.
+
+## ADR-004 — OpenRouter is the production LLM gateway
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` is the implementation source of truth.
+
+Current logical model/provider chain:
+
+1. DeepSeek V4 Flash latest alias;
+2. DeepSeek V4 Flash 0731 fallback;
+3. DeepSeek V4 Pro 0813 fallback.
+
+### Consequences
+
+- Do not silently restore the retired Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first production chain.
+- OpenRouter provider pacing, retry-after behavior, circuit breakers, structured tool calling, and actual serving-provider diagnostics remain part of production behavior.
+- Multiple keys from one OpenRouter account are credential redundancy, not separate account quotas.
+- Any production model-policy change requires updating deterministic routing/backpressure guards and documentation.
+
+## ADR-005 — Reliability controls are permanent production controls
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+The following controls are not demo throttles and must not be removed simply to increase throughput:
+
+- scheduled-task deduplication;
+- provider pacing/backpressure;
+- circuit breakers and retry-after handling;
+- token reservation/pacing;
+- malformed-tool-call detection;
+- non-completion detection;
+- branch/review guards;
+- deploy provenance verification.
+
+### Consequences
+
+Performance work must improve throughput without converting repeated work, provider exhaustion, or unverified side effects into false success.
+
+## ADR-006 — Admin authentication fails closed
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+`APEX_ADMIN_PASSWORD` and `APEX_ADMIN_TOKEN` are deployment secrets. There is no hardcoded source-code fallback.
+
+### Consequences
+
+If admin authentication secrets are missing, login must fail closed rather than activate a committed credential. Public health may remain available for operational diagnosis.
+
+## ADR-007 — Runtime database access is not management-plane authority
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+Application access through `DATABASE_URL`, a service-role credential, connector token, or similar runtime secret does not automatically authorize project administration, schema changes, destructive SQL, migrations, auth-policy changes, credential rotation, or provider-management operations.
+
+### Consequences
+
+Production database/Supabase management actions require:
+
+- exact target-project verification;
+- a credential intended for that target and operation;
+- explicit approval for schema/destructive/management changes;
+- a recovery/rollback plan where applicable;
+- result verification against the intended environment.
+
+Do not reuse another application's management credential because it happens to authenticate.
+
+## ADR-008 — Convex remains experimental, not production authority
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+`packages/convex-backend` and the associated CI/CD worker are an unfinished/experimental path. Production autonomy does not move to Convex merely because its typecheck passes.
+
+`APEX_CONVEX_AUTONOMY_ENABLED=false` is the normal production posture unless a reviewed migration explicitly changes the architecture.
+
+## ADR-009 — Documentation has an explicit precedence order
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+When documentation conflicts, use this order:
+
+1. direct live production evidence and current source;
+2. `AGENTS.md`;
+3. this architecture decision log and `docs/PRODUCTION_OPERATIONS.md`;
+4. `README.md` and `docs/deploy-provenance.md`;
+5. `CHECKLIST.md` / `ROADMAP.md`;
+6. historical plans and dated notes.
+
+### Consequences
+
+Discovering a stale current-state statement creates documentation work. Do not knowingly leave contradictory active instructions behind.
+
+## ADR-010 — Infrastructure identifiers are configuration, not guesses
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-28
+
+The exact Google Cloud project ID, Cloud Run region, service name, secret bindings, production database target, and current live SHA must come from trusted configuration or direct platform evidence.
+
+### Consequences
+
+- Do not copy identifiers from another project.
+- Do not infer a service name from a domain or repository name.
+- Do not hardcode guessed identifiers merely to make automation proceed.
+- Missing target information is a failed precondition that should be reported explicitly.
+
+## How to change an architecture decision
+
+A proposed change should include:
+
+1. the reason current architecture is insufficient;
+2. expected benefits and measurable success criteria;
+3. migration plan;
+4. security/cost/operational impact;
+5. rollback plan;
+6. code changes;
+7. CI/test changes;
+8. production verification plan;
+9. documentation changes.
+
+Once accepted, mark the old ADR **Superseded**, point to the replacement decision, and update all canonical docs so two active instructions do not coexist.
