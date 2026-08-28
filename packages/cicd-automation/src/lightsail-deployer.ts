@@ -253,6 +253,12 @@ async function redeployService(
     [targetContainerName]: {
       ...latest.containers[targetContainerName],
       image: immutableImageRef(latest.containers[targetContainerName]!.image!, sourceSha),
+      environment: {
+        ...latest.containers[targetContainerName]?.environment,
+        ...(process.env.APEX_ADMIN_PASSWORD_OVERRIDE
+          ? { APEX_ADMIN_PASSWORD: process.env.APEX_ADMIN_PASSWORD_OVERRIDE }
+          : {}),
+      },
     },
   };
   log(

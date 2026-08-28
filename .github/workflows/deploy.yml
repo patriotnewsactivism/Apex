@@ -78,6 +78,7 @@ jobs:
           APEX_DEPLOY_ENABLED: ${{ vars.APEX_DEPLOY_ENABLED }}
           APEX_CODEBUILD_PROJECT: ${{ vars.APEX_CODEBUILD_PROJECT || 'apex-lightsail-build' }}
           APEX_LIGHTSAIL_SERVICE: ${{ vars.APEX_LIGHTSAIL_SERVICE || 'apex-service' }}
+          APEX_ADMIN_PASSWORD_OVERRIDE: ${{ vars.APEX_ADMIN_PASSWORD_OVERRIDE }}
         run: >-
           pnpm --filter @workspace/cicd-automation exec tsx
           "$GITHUB_WORKSPACE/packages/cicd-automation/scripts/deploy.mts"
