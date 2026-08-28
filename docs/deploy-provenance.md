@@ -1,114 +1,108 @@
-# Knowing what's actually running
+# Knowing what is actually running
 
-On 2026-08-19 a single-line bug in `TaskQueue.dequeue()` took several
-build → deploy → read-logs cycles to pin down, and most of that time went to a
-question that should be free: **is the code I just built the code that's
-running?** `:latest` is a mutable tag, `GET /health` returned a flat
-`{status:'ok'}` that proved only that Express was listening, and Lightsail
-reports a deployment `ACTIVE` whether or not the container can do any work.
-Three separate signals, none of which answered the question.
+APEX production is the existing Google Cloud Run service mapped to
+`https://apex.donmatthews.live`.
 
-## What `/health` now tells you
+A deployment is not considered successful merely because a build completed or
+Cloud Run created a revision. The code answering production traffic must be the
+exact reviewed Git commit and its task queue must remain healthy.
+
+## What `/health` proves
 
 ```bash
 curl -s https://apex.donmatthews.live/health | jq
 ```
 
-```json
-{
-  "status": "ok",
-  "agents": 13,
-  "build": { "sha": "c1a8374…", "builtAt": "…", "startedAt": "…", "uptimeSeconds": 412 },
-  "taskQueue": { "attempts": 512, "successes": 512, "tasksClaimed": 7,
-                 "failures": 0, "consecutiveFailures": 0, "verdict": "ok" }
-}
+Important fields:
+
+- `build.sha` — exact source commit baked into the image by
+  `cloudbuild.apex.yaml`.
+- `build.builtAt` — image build time.
+- `build.startedAt` / `build.uptimeSeconds` — confirms a new instance actually
+  started.
+- `taskQueue.verdict` — must be `ok` after rollout. Repeated dequeue failures
+  deliberately make the health endpoint fail rather than allowing a broken
+  workforce to look healthy.
+- `llmCapacity.state` — operational LLM-capacity signal; provider exhaustion is
+  reported separately from application health.
+
+## Immutable Cloud Build image
+
+`cloudbuild.apex.yaml` builds the production Dockerfile and requires three
+substitutions from the deployer:
+
+- `_IMAGE` — the existing Cloud Run image repository with `:<commit-sha>` tag.
+- `_APEX_BUILD_SHA` — the exact clean Git commit being built.
+- `_APEX_BUILD_TIME` — UTC build timestamp.
+
+The Dockerfile bakes the latter two into the image. The deployer does **not**
+forge `APEX_BUILD_SHA` as a runtime environment override; `/health` therefore
+reports what the image was actually built from.
+
+## Existing-service-only rule
+
+APEX must never create a second Cloud Run service during an ordinary release.
+The deployer first runs `gcloud run services describe` against the explicitly
+configured project, region, and service. If that exact service cannot be read,
+it stops.
+
+After Cloud Build publishes the immutable image, deployment uses:
+
+```text
+gcloud run services update <existing-service> --image <immutable-image>
 ```
 
-- **`build.sha`** — the commit baked into the image. Compare it to the commit
-  you expect. If they differ, the deployment did not pick up your build and no
-  amount of log reading will change that.
-- **`build.uptimeSeconds`** — small means the container really restarted. A
-  large value right after a deployment means the old container is still serving.
-- **`taskQueue`** — `attempts` climbing with `successes` flat is a queue failing
-  on every call. `tasksClaimed: 0` on its own only means idle.
-- **`status: "degraded"` + HTTP 503** once dequeue fails 5 times in a row (5, so
-  a single dropped connection during a DB failover doesn't trip it). The
-  automated deployer verifies `/health` after activation, so **a release that
-  brings up a service whose queue is broken now fails the deploy** instead of
-  being reported healthy.
+Using `services update` rather than `run deploy` is intentional. It updates the
+existing service and preserves configuration that should not be reconstructed
+from this repository: environment variables, Secret Manager references, runtime
+service account, scaling, CPU/memory, ingress, domain mapping, and related
+Google-managed settings.
 
-## Required buildspec change
+## Required deployment configuration
 
-The build must pass the commit through, or `build.sha` reads `unknown`:
+The operator or CI environment must have an authenticated `gcloud` identity and
+set:
 
-```yaml
-build:
-  commands:
-    - |
-      docker build \
-        --build-arg APEX_BUILD_SHA="$CODEBUILD_RESOLVED_SOURCE_VERSION" \
-        --build-arg APEX_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        -t "$ECR_REPO:latest" \
-        -t "$ECR_REPO:${CODEBUILD_RESOLVED_SOURCE_VERSION:0:12}" .
-    - docker push "$ECR_REPO:latest"
-    - docker push "$ECR_REPO:${CODEBUILD_RESOLVED_SOURCE_VERSION:0:12}"
+```text
+APEX_DEPLOY_ENABLED=production
+APEX_GCP_PROJECT_ID=<the existing APEX Google Cloud project>
+APEX_CLOUD_RUN_REGION=<the existing service region>
+APEX_CLOUD_RUN_SERVICE=<the existing service name>
 ```
 
-The buildspec lives in the CodeBuild project `apex-lightsail-build`, not in this
-repo, so this file is the record of what it needs to contain.
+Optional:
 
-## Recommended: stop deploying a mutable tag
-
-The second tag above is the real fix for this class of confusion. Deploying
-`:<sha>` instead of `:latest` makes every deployment name exactly one image, and
-makes rollback meaningful — `rollbackLightsail()` currently warns that restoring
-a spec pinned to `:latest` may re-pull the same bad image, because it can.
-
-## How to deploy
-
-```
-Actions → Deploy → Run workflow → environment: staging | production
+```text
+APEX_CLOUD_BUILD_REGION=<regional Cloud Build location, if used>
+APEX_DEPLOY_HEALTH_URL=https://apex.donmatthews.live
+APEX_DEPLOY_SOURCE_DIR=<clean APEX checkout; defaults to current directory>
 ```
 
-`.github/workflows/deploy.yml` (see `docs/deploy-workflow.yml` for the exact
-contents to copy in — GitHub Apps are barred from writing workflow files, so it
-has to be added by a human) runs `packages/cicd-automation/scripts/deploy.mts`,
-which calls the same `deployToLightsail()` used everywhere else — CI does not
-reimplement the deploy in YAML — and then additionally asserts that the commit
-answering `/health` **is the commit that was just deployed**. A cached `:latest`
-digest therefore fails the run instead of passing as green.
+Do not put service-account JSON keys in the repository. Use an authenticated
+human `gcloud` session for an operator release or Google Workload Identity for
+CI/automation.
 
-One-time setup in the repo (Settings):
+## Production deploy
 
-| Kind | Name | Value |
-| --- | --- | --- |
-| Secret | `AWS_ACCESS_KEY_ID` | the `apex-deployer` IAM user's key |
-| Secret | `AWS_SECRET_ACCESS_KEY` | its secret |
-| Variable | `APEX_DEPLOY_ENABLED` | `staging`, `production`, or `all` |
-| Variable | `AWS_REGION` | `us-east-1` (default if unset) |
+From a clean checkout whose `HEAD` is the reviewed release:
 
-Use the scoped `apex-deployer` user from `docs/aws-deploy-iam-policy.json`, never
-root credentials: the policy grants five actions and cannot touch anything else
-if it leaks. With `APEX_DEPLOY_ENABLED` unset the deployer refuses to run, so
-merging this workflow does not by itself enable deployments.
-
-## Deploying without the workflow file (CloudShell)
-
-`.github/workflows/deploy.yml` can only be committed by a human. Until it is,
-`scripts/deploy-from-shell.sh` performs the same build → redeploy → verify
-sequence from AWS CloudShell, where no credential ever leaves AWS:
-
-```
-curl -sL https://raw.githubusercontent.com/patriotnewsactivism/Apex/main/scripts/deploy-from-shell.sh | bash
+```bash
+export APEX_DEPLOY_ENABLED=production
+export APEX_GCP_PROJECT_ID=...
+export APEX_CLOUD_RUN_REGION=...
+export APEX_CLOUD_RUN_SERVICE=...
+./scripts/deploy-from-shell.sh
 ```
 
-It forces a genuinely new container spec (by stamping `APEX_DEPLOY_STAMP`) so a
-cached `:latest` digest cannot be silently reused, then compares the commit
-CodeBuild built against the commit answering `/health` and fails with
-`STALE IMAGE` if they differ.
+The wrapper passes the exact `git rev-parse HEAD` to
+`packages/cicd-automation/scripts/deploy.mts`. The deployment fails if the tree
+is dirty, if the requested SHA differs from the checkout, if Google Cloud Build
+fails, if the existing service cannot be found, if the new revision does not
+become Ready, if `/health` is non-200, or if `/health.build.sha` does not match
+the requested commit.
 
-It deliberately does **not** set `APEX_BUILD_SHA` in the deployment spec.
-`/health` reads that value from the environment, so injecting it would override
-whatever the image was actually built with and make the provenance check pass
-unconditionally — a green light that proves nothing. The value must come from
-the image, which is why the buildspec `--build-arg` above is still required.
+## Rollback
+
+Rollback routes 100% traffic to the previous Cloud Run revision and then checks
+`/health`. It does not rebuild an old mutable image and does not declare success
+until the production health endpoint responds successfully.
