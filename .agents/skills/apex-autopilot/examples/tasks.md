@@ -28,8 +28,8 @@ Expected behavior:
 
 Expected behavior:
 
-- Inspect `/api/tokens` and current provider roster.
-- Separate missing keys, caps, cooldowns, 401/402/429, daily quota, tool compatibility, and total cap.
+- Inspect `/api/tokens` and current OpenRouter provider roster.
+- Separate missing credentials, spend/token limits, cooldowns, 401/402/429 responses, model availability, tool compatibility, and workspace caps.
 - Inspect representative failed tasks.
 - Do not assume a provider outage from the aggregate error string.
 - Verify a real task succeeds after the remedy.
@@ -38,14 +38,14 @@ Expected behavior:
 
 Expected behavior:
 
-- Verify target commit and passed tests.
+- Verify the exact target commit and passed CI/tests.
 - Present/consume the production approval.
-- Start CodeBuild using current config.
-- Wait for success.
-- Create Lightsail deployment from the current spec with intended change only.
-- Wait for `ACTIVE`.
-- Verify `/health` `build.sha`.
-- Smoke-test the feature.
+- Resolve the configured **existing** Google Cloud project, region, and Cloud Run service from trusted configuration; never guess or create a substitute service.
+- Build the exact clean commit with Google Cloud Build using `cloudbuild.apex.yaml` and an immutable SHA tag.
+- Update only the existing Cloud Run service image.
+- Wait for the new revision to become Ready.
+- Verify public `/health.build.sha` equals the target commit and the task queue is healthy.
+- Smoke-test the changed feature.
 - Report actual live proof.
 
 ## "Run the company for me today"
@@ -56,6 +56,6 @@ Expected behavior:
 - Check unresolved customer/revenue-impacting incidents.
 - Check qualified sales/follow-up queue.
 - Check billing failures/churn risk using read-only access.
-- Check provider/token capacity and approvals that block work.
+- Check OpenRouter/token capacity and approvals that block work.
 - Execute drafts, research, classification, internal preparation, and reversible fixes.
 - Bundle external sends/spend/deployments into precise approval packets.
