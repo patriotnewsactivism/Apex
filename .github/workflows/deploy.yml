@@ -32,23 +32,15 @@ jobs:
 
       - name: Build and push image
         run: |
-          gcloud builds submit . \
-            --project ${{ secrets.APEX_GCP_PROJECT_ID }} \
-            --tag us-central1-docker.pkg.dev/${{ secrets.APEX_GCP_PROJECT_ID }}/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest \
-            --timeout=900
+          gcloud builds submit .             --project ${{ secrets.APEX_GCP_PROJECT_ID }}             --tag us-central1-docker.pkg.dev/${{ secrets.APEX_GCP_PROJECT_ID }}/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest             --timeout=900
 
       - name: Deploy to Cloud Run
         run: |
-          gcloud run deploy ${{ secrets.APEX_CLOUD_RUN_SERVICE }} \
-            --project ${{ secrets.APEX_GCP_PROJECT_ID }} \
-            --region ${{ secrets.APEX_CLOUD_RUN_REGION }} \
-            --image us-central1-docker.pkg.dev/${{ secrets.APEX_GCP_PROJECT_ID }}/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest \
-            --no-allow-unauthenticated \
-            --quiet
+          gcloud run deploy ${{ secrets.APEX_CLOUD_RUN_SERVICE }}             --project ${{ secrets.APEX_GCP_PROJECT_ID }}             --region ${{ secrets.APEX_CLOUD_RUN_REGION }}             --image us-central1-docker.pkg.dev/${{ secrets.APEX_GCP_PROJECT_ID }}/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest             --no-allow-unauthenticated             --quiet
 
       - name: Verify deployment
         run: |
           sleep 10
-          curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-            "https://${{ secrets.APEX_CLOUD_RUN_SERVICE }}-${{ secrets.APEX_GCP_PROJECT_ID }}.${{ secrets.APEX_CLOUD_RUN_REGION }}.run.app/health" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Health: {d.get(\"status\",\"?\")}  SHA: {d.get(\"build\",{}).get(\"sha\",\"?\")}  Agents: {d.get(\"agents\",\"?\")}')"
+          SERVICE_URL=$(gcloud run services describe ${{ secrets.APEX_CLOUD_RUN_SERVICE }}             --project ${{ secrets.APEX_GCP_PROJECT_ID }}             --region ${{ secrets.APEX_CLOUD_RUN_REGION }}             --format='value(status.url)')
+          echo "Service URL: $SERVICE_URL"
+          curl -s -H "Authorization: Bearer $(gcloud auth print-identity-token)"             "$SERVICE_URL/health"             | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Health: {d.get(\"status\",\"?\")}  SHA: {d.get(\"build\",{}).get(\"sha\",\"?\")}  Agents: {d.get(\"agents\",\"?\")}')"
