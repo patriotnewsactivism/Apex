@@ -1,8 +1,7 @@
 // ─── StrategyOptimizer ─────────────────────────────────────────────────────────
 //
-// Formulates actionable strategy recommendations based on learning insights.
-// All recommendations are advisory — human approval is strictly required
-// before any recommendation is applied per ROADMAP.md governance rules.
+// Formulates evidence-led strategy recommendations based on measured patterns.
+// Stable identities prevent every learning run from restating the same advice.
 
 import crypto from 'crypto';
 import { db, strategyRecommendations, type NewStrategyRecommendation } from '@workspace/db';
@@ -19,35 +18,41 @@ export class StrategyOptimizer {
 
     for (const pattern of patterns) {
       if (pattern.category === 'failure' && pattern.targetRole) {
-        const id = `rec-error-${pattern.targetRole.toLowerCase()}-${now.getTime()}`;
+        const fingerprint = crypto.createHash('sha256')
+          .update(`failure:${pattern.targetRole}:${pattern.description}`)
+          .digest('hex').slice(0, 16);
+        const id = `rec-error-${pattern.targetRole.toLowerCase()}-${fingerprint}`;
         const record: NewStrategyRecommendation = {
           id,
           recommendationType: 'error_mitigation',
           title: `Mitigate failures for role ${pattern.targetRole}`,
-          text: `Enable strict human approval for high-risk tools assigned to ${pattern.targetRole} and adjust retry count from 3 to 5 to handle transient errors.`,
-          expectedImpact: `Expected to reduce ${pattern.targetRole} failure rate from current level (${pattern.description})`,
+          text: `Cluster the ${pattern.targetRole} failures by the first causal error, reproduce the largest cluster, and change the smallest responsible prompt, tool contract, or code path. Validate against the failed examples plus a successful control before changing retry or approval policy.`,
+          expectedImpact: `Reduce the measured ${pattern.targetRole} failure mode without adding blanket approval friction or retry cost (${pattern.description})`,
           confidence: pattern.confidence,
           status: 'pending',
           createdAt: now,
         };
 
-        await db.insert(strategyRecommendations).values(record).onConflictDoNothing().catch(() => {});
-        createdCount++;
+        const inserted = await db.insert(strategyRecommendations).values(record).onConflictDoNothing().returning({ id: strategyRecommendations.id });
+        createdCount += inserted.length;
       } else if (pattern.category === 'duration' && pattern.targetRole) {
-        const id = `rec-duration-${pattern.targetRole.toLowerCase()}-${now.getTime()}`;
+        const fingerprint = crypto.createHash('sha256')
+          .update(`duration:${pattern.targetRole}:${pattern.description}`)
+          .digest('hex').slice(0, 16);
+        const id = `rec-duration-${pattern.targetRole.toLowerCase()}-${fingerprint}`;
         const record: NewStrategyRecommendation = {
           id,
           recommendationType: 'tool_optimization',
-          title: `Optimize task concurrency for role ${pattern.targetRole}`,
-          text: `Increase task concurrency setting for role ${pattern.targetRole} to allow parallel swarm execution and reduce queue bottlenecks.`,
-          expectedImpact: `Expected to reduce overall task completion latency for ${pattern.targetRole}`,
+          title: `Remove the dominant latency source for ${pattern.targetRole}`,
+          text: `Measure queue wait, LLM round trips, tool duration, and rework separately for ${pattern.targetRole}; optimize the largest contributor first. Prefer tighter context, reusable evidence, or smaller independently verifiable tasks. Increase concurrency only when queue wait is proven dominant and provider budgets have headroom.`,
+          expectedImpact: `Reduce ${pattern.targetRole} completion latency without creating duplicated work, provider throttling, or a larger failure blast radius`,
           confidence: pattern.confidence,
           status: 'pending',
           createdAt: now,
         };
 
-        await db.insert(strategyRecommendations).values(record).onConflictDoNothing().catch(() => {});
-        createdCount++;
+        const inserted = await db.insert(strategyRecommendations).values(record).onConflictDoNothing().returning({ id: strategyRecommendations.id });
+        createdCount += inserted.length;
       }
     }
 

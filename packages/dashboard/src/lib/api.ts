@@ -209,9 +209,15 @@ export const api = {
   },
 
   suggestions: {
-    list: () => apiFetch<{ suggestions: SuggestionRow[] }>('/suggestions').then((r) => r.suggestions),
-    implement: (id: string, data: { goalTitle: string; goalDescription: string; goalPriority: number }) =>
-      apiFetch<{ success: boolean; goalId: string }>(`/suggestions/${id}/implement`, { method: 'POST', body: JSON.stringify(data) }),
+    list: () => apiFetch<SuggestionsResponse>('/suggestions'),
+    discover: () => apiFetch<{ success: boolean; message: string }>('/suggestions/discover', { method: 'POST' }),
+    implement: (id: string) =>
+      apiFetch<{ success: boolean; goalId: string }>(`/suggestions/${id}/implement`, { method: 'POST' }),
+    dismiss: (id: string, reason?: string) =>
+      apiFetch<{ success: boolean }>(`/suggestions/${id}/dismiss`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
   },
 
   system: {
@@ -591,14 +597,41 @@ export interface SuggestionRow {
   id: string;
   title: string;
   description: string;
-  category: 'self_improvement' | 'app_improvement';
+  projectId: string | null;
+  projectName: string;
+  source: string;
+  category: 'product_growth' | 'revenue' | 'efficiency' | 'reliability' | 'user_experience' | 'security' | 'prompt_improvement' | 'cost_optimization' | 'automation' | 'distribution' | 'consolidation' | 'self_improvement';
   impact: 'high' | 'medium' | 'low';
   difficulty: 'easy' | 'medium' | 'hard';
+  rationale: string;
+  evidence: Record<string, unknown>;
+  proposedPlan: Record<string, unknown>;
+  confidence: number;
+  novelty: number;
+  valueScore: number;
+  occurrences: number;
+  lastSeenAt: string;
   goalTitle: string;
   goalDescription: string;
   goalPriority: number;
 }
 
+export interface SuggestionsResponse {
+  suggestions: SuggestionRow[];
+  background: {
+    runningWithoutDashboard: boolean;
+    activeProjectLoops: number;
+    totalProjectLoops: number;
+    coreJobs: Array<{
+      id: string;
+      name: string;
+      jobType: string;
+      enabled: boolean;
+      status: string;
+      nextRunAt: string | null;
+    }>;
+  };
+}
 
 
 

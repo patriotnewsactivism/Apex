@@ -116,6 +116,41 @@ async function seedDefaultJobs(): Promise<void> {
         priority: 6,
         payload: {} as Record<string, unknown>,
       },
+      {
+        id: 'system-opportunity-discovery',
+        name: 'Novel opportunity discovery across projects',
+        jobType: 'opportunity_discovery',
+        cronExpression: '47 */2 * * *',
+        targetAgentId: null as string | null,
+        priority: 4,
+        payload: {
+          systemDefinitionVersion: 1,
+          maxProjectsPerRun: 6,
+          maxCandidatesPerProject: 4,
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-workforce-planner',
+        name: 'Bounded autonomous workforce coverage planner',
+        jobType: 'workforce_planner',
+        cronExpression: '7 * * * *',
+        targetAgentId: null as string | null,
+        priority: 4,
+        payload: { systemDefinitionVersion: 1 } as Record<string, unknown>,
+      },
+      {
+        id: 'system-prompt-evolution',
+        name: 'Continuous agent prompt evolution',
+        jobType: 'prompt_self_improve',
+        cronExpression: '27 */6 * * *',
+        targetAgentId: null as string | null,
+        priority: 5,
+        payload: {
+          systemDefinitionVersion: 1,
+          role: 'auto',
+          maxIterations: 4,
+        } as Record<string, unknown>,
+      },
       // ── Closed-loop autonomy roster ──────────────────────────────────────
       // Delegation used to be one-way: a manager handed work down and its own
       // task finished immediately, so nothing ever read the outcome back. This
@@ -264,7 +299,7 @@ async function seedDefaultJobs(): Promise<void> {
       }
     }
     console.log(
-      '✅ Seeded default system jobs (goal review, lead-gen sweep, daily report, maintenance, learning, delegation follow-up, goal progress, failure triage, COO/CTO branch reviews)',
+      '✅ Seeded default system jobs (goals, learning, opportunity discovery, workforce planning, prompt evolution, recovery, branch reviews, reporting)',
     );
   } catch (err) {
     console.warn('⚠️  Default job seeding skipped:', err instanceof Error ? err.message : String(err));
