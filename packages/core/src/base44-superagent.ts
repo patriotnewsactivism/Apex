@@ -20,6 +20,13 @@ type Base44Conversation = {
   [key: string]: unknown;
 };
 
+type Base44SuperagentInput = {
+  task: string;
+  conversationId?: string;
+  fileUrls?: string[];
+  timeoutMs?: number;
+};
+
 export type Base44SuperagentResult = {
   conversationId: string;
   messageId: string | null;
@@ -125,12 +132,9 @@ function newestNewAssistantMessage(
   return null;
 }
 
-export async function callBase44Superagent(input: {
-  task: string;
-  conversationId?: string;
-  fileUrls?: string[];
-  timeoutMs?: number;
-}): Promise<Base44SuperagentResult> {
+export async function callBase44Superagent(
+  input: Base44SuperagentInput,
+): Promise<Base44SuperagentResult> {
   const task = input.task.trim();
   if (!task) throw new Error('Base44 Superagent task must not be empty');
   if (!base44SuperagentConfigured()) {
@@ -242,7 +246,7 @@ export function createBase44SuperagentTools(): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute(args) {
-        return callBase44Superagent(args);
+        return callBase44Superagent(args as Base44SuperagentInput);
       },
     },
   ];
