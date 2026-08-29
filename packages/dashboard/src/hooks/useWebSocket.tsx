@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { api } from '../lib/api.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,27 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     heartbeatTimeout.current = null;
   };
 
+  // The event stream only contains status CHANGES. A browser that connects
+  // after agents are already thinking/acting otherwise starts with an empty
+  // status map and incorrectly renders 0 active agents until another transition
+  // happens. Bootstrap from the authoritative in-memory statuses returned by
+  // /api/agents, then let websocket events win for any status that changes while
+  // the snapshot request is in flight.
+  const hydrateAgentStatuses = async () => {
+    try {
+      const agents = await api.agents.list();
+      const snapshot = Object.fromEntries(
+        agents.map((agent) => [agent.id, agent.liveStatus ?? agent.status ?? 'idle']),
+      );
+      setAgentStatuses((liveUpdates) => ({ ...snapshot, ...liveUpdates }));
+    } catch (err) {
+      console.warn(
+        '[WebSocket] Could not hydrate initial agent statuses:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
   const connect = () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
@@ -81,6 +103,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     ws.onopen = () => {
       setConnected(true);
       reconnectDelay.current = INITIAL_RECONNECT_DELAY;
+      // Drop statuses from an older connection, then immediately replace them
+      // with a fresh server snapshot. Any websocket transition arriving during
+      // the fetch is merged on top of that snapshot by hydrateAgentStatuses().
+      setAgentStatuses({});
+      void hydrateAgentStatuses();
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
         reconnectTimer.current = null;
