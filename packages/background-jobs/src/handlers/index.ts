@@ -545,31 +545,40 @@ export class LearningAnalysisJob implements JobHandler {
 
 // ── PromptSelfImproveJob: closes the loop on Apex improving its own prompts ─
 //
-// Runs Prompt Forge (packages/core/src/prompt-forge.ts) against ONE of Apex's
-// own agent roles per invocation (job.payload.role — e.g. 'MARKETING',
-// 'QA_DIRECTOR'). Compares the winning candidate's score against the stored
-// baseline for that role (performance_baselines, metricName
-// `prompt_forge:{role}`). This NEVER edits the live prompt file itself — a
-// self-modifying production agent with no human in the loop is exactly the
-// kind of irreversible unilateral action Apex's own operating rules forbid.
-// Instead, a genuine improvement creates a pending review task for Lead Dev
-// carrying the full proposed prompt + score trajectory + real test output, so
-// a human applies (or rejects) the diff. No improvement -> logged silently in
-// job_execution_log via the return value, no task noise.
+// Runs Prompt Forge against one persisted agent role per invocation (or rotates
+// roles when payload.role='auto'). It evolves the actual incumbent prompt,
+// preserves immutable security/permission/evidence/approval clauses, compares
+// incumbent and candidate, and stores the winning prompt plus test evidence as
+// a ranked opportunity. This NEVER silently edits live agent behavior.
 export class PromptSelfImproveJob implements JobHandler {
-  static readonly IMPROVEMENT_THRESHOLD = 0.5; // out of a 10-point total_score scale
+  static readonly IMPROVEMENT_THRESHOLD = 0.25; // out of a 10-point total_score scale
 
   async execute(job: ScheduledJob): Promise<unknown> {
     const payload = (job.payload as Record<string, unknown>) ?? {};
-    const role = String(payload.role ?? '').trim();
-    if (!role) {
+    const requestedRole = String(payload.role ?? '').trim();
+    if (!requestedRole) {
       return { skipped: true, reason: "job.payload.role is required (e.g. 'MARKETING', 'QA_DIRECTOR')" };
     }
     const personaHint = typeof payload.personaHint === 'string' ? payload.personaHint : undefined;
 
-    const { optimizePrompt } = await import('@workspace/core');
-    const { db, performanceBaselines } = await import('@workspace/db');
-    const { eq } = await import('drizzle-orm');
+    const { optimizePrompt, evaluateCandidate, opportunityFingerprint } = await import('@workspace/core');
+    const { db, agents, opportunities, performanceBaselines } = await import('@workspace/db');
+    const { eq, sql } = await import('drizzle-orm');
+
+    const agentRows = await db.select().from(agents).orderBy(agents.role);
+    if (!agentRows.length) return { skipped: true, reason: 'No persisted agents are available to evolve' };
+    const selectedAgent = requestedRole.toLowerCase() === 'auto'
+      ? agentRows[Math.floor(Date.now() / (6 * 60 * 60 * 1000)) % agentRows.length]
+      : agentRows.find((agent) => agent.role.toLowerCase() === requestedRole.toLowerCase());
+    if (!selectedAgent) return { skipped: true, reason: `No agent found for role ${requestedRole}` };
+    const role = selectedAgent.role;
+
+    const immutableRules = [
+      'Never expose secrets, credentials, or private user data.',
+      'Never weaken or bypass security, permission, autonomy, or per-action approval boundaries.',
+      'Never claim work, tests, deployments, outreach, or outcomes happened without evidence.',
+      'External sends, spending, deployments, schema changes, destructive actions, and other irreversible operations retain their existing approval gates.',
+    ];
 
     const goalDescription =
       typeof payload.goalDescription === 'string'
@@ -577,11 +586,19 @@ export class PromptSelfImproveJob implements JobHandler {
         : `Improve the ${role} agent's system prompt for higher clarity and task-success, while ` +
           `preserving every existing hard rule and domain-specific requirement — this is a refinement, not a rewrite.`;
 
+    const incumbentEvaluation = await evaluateCandidate(
+      goalDescription,
+      selectedAgent.systemPrompt,
+      personaHint,
+      role,
+    );
     const result = await optimizePrompt({
       goalDescription,
       targetPersona: personaHint,
       maxIterations: Number(payload.maxIterations ?? 4),
-      role: role.toLowerCase(),
+      role,
+      incumbentPrompt: selectedAgent.systemPrompt,
+      immutableRules,
     });
 
     const metricName = `prompt_forge:${role}`;
@@ -601,9 +618,9 @@ export class PromptSelfImproveJob implements JobHandler {
     }
 
     const newScore = result.bestCandidate.totalScore;
-    const previousBaseline = baseline?.baselineValue ?? null;
-    const isFirstRun = previousBaseline === null;
-    const delta = isFirstRun ? null : newScore - (previousBaseline as number);
+    const previousBaseline = incumbentEvaluation?.totalScore ?? baseline?.baselineValue ?? null;
+    const isFirstRun = baseline === undefined;
+    const delta = previousBaseline === null ? null : newScore - previousBaseline;
 
     // Always record the latest attempt as the new comparison point — whether
     // or not it beat the last one — so a plateaued prompt doesn't re-alert
@@ -626,28 +643,76 @@ export class PromptSelfImproveJob implements JobHandler {
         },
       });
 
-    const meaningfulImprovement = !isFirstRun && (delta as number) >= PromptSelfImproveJob.IMPROVEMENT_THRESHOLD;
+    const meaningfulImprovement = delta !== null && delta >= PromptSelfImproveJob.IMPROVEMENT_THRESHOLD;
 
     if (meaningfulImprovement) {
-      await enqueueSystemTask({
-        title: `Prompt Forge: proposed improvement for ${role} agent (+${(delta as number).toFixed(2)})`,
-        description:
-          `Prompt Forge ran ${result.iterationsRun} generation(s) against the ${role} agent's system prompt and ` +
-          `found a candidate that scores ${newScore.toFixed(2)}/10 vs. the current baseline ${(previousBaseline as number).toFixed(2)}/10.\n\n` +
-          `Score trajectory: ${JSON.stringify(result.scoreTrajectory)}\n\n` +
-          `Real test-drive output from the winning candidate:\n${result.bestCandidate.testOutput}\n\n` +
-          `Self-critique: ${result.bestCandidate.selfCritique}\n\n` +
-          `PROPOSED PROMPT TEXT (review before applying — this does NOT auto-deploy):\n\n${result.bestCandidate.promptText}`,
-        assignedAgentId: 'lead-dev-001',
-        priority: 4,
-        context: {
-          promptForgeRole: role,
-          newScore,
-          previousBaseline,
+      const title = `Evolve the ${role} agent prompt (+${delta.toFixed(2)} evaluated quality)`;
+      const now = new Date();
+      await db.insert(opportunities).values({
+        id: crypto.randomUUID(),
+        projectId: null,
+        fingerprint: opportunityFingerprint(null, `prompt-evolution-${selectedAgent.id}`),
+        source: 'prompt_forge',
+        category: 'prompt_improvement',
+        title,
+        description: `A candidate evolved from the actual ${role} prompt scored ${newScore.toFixed(2)}/10 versus ${previousBaseline?.toFixed(2)}/10 for the incumbent. It preserves immutable security, evidence, permission, and approval clauses.`,
+        rationale: 'Better role prompts compound across every future task while controlled candidate promotion prevents silent regressions.',
+        evidence: {
+          incumbentScore: previousBaseline,
+          candidateScore: newScore,
           delta,
           scoreTrajectory: result.scoreTrajectory,
-          proposedPromptText: result.bestCandidate.promptText,
-          requiresManualApplication: true,
+          selfCritique: result.bestCandidate.selfCritique,
+          testOutput: result.bestCandidate.testOutput,
+          immutableRulesPreserved: true,
+        },
+        proposedPlan: {
+          targetAgentId: selectedAgent.id,
+          targetRole: role,
+          incumbentPrompt: selectedAgent.systemPrompt,
+          candidatePrompt: result.bestCandidate.promptText,
+          validation: ['Run representative role tasks against incumbent and candidate', 'Promote only after a minimum sample and no safety regression'],
+          immutableRules,
+        },
+        impact: 'high',
+        difficulty: 'medium',
+        confidence: Math.min(1, 0.65 + Math.max(0, delta) / 10),
+        novelty: 0.8,
+        valueScore: Math.min(100, Math.round(72 + delta * 4)),
+        status: 'proposed',
+        goalTitle: `Validate and promote the improved ${role} prompt`,
+        goalDescription: `Test the stored candidate prompt against the incumbent using representative ${role} work. Preserve all immutable rules. Promote only if measured outcomes materially improve without security, permission, approval, truthfulness, cost, or reliability regressions.`,
+        goalPriority: 4,
+        generatedByAgentId: 'prompt-forge',
+        generationId: job.id,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        updatedAt: now,
+      }).onConflictDoUpdate({
+        target: opportunities.fingerprint,
+        set: {
+          title,
+          description: `A new candidate evolved from the actual ${role} prompt scored ${newScore.toFixed(2)}/10 versus ${previousBaseline?.toFixed(2)}/10 for the incumbent.`,
+          evidence: {
+            incumbentScore: previousBaseline,
+            candidateScore: newScore,
+            delta,
+            scoreTrajectory: result.scoreTrajectory,
+            selfCritique: result.bestCandidate.selfCritique,
+            testOutput: result.bestCandidate.testOutput,
+            immutableRulesPreserved: true,
+          },
+          proposedPlan: {
+            targetAgentId: selectedAgent.id,
+            targetRole: role,
+            incumbentPrompt: selectedAgent.systemPrompt,
+            candidatePrompt: result.bestCandidate.promptText,
+            immutableRules,
+          },
+          valueScore: Math.min(100, Math.round(72 + delta * 4)),
+          occurrences: sql`${opportunities.occurrences} + 1`,
+          lastSeenAt: now,
+          updatedAt: now,
         },
       });
     }
@@ -661,7 +726,7 @@ export class PromptSelfImproveJob implements JobHandler {
       meaningfulImprovement,
       iterationsRun: result.iterationsRun,
       scoreTrajectory: result.scoreTrajectory,
-      taskCreated: meaningfulImprovement,
+      opportunityCreated: meaningfulImprovement,
     };
   }
 }

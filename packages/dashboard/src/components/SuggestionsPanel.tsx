@@ -1,250 +1,211 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { motion, AnimatePresence } from 'framer-motion';
-import { api } from '../lib/api.js';
-import type { SuggestionRow } from '../lib/api.js';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
-  Lightbulb,
-  Rocket,
-  Zap,
-  Wrench,
+  Bot,
   CheckCircle2,
+  Clock3,
+  Lightbulb,
   RefreshCw,
-  AlertTriangle,
-  TrendingUp,
-  Building2,
+  Rocket,
+  Sparkles,
+  Target,
+  Trash2,
 } from 'lucide-react';
+import { api, type SuggestionRow } from '../lib/api.js';
 
-const IMPACT_COLORS: Record<string, string> = {
-  high: '#c45c66',
-  medium: '#c9a84a',
-  low: '#6a9f78',
+const CATEGORY_META: Record<string, { color: string; label: string }> = {
+  product_growth: { color: '#8b7ec8', label: 'Product Growth' },
+  revenue: { color: '#6a9f78', label: 'Revenue' },
+  efficiency: { color: '#5a9eae', label: 'Efficiency' },
+  reliability: { color: '#cf8a54', label: 'Reliability' },
+  user_experience: { color: '#8b7ec8', label: 'User Experience' },
+  security: { color: '#c45c66', label: 'Security' },
+  prompt_improvement: { color: '#c9a84a', label: 'Prompt Evolution' },
+  cost_optimization: { color: '#6a9f78', label: 'Cost' },
+  automation: { color: '#5a9eae', label: 'Automation' },
+  distribution: { color: '#8b7ec8', label: 'Distribution' },
+  consolidation: { color: '#cf8a54', label: 'Consolidation' },
+  self_improvement: { color: '#5a9eae', label: 'APEX Upgrade' },
 };
 
-const CATEGORY_META: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
-  self_improvement: { icon: <Zap size={14} />, color: '#5a9eae', label: 'Self-Improvement' },
-  app_improvement: { icon: <Building2 size={14} />, color: '#8b7ec8', label: 'App Improvement' },
-};
+function percentage(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
+}
 
 function SuggestionCard({ suggestion }: { suggestion: SuggestionRow }) {
   const queryClient = useQueryClient();
-  const cat = CATEGORY_META[suggestion.category] ?? CATEGORY_META.self_improvement;
-
-  const implementMutation = useMutation({
-    mutationFn: () => api.suggestions.implement(suggestion.id, {
-      goalTitle: suggestion.goalTitle,
-      goalDescription: suggestion.goalDescription,
-      goalPriority: suggestion.goalPriority,
-    }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['suggestions'] });
-    },
+  const meta = CATEGORY_META[suggestion.category] ?? CATEGORY_META.product_growth;
+  const implement = useMutation({
+    mutationFn: () => api.suggestions.implement(suggestion.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['suggestions'] }),
   });
+  const dismiss = useMutation({
+    mutationFn: () => api.suggestions.dismiss(suggestion.id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['suggestions'] }),
+  });
+  const observed = Array.isArray(suggestion.evidence?.observed)
+    ? suggestion.evidence.observed as unknown[]
+    : [];
 
   return (
-    <motion.div
+    <motion.article
       layout
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.95 }}
+      exit={{ opacity: 0, scale: 0.96 }}
       style={{
         background: 'var(--color-apex-card)',
-        border: `1px solid ${cat.color}22`,
+        border: `1px solid ${meta.color}33`,
         borderRadius: 12,
         padding: 16,
         display: 'flex',
         flexDirection: 'column',
-        gap: 10,
+        gap: 11,
       }}
     >
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-apex-text)', lineHeight: 1.3 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+        <div>
+          <div style={{ color: 'var(--color-apex-text)', fontSize: 14, fontWeight: 700, lineHeight: 1.35 }}>
             {suggestion.title}
           </div>
+          <div style={{ color: 'var(--color-apex-muted)', fontSize: 10, marginTop: 4 }}>
+            {suggestion.projectName} · {suggestion.source.replace(/_/g, ' ')}
+          </div>
         </div>
-        <span style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 4,
-          fontSize: 10,
-          fontWeight: 600,
-          color: cat.color,
-          background: `${cat.color}11`,
-          padding: '3px 8px',
-          borderRadius: 6,
-          whiteSpace: 'nowrap',
-        }}>
-          {cat.icon}
-          {cat.label}
+        <span style={{ color: meta.color, background: `${meta.color}16`, borderRadius: 6, padding: '3px 7px', fontSize: 10, whiteSpace: 'nowrap' }}>
+          {meta.label}
         </span>
       </div>
 
-      {/* Description */}
-      <p style={{ margin: 0, fontSize: 12, color: 'var(--color-apex-muted)', lineHeight: 1.5 }}>
+      <p style={{ margin: 0, color: 'var(--color-apex-muted)', fontSize: 12, lineHeight: 1.55 }}>
         {suggestion.description}
       </p>
 
-      {/* Badges */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{
-          fontSize: 10,
-          fontWeight: 600,
-          color: IMPACT_COLORS[suggestion.impact] ?? '#64748b',
-          background: `${IMPACT_COLORS[suggestion.impact] ?? '#64748b'}11`,
-          padding: '2px 8px',
-          borderRadius: 4,
-        }}>
-          {suggestion.impact.toUpperCase()} IMPACT
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        <span style={{ color: meta.color, background: `${meta.color}12`, borderRadius: 4, padding: '2px 7px', fontSize: 10, fontWeight: 700 }}>
+          VALUE {suggestion.valueScore}/100
         </span>
-        <span style={{
-          fontSize: 10,
-          color: 'var(--color-apex-muted)',
-          background: 'rgba(255,255,255,0.04)',
-          padding: '2px 8px',
-          borderRadius: 4,
-        }}>
-          {suggestion.difficulty}
+        <span style={{ color: 'var(--color-apex-muted)', background: 'rgba(255,255,255,0.04)', borderRadius: 4, padding: '2px 7px', fontSize: 10 }}>
+          {suggestion.impact} impact · {suggestion.difficulty} effort
+        </span>
+        <span style={{ color: 'var(--color-apex-muted)', background: 'rgba(255,255,255,0.04)', borderRadius: 4, padding: '2px 7px', fontSize: 10 }}>
+          {percentage(suggestion.confidence)} confidence · {percentage(suggestion.novelty)} novelty
         </span>
       </div>
 
-      {/* Action */}
-      {implementMutation.isSuccess ? (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          fontSize: 12,
-          color: 'var(--color-apex-green)',
-          fontWeight: 600,
-        }}>
-          <CheckCircle2 size={16} />
-          Submitted as goal to CEO
+      <details style={{ color: 'var(--color-apex-muted)', fontSize: 11 }}>
+        <summary style={{ cursor: 'pointer', color: 'var(--color-apex-cyan)' }}>Why this could matter</summary>
+        <p style={{ lineHeight: 1.5 }}>{suggestion.rationale}</p>
+        {observed.length > 0 && (
+          <div><strong>Observed evidence:</strong> {observed.map(String).join(' · ')}</div>
+        )}
+        {suggestion.category === 'prompt_improvement' && typeof suggestion.proposedPlan?.candidatePrompt === 'string' && (
+          <pre style={{ whiteSpace: 'pre-wrap', maxHeight: 220, overflow: 'auto', fontSize: 10, padding: 10, borderRadius: 8, background: 'rgba(0,0,0,0.2)' }}>
+            {suggestion.proposedPlan.candidatePrompt}
+          </pre>
+        )}
+      </details>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+        {implement.isSuccess ? (
+          <span style={{ color: 'var(--color-apex-green)', display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+            <CheckCircle2 size={15} /> Activated as a goal
+          </span>
+        ) : (
+          <button
+            onClick={() => implement.mutate()}
+            disabled={implement.isPending || dismiss.isPending}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: 8, border: `1px solid ${meta.color}55`, background: `${meta.color}18`, color: meta.color, cursor: 'pointer', fontSize: 11, fontWeight: 700, minHeight: 38 }}
+          >
+            <Rocket size={14} /> {implement.isPending ? 'Activating…' : 'Implement'}
+          </button>
+        )}
+        {!implement.isSuccess && (
+          <button
+            aria-label="Dismiss and teach APEX not to repeat this idea"
+            onClick={() => dismiss.mutate()}
+            disabled={dismiss.isPending || implement.isPending}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'transparent', color: 'var(--color-apex-muted)', cursor: 'pointer', fontSize: 11, minHeight: 38 }}
+          >
+            <Trash2 size={13} /> {dismiss.isPending ? 'Learning…' : 'Not useful'}
+          </button>
+        )}
+      </div>
+      {(implement.error || dismiss.error) && (
+        <div style={{ color: '#c45c66', fontSize: 10 }}>
+          {(implement.error ?? dismiss.error)?.message}
         </div>
-      ) : (
-        <button
-          onClick={() => implementMutation.mutate()}
-          disabled={implementMutation.isPending}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '8px 16px',
-            borderRadius: 8,
-            background: `${cat.color}1a`,
-            border: `1px solid ${cat.color}44`,
-            color: cat.color,
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: implementMutation.isPending ? 'wait' : 'pointer',
-            opacity: implementMutation.isPending ? 0.5 : 1,
-            transition: 'all 0.15s',
-            width: 'fit-content',
-            minHeight: 40,
-          }}
-        >
-          <Rocket size={14} />
-          {implementMutation.isPending ? 'Submitting...' : 'Implement'}
-        </button>
       )}
-    </motion.div>
+    </motion.article>
   );
 }
 
 export function SuggestionsPanel() {
-  const { data: suggestions = [], refetch, isFetching } = useQuery({
+  const queryClient = useQueryClient();
+  const { data, refetch, isFetching } = useQuery({
     queryKey: ['suggestions'],
     queryFn: () => api.suggestions.list(),
     refetchInterval: 30_000,
   });
-
-  const selfImprovement = suggestions.filter((s) => s.category === 'self_improvement');
-  const appImprovement = suggestions.filter((s) => s.category === 'app_improvement');
+  const discover = useMutation({
+    mutationFn: () => api.suggestions.discover(),
+    onSuccess: () => {
+      window.setTimeout(() => queryClient.invalidateQueries({ queryKey: ['suggestions'] }), 4_000);
+    },
+  });
+  const suggestions = data?.suggestions ?? [];
+  const background = data?.background;
+  const backgroundActive = background?.runningWithoutDashboard ?? false;
+  const nextDiscovery = background?.coreJobs.find((job) => job.jobType === 'opportunity_discovery')?.nextRunAt;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-apex-text)', display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
-          <Lightbulb size={20} color="#c9a84a" />
-          Suggestions
-        </h2>
-        <button
-          onClick={() => refetch()}
-          style={{
-            background: 'rgba(90,158,174,0.06)',
-            border: '1px solid rgba(90,158,174,0.15)',
-            borderRadius: 8,
-            padding: '6px 12px',
-            fontSize: 11,
-            color: 'var(--color-apex-cyan)',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-            minHeight: 36,
-          }}
-        >
-          <RefreshCw size={12} className={isFetching ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-apex-text)', display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}>
+            <Sparkles size={19} color="#c9a84a" /> Autonomous Opportunities
+          </h2>
+          <div style={{ color: 'var(--color-apex-muted)', fontSize: 11, marginTop: 4 }}>
+            New ways to increase product value, efficiency, quality, distribution, and agent performance
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 7 }}>
+          <button onClick={() => discover.mutate()} disabled={discover.isPending} style={{ background: 'rgba(201,168,74,0.10)', border: '1px solid rgba(201,168,74,0.25)', borderRadius: 8, padding: '7px 11px', color: '#c9a84a', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, minHeight: 38 }}>
+            <Lightbulb size={13} /> {discover.isPending ? 'Queuing…' : 'Find new ideas'}
+          </button>
+          <button onClick={() => refetch()} aria-label="Refresh opportunities" style={{ background: 'rgba(90,158,174,0.06)', border: '1px solid rgba(90,158,174,0.15)', borderRadius: 8, padding: '7px 10px', color: 'var(--color-apex-cyan)', cursor: 'pointer', minHeight: 38 }}>
+            <RefreshCw size={13} className={isFetching ? 'animate-spin' : ''} />
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
+        <div style={{ background: 'var(--color-apex-card)', border: '1px solid rgba(90,158,174,0.15)', borderRadius: 10, padding: 11, color: 'var(--color-apex-muted)', fontSize: 11 }}>
+          <Bot size={14} color="#5a9eae" style={{ verticalAlign: 'middle', marginRight: 6 }} />
+          Background mode <strong style={{ color: backgroundActive ? 'var(--color-apex-green)' : '#c45c66' }}>{backgroundActive ? 'active' : 'starting'}</strong>
+        </div>
+        <div style={{ background: 'var(--color-apex-card)', border: '1px solid rgba(90,158,174,0.15)', borderRadius: 10, padding: 11, color: 'var(--color-apex-muted)', fontSize: 11 }}>
+          <Target size={14} color="#8b7ec8" style={{ verticalAlign: 'middle', marginRight: 6 }} />
+          {background?.activeProjectLoops ?? 0} project improvement loops
+        </div>
+        <div style={{ background: 'var(--color-apex-card)', border: '1px solid rgba(90,158,174,0.15)', borderRadius: 10, padding: 11, color: 'var(--color-apex-muted)', fontSize: 11 }}>
+          <Clock3 size={14} color="#c9a84a" style={{ verticalAlign: 'middle', marginRight: 6 }} />
+          Next discovery {nextDiscovery ? new Date(nextDiscovery).toLocaleString() : 'is being scheduled'}
+        </div>
       </div>
 
       {suggestions.length === 0 ? (
-        <div style={{
-          textAlign: 'center',
-          padding: 40,
-          color: 'var(--color-apex-muted)',
-          background: 'var(--color-apex-card)',
-          borderRadius: 12,
-          border: '1px solid rgba(255,255,255,0.06)',
-        }}>
-          <CheckCircle2 size={40} style={{ margin: '0 auto 12px', display: 'block', opacity: 0.5 }} />
-          <div style={{ fontSize: 14, fontWeight: 600 }}>System is healthy — no suggestions</div>
-          <div style={{ fontSize: 11, marginTop: 4 }}>Suggestions appear automatically when issues or opportunities are detected</div>
+        <div style={{ textAlign: 'center', padding: 38, color: 'var(--color-apex-muted)', background: 'var(--color-apex-card)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)' }}>
+          <Sparkles size={36} style={{ margin: '0 auto 10px', display: 'block', opacity: 0.5 }} />
+          <div style={{ fontSize: 13, fontWeight: 700 }}>Building the next opportunity set</div>
+          <div style={{ fontSize: 11, marginTop: 4 }}>Discovery continues on schedule even while the dashboard is closed.</div>
         </div>
       ) : (
-        <>
-          {/* Self-Improvement section */}
-          {selfImprovement.length > 0 && (
-            <section>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                <TrendingUp size={16} color="#5a9eae" />
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-apex-cyan)' }}>Self-Improvement</span>
-                <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>({selfImprovement.length})</span>
-              </div>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))',
-                gap: 12,
-              }}>
-                <AnimatePresence>
-                  {selfImprovement.map((s) => <SuggestionCard key={s.id} suggestion={s} />)}
-                </AnimatePresence>
-              </div>
-            </section>
-          )}
-
-          {/* App-Improvement section */}
-          {appImprovement.length > 0 && (
-            <section>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                <Building2 size={16} color="#8b7ec8" />
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-apex-purple)' }}>App Improvement</span>
-                <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>({appImprovement.length})</span>
-              </div>
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))',
-                gap: 12,
-              }}>
-                <AnimatePresence>
-                  {appImprovement.map((s) => <SuggestionCard key={s.id} suggestion={s} />)}
-                </AnimatePresence>
-              </div>
-            </section>
-          )}
-        </>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))', gap: 12 }}>
+          <AnimatePresence>
+            {suggestions.map((suggestion) => <SuggestionCard key={suggestion.id} suggestion={suggestion} />)}
+          </AnimatePresence>
+        </div>
       )}
     </div>
   );

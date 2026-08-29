@@ -7,8 +7,8 @@
  * score plateaus (2 flat generations) or maxIterations is hit.
  *
  * Reuses Apex's own createLLMClient/getDefaultLLMConfig — no separate HTTP
- * plumbing, so it inherits Apex's existing live provider fallback chain
- * (Cerebras -> Groq -> Cohere -> Mistral -> OpenRouter-free) automatically.
+ * plumbing, so it inherits Apex's OpenRouter/DeepSeek routing, capacity caps,
+ * fallback behavior, and telemetry automatically.
  *
  * Usage (from another Apex module or agent):
  *   import { optimizePrompt } from './prompt-forge';
@@ -28,6 +28,11 @@ export interface OptimizePromptInput {
   maxIterations?: number;
   /** Which Apex role's default LLM config to borrow for generation/critique calls. */
   role?: string;
+  /** The real prompt being evolved. Without this, optimization drifts into a
+   * generic rewrite that is impossible to compare or apply safely. */
+  incumbentPrompt?: string;
+  /** Exact invariant clauses the evolving section may never remove. */
+  immutableRules?: string[];
 }
 
 export interface PromptCandidateResult {
@@ -87,6 +92,8 @@ async function generateCandidate(
   goal: string,
   persona: string | undefined,
   priorCritique: string | undefined,
+  incumbentPrompt: string | undefined,
+  immutableRules: string[],
 ): Promise<string | null> {
   const sys =
     'You are an expert prompt engineer. Write ONLY the final prompt text itself, ' +
@@ -94,12 +101,20 @@ async function generateCandidate(
     "an LLM's system/instruction field.";
   let user = `Goal/situation: ${goal}\n`;
   if (persona) user += `Target persona/style the prompt must produce: ${persona}\n`;
+  if (incumbentPrompt) user += `\nINCUMBENT PROMPT TO EVOLVE (preserve useful specificity):\n${incumbentPrompt}\n`;
+  if (immutableRules.length) {
+    user += `\nIMMUTABLE RULES — include these clauses verbatim and never weaken or reinterpret them:\n${immutableRules.map((rule) => `- ${rule}`).join('\n')}\n`;
+  }
   if (priorCritique) user += `\nPrevious attempt's weaknesses to fix:\n${priorCritique}\n`;
   user += '\nWrite the best possible prompt for this.';
   return callClient(role, [
     { role: 'system', content: sys },
     { role: 'user', content: user },
   ]);
+}
+
+export function preservesImmutableRules(candidate: string, immutableRules: string[]): boolean {
+  return immutableRules.every((rule) => candidate.includes(rule));
 }
 
 async function critiqueAndScore(
@@ -132,10 +147,22 @@ export async function optimizePrompt(input: OptimizePromptInput): Promise<Optimi
   let priorCritique: string | undefined;
   let best: PromptCandidateResult | null = null;
   let plateauCount = 0;
+  const immutableRules = input.immutableRules ?? [];
 
   for (let gen = 0; gen < maxIterations; gen++) {
-    const candidateText = await generateCandidate(role, input.goalDescription, input.targetPersona, priorCritique);
+    const candidateText = await generateCandidate(
+      role,
+      input.goalDescription,
+      input.targetPersona,
+      priorCritique,
+      input.incumbentPrompt,
+      immutableRules,
+    );
     if (!candidateText) break;
+    if (!preservesImmutableRules(candidateText, immutableRules)) {
+      priorCritique = 'The candidate omitted or altered immutable security, permission, or approval rules. Preserve every invariant clause verbatim.';
+      continue;
+    }
 
     const testCase = input.testCases?.[0] ?? input.goalDescription;
     const testOutput =

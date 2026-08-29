@@ -22,6 +22,7 @@ import {
   StalledWorkRecoveryJob,
   PromptSelfImproveJob,
 } from './handlers/index.js';
+import { OpportunityDiscoveryJob, WorkforcePlannerJob } from './opportunity-jobs.js';
 
 const OPEN_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const;
 
@@ -63,6 +64,8 @@ export class JobScheduler {
     // Prompt Forge self-improvement: an agent's own prompt only ever improves via a
     // human-reviewed task (see PromptSelfImproveJob) — never auto-applied.
     this.executor.registerHandler('prompt_self_improve', new PromptSelfImproveJob());
+    this.executor.registerHandler('opportunity_discovery', new OpportunityDiscoveryJob());
+    this.executor.registerHandler('workforce_planner', new WorkforcePlannerJob());
   }
 
   /** Start the scheduler polling loop. */

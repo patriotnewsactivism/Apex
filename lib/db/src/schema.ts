@@ -372,6 +372,45 @@ export const strategyRecommendations = pgTable('strategy_recommendations', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+// ─── Autonomous Opportunities ───────────────────────────────────────────────
+//
+// Durable, novelty-aware improvement ideas for Apex itself and every project
+// it operates. A unique semantic fingerprint turns repeated/paraphrased ideas
+// into evidence (`occurrences`) instead of dashboard spam. Dismissed ideas stay
+// as negative memory so the discovery agent cannot keep proposing them.
+
+export const opportunities = pgTable('opportunities', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id'),
+  fingerprint: text('fingerprint').notNull(),
+  source: text('source').notNull().default('opportunity_discovery'),
+  category: text('category').notNull(),
+  title: text('title').notNull(),
+  description: text('description').notNull(),
+  rationale: text('rationale').notNull(),
+  evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull().default({}),
+  proposedPlan: jsonb('proposed_plan').$type<Record<string, unknown>>().notNull().default({}),
+  impact: text('impact').notNull().default('medium'),
+  difficulty: text('difficulty').notNull().default('medium'),
+  confidence: real('confidence').notNull().default(0.65),
+  novelty: real('novelty').notNull().default(0.7),
+  valueScore: integer('value_score').notNull().default(50),
+  status: text('status').notNull().default('proposed'), // proposed | accepted | scheduled | in_progress | implemented | dismissed | expired
+  goalTitle: text('goal_title').notNull(),
+  goalDescription: text('goal_description').notNull(),
+  goalPriority: integer('goal_priority').notNull().default(5),
+  goalId: text('goal_id'),
+  generatedByAgentId: text('generated_by_agent_id'),
+  generationId: text('generation_id'),
+  occurrences: integer('occurrences').notNull().default(1),
+  dismissalReason: text('dismissal_reason'),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  fingerprintUnique: uniqueIndex('opportunities_fingerprint_unique').on(table.fingerprint),
+}));
+
 // ─── Performance Baselines ───────────────────────────────────────────────────
 
 export const performanceBaselines = pgTable('performance_baselines', {
@@ -516,6 +555,12 @@ export const agentRelations = relations(agents, ({ one, many }) => ({
 
 export const projectRelations = relations(projects, ({ many }) => ({
   goals: many(goals),
+  opportunities: many(opportunities),
+}));
+
+export const opportunityRelations = relations(opportunities, ({ one }) => ({
+  project: one(projects, { fields: [opportunities.projectId], references: [projects.id] }),
+  goal: one(goals, { fields: [opportunities.goalId], references: [goals.id] }),
 }));
 
 export const goalRelations = relations(goals, ({ many, one }) => ({
@@ -590,6 +635,8 @@ export type LearningInsight = typeof learningInsights.$inferSelect;
 export type NewLearningInsight = typeof learningInsights.$inferInsert;
 export type StrategyRecommendation = typeof strategyRecommendations.$inferSelect;
 export type NewStrategyRecommendation = typeof strategyRecommendations.$inferInsert;
+export type Opportunity = typeof opportunities.$inferSelect;
+export type NewOpportunity = typeof opportunities.$inferInsert;
 export type PerformanceBaseline = typeof performanceBaselines.$inferSelect;
 export type NewPerformanceBaseline = typeof performanceBaselines.$inferInsert;
 export type PipelineRun = typeof pipelineRuns.$inferSelect;
