@@ -21,6 +21,15 @@ const KINDS = ['approval', 'escalation', 'all'] as const;
  *  A gated approval is NEVER auto-closed — something is blocked on it. */
 const ESCALATION_STALE_AFTER_DAYS = 7;
 
+const reviewBodySchema = z.object({ note: z.string().optional() });
+
+function conflictMessage(action: 'approve' | 'reject' | 'acknowledge'): string {
+  if (action === 'acknowledge') {
+    return 'Escalation is not pending or does not exist. Only a pending escalation may be acknowledged.';
+  }
+  return `Approval is not pending or does not exist. Only a pending gated approval may be ${action === 'approve' ? 'approved' : 'rejected'}.`;
+}
+
 export function createApprovalsRouter() {
   const router = Router();
 
@@ -61,11 +70,26 @@ export function createApprovalsRouter() {
   });
 
   // POST /api/approvals/:id/approve
+  //
+  // Resolution is a compare-and-set transition, not a blind update. This makes
+  // approve/reject races deterministic: exactly one request may transition a
+  // still-pending gated approval. Replays, stale tabs, and attempts to approve
+  // an escalation fail closed instead of rewriting audit history.
   router.post('/:id/approve', async (req, res) => {
-    const { note } = z.object({ note: z.string().optional() }).parse(req.body);
-    await db.update(approvals)
+    const { note } = reviewBodySchema.parse(req.body);
+    const [resolved] = await db.update(approvals)
       .set({ status: 'approved', reviewedAt: new Date(), reviewerNote: note })
-      .where(eq(approvals.id, req.params.id));
+      .where(and(
+        eq(approvals.id, req.params.id),
+        eq(approvals.kind, 'approval'),
+        eq(approvals.status, 'pending'),
+      ))
+      .returning({ id: approvals.id });
+
+    if (!resolved) {
+      res.status(409).json({ error: conflictMessage('approve') });
+      return;
+    }
 
     broadcast({ type: 'approval:resolved', approvalId: req.params.id, status: 'approved' });
     res.json({ approved: true });
@@ -73,10 +97,20 @@ export function createApprovalsRouter() {
 
   // POST /api/approvals/:id/reject
   router.post('/:id/reject', async (req, res) => {
-    const { note } = z.object({ note: z.string().optional() }).parse(req.body);
-    await db.update(approvals)
+    const { note } = reviewBodySchema.parse(req.body);
+    const [resolved] = await db.update(approvals)
       .set({ status: 'rejected', reviewedAt: new Date(), reviewerNote: note })
-      .where(eq(approvals.id, req.params.id));
+      .where(and(
+        eq(approvals.id, req.params.id),
+        eq(approvals.kind, 'approval'),
+        eq(approvals.status, 'pending'),
+      ))
+      .returning({ id: approvals.id });
+
+    if (!resolved) {
+      res.status(409).json({ error: conflictMessage('reject') });
+      return;
+    }
 
     broadcast({ type: 'approval:resolved', approvalId: req.params.id, status: 'rejected' });
     res.json({ rejected: true });
@@ -86,16 +120,18 @@ export function createApprovalsRouter() {
   // An escalation is a message, not a gate: acknowledging it clears it from the
   // queue without pretending a tool call was authorized.
   router.post('/:id/acknowledge', async (req, res) => {
-    const { note } = z.object({ note: z.string().optional() }).parse(req.body);
-    const result = await db.update(approvals)
+    const { note } = reviewBodySchema.parse(req.body);
+    const [resolved] = await db.update(approvals)
       .set({ status: 'acknowledged', reviewedAt: new Date(), reviewerNote: note })
-      .where(and(eq(approvals.id, req.params.id), eq(approvals.kind, 'escalation')))
+      .where(and(
+        eq(approvals.id, req.params.id),
+        eq(approvals.kind, 'escalation'),
+        eq(approvals.status, 'pending'),
+      ))
       .returning({ id: approvals.id });
 
-    if (result.length === 0) {
-      res.status(400).json({
-        error: 'Not an open escalation. Gated approvals must be approved or rejected — something is blocked on them.',
-      });
+    if (!resolved) {
+      res.status(409).json({ error: conflictMessage('acknowledge') });
       return;
     }
 
