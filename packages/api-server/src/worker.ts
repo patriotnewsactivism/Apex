@@ -2,7 +2,7 @@ import 'dotenv/config';
 
 import { createWorkforce, initializeWorkforce } from '@workspace/agents';
 import { JobScheduler } from '@workspace/background-jobs';
-import { db, agents } from '@workspace/db';
+import { assertDurableDatabaseReady } from '@workspace/db';
 
 // ─── APEX Autonomous Worker Runtime ──────────────────────────────────────────
 //
@@ -19,19 +19,8 @@ import { db, agents } from '@workspace/db';
 //   infrastructure decision; this file does not guess project/region/resource
 //   identifiers or create any GCP resource.
 
-async function assertDurableDatabaseReady(): Promise<void> {
-  try {
-    // Cheap read-only probe against an existing authoritative table. Do not use
-    // migrate() here: runtime DB credentials are not management-plane authority.
-    await db.select({ id: agents.id }).from(agents).limit(1);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(`Durable database readiness check failed: ${detail}`);
-  }
-}
-
 async function main(): Promise<void> {
-  await assertDurableDatabaseReady();
+  await assertDurableDatabaseReady({ requireConfiguredUrl: true });
 
   const workforce = createWorkforce();
   await initializeWorkforce(workforce);
