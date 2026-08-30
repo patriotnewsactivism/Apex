@@ -31,6 +31,11 @@ export type OpenRouterModelPolicy = {
   optimizationObjective: ModelOptimizationObjective;
   /** Minimum completed-task outcomes required before a model may move automatically. */
   minimumSamples: number;
+  /**
+   * Optional fraction (0..0.25) of eligible low-complexity tasks used to gather
+   * evidence for under-sampled selected models in adaptive mode. Default 0.
+   */
+  explorationRate: number;
 };
 
 const MODEL_ID_PATTERN = /^~?[a-zA-Z0-9._-]+\/[a-zA-Z0-9._~:/-]+$/;
@@ -89,6 +94,10 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
     const minimumSamples = Number.isFinite(rawMinimumSamples)
       ? Math.max(2, Math.min(100, Math.round(rawMinimumSamples)))
       : 5;
+    const rawExplorationRate = Number(parsed.explorationRate ?? 0);
+    const explorationRate = Number.isFinite(rawExplorationRate)
+      ? Math.max(0, Math.min(0.25, rawExplorationRate))
+      : 0;
 
     return {
       version: 1,
@@ -97,6 +106,7 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
       routingMode,
       optimizationObjective,
       minimumSamples,
+      explorationRate,
     };
   } catch {
     return null;
