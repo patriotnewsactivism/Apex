@@ -110,9 +110,11 @@ The authenticated Settings → OpenRouter Model Control panel may persist `APEX_
 - optional role-specific first choices, restricted to models already in that roster;
 - a routing mode: `manual`, `advisor`, or `adaptive`;
 - an optimization objective: `quality`, `balanced`, `budget`, or `speed`;
-- a minimum completed-task sample threshold before learned routing may move a model.
+- a minimum completed-task sample threshold before learned routing may move a model;
+- an optional controlled-learning trial rate from 0 to 25%;
+- an optional smart complexity-escalation flag.
 
-Saved policies from before the intelligence layer remain backward-compatible and parse as `manual`, preserving their prior behavior.
+Saved policies from before the intelligence layer remain backward-compatible and parse as `manual`, with learning trials off and complexity escalation off, preserving their prior behavior.
 
 ### Routing modes and operator authority
 
@@ -121,6 +123,12 @@ Saved policies from before the intelligence layer remain backward-compatible and
 - **Adaptive** — evidence-qualified models may reorder **only inside the selected roster**. Under-sampled models retain their operator-defined slots. At least two models must be evidence-qualified before learned ranking can change an order.
 - An explicit role-specific first choice is a hard operator pin. It stays first in adaptive mode even when another model has a higher learned score.
 - Model Intelligence must never introduce an unselected model or silently broaden the operator-approved roster.
+
+Controlled learning trials are opt-in and exist only to close cold-start evidence gaps. They are allowed only in Adaptive mode, only on tasks whose pre-run complexity is `<= 0.5`, never for a role with a hard model pin, and are deterministically sampled by task ID. Trial traffic is hard-capped at 25% and targets the least-sampled selected model below the evidence threshold. Do not turn this into unrestricted random model experimentation.
+
+Smart complexity escalation is also opt-in. When enabled, a task at complexity `>= 0.70` uses the `quality` objective; routine work at `<= 0.35` shifts a neutral `balanced` base objective to `budget`; middle-complexity work keeps the base objective. Explicit routine `quality`, `budget`, or `speed` preferences are preserved, missing complexity never changes the objective, and role pins still win. The API/UI must expose the effective objective when it differs from the saved base objective.
+
+Neither learning trials nor complexity escalation can make an under-sampled model evidence-qualified. Normal sample thresholds still govern automatic learned promotion.
 
 When a valid custom policy exists, APEX sends the ordered roster to OpenRouter using its native `models` fallback parameter. APEX uses one paced OpenRouter gateway attempt for that roster and records the actual model returned in OpenRouter's response rather than assuming the first requested model served the generation.
 
@@ -299,7 +307,7 @@ Do not let a completed code migration leave documentation on the old architectur
 - `docs/ARCHITECTURE_DECISIONS.md` — durable decisions and retired architecture.
 - `docs/PRODUCTION_OPERATIONS.md` — production runbook.
 - `docs/deploy-provenance.md` — source/image/runtime provenance contract.
-- `docs/MODEL_INTELLIGENCE.md` — model telemetry, evidence thresholds, adaptive-routing, and scoring contract.
+- `docs/MODEL_INTELLIGENCE.md` — model telemetry, evidence thresholds, controlled learning, complexity escalation, adaptive-routing, and scoring contract.
 - `BUSINESS_PROFILE.md` — dated BuildMyBot business/ICP snapshot; verify current pricing, features, payment state, and deployment before acting.
 - `APEX_CHARTER.md` — mission/governance; dated infrastructure/model notes are historical unless promoted into current canonical docs.
 - `packages/core/src/buildmybot-connector.ts` — current BuildMyBot connector implementation; verify live BuildMyBot state separately.
