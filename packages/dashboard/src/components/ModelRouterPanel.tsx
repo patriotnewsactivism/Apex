@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowDown,
   ArrowUp,
+  BarChart3,
   BrainCircuit,
   Check,
   DollarSign,
@@ -11,11 +12,14 @@ import {
   RotateCcw,
   Save,
   Search,
+  Sparkles,
   Wrench,
 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import {
   settingsApi,
+  type ModelOptimizationObjective,
+  type ModelRoutingMode,
   type OpenRouterModelCatalogItem,
   type OpenRouterModelPolicy,
 } from '../lib/settingsApi.js';
@@ -24,6 +28,9 @@ const DEFAULT_POLICY: OpenRouterModelPolicy = {
   version: 1,
   selectedModelIds: [],
   rolePrimary: {},
+  routingMode: 'manual',
+  optimizationObjective: 'balanced',
+  minimumSamples: 5,
 };
 
 type SortMode = 'efficiency' | 'input-price' | 'output-price' | 'context' | 'name';
@@ -34,6 +41,24 @@ function price(value: number | null): string {
   if (value < 0.01) return `$${value.toFixed(4)}`;
   if (value < 1) return `$${value.toFixed(3)}`;
   return `$${value.toFixed(2)}`;
+}
+
+function money(value: number | null): string {
+  if (value === null) return '—';
+  if (value === 0) return 'FREE';
+  if (value < 0.001) return `$${value.toFixed(5)}`;
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(3)}`;
+}
+
+function pct(value: number | null): string {
+  return value === null ? '—' : `${Math.round(value * 100)}%`;
+}
+
+function latency(value: number | null): string {
+  if (value === null) return '—';
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(1)} s`;
 }
 
 function contextLabel(tokens: number): string {
@@ -70,6 +95,19 @@ function ModelBadge({ children }: { children: React.ReactNode }) {
   );
 }
 
+const MODE_COPY: Record<ModelRoutingMode, string> = {
+  manual: 'Exact operator order. APEX records evidence but never changes routing.',
+  advisor: 'Exact operator order plus evidence-backed recommendations for you to review.',
+  adaptive: 'APEX may reorder evidence-qualified models inside your selected roster. Role pins stay first.',
+};
+
+const OBJECTIVE_COPY: Record<ModelOptimizationObjective, string> = {
+  quality: 'Favor completed-task success and satisfaction even when a model costs more.',
+  balanced: 'Balance completed-task quality, actual cost, provider reliability, and latency.',
+  budget: 'Push harder on actual generation cost while preserving outcome quality and reliability.',
+  speed: 'Favor lower observed latency while preserving outcome quality and reliability.',
+};
+
 export function ModelRouterPanel() {
   const queryClient = useQueryClient();
   const [policy, setPolicy] = useState<OpenRouterModelPolicy>(DEFAULT_POLICY);
@@ -80,6 +118,8 @@ export function ModelRouterPanel() {
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>('efficiency');
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const [intelligenceRole, setIntelligenceRole] = useState('');
+  const [intelligenceComplexity, setIntelligenceComplexity] = useState<string>('all');
 
   const catalogQuery = useQuery({
     queryKey: ['settings', 'models'],
@@ -113,6 +153,12 @@ export function ModelRouterPanel() {
     return [...found.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [agentsQuery.data]);
 
+  useEffect(() => {
+    if (intelligenceRole || roles.length === 0) return;
+    const preferred = roles.find(([role]) => role === 'BACKEND') ?? roles[0];
+    if (preferred) setIntelligenceRole(preferred[0]);
+  }, [intelligenceRole, roles]);
+
   const visibleModels = useMemo(() => {
     const needle = search.trim().toLowerCase();
     const result = models.filter((model) => {
@@ -134,6 +180,16 @@ export function ModelRouterPanel() {
     });
     return result;
   }, [models, search, freeOnly, agentReadyOnly, selectedOnly, selectedSet, sortMode]);
+
+  const intelligenceQuery = useQuery({
+    queryKey: ['settings', 'models', 'intelligence', intelligenceRole, intelligenceComplexity, catalogQuery.data?.policy?.optimizationObjective, catalogQuery.data?.policy?.minimumSamples],
+    queryFn: () => settingsApi.modelIntelligence(intelligenceRole, {
+      complexity: intelligenceComplexity === 'all' ? undefined : Number(intelligenceComplexity),
+    }),
+    enabled: Boolean(intelligenceRole && catalogQuery.data?.policy?.selectedModelIds.length),
+    staleTime: 60_000,
+    retry: 1,
+  });
 
   const saveMutation = useMutation({
     mutationFn: () => settingsApi.saveModelPolicy(policy),
@@ -190,6 +246,12 @@ export function ModelRouterPanel() {
   const selectedModels = policy.selectedModelIds.map((id) => modelById.get(id)).filter(Boolean) as OpenRouterModelCatalogItem[];
   const freeSelected = selectedModels.filter((model) => model.isFree).length;
   const agentReadySelected = selectedModels.filter((model) => model.agentReady).length;
+  const intelligence = intelligenceQuery.data?.report;
+  const intelligenceStats = useMemo(() => {
+    if (!intelligence) return [];
+    const byId = new Map(intelligence.stats.map((stat) => [stat.modelId, stat]));
+    return intelligence.recommendedOrder.map((id) => byId.get(id)).filter(Boolean).slice(0, 10);
+  }, [intelligence]);
 
   return (
     <section style={{
@@ -202,8 +264,8 @@ export function ModelRouterPanel() {
             <BrainCircuit size={20} color="#8b7ec8" />
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>OpenRouter Model Control</span>
           </div>
-          <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '6px 0 0', lineHeight: 1.45, maxWidth: 760 }}>
-            Select any number of models, order the global fallback chain, and optionally give each APEX role a preferred first model. Prices are pulled from OpenRouter's live catalog; the efficiency score is an APEX value heuristic, not a claim about raw intelligence.
+          <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '6px 0 0', lineHeight: 1.45, maxWidth: 820 }}>
+            Select the model roster, compare live price/capabilities, and choose whether APEX should preserve your exact order, advise you from observed outcomes, or adapt inside your selected roster. Static efficiency is a heuristic; learned rankings use completed APEX tasks, observed latency, and OpenRouter-reported generation cost.
           </p>
         </div>
         <button
@@ -234,6 +296,41 @@ export function ModelRouterPanel() {
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--color-apex-text)', marginTop: 3 }}>{value}</div>
           </div>
         ))}
+      </div>
+
+      <div style={{ border: '1px solid rgba(139,126,200,0.28)', borderRadius: 10, padding: 14, background: 'rgba(139,126,200,0.035)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 10 }}>
+          <Sparkles size={15} color="#8b7ec8" />
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>Model Intelligence routing policy</div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 10 }}>
+          <label style={{ display: 'grid', gap: 5 }}>
+            <span style={{ fontSize: 9, color: 'var(--color-apex-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Routing mode</span>
+            <select className="apex-input" value={policy.routingMode} onChange={(event) => setPolicy((previous) => ({ ...previous, routingMode: event.target.value as ModelRoutingMode }))}>
+              <option value="manual">Manual — exact order</option>
+              <option value="advisor">Advisor — recommend only</option>
+              <option value="adaptive">Adaptive — evidence can reorder</option>
+            </select>
+          </label>
+          <label style={{ display: 'grid', gap: 5 }}>
+            <span style={{ fontSize: 9, color: 'var(--color-apex-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Optimization objective</span>
+            <select className="apex-input" value={policy.optimizationObjective} onChange={(event) => setPolicy((previous) => ({ ...previous, optimizationObjective: event.target.value as ModelOptimizationObjective }))}>
+              <option value="quality">Quality first</option>
+              <option value="balanced">Balanced</option>
+              <option value="budget">Budget first</option>
+              <option value="speed">Speed first</option>
+            </select>
+          </label>
+          <label style={{ display: 'grid', gap: 5 }}>
+            <span style={{ fontSize: 9, color: 'var(--color-apex-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Evidence threshold</span>
+            <select className="apex-input" value={policy.minimumSamples} onChange={(event) => setPolicy((previous) => ({ ...previous, minimumSamples: Number(event.target.value) }))}>
+              {[3, 5, 10, 20, 40].map((value) => <option key={value} value={value}>{value} completed tasks/model</option>)}
+            </select>
+          </label>
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', lineHeight: 1.5, marginTop: 9 }}>
+          <strong style={{ color: 'var(--color-apex-text)' }}>{MODE_COPY[policy.routingMode]}</strong> {OBJECTIVE_COPY[policy.optimizationObjective]} Models below the evidence threshold keep their operator-defined positions; APEX never fills the roster with an unselected model.
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
@@ -277,12 +374,12 @@ export function ModelRouterPanel() {
                 <th style={{ padding: 9 }}>Output / M</th>
                 <th style={{ padding: 9 }}>Typical task*</th>
                 <th style={{ padding: 9 }}>Context</th>
-                <th style={{ padding: 9 }}><Gauge size={11} style={{ display: 'inline' }} /> Efficiency</th>
+                <th style={{ padding: 9 }}><Gauge size={11} style={{ display: 'inline' }} /> Static value</th>
                 <th style={{ padding: 9 }}>Capabilities</th>
               </tr>
             </thead>
             <tbody>
-              {visibleModels.slice(0, 250).map((model) => {
+              {visibleModels.map((model) => {
                 const selected = selectedSet.has(model.id);
                 const taskCost = typicalTaskCost(model);
                 return (
@@ -324,14 +421,81 @@ export function ModelRouterPanel() {
           </table>
         </div>
         <div style={{ padding: '7px 10px', borderTop: '1px solid var(--color-apex-border)', fontSize: 9, color: 'var(--color-apex-muted)' }}>
-          * Typical task is a comparison estimate using 20K input + 4K output tokens. Actual APEX cost depends on the task and the model OpenRouter ultimately serves.
+          * Typical task is a static comparison estimate using 20K input + 4K output tokens. The learned panel below uses OpenRouter-reported per-generation cost where available.
         </div>
+      </div>
+
+      <div style={{ border: '1px solid rgba(90,158,174,0.25)', borderRadius: 10, padding: 14, background: 'rgba(90,158,174,0.03)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <BarChart3 size={15} color="#5a9eae" />
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>Observed Model Intelligence</div>
+              <div style={{ fontSize: 9, color: 'var(--color-apex-muted)', marginTop: 2 }}>30-day evidence from actual APEX generations joined to completed task outcomes.</div>
+            </div>
+          </div>
+          <button className="btn-secondary" disabled={!intelligenceRole || intelligenceQuery.isFetching} onClick={() => intelligenceQuery.refetch()} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10 }}>
+            <RefreshCw size={11} /> {intelligenceQuery.isFetching ? 'Analyzing…' : 'Refresh evidence'}
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <select className="apex-input" value={intelligenceRole} onChange={(event) => setIntelligenceRole(event.target.value)} style={{ width: 'auto', minWidth: 190 }}>
+            {roles.map(([role, name]) => <option key={role} value={role}>{name} ({role})</option>)}
+          </select>
+          <select className="apex-input" value={intelligenceComplexity} onChange={(event) => setIntelligenceComplexity(event.target.value)} style={{ width: 'auto', minWidth: 190 }}>
+            <option value="all">All task complexities</option>
+            <option value="0.25">Routine / light</option>
+            <option value="0.5">Moderate</option>
+            <option value="0.75">Hard</option>
+            <option value="1">Very hard / critical</option>
+          </select>
+        </div>
+
+        {intelligenceQuery.error && <div style={{ color: '#c45c66', fontSize: 10 }}>Could not load model evidence: {(intelligenceQuery.error as Error).message}</div>}
+        {intelligence && (
+          <>
+            <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', lineHeight: 1.5, marginBottom: 10 }}>
+              {intelligenceQuery.data?.explanation} Evidence-qualified models: <strong style={{ color: 'var(--color-apex-text)' }}>{intelligence.evidenceReadyModels}</strong>. Threshold: {intelligence.minimumSamples} completed tasks/model. Objective: {intelligence.objective}. {intelligence.recommendationChanged ? 'The evidence currently recommends a different order for qualified slots.' : 'The evidence does not currently justify changing the saved qualified slots.'}
+            </div>
+            {intelligenceStats.length > 0 ? (
+              <div style={{ overflowX: 'auto', border: '1px solid var(--color-apex-border)', borderRadius: 8 }}>
+                <table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse', fontSize: 10 }}>
+                  <thead><tr style={{ textAlign: 'left', color: 'var(--color-apex-muted)', background: 'rgba(255,255,255,0.02)' }}>
+                    <th style={{ padding: 8 }}>Rank</th><th style={{ padding: 8 }}>Model</th><th style={{ padding: 8 }}>Observed score</th><th style={{ padding: 8 }}>Task success</th><th style={{ padding: 8 }}>Samples</th><th style={{ padding: 8 }}>Avg actual cost</th><th style={{ padding: 8 }}>Avg latency</th><th style={{ padding: 8 }}>Confidence</th>
+                  </tr></thead>
+                  <tbody>
+                    {intelligenceStats.map((stat, index) => {
+                      if (!stat) return null;
+                      const model = modelById.get(stat.modelId);
+                      const ready = stat.taskSamples >= intelligence.minimumSamples;
+                      return <tr key={stat.modelId} style={{ borderTop: '1px solid var(--color-apex-border)' }}>
+                        <td style={{ padding: 8, color: 'var(--color-apex-muted)' }}>#{index + 1}</td>
+                        <td style={{ padding: 8 }}><div style={{ fontWeight: 650, color: 'var(--color-apex-text)' }}>{model?.name ?? stat.modelId}</div><div style={{ fontSize: 8, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>{stat.modelId}</div></td>
+                        <td style={{ padding: 8, fontWeight: 700 }}>{stat.observedScore === null ? 'Learning…' : `${Math.round(stat.observedScore * 100)}/100`}</td>
+                        <td style={{ padding: 8 }}>{pct(stat.taskSuccessRate)}</td>
+                        <td style={{ padding: 8 }}>{stat.taskSamples} {ready ? <ModelBadge>QUALIFIED</ModelBadge> : <ModelBadge>LEARNING</ModelBadge>}</td>
+                        <td style={{ padding: 8 }}>{money(stat.avgCostUsd)}</td>
+                        <td style={{ padding: 8 }}>{latency(stat.avgLatencyMs)}</td>
+                        <td style={{ padding: 8 }}>{pct(stat.confidence)}</td>
+                      </tr>;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', padding: 12, border: '1px dashed var(--color-apex-border)', borderRadius: 8 }}>
+                No attributable task/model evidence yet for this role. APEX will populate this automatically as the instrumented runtime serves generations and completed task outcomes arrive. Until enough evidence exists, adaptive mode preserves your saved order.
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(300px,1fr)', gap: 14 }} className="model-routing-grid">
         <div style={{ border: '1px solid var(--color-apex-border)', borderRadius: 9, padding: 13, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>Global fallback priority</div>
-          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>OpenRouter tries the ordered roster when a model is unavailable, rate-limited, or fails.</div>
+          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>Manual/advisor use this exact order. Adaptive may reorder only evidence-qualified slots; unqualified models keep their positions.</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {policy.selectedModelIds.map((id, index) => {
               const model = modelById.get(id);
@@ -353,7 +517,7 @@ export function ModelRouterPanel() {
 
         <div style={{ border: '1px solid var(--color-apex-border)', borderRadius: 9, padding: 13, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>Role-specific first choice</div>
-          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>A role can start with its best-fit model, then fall back through the global priority list.</div>
+          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>A role pin is a hard operator decision. It stays first even in adaptive mode; learned ranking applies to the remaining eligible slots.</div>
           <div style={{ display: 'grid', gap: 7 }}>
             {roles.map(([role, name]) => (
               <label key={role} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px,0.8fr) minmax(160px,1.2fr)', gap: 8, alignItems: 'center' }}>
@@ -365,7 +529,7 @@ export function ModelRouterPanel() {
                   disabled={policy.selectedModelIds.length === 0}
                   style={{ fontSize: 10, padding: '6px 8px' }}
                 >
-                  <option value="">Use global #1</option>
+                  <option value="">Use learned/global order</option>
                   {policy.selectedModelIds.map((id) => <option key={id} value={id}>{modelById.get(id)?.name ?? id}</option>)}
                 </select>
               </label>
