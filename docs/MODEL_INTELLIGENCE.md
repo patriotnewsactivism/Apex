@@ -8,7 +8,7 @@ APEX uses OpenRouter as its production LLM gateway, but model selection is an op
 
 The Model Intelligence layer answers a practical question with production evidence:
 
-> For this APEX role and this kind of task, which model in the operator-approved roster gives the best observed outcome for the chosen quality/cost/latency objective?
+> For this APEX role and this kind of task, which model or routing product in the operator-approved roster gives the best observed outcome for the chosen quality/cost/latency objective?
 
 It does **not** treat price, context length, model branding, or a synthetic dashboard heuristic as proof of intelligence.
 
@@ -74,7 +74,9 @@ Each OpenRouter generation may emit a structured telemetry event into the existi
 
 - durable task ID, agent ID, and role;
 - ordered requested model IDs;
-- actual model ID reported by OpenRouter;
+- concrete model ID reported by OpenRouter as actually served;
+- operator-selected route candidate safely attributable for learning, when known;
+- attribution basis (`exact_served_model`, `single_route`, or `unattributed`);
 - provider/gateway identity;
 - success/failure;
 - observed latency;
@@ -83,11 +85,46 @@ Each OpenRouter generation may emit a structured telemetry event into the existi
 - OpenRouter-reported generation cost when available;
 - tool-call count and whether tools were available;
 - a coarse pre-run complexity hint;
-- provider error type for failed calls.
+- provider error type for failed calls;
+- a privacy-minimized subset of OpenRouter router-audit metadata when returned.
+
+The retained router-audit subset is intentionally bounded to routing identity/status fields: requested route, routing strategy, attempt number, selected provider, and a capped list of provider/model/status attempts. Free-form summaries, pipeline information, prompts, completions, and arbitrary router metadata are not copied into Model Intelligence telemetry.
 
 Model telemetry must **not** persist prompt text, completion text, tool-result content, secrets, or API keys.
 
 Task identity is carried through concurrent asynchronous work using Node `AsyncLocalStorage`, so one multi-concurrency QA or research agent cannot attribute another task's generations to itself accidentally.
+
+## Served model versus learnable route attribution
+
+OpenRouter can resolve aliases, routers, and ordered fallback lists. Therefore the concrete `model` returned by OpenRouter and the operator-selected route APEX should learn about are related but not always the same identifier.
+
+APEX keeps them separate:
+
+- `servedModel` is the concrete model OpenRouter reports for the response;
+- `attributedModelId` is the selected roster candidate that APEX can defensibly credit for the observation.
+
+The attribution rule is intentionally fail-closed:
+
+1. If the concrete served model exactly matches one of the requested selected candidates, credit that exact candidate.
+2. If exactly one selected model/alias/router was requested, credit that sole route candidate even when OpenRouter reports a different concrete model. There was no competing roster candidate in that request, so this measures the routing product the operator actually selected.
+3. If multiple selected aliases/routers were sent and the returned concrete model does not exactly identify one of them, mark the observation **unattributed**. Do not guess which alias resolved to the concrete model.
+
+This lets a sole `~latest` alias or `openrouter/auto` accumulate useful route-level evidence while preventing ambiguous multi-model alias fallbacks from poisoning learned rankings.
+
+The intelligence report exposes:
+
+- `attributionCoverage` — fraction of successful role generations in the evidence window that could safely be assigned to a selected candidate;
+- `unattributedSuccessfulCalls` — successful calls excluded from model scoring because attribution would require guessing.
+
+The Settings intelligence explanation surfaces this coverage so the operator can judge the quality of the evidence behind a recommendation.
+
+## OpenRouter router audit metadata
+
+APEX opts into OpenRouter router metadata using the documented request header and sanitizes the result before persistence. The metadata is an audit aid, not a new routing dependency and not permission to infer an undocumented alias mapping.
+
+Router metadata may be absent, including on cache hits. Its absence is normal and must not turn a successful generation into an error or an unattributable exact/single-route observation into a failure.
+
+If a future OpenRouter contract provides an explicit, stable alias-to-requested-candidate identity that removes ambiguity, APEX may use it only after a reviewed implementation and deterministic attribution tests. Do not infer such a mapping from provider order or names.
 
 ## Outcome join
 
@@ -104,7 +141,7 @@ APEX already records completed task outcomes in `task_outcomes`, including:
 
 Model Intelligence joins generation telemetry to these outcomes by durable task ID.
 
-A task outcome is credited once to the dominant serving model for that task (the model that handled the most successful LLM turns). This avoids turning a 12-iteration task into 12 successful task samples and avoids blindly crediting every transient fallback model with the same outcome.
+A task outcome is credited once to the dominant **attributable selected route candidate** for that task. This avoids turning a 12-iteration task into 12 successful task samples, avoids blindly crediting every transient fallback model with the same outcome, and excludes ambiguous alias fallback traffic rather than inventing attribution.
 
 ## Observed score
 
@@ -127,7 +164,7 @@ This score is an APEX operational ranking, not an independent model benchmark.
 
 The catalog continues to show a **static value-efficiency heuristic** based on live OpenRouter price metadata, capabilities, and context length. That is useful before evidence exists.
 
-The **Observed Model Intelligence** panel is distinct. It reports evidence from actual APEX work: task success, sample count, average actual generation cost, average latency, confidence, and the evidence-backed recommended order for a role.
+The **Observed Model Intelligence** panel is distinct. It reports evidence from actual APEX work: task success, sample count, average actual generation cost, average latency, confidence, attribution coverage, and the evidence-backed recommended order for a role.
 
 Do not merge these two concepts or present the static heuristic as learned performance.
 
@@ -139,7 +176,9 @@ Telemetry writes are best-effort observability and must never convert a successf
 
 ## OpenRouter request behavior
 
-APEX requests usage information on OpenRouter chat-completion requests so the response can include billed generation cost and token details when supported. APEX continues to record the actual `model` returned by OpenRouter rather than assuming the first requested model served the response.
+APEX requests usage information on OpenRouter chat-completion requests so the response can include billed generation cost and token details when supported. APEX records the concrete `model` returned by OpenRouter and separately computes the selected route candidate eligible for learning.
+
+APEX also requests router-audit metadata and keeps only the sanitized identity/status subset described above.
 
 Model Intelligence does not bypass:
 
@@ -162,10 +201,15 @@ Model Intelligence does not bypass:
 - under-sampled models retain their operator-defined slots;
 - explicit role pins remain first;
 - adaptive ranking cannot introduce an unselected model;
+- exact concrete fallback attribution remains exact;
+- a single-route alias/router can be credited to its sole selected route;
+- ambiguous multi-alias fallback is never guessed;
+- attribution coverage remains part of the intelligence report;
 - complexity escalation is opt-in and deterministic;
 - hard tasks escalate to quality while routine explicit preferences are preserved;
 - controlled trials stay bounded to low-complexity unpinned work;
 - OpenRouter usage/cost telemetry remains wired;
+- router-audit metadata is explicitly requested and privacy-minimized;
 - async task attribution remains concurrency-safe;
 - model telemetry does not store response content;
 - the dashboard keeps static heuristics and observed evidence visibly distinct.
