@@ -23,6 +23,7 @@ import {
   type IntegrationCatalogItem,
   type IntegrationProbeResult,
 } from '../lib/settingsApi.js';
+import { ModelRouterPanel } from './ModelRouterPanel.js';
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   ai: { label: 'AI Models', color: '#8b7ec8' },
@@ -459,6 +460,9 @@ export function Settings() {
           })}
         </div>
       </div>
+
+      {/* Live model selection and role routing */}
+      <ModelRouterPanel />
 
       {/* Provider recovery */}
       <div className="glass-card" style={{ padding: 16, border: '1px solid rgba(196,92,102,0.2)' }}>
