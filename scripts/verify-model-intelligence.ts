@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   applyControlledExploration,
+  attributeModelForLearning,
   rankModelsFromStats,
   resolveComplexityObjective,
   type ModelPerformanceStats,
@@ -83,6 +84,28 @@ const pinned = rankModelsFromStats({
 check('explicit role pin stays first despite lower learned score', pinned.order[0] === 'vendor/a', pinned.order);
 check('adaptive ranking never introduces an unselected model', pinned.order.every((id) => candidates.includes(id)) && pinned.order.length === candidates.length, pinned.order);
 
+console.log('\n── Auditable route attribution ──');
+const exactAttribution = attributeModelForLearning({
+  requestedModels: ['vendor/a', 'vendor/b'],
+  servedModel: 'vendor/b',
+});
+check('exact concrete fallback is credited to the exact selected model', exactAttribution.modelId === 'vendor/b' && exactAttribution.basis === 'exact_served_model', exactAttribution);
+const aliasAttribution = attributeModelForLearning({
+  requestedModels: ['~vendor/family-latest'],
+  servedModel: 'vendor/family-2026-08',
+});
+check('single-route alias is safely credited to the selected alias', aliasAttribution.modelId === '~vendor/family-latest' && aliasAttribution.basis === 'single_route', aliasAttribution);
+const routerAttribution = attributeModelForLearning({
+  requestedModels: ['openrouter/auto'],
+  servedModel: 'vendor/concrete-model',
+});
+check('single-route router is learned as the selected routing product', routerAttribution.modelId === 'openrouter/auto' && routerAttribution.basis === 'single_route', routerAttribution);
+const ambiguousAlias = attributeModelForLearning({
+  requestedModels: ['~vendor/a-latest', '~vendor/b-latest'],
+  servedModel: 'vendor/b-2026-08',
+});
+check('ambiguous multi-alias fallback is never guessed', ambiguousAlias.modelId === undefined && ambiguousAlias.basis === 'unattributed', ambiguousAlias);
+
 console.log('\n── Complexity escalation ──');
 check('disabled escalation preserves base objective', resolveComplexityObjective({ baseObjective: 'balanced', targetComplexity: 0.95, enabled: false }) === 'balanced');
 check('hard work escalates balanced routing to quality', resolveComplexityObjective({ baseObjective: 'balanced', targetComplexity: 0.75, enabled: true }) === 'quality');
@@ -126,7 +149,11 @@ const contextSource = fs.readFileSync(path.join(root, 'packages/core/src/model-e
 const panelSource = fs.readFileSync(path.join(root, 'packages/dashboard/src/components/ModelRouterPanel.tsx'), 'utf8');
 check('OpenRouter usage data is explicitly requested', clientSource.includes("usage: { include: true }"));
 check('OpenRouter generation cost is read from usage.cost', clientSource.includes('parsed.usage?.cost'));
-check('actual served model is retained separately from the diagnostic label', clientSource.includes('servedModel,') && clientSource.includes('requestedModels: [...routedModels]'));
+check('OpenRouter router audit metadata is explicitly requested', clientSource.includes("'X-OpenRouter-Metadata': 'enabled'"));
+check('router metadata is privacy-minimized before it reaches learning telemetry', clientSource.includes('sanitizeRouterMetadata') && clientSource.includes('selectedProvider') && !clientSource.includes('routerMetadata: parsed.openrouter_metadata'));
+check('actual served model remains separate from the attributable route candidate', intelligenceSource.includes('attributedModelId') && intelligenceSource.includes('servedModel'));
+check('ambiguous multi-model alias fallbacks are excluded rather than guessed', intelligenceSource.includes('Multi-model alias/router fallbacks remain unattributed'));
+check('model intelligence reports attribution coverage', intelligenceSource.includes('attributionCoverage') && intelligenceSource.includes('unattributedSuccessfulCalls'));
 check('task identity uses AsyncLocalStorage for concurrency-safe attribution', contextSource.includes('AsyncLocalStorage<LLMExecutionContext>'));
 check('telemetry writes identifiers/metrics, not prompt or completion content', intelligenceSource.includes('never store prompt/completion content') && !intelligenceSource.includes('response.content'));
 check('dashboard clearly separates static heuristic from learned evidence', panelSource.includes('Static value') && panelSource.includes('Observed Model Intelligence'));
