@@ -14,6 +14,7 @@ concurrency:
 
 env:
   GCP_PROJECT_ID: apex-503709
+  DEPLOY_SERVICE_ACCOUNT: 429262820734-compute@developer.gserviceaccount.com
   ARTIFACT_REPO: cloud-run-source-deploy
 
 jobs:
@@ -30,6 +31,15 @@ jobs:
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Use APEX production service account
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud config set project "$GCP_PROJECT_ID" --quiet
+          gcloud config set auth/impersonate_service_account "$DEPLOY_SERVICE_ACCOUNT" --quiet
+          gcloud auth print-access-token >/dev/null
+          echo "Deploying as $DEPLOY_SERVICE_ACCOUNT"
 
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
