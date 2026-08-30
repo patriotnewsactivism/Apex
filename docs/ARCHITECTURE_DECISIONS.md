@@ -64,12 +64,12 @@ Production is considered released only when the public health endpoint reports t
 - Runtime environment overrides must not fake `APEX_BUILD_SHA`.
 - Release tooling and CI must preserve deterministic provenance checks.
 
-## ADR-004 — OpenRouter is the production LLM gateway
+## ADR-004 — OpenRouter is the production LLM gateway; model adaptation is evidence-governed
 
 **Status:** Accepted  
 **Last confirmed:** 2026-08-30
 
-Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` remains the request-path implementation authority and `packages/core/src/model-routing.ts` owns the operator-selectable model policy contract.
+Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` is the request-path implementation authority, `packages/core/src/model-routing.ts` owns the operator-selectable policy contract, and `packages/core/src/model-intelligence.ts` owns evidence-based ranking.
 
 The reviewed no-configuration fallback remains:
 
@@ -77,11 +77,42 @@ The reviewed no-configuration fallback remains:
 2. DeepSeek V4 Flash 0731 fallback;
 3. DeepSeek V4 Pro 0813 fallback.
 
-An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The policy may contain 1–500 valid OpenRouter model IDs—intentionally large enough for the current hundreds-model catalog—and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
+An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The roster may contain 1–500 valid OpenRouter model IDs—large enough for the current hundreds-model catalog—and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
 
-When a valid custom policy exists, APEX sends the role-specific ordered roster to OpenRouter using the native `models` fallback parameter. APEX makes one paced gateway attempt rather than replaying the same roster through the three legacy logical rungs. OpenRouter may then fall through the ordered models according to its documented model-fallback behavior, and APEX records the actual model returned by OpenRouter.
+The policy also contains a routing mode (`manual`, `advisor`, or `adaptive`), an optimization objective (`quality`, `balanced`, `budget`, or `speed`), and a completed-task evidence threshold. Policies saved before these fields existed remain valid and default to `manual`.
 
-Model prices are not architectural constants. The operator console reads the live OpenRouter `/api/v1/models` catalog and presents current token pricing and capabilities. APEX may compute a transparent value-efficiency heuristic for comparison, but that score must be labeled as an APEX heuristic and must not be represented as an intelligence benchmark or provider-supplied quality score.
+### Operator authority and adaptive boundary
+
+- **Manual** preserves the exact saved operator order.
+- **Advisor** preserves the exact saved order while surfacing learned recommendations.
+- **Adaptive** may reorder only models already selected by the operator and only after enough completed-task evidence exists.
+- Under-sampled models retain their operator-defined slots.
+- At least two models must be evidence-qualified before adaptive ranking can change an order.
+- An explicit role-specific model is a hard operator pin and remains first even when another model has a higher learned score.
+- Model Intelligence must never add an unselected model or broaden the roster implicitly.
+
+When a valid custom policy exists, APEX sends the resulting role-specific ordered roster to OpenRouter using the native `models` fallback parameter. APEX makes one paced gateway attempt rather than replaying the same roster through the three legacy logical rungs. OpenRouter may fall through the ordered models, and APEX records the actual model returned by OpenRouter.
+
+### Evidence model
+
+Model prices are not architectural constants. The operator console reads the live OpenRouter `/api/v1/models` catalog and may compute a transparent static value-efficiency heuristic from current price, context, and capability metadata. That score is a cold-start comparison aid, not an intelligence benchmark.
+
+The separate learned ranking uses actual APEX operational evidence. Generation metadata is recorded without prompt/completion content and joined by durable task ID to the existing `task_outcomes` records. Evidence may include:
+
+- actual served model and requested fallback roster;
+- observed latency;
+- prompt/completion/cached/reasoning token counts;
+- OpenRouter-reported generation cost when available;
+- generation reliability/tool-call behavior;
+- completed-task success, quality, satisfaction, and complexity.
+
+Concurrent task attribution uses Node `AsyncLocalStorage` so one multi-concurrency agent cannot leak task identity into another generation.
+
+A completed task outcome is credited once to the dominant serving model for that task rather than once per LLM iteration. This prevents repeated reasoning turns from inflating the model's successful-task sample count and avoids crediting every transient fallback model with the same outcome.
+
+Adaptive ranking is not an inference dependency. If telemetry/outcome reads fail or evidence is insufficient, APEX preserves the operator-defined order. Telemetry writes are best-effort and must never convert a successful generation into a task failure.
+
+The learned observed score is objective-specific and combines completed-task outcome quality, generation reliability, actual generation cost, and latency. Its precise scoring/evidence contract is documented in `docs/MODEL_INTELLIGENCE.md` and protected by deterministic CI.
 
 ### Consequences
 
@@ -92,8 +123,9 @@ Model prices are not architectural constants. The operator console reads the liv
 - Multiple keys from one OpenRouter account are credential redundancy, not separate account quotas.
 - Free model variants are permitted in an operator-selected roster, but free-tier availability/rate limits do not weaken failure handling or permit fabricated completion.
 - A model that lacks reliable tool calling may be displayed/selectable for cost comparison, but the operator console must flag that limitation; APEX's tool-call and completion guards remain authoritative.
-- Policy changes are persisted and apply to subsequent LLM requests; they do not authorize bypassing approvals, tool permissions, spend caps, or other constitutional safeguards.
-- Changes to the routing-policy contract require deterministic routing tests and documentation updates.
+- Model telemetry must not persist prompt text, completion text, tool-result content, secrets, or API keys.
+- Learned routing does not authorize bypassing approvals, tool permissions, spend caps, or other governance controls.
+- Changes to the routing/evidence contract require deterministic routing/model-intelligence tests and documentation updates.
 
 ## ADR-005 — Reliability controls are permanent production controls
 
