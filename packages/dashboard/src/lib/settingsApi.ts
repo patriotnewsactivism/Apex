@@ -56,6 +56,8 @@ export interface OpenRouterModelPolicy {
   minimumSamples: number;
   /** Older dashboard state may omit this; server defaults to 0. */
   explorationRate?: number;
+  /** Older dashboard state may omit this; server defaults to false. */
+  complexityEscalation?: boolean;
 }
 
 export interface OpenRouterModelCatalogItem {
@@ -128,6 +130,9 @@ export interface ModelIntelligenceResponse {
   report: ModelIntelligenceReport;
   routingMode: ModelRoutingMode;
   explorationRate: number;
+  complexityEscalation: boolean;
+  baseObjective: ModelOptimizationObjective;
+  effectiveObjective: ModelOptimizationObjective;
   explanation: string;
 }
 
