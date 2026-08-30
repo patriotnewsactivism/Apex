@@ -36,6 +36,13 @@ export type OpenRouterModelPolicy = {
    * evidence for under-sampled selected models in adaptive mode. Default 0.
    */
   explorationRate: number;
+  /**
+   * When enabled in advisor/adaptive analysis, task complexity may change the
+   * effective ranking objective: routine balanced work can optimize for budget,
+   * while high-complexity work escalates to quality. Explicit role pins remain
+   * stronger than this policy. Default false for backward compatibility.
+   */
+  complexityEscalation: boolean;
 };
 
 const MODEL_ID_PATTERN = /^~?[a-zA-Z0-9._-]+\/[a-zA-Z0-9._~:/-]+$/;
@@ -98,6 +105,7 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
     const explorationRate = Number.isFinite(rawExplorationRate)
       ? Math.max(0, Math.min(0.25, rawExplorationRate))
       : 0;
+    const complexityEscalation = parsed.complexityEscalation === true;
 
     return {
       version: 1,
@@ -107,6 +115,7 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
       optimizationObjective,
       minimumSamples,
       explorationRate,
+      complexityEscalation,
     };
   } catch {
     return null;
