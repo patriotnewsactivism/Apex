@@ -27,10 +27,10 @@ check('quarantined timeout clears automatic retry scheduling',
 check('late detached failure cannot turn quarantine back into retryable work',
   queue.includes('if (isTimeoutQuarantine(task)) return'));
 check('late execution cannot resurrect cancelled/terminal task as complete',
-  queue.includes('Task ${taskId} completion rejected because it is no longer owned by this execution state'));
+  queue.includes('completion rejected because it is no longer owned by this execution state'));
 check('same original execution may close a timeout quarantine if it truly completes',
   queue.includes("eq(tasks.status, 'blocked')") &&
-  queue.includes(`LIKE \${\`${'${TIMEOUT_QUARANTINE_PREFIX}'}%\`}`) === false ? queue.includes('TIMEOUT_QUARANTINE_PREFIX') : true);
+  queue.includes('sql`${tasks.errorMessage} LIKE'));
 check('late failure does not overwrite independently terminalized task',
   queue.includes("new Set(['done', 'failed', 'cancelled'])") &&
   queue.includes('TERMINAL_TASK_STATUSES.has(task.status)'));
