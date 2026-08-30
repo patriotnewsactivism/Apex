@@ -40,9 +40,9 @@ export type OpenRouterModelPolicy = {
    * When enabled in advisor/adaptive analysis, task complexity may change the
    * effective ranking objective: routine balanced work can optimize for budget,
    * while high-complexity work escalates to quality. Explicit role pins remain
-   * stronger than this policy. Default false for backward compatibility.
+   * stronger than this policy. Omitted/false preserves prior behavior.
    */
-  complexityEscalation: boolean;
+  complexityEscalation?: boolean;
 };
 
 const MODEL_ID_PATTERN = /^~?[a-zA-Z0-9._-]+\/[a-zA-Z0-9._~:/-]+$/;
