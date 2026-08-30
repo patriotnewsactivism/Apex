@@ -54,7 +54,8 @@ export interface OpenRouterModelPolicy {
   routingMode: ModelRoutingMode;
   optimizationObjective: ModelOptimizationObjective;
   minimumSamples: number;
-  explorationRate: number;
+  /** Older dashboard state may omit this; server defaults to 0. */
+  explorationRate?: number;
 }
 
 export interface OpenRouterModelCatalogItem {
