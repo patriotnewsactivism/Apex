@@ -46,9 +46,85 @@ jobs:
             exit 3
           fi
 
+      - name: Resolve the APEX database credential
+        id: db
+        env:
+          GITHUB_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # APEX's durable state — 13 agents, 4,722 researched leads, its whole
+          # task and memory history — lives in the existing Supabase Postgres
+          # project. The service simply has no DATABASE_URL pointing at it, and
+          # the GitHub production secret of that name is empty, which is what
+          # deadlocked every recovery attempt since 2026-08-29.
+          #
+          # Look for the credential in Google Secret Manager as well as the
+          # GitHub secret, and prefer a Secret Manager reference: it keeps the
+          # DSN off the revision spec entirely, the way APEX_ADMIN_TOKEN and
+          # APEX_ADMIN_PASSWORD are already attached.
+          #
+          # NEVER create a new database here. A fresh, empty Postgres would let
+          # the deploy go green while silently orphaning production data.
+
+          if [[ -n "${GITHUB_DATABASE_URL:-}" ]]; then
+            echo 'source=github' >> "$GITHUB_OUTPUT"
+            echo 'Resolved DATABASE_URL from the masked GitHub production secret.'
+            exit 0
+          fi
+
+          for candidate in \
+            apex-database-url \
+            apex-db-url \
+            apex-supabase-database-url \
+            apex-postgres-url \
+            database-url \
+            DATABASE_URL; do
+            if gcloud secrets describe "$candidate" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
+              echo 'source=secret-manager' >> "$GITHUB_OUTPUT"
+              echo "secret_name=$candidate" >> "$GITHUB_OUTPUT"
+              echo "Resolved DATABASE_URL from Secret Manager secret '$candidate'."
+              exit 0
+            fi
+          done
+
+          echo 'source=none' >> "$GITHUB_OUTPUT"
+
+          # Names only — never values. One run of this makes it unambiguous
+          # whether the credential exists in the project at all, instead of
+          # leaving the next operator to guess.
+          echo 'No DATABASE_URL found. Secrets that DO exist in this project:'
+          gcloud secrets list --project "$GCP_PROJECT_ID" --format='value(name)' 2>/dev/null \
+            | sed 's/^/  - /' || echo '  (unable to list secrets)'
+
+          {
+            echo '### APEX database credential missing'
+            echo
+            echo 'The Cloud Run service has no `DATABASE_URL`, the GitHub `DATABASE_URL`'
+            echo 'secret is empty, and no Secret Manager secret matched the names tried.'
+            echo
+            echo 'The database itself is healthy and holds live production data —'
+            echo 'only the connection string is missing. To restore it, store the'
+            echo "existing Supabase DSN (do **not** provision a new database) as a"
+            echo 'Secret Manager secret named `apex-database-url`:'
+            echo
+            echo '```'
+            echo "printf '%s' \"\$APEX_DSN\" | gcloud secrets create apex-database-url \\"
+            echo "  --project $GCP_PROJECT_ID --replication-policy=automatic --data-file=-"
+            echo
+            echo '# the Cloud Run runtime service account must be able to read it'
+            echo "gcloud secrets add-iam-policy-binding apex-database-url \\"
+            echo "  --project $GCP_PROJECT_ID \\"
+            echo "  --member serviceAccount:$EXPECTED_DEPLOY_SERVICE_ACCOUNT \\"
+            echo "  --role roles/secretmanager.secretAccessor"
+            echo '```'
+            echo
+            echo 'then re-run this workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Validate existing production Cloud Run target
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SOURCE: ${{ steps.db.outputs.source }}
         shell: bash
         run: |
           set -euo pipefail
@@ -95,15 +171,16 @@ jobs:
           containers = service.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
           env = {item.get('name'): item for item in (containers[0].get('env', []) if containers else [])}
           required = ('DATABASE_URL', 'APEX_ADMIN_TOKEN', 'APEX_ADMIN_PASSWORD')
-          github_database_url = bool(os.environ.get('DATABASE_URL'))
+          db_source = os.environ.get('DB_SOURCE', 'none')
+          resolved_externally = db_source in ('github', 'secret-manager')
           missing = [
               name for name in required
-              if name not in env and not (name == 'DATABASE_URL' and github_database_url)
+              if name not in env and not (name == 'DATABASE_URL' and resolved_externally)
           ]
           for name in required:
               item = env.get(name)
-              if name == 'DATABASE_URL' and not item and github_database_url:
-                  print('DATABASE_URL: available from masked GitHub production secret')
+              if name == 'DATABASE_URL' and not item and resolved_externally:
+                  print(f'DATABASE_URL: will be attached from {db_source}')
               elif not item:
                   print(f'{name}: missing')
               elif item.get('valueFrom'):
@@ -133,6 +210,8 @@ jobs:
       - name: Update existing Cloud Run service image
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SOURCE: ${{ steps.db.outputs.source }}
+          DB_SECRET_NAME: ${{ steps.db.outputs.secret_name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -141,10 +220,22 @@ jobs:
             --region "${{ secrets.APEX_CLOUD_RUN_REGION }}"
             --image "$IMAGE"
           )
-          if [[ -n "${DATABASE_URL:-}" ]]; then
-            args+=(--update-env-vars "^__APEX_DB__^DATABASE_URL=$DATABASE_URL")
-            echo 'Attaching DATABASE_URL from masked GitHub production secret.'
-          fi
+          case "${DB_SOURCE:-none}" in
+            secret-manager)
+              # Preferred: the revision carries a reference, not the DSN itself.
+              args+=(--update-secrets "DATABASE_URL=${DB_SECRET_NAME}:latest")
+              echo "Attaching DATABASE_URL from Secret Manager secret '$DB_SECRET_NAME'."
+              ;;
+            github)
+              # ^delim^ form so a DSN containing commas is not split into
+              # several bogus env vars by gcloud's default parser.
+              args+=(--update-env-vars "^__APEX_DB__^DATABASE_URL=$DATABASE_URL")
+              echo 'Attaching DATABASE_URL from masked GitHub production secret.'
+              ;;
+            *)
+              echo 'No DATABASE_URL to attach; leaving existing service configuration untouched.'
+              ;;
+          esac
           gcloud run services update "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" "${args[@]}" --quiet
 
       - name: Verify deployment and auth boundary
@@ -156,7 +247,24 @@ jobs:
             --project "$GCP_PROJECT_ID" \
             --region "${{ secrets.APEX_CLOUD_RUN_REGION }}" \
             --format='value(status.url)')
-          echo "Service URL: $SERVICE_URL"
+          echo "Service URL: ${SERVICE_URL:-<none>}"
+
+          # Cloud Run leaves status.url empty while a service has never had a
+          # Ready revision -- exactly the state APEX was stuck in. Without this
+          # guard the curls below degrade into requests for the literal path
+          # "/" and fail with a connection error that says nothing about the
+          # actual cause.
+          if [[ -z "$SERVICE_URL" ]]; then
+            echo 'Cloud Run reports no service URL, so the new revision never became Ready.' >&2
+            echo 'Recent revision failures:' >&2
+            gcloud run revisions list \
+              --project "$GCP_PROJECT_ID" \
+              --region "${{ secrets.APEX_CLOUD_RUN_REGION }}" \
+              --service "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" \
+              --format='table(metadata.name, status.conditions[0].message)' \
+              --limit 5 >&2 || true
+            exit 6
+          fi
 
           curl -fsS "$SERVICE_URL/" -o /tmp/apex-root.html
           if grep -qi 'Bearer token required' /tmp/apex-root.html; then

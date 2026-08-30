@@ -184,6 +184,75 @@ If the release intentionally changes environment variables, Secret Manager refer
 
 Never expose secret values in command output, commits, issues, PRs, screenshots, or agent reports.
 
+## Restoring a service with no Ready revision
+
+Symptom, as observed on 2026-08-30: `https://apex.donmatthews.live` answers
+**503** from Google Frontend, and the deploy workflow's preflight reports
+
+```text
+Current ready revision: none — recovery rollout required
+Latest created revision: <service>-00002-9vg
+Current service URL:
+Missing required APEX runtime configuration: DATABASE_URL
+```
+
+An empty `status.url` is the tell: Cloud Run does not assign one until a
+revision has gone Ready, so the service has never served, and the custom
+domain mapping in front of it has nothing healthy to route to.
+
+`APEX_ADMIN_TOKEN` and `APEX_ADMIN_PASSWORD` were already attached from Secret
+Manager. Only `DATABASE_URL` was absent — both from the service spec and from
+the GitHub `DATABASE_URL` production secret, which is empty. The preflight
+refuses to roll out without it, so every recovery attempt since 2026-08-29
+stopped at the same place.
+
+**The database itself is not the problem.** The APEX Supabase project is
+`ACTIVE_HEALTHY` and holds live production state — the agent roster, the
+researched-lead pipeline, and the full task and memory history. Losing it
+would be unrecoverable.
+
+So the rule for this failure is narrow:
+
+> Restore the connection string. **Never provision a new database.**
+> A fresh, empty Postgres makes the deploy go green while silently orphaning
+> production data — the failure mode this runbook exists to prevent.
+
+The deploy workflow resolves the credential from, in order:
+
+1. the GitHub `DATABASE_URL` production secret;
+2. a Google Secret Manager secret named `apex-database-url`, `apex-db-url`,
+   `apex-supabase-database-url`, `apex-postgres-url`, `database-url`, or
+   `DATABASE_URL`.
+
+A Secret Manager match is preferred and attached with `--update-secrets`, so
+the DSN stays off the revision spec. When nothing matches, the run lists the
+secret **names** that do exist in the project (never values) and writes the
+exact recovery commands to the job summary.
+
+To restore, store the existing Supabase DSN — do not mint a new database —
+and grant the runtime service account read access:
+
+```bash
+printf '%s' "$APEX_DSN" | gcloud secrets create apex-database-url \
+  --project "$APEX_GCP_PROJECT_ID" --replication-policy=automatic --data-file=-
+
+gcloud secrets add-iam-policy-binding apex-database-url \
+  --project "$APEX_GCP_PROJECT_ID" \
+  --member "serviceAccount:$APEX_RUNTIME_SERVICE_ACCOUNT" \
+  --role roles/secretmanager.secretAccessor
+```
+
+Then re-run *Deploy to Cloud Run*. Verification is unchanged: the public
+health endpoint must report the intended `build.sha`, and anonymous
+`/api/tasks` must still return 401.
+
+Note that APEX's startup path tolerates an unreachable database — `migrate()`,
+`loadSettingsIntoEnv()`, `initializeTokenLedgerPersistence()` and
+`recoverStaleLeasedTasks()` each swallow their own failures so the HTTP
+listener still binds. A revision can therefore go Ready while the agents have
+no durable state at all. Treat "the service is up" and "APEX has its brain"
+as two separate checks.
+
 ## Database changes
 
 Do not couple an image release with an unreviewed production schema or Supabase-management change.

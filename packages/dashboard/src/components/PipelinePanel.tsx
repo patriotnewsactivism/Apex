@@ -204,7 +204,7 @@ export function PipelinePanel() {
             HEALTHY
           </div>
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
-            Platform: Railway · Node.js runtime
+            Platform: Google Cloud Run · Node.js runtime
           </div>
         </div>
       </div>
