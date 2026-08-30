@@ -123,6 +123,8 @@ export interface ModelIntelligenceReport {
   recommendedOrder: string[];
   recommendationChanged: boolean;
   evidenceReadyModels: number;
+  attributionCoverage: number;
+  unattributedSuccessfulCalls: number;
   stats: ModelPerformanceStats[];
 }
 
