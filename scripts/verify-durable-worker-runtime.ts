@@ -8,6 +8,19 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'packages/api-server/pack
 };
 const adr = fs.readFileSync(path.join(root, 'docs/ARCHITECTURE_DECISIONS.md'), 'utf8');
 
+// Source guards should inspect executable source, not fail because a safety
+// comment explicitly names the operation it forbids (for example,
+// "Do not call migrate() here"). This deliberately strips comments only for
+// the negative management-operation check below; the other assertions still
+// inspect the original source text.
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/.*$/gm, '$1');
+}
+
+const executableWorker = stripComments(worker);
+
 let failures = 0;
 function check(label: string, condition: boolean): void {
   console.log(`${condition ? '✅' : '❌'} ${label}`);
@@ -25,12 +38,12 @@ check('worker performs a durable DB probe before creating the workforce', (() =>
   return probe >= 0 && workforce > probe;
 })());
 check('worker does not invoke migration management code',
-  !worker.includes('migrate(') && !worker.includes('runMigrations('));
+  !executableWorker.includes('migrate(') && !executableWorker.includes('runMigrations('));
 check('worker handles Cloud Run termination signals',
   worker.includes("process.once('SIGTERM'") && worker.includes("process.once('SIGINT'"));
 check('worker stops scheduler and agent claim loops before shutdown',
   worker.includes('scheduler.stop()') && worker.includes('agent.stop()'));
-check('worker does not force successful process exit during shutdown', !worker.includes('process.exit(0)'));
+check('worker does not force successful process exit during shutdown', !executableWorker.includes('process.exit(0)'));
 
 console.log('\n── Architecture guard ──');
 check('ADR explicitly rejects browser/request/timer authority',
