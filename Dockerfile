@@ -1,5 +1,5 @@
 # ─── Stage 1: Builder ─────────────────────────────────────────────────────────
-FROM public.ecr.aws/docker/library/node:22-slim AS builder
+FROM mirror.gcr.io/library/node:22-slim AS builder
 
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 
@@ -58,7 +58,7 @@ COPY packages/ ./packages/
 RUN pnpm --filter @workspace/dashboard run build
 
 # ─── Stage 2: Production Runtime ──────────────────────────────────────────────
-FROM public.ecr.aws/docker/library/node:22-alpine AS runtime
+FROM mirror.gcr.io/library/node:22-alpine AS runtime
 
 # git is needed at runtime by @workspace/cicd-automation's ci-workspace.ts,
 # which maintains a separate scratch checkout (with devDependencies) to run
