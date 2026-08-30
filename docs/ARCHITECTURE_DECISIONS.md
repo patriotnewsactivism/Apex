@@ -67,22 +67,33 @@ Production is considered released only when the public health endpoint reports t
 ## ADR-004 — OpenRouter is the production LLM gateway
 
 **Status:** Accepted  
-**Last confirmed:** 2026-08-28
+**Last confirmed:** 2026-08-30
 
-Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` is the implementation source of truth.
+Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` remains the request-path implementation authority and `packages/core/src/model-routing.ts` owns the operator-selectable model policy contract.
 
-Current logical model/provider chain:
+The reviewed no-configuration fallback remains:
 
 1. DeepSeek V4 Flash latest alias;
 2. DeepSeek V4 Flash 0731 fallback;
 3. DeepSeek V4 Pro 0813 fallback.
 
+An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The policy may contain 1–50 valid OpenRouter model IDs and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
+
+When a valid custom policy exists, APEX sends the role-specific ordered roster to OpenRouter using the native `models` fallback parameter. APEX makes one paced gateway attempt rather than replaying the same roster through the three legacy logical rungs. OpenRouter may then fall through the ordered models according to its documented model-fallback behavior, and APEX records the actual model returned by OpenRouter.
+
+Model prices are not architectural constants. The operator console reads the live OpenRouter `/api/v1/models` catalog and presents current token pricing and capabilities. APEX may compute a transparent value-efficiency heuristic for comparison, but that score must be labeled as an APEX heuristic and must not be represented as an intelligence benchmark or provider-supplied quality score.
+
 ### Consequences
 
-- Do not silently restore the retired Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first production chain.
-- OpenRouter provider pacing, retry-after behavior, circuit breakers, structured tool calling, and actual serving-provider diagnostics remain part of production behavior.
+- OpenRouter remains the production inference gateway even when the selected roster contains models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or another model family available through OpenRouter.
+- Do not silently restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain outside OpenRouter.
+- The reviewed DeepSeek V4 chain remains the fail-safe when no valid custom policy is present.
+- OpenRouter gateway pacing, retry-after behavior, circuit breakers, token reservation, malformed-tool-call rejection, non-completion detection, and actual served-model diagnostics remain production controls.
 - Multiple keys from one OpenRouter account are credential redundancy, not separate account quotas.
-- Any production model-policy change requires updating deterministic routing/backpressure guards and documentation.
+- Free model variants are permitted in an operator-selected roster, but free-tier availability/rate limits do not weaken failure handling or permit fabricated completion.
+- A model that lacks reliable tool calling may be displayed/selectable for cost comparison, but the operator console must flag that limitation; APEX's tool-call and completion guards remain authoritative.
+- Policy changes are persisted and apply to subsequent LLM requests; they do not authorize bypassing approvals, tool permissions, spend caps, or other constitutional safeguards.
+- Changes to the routing-policy contract require deterministic routing tests and documentation updates.
 
 ## ADR-005 — Reliability controls are permanent production controls
 
