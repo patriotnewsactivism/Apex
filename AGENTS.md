@@ -1,5 +1,5 @@
 # Repository Guidelines — APEX
-_Last verified against current source, production health, and CI: 2026-08-28._
+_Last verified against current source, production health, and CI: 2026-08-30._
 
 This is the canonical instruction file for AI coding tools and contributors working in this repository. Keep it synchronized with current source and live production evidence. Do not create per-tool instruction copies that can drift.
 
@@ -96,21 +96,23 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 ## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the source of truth. Every production APEX unit routes through OpenRouter. Do not restore the previous Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first chain unless the operator explicitly changes policy again.
+`packages/core/src/llm-client.ts` is the request-path source of truth and `packages/core/src/model-routing.ts` defines the operator model-policy contract. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
 
-Current logical provider order:
+With no valid operator policy, the reviewed fallback remains:
 
-1. `openrouter-deepseek-flash`
-   - primary production route;
-   - DeepSeek V4 Flash latest alias as pinned in source.
-2. `openrouter-deepseek-flash-0731`
-   - fixed-version Flash fallback.
-3. `openrouter-deepseek-pro`
-   - heavier DeepSeek V4 Pro fallback for difficult work/capacity recovery.
+1. `~deepseek/deepseek-v4-flash-latest`
+2. `deepseek/deepseek-v4-flash-0731`
+3. `deepseek/deepseek-v4-pro-0813`
 
-All use the OpenAI-compatible endpoint:
+The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
-`https://openrouter.ai/api/v1`
+- 1–50 selected OpenRouter model IDs in global priority order;
+- optional role-specific first choices;
+- role primaries restricted to models already present in the selected roster.
+
+When a valid custom policy exists, APEX sends the role-specific ordered roster to OpenRouter using its native `models` fallback parameter. The first role-specific model is tried first when configured; the remaining selected models retain their global order. APEX uses one paced OpenRouter gateway attempt for that roster and records the actual model returned in OpenRouter's response.
+
+The Settings catalog pulls current model metadata from `https://openrouter.ai/api/v1/models`. Do not hard-code current prices into runtime policy. The dashboard may compute a transparent APEX value-efficiency score from current price, context, and agent-capability metadata, but it must label that score as a heuristic rather than an intelligence benchmark.
 
 Credential environment variables:
 
@@ -123,14 +125,17 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 ### Routing behavior
 
-- Preserve the exact reviewed provider/model order in live source.
+- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed DeepSeek V4 chain.
+- Operator-selected free model variants are allowed; free availability or rate limits never justify false completion or bypass backpressure.
+- Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.
 - Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
-- Record actual serving provider/model and real provider failures.
+- Record the model OpenRouter actually served, not merely the requested first choice.
 - Preserve tool-call/result message pairing while trimming context.
 - Provider exhaustion is a capacity pause, not an agent failure, when a machine-readable resume time exists.
-- Do not silently route to unrelated legacy providers because an OpenRouter model is temporarily unavailable.
+- Do not silently route to unrelated direct legacy providers because an OpenRouter model is temporarily unavailable.
+- A routing-policy change does not bypass approval requirements, tool authorization, token/spend caps, or other safety controls.
 
-`scripts/verify-provider-routing.ts` and `scripts/verify-provider-backpressure.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
+`scripts/verify-provider-routing.ts`, `scripts/verify-provider-backpressure.ts`, and `scripts/verify-model-routing-policy.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
 
 ## Production concurrency and spend controls
 
@@ -223,6 +228,12 @@ Production CI currently includes:
 - malformed-tool-call guard;
 - non-completion guard;
 - branch/review guard;
+- opportunity-engine guard;
+- durable-autonomy/task-claim guard;
+- approval-state-integrity guard;
+- hard-timeout quarantine guard;
+- durable-worker-runtime guard;
+- OpenRouter model-routing-policy guard;
 - dashboard build.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
