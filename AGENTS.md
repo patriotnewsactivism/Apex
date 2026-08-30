@@ -1,5 +1,5 @@
 # Repository Guidelines — APEX
-_Last verified against current source, production health, and CI: 2026-08-28._
+_Last verified against current source, production health, and CI: 2026-08-30._
 
 This is the canonical instruction file for AI coding tools and contributors working in this repository. Keep it synchronized with current source and live production evidence. Do not create per-tool instruction copies that can drift.
 
@@ -96,21 +96,69 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 ## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the source of truth. Every production APEX unit routes through OpenRouter. Do not restore the previous Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first chain unless the operator explicitly changes policy again.
+`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
 
-Current logical provider order:
+With no valid operator policy, the reviewed fallback remains:
 
-1. `openrouter-deepseek-flash`
-   - primary production route;
-   - DeepSeek V4 Flash latest alias as pinned in source.
-2. `openrouter-deepseek-flash-0731`
-   - fixed-version Flash fallback.
-3. `openrouter-deepseek-pro`
-   - heavier DeepSeek V4 Pro fallback for difficult work/capacity recovery.
+1. `~deepseek/deepseek-v4-flash-latest`
+2. `deepseek/deepseek-v4-flash-0731`
+3. `deepseek/deepseek-v4-pro-0813`
 
-All use the OpenAI-compatible endpoint:
+The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
-`https://openrouter.ai/api/v1`
+- 1–500 selected OpenRouter model IDs in global priority order, intentionally large enough for the current hundreds-model catalog;
+- optional role-specific first choices, restricted to models already in that roster;
+- a routing mode: `manual`, `advisor`, or `adaptive`;
+- an optimization objective: `quality`, `balanced`, `budget`, or `speed`;
+- a minimum completed-task sample threshold before learned routing may move a model;
+- an optional controlled-learning trial rate from 0 to 25%;
+- an optional smart complexity-escalation flag.
+
+Saved policies from before the intelligence layer remain backward-compatible and parse as `manual`, with learning trials off and complexity escalation off, preserving their prior behavior.
+
+### Routing modes and operator authority
+
+- **Manual** — use the exact operator-defined order. Evidence is collected but never changes routing.
+- **Advisor** — use the exact operator-defined order and show evidence-backed recommendations for operator review.
+- **Adaptive** — evidence-qualified models may reorder **only inside the selected roster**. Under-sampled models retain their operator-defined slots. At least two models must be evidence-qualified before learned ranking can change an order.
+- An explicit role-specific first choice is a hard operator pin. It stays first in adaptive mode even when another model has a higher learned score.
+- Model Intelligence must never introduce an unselected model or silently broaden the operator-approved roster.
+
+Controlled learning trials are opt-in and exist only to close cold-start evidence gaps. They are allowed only in Adaptive mode, only on tasks whose pre-run complexity is `<= 0.5`, never for a role with a hard model pin, and are deterministically sampled by task ID. Trial traffic is hard-capped at 25% and targets the least-sampled selected model below the evidence threshold. Do not turn this into unrestricted random model experimentation.
+
+Smart complexity escalation is also opt-in. When enabled, a task at complexity `>= 0.70` uses the `quality` objective; routine work at `<= 0.35` shifts a neutral `balanced` base objective to `budget`; middle-complexity work keeps the base objective. Explicit routine `quality`, `budget`, or `speed` preferences are preserved, missing complexity never changes the objective, and role pins still win. The API/UI must expose the effective objective when it differs from the saved base objective.
+
+Neither learning trials nor complexity escalation can make an under-sampled model evidence-qualified. Normal sample thresholds still govern automatic learned promotion.
+
+When a valid custom policy exists, APEX sends the ordered roster to OpenRouter using its native `models` fallback parameter. APEX uses one paced OpenRouter gateway attempt for that roster and records the concrete model returned in OpenRouter's response rather than assuming the first requested model served the generation.
+
+### Static catalog score versus learned evidence
+
+The Settings catalog pulls current model metadata from `https://openrouter.ai/api/v1/models`. Do not hard-code current prices into runtime policy. The dashboard may compute a transparent APEX value-efficiency score from live price, context, and agent-capability metadata, but it must label that score as a **static heuristic**, not an intelligence benchmark.
+
+The separate **Observed Model Intelligence** ranking is based on APEX's own work. Per-generation telemetry is joined by durable task ID to existing `task_outcomes` records. It may use:
+
+- concrete model OpenRouter actually served;
+- selected route candidate safely attributable for learning, with explicit attribution basis;
+- attribution coverage and count of successful ambiguous calls excluded from scoring;
+- observed request latency;
+- prompt/completion/cached/reasoning token counts;
+- OpenRouter-reported generation cost when available;
+- generation success/failure and tool-call behavior;
+- completed-task success, quality, satisfaction, and post-run complexity;
+- privacy-minimized OpenRouter router-audit identity/status metadata when returned.
+
+Keep concrete served-model identity separate from selected-route learning identity. Credit an exact concrete match exactly. When exactly one selected model/alias/router was requested, that sole selected route may receive route-level evidence even if OpenRouter reports a different concrete model. If multiple selected aliases/routers were sent and the concrete response does not exactly identify one requested candidate, mark the observation **unattributed** and exclude it from scoring. Never guess an alias mapping to make evidence fit the roster.
+
+A completed task outcome is credited once to the dominant **attributable selected route candidate** for that task, not once per LLM iteration. This prevents an iterative task from becoming multiple fake successful samples, avoids crediting every transient fallback with the same task outcome, and keeps ambiguous alias traffic from poisoning rankings.
+
+Telemetry is operational metadata only. It must **not** persist prompt text, completion text, tool-result content, secrets, API keys, OpenRouter free-form summaries, or pipeline payloads. Router metadata must be sanitized to bounded routing identity/status fields before persistence. Task identity flows through concurrent work using `AsyncLocalStorage`; the instrumented BaseAgent must continue injecting that current task-local context into the normal LLM `complete()` path so parallel tasks on the same agent cannot cross-contaminate model attribution.
+
+Adaptive routing must fail safe: if telemetry/outcome data is unavailable or insufficient, preserve the operator-defined order. Learning is not allowed to become a new inference-availability dependency. Telemetry writes are best-effort and must never convert a successful LLM response into a failed task.
+
+The operator-facing intelligence view must surface attribution coverage rather than hiding ambiguous exclusions.
+
+See `docs/MODEL_INTELLIGENCE.md` and `docs/ADR-012_MODEL_INTELLIGENCE.md` for the scoring, attribution, privacy, and adaptation contract.
 
 Credential environment variables:
 
@@ -123,14 +171,19 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 ### Routing behavior
 
-- Preserve the exact reviewed provider/model order in live source.
+- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed DeepSeek V4 chain.
+- Operator-selected free model variants are allowed; free availability or rate limits never justify false completion or bypass backpressure.
+- Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.
 - Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
-- Record actual serving provider/model and real provider failures.
+- Record the model OpenRouter actually served, not merely the requested first choice, and keep it separate from the route candidate used for learning attribution.
+- Ambiguous multi-alias/multi-router attribution must remain unattributed unless direct evidence identifies the selected candidate. Do not infer it from provider/model name similarity.
+- Router audit metadata is optional observability, not a new inference dependency; its absence (including cache-hit paths) is not a generation failure.
 - Preserve tool-call/result message pairing while trimming context.
 - Provider exhaustion is a capacity pause, not an agent failure, when a machine-readable resume time exists.
-- Do not silently route to unrelated legacy providers because an OpenRouter model is temporarily unavailable.
+- Do not silently route to unrelated direct legacy providers because an OpenRouter model is temporarily unavailable.
+- A routing-policy change does not bypass approval requirements, tool authorization, token/spend caps, or other safety controls.
 
-`scripts/verify-provider-routing.ts` and `scripts/verify-provider-backpressure.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
+`scripts/verify-provider-routing.ts`, `scripts/verify-provider-backpressure.ts`, `scripts/verify-model-routing-policy.ts`, and `scripts/verify-model-intelligence.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
 
 ## Production concurrency and spend controls
 
@@ -198,7 +251,7 @@ For any real code fix or feature:
 1. Start from current `origin/main`.
 2. Run `pnpm install --frozen-lockfile` when dependencies are involved or the environment is fresh.
 3. Run `pnpm run typecheck:production`.
-4. Run deterministic guards relevant to the change; LLM changes require routing and backpressure guards, deployment changes require the provenance guard.
+4. Run deterministic guards relevant to the change; LLM changes require routing/backpressure/model-intelligence guards, deployment changes require the provenance guard.
 5. Build the dashboard and verify real output.
 6. Require green CI before ordinary merge/release.
 7. For production behavior, build an immutable Cloud Run image from the exact reviewed SHA and update the existing service.
@@ -223,6 +276,13 @@ Production CI currently includes:
 - malformed-tool-call guard;
 - non-completion guard;
 - branch/review guard;
+- opportunity-engine guard;
+- durable-autonomy/task-claim guard;
+- approval-state-integrity guard;
+- hard-timeout quarantine guard;
+- durable-worker-runtime guard;
+- OpenRouter model-routing-policy guard;
+- evidence-driven model-intelligence guard;
 - dashboard build.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
@@ -256,6 +316,8 @@ Do not let a completed code migration leave documentation on the old architectur
 - `docs/ARCHITECTURE_DECISIONS.md` — durable decisions and retired architecture.
 - `docs/PRODUCTION_OPERATIONS.md` — production runbook.
 - `docs/deploy-provenance.md` — source/image/runtime provenance contract.
+- `docs/MODEL_INTELLIGENCE.md` — model telemetry, attribution, evidence thresholds, controlled learning, complexity escalation, adaptive-routing, and scoring contract.
+- `docs/ADR-012_MODEL_INTELLIGENCE.md` — durable Model Intelligence learning-authority and privacy decision.
 - `BUSINESS_PROFILE.md` — dated BuildMyBot business/ICP snapshot; verify current pricing, features, payment state, and deployment before acting.
 - `APEX_CHARTER.md` — mission/governance; dated infrastructure/model notes are historical unless promoted into current canonical docs.
 - `packages/core/src/buildmybot-connector.ts` — current BuildMyBot connector implementation; verify live BuildMyBot state separately.

@@ -1,4 +1,12 @@
-import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } from './types.js';
+import type {
+  LLMClientConfig,
+  LLMExecutionContext,
+  LLMMessage,
+  LLMResponse,
+  LLMRouterMetadata,
+  LLMTool,
+  LLMToolCall,
+} from './types.js';
 import {
   isTotalDailyCapReached,
   msUntilDailyReset,
@@ -7,20 +15,28 @@ import {
   reserveTotalTokenCapacity,
   type TokenCapacityReservation,
 } from './token-ledger.js';
+import {
+  DEFAULT_OPENROUTER_MODEL_CHAIN,
+  getActiveOpenRouterModelPolicy,
+  getOpenRouterModelChainForRole,
+  getPinnedOpenRouterModelForRole,
+  hasCustomOpenRouterModelPolicy,
+} from './model-routing.js';
+import {
+  getAdaptiveModelOrder,
+  recordModelTelemetry,
+  recordResponseTelemetry,
+} from './model-intelligence.js';
 
-// ─── APEX OpenRouter DeepSeek V4 Stack ───────────────────────────────────────
+// ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// Policy (2026-08-28): all APEX units route through OpenRouter using
-// DeepSeek V4 models — extremely inexpensive, high-quality, 1M+ context.
+// OpenRouter is the production gateway. With no operator policy, APEX preserves
+// the reviewed DeepSeek V4 chain below. When APEX_OPENROUTER_MODEL_POLICY is a
+// valid persisted policy, the selected model roster is sent to OpenRouter via
+// its native `models` fallback parameter in role-specific priority order.
 //
-//   1. DeepSeek V4 Flash Latest  — $0.03/$0.10 per M tokens (primary)
-//   2. DeepSeek V4 Flash 0731    — $0.06/$0.12 per M tokens (fallback)
-//   3. DeepSeek V4 Pro 0813      — $0.66/$1.98 per M tokens (heavy reasoning)
-//
-// All three use the same OpenRouter endpoint and API key, but route to
-// different underlying DeepSeek deployments via OpenRouter's routing layer.
-// Circuit breakers treat them as separate providers so a rate limit on one
-// doesn't block fallback to the others.
+// Pricing is deliberately NOT hard-coded here. The Settings model-control API
+// reads OpenRouter's live catalog because per-model prices may change.
 
 export type ApexProviderName =
   | 'openrouter-deepseek-flash'
@@ -43,7 +59,7 @@ type ProviderSpec = {
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'openrouter-deepseek-flash',
-    model: '~deepseek/deepseek-v4-flash-latest',
+    model: DEFAULT_OPENROUTER_MODEL_CHAIN[0],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
@@ -51,7 +67,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     name: 'openrouter-deepseek-flash-0731',
-    model: 'deepseek/deepseek-v4-flash-0731',
+    model: DEFAULT_OPENROUTER_MODEL_CHAIN[1],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
@@ -59,7 +75,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     name: 'openrouter-deepseek-pro',
-    model: 'deepseek/deepseek-v4-pro-0813',
+    model: DEFAULT_OPENROUTER_MODEL_CHAIN[2],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
@@ -78,12 +94,16 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
+  // A custom roster is one OpenRouter gateway request with native model
+  // fallback. Repeating that same roster through three logical adapters would
+  // multiply identical requests and defeat provider pacing/circuit breaking.
+  if (hasCustomOpenRouterModelPolicy()) return ['openrouter-deepseek-flash'];
   return [...PROVIDER_ORDER];
 }
 
-/** Paid inference is no longer gated — all OpenRouter/DeepSeek models are
- * inexpensive enough to run without the fail-closed policy that was needed
- * for the old Mistral emergency fallback. Kept for backward compat. */
+/** Paid inference is no longer gated — the selected OpenRouter roster is an
+ * explicit operator decision. Kept for backward compatibility with callers
+ * that still inspect APEX_PAID_LLM_MODE. */
 export function paidLLMFallbackEnabled(mode?: string): boolean {
   const normalized = (mode ?? 'on').trim().toLowerCase();
   return ['1', 'true', 'on', 'enabled', 'fallback'].includes(normalized);
@@ -209,7 +229,13 @@ type CredentialCooldown = {
   reason: string;
 };
 const credentialCooldowns = new Map<string, CredentialCooldown>();
-type ProviderRequestError = Error & { status?: number; retryAfterMs?: number };
+type ProviderRequestError = Error & {
+  status?: number;
+  retryAfterMs?: number;
+  requestedModels?: string[];
+  latencyMs?: number;
+  routerMetadata?: LLMRouterMetadata;
+};
 const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
@@ -495,7 +521,28 @@ function parseToolCalls(raw: any): LLMToolCall[] {
     });
 }
 
+type CompatibleRouterAttempt = {
+  provider?: unknown;
+  model?: unknown;
+  status?: unknown;
+};
+
+type CompatibleRouterMetadata = {
+  requested?: unknown;
+  strategy?: unknown;
+  attempt?: unknown;
+  endpoints?: {
+    available?: Array<{
+      provider?: unknown;
+      model?: unknown;
+      selected?: unknown;
+    }>;
+  };
+  attempts?: CompatibleRouterAttempt[];
+};
+
 type CompatibleResponse = {
+  model?: string;
   choices?: Array<{
     message?: {
       content?: string | null;
@@ -505,9 +552,42 @@ type CompatibleResponse = {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    cost?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
   };
+  openrouter_metadata?: CompatibleRouterMetadata;
   error?: { message?: string; type?: string; code?: string | number };
 };
+
+function sanitizeRouterMetadata(raw: CompatibleRouterMetadata | undefined): LLMRouterMetadata | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const requested = typeof raw.requested === 'string' ? raw.requested.slice(0, 200) : undefined;
+  const strategy = typeof raw.strategy === 'string' ? raw.strategy.slice(0, 80) : undefined;
+  const rawAttempt = Number(raw.attempt);
+  const attempt = Number.isFinite(rawAttempt) && rawAttempt >= 0 ? Math.floor(rawAttempt) : undefined;
+  const selectedEndpoint = Array.isArray(raw.endpoints?.available)
+    ? raw.endpoints?.available.find((entry) => entry?.selected === true)
+    : undefined;
+  const selectedProvider = typeof selectedEndpoint?.provider === 'string'
+    ? selectedEndpoint.provider.slice(0, 120)
+    : undefined;
+  const attempts = Array.isArray(raw.attempts)
+    ? raw.attempts.slice(0, 25).map((entry) => {
+        const statusNumber = Number(entry?.status);
+        return {
+          provider: typeof entry?.provider === 'string' ? entry.provider.slice(0, 120) : undefined,
+          model: typeof entry?.model === 'string' ? entry.model.slice(0, 200) : undefined,
+          status: Number.isFinite(statusNumber) ? Math.floor(statusNumber) : undefined,
+        };
+      })
+    : undefined;
+
+  if (!requested && !strategy && attempt === undefined && !selectedProvider && !attempts?.length) {
+    return undefined;
+  }
+  return { requested, strategy, attempt, selectedProvider, attempts };
+}
 
 async function callCompatibleProvider(
   provider: ProviderSpec,
@@ -515,6 +595,7 @@ async function callCompatibleProvider(
   messages: LLMMessage[],
   tools: LLMTool[] | undefined,
   config: LLMClientConfig,
+  execution?: LLMExecutionContext,
 ): Promise<LLMResponse> {
   const baseURL = providerBaseURL(provider);
   if (!baseURL) {
@@ -523,14 +604,37 @@ async function callCompatibleProvider(
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 75_000);
+  const startedAt = Date.now();
+  let routedModels = [provider.model];
 
   try {
+    const policy = getActiveOpenRouterModelPolicy();
+    const customPolicy = Boolean(policy);
+    routedModels = customPolicy
+      ? getOpenRouterModelChainForRole(config.role)
+      : [provider.model];
+
+    if (policy?.routingMode === 'adaptive') {
+      routedModels = await getAdaptiveModelOrder({
+        role: config.role,
+        candidates: routedModels,
+        objective: policy.optimizationObjective,
+        minimumSamples: policy.minimumSamples,
+        pinnedModel: getPinnedOpenRouterModelForRole(config.role),
+        targetComplexity: execution?.complexityHint,
+      });
+    }
+
     const body: Record<string, unknown> = {
-      model: provider.model,
       messages: toWireMessages(messages),
       temperature: config.temperature ?? 0.7,
       max_tokens: config.maxTokens ?? 2048,
+      // Explicitly request usage data so OpenRouter returns billed generation
+      // cost alongside token counts when available.
+      usage: { include: true },
     };
+    if (customPolicy) body.models = routedModels;
+    else body.model = provider.model;
 
     const wireTools = toWireTools(tools);
     if (wireTools?.length) {
@@ -545,6 +649,9 @@ async function callCompatibleProvider(
         Authorization: `Bearer ${key}`,
         'HTTP-Referer': 'https://apex.donmatthews.live',
         'X-Title': 'APEX Agent Workforce',
+        // OpenRouter documents this as the stable opt-in for route audit data.
+        // Only a privacy-minimized subset is retained by APEX.
+        'X-OpenRouter-Metadata': 'enabled',
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -557,6 +664,7 @@ async function callCompatibleProvider(
     } catch {
       parsed = {};
     }
+    const routerMetadata = sanitizeRouterMetadata(parsed.openrouter_metadata);
 
     if (!response.ok) {
       const detail =
@@ -566,11 +674,14 @@ async function callCompatibleProvider(
       throw Object.assign(new Error(detail), {
         status: response.status,
         retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+        routerMetadata,
       });
     }
 
     const choice = parsed.choices?.[0]?.message;
     if (!choice) throw new Error('provider returned no completion choice');
+    const servedModel = parsed.model || routedModels[0] || provider.model;
+    const rawCost = Number(parsed.usage?.cost);
 
     return {
       content: choice.content ?? '',
@@ -579,8 +690,20 @@ async function callCompatibleProvider(
         promptTokens: parsed.usage?.prompt_tokens ?? 0,
         completionTokens: parsed.usage?.completion_tokens ?? 0,
       },
-      model: `${provider.name}/${provider.model}`,
+      model: `${provider.name}/${servedModel}`,
+      servedModel,
+      requestedModels: [...routedModels],
+      routerMetadata,
+      latencyMs: Date.now() - startedAt,
+      costUsd: Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null,
+      cachedTokens: Math.max(0, parsed.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+      reasoningTokens: Math.max(0, parsed.usage?.completion_tokens_details?.reasoning_tokens ?? 0),
     };
+  } catch (error) {
+    const err = error instanceof Error ? error as ProviderRequestError : new Error(String(error)) as ProviderRequestError;
+    err.requestedModels = [...routedModels];
+    err.latencyMs = Date.now() - startedAt;
+    throw err;
   } finally {
     clearTimeout(timeout);
   }
@@ -602,9 +725,9 @@ function capacityBlockFromReservation(
     source,
     resumeAt: reservation.resumeAt,
     reason:
-      reservation.reason === "daily_cap"
-        ? "daily cap reached"
-        : "daily allowance pacing",
+      reservation.reason === 'daily_cap'
+        ? 'daily cap reached'
+        : 'daily allowance pacing',
   };
 }
 
@@ -623,9 +746,9 @@ function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []
       ]),
     ).values(),
     ...otherDetails,
-  ].join(" | ");
+  ].join(' | ');
   return new Error(
-    `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || "configured capacity is temporarily unavailable"}`,
+    `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || 'configured capacity is temporarily unavailable'}`,
   );
 }
 
@@ -636,7 +759,11 @@ class MultiProviderClient {
     this.config = config;
   }
 
-  async complete(messages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
+  async complete(
+    messages: LLMMessage[],
+    tools?: LLMTool[],
+    execution?: LLMExecutionContext,
+  ): Promise<LLMResponse> {
     await acquireLLMConcurrencySlot();
 
     try {
@@ -655,7 +782,7 @@ class MultiProviderClient {
       const totalReservation = reserveTotalTokenCapacity(estimatedTokens);
       if (!totalReservation.allowed) {
         throw capacityPauseError([
-          capacityBlockFromReservation("workspace", totalReservation),
+          capacityBlockFromReservation('workspace', totalReservation),
         ]);
       }
 
@@ -684,7 +811,7 @@ class MultiProviderClient {
           const credentials = configuredCredentials(provider);
           if (credentials.length === 0) {
             skipReasons.push(
-              `${provider.name}: no API key (${provider.apiKeyEnvs.join(" or ")})`,
+              `${provider.name}: no API key (${provider.apiKeyEnvs.join(' or ')})`,
             );
             continue;
           }
@@ -712,7 +839,7 @@ class MultiProviderClient {
               capacityBlockFromReservation(provider.name, providerReservation),
             );
             skipReasons.push(
-              `${provider.name}: APEX ${providerReservation.reason === "daily_cap" ? "per-provider daily cap reached" : "daily allowance pacing active"}`,
+              `${provider.name}: APEX ${providerReservation.reason === 'daily_cap' ? 'per-provider daily cap reached' : 'daily allowance pacing active'}`,
             );
             continue;
           }
@@ -744,21 +871,61 @@ class MultiProviderClient {
                   trimmed.messages,
                   tools,
                   this.config,
+                  execution,
                 );
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
+                await recordResponseTelemetry({
+                  response: result,
+                  provider: provider.name,
+                  requestedModels: result.requestedModels ?? [provider.model],
+                  execution: {
+                    ...execution,
+                    role: execution?.role ?? this.config.role,
+                  },
+                  hadTools: Boolean(tools?.length),
+                });
                 return result;
               } catch (error) {
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
-                  err.name === "AbortError" ? "request timed out" : err.message;
+                  err.name === 'AbortError' ? 'request timed out' : err.message;
+                const requestedModels = err.requestedModels?.length
+                  ? err.requestedModels
+                  : hasCustomOpenRouterModelPolicy()
+                    ? getOpenRouterModelChainForRole(this.config.role)
+                    : [provider.model];
+                const attemptedModel = requestedModels[0] ?? provider.model;
                 recordProviderFailure(
                   provider.name,
-                  provider.model,
+                  attemptedModel,
                   status,
                   message,
                 );
+                await recordModelTelemetry({
+                  taskId: execution?.taskId,
+                  agentId: execution?.agentId,
+                  role: execution?.role ?? this.config.role,
+                  provider: provider.name,
+                  requestedModels,
+                  routerMetadata: err.routerMetadata,
+                  // Only attribute a gateway failure to a specific model when
+                  // exactly one model was requested; a multi-model OpenRouter
+                  // fallback failure cannot honestly identify which rung failed.
+                  servedModel: requestedModels.length === 1 ? requestedModels[0] : undefined,
+                  success: false,
+                  latencyMs: err.latencyMs ?? 0,
+                  promptTokens: 0,
+                  completionTokens: 0,
+                  cachedTokens: 0,
+                  reasoningTokens: 0,
+                  costUsd: null,
+                  toolCalls: 0,
+                  hadTools: Boolean(tools?.length),
+                  complexityHint: execution?.complexityHint,
+                  errorType: status ? `http_${status}` : err.name || 'provider_error',
+                });
                 setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
@@ -772,8 +939,8 @@ class MultiProviderClient {
                   });
                 }
                 providerErrors.push(
-                  `${provider.name}/${provider.model} via ${credential.env}: ` +
-                    `${status ? `HTTP ${status} ` : ""}${message}`,
+                  `${provider.name}/${attemptedModel} via ${credential.env}: ` +
+                    `${status ? `HTTP ${status} ` : ''}${message}`,
                 );
 
                 if (capacityFailure) break;
@@ -790,9 +957,20 @@ class MultiProviderClient {
                       emergency.messages,
                       tools,
                       this.config,
+                      execution,
                     );
                     clearCredentialCooldown(credentialId);
                     recordTokenUsage(provider.name, result.usage);
+                    await recordResponseTelemetry({
+                      response: result,
+                      provider: provider.name,
+                      requestedModels: result.requestedModels ?? [provider.model],
+                      execution: {
+                        ...execution,
+                        role: execution?.role ?? this.config.role,
+                      },
+                      hadTools: Boolean(tools?.length),
+                    });
                     return result;
                   } catch {
                     // Continue to the next credential/provider.
@@ -806,7 +984,7 @@ class MultiProviderClient {
               providerRequirements(provider).length > 0
             ) {
               skipReasons.push(
-                `${provider.name}: ${providerRequirements(provider).join(", ")}`,
+                `${provider.name}: ${providerRequirements(provider).join(', ')}`,
               );
             }
           } finally {
@@ -821,8 +999,8 @@ class MultiProviderClient {
         throw new Error(
           `All LLM providers failed or were unavailable. ${
             details.length
-              ? details.join(" | ")
-              : "No usable provider credential was configured."
+              ? details.join(' | ')
+              : 'No usable provider credential was configured.'
           }`,
         );
       } finally {
@@ -872,10 +1050,11 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const maxTokens = Number.isFinite(configuredMaxTokens)
     ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
     : defaultMaxTokens;
+  const model = getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
     provider: 'openrouter-deepseek-flash',
-    model: '~deepseek/deepseek-v4-flash-latest',
+    model,
     temperature: 0.7,
     maxTokens,
     role,
@@ -1015,11 +1194,13 @@ export function getProviderRoster(): {
 
 export function logProviderRoster(): void {
   const roster = getProviderRoster();
+  const policy = getActiveOpenRouterModelPolicy();
+  const custom = Boolean(policy);
+  const modelOrder = getOpenRouterModelChainForRole();
   console.log(
-    `[LLM] OpenRouter DeepSeek V4 roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} slots ready; ` +
-      `order=${PROVIDER_ORDER.join(' -> ')}`,
+    `[LLM] OpenRouter roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} credential slots ready; ` +
+      `policy=${custom ? `operator-${policy?.routingMode ?? 'manual'}` : 'reviewed-default'}; models=${modelOrder.join(' -> ')}`,
   );
-
   if (roster.emptyFreeSlots.length) {
     console.warn(
       `[LLM] Provider configuration missing: ${roster.emptyFreeSlots.join(', ')}`,

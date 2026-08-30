@@ -2,10 +2,9 @@ import { z } from 'zod';
 
 // ─── LLM ─────────────────────────────────────────────────────────────────────
 
-// Provider names mirror the runtime chain in llm-client.ts (cerebras,
-// cerebras-2, groq, google-gemini, cohere, openrouter-free, etc.).
-// The actual provider used is determined by the fallback chain, so this
-// field is primarily for observability/override.
+// Provider names mirror the runtime chain in llm-client.ts. The actual provider
+// used is determined by the OpenRouter routing/fallback chain, so this field is
+// primarily for observability/override.
 export type LLMProvider = string;
 
 export interface LLMMessage {
@@ -28,14 +27,55 @@ export interface LLMToolCall {
   args: Record<string, unknown>;
 }
 
+export interface LLMRouterAttempt {
+  provider?: string;
+  model?: string;
+  status?: number;
+}
+
+/**
+ * Privacy-minimized subset of OpenRouter router metadata. APEX intentionally
+ * keeps only routing identity/status fields; summaries, pipeline payloads and
+ * other free-form router data are not persisted into model-learning telemetry.
+ */
+export interface LLMRouterMetadata {
+  requested?: string;
+  strategy?: string;
+  attempt?: number;
+  selectedProvider?: string;
+  attempts?: LLMRouterAttempt[];
+}
+
 export interface LLMResponse {
   content: string;
   toolCalls: LLMToolCall[];
   usage: { promptTokens: number; completionTokens: number };
+  /** Existing diagnostic label: logical provider + actual served model. */
   model: string;
+  /** Actual model ID reported by OpenRouter, without the logical provider prefix. */
+  servedModel?: string;
+  /** Ordered model IDs sent to the gateway for this generation. */
+  requestedModels?: string[];
+  /** Privacy-minimized OpenRouter routing audit metadata, when returned. */
+  routerMetadata?: LLMRouterMetadata;
+  /** End-to-end provider request latency observed by APEX. */
+  latencyMs?: number;
+  /** OpenRouter-reported generation cost when supplied in usage.cost. */
+  costUsd?: number | null;
+  cachedTokens?: number;
+  reasoningTokens?: number;
   // Set when the response was served by a provider that does not reliably
   // emit structured tool calls. The agent loop can use this to prompt again.
   degraded?: boolean;
+}
+
+/** Per-call attribution supplied by the agent loop. It contains identifiers and
+ * a coarse pre-run complexity hint only — never prompt/completion content. */
+export interface LLMExecutionContext {
+  taskId?: string;
+  agentId?: string;
+  role?: string;
+  complexityHint?: number;
 }
 
 export interface LLMClientConfig {
@@ -45,9 +85,7 @@ export interface LLMClientConfig {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
-  // Agent role (e.g. 'LEAD_DEV', 'QA') — used to pick role-appropriate models
-  // when falling back to a provider that doesn't support the primary
-  // OpenRouter model ID (e.g. routing coding roles to Mistral's Devstral/Codestral).
+  // Agent role (e.g. 'LEAD_DEV', 'QA') — used to pick role-appropriate models.
   role?: string;
 }
 
@@ -56,6 +94,7 @@ export interface LLMClientConfig {
 export interface ToolDefinition<TInput = unknown, TOutput = unknown> {
   name: string;
   description: string;
+  parameters?: Record<string, unknown>;
   schema: z.ZodSchema<TInput>;
   requiresApproval: boolean;
   execute: (input: TInput, context: ToolContext) => Promise<TOutput>;
@@ -172,4 +211,3 @@ export type ApexEvent =
   | { type: 'campaign:progress'; campaignId: string; leadsSaved: number; targetLeads: number; segmentsDone: number; segmentsTotal: number }
   | { type: 'campaign:segment'; campaignId: string; segmentId: string; industry: string; city: string; status: string; saved: number; found: number }
   | { type: 'campaign:completed'; campaignId: string; status: string; leadsSaved: number; targetLeads: number };
-

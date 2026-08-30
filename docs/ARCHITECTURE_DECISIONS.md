@@ -64,25 +64,84 @@ Production is considered released only when the public health endpoint reports t
 - Runtime environment overrides must not fake `APEX_BUILD_SHA`.
 - Release tooling and CI must preserve deterministic provenance checks.
 
-## ADR-004 — OpenRouter is the production LLM gateway
+## ADR-004 — OpenRouter is the production LLM gateway; model adaptation is evidence-governed
 
 **Status:** Accepted  
-**Last confirmed:** 2026-08-28
+**Last confirmed:** 2026-08-30
 
-Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` is the implementation source of truth.
+Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` is the request-path implementation authority, `packages/core/src/model-routing.ts` owns the operator-selectable policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus the instrumented BaseAgent bind durable task identity into concurrent LLM calls.
 
-Current logical model/provider chain:
+The reviewed no-configuration fallback remains:
 
 1. DeepSeek V4 Flash latest alias;
 2. DeepSeek V4 Flash 0731 fallback;
 3. DeepSeek V4 Pro 0813 fallback.
 
+An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The roster may contain 1–500 valid OpenRouter model IDs—large enough for the current hundreds-model catalog—and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
+
+The policy also contains a routing mode (`manual`, `advisor`, or `adaptive`), an optimization objective (`quality`, `balanced`, `budget`, or `speed`), a completed-task evidence threshold, an optional controlled-learning trial rate, and an optional smart complexity-escalation flag. Policies saved before these fields existed remain valid and default to `manual`, with trials and complexity escalation off.
+
+### Operator authority and adaptive boundary
+
+- **Manual** preserves the exact saved operator order.
+- **Advisor** preserves the exact saved order while surfacing learned recommendations.
+- **Adaptive** may reorder only models already selected by the operator and only after enough completed-task evidence exists.
+- Under-sampled models retain their operator-defined slots.
+- At least two models must be evidence-qualified before adaptive ranking can change an order.
+- An explicit role-specific model is a hard operator pin and remains first even when another model has a higher learned score.
+- Model Intelligence must never add an unselected model or broaden the roster implicitly.
+
+When a valid custom policy exists, APEX sends the resulting role-specific ordered roster to OpenRouter using the native `models` fallback parameter. APEX makes one paced gateway attempt rather than replaying the same roster through the three legacy logical rungs. OpenRouter may fall through the ordered models, and APEX records the concrete model returned by OpenRouter.
+
+### Evidence and attribution model
+
+Model prices are not architectural constants. The operator console reads the live OpenRouter `/api/v1/models` catalog and may compute a transparent static value-efficiency heuristic from current price, context, and capability metadata. That score is a cold-start comparison aid, not an intelligence benchmark.
+
+The separate learned ranking uses actual APEX operational evidence. Generation metadata is recorded without prompt/completion content and joined by durable task ID to the existing `task_outcomes` records. Evidence may include:
+
+- concrete served model and ordered requested route roster;
+- selected route candidate safely attributable for learning;
+- attribution basis and attribution coverage;
+- observed latency;
+- prompt/completion/cached/reasoning token counts;
+- OpenRouter-reported generation cost when available;
+- generation reliability/tool-call behavior;
+- completed-task success, quality, satisfaction, and complexity;
+- privacy-minimized OpenRouter router-audit metadata when returned.
+
+Concurrent task attribution uses Node `AsyncLocalStorage`. The production instrumented BaseAgent injects the current task-local execution context into the existing normal LLM `complete()` calls, so one multi-concurrency agent cannot leak task identity into another generation.
+
+APEX keeps the concrete served model separate from the operator-selected route candidate it is allowed to learn from. Exact concrete matches are attributable. A request containing exactly one selected alias/router/model is attributable to that sole route candidate. A multi-candidate alias/router fallback whose concrete response does not exactly identify a requested candidate remains **unattributed**. Ambiguous attribution is excluded rather than guessed, and the operator-facing intelligence report exposes the resulting attribution coverage.
+
+A completed task outcome is credited once to the dominant **attributable selected route candidate** for that task rather than once per LLM iteration. This prevents repeated reasoning turns from inflating successful-task samples, avoids crediting every transient fallback with the same outcome, and prevents ambiguous alias traffic from contaminating a selected candidate's record.
+
+Adaptive ranking is not an inference dependency. If telemetry/outcome reads fail or evidence is insufficient, APEX preserves the operator-defined order. Telemetry writes are best-effort and must never convert a successful generation into a task failure.
+
+The learned observed score is objective-specific and combines completed-task outcome quality, generation reliability, actual generation cost, and latency. Its precise scoring/evidence contract is documented in `docs/MODEL_INTELLIGENCE.md` and protected by deterministic CI.
+
+### Controlled learning and complexity escalation
+
+Controlled learning trials are optional and default off. They are limited to Adaptive mode, selected candidates, low-complexity work, deterministic task-based sampling, and a hard maximum trial rate of 25%. A hard role pin disables trials for that role. Trial selection targets the least-sampled under-threshold selected candidate rather than random exploration.
+
+Smart complexity escalation is optional and default off. When enabled, high-complexity work shifts to the Quality objective, while routine neutral Balanced work may shift to Budget. Explicit routine Quality/Budget/Speed preferences are preserved, missing complexity does not change the objective, role pins remain authoritative, and evidence thresholds still govern automatic model movement.
+
+The API/UI must expose the effective objective when complexity escalation changes it.
+
 ### Consequences
 
-- Do not silently restore the retired Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first production chain.
-- OpenRouter provider pacing, retry-after behavior, circuit breakers, structured tool calling, and actual serving-provider diagnostics remain part of production behavior.
+- OpenRouter remains the production inference gateway even when the selected roster contains models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or another model family available through OpenRouter.
+- Do not silently restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain outside OpenRouter.
+- The reviewed DeepSeek V4 chain remains the fail-safe when no valid custom policy is present.
+- OpenRouter gateway pacing, retry-after behavior, circuit breakers, token reservation, malformed-tool-call rejection, non-completion detection, and actual served-model diagnostics remain production controls.
 - Multiple keys from one OpenRouter account are credential redundancy, not separate account quotas.
-- Any production model-policy change requires updating deterministic routing/backpressure guards and documentation.
+- Free model variants are permitted in an operator-selected roster, but free-tier availability/rate limits do not weaken failure handling or permit fabricated completion.
+- A model that lacks reliable tool calling may be displayed/selectable for cost comparison, but the operator console must flag that limitation; APEX's tool-call and completion guards remain authoritative.
+- Model telemetry must not persist prompt text, completion text, tool-result content, secrets, or API keys.
+- OpenRouter router-audit metadata must be sanitized to bounded routing identity/status fields before persistence; free-form summaries/pipelines are not Model Intelligence evidence.
+- Learned routing does not authorize bypassing approvals, tool permissions, spend caps, or other governance controls.
+- Changes to the routing/evidence contract require deterministic routing/model-intelligence tests and documentation updates.
+
+The full durable decision is recorded in `docs/ADR-012_MODEL_INTELLIGENCE.md`.
 
 ## ADR-005 — Reliability controls are permanent production controls
 
@@ -231,6 +290,24 @@ At minimum, production evidence must show:
 6. `/health` reports the expected immutable build SHA and a healthy task-queue verdict after the scenario.
 
 Operational procedure is documented in `docs/DURABLE_AUTONOMY_OPERATIONS.md`.
+
+## ADR-012 — Model Intelligence learning authority is operator-bounded and fail-safe
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-30
+
+The durable Model Intelligence authority, attribution rules, privacy boundary, controlled-learning constraints, complexity escalation rules, and verification requirements are defined in `docs/ADR-012_MODEL_INTELLIGENCE.md`.
+
+ADR-012 refines ADR-004's model-adaptation contract; it does not change OpenRouter's role as the production LLM gateway or expand APEX's authority over the operator-selected roster.
+
+### Consequences
+
+- Ambiguous model/alias attribution is excluded rather than guessed.
+- Concrete served-model identity remains separate from selected-route learning identity.
+- Learning trials and complexity escalation are opt-in and bounded.
+- Role pins and evidence thresholds remain stronger than adaptation.
+- Model-learning telemetry is operational metadata, not prompt/content storage.
+- If Model Intelligence cannot establish safe evidence, production routing falls back to the saved operator order.
 
 ## How to change an architecture decision
 
