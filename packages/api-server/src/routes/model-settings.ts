@@ -5,6 +5,7 @@ import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
   OPENROUTER_MODEL_POLICY_ENV,
   getActiveOpenRouterModelPolicy,
+  getModelIntelligenceReport,
   parseOpenRouterModelPolicy,
   serializeOpenRouterModelPolicy,
   type OpenRouterModelPolicy,
@@ -142,6 +143,9 @@ function defaultPolicy(): OpenRouterModelPolicy {
     version: 1,
     selectedModelIds: [...DEFAULT_OPENROUTER_MODEL_CHAIN],
     rolePrimary: {},
+    routingMode: 'manual',
+    optimizationObjective: 'balanced',
+    minimumSamples: 5,
   };
 }
 
@@ -164,6 +168,41 @@ export function createModelSettingsRouter(): Router {
         error: err instanceof Error ? err.message : String(err),
         policy: getActiveOpenRouterModelPolicy() ?? defaultPolicy(),
       });
+    }
+  });
+
+  router.get('/intelligence', async (req, res) => {
+    try {
+      const role = String(req.query.role ?? '').trim().toUpperCase();
+      if (!role || !/^[A-Z0-9_\-]{2,80}$/.test(role)) {
+        res.status(400).json({ error: 'A valid role query parameter is required.' });
+        return;
+      }
+      const policy = getActiveOpenRouterModelPolicy() ?? defaultPolicy();
+      const rawComplexity = req.query.complexity === undefined ? null : Number(req.query.complexity);
+      const targetComplexity = rawComplexity !== null && Number.isFinite(rawComplexity)
+        ? Math.max(0, Math.min(1, rawComplexity))
+        : null;
+      const report = await getModelIntelligenceReport({
+        role,
+        candidates: policy.selectedModelIds,
+        objective: policy.optimizationObjective,
+        minimumSamples: policy.minimumSamples,
+        targetComplexity,
+        pinnedModel: policy.rolePrimary[role],
+        bypassCache: req.query.refresh === '1' || req.query.refresh === 'true',
+      });
+      res.json({
+        report,
+        routingMode: policy.routingMode,
+        explanation: policy.routingMode === 'adaptive'
+          ? 'Evidence-qualified models may reorder inside the selected roster. Explicit role pins remain first.'
+          : policy.routingMode === 'advisor'
+            ? 'Recommendations are advisory only; the saved operator order remains authoritative.'
+            : 'Manual mode preserves the exact saved operator order.',
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
