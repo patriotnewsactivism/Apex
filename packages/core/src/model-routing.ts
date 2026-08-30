@@ -11,12 +11,26 @@ export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
   'deepseek/deepseek-v4-pro-0813',
 ] as const;
 
+export type ModelRoutingMode = 'manual' | 'advisor' | 'adaptive';
+export type ModelOptimizationObjective = 'quality' | 'balanced' | 'budget' | 'speed';
+
 export type OpenRouterModelPolicy = {
   version: 1;
   /** Ordered global model roster. Large enough to cover the live OpenRouter catalog. */
   selectedModelIds: string[];
   /** Optional role-specific first choice. Global roster remains the fallback. */
   rolePrimary: Record<string, string>;
+  /**
+   * manual   = exact operator order;
+   * advisor  = exact operator order plus evidence-backed recommendations in UI;
+   * adaptive = evidence-qualified models may reorder automatically inside the
+   *            selected roster. Role-primary pins always remain first.
+   */
+  routingMode: ModelRoutingMode;
+  /** What adaptive/advisor ranking optimizes for. */
+  optimizationObjective: ModelOptimizationObjective;
+  /** Minimum completed-task outcomes required before a model may move automatically. */
+  minimumSamples: number;
 };
 
 const MODEL_ID_PATTERN = /^~?[a-zA-Z0-9._-]+\/[a-zA-Z0-9._~:/-]+$/;
@@ -25,6 +39,8 @@ const MODEL_ID_PATTERN = /^~?[a-zA-Z0-9._-]+\/[a-zA-Z0-9._~:/-]+$/;
 // operator can select every available model if desired without accepting an
 // unbounded authenticated JSON payload forever.
 const MAX_SELECTED_MODELS = 500;
+const VALID_ROUTING_MODES = new Set<ModelRoutingMode>(['manual', 'advisor', 'adaptive']);
+const VALID_OBJECTIVES = new Set<ModelOptimizationObjective>(['quality', 'balanced', 'budget', 'speed']);
 
 function uniqueStrings(values: unknown[]): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))];
@@ -61,7 +77,27 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
       }
     }
 
-    return { version: 1, selectedModelIds, rolePrimary };
+    // Backward compatibility: policies saved before the intelligence layer had
+    // no routing-mode fields. They remain manual, preserving exact behavior.
+    const routingMode = typeof parsed.routingMode === 'string' && VALID_ROUTING_MODES.has(parsed.routingMode as ModelRoutingMode)
+      ? parsed.routingMode as ModelRoutingMode
+      : 'manual';
+    const optimizationObjective = typeof parsed.optimizationObjective === 'string' && VALID_OBJECTIVES.has(parsed.optimizationObjective as ModelOptimizationObjective)
+      ? parsed.optimizationObjective as ModelOptimizationObjective
+      : 'balanced';
+    const rawMinimumSamples = Number(parsed.minimumSamples ?? 5);
+    const minimumSamples = Number.isFinite(rawMinimumSamples)
+      ? Math.max(2, Math.min(100, Math.round(rawMinimumSamples)))
+      : 5;
+
+    return {
+      version: 1,
+      selectedModelIds,
+      rolePrimary,
+      routingMode,
+      optimizationObjective,
+      minimumSamples,
+    };
   } catch {
     return null;
   }
@@ -84,6 +120,12 @@ export function getOpenRouterModelChainForRole(role?: string): string[] {
   if (!preferred) return [...policy.selectedModelIds];
 
   return [preferred, ...policy.selectedModelIds.filter((modelId) => modelId !== preferred)];
+}
+
+export function getPinnedOpenRouterModelForRole(role?: string): string | undefined {
+  const policy = getActiveOpenRouterModelPolicy();
+  if (!policy || !role) return undefined;
+  return policy.rolePrimary[role.trim().toUpperCase()];
 }
 
 export function serializeOpenRouterModelPolicy(policy: OpenRouterModelPolicy): string {
