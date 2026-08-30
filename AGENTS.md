@@ -96,7 +96,7 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 ## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` provides concurrency-safe task attribution. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
+`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
 
 With no valid operator policy, the reviewed fallback remains:
 
@@ -130,7 +130,7 @@ Smart complexity escalation is also opt-in. When enabled, a task at complexity `
 
 Neither learning trials nor complexity escalation can make an under-sampled model evidence-qualified. Normal sample thresholds still govern automatic learned promotion.
 
-When a valid custom policy exists, APEX sends the ordered roster to OpenRouter using its native `models` fallback parameter. APEX uses one paced OpenRouter gateway attempt for that roster and records the actual model returned in OpenRouter's response rather than assuming the first requested model served the generation.
+When a valid custom policy exists, APEX sends the ordered roster to OpenRouter using its native `models` fallback parameter. APEX uses one paced OpenRouter gateway attempt for that roster and records the concrete model returned in OpenRouter's response rather than assuming the first requested model served the generation.
 
 ### Static catalog score versus learned evidence
 
@@ -138,20 +138,27 @@ The Settings catalog pulls current model metadata from `https://openrouter.ai/ap
 
 The separate **Observed Model Intelligence** ranking is based on APEX's own work. Per-generation telemetry is joined by durable task ID to existing `task_outcomes` records. It may use:
 
-- actual served model;
+- concrete model OpenRouter actually served;
+- selected route candidate safely attributable for learning, with explicit attribution basis;
+- attribution coverage and count of successful ambiguous calls excluded from scoring;
 - observed request latency;
 - prompt/completion/cached/reasoning token counts;
 - OpenRouter-reported generation cost when available;
 - generation success/failure and tool-call behavior;
-- completed-task success, quality, satisfaction, and post-run complexity.
+- completed-task success, quality, satisfaction, and post-run complexity;
+- privacy-minimized OpenRouter router-audit identity/status metadata when returned.
 
-A completed task outcome is credited once to the dominant serving model for that task, not once per LLM iteration. This prevents an iterative task from becoming multiple fake successful samples and avoids crediting every transient fallback model with the same task outcome.
+Keep concrete served-model identity separate from selected-route learning identity. Credit an exact concrete match exactly. When exactly one selected model/alias/router was requested, that sole selected route may receive route-level evidence even if OpenRouter reports a different concrete model. If multiple selected aliases/routers were sent and the concrete response does not exactly identify one requested candidate, mark the observation **unattributed** and exclude it from scoring. Never guess an alias mapping to make evidence fit the roster.
 
-Telemetry is operational metadata only. It must **not** persist prompt text, completion text, tool-result content, secrets, or API keys. Task identity flows through concurrent work using `AsyncLocalStorage` so parallel tasks on the same agent cannot cross-contaminate model attribution.
+A completed task outcome is credited once to the dominant **attributable selected route candidate** for that task, not once per LLM iteration. This prevents an iterative task from becoming multiple fake successful samples, avoids crediting every transient fallback with the same task outcome, and keeps ambiguous alias traffic from poisoning rankings.
+
+Telemetry is operational metadata only. It must **not** persist prompt text, completion text, tool-result content, secrets, API keys, OpenRouter free-form summaries, or pipeline payloads. Router metadata must be sanitized to bounded routing identity/status fields before persistence. Task identity flows through concurrent work using `AsyncLocalStorage`; the instrumented BaseAgent must continue injecting that current task-local context into the normal LLM `complete()` path so parallel tasks on the same agent cannot cross-contaminate model attribution.
 
 Adaptive routing must fail safe: if telemetry/outcome data is unavailable or insufficient, preserve the operator-defined order. Learning is not allowed to become a new inference-availability dependency. Telemetry writes are best-effort and must never convert a successful LLM response into a failed task.
 
-See `docs/MODEL_INTELLIGENCE.md` for the scoring/evidence contract.
+The operator-facing intelligence view must surface attribution coverage rather than hiding ambiguous exclusions.
+
+See `docs/MODEL_INTELLIGENCE.md` and `docs/ADR-012_MODEL_INTELLIGENCE.md` for the scoring, attribution, privacy, and adaptation contract.
 
 Credential environment variables:
 
@@ -168,7 +175,9 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 - Operator-selected free model variants are allowed; free availability or rate limits never justify false completion or bypass backpressure.
 - Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.
 - Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
-- Record the model OpenRouter actually served, not merely the requested first choice.
+- Record the model OpenRouter actually served, not merely the requested first choice, and keep it separate from the route candidate used for learning attribution.
+- Ambiguous multi-alias/multi-router attribution must remain unattributed unless direct evidence identifies the selected candidate. Do not infer it from provider/model name similarity.
+- Router audit metadata is optional observability, not a new inference dependency; its absence (including cache-hit paths) is not a generation failure.
 - Preserve tool-call/result message pairing while trimming context.
 - Provider exhaustion is a capacity pause, not an agent failure, when a machine-readable resume time exists.
 - Do not silently route to unrelated direct legacy providers because an OpenRouter model is temporarily unavailable.
@@ -307,7 +316,8 @@ Do not let a completed code migration leave documentation on the old architectur
 - `docs/ARCHITECTURE_DECISIONS.md` — durable decisions and retired architecture.
 - `docs/PRODUCTION_OPERATIONS.md` — production runbook.
 - `docs/deploy-provenance.md` — source/image/runtime provenance contract.
-- `docs/MODEL_INTELLIGENCE.md` — model telemetry, evidence thresholds, controlled learning, complexity escalation, adaptive-routing, and scoring contract.
+- `docs/MODEL_INTELLIGENCE.md` — model telemetry, attribution, evidence thresholds, controlled learning, complexity escalation, adaptive-routing, and scoring contract.
+- `docs/ADR-012_MODEL_INTELLIGENCE.md` — durable Model Intelligence learning-authority and privacy decision.
 - `BUSINESS_PROFILE.md` — dated BuildMyBot business/ICP snapshot; verify current pricing, features, payment state, and deployment before acting.
 - `APEX_CHARTER.md` — mission/governance; dated infrastructure/model notes are historical unless promoted into current canonical docs.
 - `packages/core/src/buildmybot-connector.ts` — current BuildMyBot connector implementation; verify live BuildMyBot state separately.
