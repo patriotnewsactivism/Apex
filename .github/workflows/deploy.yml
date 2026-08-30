@@ -58,7 +58,8 @@ jobs:
           fi
           if ! gcloud run services describe "$SERVICE" \
             --project "$GCP_PROJECT_ID" \
-            --region "$REGION" >/tmp/apex-service.json 2>/tmp/apex-service.err; then
+            --region "$REGION" \
+            --format=json >/tmp/apex-service.json 2>/tmp/apex-service.err; then
             cat /tmp/apex-service.err >&2 || true
             echo 'Configured APEX Cloud Run service does not exist or is inaccessible. Refusing to create a replacement service.' >&2
             exit 4
@@ -67,17 +68,42 @@ jobs:
             --project "$GCP_PROJECT_ID" \
             --region "$REGION" \
             --format='value(status.latestReadyRevisionName)')"
+          CREATED="$(gcloud run services describe "$SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$REGION" \
+            --format='value(status.latestCreatedRevisionName)')"
           URL="$(gcloud run services describe "$SERVICE" \
             --project "$GCP_PROJECT_ID" \
             --region "$REGION" \
             --format='value(status.url)')"
-          if [[ -z "$READY" ]]; then
-            echo "Configured target $SERVICE has no Ready revision. Refusing an image-only production update until the real existing production service is identified." >&2
+          if [[ -z "$READY" && -z "$CREATED" ]]; then
+            echo "Configured target $SERVICE has neither a Ready nor a created revision. Refusing recovery because this is not an established Cloud Run service." >&2
             exit 5
           fi
           echo "Target service: $SERVICE"
-          echo "Current ready revision: $READY"
+          echo "Current ready revision: ${READY:-none — recovery rollout required}"
+          echo "Latest created revision: ${CREATED:-none}"
           echo "Current service URL: $URL"
+
+          python3 - <<'PY'
+          import json
+
+          service = json.load(open('/tmp/apex-service.json'))
+          containers = service.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
+          env = {item.get('name'): item for item in (containers[0].get('env', []) if containers else [])}
+          required = ('DATABASE_URL', 'APEX_ADMIN_TOKEN', 'APEX_ADMIN_PASSWORD')
+          missing = [name for name in required if name not in env]
+          for name in required:
+              item = env.get(name)
+              if not item:
+                  print(f'{name}: missing')
+              elif item.get('valueFrom'):
+                  print(f'{name}: configured from Secret Manager')
+              else:
+                  print(f'{name}: configured as a service environment value')
+          if missing:
+              raise SystemExit('Missing required APEX runtime configuration: ' + ', '.join(missing))
+          PY
 
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
