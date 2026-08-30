@@ -12,6 +12,8 @@ const MODEL_INTELLIGENCE_CACHE_MS = 60_000;
 const DEFAULT_WINDOW_DAYS = 30;
 const MAX_TELEMETRY_ROWS = 10_000;
 const EXPLORATION_MAX_COMPLEXITY = 0.5;
+const ROUTINE_COMPLEXITY_MAX = 0.35;
+const HARD_COMPLEXITY_MIN = 0.70;
 
 export interface ModelTelemetryEvent {
   taskId?: string;
@@ -165,6 +167,28 @@ function objectiveWeights(objective: ModelOptimizationObjective): {
     default:
       return { quality: 0.40, reliability: 0.15, cost: 0.25, latency: 0.20 };
   }
+}
+
+/**
+ * Convert an operator's base objective into the effective objective for a task.
+ * This is intentionally coarse and deterministic rather than an opaque learned
+ * policy. High-complexity work escalates toward outcome quality. Routine work
+ * may optimize harder for cost only when the operator chose the neutral
+ * `balanced` objective. Explicit `quality`, `budget`, and `speed` choices are
+ * preserved for routine/mid-complexity work.
+ */
+export function resolveComplexityObjective(input: {
+  baseObjective: ModelOptimizationObjective;
+  targetComplexity?: number | null;
+  enabled: boolean;
+}): ModelOptimizationObjective {
+  if (!input.enabled || input.targetComplexity === null || input.targetComplexity === undefined) {
+    return input.baseObjective;
+  }
+  const complexity = clamp01(input.targetComplexity);
+  if (complexity >= HARD_COMPLEXITY_MIN) return 'quality';
+  if (complexity <= ROUTINE_COMPLEXITY_MAX && input.baseObjective === 'balanced') return 'budget';
+  return input.baseObjective;
 }
 
 function complexityWeight(sampleComplexity: number, targetComplexity: number | null): number {
@@ -586,16 +610,21 @@ export async function getAdaptiveModelOrder(input: {
   targetComplexity?: number;
 }): Promise<string[]> {
   if (!input.role || input.candidates.length < 2) return [...input.candidates];
+  const policy = getActiveOpenRouterModelPolicy();
+  const objective = resolveComplexityObjective({
+    baseObjective: input.objective,
+    targetComplexity: input.targetComplexity,
+    enabled: policy?.complexityEscalation === true,
+  });
   const report = await getModelIntelligenceReport({
     role: input.role,
     candidates: input.candidates,
-    objective: input.objective,
+    objective,
     minimumSamples: input.minimumSamples,
     targetComplexity: input.targetComplexity,
     pinnedModel: input.pinnedModel,
   });
 
-  const policy = getActiveOpenRouterModelPolicy();
   const execution = getCurrentLLMExecutionContext();
   const trial = applyControlledExploration({
     order: report.recommendedOrder,
