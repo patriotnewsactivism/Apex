@@ -7,6 +7,7 @@ import {
   getActiveOpenRouterModelPolicy,
   getModelIntelligenceReport,
   parseOpenRouterModelPolicy,
+  resolveComplexityObjective,
   serializeOpenRouterModelPolicy,
   type OpenRouterModelPolicy,
 } from '@workspace/core';
@@ -147,6 +148,7 @@ function defaultPolicy(): OpenRouterModelPolicy {
     optimizationObjective: 'balanced',
     minimumSamples: 5,
     explorationRate: 0,
+    complexityEscalation: false,
   };
 }
 
@@ -184,23 +186,32 @@ export function createModelSettingsRouter(): Router {
       const targetComplexity = rawComplexity !== null && Number.isFinite(rawComplexity)
         ? Math.max(0, Math.min(1, rawComplexity))
         : null;
+      const effectiveObjective = resolveComplexityObjective({
+        baseObjective: policy.optimizationObjective,
+        targetComplexity,
+        enabled: policy.complexityEscalation === true,
+      });
       const report = await getModelIntelligenceReport({
         role,
         candidates: policy.selectedModelIds,
-        objective: policy.optimizationObjective,
+        objective: effectiveObjective,
         minimumSamples: policy.minimumSamples,
         targetComplexity,
         pinnedModel: policy.rolePrimary[role],
         bypassCache: req.query.refresh === '1' || req.query.refresh === 'true',
       });
+      const objectiveChanged = effectiveObjective !== policy.optimizationObjective;
       res.json({
         report,
         routingMode: policy.routingMode,
         explorationRate: policy.explorationRate,
+        complexityEscalation: policy.complexityEscalation === true,
+        baseObjective: policy.optimizationObjective,
+        effectiveObjective,
         explanation: policy.routingMode === 'adaptive'
-          ? `Evidence-qualified models may reorder inside the selected roster. Explicit role pins remain first.${policy.explorationRate > 0 ? ` Controlled learning trials are enabled for up to ${Math.round(policy.explorationRate * 100)}% of eligible low-complexity tasks.` : ''}`
+          ? `Evidence-qualified models may reorder inside the selected roster. Explicit role pins remain first.${policy.explorationRate > 0 ? ` Controlled learning trials are enabled for up to ${Math.round(policy.explorationRate * 100)}% of eligible low-complexity tasks.` : ''}${objectiveChanged ? ` Complexity escalation changed this analysis objective from ${policy.optimizationObjective} to ${effectiveObjective}.` : ''}`
           : policy.routingMode === 'advisor'
-            ? 'Recommendations are advisory only; the saved operator order remains authoritative.'
+            ? `Recommendations are advisory only; the saved operator order remains authoritative.${objectiveChanged ? ` Complexity escalation changed this analysis objective from ${policy.optimizationObjective} to ${effectiveObjective}.` : ''}`
             : 'Manual mode preserves the exact saved operator order.',
       });
     } catch (err) {
