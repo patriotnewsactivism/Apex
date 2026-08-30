@@ -1,4 +1,12 @@
-import type { LLMClientConfig, LLMExecutionContext, LLMMessage, LLMResponse, LLMTool, LLMToolCall } from './types.js';
+import type {
+  LLMClientConfig,
+  LLMExecutionContext,
+  LLMMessage,
+  LLMResponse,
+  LLMRouterMetadata,
+  LLMTool,
+  LLMToolCall,
+} from './types.js';
 import {
   isTotalDailyCapReached,
   msUntilDailyReset,
@@ -226,6 +234,7 @@ type ProviderRequestError = Error & {
   retryAfterMs?: number;
   requestedModels?: string[];
   latencyMs?: number;
+  routerMetadata?: LLMRouterMetadata;
 };
 const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
@@ -512,6 +521,26 @@ function parseToolCalls(raw: any): LLMToolCall[] {
     });
 }
 
+type CompatibleRouterAttempt = {
+  provider?: unknown;
+  model?: unknown;
+  status?: unknown;
+};
+
+type CompatibleRouterMetadata = {
+  requested?: unknown;
+  strategy?: unknown;
+  attempt?: unknown;
+  endpoints?: {
+    available?: Array<{
+      provider?: unknown;
+      model?: unknown;
+      selected?: unknown;
+    }>;
+  };
+  attempts?: CompatibleRouterAttempt[];
+};
+
 type CompatibleResponse = {
   model?: string;
   choices?: Array<{
@@ -527,8 +556,38 @@ type CompatibleResponse = {
     prompt_tokens_details?: { cached_tokens?: number };
     completion_tokens_details?: { reasoning_tokens?: number };
   };
+  openrouter_metadata?: CompatibleRouterMetadata;
   error?: { message?: string; type?: string; code?: string | number };
 };
+
+function sanitizeRouterMetadata(raw: CompatibleRouterMetadata | undefined): LLMRouterMetadata | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const requested = typeof raw.requested === 'string' ? raw.requested.slice(0, 200) : undefined;
+  const strategy = typeof raw.strategy === 'string' ? raw.strategy.slice(0, 80) : undefined;
+  const rawAttempt = Number(raw.attempt);
+  const attempt = Number.isFinite(rawAttempt) && rawAttempt >= 0 ? Math.floor(rawAttempt) : undefined;
+  const selectedEndpoint = Array.isArray(raw.endpoints?.available)
+    ? raw.endpoints?.available.find((entry) => entry?.selected === true)
+    : undefined;
+  const selectedProvider = typeof selectedEndpoint?.provider === 'string'
+    ? selectedEndpoint.provider.slice(0, 120)
+    : undefined;
+  const attempts = Array.isArray(raw.attempts)
+    ? raw.attempts.slice(0, 25).map((entry) => {
+        const statusNumber = Number(entry?.status);
+        return {
+          provider: typeof entry?.provider === 'string' ? entry.provider.slice(0, 120) : undefined,
+          model: typeof entry?.model === 'string' ? entry.model.slice(0, 200) : undefined,
+          status: Number.isFinite(statusNumber) ? Math.floor(statusNumber) : undefined,
+        };
+      })
+    : undefined;
+
+  if (!requested && !strategy && attempt === undefined && !selectedProvider && !attempts?.length) {
+    return undefined;
+  }
+  return { requested, strategy, attempt, selectedProvider, attempts };
+}
 
 async function callCompatibleProvider(
   provider: ProviderSpec,
@@ -590,6 +649,9 @@ async function callCompatibleProvider(
         Authorization: `Bearer ${key}`,
         'HTTP-Referer': 'https://apex.donmatthews.live',
         'X-Title': 'APEX Agent Workforce',
+        // OpenRouter documents this as the stable opt-in for route audit data.
+        // Only a privacy-minimized subset is retained by APEX.
+        'X-OpenRouter-Metadata': 'enabled',
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -602,6 +664,7 @@ async function callCompatibleProvider(
     } catch {
       parsed = {};
     }
+    const routerMetadata = sanitizeRouterMetadata(parsed.openrouter_metadata);
 
     if (!response.ok) {
       const detail =
@@ -611,6 +674,7 @@ async function callCompatibleProvider(
       throw Object.assign(new Error(detail), {
         status: response.status,
         retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
+        routerMetadata,
       });
     }
 
@@ -629,6 +693,7 @@ async function callCompatibleProvider(
       model: `${provider.name}/${servedModel}`,
       servedModel,
       requestedModels: [...routedModels],
+      routerMetadata,
       latencyMs: Date.now() - startedAt,
       costUsd: Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null,
       cachedTokens: Math.max(0, parsed.usage?.prompt_tokens_details?.cached_tokens ?? 0),
@@ -844,6 +909,7 @@ class MultiProviderClient {
                   role: execution?.role ?? this.config.role,
                   provider: provider.name,
                   requestedModels,
+                  routerMetadata: err.routerMetadata,
                   // Only attribute a gateway failure to a specific model when
                   // exactly one model was requested; a multi-model OpenRouter
                   // fallback failure cannot honestly identify which rung failed.
