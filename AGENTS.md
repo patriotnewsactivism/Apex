@@ -106,7 +106,7 @@ With no valid operator policy, the reviewed fallback remains:
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
-- 1–50 selected OpenRouter model IDs in global priority order;
+- 1–500 selected OpenRouter model IDs in global priority order, intentionally large enough for the current hundreds-model catalog;
 - optional role-specific first choices;
 - role primaries restricted to models already present in the selected roster.
 
