@@ -34,6 +34,16 @@ try {
   check('empty roster is rejected', parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: [], rolePrimary: {} })) === null);
   check('fabricated non-OpenRouter-shaped ID is rejected', parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: ['not-a-model'], rolePrimary: {} })) === null);
 
+  const legacyPolicy = parseOpenRouterModelPolicy(JSON.stringify({
+    version: 1,
+    selectedModelIds: ['openrouter/auto', 'qwen/qwen3-coder:free'],
+    rolePrimary: {},
+  }));
+  check('pre-intelligence saved policy remains valid', legacyPolicy !== null, legacyPolicy);
+  check('pre-intelligence policy fails safe to manual routing', legacyPolicy?.routingMode === 'manual', legacyPolicy);
+  check('pre-intelligence policy defaults to balanced objective', legacyPolicy?.optimizationObjective === 'balanced', legacyPolicy);
+  check('pre-intelligence policy gets conservative sample threshold', legacyPolicy?.minimumSamples === 5, legacyPolicy);
+
   const policy = {
     version: 1 as const,
     selectedModelIds: [
@@ -47,6 +57,9 @@ try {
       BACKEND: 'deepseek/deepseek-v4-pro-0813',
       QA: 'not-selected/model',
     },
+    routingMode: 'advisor' as const,
+    optimizationObjective: 'quality' as const,
+    minimumSamples: 10,
   };
   const serialized = serializeOpenRouterModelPolicy(policy);
   process.env[OPENROUTER_MODEL_POLICY_ENV] = serialized;
@@ -54,6 +67,15 @@ try {
   const parsed = parseOpenRouterModelPolicy(serialized);
   check('operator can select multiple OpenRouter models including :free variants', parsed?.selectedModelIds.length === 4, parsed);
   check('unselected role primary is discarded fail-closed', parsed?.rolePrimary.QA === undefined, parsed?.rolePrimary);
+  check('routing mode survives serialization', parsed?.routingMode === 'advisor', parsed);
+  check('optimization objective survives serialization', parsed?.optimizationObjective === 'quality', parsed);
+  check('evidence threshold survives serialization', parsed?.minimumSamples === 10, parsed);
+
+  const bounded = parseOpenRouterModelPolicy(JSON.stringify({
+    ...policy,
+    minimumSamples: 10_000,
+  }));
+  check('evidence threshold is bounded to 100 completed tasks/model', bounded?.minimumSamples === 100, bounded);
 
   console.log('\n── Runtime routing ──');
   const ceoChain = getOpenRouterModelChainForRole('CEO');
@@ -71,6 +93,7 @@ try {
   const routeSource = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/model-settings.ts'), 'utf8');
   check('custom routing sends an OpenRouter models array', clientSource.includes('body.models = routedModels'));
   check('actual served model is read from the OpenRouter response', clientSource.includes('const servedModel = parsed.model'));
+  check('adaptive routing is explicit rather than silently enabled', clientSource.includes("policy?.routingMode === 'adaptive'"));
   check('model catalog pricing comes from live OpenRouter API', routeSource.includes("https://openrouter.ai/api/v1/models") && routeSource.includes('usdPerMillion'));
   check('efficiency is explicitly described as heuristic, not benchmark', routeSource.includes('It is not an intelligence benchmark'));
 } finally {
