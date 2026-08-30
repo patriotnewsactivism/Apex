@@ -176,7 +176,7 @@ export function createModelSettingsRouter(): Router {
       const candidate = parseOpenRouterModelPolicy(JSON.stringify(req.body));
       if (!candidate) {
         res.status(400).json({
-          error: 'Invalid model policy. Select 1-50 valid OpenRouter model IDs; role primaries must be selected models.',
+          error: 'Invalid model policy. Select 1-500 valid OpenRouter model IDs; role primaries must be selected models.',
         });
         return;
       }
