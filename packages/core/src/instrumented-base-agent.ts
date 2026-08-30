@@ -16,11 +16,22 @@ import {
   getCurrentLLMExecutionContext,
   withLLMExecutionContext,
 } from './model-execution-context.js';
-import type { AgentConfig, TaskInput, TaskResult, ToolContext } from './types.js';
+import type { AgentConfig, TaskResult, ToolContext } from './types.js';
 
 const APPROVAL_RECOVERY_SWEEP_MS = 60_000;
 const APPROVAL_RECOVERY_BATCH = 200;
 let approvalRecoveryLoopStarted = false;
+
+function summarizeRecoveredToolResult(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized === undefined ? String(value) : serialized;
+  } catch {
+    // The side effect already happened. Serialization failure must never turn a
+    // completed execution into a fake tool failure that encourages a retry.
+    return '[tool executed successfully; return value was not JSON-serializable]';
+  }
+}
 
 /**
  * Recover only approval waits that are older than the maximum live in-process
@@ -271,7 +282,7 @@ export class BaseAgent extends CoreBaseAgent {
     await this.logger.acting(`Executing recovered one-shot approval: ${row.toolName}`, taskId);
     try {
       const output = await tool.execute(parsed.data, toolContext);
-      const serialized = JSON.stringify(output);
+      const serialized = summarizeRecoveredToolResult(output);
       return `Human previously approved exactly one ${row.toolName} action with normalized args ${JSON.stringify(row.toolArgs)}. APEX consumed that approval before execution and has now executed it once. Verified tool result: ${serialized.slice(0, 8000)}. Continue from this result. Do not repeat the same gated action unless a new approval is obtained.`;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
