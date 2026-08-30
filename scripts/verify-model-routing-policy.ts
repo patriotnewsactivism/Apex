@@ -43,6 +43,7 @@ try {
   check('pre-intelligence policy fails safe to manual routing', legacyPolicy?.routingMode === 'manual', legacyPolicy);
   check('pre-intelligence policy defaults to balanced objective', legacyPolicy?.optimizationObjective === 'balanced', legacyPolicy);
   check('pre-intelligence policy gets conservative sample threshold', legacyPolicy?.minimumSamples === 5, legacyPolicy);
+  check('pre-intelligence policy cannot silently enable learning trials', legacyPolicy?.explorationRate === 0, legacyPolicy);
 
   const policy = {
     version: 1 as const,
@@ -60,6 +61,7 @@ try {
     routingMode: 'advisor' as const,
     optimizationObjective: 'quality' as const,
     minimumSamples: 10,
+    explorationRate: 0.05,
   };
   const serialized = serializeOpenRouterModelPolicy(policy);
   process.env[OPENROUTER_MODEL_POLICY_ENV] = serialized;
@@ -70,12 +72,17 @@ try {
   check('routing mode survives serialization', parsed?.routingMode === 'advisor', parsed);
   check('optimization objective survives serialization', parsed?.optimizationObjective === 'quality', parsed);
   check('evidence threshold survives serialization', parsed?.minimumSamples === 10, parsed);
+  check('controlled exploration rate survives serialization', parsed?.explorationRate === 0.05, parsed);
 
   const bounded = parseOpenRouterModelPolicy(JSON.stringify({
     ...policy,
     minimumSamples: 10_000,
+    explorationRate: 1,
   }));
   check('evidence threshold is bounded to 100 completed tasks/model', bounded?.minimumSamples === 100, bounded);
+  check('learning-trial traffic is hard-capped at 25%', bounded?.explorationRate === 0.25, bounded);
+  const negative = parseOpenRouterModelPolicy(JSON.stringify({ ...policy, explorationRate: -5 }));
+  check('negative learning-trial traffic is clamped to off', negative?.explorationRate === 0, negative);
 
   console.log('\n── Runtime routing ──');
   const ceoChain = getOpenRouterModelChainForRole('CEO');
