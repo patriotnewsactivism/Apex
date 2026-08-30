@@ -175,6 +175,63 @@ The exact Google Cloud project ID, Cloud Run region, service name, secret bindin
 - Do not hardcode guessed identifiers merely to make automation proceed.
 - Missing target information is a failed precondition that should be reported explicitly.
 
+## ADR-011 — Browser-independent autonomy requires a durable Cloud Run execution source
+
+**Status:** Accepted  
+**Last confirmed:** 2026-08-30
+
+The dashboard/browser, an HTTP request, a JavaScript timer, and the lifetime of one Cloud Run HTTP instance are not authoritative sources of autonomous execution.
+
+Durable work identity, scheduling state, claims, retries, approvals, and completion evidence belong in Postgres. Production must also have a verified Google Cloud Run execution primitive that provides CPU/execution opportunities independently of an open browser session.
+
+The repository provides a dedicated autonomous runtime at:
+
+`pnpm --filter @workspace/api-server run start:worker`
+
+That runtime:
+
+- probes the authoritative Postgres database before accepting work;
+- fails closed if durable state is unavailable;
+- starts the same governed workforce and scheduler used by the control plane;
+- does not run database migrations or management-plane operations;
+- keeps task/job ownership in Postgres rather than process memory;
+- shuts down claim loops on `SIGTERM`/`SIGINT` and leaves unfinished durable work recoverable.
+
+### Cloud Run topology rule
+
+This ADR defines the execution requirement but does **not** guess or silently create a GCP resource.
+
+Before production activation, inspect the exact existing Cloud Run configuration from trusted platform evidence. The production topology must then be one deliberately reviewed option that actually satisfies the requirement, for example:
+
+- the existing HTTP service intentionally configured with a minimum live instance and instance-based CPU allocation, if that is verified to be the chosen architecture; or
+- a Cloud Run Worker Pool running the same immutable APEX image with the dedicated `start:worker` command, if an additional worker resource is explicitly approved and provisioned; or
+- another reviewed Cloud Run-native design that provides equivalent durable wake/execution semantics.
+
+Cloud Scheduler or Cloud Run Jobs may be part of a design, but merely waking an HTTP endpoint is not sufficient if queued agent work can stop again as soon as request-scoped CPU is removed.
+
+### Consequences
+
+- In-process polling timers are latency optimizations, not correctness mechanisms.
+- Closing the dashboard must not stop autonomous progress.
+- A production release cannot be called autonomously complete until a no-browser acceptance test proves future work wakes and executes.
+- Multi-instance task/job claims must remain safe because more than one worker may run.
+- A worker process must never run production schema migrations merely because it possesses `DATABASE_URL`.
+- Any new Cloud Run Worker Pool, Job, Scheduler, service scaling change, or instance-CPU change requires exact target verification, explicit infrastructure review/approval where required, rollback planning, and production verification.
+- Do not create a replacement HTTP Cloud Run service to satisfy this ADR.
+
+### Acceptance evidence
+
+At minimum, production evidence must show:
+
+1. a future-due scheduled job persisted in Postgres;
+2. the dashboard/browser closed;
+3. the durable Cloud Run execution source wakes/processes the job;
+4. resulting child tasks are durably claimed and executed;
+5. a worker replacement/restart does not lose the occurrence or duplicate a side effect;
+6. `/health` reports the expected immutable build SHA and a healthy task-queue verdict after the scenario.
+
+Operational procedure is documented in `docs/DURABLE_AUTONOMY_OPERATIONS.md`.
+
 ## How to change an architecture decision
 
 A proposed change should include:
