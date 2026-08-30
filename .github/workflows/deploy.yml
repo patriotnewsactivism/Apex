@@ -1,30 +1,76 @@
 name: Deploy to Cloud Run
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
     branches: [main]
-  workflow_dispatch:
+    types: [completed]
 
 permissions:
   contents: read
   id-token: write
 
+# Only one production deployment may run at a time. If a newer green main
+# commit arrives, its run supersedes an older deployment that has not finished.
 concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: false
+  group: deploy-main
+  cancel-in-progress: true
 
 env:
   GCP_PROJECT_ID: apex-503709
   EXPECTED_DEPLOY_SERVICE_ACCOUNT: 429262820734-compute@developer.gserviceaccount.com
   GCP_WORKLOAD_IDENTITY_PROVIDER: projects/429262820734/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   ARTIFACT_REPO: cloud-run-source-deploy
+  DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
 
 jobs:
+  gate:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.current.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+          fetch-depth: 0
+
+      - name: Verify candidate is the current main SHA and deployment is explicitly enabled
+        id: current
+        env:
+          DEPLOY_ENABLED_VAR: ${{ vars.APEX_DEPLOY_ENABLED }}
+          DEPLOY_ENABLED_SECRET: ${{ secrets.APEX_DEPLOY_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse origin/main)"
+          if [[ "$DEPLOY_SHA" != "$current_main" ]]; then
+            echo "Skipping stale deploy candidate $DEPLOY_SHA; current main is $current_main."
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          deploy_enabled="${DEPLOY_ENABLED_VAR:-${DEPLOY_ENABLED_SECRET:-}}"
+          case "${deploy_enabled,,}" in
+            production|all)
+              echo 'deploy=true' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo 'Production deployment is not explicitly enabled. Set APEX_DEPLOY_ENABLED=production (or all) as a repository variable/secret.'
+              echo 'deploy=false' >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
   deploy:
+    needs: gate
+    if: ${{ needs.gate.outputs.deploy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
 
       - name: Authenticate APEX deployment with Google Workload Identity
         uses: google-github-actions/auth@v3
@@ -53,20 +99,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # APEX's durable state — 13 agents, 4,722 researched leads, its whole
-          # task and memory history — lives in the existing Supabase Postgres
-          # project. The service simply has no DATABASE_URL pointing at it, and
-          # the GitHub production secret of that name is empty, which is what
-          # deadlocked every recovery attempt since 2026-08-29.
-          #
-          # Look for the credential in Google Secret Manager as well as the
-          # GitHub secret, and prefer a Secret Manager reference: it keeps the
-          # DSN off the revision spec entirely, the way APEX_ADMIN_TOKEN and
-          # APEX_ADMIN_PASSWORD are already attached.
-          #
-          # NEVER create a new database here. A fresh, empty Postgres would let
-          # the deploy go green while silently orphaning production data.
-
+          # APEX durable state lives in the existing production Postgres. Never
+          # create a replacement database merely to make deployment succeed.
           if [[ -n "${GITHUB_DATABASE_URL:-}" ]]; then
             echo 'source=github' >> "$GITHUB_OUTPUT"
             echo 'Resolved DATABASE_URL from the masked GitHub production secret.'
@@ -89,10 +123,6 @@ jobs:
           done
 
           echo 'source=none' >> "$GITHUB_OUTPUT"
-
-          # Names only — never values. One run of this makes it unambiguous
-          # whether the credential exists in the project at all, instead of
-          # leaving the next operator to guess.
           echo 'No DATABASE_URL found. Secrets that DO exist in this project:'
           gcloud secrets list --project "$GCP_PROJECT_ID" --format='value(name)' 2>/dev/null \
             | sed 's/^/  - /' || echo '  (unable to list secrets)'
@@ -100,26 +130,8 @@ jobs:
           {
             echo '### APEX database credential missing'
             echo
-            echo 'The Cloud Run service has no `DATABASE_URL`, the GitHub `DATABASE_URL`'
-            echo 'secret is empty, and no Secret Manager secret matched the names tried.'
-            echo
-            echo 'The database itself is healthy and holds live production data —'
-            echo 'only the connection string is missing. To restore it, store the'
-            echo "existing Supabase DSN (do **not** provision a new database) as a"
-            echo 'Secret Manager secret named `apex-database-url`:'
-            echo
-            echo '```'
-            echo "printf '%s' \"\$APEX_DSN\" | gcloud secrets create apex-database-url \\"
-            echo "  --project $GCP_PROJECT_ID --replication-policy=automatic --data-file=-"
-            echo
-            echo '# the Cloud Run runtime service account must be able to read it'
-            echo "gcloud secrets add-iam-policy-binding apex-database-url \\"
-            echo "  --project $GCP_PROJECT_ID \\"
-            echo "  --member serviceAccount:$EXPECTED_DEPLOY_SERVICE_ACCOUNT \\"
-            echo "  --role roles/secretmanager.secretAccessor"
-            echo '```'
-            echo
-            echo 'then re-run this workflow.'
+            echo 'The existing production database connection string could not be resolved.'
+            echo 'Do not provision a replacement database. Restore the existing DSN in Secret Manager or the GitHub production secret, then allow CI to produce a new eligible deployment.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate existing production Cloud Run target
@@ -142,6 +154,7 @@ jobs:
             echo 'Configured APEX Cloud Run service does not exist or is inaccessible. Refusing to create a replacement service.' >&2
             exit 4
           fi
+
           READY="$(gcloud run services describe "$SERVICE" \
             --project "$GCP_PROJECT_ID" \
             --region "$REGION" \
@@ -194,18 +207,29 @@ jobs:
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      - name: Build and push image from GitHub runner
+      - name: Build and push immutable image from verified CI SHA
         shell: bash
         run: |
           set -euo pipefail
-          IMAGE="us-central1-docker.pkg.dev/$GCP_PROJECT_ID/$ARTIFACT_REPO/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:$GITHUB_SHA"
+          IMAGE="us-central1-docker.pkg.dev/$GCP_PROJECT_ID/$ARTIFACT_REPO/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:$DEPLOY_SHA"
           docker build \
             --platform linux/amd64 \
-            --build-arg APEX_BUILD_SHA="$GITHUB_SHA" \
+            --build-arg APEX_BUILD_SHA="$DEPLOY_SHA" \
             --build-arg APEX_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -t "$IMAGE" .
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Re-verify current main before production mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse origin/main)"
+          if [[ "$DEPLOY_SHA" != "$current_main" ]]; then
+            echo "Deployment candidate became stale before Cloud Run update: candidate=$DEPLOY_SHA current-main=$current_main" >&2
+            exit 7
+          fi
 
       - name: Update existing Cloud Run service image
         env:
@@ -222,13 +246,10 @@ jobs:
           )
           case "${DB_SOURCE:-none}" in
             secret-manager)
-              # Preferred: the revision carries a reference, not the DSN itself.
               args+=(--update-secrets "DATABASE_URL=${DB_SECRET_NAME}:latest")
               echo "Attaching DATABASE_URL from Secret Manager secret '$DB_SECRET_NAME'."
               ;;
             github)
-              # ^delim^ form so a DSN containing commas is not split into
-              # several bogus env vars by gcloud's default parser.
               args+=(--update-env-vars "^__APEX_DB__^DATABASE_URL=$DATABASE_URL")
               echo 'Attaching DATABASE_URL from masked GitHub production secret.'
               ;;
@@ -249,11 +270,6 @@ jobs:
             --format='value(status.url)')
           echo "Service URL: ${SERVICE_URL:-<none>}"
 
-          # Cloud Run leaves status.url empty while a service has never had a
-          # Ready revision -- exactly the state APEX was stuck in. Without this
-          # guard the curls below degrade into requests for the literal path
-          # "/" and fail with a connection error that says nothing about the
-          # actual cause.
           if [[ -z "$SERVICE_URL" ]]; then
             echo 'Cloud Run reports no service URL, so the new revision never became Ready.' >&2
             echo 'Recent revision failures:' >&2
@@ -278,7 +294,7 @@ jobs:
           d=json.load(open('/tmp/apex-health.json'))
           sha=d.get('build',{}).get('sha')
           print(f"Health: {d.get('status','?')}  SHA: {sha or '?'}  Agents: {d.get('agents','?')}")
-          expected=os.environ.get('GITHUB_SHA')
+          expected=os.environ.get('DEPLOY_SHA')
           if sha != expected:
               print(f"Expected deployed SHA {expected}, got {sha}", file=sys.stderr)
               raise SystemExit(1)
