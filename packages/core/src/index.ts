@@ -1,5 +1,6 @@
 export * from './types.js';
 export * from './llm-client.js';
+export * from './model-routing.js';
 export * from './tool-registry-with-base44.js';
 export * from './base44-superagent.js';
 export * from './orchestration-tools.js';
