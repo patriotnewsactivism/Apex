@@ -27,6 +27,25 @@ export interface LLMToolCall {
   args: Record<string, unknown>;
 }
 
+export interface LLMRouterAttempt {
+  provider?: string;
+  model?: string;
+  status?: number;
+}
+
+/**
+ * Privacy-minimized subset of OpenRouter router metadata. APEX intentionally
+ * keeps only routing identity/status fields; summaries, pipeline payloads and
+ * other free-form router data are not persisted into model-learning telemetry.
+ */
+export interface LLMRouterMetadata {
+  requested?: string;
+  strategy?: string;
+  attempt?: number;
+  selectedProvider?: string;
+  attempts?: LLMRouterAttempt[];
+}
+
 export interface LLMResponse {
   content: string;
   toolCalls: LLMToolCall[];
@@ -37,6 +56,8 @@ export interface LLMResponse {
   servedModel?: string;
   /** Ordered model IDs sent to the gateway for this generation. */
   requestedModels?: string[];
+  /** Privacy-minimized OpenRouter routing audit metadata, when returned. */
+  routerMetadata?: LLMRouterMetadata;
   /** End-to-end provider request latency observed by APEX. */
   latencyMs?: number;
   /** OpenRouter-reported generation cost when supplied in usage.cost. */
