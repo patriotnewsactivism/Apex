@@ -44,6 +44,45 @@ export interface WorkforceRecoveryResult {
   note: string;
 }
 
+export interface OpenRouterModelPolicy {
+  version: 1;
+  selectedModelIds: string[];
+  rolePrimary: Record<string, string>;
+}
+
+export interface OpenRouterModelCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  contextLength: number;
+  pricing: {
+    inputPerMillion: number | null;
+    outputPerMillion: number | null;
+    request: number | null;
+  };
+  capabilities: {
+    toolCalling: boolean;
+    structuredOutput: boolean;
+    reasoning: boolean;
+    vision: boolean;
+    inputModalities: string[];
+    outputModalities: string[];
+  };
+  isFree: boolean;
+  agentReady: boolean;
+  capabilityScore: number;
+  efficiencyScore: number;
+  recommendedFor: string[];
+}
+
+export interface OpenRouterModelCatalogResponse {
+  models: OpenRouterModelCatalogItem[];
+  policy: OpenRouterModelPolicy;
+  source: string;
+  pricingUpdatedAt: string;
+  efficiencyMethod: string;
+}
+
 async function settingsFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const token = localStorage.getItem('apex_token');
   const headers: Record<string, string> = {
@@ -82,4 +121,22 @@ export const settingsApi = {
       method: 'POST',
       body: JSON.stringify({}),
     }),
+  models: () => settingsFetch<OpenRouterModelCatalogResponse>('/api/settings/models'),
+  modelPolicy: () => settingsFetch<{ policy: OpenRouterModelPolicy }>('/api/settings/models/policy'),
+  saveModelPolicy: (policy: OpenRouterModelPolicy) =>
+    settingsFetch<{
+      ok: boolean;
+      policy: OpenRouterModelPolicy;
+      applies: string;
+      unknownModelIds: string[];
+      warning: string | null;
+    }>('/api/settings/models/policy', {
+      method: 'PUT',
+      body: JSON.stringify(policy),
+    }),
+  resetModelPolicy: () =>
+    settingsFetch<{ ok: boolean; policy: OpenRouterModelPolicy; applies: string }>(
+      '/api/settings/models/policy',
+      { method: 'DELETE' },
+    ),
 };
