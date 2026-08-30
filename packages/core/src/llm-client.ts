@@ -1,4 +1,4 @@
-import type { LLMClientConfig, LLMMessage, LLMResponse, LLMTool, LLMToolCall } from './types.js';
+import type { LLMClientConfig, LLMExecutionContext, LLMMessage, LLMResponse, LLMTool, LLMToolCall } from './types.js';
 import {
   isTotalDailyCapReached,
   msUntilDailyReset,
@@ -9,9 +9,16 @@ import {
 } from './token-ledger.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
+  getActiveOpenRouterModelPolicy,
   getOpenRouterModelChainForRole,
+  getPinnedOpenRouterModelForRole,
   hasCustomOpenRouterModelPolicy,
 } from './model-routing.js';
+import {
+  getAdaptiveModelOrder,
+  recordModelTelemetry,
+  recordResponseTelemetry,
+} from './model-intelligence.js';
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
@@ -214,7 +221,12 @@ type CredentialCooldown = {
   reason: string;
 };
 const credentialCooldowns = new Map<string, CredentialCooldown>();
-type ProviderRequestError = Error & { status?: number; retryAfterMs?: number };
+type ProviderRequestError = Error & {
+  status?: number;
+  retryAfterMs?: number;
+  requestedModels?: string[];
+  latencyMs?: number;
+};
 const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
@@ -511,6 +523,9 @@ type CompatibleResponse = {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    cost?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
   };
   error?: { message?: string; type?: string; code?: string | number };
 };
@@ -521,6 +536,7 @@ async function callCompatibleProvider(
   messages: LLMMessage[],
   tools: LLMTool[] | undefined,
   config: LLMClientConfig,
+  execution?: LLMExecutionContext,
 ): Promise<LLMResponse> {
   const baseURL = providerBaseURL(provider);
   if (!baseURL) {
@@ -529,16 +545,34 @@ async function callCompatibleProvider(
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 75_000);
+  const startedAt = Date.now();
+  let routedModels = [provider.model];
 
   try {
-    const customPolicy = hasCustomOpenRouterModelPolicy();
-    const routedModels = customPolicy
+    const policy = getActiveOpenRouterModelPolicy();
+    const customPolicy = Boolean(policy);
+    routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
       : [provider.model];
+
+    if (policy?.routingMode === 'adaptive') {
+      routedModels = await getAdaptiveModelOrder({
+        role: config.role,
+        candidates: routedModels,
+        objective: policy.optimizationObjective,
+        minimumSamples: policy.minimumSamples,
+        pinnedModel: getPinnedOpenRouterModelForRole(config.role),
+        targetComplexity: execution?.complexityHint,
+      });
+    }
+
     const body: Record<string, unknown> = {
       messages: toWireMessages(messages),
       temperature: config.temperature ?? 0.7,
       max_tokens: config.maxTokens ?? 2048,
+      // Explicitly request usage data so OpenRouter returns billed generation
+      // cost alongside token counts when available.
+      usage: { include: true },
     };
     if (customPolicy) body.models = routedModels;
     else body.model = provider.model;
@@ -583,6 +617,7 @@ async function callCompatibleProvider(
     const choice = parsed.choices?.[0]?.message;
     if (!choice) throw new Error('provider returned no completion choice');
     const servedModel = parsed.model || routedModels[0] || provider.model;
+    const rawCost = Number(parsed.usage?.cost);
 
     return {
       content: choice.content ?? '',
@@ -592,7 +627,18 @@ async function callCompatibleProvider(
         completionTokens: parsed.usage?.completion_tokens ?? 0,
       },
       model: `${provider.name}/${servedModel}`,
+      servedModel,
+      requestedModels: [...routedModels],
+      latencyMs: Date.now() - startedAt,
+      costUsd: Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null,
+      cachedTokens: Math.max(0, parsed.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+      reasoningTokens: Math.max(0, parsed.usage?.completion_tokens_details?.reasoning_tokens ?? 0),
     };
+  } catch (error) {
+    const err = error instanceof Error ? error as ProviderRequestError : new Error(String(error)) as ProviderRequestError;
+    err.requestedModels = [...routedModels];
+    err.latencyMs = Date.now() - startedAt;
+    throw err;
   } finally {
     clearTimeout(timeout);
   }
@@ -648,7 +694,11 @@ class MultiProviderClient {
     this.config = config;
   }
 
-  async complete(messages: LLMMessage[], tools?: LLMTool[]): Promise<LLMResponse> {
+  async complete(
+    messages: LLMMessage[],
+    tools?: LLMTool[],
+    execution?: LLMExecutionContext,
+  ): Promise<LLMResponse> {
     await acquireLLMConcurrencySlot();
 
     try {
@@ -756,24 +806,60 @@ class MultiProviderClient {
                   trimmed.messages,
                   tools,
                   this.config,
+                  execution,
                 );
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
+                await recordResponseTelemetry({
+                  response: result,
+                  provider: provider.name,
+                  requestedModels: result.requestedModels ?? [provider.model],
+                  execution: {
+                    ...execution,
+                    role: execution?.role ?? this.config.role,
+                  },
+                  hadTools: Boolean(tools?.length),
+                });
                 return result;
               } catch (error) {
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
                   err.name === 'AbortError' ? 'request timed out' : err.message;
-                const attemptedModel = hasCustomOpenRouterModelPolicy()
-                  ? getOpenRouterModelChainForRole(this.config.role)[0] ?? provider.model
-                  : provider.model;
+                const requestedModels = err.requestedModels?.length
+                  ? err.requestedModels
+                  : hasCustomOpenRouterModelPolicy()
+                    ? getOpenRouterModelChainForRole(this.config.role)
+                    : [provider.model];
+                const attemptedModel = requestedModels[0] ?? provider.model;
                 recordProviderFailure(
                   provider.name,
                   attemptedModel,
                   status,
                   message,
                 );
+                await recordModelTelemetry({
+                  taskId: execution?.taskId,
+                  agentId: execution?.agentId,
+                  role: execution?.role ?? this.config.role,
+                  provider: provider.name,
+                  requestedModels,
+                  // Only attribute a gateway failure to a specific model when
+                  // exactly one model was requested; a multi-model OpenRouter
+                  // fallback failure cannot honestly identify which rung failed.
+                  servedModel: requestedModels.length === 1 ? requestedModels[0] : undefined,
+                  success: false,
+                  latencyMs: err.latencyMs ?? 0,
+                  promptTokens: 0,
+                  completionTokens: 0,
+                  cachedTokens: 0,
+                  reasoningTokens: 0,
+                  costUsd: null,
+                  toolCalls: 0,
+                  hadTools: Boolean(tools?.length),
+                  complexityHint: execution?.complexityHint,
+                  errorType: status ? `http_${status}` : err.name || 'provider_error',
+                });
                 setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
@@ -805,9 +891,20 @@ class MultiProviderClient {
                       emergency.messages,
                       tools,
                       this.config,
+                      execution,
                     );
                     clearCredentialCooldown(credentialId);
                     recordTokenUsage(provider.name, result.usage);
+                    await recordResponseTelemetry({
+                      response: result,
+                      provider: provider.name,
+                      requestedModels: result.requestedModels ?? [provider.model],
+                      execution: {
+                        ...execution,
+                        role: execution?.role ?? this.config.role,
+                      },
+                      hadTools: Boolean(tools?.length),
+                    });
                     return result;
                   } catch {
                     // Continue to the next credential/provider.
@@ -1031,13 +1128,13 @@ export function getProviderRoster(): {
 
 export function logProviderRoster(): void {
   const roster = getProviderRoster();
-  const custom = hasCustomOpenRouterModelPolicy();
+  const policy = getActiveOpenRouterModelPolicy();
+  const custom = Boolean(policy);
   const modelOrder = getOpenRouterModelChainForRole();
   console.log(
     `[LLM] OpenRouter roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} credential slots ready; ` +
-      `policy=${custom ? 'operator-selected' : 'reviewed-default'}; models=${modelOrder.join(' -> ')}`,
+      `policy=${custom ? `operator-${policy?.routingMode ?? 'manual'}` : 'reviewed-default'}; models=${modelOrder.join(' -> ')}`,
   );
-
   if (roster.emptyFreeSlots.length) {
     console.warn(
       `[LLM] Provider configuration missing: ${roster.emptyFreeSlots.join(', ')}`,
