@@ -14,11 +14,12 @@ concurrency:
 
 env:
   GCP_PROJECT_ID: apex-503709
+  ARTIFACT_REPO: cloud-run-source-deploy
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -33,12 +34,28 @@ jobs:
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      - name: Build and push image
+      - name: Ensure Artifact Registry repository exists
+        shell: bash
         run: |
-          gcloud builds submit . \
+          set -euo pipefail
+          if ! gcloud artifacts repositories describe "$ARTIFACT_REPO" \
             --project "$GCP_PROJECT_ID" \
-            --tag us-central1-docker.pkg.dev/$GCP_PROJECT_ID/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest \
-            --timeout=900
+            --location us-central1 >/dev/null 2>&1; then
+            gcloud artifacts repositories create "$ARTIFACT_REPO" \
+              --project "$GCP_PROJECT_ID" \
+              --location us-central1 \
+              --repository-format docker \
+              --description "APEX Cloud Run production images"
+          fi
+
+      - name: Build and push image from GitHub runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="us-central1-docker.pkg.dev/$GCP_PROJECT_ID/$ARTIFACT_REPO/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:$GITHUB_SHA"
+          docker build --platform linux/amd64 -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Deploy to Cloud Run
         run: |
@@ -49,7 +66,7 @@ jobs:
           gcloud run deploy ${{ secrets.APEX_CLOUD_RUN_SERVICE }} \
             --project "$GCP_PROJECT_ID" \
             --region ${{ secrets.APEX_CLOUD_RUN_REGION }} \
-            --image us-central1-docker.pkg.dev/$GCP_PROJECT_ID/cloud-run-source-deploy/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:latest \
+            --image "$IMAGE" \
             --allow-unauthenticated \
             --quiet
 
