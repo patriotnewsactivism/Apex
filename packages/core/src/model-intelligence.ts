@@ -1,12 +1,17 @@
 import { db, logs, taskOutcomes } from '@workspace/db';
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
 import type { LLMExecutionContext, LLMResponse } from './types.js';
-import type { ModelOptimizationObjective } from './model-routing.js';
+import {
+  getActiveOpenRouterModelPolicy,
+  type ModelOptimizationObjective,
+} from './model-routing.js';
+import { getCurrentLLMExecutionContext } from './model-execution-context.js';
 
 export const MODEL_TELEMETRY_LOG_MESSAGE = '[model-intelligence] llm-generation';
 const MODEL_INTELLIGENCE_CACHE_MS = 60_000;
 const DEFAULT_WINDOW_DAYS = 30;
 const MAX_TELEMETRY_ROWS = 10_000;
+const EXPLORATION_MAX_COMPLEXITY = 0.5;
 
 export interface ModelTelemetryEvent {
   taskId?: string;
@@ -231,6 +236,69 @@ export function rankModelsFromStats(input: {
     order,
     changed: order.some((modelId, index) => modelId !== candidates[index]),
     evidenceReadyModels: evidenceReady.length,
+  };
+}
+
+function deterministicFraction(seed: string): number {
+  // FNV-1a: deterministic across worker processes/restarts, cheap, and adequate
+  // for traffic sampling. This is not used for security or randomness-sensitive work.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < seed.length; index++) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) / 0x1_0000_0000;
+}
+
+/**
+ * Optional cold-start learning trial. It is intentionally separate from learned
+ * ranking: unqualified models normally keep their operator slots, but an
+ * explicitly enabled low-rate trial can temporarily put the least-sampled
+ * selected model first on an eligible low-complexity task so evidence can grow.
+ */
+export function applyControlledExploration(input: {
+  order: string[];
+  stats: ModelPerformanceStats[];
+  minimumSamples: number;
+  explorationRate: number;
+  taskId?: string;
+  role?: string;
+  targetComplexity?: number;
+  pinnedModel?: string;
+}): { order: string[]; explored: boolean; modelId?: string } {
+  const order = [...input.order];
+  if (
+    order.length < 2 ||
+    input.pinnedModel ||
+    !input.taskId ||
+    input.targetComplexity === undefined ||
+    input.targetComplexity > EXPLORATION_MAX_COMPLEXITY
+  ) {
+    return { order, explored: false };
+  }
+
+  const rate = Math.max(0, Math.min(0.25, input.explorationRate));
+  if (rate <= 0) return { order, explored: false };
+  if (deterministicFraction(`${input.taskId}:${input.role ?? ''}:model-trial`) >= rate) {
+    return { order, explored: false };
+  }
+
+  const statByModel = new Map(input.stats.map((stat) => [stat.modelId, stat]));
+  const underSampled = order
+    .map((modelId, index) => ({
+      modelId,
+      index,
+      samples: statByModel.get(modelId)?.taskSamples ?? 0,
+    }))
+    .filter((entry) => entry.samples < input.minimumSamples)
+    .sort((a, b) => a.samples - b.samples || a.index - b.index);
+
+  const trial = underSampled[0];
+  if (!trial || trial.modelId === order[0]) return { order, explored: false };
+  return {
+    order: [trial.modelId, ...order.filter((modelId) => modelId !== trial.modelId)],
+    explored: true,
+    modelId: trial.modelId,
   };
 }
 
@@ -526,5 +594,18 @@ export async function getAdaptiveModelOrder(input: {
     targetComplexity: input.targetComplexity,
     pinnedModel: input.pinnedModel,
   });
-  return report.recommendedOrder;
+
+  const policy = getActiveOpenRouterModelPolicy();
+  const execution = getCurrentLLMExecutionContext();
+  const trial = applyControlledExploration({
+    order: report.recommendedOrder,
+    stats: report.stats,
+    minimumSamples: input.minimumSamples,
+    explorationRate: policy?.routingMode === 'adaptive' ? policy.explorationRate : 0,
+    taskId: execution?.taskId,
+    role: input.role,
+    targetComplexity: input.targetComplexity,
+    pinnedModel: input.pinnedModel,
+  });
+  return trial.order;
 }
