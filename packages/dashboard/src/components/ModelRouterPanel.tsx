@@ -32,6 +32,7 @@ const DEFAULT_POLICY: OpenRouterModelPolicy = {
   optimizationObjective: 'balanced',
   minimumSamples: 5,
   explorationRate: 0,
+  complexityEscalation: false,
 };
 
 type SortMode = 'efficiency' | 'input-price' | 'output-price' | 'context' | 'name';
@@ -135,7 +136,11 @@ export function ModelRouterPanel() {
 
   useEffect(() => {
     if (!initializedFromServer && catalogQuery.data?.policy) {
-      setPolicy({ ...catalogQuery.data.policy, explorationRate: catalogQuery.data.policy.explorationRate ?? 0 });
+      setPolicy({
+        ...catalogQuery.data.policy,
+        explorationRate: catalogQuery.data.policy.explorationRate ?? 0,
+        complexityEscalation: catalogQuery.data.policy.complexityEscalation ?? false,
+      });
       setInitializedFromServer(true);
     }
   }, [catalogQuery.data?.policy, initializedFromServer]);
@@ -182,7 +187,13 @@ export function ModelRouterPanel() {
   }, [models, search, freeOnly, agentReadyOnly, selectedOnly, selectedSet, sortMode]);
 
   const intelligenceQuery = useQuery({
-    queryKey: ['settings', 'models', 'intelligence', intelligenceRole, intelligenceComplexity, catalogQuery.data?.policy?.optimizationObjective, catalogQuery.data?.policy?.minimumSamples, catalogQuery.data?.policy?.explorationRate],
+    queryKey: [
+      'settings', 'models', 'intelligence', intelligenceRole, intelligenceComplexity,
+      catalogQuery.data?.policy?.optimizationObjective,
+      catalogQuery.data?.policy?.minimumSamples,
+      catalogQuery.data?.policy?.explorationRate,
+      catalogQuery.data?.policy?.complexityEscalation,
+    ],
     queryFn: () => settingsApi.modelIntelligence(intelligenceRole, {
       complexity: intelligenceComplexity === 'all' ? undefined : Number(intelligenceComplexity),
     }),
@@ -192,9 +203,17 @@ export function ModelRouterPanel() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: () => settingsApi.saveModelPolicy({ ...policy, explorationRate: policy.explorationRate ?? 0 }),
+    mutationFn: () => settingsApi.saveModelPolicy({
+      ...policy,
+      explorationRate: policy.explorationRate ?? 0,
+      complexityEscalation: policy.complexityEscalation ?? false,
+    }),
     onSuccess: (result) => {
-      setPolicy({ ...result.policy, explorationRate: result.policy.explorationRate ?? 0 });
+      setPolicy({
+        ...result.policy,
+        explorationRate: result.policy.explorationRate ?? 0,
+        complexityEscalation: result.policy.complexityEscalation ?? false,
+      });
       setSavedMessage(result.warning ?? `Saved — applies to ${result.applies}.`);
       queryClient.invalidateQueries({ queryKey: ['settings', 'models'] });
       queryClient.invalidateQueries({ queryKey: ['agents'] });
@@ -205,7 +224,11 @@ export function ModelRouterPanel() {
   const resetMutation = useMutation({
     mutationFn: () => settingsApi.resetModelPolicy(),
     onSuccess: (result) => {
-      setPolicy({ ...result.policy, explorationRate: result.policy.explorationRate ?? 0 });
+      setPolicy({
+        ...result.policy,
+        explorationRate: result.policy.explorationRate ?? 0,
+        complexityEscalation: result.policy.complexityEscalation ?? false,
+      });
       setSavedMessage('Restored the reviewed DeepSeek V4 fallback chain.');
       queryClient.invalidateQueries({ queryKey: ['settings', 'models'] });
     },
@@ -247,6 +270,7 @@ export function ModelRouterPanel() {
   const freeSelected = selectedModels.filter((model) => model.isFree).length;
   const agentReadySelected = selectedModels.filter((model) => model.agentReady).length;
   const explorationRate = policy.explorationRate ?? 0;
+  const complexityEscalation = policy.complexityEscalation ?? false;
   const intelligence = intelligenceQuery.data?.report;
   const intelligenceStats = useMemo(() => {
     if (!intelligence) return [];
@@ -343,9 +367,21 @@ export function ModelRouterPanel() {
               <option value={0.25}>25% maximum</option>
             </select>
           </label>
+          <label style={{ display: 'grid', gap: 5 }}>
+            <span style={{ fontSize: 9, color: 'var(--color-apex-muted)', textTransform: 'uppercase', letterSpacing: '.05em' }}>Smart complexity escalation</span>
+            <select
+              className="apex-input"
+              value={complexityEscalation ? 'on' : 'off'}
+              onChange={(event) => setPolicy((previous) => ({ ...previous, complexityEscalation: event.target.value === 'on' }))}
+            >
+              <option value="off">Off — keep one objective</option>
+              <option value="on">On — cost routine, quality hard</option>
+            </select>
+          </label>
         </div>
         <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', lineHeight: 1.5, marginTop: 9 }}>
           <strong style={{ color: 'var(--color-apex-text)' }}>{MODE_COPY[policy.routingMode]}</strong> {OBJECTIVE_COPY[policy.optimizationObjective]} Models below the evidence threshold keep their operator-defined positions; APEX never fills the roster with an unselected model.
+          {complexityEscalation && <><br /><strong style={{ color: 'var(--color-apex-text)' }}>Complexity escalation:</strong> hard tasks (complexity ≥ 0.70) use the quality objective; routine tasks (≤ 0.35) shift neutral balanced routing toward budget. Explicit quality/budget/speed preferences are preserved on routine work, and role pins always win.</>}
           {explorationRate > 0 && <><br /><strong style={{ color: 'var(--color-apex-text)' }}>Learning trials:</strong> only active in Adaptive mode, only on eligible tasks with pre-run complexity ≤ 0.5, never when that role has a hard model pin, and deterministically favor the least-sampled selected model. Maximum configured trial traffic is {Math.round(explorationRate * 100)}%.</>}
         </div>
       </div>
@@ -473,7 +509,7 @@ export function ModelRouterPanel() {
         {intelligence && (
           <>
             <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', lineHeight: 1.5, marginBottom: 10 }}>
-              {intelligenceQuery.data?.explanation} Evidence-qualified models: <strong style={{ color: 'var(--color-apex-text)' }}>{intelligence.evidenceReadyModels}</strong>. Threshold: {intelligence.minimumSamples} completed tasks/model. Objective: {intelligence.objective}. {intelligence.recommendationChanged ? 'The evidence currently recommends a different order for qualified slots.' : 'The evidence does not currently justify changing the saved qualified slots.'}
+              {intelligenceQuery.data?.explanation} Evidence-qualified models: <strong style={{ color: 'var(--color-apex-text)' }}>{intelligence.evidenceReadyModels}</strong>. Threshold: {intelligence.minimumSamples} completed tasks/model. Effective objective: <strong style={{ color: 'var(--color-apex-text)' }}>{intelligenceQuery.data?.effectiveObjective ?? intelligence.objective}</strong>{intelligenceQuery.data?.baseObjective && intelligenceQuery.data.baseObjective !== intelligenceQuery.data.effectiveObjective ? ` (base ${intelligenceQuery.data.baseObjective})` : ''}. {intelligence.recommendationChanged ? 'The evidence currently recommends a different order for qualified slots.' : 'The evidence does not currently justify changing the saved qualified slots.'}
             </div>
             {intelligenceStats.length > 0 ? (
               <div style={{ overflowX: 'auto', border: '1px solid var(--color-apex-border)', borderRadius: 8 }}>
@@ -512,7 +548,7 @@ export function ModelRouterPanel() {
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(300px,1fr)', gap: 14 }} className="model-routing-grid">
         <div style={{ border: '1px solid var(--color-apex-border)', borderRadius: 9, padding: 13, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>Global fallback priority</div>
-          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>Manual/advisor use this exact order. Adaptive may reorder evidence-qualified slots; if controlled learning trials are enabled, an eligible low-complexity task may temporarily start with the least-sampled selected model.</div>
+          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>Manual/advisor use this exact order. Adaptive may reorder evidence-qualified slots; complexity escalation may change the scoring objective for the current task; controlled learning trials may temporarily start an eligible low-complexity task with the least-sampled selected model.</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {policy.selectedModelIds.map((id, index) => {
               const model = modelById.get(id);
