@@ -47,6 +47,8 @@ jobs:
           fi
 
       - name: Validate existing production Cloud Run target
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           set -euo pipefail
@@ -87,15 +89,22 @@ jobs:
 
           python3 - <<'PY'
           import json
+          import os
 
           service = json.load(open('/tmp/apex-service.json'))
           containers = service.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
           env = {item.get('name'): item for item in (containers[0].get('env', []) if containers else [])}
           required = ('DATABASE_URL', 'APEX_ADMIN_TOKEN', 'APEX_ADMIN_PASSWORD')
-          missing = [name for name in required if name not in env]
+          github_database_url = bool(os.environ.get('DATABASE_URL'))
+          missing = [
+              name for name in required
+              if name not in env and not (name == 'DATABASE_URL' and github_database_url)
+          ]
           for name in required:
               item = env.get(name)
-              if not item:
+              if name == 'DATABASE_URL' and not item and github_database_url:
+                  print('DATABASE_URL: available from masked GitHub production secret')
+              elif not item:
                   print(f'{name}: missing')
               elif item.get('valueFrom'):
                   print(f'{name}: configured from Secret Manager')
@@ -122,14 +131,21 @@ jobs:
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Update existing Cloud Run service image
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           set -euo pipefail
-          gcloud run services update "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" \
-            --project "$GCP_PROJECT_ID" \
-            --region "${{ secrets.APEX_CLOUD_RUN_REGION }}" \
-            --image "$IMAGE" \
-            --quiet
+          args=(
+            --project "$GCP_PROJECT_ID"
+            --region "${{ secrets.APEX_CLOUD_RUN_REGION }}"
+            --image "$IMAGE"
+          )
+          if [[ -n "${DATABASE_URL:-}" ]]; then
+            args+=(--update-env-vars "^__APEX_DB__^DATABASE_URL=$DATABASE_URL")
+            echo 'Attaching DATABASE_URL from masked GitHub production secret.'
+          fi
+          gcloud run services update "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" "${args[@]}" --quiet
 
       - name: Verify deployment and auth boundary
         shell: bash
