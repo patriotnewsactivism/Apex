@@ -146,6 +146,7 @@ function defaultPolicy(): OpenRouterModelPolicy {
     routingMode: 'manual',
     optimizationObjective: 'balanced',
     minimumSamples: 5,
+    explorationRate: 0,
   };
 }
 
@@ -195,8 +196,9 @@ export function createModelSettingsRouter(): Router {
       res.json({
         report,
         routingMode: policy.routingMode,
+        explorationRate: policy.explorationRate,
         explanation: policy.routingMode === 'adaptive'
-          ? 'Evidence-qualified models may reorder inside the selected roster. Explicit role pins remain first.'
+          ? `Evidence-qualified models may reorder inside the selected roster. Explicit role pins remain first.${policy.explorationRate > 0 ? ` Controlled learning trials are enabled for up to ${Math.round(policy.explorationRate * 100)}% of eligible low-complexity tasks.` : ''}`
           : policy.routingMode === 'advisor'
             ? 'Recommendations are advisory only; the saved operator order remains authoritative.'
             : 'Manual mode preserves the exact saved operator order.',
