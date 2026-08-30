@@ -54,6 +54,7 @@ export interface OpenRouterModelPolicy {
   routingMode: ModelRoutingMode;
   optimizationObjective: ModelOptimizationObjective;
   minimumSamples: number;
+  explorationRate: number;
 }
 
 export interface OpenRouterModelCatalogItem {
@@ -125,6 +126,7 @@ export interface ModelIntelligenceReport {
 export interface ModelIntelligenceResponse {
   report: ModelIntelligenceReport;
   routingMode: ModelRoutingMode;
+  explorationRate: number;
   explanation: string;
 }
 
