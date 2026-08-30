@@ -1,6 +1,6 @@
 import { db, logs, taskOutcomes } from '@workspace/db';
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
-import type { LLMExecutionContext, LLMResponse } from './types.js';
+import type { LLMExecutionContext, LLMResponse, LLMRouterMetadata } from './types.js';
 import {
   getActiveOpenRouterModelPolicy,
   type ModelOptimizationObjective,
@@ -15,13 +15,20 @@ const EXPLORATION_MAX_COMPLEXITY = 0.5;
 const ROUTINE_COMPLEXITY_MAX = 0.35;
 const HARD_COMPLEXITY_MIN = 0.70;
 
+export type ModelAttributionBasis = 'exact_served_model' | 'single_route' | 'unattributed';
+
 export interface ModelTelemetryEvent {
   taskId?: string;
   agentId?: string;
   role?: string;
   provider: string;
   requestedModels: string[];
+  /** Concrete model OpenRouter reports actually serving the call. */
   servedModel?: string;
+  /** Operator-selected route candidate this call can safely teach, if known. */
+  attributedModelId?: string;
+  attributionBasis?: ModelAttributionBasis;
+  routerMetadata?: LLMRouterMetadata;
   success: boolean;
   latencyMs: number;
   promptTokens: number;
@@ -65,6 +72,8 @@ export interface ModelRankingResult {
   recommendedOrder: string[];
   recommendationChanged: boolean;
   evidenceReadyModels: number;
+  attributionCoverage: number;
+  unattributedSuccessfulCalls: number;
   stats: ModelPerformanceStats[];
 }
 
@@ -117,6 +126,57 @@ function safeStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+function safeRouterMetadata(value: unknown): LLMRouterMetadata | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const rawAttempts = Array.isArray(raw.attempts) ? raw.attempts : [];
+  const attempts = rawAttempts.slice(0, 25).flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const entry = item as Record<string, unknown>;
+    const status = Number(entry.status);
+    return [{
+      provider: typeof entry.provider === 'string' ? entry.provider.slice(0, 120) : undefined,
+      model: typeof entry.model === 'string' ? entry.model.slice(0, 200) : undefined,
+      status: Number.isFinite(status) ? Math.floor(status) : undefined,
+    }];
+  });
+  const attempt = Number(raw.attempt);
+  const metadata: LLMRouterMetadata = {
+    requested: typeof raw.requested === 'string' ? raw.requested.slice(0, 200) : undefined,
+    strategy: typeof raw.strategy === 'string' ? raw.strategy.slice(0, 80) : undefined,
+    attempt: Number.isFinite(attempt) && attempt >= 0 ? Math.floor(attempt) : undefined,
+    selectedProvider: typeof raw.selectedProvider === 'string' ? raw.selectedProvider.slice(0, 120) : undefined,
+    attempts: attempts.length ? attempts : undefined,
+  };
+  return Object.values(metadata).some((item) => item !== undefined) ? metadata : undefined;
+}
+
+/**
+ * Attribute a gateway observation to an operator-selected route candidate only
+ * when that conclusion is defensible from the response itself.
+ *
+ * - Exact concrete match is authoritative.
+ * - A one-model request is safe to credit to that sole requested route even if
+ *   it is a `~latest` alias or OpenRouter router whose response reports a
+ *   different concrete model: no cross-model fallback candidate existed.
+ * - Multi-model alias/router fallbacks remain unattributed unless the concrete
+ *   served model exactly matches one of the requested candidates. We explicitly
+ *   do not guess which alias resolved to a concrete model.
+ */
+export function attributeModelForLearning(input: {
+  requestedModels: string[];
+  servedModel?: string;
+}): { modelId?: string; basis: ModelAttributionBasis } {
+  const requested = [...new Set(input.requestedModels.filter(Boolean))];
+  if (input.servedModel && requested.includes(input.servedModel)) {
+    return { modelId: input.servedModel, basis: 'exact_served_model' };
+  }
+  if (requested.length === 1) {
+    return { modelId: requested[0], basis: 'single_route' };
+  }
+  return { basis: 'unattributed' };
+}
+
 function telemetryFromRow(row: TelemetryRow): ModelTelemetryEvent | null {
   const data = row.data ?? {};
   const requestedModels = safeStringArray(data.requestedModels);
@@ -124,6 +184,15 @@ function telemetryFromRow(row: TelemetryRow): ModelTelemetryEvent | null {
   const servedModel = typeof data.servedModel === 'string' ? data.servedModel : undefined;
   const role = typeof data.role === 'string' ? data.role : undefined;
   if (!servedModel && data.success !== false) return null;
+  const computedAttribution = attributeModelForLearning({ requestedModels, servedModel });
+  const storedBasis = typeof data.attributionBasis === 'string' && [
+    'exact_served_model', 'single_route', 'unattributed',
+  ].includes(data.attributionBasis)
+    ? data.attributionBasis as ModelAttributionBasis
+    : computedAttribution.basis;
+  const storedAttributed = typeof data.attributedModelId === 'string'
+    ? data.attributedModelId
+    : computedAttribution.modelId;
   return {
     taskId: row.taskId ?? (typeof data.taskId === 'string' ? data.taskId : undefined),
     agentId: row.agentId ?? (typeof data.agentId === 'string' ? data.agentId : undefined),
@@ -131,6 +200,9 @@ function telemetryFromRow(row: TelemetryRow): ModelTelemetryEvent | null {
     provider,
     requestedModels,
     servedModel,
+    attributedModelId: storedAttributed,
+    attributionBasis: storedBasis,
+    routerMetadata: safeRouterMetadata(data.routerMetadata),
     success: data.success !== false,
     latencyMs: Math.max(0, safeNumber(data.latencyMs)),
     promptTokens: Math.max(0, safeNumber(data.promptTokens)),
@@ -328,6 +400,9 @@ export function applyControlledExploration(input: {
 
 export async function recordModelTelemetry(event: ModelTelemetryEvent): Promise<void> {
   try {
+    const attribution = event.attributedModelId
+      ? { modelId: event.attributedModelId, basis: event.attributionBasis ?? 'exact_served_model' as ModelAttributionBasis }
+      : attributeModelForLearning({ requestedModels: event.requestedModels, servedModel: event.servedModel });
     await db.insert(logs).values({
       agentId: event.agentId ?? null,
       taskId: event.taskId ?? null,
@@ -335,8 +410,11 @@ export async function recordModelTelemetry(event: ModelTelemetryEvent): Promise<
       message: MODEL_TELEMETRY_LOG_MESSAGE,
       data: {
         ...event,
+        attributedModelId: attribution.modelId,
+        attributionBasis: attribution.basis,
         // Keep the event small and deterministic; never store prompt/completion content.
         requestedModels: event.requestedModels.slice(0, 500),
+        routerMetadata: safeRouterMetadata(event.routerMetadata),
       },
       timestamp: new Date(),
     });
@@ -354,6 +432,10 @@ export async function recordResponseTelemetry(input: {
   hadTools: boolean;
 }): Promise<void> {
   const response = input.response;
+  const attribution = attributeModelForLearning({
+    requestedModels: input.requestedModels,
+    servedModel: response.servedModel,
+  });
   await recordModelTelemetry({
     taskId: input.execution?.taskId,
     agentId: input.execution?.agentId,
@@ -361,6 +443,9 @@ export async function recordResponseTelemetry(input: {
     provider: input.provider,
     requestedModels: input.requestedModels,
     servedModel: response.servedModel,
+    attributedModelId: attribution.modelId,
+    attributionBasis: attribution.basis,
+    routerMetadata: response.routerMetadata,
     success: true,
     latencyMs: response.latencyMs ?? 0,
     promptTokens: response.usage.promptTokens,
@@ -408,6 +493,8 @@ export async function getModelIntelligenceReport(input: {
       recommendedOrder: [],
       recommendationChanged: false,
       evidenceReadyModels: 0,
+      attributionCoverage: 0,
+      unattributedSuccessfulCalls: 0,
       stats: [],
     };
     return empty;
@@ -429,10 +516,22 @@ export async function getModelIntelligenceReport(input: {
   const events = telemetryRows
     .map(telemetryFromRow)
     .filter((event): event is ModelTelemetryEvent => Boolean(event))
-    .filter((event) => (event.role ?? '').toUpperCase() === role)
-    .filter((event) => !event.servedModel || candidates.includes(event.servedModel));
+    .filter((event) => (event.role ?? '').toUpperCase() === role);
 
-  const taskIds = [...new Set(events.map((event) => event.taskId).filter((taskId): taskId is string => Boolean(taskId)))];
+  const successfulEvents = events.filter((event) => event.success);
+  const attributedSuccessfulEvents = successfulEvents.filter(
+    (event) => Boolean(event.attributedModelId && candidates.includes(event.attributedModelId)),
+  );
+  const attributionCoverage = successfulEvents.length > 0
+    ? attributedSuccessfulEvents.length / successfulEvents.length
+    : 0;
+  const unattributedSuccessfulCalls = Math.max(0, successfulEvents.length - attributedSuccessfulEvents.length);
+
+  const taskIds = [...new Set(
+    attributedSuccessfulEvents
+      .map((event) => event.taskId)
+      .filter((taskId): taskId is string => Boolean(taskId)),
+  )];
   let outcomes: TaskOutcomeRow[] = [];
   if (taskIds.length > 0) {
     try {
@@ -480,10 +579,12 @@ export async function getModelIntelligenceReport(input: {
     });
   }
 
-  // Call-level observations belong to the model OpenRouter actually served.
+  // Call-level observations belong to the operator route candidate only when
+  // attribution is explicit. The concrete served model remains separately
+  // observable in telemetry and is never rewritten to make the join convenient.
   for (const event of events) {
-    if (!event.servedModel) continue;
-    const acc = accumulators.get(event.servedModel);
+    if (!event.attributedModelId) continue;
+    const acc = accumulators.get(event.attributedModelId);
     if (!acc) continue;
     acc.calls++;
     if (event.success) acc.successfulCalls++;
@@ -504,15 +605,14 @@ export async function getModelIntelligenceReport(input: {
     }
   }
 
-  // Task outcomes are credited once, to the dominant serving model for that
-  // task (the model that handled the most successful LLM turns). This prevents
-  // one task with 12 iterations from counting as 12 successful tasks, and avoids
-  // blindly crediting every transient fallback model with the same outcome.
+  // Task outcomes are credited once, to the dominant attributable route candidate
+  // for that task. One iterative task remains one task sample. Ambiguous multi-model
+  // alias fallbacks are excluded rather than guessed into a candidate bucket.
   const taskModelCounts = new Map<string, Map<string, number>>();
-  for (const event of events) {
-    if (!event.taskId || !event.servedModel || !event.success) continue;
+  for (const event of attributedSuccessfulEvents) {
+    if (!event.taskId || !event.attributedModelId) continue;
     const counts = taskModelCounts.get(event.taskId) ?? new Map<string, number>();
-    counts.set(event.servedModel, (counts.get(event.servedModel) ?? 0) + 1);
+    counts.set(event.attributedModelId, (counts.get(event.attributedModelId) ?? 0) + 1);
     taskModelCounts.set(event.taskId, counts);
   }
   for (const [taskId, counts] of taskModelCounts) {
@@ -595,6 +695,8 @@ export async function getModelIntelligenceReport(input: {
     recommendedOrder: ranked.order,
     recommendationChanged: ranked.changed,
     evidenceReadyModels: ranked.evidenceReadyModels,
+    attributionCoverage,
+    unattributedSuccessfulCalls,
     stats,
   };
   rankingCache.set(cacheKey, { expiresAt: Date.now() + MODEL_INTELLIGENCE_CACHE_MS, value });
