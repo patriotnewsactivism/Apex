@@ -146,7 +146,9 @@ const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const intelligenceSource = fs.readFileSync(path.join(root, 'packages/core/src/model-intelligence.ts'), 'utf8');
 const clientSource = fs.readFileSync(path.join(root, 'packages/core/src/llm-client.ts'), 'utf8');
 const contextSource = fs.readFileSync(path.join(root, 'packages/core/src/model-execution-context.ts'), 'utf8');
+const instrumentedAgentSource = fs.readFileSync(path.join(root, 'packages/core/src/instrumented-base-agent.ts'), 'utf8');
 const panelSource = fs.readFileSync(path.join(root, 'packages/dashboard/src/components/ModelRouterPanel.tsx'), 'utf8');
+const settingsRouteSource = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/model-settings.ts'), 'utf8');
 check('OpenRouter usage data is explicitly requested', clientSource.includes("usage: { include: true }"));
 check('OpenRouter generation cost is read from usage.cost', clientSource.includes('parsed.usage?.cost'));
 check('OpenRouter router audit metadata is explicitly requested', clientSource.includes("'X-OpenRouter-Metadata': 'enabled'"));
@@ -155,6 +157,8 @@ check('actual served model remains separate from the attributable route candidat
 check('ambiguous multi-model alias fallbacks are excluded rather than guessed', intelligenceSource.includes('Multi-model alias/router fallbacks remain unattributed'));
 check('model intelligence reports attribution coverage', intelligenceSource.includes('attributionCoverage') && intelligenceSource.includes('unattributedSuccessfulCalls'));
 check('task identity uses AsyncLocalStorage for concurrency-safe attribution', contextSource.includes('AsyncLocalStorage<LLMExecutionContext>'));
+check('production agent injects task-local context into normal LLM calls', instrumentedAgentSource.includes('execution ?? getCurrentLLMExecutionContext()') && instrumentedAgentSource.includes('withLLMExecutionContext('));
+check('operator view surfaces attribution coverage instead of hiding ambiguous exclusions', settingsRouteSource.includes('Evidence attribution coverage is') && settingsRouteSource.includes('excluded from model scoring because the selected route could not be identified without guessing'));
 check('telemetry writes identifiers/metrics, not prompt or completion content', intelligenceSource.includes('never store prompt/completion content') && !intelligenceSource.includes('response.content'));
 check('dashboard clearly separates static heuristic from learned evidence', panelSource.includes('Static value') && panelSource.includes('Observed Model Intelligence'));
 check('adaptive UI states that unqualified models retain position', panelSource.includes('Models below the evidence threshold keep their operator-defined positions'));
