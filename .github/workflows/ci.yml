@@ -46,6 +46,7 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-durable-autonomy.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-approval-state-integrity.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-task-timeout-quarantine.ts"
+          pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-durable-worker-runtime.ts"
 
       - name: Build dashboard
         run: pnpm --filter @workspace/dashboard run build
