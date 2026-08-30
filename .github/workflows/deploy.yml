@@ -46,6 +46,39 @@ jobs:
             exit 3
           fi
 
+      - name: Validate existing production Cloud Run target
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE="${{ secrets.APEX_CLOUD_RUN_SERVICE }}"
+          REGION="${{ secrets.APEX_CLOUD_RUN_REGION }}"
+          if [[ -z "$SERVICE" || -z "$REGION" ]]; then
+            echo 'Missing APEX_CLOUD_RUN_SERVICE or APEX_CLOUD_RUN_REGION.' >&2
+            exit 2
+          fi
+          if ! gcloud run services describe "$SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$REGION" >/tmp/apex-service.json 2>/tmp/apex-service.err; then
+            cat /tmp/apex-service.err >&2 || true
+            echo 'Configured APEX Cloud Run service does not exist or is inaccessible. Refusing to create a replacement service.' >&2
+            exit 4
+          fi
+          READY="$(gcloud run services describe "$SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$REGION" \
+            --format='value(status.latestReadyRevisionName)')"
+          URL="$(gcloud run services describe "$SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$REGION" \
+            --format='value(status.url)')"
+          if [[ -z "$READY" ]]; then
+            echo "Configured target $SERVICE has no Ready revision. Refusing an image-only production update until the real existing production service is identified." >&2
+            exit 5
+          fi
+          echo "Target service: $SERVICE"
+          echo "Current ready revision: $READY"
+          echo "Current service URL: $URL"
+
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
@@ -54,43 +87,53 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE="us-central1-docker.pkg.dev/$GCP_PROJECT_ID/$ARTIFACT_REPO/${{ secrets.APEX_CLOUD_RUN_SERVICE }}:$GITHUB_SHA"
-          docker build --platform linux/amd64 -t "$IMAGE" .
+          docker build \
+            --platform linux/amd64 \
+            --build-arg APEX_BUILD_SHA="$GITHUB_SHA" \
+            --build-arg APEX_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$IMAGE" .
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
-      - name: Deploy to Cloud Run
+      - name: Update existing Cloud Run service image
+        shell: bash
         run: |
-          # The browser dashboard must be reachable without a Google IAM token.
-          # APEX still protects privileged /api/* routes with its own admin
-          # bearer-token middleware, so public Cloud Run ingress does not make
-          # the control plane anonymous.
-          gcloud run deploy ${{ secrets.APEX_CLOUD_RUN_SERVICE }} \
+          set -euo pipefail
+          gcloud run services update "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" \
             --project "$GCP_PROJECT_ID" \
-            --region ${{ secrets.APEX_CLOUD_RUN_REGION }} \
+            --region "${{ secrets.APEX_CLOUD_RUN_REGION }}" \
             --image "$IMAGE" \
-            --allow-unauthenticated \
             --quiet
 
       - name: Verify deployment and auth boundary
+        shell: bash
         run: |
           set -euo pipefail
           sleep 10
-          SERVICE_URL=$(gcloud run services describe ${{ secrets.APEX_CLOUD_RUN_SERVICE }} \
+          SERVICE_URL=$(gcloud run services describe "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" \
             --project "$GCP_PROJECT_ID" \
-            --region ${{ secrets.APEX_CLOUD_RUN_REGION }} \
+            --region "${{ secrets.APEX_CLOUD_RUN_REGION }}" \
             --format='value(status.url)')
           echo "Service URL: $SERVICE_URL"
 
-          # Public shell and public health must work without Google IAM auth.
           curl -fsS "$SERVICE_URL/" -o /tmp/apex-root.html
           if grep -qi 'Bearer token required' /tmp/apex-root.html; then
             echo 'Dashboard is still blocked by Google IAM.' >&2
             exit 1
           fi
-          curl -fsS "$SERVICE_URL/health" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Health: {d.get(\"status\",\"?\")}  SHA: {d.get(\"build\",{}).get(\"sha\",\"?\")}  Agents: {d.get(\"agents\",\"?\")}')"
 
-          # The application control plane must still reject anonymous API calls.
+          curl -fsS "$SERVICE_URL/health" -o /tmp/apex-health.json
+          python3 - <<'PY'
+          import json, os, sys
+          d=json.load(open('/tmp/apex-health.json'))
+          sha=d.get('build',{}).get('sha')
+          print(f"Health: {d.get('status','?')}  SHA: {sha or '?'}  Agents: {d.get('agents','?')}")
+          expected=os.environ.get('GITHUB_SHA')
+          if sha != expected:
+              print(f"Expected deployed SHA {expected}, got {sha}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+
           API_STATUS=$(curl -sS -o /tmp/apex-api.json -w '%{http_code}' "$SERVICE_URL/api/tasks")
           if [ "$API_STATUS" != "401" ]; then
             echo "Expected anonymous /api/tasks to return 401, got $API_STATUS" >&2
@@ -98,7 +141,6 @@ jobs:
             exit 1
           fi
 
-          # Verify the actual custom domain that users open in the browser.
           curl -fsS "https://apex.donmatthews.live/" -o /tmp/apex-custom-root.html
           if grep -qi 'Bearer token required' /tmp/apex-custom-root.html; then
             echo 'Custom domain is still blocked by Google IAM.' >&2
