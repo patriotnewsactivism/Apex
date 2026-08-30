@@ -1,6 +1,10 @@
 import { BaseAgent as CoreBaseAgent } from './base-agent.js';
-import { estimatePreRunComplexity, withLLMExecutionContext } from './model-execution-context.js';
-import type { TaskResult } from './types.js';
+import {
+  estimatePreRunComplexity,
+  getCurrentLLMExecutionContext,
+  withLLMExecutionContext,
+} from './model-execution-context.js';
+import type { AgentConfig, TaskResult } from './types.js';
 
 /**
  * Thin production wrapper around the existing governed BaseAgent. It changes no
@@ -9,6 +13,17 @@ import type { TaskResult } from './types.js';
  * several tasks concurrently.
  */
 export class BaseAgent extends CoreBaseAgent {
+  constructor(config: AgentConfig) {
+    super(config);
+
+    // BaseAgent's governed execution loop owns the LLM calls. Wrap the client
+    // once so those existing calls inherit the task-local AsyncLocalStorage
+    // context without rewriting the mature task loop or using mutable globals.
+    const complete = this.llm.complete.bind(this.llm);
+    this.llm.complete = (messages, tools, execution) =>
+      complete(messages, tools, execution ?? getCurrentLLMExecutionContext());
+  }
+
   protected override async executeTask(
     taskId: string,
     title: string,
