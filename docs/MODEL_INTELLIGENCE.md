@@ -32,6 +32,42 @@ Adaptive routing is deliberately conservative. A model must have at least the co
 
 At least two models must be evidence-qualified before adaptive ranking can change the order. A single qualified model is not a comparison.
 
+## Controlled learning trials
+
+A pure fallback chain can create a learning dead zone: if model #1 normally succeeds, later selected models may never accumulate enough real task evidence to challenge it.
+
+APEX therefore supports an **optional controlled learning trial rate**. The default is `0` (off), including for all policies saved before the feature existed.
+
+When enabled, trials are restricted by all of these rules:
+
+- Adaptive mode only;
+- selected models only;
+- hard-capped to 25% of eligible tasks;
+- only tasks with a pre-run complexity hint of `0.5` or below;
+- disabled whenever that role has an explicit model pin;
+- deterministic per task ID so retries/workers make the same trial decision;
+- chooses the least-sampled under-threshold selected model rather than a random model;
+- preserves every selected fallback exactly once.
+
+Trials collect comparative evidence; they are not permission to weaken task completion, tool, approval, or spend controls.
+
+## Smart complexity escalation
+
+The operator may optionally enable **Smart complexity escalation**. It is off by default and is separate from Adaptive routing authority.
+
+When enabled, APEX derives an **effective objective** from the operator's saved base objective and the task's pre-run complexity hint:
+
+- complexity `>= 0.70`: use the `quality` objective, even if the base objective is budget/speed/balanced;
+- complexity `<= 0.35`: a neutral `balanced` base objective shifts to `budget` so routine work can prefer proven value;
+- middle-complexity work keeps the saved base objective;
+- explicit `quality`, `budget`, or `speed` choices are preserved for routine work;
+- if no complexity hint exists, the base objective is preserved;
+- role-specific model pins remain stronger than escalation.
+
+This is intentionally deterministic and transparent. The Settings intelligence view reports both the base objective and effective objective when they differ.
+
+Complexity escalation does not make an under-sampled model eligible for automatic promotion. The normal evidence threshold still applies.
+
 ## What APEX records
 
 Each OpenRouter generation may emit a structured telemetry event into the existing Postgres-backed `logs` table. The event contains operational metadata only:
@@ -72,7 +108,7 @@ A task outcome is credited once to the dominant serving model for that task (the
 
 ## Observed score
 
-The observed score is calculated only when a model has completed-task evidence. The selected optimization objective determines the weights:
+The observed score is calculated only when a model has completed-task evidence. The selected/effective optimization objective determines the weights:
 
 | Objective | Outcome quality | Generation reliability | Actual cost | Latency |
 | --- | ---: | ---: | ---: | ---: |
@@ -126,6 +162,9 @@ Model Intelligence does not bypass:
 - under-sampled models retain their operator-defined slots;
 - explicit role pins remain first;
 - adaptive ranking cannot introduce an unselected model;
+- complexity escalation is opt-in and deterministic;
+- hard tasks escalate to quality while routine explicit preferences are preserved;
+- controlled trials stay bounded to low-complexity unpinned work;
 - OpenRouter usage/cost telemetry remains wired;
 - async task attribution remains concurrency-safe;
 - model telemetry does not store response content;
