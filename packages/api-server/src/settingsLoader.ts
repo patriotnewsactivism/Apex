@@ -3,7 +3,7 @@
  * before agents start. Values are never logged.
  */
 
-import { db, integrationSettings } from '@workspace/db';
+import { assertDurableDatabaseReady, db, integrationSettings } from '@workspace/db';
 
 function stripLegacyFreeTierCaps(raw: string | undefined): string {
   const entries = new Map<string, string>();
@@ -27,30 +27,29 @@ function stripLegacyFreeTierCaps(raw: string | undefined): string {
 }
 
 export async function loadSettingsIntoEnv(): Promise<void> {
-  try {
-    const rows = await db.select().from(integrationSettings);
-    let applied = 0;
-    for (const row of rows) {
-      if (row.value) {
-        process.env[row.key] = row.value;
-        applied++;
-      }
-    }
+  // This function is awaited before workforce construction. Treat it as the
+  // HTTP control-plane durable-state gate rather than silently falling back to
+  // platform env vars when Postgres is missing. A listener that cannot reach
+  // authoritative tasks/approvals/schedules is not a healthy APEX runtime.
+  await assertDurableDatabaseReady({ requireConfiguredUrl: process.env.NODE_ENV === 'production' });
 
-    const currentCaps = process.env.APEX_TOKEN_CAPS ?? '';
-    const normalizedCaps = stripLegacyFreeTierCaps(currentCaps);
-    if (normalizedCaps !== currentCaps) {
-      process.env.APEX_TOKEN_CAPS = normalizedCaps;
-      console.log('[settings] Ignored legacy free-tier token caps for the OpenRouter production runtime.');
+  const rows = await db.select().from(integrationSettings);
+  let applied = 0;
+  for (const row of rows) {
+    if (row.value) {
+      process.env[row.key] = row.value;
+      applied++;
     }
+  }
 
-    if (applied > 0) {
-      console.log(`[settings] Applied ${applied} DB-persisted integration setting(s) into process.env at boot.`);
-    }
-  } catch (err) {
-    console.warn(
-      '[settings] Failed to load integration settings from DB (continuing with platform env vars only):',
-      err instanceof Error ? err.message : err,
-    );
+  const currentCaps = process.env.APEX_TOKEN_CAPS ?? '';
+  const normalizedCaps = stripLegacyFreeTierCaps(currentCaps);
+  if (normalizedCaps !== currentCaps) {
+    process.env.APEX_TOKEN_CAPS = normalizedCaps;
+    console.log('[settings] Ignored legacy free-tier token caps for the OpenRouter production runtime.');
+  }
+
+  if (applied > 0) {
+    console.log(`[settings] Applied ${applied} DB-persisted integration setting(s) into process.env at boot.`);
   }
 }
