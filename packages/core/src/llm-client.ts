@@ -7,20 +7,21 @@ import {
   reserveTotalTokenCapacity,
   type TokenCapacityReservation,
 } from './token-ledger.js';
+import {
+  DEFAULT_OPENROUTER_MODEL_CHAIN,
+  getOpenRouterModelChainForRole,
+  hasCustomOpenRouterModelPolicy,
+} from './model-routing.js';
 
-// ─── APEX OpenRouter DeepSeek V4 Stack ───────────────────────────────────────
+// ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// Policy (2026-08-28): all APEX units route through OpenRouter using
-// DeepSeek V4 models — extremely inexpensive, high-quality, 1M+ context.
+// OpenRouter is the production gateway. With no operator policy, APEX preserves
+// the reviewed DeepSeek V4 chain below. When APEX_OPENROUTER_MODEL_POLICY is a
+// valid persisted policy, the selected model roster is sent to OpenRouter via
+// its native `models` fallback parameter in role-specific priority order.
 //
-//   1. DeepSeek V4 Flash Latest  — $0.03/$0.10 per M tokens (primary)
-//   2. DeepSeek V4 Flash 0731    — $0.06/$0.12 per M tokens (fallback)
-//   3. DeepSeek V4 Pro 0813      — $0.66/$1.98 per M tokens (heavy reasoning)
-//
-// All three use the same OpenRouter endpoint and API key, but route to
-// different underlying DeepSeek deployments via OpenRouter's routing layer.
-// Circuit breakers treat them as separate providers so a rate limit on one
-// doesn't block fallback to the others.
+// Pricing is deliberately NOT hard-coded here. The Settings model-control API
+// reads OpenRouter's live catalog because per-model prices may change.
 
 export type ApexProviderName =
   | 'openrouter-deepseek-flash'
@@ -43,7 +44,7 @@ type ProviderSpec = {
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'openrouter-deepseek-flash',
-    model: '~deepseek/deepseek-v4-flash-latest',
+    model: DEFAULT_OPENROUTER_MODEL_CHAIN[0],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
@@ -51,7 +52,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     name: 'openrouter-deepseek-flash-0731',
-    model: 'deepseek/deepseek-v4-flash-0731',
+    model: DEFAULT_OPENROUTER_MODEL_CHAIN[1],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
@@ -59,7 +60,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     name: 'openrouter-deepseek-pro',
-    model: 'deepseek/deepseek-v4-pro-0813',
+    model: DEFAULT_OPENROUTER_MODEL_CHAIN[2],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
@@ -78,12 +79,16 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
+  // A custom roster is one OpenRouter gateway request with native model
+  // fallback. Repeating that same roster through three logical adapters would
+  // multiply identical requests and defeat provider pacing/circuit breaking.
+  if (hasCustomOpenRouterModelPolicy()) return ['openrouter-deepseek-flash'];
   return [...PROVIDER_ORDER];
 }
 
-/** Paid inference is no longer gated — all OpenRouter/DeepSeek models are
- * inexpensive enough to run without the fail-closed policy that was needed
- * for the old Mistral emergency fallback. Kept for backward compat. */
+/** Paid inference is no longer gated — the selected OpenRouter roster is an
+ * explicit operator decision. Kept for backward compatibility with callers
+ * that still inspect APEX_PAID_LLM_MODE. */
 export function paidLLMFallbackEnabled(mode?: string): boolean {
   const normalized = (mode ?? 'on').trim().toLowerCase();
   return ['1', 'true', 'on', 'enabled', 'fallback'].includes(normalized);
@@ -496,6 +501,7 @@ function parseToolCalls(raw: any): LLMToolCall[] {
 }
 
 type CompatibleResponse = {
+  model?: string;
   choices?: Array<{
     message?: {
       content?: string | null;
@@ -525,12 +531,17 @@ async function callCompatibleProvider(
   const timeout = setTimeout(() => controller.abort(), 75_000);
 
   try {
+    const customPolicy = hasCustomOpenRouterModelPolicy();
+    const routedModels = customPolicy
+      ? getOpenRouterModelChainForRole(config.role)
+      : [provider.model];
     const body: Record<string, unknown> = {
-      model: provider.model,
       messages: toWireMessages(messages),
       temperature: config.temperature ?? 0.7,
       max_tokens: config.maxTokens ?? 2048,
     };
+    if (customPolicy) body.models = routedModels;
+    else body.model = provider.model;
 
     const wireTools = toWireTools(tools);
     if (wireTools?.length) {
@@ -571,6 +582,7 @@ async function callCompatibleProvider(
 
     const choice = parsed.choices?.[0]?.message;
     if (!choice) throw new Error('provider returned no completion choice');
+    const servedModel = parsed.model || routedModels[0] || provider.model;
 
     return {
       content: choice.content ?? '',
@@ -579,7 +591,7 @@ async function callCompatibleProvider(
         promptTokens: parsed.usage?.prompt_tokens ?? 0,
         completionTokens: parsed.usage?.completion_tokens ?? 0,
       },
-      model: `${provider.name}/${provider.model}`,
+      model: `${provider.name}/${servedModel}`,
     };
   } finally {
     clearTimeout(timeout);
@@ -602,9 +614,9 @@ function capacityBlockFromReservation(
     source,
     resumeAt: reservation.resumeAt,
     reason:
-      reservation.reason === "daily_cap"
-        ? "daily cap reached"
-        : "daily allowance pacing",
+      reservation.reason === 'daily_cap'
+        ? 'daily cap reached'
+        : 'daily allowance pacing',
   };
 }
 
@@ -623,9 +635,9 @@ function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []
       ]),
     ).values(),
     ...otherDetails,
-  ].join(" | ");
+  ].join(' | ');
   return new Error(
-    `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || "configured capacity is temporarily unavailable"}`,
+    `APEX LLM capacity paused. resume-at=${resumeAt} | ${detail || 'configured capacity is temporarily unavailable'}`,
   );
 }
 
@@ -655,7 +667,7 @@ class MultiProviderClient {
       const totalReservation = reserveTotalTokenCapacity(estimatedTokens);
       if (!totalReservation.allowed) {
         throw capacityPauseError([
-          capacityBlockFromReservation("workspace", totalReservation),
+          capacityBlockFromReservation('workspace', totalReservation),
         ]);
       }
 
@@ -684,7 +696,7 @@ class MultiProviderClient {
           const credentials = configuredCredentials(provider);
           if (credentials.length === 0) {
             skipReasons.push(
-              `${provider.name}: no API key (${provider.apiKeyEnvs.join(" or ")})`,
+              `${provider.name}: no API key (${provider.apiKeyEnvs.join(' or ')})`,
             );
             continue;
           }
@@ -712,7 +724,7 @@ class MultiProviderClient {
               capacityBlockFromReservation(provider.name, providerReservation),
             );
             skipReasons.push(
-              `${provider.name}: APEX ${providerReservation.reason === "daily_cap" ? "per-provider daily cap reached" : "daily allowance pacing active"}`,
+              `${provider.name}: APEX ${providerReservation.reason === 'daily_cap' ? 'per-provider daily cap reached' : 'daily allowance pacing active'}`,
             );
             continue;
           }
@@ -752,10 +764,13 @@ class MultiProviderClient {
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
-                  err.name === "AbortError" ? "request timed out" : err.message;
+                  err.name === 'AbortError' ? 'request timed out' : err.message;
+                const attemptedModel = hasCustomOpenRouterModelPolicy()
+                  ? getOpenRouterModelChainForRole(this.config.role)[0] ?? provider.model
+                  : provider.model;
                 recordProviderFailure(
                   provider.name,
-                  provider.model,
+                  attemptedModel,
                   status,
                   message,
                 );
@@ -772,8 +787,8 @@ class MultiProviderClient {
                   });
                 }
                 providerErrors.push(
-                  `${provider.name}/${provider.model} via ${credential.env}: ` +
-                    `${status ? `HTTP ${status} ` : ""}${message}`,
+                  `${provider.name}/${attemptedModel} via ${credential.env}: ` +
+                    `${status ? `HTTP ${status} ` : ''}${message}`,
                 );
 
                 if (capacityFailure) break;
@@ -806,7 +821,7 @@ class MultiProviderClient {
               providerRequirements(provider).length > 0
             ) {
               skipReasons.push(
-                `${provider.name}: ${providerRequirements(provider).join(", ")}`,
+                `${provider.name}: ${providerRequirements(provider).join(', ')}`,
               );
             }
           } finally {
@@ -821,8 +836,8 @@ class MultiProviderClient {
         throw new Error(
           `All LLM providers failed or were unavailable. ${
             details.length
-              ? details.join(" | ")
-              : "No usable provider credential was configured."
+              ? details.join(' | ')
+              : 'No usable provider credential was configured.'
           }`,
         );
       } finally {
@@ -872,10 +887,11 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const maxTokens = Number.isFinite(configuredMaxTokens)
     ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
     : defaultMaxTokens;
+  const model = getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
     provider: 'openrouter-deepseek-flash',
-    model: '~deepseek/deepseek-v4-flash-latest',
+    model,
     temperature: 0.7,
     maxTokens,
     role,
@@ -1015,9 +1031,11 @@ export function getProviderRoster(): {
 
 export function logProviderRoster(): void {
   const roster = getProviderRoster();
+  const custom = hasCustomOpenRouterModelPolicy();
+  const modelOrder = getOpenRouterModelChainForRole();
   console.log(
-    `[LLM] OpenRouter DeepSeek V4 roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} slots ready; ` +
-      `order=${PROVIDER_ORDER.join(' -> ')}`,
+    `[LLM] OpenRouter roster: ${roster.freeSlotsConfigured}/${roster.freeSlots} credential slots ready; ` +
+      `policy=${custom ? 'operator-selected' : 'reviewed-default'}; models=${modelOrder.join(' -> ')}`,
   );
 
   if (roster.emptyFreeSlots.length) {
