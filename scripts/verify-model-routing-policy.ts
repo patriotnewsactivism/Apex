@@ -44,6 +44,7 @@ try {
   check('pre-intelligence policy defaults to balanced objective', legacyPolicy?.optimizationObjective === 'balanced', legacyPolicy);
   check('pre-intelligence policy gets conservative sample threshold', legacyPolicy?.minimumSamples === 5, legacyPolicy);
   check('pre-intelligence policy cannot silently enable learning trials', legacyPolicy?.explorationRate === 0, legacyPolicy);
+  check('pre-intelligence policy cannot silently enable complexity escalation', legacyPolicy?.complexityEscalation === false, legacyPolicy);
 
   const policy = {
     version: 1 as const,
@@ -62,6 +63,7 @@ try {
     optimizationObjective: 'quality' as const,
     minimumSamples: 10,
     explorationRate: 0.05,
+    complexityEscalation: true,
   };
   const serialized = serializeOpenRouterModelPolicy(policy);
   process.env[OPENROUTER_MODEL_POLICY_ENV] = serialized;
@@ -73,6 +75,7 @@ try {
   check('optimization objective survives serialization', parsed?.optimizationObjective === 'quality', parsed);
   check('evidence threshold survives serialization', parsed?.minimumSamples === 10, parsed);
   check('controlled exploration rate survives serialization', parsed?.explorationRate === 0.05, parsed);
+  check('complexity escalation survives serialization', parsed?.complexityEscalation === true, parsed);
 
   const bounded = parseOpenRouterModelPolicy(JSON.stringify({
     ...policy,
@@ -83,6 +86,8 @@ try {
   check('learning-trial traffic is hard-capped at 25%', bounded?.explorationRate === 0.25, bounded);
   const negative = parseOpenRouterModelPolicy(JSON.stringify({ ...policy, explorationRate: -5 }));
   check('negative learning-trial traffic is clamped to off', negative?.explorationRate === 0, negative);
+  const falseEscalation = parseOpenRouterModelPolicy(JSON.stringify({ ...policy, complexityEscalation: 'true' }));
+  check('non-boolean escalation input cannot enable escalation', falseEscalation?.complexityEscalation === false, falseEscalation);
 
   console.log('\n── Runtime routing ──');
   const ceoChain = getOpenRouterModelChainForRole('CEO');
@@ -103,6 +108,7 @@ try {
   check('adaptive routing is explicit rather than silently enabled', clientSource.includes("policy?.routingMode === 'adaptive'"));
   check('model catalog pricing comes from live OpenRouter API', routeSource.includes("https://openrouter.ai/api/v1/models") && routeSource.includes('usdPerMillion'));
   check('efficiency is explicitly described as heuristic, not benchmark', routeSource.includes('It is not an intelligence benchmark'));
+  check('intelligence API reports effective objective rather than hiding escalation', routeSource.includes('effectiveObjective') && routeSource.includes('baseObjective'));
 } finally {
   if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
   else process.env[OPENROUTER_MODEL_POLICY_ENV] = previousPolicy;
