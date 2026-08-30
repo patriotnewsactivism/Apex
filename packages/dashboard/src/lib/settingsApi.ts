@@ -44,10 +44,16 @@ export interface WorkforceRecoveryResult {
   note: string;
 }
 
+export type ModelRoutingMode = 'manual' | 'advisor' | 'adaptive';
+export type ModelOptimizationObjective = 'quality' | 'balanced' | 'budget' | 'speed';
+
 export interface OpenRouterModelPolicy {
   version: 1;
   selectedModelIds: string[];
   rolePrimary: Record<string, string>;
+  routingMode: ModelRoutingMode;
+  optimizationObjective: ModelOptimizationObjective;
+  minimumSamples: number;
 }
 
 export interface OpenRouterModelCatalogItem {
@@ -81,6 +87,45 @@ export interface OpenRouterModelCatalogResponse {
   source: string;
   pricingUpdatedAt: string;
   efficiencyMethod: string;
+}
+
+export interface ModelPerformanceStats {
+  modelId: string;
+  llmCalls: number;
+  generationSuccessRate: number;
+  taskSamples: number;
+  taskSuccessRate: number | null;
+  avgSatisfaction: number | null;
+  avgQuality: number | null;
+  avgComplexity: number | null;
+  avgLatencyMs: number | null;
+  avgCostUsd: number | null;
+  avgPromptTokens: number | null;
+  avgCompletionTokens: number | null;
+  cacheHitTokenRate: number | null;
+  toolCallRate: number | null;
+  observedScore: number | null;
+  confidence: number;
+}
+
+export interface ModelIntelligenceReport {
+  role: string;
+  objective: ModelOptimizationObjective;
+  minimumSamples: number;
+  targetComplexity: number | null;
+  windowDays: number;
+  generatedAt: string;
+  originalOrder: string[];
+  recommendedOrder: string[];
+  recommendationChanged: boolean;
+  evidenceReadyModels: number;
+  stats: ModelPerformanceStats[];
+}
+
+export interface ModelIntelligenceResponse {
+  report: ModelIntelligenceReport;
+  routingMode: ModelRoutingMode;
+  explanation: string;
 }
 
 async function settingsFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -123,6 +168,12 @@ export const settingsApi = {
     }),
   models: () => settingsFetch<OpenRouterModelCatalogResponse>('/api/settings/models'),
   modelPolicy: () => settingsFetch<{ policy: OpenRouterModelPolicy }>('/api/settings/models/policy'),
+  modelIntelligence: (role: string, options?: { complexity?: number; refresh?: boolean }) => {
+    const params = new URLSearchParams({ role });
+    if (options?.complexity !== undefined) params.set('complexity', String(options.complexity));
+    if (options?.refresh) params.set('refresh', '1');
+    return settingsFetch<ModelIntelligenceResponse>(`/api/settings/models/intelligence?${params.toString()}`);
+  },
   saveModelPolicy: (policy: OpenRouterModelPolicy) =>
     settingsFetch<{
       ok: boolean;
