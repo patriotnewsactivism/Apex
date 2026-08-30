@@ -105,6 +105,9 @@ check('recovered approval continuation runs before the ordinary reasoning loop',
 check('timeout is itself consumed and cannot become a reusable rejection',
   agentSource.includes("status: 'consumed_rejected'") &&
   agentSource.includes('Auto-rejected after'));
+check('a successful side effect cannot become a fake failure because its return value is not JSON serializable',
+  agentSource.includes('summarizeRecoveredToolResult') &&
+  agentSource.includes('[tool executed successfully; return value was not JSON-serializable]'));
 
 if (failures > 0) {
   console.error(`\n❌ Approval state integrity guard failed: ${failures} invariant(s) missing`);
