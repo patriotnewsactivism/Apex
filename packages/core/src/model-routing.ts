@@ -13,14 +13,18 @@ export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
 
 export type OpenRouterModelPolicy = {
   version: 1;
-  /** Ordered global model roster. Any number from 1..50 may be selected. */
+  /** Ordered global model roster. Large enough to cover the live OpenRouter catalog. */
   selectedModelIds: string[];
   /** Optional role-specific first choice. Global roster remains the fallback. */
   rolePrimary: Record<string, string>;
 };
 
 const MODEL_ID_PATTERN = /^~?[a-zA-Z0-9._-]+\/[a-zA-Z0-9._~:/-]+$/;
-const MAX_SELECTED_MODELS = 50;
+// OpenRouter currently exposes hundreds of text models. This is an abuse/size
+// ceiling, not a product limit: it is deliberately above the live catalog so an
+// operator can select every available model if desired without accepting an
+// unbounded authenticated JSON payload forever.
+const MAX_SELECTED_MODELS = 500;
 
 function uniqueStrings(values: unknown[]): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))];
