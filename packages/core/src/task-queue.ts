@@ -12,6 +12,9 @@ import {
 // ─── Task Queue ───────────────────────────────────────────────────────────────
 
 const EPHEMERAL_FALLBACK_VALUES = new Set(['1', 'true', 'on', 'yes']);
+const HARD_TIMEOUT_MARKER = 'wall-clock timeout';
+const TIMEOUT_QUARANTINE_PREFIX = 'Quarantined after hard task timeout:';
+const TERMINAL_TASK_STATUSES = new Set(['done', 'failed', 'cancelled']);
 
 function ephemeralFallbackEnabled(): boolean {
   // Process-local work is intentionally opt-in for local development only.
@@ -29,6 +32,14 @@ function requireDurabilityOrAllowLocalFallback(operation: string, err: unknown):
   throw new Error(
     `[TaskQueue.${operation}] durable Postgres operation failed; refusing process-local fallback: ${detail}`,
   );
+}
+
+function isHardTaskTimeout(error: string): boolean {
+  return error.includes('Task exceeded hard') && error.includes(HARD_TIMEOUT_MARKER);
+}
+
+function isTimeoutQuarantine(task: Pick<Task, 'status' | 'errorMessage'>): boolean {
+  return task.status === 'blocked' && task.errorMessage?.startsWith(TIMEOUT_QUARANTINE_PREFIX) === true;
 }
 
 export class TaskQueue {
@@ -158,10 +169,16 @@ export class TaskQueue {
     return null;
   }
 
-  /** Complete a task with durable result evidence. */
+  /**
+   * Complete only work still owned by the live execution. A task cancelled or
+   * otherwise terminalized by another actor must never be resurrected as done
+   * by a late promise. The one exception is a timeout-quarantined task: if the
+   * original execution eventually returns real completion evidence, that same
+   * execution may close its quarantine successfully.
+   */
   async complete(taskId: string, result: string): Promise<void> {
     try {
-      await db
+      const [completed] = await db
         .update(tasks)
         .set({
           status: 'done',
@@ -172,13 +189,36 @@ export class TaskQueue {
           completedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(tasks.id, taskId));
+        .where(
+          and(
+            eq(tasks.id, taskId),
+            or(
+              eq(tasks.status, 'in_progress'),
+              and(
+                eq(tasks.status, 'blocked'),
+                sql`${tasks.errorMessage} LIKE ${`${TIMEOUT_QUARANTINE_PREFIX}%`}`,
+              ),
+            ),
+          ),
+        )
+        .returning({ id: tasks.id });
+
+      if (!completed) {
+        throw new Error(
+          `Task ${taskId} completion rejected because it is no longer owned by this execution state`,
+        );
+      }
     } catch (err) {
       requireDurabilityOrAllowLocalFallback('complete', err);
     }
 
     const memTask = this.memoryQueue.find((task) => task.id === taskId);
     if (memTask) {
+      if (memTask.status !== 'in_progress' && !isTimeoutQuarantine(memTask)) {
+        throw new Error(
+          `Task ${taskId} completion rejected because it is no longer owned by this execution state`,
+        );
+      }
       memTask.status = 'done';
       memTask.result = result;
       memTask.errorMessage = null;
@@ -195,6 +235,37 @@ export class TaskQueue {
     try {
       const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
       if (task) {
+        // A hard timeout in BaseAgent is a race against an execution that may
+        // still be alive: Promise.race cannot cancel arbitrary tool/DB work.
+        // Automatic retry here would permit a second worker to execute the same
+        // task while the first execution is still capable of side effects.
+        // Quarantine instead. Operators/recovery logic can inspect the explicit
+        // blocked state; if the original execution later finishes successfully,
+        // complete() is allowed to close this specific quarantine.
+        if (isHardTaskTimeout(error)) {
+          if (TERMINAL_TASK_STATUSES.has(task.status)) return;
+          if (isTimeoutQuarantine(task)) return;
+
+          const quarantineReason = `${TIMEOUT_QUARANTINE_PREFIX} ${error}`;
+          await db.update(tasks).set({
+            status: 'blocked',
+            errorMessage: quarantineReason,
+            nextRetryAt: null,
+            leasedAt: null,
+            updatedAt: new Date(),
+          }).where(and(eq(tasks.id, taskId), eq(tasks.status, 'in_progress')));
+          return;
+        }
+
+        // Once a timeout has quarantined a still-live execution, a late error
+        // from that detached promise must not turn the row back into retryable
+        // work. That would recreate the duplicate-side-effect race.
+        if (isTimeoutQuarantine(task)) return;
+
+        // Never overwrite an independently terminalized task (for example an
+        // operator cancellation) with a late failure from an old execution.
+        if (TERMINAL_TASK_STATUSES.has(task.status)) return;
+
         if (capacityRetryAt) {
           await db
             .update(tasks)
@@ -240,6 +311,15 @@ export class TaskQueue {
 
     const memTask = this.memoryQueue.find((task) => task.id === taskId);
     if (memTask) {
+      if (isHardTaskTimeout(error)) {
+        if (TERMINAL_TASK_STATUSES.has(memTask.status) || isTimeoutQuarantine(memTask)) return;
+        memTask.status = 'blocked';
+        memTask.errorMessage = `${TIMEOUT_QUARANTINE_PREFIX} ${error}`;
+        memTask.nextRetryAt = null;
+        memTask.leasedAt = null;
+        return;
+      }
+      if (isTimeoutQuarantine(memTask) || TERMINAL_TASK_STATUSES.has(memTask.status)) return;
       if (capacityRetryAt) {
         memTask.status = 'pending';
         memTask.errorMessage = error;
