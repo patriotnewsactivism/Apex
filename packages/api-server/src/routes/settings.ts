@@ -3,6 +3,7 @@ import { db, integrationSettings, tasks, agents } from '@workspace/db';
 import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { getKnownApiKeyEnvs } from '@workspace/core';
 import { CronParser } from '@workspace/background-jobs';
+import { createModelSettingsRouter } from './model-settings.js';
 
 type IntegrationCategory = 'ai' | 'search' | 'voice' | 'dev' | 'data' | 'business';
 type ProbeDefinition = { kind: 'openai-models'; baseUrl: string; extraHeaders?: Record<string, string> };
@@ -23,12 +24,12 @@ type IntegrationDefinition = {
 };
 
 /** Backend-owned integration catalog. The AI section MUST match the runtime
- * free-first allowlist in packages/core/src/llm-client.ts. */
+ * OpenRouter routing authority in packages/core/src/llm-client.ts. */
 const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'openrouter',
     name: 'OpenRouter — Production LLM',
-    description: 'Primary APEX inference layer. Routes DeepSeek V4 Flash/Pro through OpenRouter with provider failover, pacing, and circuit breakers.',
+    description: 'Primary APEX inference gateway. Select and assign the live model roster in Model Control; OpenRouter provides model/provider failover while APEX preserves pacing, budgets, and circuit breakers.',
     category: 'ai',
     docsUrl: 'https://openrouter.ai',
     envVars: [
@@ -43,7 +44,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'APEX_MAX_CONCURRENT_LLM_CALLS', label: 'Global LLM Concurrency', placeholder: '6' },
       { key: 'APEX_LEAD_RESEARCH_CONCURRENCY', label: 'Lead Research Concurrency', placeholder: '3' },
       { key: 'APEX_TOKEN_CAP_TOTAL', label: 'Optional Daily Token Cap', placeholder: '0 = unlimited' },
-      { key: 'APEX_TOKEN_CAPS', label: 'Optional Per-Model Token Caps', placeholder: 'provider:tokens,...' },
+      { key: 'APEX_TOKEN_CAPS', label: 'Optional Per-Provider Token Caps', placeholder: 'provider:tokens,...' },
     ],
   },
   {
@@ -79,7 +80,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'BUILDMYBOT_SUPABASE_SERVICE_KEY', label: 'Supabase Service Key', placeholder: 'service_role key', secret: true },
       { key: 'BUILDMYBOT_APP_URL', label: 'Application URL', placeholder: 'https://www.buildmybot.app' },
       { key: 'BUILDMYBOT_CRON_SECRET', label: 'Cron Secret', placeholder: 'cron secret', secret: true },
-      { key: 'BUILDMYBOT_VERCEL_DEPLOY_HOOK', label: 'Deploy Hook', placeholder: 'https://api.vercel.com/v1/integrations/deploy/...', secret: true },
+      { key: 'BUILDMYBOT_VERCEL_DEPLOY_HOOK', label: 'Deploy Hook', placeholder: 'legacy deploy hook', secret: true },
     ],
   },
   {
@@ -178,6 +179,9 @@ async function probeConfiguredKey(key: string): Promise<{
 
 export function createSettingsRouter(): Router {
   const router = Router();
+
+  // Live OpenRouter model catalog + durable operator routing policy.
+  router.use('/models', createModelSettingsRouter());
 
   router.get('/integrations', async (_req, res) => {
     try {
