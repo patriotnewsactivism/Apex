@@ -201,6 +201,15 @@ export function createModelSettingsRouter(): Router {
         bypassCache: req.query.refresh === '1' || req.query.refresh === 'true',
       });
       const objectiveChanged = effectiveObjective !== policy.optimizationObjective;
+      const coveragePct = Math.round(report.attributionCoverage * 100);
+      const attributionNote = report.unattributedSuccessfulCalls > 0
+        ? ` Evidence attribution coverage is ${coveragePct}%; ${report.unattributedSuccessfulCalls} successful generation(s) were excluded from model scoring because the selected route could not be identified without guessing.`
+        : ` Evidence attribution coverage is ${coveragePct}%; no successful generation in this window required ambiguous route guessing.`;
+      const routingExplanation = policy.routingMode === 'adaptive'
+        ? `Evidence-qualified models may reorder inside the selected roster. Explicit role pins remain first.${policy.explorationRate > 0 ? ` Controlled learning trials are enabled for up to ${Math.round(policy.explorationRate * 100)}% of eligible low-complexity tasks.` : ''}${objectiveChanged ? ` Complexity escalation changed this analysis objective from ${policy.optimizationObjective} to ${effectiveObjective}.` : ''}`
+        : policy.routingMode === 'advisor'
+          ? `Recommendations are advisory only; the saved operator order remains authoritative.${objectiveChanged ? ` Complexity escalation changed this analysis objective from ${policy.optimizationObjective} to ${effectiveObjective}.` : ''}`
+          : 'Manual mode preserves the exact saved operator order.';
       res.json({
         report,
         routingMode: policy.routingMode,
@@ -208,11 +217,7 @@ export function createModelSettingsRouter(): Router {
         complexityEscalation: policy.complexityEscalation === true,
         baseObjective: policy.optimizationObjective,
         effectiveObjective,
-        explanation: policy.routingMode === 'adaptive'
-          ? `Evidence-qualified models may reorder inside the selected roster. Explicit role pins remain first.${policy.explorationRate > 0 ? ` Controlled learning trials are enabled for up to ${Math.round(policy.explorationRate * 100)}% of eligible low-complexity tasks.` : ''}${objectiveChanged ? ` Complexity escalation changed this analysis objective from ${policy.optimizationObjective} to ${effectiveObjective}.` : ''}`
-          : policy.routingMode === 'advisor'
-            ? `Recommendations are advisory only; the saved operator order remains authoritative.${objectiveChanged ? ` Complexity escalation changed this analysis objective from ${policy.optimizationObjective} to ${effectiveObjective}.` : ''}`
-            : 'Manual mode preserves the exact saved operator order.',
+        explanation: `${routingExplanation}${attributionNote}`,
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
