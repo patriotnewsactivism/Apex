@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { rankModelsFromStats, type ModelPerformanceStats } from '../packages/core/src/model-intelligence.js';
+import {
+  applyControlledExploration,
+  rankModelsFromStats,
+  type ModelPerformanceStats,
+} from '../packages/core/src/model-intelligence.js';
 
 let failures = 0;
 const check = (label: string, condition: boolean, detail?: unknown) => {
@@ -78,6 +82,30 @@ const pinned = rankModelsFromStats({
 check('explicit role pin stays first despite lower learned score', pinned.order[0] === 'vendor/a', pinned.order);
 check('adaptive ranking never introduces an unselected model', pinned.order.every((id) => candidates.includes(id)) && pinned.order.length === candidates.length, pinned.order);
 
+console.log('\n── Controlled learning trials ──');
+const trialStats = [
+  stat('vendor/a', { taskSamples: 4, observedScore: 0.8 }),
+  stat('vendor/b', { taskSamples: 2, observedScore: 0.7 }),
+  stat('vendor/c', { taskSamples: 0, observedScore: null, confidence: 0 }),
+];
+const trialBase = {
+  order: candidates,
+  stats: trialStats,
+  minimumSamples: 5,
+  explorationRate: 0.25,
+  taskId: 'task-0',
+  role: 'BACKEND',
+  targetComplexity: 0.35,
+};
+const learningTrial = applyControlledExploration(trialBase);
+check('eligible deterministic trial chooses least-sampled selected model', learningTrial.explored && learningTrial.order[0] === 'vendor/c', learningTrial);
+check('learning trial preserves every selected model exactly once', learningTrial.order.length === candidates.length && new Set(learningTrial.order).size === candidates.length && learningTrial.order.every((id) => candidates.includes(id)), learningTrial.order);
+check('same task produces the same exploration decision', JSON.stringify(applyControlledExploration(trialBase)) === JSON.stringify(learningTrial));
+check('0% exploration can never change order', applyControlledExploration({ ...trialBase, explorationRate: 0 }).explored === false);
+check('high-complexity task is never used for exploration', applyControlledExploration({ ...trialBase, targetComplexity: 0.75 }).explored === false);
+check('hard role pin disables exploration', applyControlledExploration({ ...trialBase, pinnedModel: 'vendor/a' }).explored === false);
+check('trial rate is internally hard-capped at 25%', JSON.stringify(applyControlledExploration({ ...trialBase, explorationRate: 1 })) === JSON.stringify(learningTrial));
+
 console.log('\n── Runtime telemetry contract ──');
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const intelligenceSource = fs.readFileSync(path.join(root, 'packages/core/src/model-intelligence.ts'), 'utf8');
@@ -91,6 +119,7 @@ check('task identity uses AsyncLocalStorage for concurrency-safe attribution', c
 check('telemetry writes identifiers/metrics, not prompt or completion content', intelligenceSource.includes('never store prompt/completion content') && !intelligenceSource.includes('response.content'));
 check('dashboard clearly separates static heuristic from learned evidence', panelSource.includes('Static value') && panelSource.includes('Observed Model Intelligence'));
 check('adaptive UI states that unqualified models retain position', panelSource.includes('Models below the evidence threshold keep their operator-defined positions'));
+check('learning-trial UI states the low-complexity and role-pin restrictions', panelSource.includes('pre-run complexity ≤ 0.5') && panelSource.includes('never when that role has a hard model pin'));
 
 console.log(`\n${failures === 0 ? '✅ MODEL INTELLIGENCE GUARDS PASSED' : `❌ ${failures} MODEL INTELLIGENCE GUARD(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
