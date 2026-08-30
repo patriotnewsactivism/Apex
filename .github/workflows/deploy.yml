@@ -14,8 +14,9 @@ concurrency:
 
 env:
   GCP_PROJECT_ID: apex-503709
-  DEPLOY_SERVICE_ACCOUNT: 429262820734-compute@developer.gserviceaccount.com
+  EXPECTED_DEPLOY_SERVICE_ACCOUNT: 429262820734-compute@developer.gserviceaccount.com
   ARTIFACT_REPO: cloud-run-source-deploy
+  GCP_SA_KEY: ${{ secrets.APEX_GCP_SA_KEY || secrets.GCP_SA_KEY }}
 
 jobs:
   deploy:
@@ -24,22 +25,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Use APEX production service account
+      - name: Validate APEX deployment credential
         shell: bash
         run: |
           set -euo pipefail
-          gcloud config set project "$GCP_PROJECT_ID" --quiet
-          gcloud config set auth/impersonate_service_account "$DEPLOY_SERVICE_ACCOUNT" --quiet
-          gcloud auth print-access-token >/dev/null
-          echo "Deploying as $DEPLOY_SERVICE_ACCOUNT"
+          if [[ -z "${GCP_SA_KEY:-}" ]]; then
+            echo "Missing APEX_GCP_SA_KEY (preferred) or GCP_SA_KEY." >&2
+            exit 2
+          fi
+          actual="$(printf '%s' "$GCP_SA_KEY" | jq -r '.client_email // empty')"
+          if [[ "$actual" != "$EXPECTED_DEPLOY_SERVICE_ACCOUNT" ]]; then
+            echo "Wrong APEX Google credential. Expected $EXPECTED_DEPLOY_SERVICE_ACCOUNT but secret contains ${actual:-unknown}." >&2
+            exit 3
+          fi
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          credentials_json: ${{ env.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
 
       - name: Configure Docker auth
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
