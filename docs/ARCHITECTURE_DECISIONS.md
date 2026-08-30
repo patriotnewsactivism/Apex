@@ -77,7 +77,7 @@ The reviewed no-configuration fallback remains:
 2. DeepSeek V4 Flash 0731 fallback;
 3. DeepSeek V4 Pro 0813 fallback.
 
-An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The policy may contain 1–50 valid OpenRouter model IDs and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
+An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The policy may contain 1–500 valid OpenRouter model IDs—intentionally large enough for the current hundreds-model catalog—and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
 
 When a valid custom policy exists, APEX sends the role-specific ordered roster to OpenRouter using the native `models` fallback parameter. APEX makes one paced gateway attempt rather than replaying the same roster through the three legacy logical rungs. OpenRouter may then fall through the ordered models according to its documented model-fallback behavior, and APEX records the actual model returned by OpenRouter.
 
