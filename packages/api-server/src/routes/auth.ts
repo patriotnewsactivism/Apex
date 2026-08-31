@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { validateAdminToken } from '../middleware/auth.js';
 
 /**
  * POST /api/auth/login — exchange APEX_ADMIN_PASSWORD for APEX_ADMIN_TOKEN.
@@ -40,6 +41,26 @@ export function createAuthRouter() {
       console.error('[auth] Login error:', err);
       res.status(500).json({ error: 'Authentication processing error' });
     }
+  });
+
+  /**
+   * GET /api/auth/verify — is this bearer token still the configured one?
+   *
+   * APEX_ADMIN_TOKEN is a long-lived deployment secret, so a token the browser
+   * stored under a previous value stays in localStorage and looks like a
+   * session. The dashboard trusted its mere presence, rendered the full UI, and
+   * then had every data call rejected — the operator saw a dashboard with no
+   * agents and no leads rather than a login prompt.
+   *
+   * Mounted on the auth router, which sits in front of requireAdminAuth, so it
+   * can answer 401 instead of being swallowed by it.
+   */
+  router.get('/verify', (req, res): void => {
+    if (validateAdminToken(req.headers.authorization)) {
+      res.json({ valid: true });
+      return;
+    }
+    res.status(401).json({ error: 'Invalid token' });
   });
 
   return router;

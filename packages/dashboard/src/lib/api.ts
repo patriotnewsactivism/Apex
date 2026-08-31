@@ -16,6 +16,13 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      // The token is no longer the configured one. Drop it and tell App to show
+      // the login screen, rather than letting each panel render its own empty
+      // state and leave the operator staring at a dashboard with no data.
+      localStorage.removeItem('apex_token');
+      window.dispatchEvent(new Event('apex:unauthorized'));
+    }
     const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string };
     throw new Error(err.error ?? `HTTP ${res.status}`);
   }

@@ -148,6 +148,13 @@ async function settingsFetch<T>(path: string, options?: RequestInit): Promise<T>
 
   const res = await fetch(path, { ...options, headers });
   if (!res.ok) {
+    if (res.status === 401) {
+      // Same session handling as lib/api.ts: a rejected token is cleared and
+      // reported once, so the app returns to login instead of showing an
+      // authenticated shell that cannot load anything.
+      localStorage.removeItem('apex_token');
+      window.dispatchEvent(new Event('apex:unauthorized'));
+    }
     const body = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(body.error || `HTTP ${res.status}`);
   }
