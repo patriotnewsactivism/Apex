@@ -59,8 +59,69 @@ export function getLLMPauseRetryAt(
   return new Date(Math.max(now + 1_000, resumeAt) + 5_000 + jitterMs);
 }
 
-/** Failures where a 2s/4s/8s retry can only repeat a known global condition. */
+/** Conditions inside a chain failure that clear on their own within about a
+ * minute: a short credential or provider cooldown, a request that timed out,
+ * a rate limit, or a momentary gateway error. */
+const TRANSIENT_CHAIN_CONDITION =
+  /(credential in cooldown|provider pacing\/cooldown|request timed out|\b429\b|\b50[234]\b|rate limit|overloaded|temporarily unavailable)/i;
+
+/** Conditions no retry can clear on a useful timescale: a missing or rejected
+ * credential, an exhausted quota, a model that is gone, or a request too large
+ * for the roster. One of these anywhere in the chain failure means waiting is
+ * pointless, however transient the rest of it looks. */
+const PERSISTENT_CHAIN_CONDITION =
+  /(no API key|no usable provider credential|base URL is not configured|insufficient credits|\b40[123]\b|unauthori[sz]ed|forbidden|invalid (?:api )?key|authentication failed|\b404\b|model is unavailable|\b413\b|request too large|tokens per day|per[\s-]?day|daily (?:cap|limit|allowance)|quota exhausted|free quota|free[\s-]?tier)/i;
+
+/** A chain failure whose every reported condition is short and self-clearing.
+ *
+ * APEX runs a single OpenRouter gateway, so one slow request parks the only
+ * credential for its cooldown and every task started in that window sees this
+ * error. Dropping those outright is how a lead-generation sweep gets lost to a
+ * 30-second cooldown, so these keep their retries. */
+export function isTransientLLMChainFailure(error: string | null): boolean {
+  if (!error || !isLLMProviderChainFailure(error)) return false;
+  if (PERSISTENT_CHAIN_CONDITION.test(error)) return false;
+  return TRANSIENT_CHAIN_CONDITION.test(error);
+}
+
+/** Longest credential cooldown APEX applies to a transient provider failure,
+ * plus room for the request that trips it. The default 1s/2s/4s ladder expires
+ * well inside that window, so without this floor all three retries burn before
+ * the cooldown ever lifts. */
+export const TRANSIENT_LLM_RETRY_FLOOR_MS = 45_000;
+
+/** Deterministic 0..max-1 spread over a task ID. A plain character sum is not
+ * enough here: task IDs are UUIDs, whose sums land in a band a few hundred wide,
+ * so every task in a swarm would draw nearly the same jitter. Mixing each
+ * character into the accumulator spreads them across the whole range while
+ * staying a pure function of the ID, so a retry time is still reproducible. */
+function taskIdJitterMs(taskId: string, max: number): number {
+  let hash = 0;
+  for (const char of taskId) {
+    hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  }
+  return Math.abs(hash) % max;
+}
+
+/** Retry delay for a transient chain failure: never shorter than the cooldown
+ * that caused it, and spread so a swarm that failed together on one credential
+ * does not come back in lockstep and collide on it again. */
+export function getTransientLLMRetryDelayMs(
+  baseDelayMs: number,
+  taskId: string,
+): number {
+  return Math.min(
+    300_000,
+    Math.max(baseDelayMs, TRANSIENT_LLM_RETRY_FLOOR_MS) +
+      taskIdJitterMs(taskId, 15_000),
+  );
+}
+
+/** Failures where a 2s/4s/8s retry can only repeat a known global condition.
+ * A transient cooldown is not one of those — it clears without intervention,
+ * so the task keeps its retries and returns on the longer schedule above. */
 export function shouldSuppressImmediateLLMRetry(error: string | null): boolean {
+  if (isTransientLLMChainFailure(error)) return false;
   return isLLMProviderChainFailure(error) || isLLMIntentionalPause(error);
 }
 

@@ -6,6 +6,8 @@ import type { TaskInput } from './types.js';
 import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure } from './runtime-health.js';
 import {
   getLLMPauseRetryAt,
+  getTransientLLMRetryDelayMs,
+  isTransientLLMChainFailure,
   shouldSuppressImmediateLLMRetry,
 } from './provider-failure.js';
 
@@ -282,7 +284,10 @@ export class TaskQueue {
 
         const canRetry = task.retryCount < task.maxRetries && !shouldSuppressImmediateLLMRetry(error);
         if (canRetry) {
-          const retryDelayMs = Math.min(Math.pow(2, task.retryCount) * 1000, 300_000);
+          const baseDelayMs = Math.min(Math.pow(2, task.retryCount) * 1000, 300_000);
+          const retryDelayMs = isTransientLLMChainFailure(error)
+            ? getTransientLLMRetryDelayMs(baseDelayMs, taskId)
+            : baseDelayMs;
           const nextRetryAt = new Date(Date.now() + retryDelayMs);
           await db.update(tasks).set({
             status: 'pending',
