@@ -771,10 +771,52 @@ export default function App() {
 
   useEffect(() => {
     const token = localStorage.getItem('apex_token');
-    if (token) {
-      setAuthed(true);
+    if (!token) {
+      setLoading(false);
+      return;
     }
-    setLoading(false);
+
+    // A stored token is not a session. APEX_ADMIN_TOKEN is a long-lived
+    // deployment secret, so a token minted under a previous value survives in
+    // localStorage and used to satisfy this check on its own — the dashboard
+    // rendered in full and then every data call came back 401, which looks
+    // like "loaded but empty" rather than "logged out".
+    let cancelled = false;
+    fetch('/api/auth/verify', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok) {
+          setAuthed(true);
+        } else if (res.status === 401) {
+          localStorage.removeItem('apex_token');
+        } else {
+          // Server trouble that is not a rejection — keep the session and let
+          // the panels surface the real error.
+          setAuthed(true);
+        }
+      })
+      .catch(() => {
+        // Offline or a transient network fault should not sign anyone out.
+        if (!cancelled) setAuthed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Any API call that comes back 401 clears the token and reports it here, so a
+  // token invalidated while the tab is open returns to the login screen instead
+  // of leaving empty panels behind.
+  useEffect(() => {
+    const onUnauthorized = () => setAuthed(false);
+    window.addEventListener('apex:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('apex:unauthorized', onUnauthorized);
   }, []);
 
   const handleLogout = () => {
