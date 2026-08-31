@@ -134,6 +134,61 @@ jobs:
             echo 'Do not provision a replacement database. Restore the existing DSN in Secret Manager or the GitHub production secret, then allow CI to produce a new eligible deployment.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Resolve optional AI and lead-research credentials
+        id: lead_secrets
+        env:
+          GITHUB_OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+          GITHUB_OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          GITHUB_BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          GITHUB_GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          GITHUB_YELP_API_KEY: ${{ secrets.YELP_API_KEY }}
+          GITHUB_FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          resolve_optional() {
+            local env_name="$1"
+            local github_env_name="$2"
+            shift 2
+            local github_value="${!github_env_name:-}"
+
+            if [[ -n "$github_value" ]]; then
+              echo "${env_name}_SOURCE=github" >> "$GITHUB_OUTPUT"
+              echo "$env_name: resolved from masked GitHub secret."
+              return 0
+            fi
+
+            local candidate
+            for candidate in "$@"; do
+              if gcloud secrets describe "$candidate" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
+                echo "${env_name}_SOURCE=secret-manager" >> "$GITHUB_OUTPUT"
+                echo "${env_name}_SECRET_NAME=$candidate" >> "$GITHUB_OUTPUT"
+                echo "$env_name: resolved from Secret Manager secret '$candidate'."
+                return 0
+              fi
+            done
+
+            echo "${env_name}_SOURCE=existing" >> "$GITHUB_OUTPUT"
+            echo "$env_name: no GitHub/Secret Manager source found; preserving any existing Cloud Run binding."
+          }
+
+          resolve_optional OPENROUTER_API_KEY_2 GITHUB_OPENROUTER_API_KEY_2 \
+            apex-openrouter-api-key-2 openrouter-api-key-2 OPENROUTER_API_KEY_2
+          resolve_optional OPENROUTER_API_KEY GITHUB_OPENROUTER_API_KEY \
+            apex-openrouter-api-key openrouter-api-key OPENROUTER_API_KEY
+          resolve_optional TAVILY_API_KEY GITHUB_TAVILY_API_KEY \
+            apex-tavily-api-key tavily-api-key TAVILY_API_KEY
+          resolve_optional BRAVE_SEARCH_API_KEY GITHUB_BRAVE_SEARCH_API_KEY \
+            apex-brave-search-api-key brave-search-api-key BRAVE_SEARCH_API_KEY
+          resolve_optional GOOGLE_PLACES_API_KEY GITHUB_GOOGLE_PLACES_API_KEY \
+            apex-google-places-api-key google-places-api-key GOOGLE_PLACES_API_KEY
+          resolve_optional YELP_API_KEY GITHUB_YELP_API_KEY \
+            apex-yelp-api-key yelp-api-key YELP_API_KEY
+          resolve_optional FIRECRAWL_API_KEY GITHUB_FIRECRAWL_API_KEY \
+            apex-firecrawl-api-key firecrawl-api-key FIRECRAWL_API_KEY
+
       - name: Validate existing production Cloud Run target
         env:
           DB_SOURCE: ${{ steps.db.outputs.source }}
@@ -202,6 +257,20 @@ jobs:
                   print(f'{name}: configured as a service environment value')
           if missing:
               raise SystemExit('Missing required APEX runtime configuration: ' + ', '.join(missing))
+
+          print('Lead-research runtime configuration currently on Cloud Run:')
+          for name in (
+              'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY', 'TAVILY_API_KEY',
+              'BRAVE_SEARCH_API_KEY', 'GOOGLE_PLACES_API_KEY', 'YELP_API_KEY',
+              'FIRECRAWL_API_KEY',
+          ):
+              item = env.get(name)
+              if not item:
+                  print(f'{name}: not currently attached')
+              elif item.get('valueFrom'):
+                  print(f'{name}: configured from Secret Manager')
+              else:
+                  print(f'{name}: configured as a service environment value')
           PY
 
       - name: Configure Docker auth
@@ -231,11 +300,32 @@ jobs:
             exit 7
           fi
 
-      - name: Update existing Cloud Run service image
+      - name: Update existing Cloud Run service image and runtime credentials
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DB_SOURCE: ${{ steps.db.outputs.source }}
           DB_SECRET_NAME: ${{ steps.db.outputs.secret_name }}
+          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          YELP_API_KEY: ${{ secrets.YELP_API_KEY }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          OPENROUTER_API_KEY_2_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_2_SOURCE }}
+          OPENROUTER_API_KEY_2_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_2_SECRET_NAME }}
+          OPENROUTER_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_SOURCE }}
+          OPENROUTER_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_SECRET_NAME }}
+          TAVILY_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.TAVILY_API_KEY_SOURCE }}
+          TAVILY_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.TAVILY_API_KEY_SECRET_NAME }}
+          BRAVE_SEARCH_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.BRAVE_SEARCH_API_KEY_SOURCE }}
+          BRAVE_SEARCH_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.BRAVE_SEARCH_API_KEY_SECRET_NAME }}
+          GOOGLE_PLACES_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.GOOGLE_PLACES_API_KEY_SOURCE }}
+          GOOGLE_PLACES_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.GOOGLE_PLACES_API_KEY_SECRET_NAME }}
+          YELP_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.YELP_API_KEY_SOURCE }}
+          YELP_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.YELP_API_KEY_SECRET_NAME }}
+          FIRECRAWL_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.FIRECRAWL_API_KEY_SOURCE }}
+          FIRECRAWL_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.FIRECRAWL_API_KEY_SECRET_NAME }}
         shell: bash
         run: |
           set -euo pipefail
@@ -247,16 +337,7 @@ jobs:
             # APEX is a singleton autonomous workforce, not a stateless web
             # service. Every container start boots all 13 agents and their
             # polling loops, so more than one instance means several copies of
-            # each agent racing for the same rows. Observed 2026-08-31: the full
-            # roster logged "initialized" four times in 22 minutes, and the
-            # agents then failed with
-            #   [TaskQueue.dequeue] durable Postgres operation failed
-            # because each instance also opens its own pool (lib/db max: 20)
-            # against Supabase's pgbouncer.
-            #
-            # It also breaks Settings. Saving an integration key writes the row
-            # and sets process.env on the instance that served the request, so
-            # with several instances the other copies keep running without it.
+            # each agent racing for the same rows.
             --max-instances=1
 
             # Without a warm instance Cloud Run scales to zero and the autonomous
@@ -266,19 +347,78 @@ jobs:
             --min-instances=1
             --no-cpu-throttling
           )
+
+          delim='__APEX_ENV_94B4F__'
+          env_spec="^${delim}^"
+          has_env=false
+          secret_spec=''
+
+          add_env() {
+            local name="$1"
+            local value="$2"
+            [[ -n "$value" ]] || return 0
+            if [[ "$has_env" == true ]]; then env_spec+="$delim"; fi
+            env_spec+="${name}=${value}"
+            has_env=true
+          }
+
+          add_secret() {
+            local name="$1"
+            local secret_name="$2"
+            [[ -n "$secret_name" ]] || return 0
+            if [[ -n "$secret_spec" ]]; then secret_spec+=','; fi
+            secret_spec+="${name}=${secret_name}:latest"
+          }
+
           case "${DB_SOURCE:-none}" in
             secret-manager)
-              args+=(--update-secrets "DATABASE_URL=${DB_SECRET_NAME}:latest")
+              add_secret DATABASE_URL "$DB_SECRET_NAME"
               echo "Attaching DATABASE_URL from Secret Manager secret '$DB_SECRET_NAME'."
               ;;
             github)
-              args+=(--update-env-vars "^__APEX_DB__^DATABASE_URL=$DATABASE_URL")
+              add_env DATABASE_URL "$DATABASE_URL"
               echo 'Attaching DATABASE_URL from masked GitHub production secret.'
               ;;
             *)
               echo 'No DATABASE_URL to attach; leaving existing service configuration untouched.'
               ;;
           esac
+
+          attach_optional() {
+            local name="$1"
+            local source="$2"
+            local secret_name="$3"
+            local github_value="$4"
+            case "$source" in
+              github)
+                add_env "$name" "$github_value"
+                echo "$name: attaching masked GitHub secret."
+                ;;
+              secret-manager)
+                add_secret "$name" "$secret_name"
+                echo "$name: attaching Secret Manager secret '$secret_name'."
+                ;;
+              *)
+                echo "$name: preserving existing Cloud Run configuration."
+                ;;
+            esac
+          }
+
+          attach_optional OPENROUTER_API_KEY_2 "$OPENROUTER_API_KEY_2_SOURCE" "$OPENROUTER_API_KEY_2_SECRET_NAME" "$OPENROUTER_API_KEY_2"
+          attach_optional OPENROUTER_API_KEY "$OPENROUTER_API_KEY_SOURCE" "$OPENROUTER_API_KEY_SECRET_NAME" "$OPENROUTER_API_KEY"
+          attach_optional TAVILY_API_KEY "$TAVILY_API_KEY_SOURCE" "$TAVILY_API_KEY_SECRET_NAME" "$TAVILY_API_KEY"
+          attach_optional BRAVE_SEARCH_API_KEY "$BRAVE_SEARCH_API_KEY_SOURCE" "$BRAVE_SEARCH_API_KEY_SECRET_NAME" "$BRAVE_SEARCH_API_KEY"
+          attach_optional GOOGLE_PLACES_API_KEY "$GOOGLE_PLACES_API_KEY_SOURCE" "$GOOGLE_PLACES_API_KEY_SECRET_NAME" "$GOOGLE_PLACES_API_KEY"
+          attach_optional YELP_API_KEY "$YELP_API_KEY_SOURCE" "$YELP_API_KEY_SECRET_NAME" "$YELP_API_KEY"
+          attach_optional FIRECRAWL_API_KEY "$FIRECRAWL_API_KEY_SOURCE" "$FIRECRAWL_API_KEY_SECRET_NAME" "$FIRECRAWL_API_KEY"
+
+          if [[ "$has_env" == true ]]; then
+            args+=(--update-env-vars "$env_spec")
+          fi
+          if [[ -n "$secret_spec" ]]; then
+            args+=(--update-secrets "$secret_spec")
+          fi
+
           gcloud run services update "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" "${args[@]}" --quiet
 
       - name: Verify deployment and auth boundary
