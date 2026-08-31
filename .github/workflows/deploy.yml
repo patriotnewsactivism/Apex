@@ -243,6 +243,28 @@ jobs:
             --project "$GCP_PROJECT_ID"
             --region "${{ secrets.APEX_CLOUD_RUN_REGION }}"
             --image "$IMAGE"
+
+            # APEX is a singleton autonomous workforce, not a stateless web
+            # service. Every container start boots all 13 agents and their
+            # polling loops, so more than one instance means several copies of
+            # each agent racing for the same rows. Observed 2026-08-31: the full
+            # roster logged "initialized" four times in 22 minutes, and the
+            # agents then failed with
+            #   [TaskQueue.dequeue] durable Postgres operation failed
+            # because each instance also opens its own pool (lib/db max: 20)
+            # against Supabase's pgbouncer.
+            #
+            # It also breaks Settings. Saving an integration key writes the row
+            # and sets process.env on the instance that served the request, so
+            # with several instances the other copies keep running without it.
+            --max-instances=1
+
+            # Without a warm instance Cloud Run scales to zero and the autonomous
+            # loops simply stop between requests; with CPU throttling they stall
+            # the moment no HTTP request is in flight. A background workforce
+            # needs both of these to keep working when nobody is watching.
+            --min-instances=1
+            --no-cpu-throttling
           )
           case "${DB_SOURCE:-none}" in
             secret-manager)
