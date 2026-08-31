@@ -240,6 +240,11 @@ const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
 const COOLDOWN_429_MS = 30_000;
+/** A request that timed out says nothing about the credential's quota, so it
+ * earns only enough of a pause to let a wedged endpoint settle. Charging it the
+ * full rate-limit cooldown blacks out every agent on APEX's single OpenRouter
+ * credential for 30s over one slow response. */
+const COOLDOWN_TIMEOUT_MS = 5_000;
 const COOLDOWN_402_MS = 6 * 60 * 60 * 1000;
 const COOLDOWN_AUTH_MS = 10 * 60 * 1000;
 const COOLDOWN_404_MS = 10 * 60 * 1000;
@@ -277,6 +282,9 @@ function cooldownMs(status: number | undefined, message: string): number {
   if (status === 404) return COOLDOWN_404_MS;
   if (status === 413) return COOLDOWN_413_MS;
   if (status === 429 && DAILY_QUOTA_PATTERN.test(message)) return msUntilDailyReset();
+  if (status === undefined && /request timed out|aborted/i.test(message)) {
+    return COOLDOWN_TIMEOUT_MS;
+  }
   return COOLDOWN_429_MS;
 }
 
