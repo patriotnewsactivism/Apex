@@ -239,6 +239,11 @@ type ProviderRequestError = Error & {
 const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
+/** OpenRouter's documented ceiling for the `models` fallback array. Sending
+ * more earns "HTTP 400 'models' array must have 3 items or fewer" on every
+ * request, whichever credential is used. */
+export const OPENROUTER_MAX_FALLBACK_MODELS = 3;
+
 const COOLDOWN_429_MS = 30_000;
 /** A request that timed out says nothing about the credential's quota, so it
  * earns only enough of a pause to let a wedged endpoint settle. Charging it the
@@ -641,8 +646,15 @@ async function callCompatibleProvider(
       // cost alongside token counts when available.
       usage: { include: true },
     };
-    if (customPolicy) body.models = routedModels;
-    else body.model = provider.model;
+    if (customPolicy) {
+      // OpenRouter rejects the whole request with HTTP 400 when `models` holds
+      // more than OPENROUTER_MAX_FALLBACK_MODELS entries, and the Settings
+      // model picker does not stop an operator selecting more than that. A
+      // sixth selection must degrade to "route the best three", never to a
+      // gateway that refuses every call.
+      routedModels = routedModels.slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
+      body.models = routedModels;
+    } else body.model = provider.model;
 
     const wireTools = toWireTools(tools);
     if (wireTools?.length) {
@@ -934,7 +946,14 @@ class MultiProviderClient {
                   complexityHint: execution?.complexityHint,
                   errorType: status ? `http_${status}` : err.name || 'provider_error',
                 });
-                setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
+                // A 400 indicts the request body, not the key. Parking the
+                // credential for it takes every other agent down over a
+                // malformed payload they had no part in — which is how one bad
+                // model-policy selection became "credential in cooldown"
+                // across the whole workforce.
+                if (status !== 400) {
+                  setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
+                }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
                 if (!capacityFailure) nonCapacityFailureSeen = true;

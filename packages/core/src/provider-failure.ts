@@ -70,7 +70,7 @@ const TRANSIENT_CHAIN_CONDITION =
  * for the roster. One of these anywhere in the chain failure means waiting is
  * pointless, however transient the rest of it looks. */
 const PERSISTENT_CHAIN_CONDITION =
-  /(no API key|no usable provider credential|base URL is not configured|insufficient credits|\b40[123]\b|unauthori[sz]ed|forbidden|invalid (?:api )?key|authentication failed|\b404\b|model is unavailable|\b413\b|request too large|tokens per day|per[\s-]?day|daily (?:cap|limit|allowance)|quota exhausted|free quota|free[\s-]?tier)/i;
+  /(no API key|no usable provider credential|base URL is not configured|insufficient credits|\b40[0123]\b|unauthori[sz]ed|forbidden|invalid (?:api )?key|authentication failed|\b404\b|model is unavailable|\b413\b|request too large|items or fewer|tokens per day|per[\s-]?day|daily (?:cap|limit|allowance)|quota exhausted|free quota|free[\s-]?tier)/i;
 
 /** A chain failure whose every reported condition is short and self-clearing.
  *
