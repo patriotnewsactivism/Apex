@@ -656,61 +656,96 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           }
         }
 
-        // ── Provider 2: Google Places API (if key configured) ──
+        // ── Provider 2: Google Places API (New) ──
+        // Google removed Places API (Legacy) from all new Cloud projects on
+        // 2025-03-01, so the old maps.googleapis.com/maps/api/place endpoints
+        // cannot be enabled any more. This uses the current searchText API,
+        // which also returns the phone and website inline — the legacy flow
+        // needed a Place Details request per result to get them.
         if (googleKey) {
           try {
-            const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${googleKey}`;
-            const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(10_000) });
-            if (searchRes.ok) {
-              const searchData = await searchRes.json() as {
-                results: Array<{
-                  place_id: string;
-                  name: string;
-                  formatted_address: string;
-                  types: string[];
+            const collected: Array<Record<string, unknown>> = [];
+            let pageToken: string | undefined;
+
+            // searchText caps a page at 20; three pages covers the 50 this
+            // tool advertises without spending requests nobody asked for.
+            for (let page = 0; page < 3 && collected.length < 50; page++) {
+              const res: Response = await fetch(
+                'https://places.googleapis.com/v1/places:searchText',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': googleKey,
+                    // Billing is per requested field, so ask only for what a
+                    // lead actually needs.
+                    'X-Goog-FieldMask': [
+                      'places.displayName',
+                      'places.formattedAddress',
+                      'places.nationalPhoneNumber',
+                      'places.websiteUri',
+                      'places.primaryTypeDisplayName',
+                      'places.rating',
+                      'places.userRatingCount',
+                      'nextPageToken',
+                    ].join(','),
+                  },
+                  body: JSON.stringify({
+                    textQuery: query,
+                    pageSize: 20,
+                    ...(pageToken ? { pageToken } : {}),
+                  }),
+                  signal: AbortSignal.timeout(10_000),
+                },
+              );
+
+              if (!res.ok) break;
+
+              const data = await res.json() as {
+                places?: Array<{
+                  displayName?: { text?: string };
+                  formattedAddress?: string;
+                  nationalPhoneNumber?: string;
+                  websiteUri?: string;
+                  primaryTypeDisplayName?: { text?: string };
                   rating?: number;
-                  user_ratings_total?: number;
+                  userRatingCount?: number;
                 }>;
-                status: string;
+                nextPageToken?: string;
               };
 
-              const BATCH = 10;
-              const enriched: Array<Record<string, unknown>> = [];
-              const results = searchData.results ?? [];
-
-              for (let i = 0; i < results.length; i += BATCH) {
-                const batch = results.slice(i, i + BATCH);
-                const details = await Promise.all(
-                  batch.map(async (r) => {
-                    try {
-                      const dUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${r.place_id}&fields=name,formatted_address,formatted_phone_number,website,types,rating,user_ratings_total&key=${googleKey}`;
-                      const dRes = await fetch(dUrl, { signal: AbortSignal.timeout(5_000) });
-                      if (!dRes.ok) return null;
-                      const dd = await dRes.json() as { result?: Record<string, unknown> };
-                      const d = dd.result;
-                      if (!d) return null;
-                      return {
-                        name: d.name, address: d.formatted_address,
-                        phone: d.formatted_phone_number, website: d.website,
-                        industry: (d.types as string[])?.join(', ') ?? '',
-                        rating: d.rating, reviewCount: d.user_ratings_total,
-                        source: 'google' as const,
-                      };
-                    } catch { return null; }
-                  }),
-                );
-                for (const d of details) { if (d) enriched.push(d); }
+              for (const place of data.places ?? []) {
+                const name = place.displayName?.text;
+                if (!name) continue;
+                collected.push({
+                  name,
+                  address: place.formattedAddress ?? '',
+                  phone: place.nationalPhoneNumber,
+                  website: place.websiteUri,
+                  industry: place.primaryTypeDisplayName?.text ?? '',
+                  city: '',
+                  rating: place.rating,
+                  reviewCount: place.userRatingCount,
+                  source: 'google' as const,
+                });
               }
 
-              if (enriched.length > 0) {
-                return { query, total: enriched.length, businesses: enriched, provider: 'google' };
-              }
+              pageToken = data.nextPageToken;
+              if (!pageToken) break;
+            }
+
+            if (collected.length > 0) {
+              return {
+                query,
+                total: collected.length,
+                businesses: collected.slice(0, 50),
+                provider: 'google',
+              };
             }
           } catch {
             // Fall through to OSM fallback
           }
         }
-
         // ── Provider 3: OpenStreetMap Overpass API (no key, always works) ──
         // Free, no signup, no credit card. Lower data quality but covers millions of businesses.
         try {
@@ -762,7 +797,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           // All providers failed
         }
 
-        return { query, total: 0, businesses: [], provider: 'none', error: 'No business directory API configured. Set YELP_API_KEY (free, no credit card) or GOOGLE_PLACES_API_KEY for best results. Falling back to OSM Overpass (limited). Use webSearch as an alternative.' };
+        return { query, total: 0, businesses: [], provider: 'none', error: 'No business directory API returned results. Set GOOGLE_PLACES_API_KEY (Places API (New), enabled in the same Google Cloud project APEX already deploys to) for real phone numbers and company websites; YELP_API_KEY is also supported but returns Yelp listing URLs rather than the business’s own site. OSM Overpass is the keyless fallback and is sparse for US small businesses. Use webSearch as an alternative.' };
       },
     },
 
