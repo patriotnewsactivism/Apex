@@ -16,7 +16,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createProjectsRouter } from './routes/projects.js';
@@ -604,6 +604,32 @@ await recoverStaleLeasedTasks();
     // used?" — the roster is what makes an unfilled free slot visible here
     // rather than only in a failed task's error_message.
     res.json({ ...getTokenLedgerSnapshot(), roster: getProviderRoster() });
+  });
+
+  /**
+   * POST /api/tokens/reset — clear today's spend and start the day over.
+   *
+   * resetTokenLedger() already existed but was reachable from nowhere, so a day
+   * spent against a broken provider could only be written off by waiting for
+   * the UTC rollover. Zeroing llm_token_usage_daily by hand does not work: the
+   * counters live in this process and are reconciled with GREATEST(), so the
+   * running total is simply written back. The reset has to happen in here.
+   *
+   * Behind requireAdminAuth with every other /api route.
+   */
+  app.post('/api/tokens/reset', async (_req, res) => {
+    const before = getTokenLedgerSnapshot();
+    try {
+      await resetTokenLedger();
+      const after = getTokenLedgerSnapshot();
+      console.log(
+        `[tokens] Ledger reset by operator — cleared ${before.totalTokens} tokens across ${before.providers.length} provider(s).`,
+      );
+      res.json({ ok: true, clearedTokens: before.totalTokens, before, after });
+    } catch (err) {
+      console.error('[tokens] Ledger reset failed:', err);
+      res.status(500).json({ error: 'Token ledger reset failed' });
+    }
   });
 
   // WebSocket
