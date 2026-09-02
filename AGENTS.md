@@ -98,11 +98,10 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 `packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
 
-With no valid operator policy, the reviewed fallback remains:
+With no valid operator policy, the reviewed high-capability free fallback remains:
 
-1. `~deepseek/deepseek-v4-flash-latest`
-2. `deepseek/deepseek-v4-flash-0731`
-3. `deepseek/deepseek-v4-pro-0813`
+1. `minimax/minimax-m3:free`
+2. `nvidia/nemotron-3-ultra-550b-a55b:free`
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
@@ -171,7 +170,7 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 ### Routing behavior
 
-- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed DeepSeek V4 chain.
+- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed MiniMax M3 Free → Nemotron 3 Ultra Free chain.
 - Operator-selected free model variants are allowed; free availability or rate limits never justify false completion or bypass backpressure.
 - Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.
 - Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
