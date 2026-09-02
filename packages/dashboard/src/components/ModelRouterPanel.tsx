@@ -229,7 +229,7 @@ export function ModelRouterPanel() {
         explorationRate: result.policy.explorationRate ?? 0,
         complexityEscalation: result.policy.complexityEscalation ?? false,
       });
-      setSavedMessage('Restored the reviewed DeepSeek V4 fallback chain.');
+      setSavedMessage('Restored the reviewed MiniMax M3 Free → Nemotron 3 Ultra Free fallback chain.');
       queryClient.invalidateQueries({ queryKey: ['settings', 'models'] });
     },
   });

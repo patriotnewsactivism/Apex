@@ -37,12 +37,10 @@ const PROVIDERS: Array<{
   extraHeaders?: Record<string, string>;
   protocol?: 'openai' | 'anthropic';
 }> = [
-  // Primary: DeepSeek V4 Flash Latest — $0.03/$0.10 per million tokens
-  { name: 'openrouter-deepseek-flash', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: '~deepseek/deepseek-v4-flash-latest', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
-  // Fallback: DeepSeek V4 Flash 0731 — $0.06/$0.12 per million tokens
-  { name: 'openrouter-deepseek-flash-0731', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'deepseek/deepseek-v4-flash-0731', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
-  // Heavy reasoning: DeepSeek V4 Pro 0813 — $0.66/$1.98 per million tokens
-  { name: 'openrouter-deepseek-pro', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'deepseek/deepseek-v4-pro-0813', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  // Primary free long-horizon agent, coding, tool-use, and multimodal model.
+  { name: 'openrouter-minimax-m3', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'minimax/minimax-m3:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  // Free reasoning, planning, orchestration, and coding fallback.
+  { name: 'openrouter-nemotron-ultra', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'nvidia/nemotron-3-ultra-550b-a55b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
 ];
 
 // Role-aware Qwen Cloud model selection — mirrors packages/core/src/llm-client.ts

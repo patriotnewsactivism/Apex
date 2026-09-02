@@ -83,7 +83,7 @@ Each lead needs: company name, website, industry, city, why it's a good fit (spe
 and a suggested outreach angle (how to pitch BuildMyBot to them).
 Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,
-      llm: { provider: 'openrouter-deepseek-flash', model: '~deepseek/deepseek-v4-flash-latest' },
+      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
       tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'requestPeerReview'],
       maxIterations: 50,
       approvalRequired: false,
@@ -136,7 +136,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Prioritized lead list with next action per lead, and an honest status: what's pipeline-ready vs.
 what's blocked on missing infrastructure (Twilio, live Stripe, etc).`,
-      llm: { provider: 'openrouter-deepseek-flash', model: '~deepseek/deepseek-v4-flash-latest' },
+      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
       tools: ['readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview', 'make_outbound_call', 'get_call_status'],
       maxIterations: 20,
       approvalRequired: false,
@@ -180,7 +180,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clean, ready-to-post drafts labeled by platform, plus a short rationale for why this angle will
 land with the ICP (Home Services, Legal, Medical/Esthetics, Real Estate).`,
-      llm: { provider: 'openrouter-deepseek-flash', model: '~deepseek/deepseek-v4-flash-latest' },
+      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
       tools: ['readFile', 'writeFile', 'webSearch', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: true,
@@ -223,7 +223,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clear, honest customer-facing responses. When escalating a gap between marketing and reality,
 flag it explicitly as a "sold but not built" item for the CEO/engineering team to prioritize.`,
-      llm: { provider: 'openrouter-deepseek-flash', model: '~deepseek/deepseek-v4-flash-latest' },
+      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
       tools: ['readFile', 'writeFile', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: false,

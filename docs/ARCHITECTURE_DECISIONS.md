@@ -71,11 +71,10 @@ Production is considered released only when the public health endpoint reports t
 
 Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` is the request-path implementation authority, `packages/core/src/model-routing.ts` owns the operator-selectable policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus the instrumented BaseAgent bind durable task identity into concurrent LLM calls.
 
-The reviewed no-configuration fallback remains:
+The reviewed no-configuration fallback is:
 
-1. DeepSeek V4 Flash latest alias;
-2. DeepSeek V4 Flash 0731 fallback;
-3. DeepSeek V4 Pro 0813 fallback.
+1. MiniMax M3 Free for high-capability long-horizon agent work, coding, tools, and multimodal input;
+2. NVIDIA Nemotron 3 Ultra Free for reasoning, planning, orchestration, and coding fallback.
 
 An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The roster may contain 1–500 valid OpenRouter model IDs—large enough for the current hundreds-model catalog—and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
 
@@ -131,7 +130,7 @@ The API/UI must expose the effective objective when complexity escalation change
 
 - OpenRouter remains the production inference gateway even when the selected roster contains models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or another model family available through OpenRouter.
 - Do not silently restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain outside OpenRouter.
-- The reviewed DeepSeek V4 chain remains the fail-safe when no valid custom policy is present.
+- The reviewed MiniMax M3 Free → Nemotron 3 Ultra Free chain remains the fail-safe when no valid custom policy is present.
 - OpenRouter gateway pacing, retry-after behavior, circuit breakers, token reservation, malformed-tool-call rejection, non-completion detection, and actual served-model diagnostics remain production controls.
 - Multiple keys from one OpenRouter account are credential redundancy, not separate account quotas.
 - Free model variants are permitted in an operator-selected roster, but free-tier availability/rate limits do not weaken failure handling or permit fabricated completion.

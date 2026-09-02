@@ -11,7 +11,7 @@ Canonical production facts:
 - [x] AWS Lightsail/CodeBuild deployment code and docs are retired/removed.
 - [x] Railway and Replit are not APEX production deployment paths.
 - [x] OpenRouter is the production LLM gateway in current source.
-- [x] Current source routes DeepSeek V4 Flash latest → Flash 0731 → Pro 0813 fallback.
+- [x] Current source routes MiniMax M3 Free → NVIDIA Nemotron 3 Ultra Free fallback.
 - [x] Admin auth has no hardcoded password/token fallback.
 - [x] Cloud Run deployment tooling is existing-service-only and SHA-provenance aware.
 - [x] Production CI includes typecheck, deterministic guards, and dashboard build.

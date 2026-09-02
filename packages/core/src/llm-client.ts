@@ -31,7 +31,7 @@ import {
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
 // OpenRouter is the production gateway. With no operator policy, APEX preserves
-// the reviewed DeepSeek V4 chain below. When APEX_OPENROUTER_MODEL_POLICY is a
+// the reviewed MiniMax/Nemotron free-agent chain below. When APEX_OPENROUTER_MODEL_POLICY is a
 // valid persisted policy, the selected model roster is sent to OpenRouter via
 // its native `models` fallback parameter in role-specific priority order.
 //
@@ -39,9 +39,8 @@ import {
 // reads OpenRouter's live catalog because per-model prices may change.
 
 export type ApexProviderName =
-  | 'openrouter-deepseek-flash'
-  | 'openrouter-deepseek-flash-0731'
-  | 'openrouter-deepseek-pro';
+  | 'openrouter-minimax-m3'
+  | 'openrouter-nemotron-ultra';
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -58,7 +57,7 @@ type ProviderSpec = {
 
 const PROVIDERS: readonly ProviderSpec[] = [
   {
-    name: 'openrouter-deepseek-flash',
+    name: 'openrouter-minimax-m3',
     model: DEFAULT_OPENROUTER_MODEL_CHAIN[0],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
@@ -66,16 +65,8 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
   },
   {
-    name: 'openrouter-deepseek-flash-0731',
+    name: 'openrouter-nemotron-ultra',
     model: DEFAULT_OPENROUTER_MODEL_CHAIN[1],
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
-    minIntervalMs: 500,
-    toolCallingReliable: true,
-  },
-  {
-    name: 'openrouter-deepseek-pro',
-    model: DEFAULT_OPENROUTER_MODEL_CHAIN[2],
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     minIntervalMs: 500,
@@ -88,16 +79,15 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 );
 
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  'openrouter-deepseek-flash',
-  'openrouter-deepseek-flash-0731',
-  'openrouter-deepseek-pro',
+  'openrouter-minimax-m3',
+  'openrouter-nemotron-ultra',
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
   // A custom roster is one OpenRouter gateway request with native model
   // fallback. Repeating that same roster through three logical adapters would
   // multiply identical requests and defeat provider pacing/circuit breaking.
-  if (hasCustomOpenRouterModelPolicy()) return ['openrouter-deepseek-flash'];
+  if (hasCustomOpenRouterModelPolicy()) return ['openrouter-minimax-m3'];
   return [...PROVIDER_ORDER];
 }
 
@@ -1080,7 +1070,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model = getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
-    provider: 'openrouter-deepseek-flash',
+    provider: 'openrouter-minimax-m3',
     model,
     temperature: 0.7,
     maxTokens,

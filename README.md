@@ -30,11 +30,10 @@ See:
 
 `packages/core/src/llm-client.ts` is the production source of truth for LLM routing.
 
-APEX currently routes production inference through OpenRouter using the reviewed DeepSeek V4 chain:
+APEX currently routes production inference through OpenRouter using the reviewed high-capability free-agent chain:
 
-1. DeepSeek V4 Flash latest alias
-2. DeepSeek V4 Flash 0731 fallback
-3. DeepSeek V4 Pro 0813 fallback
+1. MiniMax M3 Free — primary long-horizon, coding, tool-use, and multimodal model
+2. NVIDIA Nemotron 3 Ultra Free — reasoning, planning, orchestration, and coding fallback
 
 Required credential: `OPENROUTER_API_KEY`.
 
