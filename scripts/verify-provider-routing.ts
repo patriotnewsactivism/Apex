@@ -19,15 +19,20 @@ const catalog = getProviderCatalog();
 const expectedProviders = [
   "openrouter-minimax-m3",
   "openrouter-nemotron-ultra",
+  "openrouter-deepseek-r1-paid",
 ];
 const expectedModels = [
   "minimax/minimax-m3:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "deepseek/deepseek-r1-0528",
 ];
 const expectedOrder = [...expectedProviders];
 
-console.log("── OpenRouter free-agent provider allowlist ──");
-check("exactly two approved OpenRouter routes exist", catalog.length === 2, catalog);
+// Operator decision 2026-09-02: once both free OpenRouter rungs are
+// exhausted/cooled-down, fall to a cheap-but-capable paid reasoning anchor
+// (DeepSeek R1) instead of stalling the whole swarm. Free rungs stay first.
+console.log("── OpenRouter provider allowlist (free-agent chain + paid reasoning anchor) ──");
+check("exactly three approved OpenRouter routes exist", catalog.length === 3, catalog);
 check(
   "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
@@ -48,6 +53,13 @@ check(
   "Nemotron 3 Ultra Free is the orchestration fallback rung",
   catalog[1]?.name === "openrouter-nemotron-ultra" &&
     catalog[1]?.model === "nvidia/nemotron-3-ultra-550b-a55b:free",
+  catalog,
+);
+check(
+  "DeepSeek R1 (paid) is the last-resort high-reasoning anchor",
+  catalog[2]?.name === "openrouter-deepseek-r1-paid" &&
+    catalog[2]?.model === "deepseek/deepseek-r1-0528" &&
+    catalog[2]?.paid === true,
   catalog,
 );
 check(

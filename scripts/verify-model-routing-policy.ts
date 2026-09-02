@@ -28,7 +28,7 @@ try {
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
-  check('no policy preserves both guarded gateway rungs', getProviderOrderForRole('CEO').length === 2);
+  check('no policy preserves all guarded gateway rungs (free chain + paid anchor)', getProviderOrderForRole('CEO').length === 3);
 
   console.log('\n── Policy validation ──');
   check('empty roster is rejected', parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: [], rolePrimary: {} })) === null);
