@@ -1,0 +1,56 @@
+# Base44 dev environment for APEX.
+# Single-origin wiring: one container runs the API server (port 5000) and the
+# Vite dashboard (port 3000) together via `pnpm run dev`. Vite proxies /api and
+# /ws to localhost:5000 inside the container. Only port 3000 is public.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: apex
+      POSTGRES_PASSWORD: apex_dev_password
+      POSTGRES_DB: apex
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["pg_isready", "-U", "apex", "-d", "apex"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    image: node:22-slim
+    working_dir: /app
+    volumes:
+      # Bind-mount the cloned source so edits appear via live reload.
+      - ./:/app
+      # Persist the pnpm store across restarts for faster reinstalls.
+      - pnpmstore:/root/.local/share/pnpm
+    ports:
+      - "3000:3000"
+    environment:
+      # Local infra credentials (generated, not user secrets).
+      DATABASE_URL: postgres://apex:apex_dev_password@db:5432/apex
+      PORT: "5000"
+      # Pass the public host suffix so the app can derive external origins if needed.
+      BASE44_PUBLIC_HOST_SUFFIX: ${BASE44_PUBLIC_HOST_SUFFIX}
+    env_file:
+      # Placeholders first — app boots without credentials.
+      - ./.env.base44-defaults
+      # Platform-managed secrets last — always wins.
+      - /run/base44/app.env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c '
+        corepack enable &&
+        corepack prepare pnpm@11.19.0 --activate &&
+        pnpm install --frozen-lockfile &&
+        pnpm run dev
+      '
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  pnpmstore:
