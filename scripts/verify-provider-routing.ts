@@ -19,12 +19,12 @@ const catalog = getProviderCatalog();
 const expectedProviders = [
   "openrouter-minimax-m3",
   "openrouter-nemotron-ultra",
-  "openrouter-deepseek-r1-paid",
+  "openrouter-deepseek-v3-paid",
 ];
 const expectedModels = [
   "minimax/minimax-m3:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "deepseek/deepseek-r1-0528",
+  "deepseek/deepseek-v3.2",
 ];
 const expectedOrder = [...expectedProviders];
 
@@ -56,9 +56,9 @@ check(
   catalog,
 );
 check(
-  "DeepSeek R1 (paid) is the last-resort high-reasoning anchor",
-  catalog[2]?.name === "openrouter-deepseek-r1-paid" &&
-    catalog[2]?.model === "deepseek/deepseek-r1-0528" &&
+  "DeepSeek V3.2 (paid) is the last-resort tool-calling-capable anchor",
+  catalog[2]?.name === "openrouter-deepseek-v3-paid" &&
+    catalog[2]?.model === "deepseek/deepseek-v3.2" &&
     catalog[2]?.paid === true,
   catalog,
 );

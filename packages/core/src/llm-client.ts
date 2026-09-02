@@ -41,7 +41,7 @@ import {
 export type ApexProviderName =
   | 'openrouter-minimax-m3'
   | 'openrouter-nemotron-ultra'
-  | 'openrouter-deepseek-r1-paid';
+  | 'openrouter-deepseek-v3-paid';
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -74,14 +74,15 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
   },
   {
-    // Paid high-reasoning anchor: only reached once both free OpenRouter
-    // models above are exhausted/cooled-down. DeepSeek R1 — genuinely
-    // reasoning-first architecture, ~$0.50/M in + $2.15/M out via
-    // OpenRouter, cheap relative to closed frontier reasoning models.
-    // Operator decision 2026-09-02: prevents cascading swarm-wide stalls
-    // when the free-tier chain gets rate-limited under heavy load.
-    name: 'openrouter-deepseek-r1-paid',
-    model: 'deepseek/deepseek-r1-0528',
+    // Paid anchor: only reached once both free OpenRouter models above are
+    // exhausted/cooled-down. DeepSeek V3.2 (not R1 — R1's OpenRouter
+    // endpoint does not accept `tools`, which would silently break every
+    // agent turn that fell back to it). V3.2 is ~$0.21/M in + $0.31/M out,
+    // explicitly supports tools/tool_choice, and reports GPT-5-class
+    // benchmark performance. Operator decision 2026-09-02: prevents
+    // cascading swarm-wide stalls when the free-tier chain is rate-limited.
+    name: 'openrouter-deepseek-v3-paid',
+    model: 'deepseek/deepseek-v3.2',
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
     paid: true,
@@ -97,7 +98,7 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-minimax-m3',
   'openrouter-nemotron-ultra',
-  'openrouter-deepseek-r1-paid',
+  'openrouter-deepseek-v3-paid',
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
