@@ -1,0 +1,27 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/api/auth/verify",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "APEX_ADMIN_TOKEN",
+      "description": "Long-lived admin bearer token checked on every /api/* request. Required at boot — the auth middleware throws at module load without it.",
+      "requiredAtBoot": true
+    },
+    {
+      "name": "APEX_ADMIN_PASSWORD",
+      "description": "Admin password for dashboard login (POST /api/auth/login exchanges it for the token). Not needed at boot but needed to use the dashboard.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "OPENROUTER_API_KEY",
+      "description": "OpenRouter API key — powers all LLM calls for the 13-agent workforce. Not required at boot; agents fail gracefully without it.",
+      "requiredAtBoot": false
+    },
+    {
+      "name": "OPENROUTER_API_KEY_2",
+      "description": "Optional second OpenRouter key for redundancy.",
+      "requiredAtBoot": false
+    }
+  ]
+}

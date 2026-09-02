@@ -324,3 +324,15 @@ Do not let a completed code migration leave documentation on the old architectur
 - `cloudbuild.apex.yaml` — immutable Google Cloud Build image definition.
 
 When documentation conflicts with current runtime evidence, state the conflict, prefer the most direct evidence, and update the stale documentation so the contradiction does not survive the task.
+
+## Base44 sandbox dev environment
+
+`docker-compose.base44.yml` runs the repo warm for the Base44 preview (dev only — production still goes through Cloud Build/Cloud Run per the provenance contract):
+
+- Two services: `db` (postgres:16-alpine) and `app` (node:22-slim). Only host port 3000 is public.
+- Single-origin wiring: the `app` container runs `pnpm run dev` (concurrently `tsx watch` API on :5000 + Vite dashboard on :3000). The Vite dev server proxies `/api` and `/ws` to `localhost:5000` inside the container — do not "fix" the proxy target to a service name; both processes share the container on purpose.
+- `pnpm install --frozen-lockfile` runs on every container start; the pnpm store is a named volume so it is fast after the first boot.
+- DB bootstrap is the idempotent DDL in `lib/db/src/client.ts` (`migrate()`), which `main()` catches and warns on if the DB is down — the server still boots without Postgres, it just has no data.
+- `APEX_ADMIN_TOKEN` is the only secret required at boot: `api-server/src/middleware/auth.ts` calls `requireEnv` at module load and the server crashes without it. Placeholders live in `.env.base44-defaults` (FIRST env_file); real values come from the platform-managed `/run/base44/app.env` (LAST env_file, always wins).
+- Vite config sets `server.allowedHosts: true` because the preview hostname changes when the sandbox is recreated.
+- Verify the stack: `docker compose -f docker-compose.base44.yml ps` (db healthy, app up), then `curl -sf -H "Host: x.example.com" http://localhost:3000/` for the dashboard and `curl -X POST .../api/auth/login` for the API through the proxy.
