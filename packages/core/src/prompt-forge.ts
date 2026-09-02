@@ -7,7 +7,7 @@
  * score plateaus (2 flat generations) or maxIterations is hit.
  *
  * Reuses Apex's own createLLMClient/getDefaultLLMConfig — no separate HTTP
- * plumbing, so it inherits Apex's OpenRouter/DeepSeek routing, capacity caps,
+ * plumbing, so it inherits APEX's OpenRouter model routing, capacity caps,
  * fallback behavior, and telemetry automatically.
  *
  * Usage (from another Apex module or agent):

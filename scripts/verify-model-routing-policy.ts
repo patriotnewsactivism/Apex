@@ -24,11 +24,11 @@ try {
   delete process.env[OPENROUTER_MODEL_POLICY_ENV];
   console.log('── Reviewed fallback ──');
   check(
-    'no policy preserves the reviewed DeepSeek chain',
+    'no policy preserves the reviewed MiniMax/Nemotron free chain',
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
-  check('no policy preserves all three guarded gateway rungs', getProviderOrderForRole('CEO').length === 3);
+  check('no policy preserves both guarded gateway rungs', getProviderOrderForRole('CEO').length === 2);
 
   console.log('\n── Policy validation ──');
   check('empty roster is rejected', parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: [], rolePrimary: {} })) === null);
@@ -96,7 +96,7 @@ try {
   const backendChain = getOpenRouterModelChainForRole('BACKEND');
   check('BACKEND can have a different first-choice model', backendChain[0] === 'deepseek/deepseek-v4-pro-0813', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'openrouter/auto');
-  check('custom model roster uses one paced OpenRouter gateway request', JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(['openrouter-deepseek-flash']), getProviderOrderForRole('CEO'));
+  check('custom model roster uses one paced OpenRouter gateway request', JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(['openrouter-minimax-m3']), getProviderOrderForRole('CEO'));
   check('default LLM config reflects the role-selected primary model', getDefaultLLMConfig('CEO').model === '~openai/gpt-latest', getDefaultLLMConfig('CEO'));
 
   console.log('\n── OpenRouter native fallback wire contract ──');

@@ -17,19 +17,17 @@ const check = (label: string, condition: boolean, detail?: unknown) => {
 
 const catalog = getProviderCatalog();
 const expectedProviders = [
-  "openrouter-deepseek-flash",
-  "openrouter-deepseek-flash-0731",
-  "openrouter-deepseek-pro",
+  "openrouter-minimax-m3",
+  "openrouter-nemotron-ultra",
 ];
 const expectedModels = [
-  "~deepseek/deepseek-v4-flash-latest",
-  "deepseek/deepseek-v4-flash-0731",
-  "deepseek/deepseek-v4-pro-0813",
+  "minimax/minimax-m3:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
 ];
 const expectedOrder = [...expectedProviders];
 
-console.log("── OpenRouter DeepSeek V4 provider allowlist ──");
-check("exactly three approved OpenRouter routes exist", catalog.length === 3, catalog);
+console.log("── OpenRouter free-agent provider allowlist ──");
+check("exactly two approved OpenRouter routes exist", catalog.length === 2, catalog);
 check(
   "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
@@ -41,21 +39,15 @@ check(
   catalog,
 );
 check(
-  "Flash Latest is the primary rung",
-  catalog[0]?.name === "openrouter-deepseek-flash" &&
-    catalog[0]?.model === "~deepseek/deepseek-v4-flash-latest",
+  "MiniMax M3 Free is the primary rung",
+  catalog[0]?.name === "openrouter-minimax-m3" &&
+    catalog[0]?.model === "minimax/minimax-m3:free",
   catalog,
 );
 check(
-  "Flash 0731 is the low-cost fallback rung",
-  catalog[1]?.name === "openrouter-deepseek-flash-0731" &&
-    catalog[1]?.model === "deepseek/deepseek-v4-flash-0731",
-  catalog,
-);
-check(
-  "DeepSeek V4 Pro is the final heavy-reasoning rung",
-  catalog[2]?.name === "openrouter-deepseek-pro" &&
-    catalog[2]?.model === "deepseek/deepseek-v4-pro-0813",
+  "Nemotron 3 Ultra Free is the orchestration fallback rung",
+  catalog[1]?.name === "openrouter-nemotron-ultra" &&
+    catalog[1]?.model === "nvidia/nemotron-3-ultra-550b-a55b:free",
   catalog,
 );
 check(
@@ -87,9 +79,9 @@ for (const role of [
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to DeepSeek V4 Flash Latest via OpenRouter`,
-    config.provider === "openrouter-deepseek-flash" &&
-      config.model === "~deepseek/deepseek-v4-flash-latest",
+    `${role} defaults to MiniMax M3 Free via OpenRouter`,
+    config.provider === "openrouter-minimax-m3" &&
+      config.model === "minimax/minimax-m3:free",
     config,
   );
 }

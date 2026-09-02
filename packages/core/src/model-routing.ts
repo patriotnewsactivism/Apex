@@ -6,9 +6,8 @@ export const OPENROUTER_MODEL_POLICY_ENV = 'APEX_OPENROUTER_MODEL_POLICY';
  * hard-coded here because OpenRouter pricing can change independently of APEX.
  */
 export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
-  '~deepseek/deepseek-v4-flash-latest',
-  'deepseek/deepseek-v4-flash-0731',
-  'deepseek/deepseek-v4-pro-0813',
+  'minimax/minimax-m3:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
 ] as const;
 
 export type ModelRoutingMode = 'manual' | 'advisor' | 'adaptive';
