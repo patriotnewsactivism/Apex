@@ -40,7 +40,8 @@ import {
 
 export type ApexProviderName =
   | 'openrouter-minimax-m3'
-  | 'openrouter-nemotron-ultra';
+  | 'openrouter-nemotron-ultra'
+  | 'openrouter-deepseek-r1-paid';
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -72,6 +73,21 @@ const PROVIDERS: readonly ProviderSpec[] = [
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
+  {
+    // Paid high-reasoning anchor: only reached once both free OpenRouter
+    // models above are exhausted/cooled-down. DeepSeek R1 — genuinely
+    // reasoning-first architecture, ~$0.50/M in + $2.15/M out via
+    // OpenRouter, cheap relative to closed frontier reasoning models.
+    // Operator decision 2026-09-02: prevents cascading swarm-wide stalls
+    // when the free-tier chain gets rate-limited under heavy load.
+    name: 'openrouter-deepseek-r1-paid',
+    model: 'deepseek/deepseek-r1-0528',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
+    paid: true,
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+  },
 ] as const;
 
 const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
@@ -81,6 +97,7 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-minimax-m3',
   'openrouter-nemotron-ultra',
+  'openrouter-deepseek-r1-paid',
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
