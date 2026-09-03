@@ -5,16 +5,7 @@ import { api } from '../lib/api.js';
 import { useApexEvent, useWebSocket } from '../hooks/useWebSocket.js';
 import { Zap, Target, ChevronRight, Activity } from 'lucide-react';
 import type { Goal } from '../lib/api.js';
-
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  useEffect(() => {
-    const handler = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
-  }, []);
-  return isMobile;
-}
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 const STATUS_COLOR: Record<string, string> = {
   active: '#5a9eae',

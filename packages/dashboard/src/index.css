@@ -305,4 +305,42 @@ body {
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
   }
+
+  /* Side-by-side panes stack. These grids are declared with inline styles, and
+     an inline style outranks a stylesheet, so the override has to be !important
+     — the same reason ModelRouterPanel carries its own inlined media query. */
+  .apex-grid-collapse {
+    grid-template-columns: 1fr !important;
+    gap: 14px !important;
+  }
+
+  /* 24px of padding each side takes 12% of a 390px screen before any content. */
+  .glass-card {
+    padding: 14px !important;
+  }
+
+  /* Toolbars: filters, chips and buttons laid out in a row wrap instead of
+     overflowing. Scoped to opted-in rows so it cannot flatten a deliberate
+     single-line layout elsewhere. */
+  .apex-toolbar {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+
+  /* Anything wider than the screen scrolls inside its own box rather than
+     pushing the page sideways. */
+  .apex-scroll-x {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Apple's minimum comfortable tap target. */
+  button, [role='button'], a.apex-tap {
+    min-height: 44px;
+  }
+
+  /* Buttons that are icon-only stay square rather than stretching. */
+  button.apex-icon-btn {
+    min-width: 44px;
+  }
 }

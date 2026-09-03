@@ -68,7 +68,7 @@ export function MultiAppPanel() {
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1200 }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+      <div className="apex-toolbar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#f1f5f9', display: 'flex', alignItems: 'center', gap: 10 }}>
             <FolderGit2 size={24} color="#5a9eae" /> Portfolio & Multi-App Orchestration
