@@ -54,6 +54,9 @@ export interface ChatResponse {
 }
 
 export const api = {
+  auth: {
+    websocketTicket: () => apiFetch<{ ticket: string }>('/auth/websocket-ticket', { method: 'POST' }),
+  },
   goals: {
     list: () => apiFetch<{ goals: Goal[] }>('/goals').then((r) => r.goals),
     get: (id: string) => apiFetch<{ goal: Goal }>(`/goals/${id}`).then((r) => r.goal),
@@ -659,6 +662,5 @@ export interface SuggestionsResponse {
     }>;
   };
 }
-
 
 

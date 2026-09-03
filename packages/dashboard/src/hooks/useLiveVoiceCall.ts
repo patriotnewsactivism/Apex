@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { api } from '../lib/api.js';
 
 // ─── Live voice call: mic capture -> our backend relay -> Gemini Live ────────
 //
@@ -146,9 +147,9 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
 
-      const token = localStorage.getItem('apex_token');
+      const { ticket } = await api.auth.websocketTicket();
       const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?token=${token ?? ''}`);
+      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 

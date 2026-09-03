@@ -1,8 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import { consumeWebSocketTicket } from './websocket-auth.js';
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import type { ApexCEO } from '@workspace/agents';
-import { validateAdminToken } from './middleware/auth.js';
 import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from './routes/chat.js';
 import type { LLMTool } from '@workspace/core';
 
@@ -71,10 +71,8 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
 
   wss.on('connection', async (client: WebSocket, req: IncomingMessage) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    const queryToken = url.searchParams.get('token');
-    const authHeader = queryToken ? `Bearer ${queryToken}` : req.headers.authorization;
-    if (!validateAdminToken(authHeader || undefined)) {
-      client.close(1008, 'Invalid or missing token');
+    if (!consumeWebSocketTicket(url.searchParams.get('ticket'))) {
+      client.close(1008, 'Invalid or expired ticket');
       return;
     }
 
