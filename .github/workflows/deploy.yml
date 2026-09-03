@@ -378,6 +378,22 @@ jobs:
             github)
               add_env DATABASE_URL "$DATABASE_URL"
               echo 'Attaching DATABASE_URL from masked GitHub production secret.'
+              # DATABASE_URL may already be bound on the live service as a
+              # Secret Manager reference from an earlier deploy. gcloud refuses
+              # to flip an existing binding from secret-type to a literal env
+              # var in the same --update-env-vars call ("already been set with
+              # a different type"), so drop any existing secret binding for
+              # this exact name first, in its own call, before the real
+              # update below applies the new literal value.
+              echo 'Dropping any pre-existing DATABASE_URL Secret Manager binding so it can be re-bound as a literal env var...'
+              gcloud run services update "${{ secrets.APEX_CLOUD_RUN_SERVICE }}" \
+                --project "$GCP_PROJECT_ID" \
+                --region "${{ secrets.APEX_CLOUD_RUN_REGION }}" \
+                --remove-secrets=DATABASE_URL \
+                --quiet 2>&1 | tee /tmp/remove-secret.log || true
+              if grep -qi 'error' /tmp/remove-secret.log && ! grep -qi 'no changes\|not found\|does not exist' /tmp/remove-secret.log; then
+                echo 'Unexpected error while removing existing DATABASE_URL secret binding — see log above.' >&2
+              fi
               ;;
             *)
               echo 'No DATABASE_URL to attach; leaving existing service configuration untouched.'
