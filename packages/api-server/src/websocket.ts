@@ -3,7 +3,7 @@ import { apexEventBus } from '@workspace/core';
 import type { ApexEvent } from '@workspace/core';
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
-import { validateAdminToken } from './middleware/auth.js';
+import { consumeWebSocketTicket } from './websocket-auth.js';
 
 // ─── WebSocket Broadcast Service ──────────────────────────────────────────────
 
@@ -13,14 +13,12 @@ export function setupWebSocket(server: Server) {
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    // Reject unauthenticated WebSocket connections. Dashboards send the token
-    // as a query parameter because browser WebSocket clients cannot set custom
-    // headers. We also accept an Authorization header for non-browser clients.
+    // Browser WebSockets cannot set Authorization headers. Accept only the
+    // short-lived, single-use ticket minted by the authenticated HTTP route;
+    // never put the long-lived admin token in a URL.
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    const queryToken = url.searchParams.get('token');
-    const token = queryToken ? `Bearer ${queryToken}` : req.headers.authorization;
-    if (!validateAdminToken(token || undefined)) {
-      ws.close(1008, 'Invalid or missing token');
+    if (!consumeWebSocketTicket(url.searchParams.get('ticket'))) {
+      ws.close(1008, 'Invalid or expired ticket');
       return;
     }
 
@@ -30,10 +28,13 @@ export function setupWebSocket(server: Server) {
     // Send current system status on connect
     ws.send(JSON.stringify({ type: 'connected', timestamp: Date.now() }));
 
-    // Heartbeat: ping the client every 30s and terminate unresponsive sockets.
+    // Send an application-level heartbeat as well as a protocol ping. Browser
+    // JavaScript cannot observe ping frames, so the dashboard needs this small
+    // message to distinguish a quiet healthy connection from a dead proxy.
     const heartbeatInterval = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.ping();
+        ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
       }
     }, 30_000);
 

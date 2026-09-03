@@ -5,6 +5,7 @@ import { api } from '../lib/api.js';
 
 export type ApexEvent =
   | { type: 'connected'; timestamp: number }
+  | { type: 'heartbeat'; timestamp: number }
   | { type: 'agent:status'; agentId: string; status: string; message?: string }
   | { type: 'task:created'; taskId: string; title: string; assignedAgentId?: string }
   | { type: 'task:updated'; taskId: string; status: string; result?: string }
@@ -37,15 +38,13 @@ const WSContext = createContext<WSContextValue>({
 
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30_000;
-const HEARTBEAT_INTERVAL = 25_000;
-const HEARTBEAT_TIMEOUT = 15_000;
+const HEARTBEAT_TIMEOUT = 75_000;
 
-function getWsUrl(): string {
-  const token = localStorage.getItem('apex_token');
+function getWsUrl(ticket: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const host = window.location.hostname === 'localhost' ? 'localhost:5000' : window.location.host;
   const base = `${protocol}//${host}/ws`;
-  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+  return `${base}?ticket=${encodeURIComponent(ticket)}`;
 }
 
 export function WebSocketProvider({ children }: { children: ReactNode }) {
@@ -55,14 +54,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelay = useRef(INITIAL_RECONNECT_DELAY);
   const intentionalClose = useRef(false);
 
   const cleanupHeartbeat = () => {
-    if (heartbeatTimer.current) clearInterval(heartbeatTimer.current);
-    heartbeatTimer.current = null;
     if (heartbeatTimeout.current) clearTimeout(heartbeatTimeout.current);
     heartbeatTimeout.current = null;
   };
@@ -88,8 +84,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const connect = () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+  const connect = async () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
 
     // Close any stale socket before replacing it so we don't leak handlers.
     if (wsRef.current) {
@@ -97,7 +93,15 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       wsRef.current.close();
     }
 
-    const ws = new WebSocket(getWsUrl());
+    let ticket: string;
+    try {
+      ({ ticket } = await api.auth.websocketTicket());
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+
+    const ws = new WebSocket(getWsUrl(ticket));
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -113,20 +117,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         reconnectTimer.current = null;
       }
 
-      // Server sends pings; client responds with pongs automatically. We also
-      // expect an occasional message. If nothing arrives, force reconnect.
+      // The server sends an observable application heartbeat every 30 seconds.
       cleanupHeartbeat();
-      heartbeatTimer.current = setInterval(() => {
-        heartbeatTimeout.current = setTimeout(() => {
-          console.warn('[WebSocket] No message received within heartbeat window; forcing reconnect');
-          ws.close();
-        }, HEARTBEAT_TIMEOUT);
-      }, HEARTBEAT_INTERVAL);
+      resetHeartbeatWatchdog(ws);
     };
 
     ws.onmessage = (e) => {
       // Reset the heartbeat timeout whenever any message arrives.
-      if (heartbeatTimeout.current) clearTimeout(heartbeatTimeout.current);
+      resetHeartbeatWatchdog(ws);
       try {
         const event = JSON.parse(e.data) as ApexEvent;
         setLastEvent(event);
@@ -157,15 +155,29 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         intentionalClose.current = false;
         return;
       }
-      reconnectTimer.current = setTimeout(() => {
-        reconnectDelay.current = Math.min(reconnectDelay.current * 1.5, MAX_RECONNECT_DELAY);
-        connect();
-      }, reconnectDelay.current);
+      scheduleReconnect();
     };
   };
 
+  const resetHeartbeatWatchdog = (ws: WebSocket) => {
+    if (heartbeatTimeout.current) clearTimeout(heartbeatTimeout.current);
+    heartbeatTimeout.current = setTimeout(() => {
+      console.warn('[WebSocket] No heartbeat received; forcing reconnect');
+      ws.close();
+    }, HEARTBEAT_TIMEOUT);
+  };
+
+  const scheduleReconnect = () => {
+    if (reconnectTimer.current) return;
+    reconnectTimer.current = setTimeout(() => {
+      reconnectTimer.current = null;
+      reconnectDelay.current = Math.min(reconnectDelay.current * 1.5, MAX_RECONNECT_DELAY);
+      void connect();
+    }, reconnectDelay.current);
+  };
+
   useEffect(() => {
-    connect();
+    void connect();
     return () => {
       intentionalClose.current = true;
       wsRef.current?.close();

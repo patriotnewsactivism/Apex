@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validateAdminToken } from '../middleware/auth.js';
+import { issueWebSocketTicket } from '../websocket-auth.js';
 
 /**
  * POST /api/auth/login — exchange APEX_ADMIN_PASSWORD for APEX_ADMIN_TOKEN.
@@ -61,6 +62,16 @@ export function createAuthRouter() {
       return;
     }
     res.status(401).json({ error: 'Invalid token' });
+  });
+
+  /** Exchange the normal Authorization header for a single-use WS ticket. */
+  router.post('/websocket-ticket', (req, res): void => {
+    if (!validateAdminToken(req.headers.authorization)) {
+      res.status(401).json({ error: 'Invalid token' });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ticket: issueWebSocketTicket() });
   });
 
   return router;
