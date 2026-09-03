@@ -89,7 +89,7 @@ function ScheduleCard({ job }: { job: ScheduledJobRow }) {
       }}
     >
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div className="apex-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-apex-text)' }}>
             {job.name}
@@ -338,7 +338,7 @@ export function ControlRoom() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* Schedule Section */}
       <section>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div className="apex-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--color-apex-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
             <Calendar size={18} color="var(--color-apex-cyan)" />
             Work Schedule

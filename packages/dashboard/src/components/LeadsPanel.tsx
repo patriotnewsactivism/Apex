@@ -329,7 +329,7 @@ export function LeadsPanel() {
                       {isExpanded && (
                         <tr key={`${lead.id}-detail`}>
                           <td colSpan={6} style={{ padding: '12px 24px', background: 'rgba(0,0,0,0.2)' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                            <div className="apex-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                               <div>
                                 <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 4 }}>
                                   Fit Reason

@@ -181,7 +181,7 @@ export function LearningPanel() {
       </div>
 
       {/* Grid for Insights & Recommendations */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+      <div className="apex-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
         {/* Learning Insights Feed */}
         <div>
           <h3 style={{ fontSize: 15, fontWeight: 600, color: '#cbd5e1', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -248,7 +248,7 @@ export function LearningPanel() {
                     padding: '16px 20px',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div className="apex-toolbar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                     <span style={{ fontSize: 14, fontWeight: 600, color: '#f1f5f9' }}>{rec.title}</span>
                     <span style={{ fontSize: 11, color: '#a855f7', fontWeight: 600 }}>{rec.status.toUpperCase()}</span>
                   </div>
