@@ -19,6 +19,8 @@ import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/ba
 import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { createGoalsRouter } from './routes/goals.js';
+import { createChatRouter } from './routes/chat.js';
+import { createTranscribeRouter } from './routes/transcribe.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createTasksRouter } from './routes/tasks.js';
 import { createAgentsRouter } from './routes/agents.js';
@@ -578,6 +580,8 @@ await recoverStaleLeasedTasks();
 
   // API Routes
   app.use('/api/goals', createGoalsRouter(ceo));
+  app.use('/api/chat', createChatRouter(ceo));
+  app.use('/api/transcribe', createTranscribeRouter());
   app.use('/api/projects', createProjectsRouter());
   app.use('/api/tasks', createTasksRouter());
   app.use('/api/agents', createAgentsRouter(workforce));

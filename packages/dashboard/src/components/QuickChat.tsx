@@ -20,6 +20,8 @@ import {
   Terminal,
   Brain,
   Bot,
+  Mic,
+  Square,
 } from 'lucide-react';
 
 function useIsMobile() {
@@ -365,7 +367,7 @@ interface ChatMessage {
   id: string;
   role: 'user' | 'system';
   text: string;
-  goalId?: string;
+  goalCreated?: { id: string; title: string };
   timestamp: number;
 }
 
@@ -380,10 +382,15 @@ export function QuickChat() {
     {
       id: 'welcome',
       role: 'system',
-      text: "What do you need? Type anything — I'll route it to the right agents.",
+      text: "Talk to me — ask what's going on, catch up on approvals, or just hand me something to run with. I'll answer for real, not just log it.",
       timestamp: Date.now(),
     },
   ]);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const qc = useQueryClient();
@@ -416,20 +423,34 @@ export function QuickChat() {
     scrollToBottom();
   }, [messages]);
 
-  const submitMut = useMutation({
-    mutationFn: (data: { title: string; description: string; priority: number }) =>
-      api.goals.submit(data),
-    onSuccess: (_result, variables) => {
+  // A real conversational turn: send the message + recent history to
+  // /api/chat/message and let Apex decide whether to answer directly or
+  // deploy a goal (see packages/api-server/src/routes/chat.ts). This
+  // replaced the old behavior of silently turning every message into a
+  // goal ticket with a canned "Got it" reply — there was no LLM in that
+  // loop at all, which is why it only ever took orders.
+  const chatMut = useMutation({
+    mutationFn: (text: string) => {
+      const history = messages
+        .filter((m) => m.id !== 'welcome')
+        .slice(-20)
+        .map((m) => ({ role: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }));
+      return api.chat.message(text, history);
+    },
+    onSuccess: (result) => {
       setMessages((prev) => [
         ...prev,
         {
           id: `sys-${Date.now()}`,
           role: 'system',
-          text: `✅ Got it. Deployed as goal "${variables.title}" — agents are on it.`,
+          text: result.reply,
+          goalCreated: result.goalCreated,
           timestamp: Date.now(),
         },
       ]);
-      qc.invalidateQueries({ queryKey: ['goals'] });
+      if (result.goalCreated) {
+        qc.invalidateQueries({ queryKey: ['goals'] });
+      }
     },
     onError: (err: Error) => {
       setMessages((prev) => [
@@ -437,7 +458,7 @@ export function QuickChat() {
         {
           id: `err-${Date.now()}`,
           role: 'system',
-          text: `❌ Failed: ${err.message}`,
+          text: `❌ Couldn't get a response: ${err.message}`,
           timestamp: Date.now(),
         },
       ]);
@@ -452,28 +473,7 @@ export function QuickChat() {
       { id: `usr-${Date.now()}`, role: 'user', text, timestamp: Date.now() },
     ]);
     setInput('');
-
-    const lines = text.split('\n').filter((l) => l.trim());
-    let title: string;
-    let description: string;
-    let priority = 5;
-
-    if (lines.length === 1 && text.length < 200) {
-      title = text.length > 80 ? text.slice(0, 77) + '...' : text;
-      description = text;
-    } else {
-      title = lines[0].length > 80 ? lines[0].slice(0, 77) + '...' : lines[0];
-      description = text;
-    }
-
-    const lower = text.toLowerCase();
-    if (/urgent|asap|critical|immediately/.test(lower)) priority = 1;
-    else if (/high priority|important/.test(lower)) priority = 2;
-    else if (/low priority|when you can|no rush/.test(lower)) priority = 8;
-
-    if (description.length < 10) description += ' — submitted via quick chat';
-
-    submitMut.mutate({ title, description, priority });
+    chatMut.mutate(text);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -481,6 +481,63 @@ export function QuickChat() {
       e.preventDefault();
       handleSubmit();
     }
+  };
+
+  // ── Push-to-talk voice input ────────────────────────────────────────────
+  // Records a clip with MediaRecorder, POSTs it to /api/transcribe
+  // (Deepgram), and drops the transcript into the input box for review —
+  // it does not auto-send, since a bad transcript should never silently
+  // become a deployed goal.
+  const startRecording = async () => {
+    setVoiceError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        if (blob.size === 0) return;
+        setIsTranscribing(true);
+        try {
+          const token = localStorage.getItem('apex_token');
+          const res = await fetch('/api/transcribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': mimeType,
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: blob,
+          });
+          const data = (await res.json()) as { transcript?: string; error?: string };
+          if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+          if (data.transcript) {
+            setInput((prev) => (prev ? `${prev} ${data.transcript}` : data.transcript!));
+            inputRef.current?.focus();
+          } else {
+            setVoiceError("Didn't catch that — try again.");
+          }
+        } catch (err) {
+          setVoiceError(err instanceof Error ? err.message : 'Transcription failed.');
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
+    } catch {
+      setVoiceError('Microphone access denied or unavailable.');
+    }
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+    setIsRecording(false);
   };
 
   // Derived stats
@@ -630,11 +687,31 @@ export function QuickChat() {
                       }}
                     >
                       {msg.text}
+                      {msg.goalCreated && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            padding: '5px 9px',
+                            borderRadius: 6,
+                            background: 'rgba(106,159,120,0.1)',
+                            border: '1px solid rgba(106,159,120,0.25)',
+                            fontSize: 10,
+                            color: '#6a9f78',
+                            fontFamily: 'var(--font-mono)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                          }}
+                        >
+                          <Target size={10} />
+                          Deployed goal: {msg.goalCreated.title}
+                        </div>
+                      )}
                     </div>
                   </motion.div>
                 ))}
               </AnimatePresence>
-              {submitMut.isPending && (
+              {chatMut.isPending && (
                 <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -647,7 +724,16 @@ export function QuickChat() {
                   }}
                 >
                   <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} />
-                  Routing to agents...
+                  Thinking...
+                </motion.div>
+              )}
+              {voiceError && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  style={{ color: '#c45c66', fontSize: 11 }}
+                >
+                  {voiceError}
                 </motion.div>
               )}
               <div ref={messagesEndRef} />
@@ -671,8 +757,9 @@ export function QuickChat() {
                   borderRadius: 8,
                 }}
               >
-                <strong style={{ color: '#5a9eae' }}>Tips:</strong> First line becomes the goal
-                title. Say "urgent" or "critical" for high priority. Shift+Enter for newlines.
+                <strong style={{ color: '#5a9eae' }}>Tips:</strong> Ask questions, check on approvals,
+                or just talk it through — I'll only deploy a goal when you're actually giving an
+                order. Shift+Enter for newlines. Tap the mic for voice input.
               </motion.div>
             )}
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
@@ -702,7 +789,7 @@ export function QuickChat() {
               <textarea
                 ref={inputRef}
                 className="apex-input"
-                placeholder="Tell APEX what to do..."
+                placeholder="Ask me anything, or tell me what to do..."
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -716,9 +803,36 @@ export function QuickChat() {
                 }}
               />
               <motion.button
+                onClick={isRecording ? stopRecording : startRecording}
+                disabled={isTranscribing || chatMut.isPending}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                title={isRecording ? 'Stop recording' : 'Voice input'}
+                style={{
+                  padding: '11px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexShrink: 0,
+                  borderRadius: 10,
+                  border: `1px solid ${isRecording ? 'rgba(196,92,102,0.4)' : 'rgba(90,158,174,0.12)'}`,
+                  background: isRecording ? 'rgba(196,92,102,0.12)' : 'rgba(13,17,23,0.6)',
+                  color: isRecording ? '#c45c66' : 'var(--color-apex-muted)',
+                  cursor: isTranscribing ? 'wait' : 'pointer',
+                }}
+              >
+                {isTranscribing ? (
+                  <Loader size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                ) : isRecording ? (
+                  <Square size={16} />
+                ) : (
+                  <Mic size={16} />
+                )}
+              </motion.button>
+              <motion.button
                 className="btn-primary"
                 onClick={handleSubmit}
-                disabled={!input.trim() || submitMut.isPending}
+                disabled={!input.trim() || chatMut.isPending}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 style={{

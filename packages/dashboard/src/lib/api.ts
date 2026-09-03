@@ -43,6 +43,16 @@ export interface Goal {
   result: string | null;
 }
 
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatResponse {
+  reply: string;
+  goalCreated?: { id: string; title: string };
+}
+
 export const api = {
   goals: {
     list: () => apiFetch<{ goals: Goal[] }>('/goals').then((r) => r.goals),
@@ -51,6 +61,16 @@ export const api = {
       apiFetch<{ goalId: string }>('/goals', { method: 'POST', body: JSON.stringify(data) }),
     updateStatus: (id: string, status: string) =>
       apiFetch(`/goals/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  },
+
+  chat: {
+    // A real conversational turn — Apex decides for itself whether to answer
+    // directly or deploy a goal. See packages/api-server/src/routes/chat.ts.
+    message: (message: string, history: ChatTurn[]) =>
+      apiFetch<ChatResponse>('/chat/message', {
+        method: 'POST',
+        body: JSON.stringify({ message, history }),
+      }),
   },
 
   tasks: {

@@ -144,6 +144,7 @@ jobs:
           GITHUB_GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           GITHUB_YELP_API_KEY: ${{ secrets.YELP_API_KEY }}
           GITHUB_FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          GITHUB_DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -188,6 +189,8 @@ jobs:
             apex-yelp-api-key yelp-api-key YELP_API_KEY
           resolve_optional FIRECRAWL_API_KEY GITHUB_FIRECRAWL_API_KEY \
             apex-firecrawl-api-key firecrawl-api-key FIRECRAWL_API_KEY
+          resolve_optional DEEPGRAM_API_KEY GITHUB_DEEPGRAM_API_KEY \
+            apex-deepgram-api-key deepgram-api-key DEEPGRAM_API_KEY
 
       - name: Validate existing production Cloud Run target
         env:
@@ -262,7 +265,7 @@ jobs:
           for name in (
               'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY', 'TAVILY_API_KEY',
               'BRAVE_SEARCH_API_KEY', 'GOOGLE_PLACES_API_KEY', 'YELP_API_KEY',
-              'FIRECRAWL_API_KEY',
+              'FIRECRAWL_API_KEY', 'DEEPGRAM_API_KEY',
           ):
               item = env.get(name)
               if not item:
@@ -312,6 +315,7 @@ jobs:
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           YELP_API_KEY: ${{ secrets.YELP_API_KEY }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
           OPENROUTER_API_KEY_2_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_2_SOURCE }}
           OPENROUTER_API_KEY_2_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_2_SECRET_NAME }}
           OPENROUTER_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_SOURCE }}
@@ -326,6 +330,8 @@ jobs:
           YELP_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.YELP_API_KEY_SECRET_NAME }}
           FIRECRAWL_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.FIRECRAWL_API_KEY_SOURCE }}
           FIRECRAWL_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.FIRECRAWL_API_KEY_SECRET_NAME }}
+          DEEPGRAM_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.DEEPGRAM_API_KEY_SOURCE }}
+          DEEPGRAM_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.DEEPGRAM_API_KEY_SECRET_NAME }}
         shell: bash
         run: |
           set -euo pipefail
@@ -427,6 +433,7 @@ jobs:
           attach_optional GOOGLE_PLACES_API_KEY "$GOOGLE_PLACES_API_KEY_SOURCE" "$GOOGLE_PLACES_API_KEY_SECRET_NAME" "$GOOGLE_PLACES_API_KEY"
           attach_optional YELP_API_KEY "$YELP_API_KEY_SOURCE" "$YELP_API_KEY_SECRET_NAME" "$YELP_API_KEY"
           attach_optional FIRECRAWL_API_KEY "$FIRECRAWL_API_KEY_SOURCE" "$FIRECRAWL_API_KEY_SECRET_NAME" "$FIRECRAWL_API_KEY"
+          attach_optional DEEPGRAM_API_KEY "$DEEPGRAM_API_KEY_SOURCE" "$DEEPGRAM_API_KEY_SECRET_NAME" "$DEEPGRAM_API_KEY"
 
           if [[ "$has_env" == true ]]; then
             args+=(--update-env-vars "$env_spec")
