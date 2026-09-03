@@ -5,27 +5,6 @@
 
 import { db, integrationSettings } from '@workspace/db';
 
-function stripLegacyFreeTierCaps(raw: string | undefined): string {
-  const entries = new Map<string, string>();
-  for (const part of (raw ?? '').split(',')) {
-    const [name, value] = part.split(':').map((piece) => piece?.trim());
-    if (name && value) entries.set(name, value);
-  }
-
-  for (const legacy of ['groq', 'google-gemini', 'cohere', 'poolside', 'qwen', 'kilo', 'mistral']) {
-    entries.delete(legacy);
-  }
-
-  // This exact cap was injected by the temporary OpenRouter migration. Remove
-  // it so production is not artificially parked after ~1M tokens/day. A
-  // deliberately configured different OpenRouter cap is preserved.
-  if (entries.get('openrouter-deepseek-flash') === '1048576') {
-    entries.delete('openrouter-deepseek-flash');
-  }
-
-  return [...entries.entries()].map(([name, value]) => `${name}:${value}`).join(',');
-}
-
 export async function loadSettingsIntoEnv(): Promise<void> {
   try {
     const rows = await db.select().from(integrationSettings);
@@ -35,13 +14,6 @@ export async function loadSettingsIntoEnv(): Promise<void> {
         process.env[row.key] = row.value;
         applied++;
       }
-    }
-
-    const currentCaps = process.env.APEX_TOKEN_CAPS ?? '';
-    const normalizedCaps = stripLegacyFreeTierCaps(currentCaps);
-    if (normalizedCaps !== currentCaps) {
-      process.env.APEX_TOKEN_CAPS = normalizedCaps;
-      console.log('[settings] Ignored legacy free-tier token caps for the OpenRouter production runtime.');
     }
 
     if (applied > 0) {
