@@ -31,7 +31,7 @@ const chatRequestSchema = z.object({
   history: z.array(chatTurnSchema).max(30).optional().default([]),
 });
 
-const CHAT_SYSTEM_PROMPT = `You are Apex, talking directly with Don — the founder who built you and the whole
+export const CHAT_SYSTEM_PROMPT = `You are Apex, talking directly with Don — the founder who built you and the whole
 portfolio you run operations for. This is his Quick Chat window: a real conversation, not a command line.
 
 How to behave:
@@ -50,7 +50,7 @@ How to behave:
 - Keep replies conversational length — a few sentences to a few short paragraphs, not a wall of bullet points,
   unless he's asked for a list.`;
 
-const CHAT_TOOLS: LLMTool[] = [
+export const CHAT_TOOLS: LLMTool[] = [
   {
     name: 'create_goal',
     description:
@@ -88,9 +88,48 @@ const CHAT_TOOLS: LLMTool[] = [
       properties: { limit: { type: 'number', description: 'Max rows, default 15, max 40.' } },
     },
   },
+  {
+    name: 'approve_pending_approval',
+    description:
+      'Approve a pending gated approval (an agent is genuinely BLOCKED waiting on this — e.g. runShell, deploy_to_environment, create_pull_request). Only call this when Don has clearly said yes/approve/go ahead for a SPECIFIC approval you already told him about via get_pending_approvals.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The approval id from get_pending_approvals.' },
+        note: { type: 'string', description: 'Optional short note on why it was approved.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'reject_pending_approval',
+    description:
+      'Reject a pending gated approval. Only call this when Don has clearly said no/reject/deny for a SPECIFIC approval you already told him about via get_pending_approvals.',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The approval id from get_pending_approvals.' },
+        note: { type: 'string', description: 'Optional short note on why it was rejected.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'acknowledge_escalation',
+    description:
+      "Acknowledge/clear a pending escalation (an FYI ask — nothing is blocked, an agent just flagged something). Use this once Don has heard about it and doesn't need it left in the queue.",
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The escalation id from get_pending_approvals.' },
+        note: { type: 'string', description: 'Optional short note.' },
+      },
+      required: ['id'],
+    },
+  },
 ];
 
-async function buildLiveSnapshot(): Promise<string> {
+export async function buildLiveSnapshot(): Promise<string> {
   const [approvalRows, escalationRows, activeGoalRows, agentRows] = await Promise.all([
     db
       .select({ count: sql<number>`count(*)::int` })
@@ -121,7 +160,10 @@ async function buildLiveSnapshot(): Promise<string> {
   return lines.join('\n');
 }
 
-async function executeTool(call: LLMToolCall, ceo: ApexCEO): Promise<Record<string, unknown>> {
+export async function executeTool(
+  call: { name: string; args: Record<string, unknown> },
+  ceo: ApexCEO,
+): Promise<Record<string, unknown>> {
   switch (call.name) {
     case 'create_goal': {
       const title = String(call.args.title ?? '').slice(0, 200);
@@ -183,6 +225,36 @@ async function executeTool(call: LLMToolCall, ceo: ApexCEO): Promise<Record<stri
           timestamp: l.timestamp,
         })),
       };
+    }
+    case 'approve_pending_approval': {
+      const id = String(call.args.id ?? '');
+      const note = call.args.note ? String(call.args.note) : undefined;
+      const [resolved] = await db.update(approvals)
+        .set({ status: 'approved', reviewedAt: new Date(), reviewerNote: note })
+        .where(and(eq(approvals.id, id), eq(approvals.kind, 'approval'), eq(approvals.status, 'pending')))
+        .returning({ id: approvals.id });
+      if (!resolved) return { error: 'That approval is not pending (already resolved, or wrong id).' };
+      return { approved: true, id };
+    }
+    case 'reject_pending_approval': {
+      const id = String(call.args.id ?? '');
+      const note = call.args.note ? String(call.args.note) : undefined;
+      const [resolved] = await db.update(approvals)
+        .set({ status: 'rejected', reviewedAt: new Date(), reviewerNote: note })
+        .where(and(eq(approvals.id, id), eq(approvals.kind, 'approval'), eq(approvals.status, 'pending')))
+        .returning({ id: approvals.id });
+      if (!resolved) return { error: 'That approval is not pending (already resolved, or wrong id).' };
+      return { rejected: true, id };
+    }
+    case 'acknowledge_escalation': {
+      const id = String(call.args.id ?? '');
+      const note = call.args.note ? String(call.args.note) : undefined;
+      const [resolved] = await db.update(approvals)
+        .set({ status: 'acknowledged', reviewedAt: new Date(), reviewerNote: note })
+        .where(and(eq(approvals.id, id), eq(approvals.kind, 'escalation'), eq(approvals.status, 'pending')))
+        .returning({ id: approvals.id });
+      if (!resolved) return { error: 'That escalation is not pending (already resolved, or wrong id).' };
+      return { acknowledged: true, id };
     }
     default:
       return { error: `Unknown tool: ${call.name}` };

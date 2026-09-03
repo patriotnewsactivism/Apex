@@ -18,6 +18,7 @@ import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
 import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
+import { setupLiveVoice } from './live-voice.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createChatRouter } from './routes/chat.js';
 import { createTranscribeRouter } from './routes/transcribe.js';
@@ -638,6 +639,7 @@ await recoverStaleLeasedTasks();
 
   // WebSocket
   setupWebSocket(server);
+  setupLiveVoice(server, ceo);
 
   // Serve dashboard static files if built
   const primaryDist = resolve(__dirname, '../../dashboard/dist');

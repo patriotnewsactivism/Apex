@@ -145,6 +145,7 @@ jobs:
           GITHUB_YELP_API_KEY: ${{ secrets.YELP_API_KEY }}
           GITHUB_FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           GITHUB_DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          GITHUB_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -191,6 +192,8 @@ jobs:
             apex-firecrawl-api-key firecrawl-api-key FIRECRAWL_API_KEY
           resolve_optional DEEPGRAM_API_KEY GITHUB_DEEPGRAM_API_KEY \
             apex-deepgram-api-key deepgram-api-key DEEPGRAM_API_KEY
+          resolve_optional GEMINI_API_KEY GITHUB_GEMINI_API_KEY \
+            apex-gemini-api-key gemini-api-key GEMINI_API_KEY
 
       - name: Validate existing production Cloud Run target
         env:
@@ -265,7 +268,7 @@ jobs:
           for name in (
               'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY', 'TAVILY_API_KEY',
               'BRAVE_SEARCH_API_KEY', 'GOOGLE_PLACES_API_KEY', 'YELP_API_KEY',
-              'FIRECRAWL_API_KEY', 'DEEPGRAM_API_KEY',
+              'FIRECRAWL_API_KEY', 'DEEPGRAM_API_KEY', 'GEMINI_API_KEY',
           ):
               item = env.get(name)
               if not item:
@@ -316,6 +319,7 @@ jobs:
           YELP_API_KEY: ${{ secrets.YELP_API_KEY }}
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
           DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY_2_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_2_SOURCE }}
           OPENROUTER_API_KEY_2_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_2_SECRET_NAME }}
           OPENROUTER_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_SOURCE }}
@@ -332,6 +336,8 @@ jobs:
           FIRECRAWL_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.FIRECRAWL_API_KEY_SECRET_NAME }}
           DEEPGRAM_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.DEEPGRAM_API_KEY_SOURCE }}
           DEEPGRAM_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.DEEPGRAM_API_KEY_SECRET_NAME }}
+          GEMINI_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.GEMINI_API_KEY_SOURCE }}
+          GEMINI_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.GEMINI_API_KEY_SECRET_NAME }}
         shell: bash
         run: |
           set -euo pipefail
@@ -434,6 +440,7 @@ jobs:
           attach_optional YELP_API_KEY "$YELP_API_KEY_SOURCE" "$YELP_API_KEY_SECRET_NAME" "$YELP_API_KEY"
           attach_optional FIRECRAWL_API_KEY "$FIRECRAWL_API_KEY_SOURCE" "$FIRECRAWL_API_KEY_SECRET_NAME" "$FIRECRAWL_API_KEY"
           attach_optional DEEPGRAM_API_KEY "$DEEPGRAM_API_KEY_SOURCE" "$DEEPGRAM_API_KEY_SECRET_NAME" "$DEEPGRAM_API_KEY"
+          attach_optional GEMINI_API_KEY "$GEMINI_API_KEY_SOURCE" "$GEMINI_API_KEY_SECRET_NAME" "$GEMINI_API_KEY"
 
           if [[ "$has_env" == true ]]; then
             args+=(--update-env-vars "$env_spec")

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useLiveVoiceCall } from '../hooks/useLiveVoiceCall';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import type { Goal, Agent, LogEntry } from '../lib/api.js';
@@ -22,6 +23,8 @@ import {
   Bot,
   Mic,
   Square,
+  Phone,
+  PhoneOff,
 } from 'lucide-react';
 
 function useIsMobile() {
@@ -540,6 +543,46 @@ export function QuickChat() {
     setIsRecording(false);
   };
 
+  // ── Live voice call (Gemini Live, real-time, same tools as text chat) ──
+  const [liveActivity, setLiveActivity] = useState<string | null>(null);
+  const liveVoice = useLiveVoiceCall({
+    onTranscript: (role, text) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `voice-${role}-${Date.now()}`,
+          role: role === 'user' ? 'user' : 'system',
+          text,
+          timestamp: Date.now(),
+        },
+      ]);
+      setLiveActivity(null);
+    },
+    onGoalCreated: (goal) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `voice-goal-${Date.now()}`,
+          role: 'system',
+          text: `Deployed via voice call.`,
+          goalCreated: goal,
+          timestamp: Date.now(),
+        },
+      ]);
+      qc.invalidateQueries({ queryKey: ['goals'] });
+    },
+    onApprovalResolved: () => {
+      qc.invalidateQueries({ queryKey: ['approvals'] });
+    },
+    onToolActivity: (name) => setLiveActivity(name.replace(/_/g, ' ')),
+    onError: (message) => {
+      setMessages((prev) => [
+        ...prev,
+        { id: `voice-err-${Date.now()}`, role: 'system', text: `❌ Voice call: ${message}`, timestamp: Date.now() },
+      ]);
+    },
+  });
+
   // Derived stats
   const activeGoals = goals.filter((g) => g.status === 'active').length;
   const completedGoals = goals.filter((g) => g.status === 'completed').length;
@@ -738,6 +781,86 @@ export function QuickChat() {
               )}
               <div ref={messagesEndRef} />
             </div>
+          </div>
+
+          {/* Live voice call bar */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              padding: '8px 12px',
+              marginBottom: 8,
+              borderRadius: 10,
+              background:
+                liveVoice.status === 'live' || liveVoice.status === 'connecting'
+                  ? 'rgba(106,159,120,0.06)'
+                  : 'rgba(90,158,174,0.03)',
+              border: `1px solid ${
+                liveVoice.status === 'live' ? 'rgba(106,159,120,0.25)' : 'rgba(90,158,174,0.08)'
+              }`,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-apex-muted)' }}>
+              {liveVoice.status === 'live' && (
+                <motion.span
+                  animate={{ opacity: [1, 0.3, 1] }}
+                  transition={{ repeat: Infinity, duration: 1.4 }}
+                  style={{ width: 7, height: 7, borderRadius: '50%', background: '#6a9f78', display: 'inline-block' }}
+                />
+              )}
+              {liveVoice.status === 'idle' || liveVoice.status === 'ended'
+                ? 'Live voice call — talk to Apex directly (Gemini Live)'
+                : liveVoice.status === 'connecting'
+                  ? 'Connecting...'
+                  : liveVoice.status === 'live'
+                    ? liveActivity
+                      ? `On the call — ${liveActivity}...`
+                      : 'On the call — speak naturally'
+                    : 'Call error'}
+            </div>
+            {liveVoice.status === 'live' || liveVoice.status === 'connecting' ? (
+              <motion.button
+                onClick={() => liveVoice.stop()}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                style={{
+                  padding: '7px 12px',
+                  borderRadius: 8,
+                  border: '1px solid rgba(196,92,102,0.35)',
+                  background: 'rgba(196,92,102,0.12)',
+                  color: '#c45c66',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                <PhoneOff size={14} /> Hang up
+              </motion.button>
+            ) : (
+              <motion.button
+                onClick={() => liveVoice.start()}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                style={{
+                  padding: '7px 12px',
+                  borderRadius: 8,
+                  border: '1px solid rgba(90,158,174,0.25)',
+                  background: 'rgba(90,158,174,0.1)',
+                  color: '#5a9eae',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                <Phone size={14} /> Start call
+              </motion.button>
+            )}
           </div>
 
           {/* Input area */}
