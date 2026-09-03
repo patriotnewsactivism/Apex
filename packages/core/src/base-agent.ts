@@ -31,6 +31,37 @@ import type {
 const IDLE_POLL_FLOOR_MS = 5_000;
 const IDLE_POLL_CAP_MS = 60_000;
 
+/** Longest single sleep while waiting out an LLM capacity pause. The wait is
+ * re-evaluated each cycle, so a daily-budget pause hours away still parks the
+ * agent without letting one bad resume-at timestamp wedge it until restart. */
+const CAPACITY_WAIT_CAP_MS = 60_000;
+
+/** When the workspace-wide LLM capacity pause lifts, shared by every agent in
+ * this process.
+ *
+ * Capacity is a workspace property, not an agent one: pacing, the daily cap and
+ * provider cooldowns apply to all 13 agents at once. Without this, a paused
+ * workspace turned the worker loop into a spin — dequeue a task, rebuild its
+ * history and learning context, hit the gate on the first LLM call, defer, free
+ * the slot, dequeue the next one. Measured on 2026-09-01: 588 task starts and
+ * 583 deferrals in nine minutes across 59 distinct tasks, roughly ten claims
+ * each, none of which could ever run. That burns no tokens — the reservation is
+ * checked before the provider call — but every lap costs several Postgres
+ * round-trips per agent, which is how the pool ends up exhausted, and it buries
+ * real failures under thousands of deferral lines. */
+let sharedCapacityResumeAtMs = 0;
+
+function noteCapacityPause(resumeAtMs: number): void {
+  if (Number.isFinite(resumeAtMs) && resumeAtMs > sharedCapacityResumeAtMs) {
+    sharedCapacityResumeAtMs = resumeAtMs;
+  }
+}
+
+/** Milliseconds still to wait, or 0 when capacity is available. */
+export function capacityPauseRemainingMs(now: number = Date.now()): number {
+  return Math.max(0, sharedCapacityResumeAtMs - now);
+}
+
 export const apexEventBus = new EventEmitter();
 apexEventBus.setMaxListeners(100);
 
@@ -219,8 +250,14 @@ export abstract class BaseAgent {
 
     while (this.running) {
       try {
-        // Top up in-flight work up to the concurrency limit.
-        while (this.running && inFlight.size < this.concurrency) {
+        // Top up in-flight work up to the concurrency limit — but never while
+        // the workspace is out of LLM capacity, since every task claimed then
+        // is claimed only to be deferred again.
+        while (
+          this.running &&
+          inFlight.size < this.concurrency &&
+          capacityPauseRemainingMs() === 0
+        ) {
           const task = await this.taskQueue.dequeue();
           if (!task) break;
 
@@ -296,6 +333,17 @@ export abstract class BaseAgent {
           // idle agent off from 5s toward 60s costs at most ~1 min of pickup
           // latency on a quiet queue and is reset to 5s the moment real work
           // arrives (below), so a busy workforce behaves exactly as before.
+          // Waiting out a capacity pause is not idleness — the queue may be
+          // full. Sleep to the resume time instead of the idle ladder, and
+          // leave idleCycles alone so a real empty queue still backs off.
+          const capacityWaitMs = capacityPauseRemainingMs();
+          if (capacityWaitMs > 0) {
+            await new Promise((r) =>
+              setTimeout(r, Math.min(capacityWaitMs + 250, CAPACITY_WAIT_CAP_MS)),
+            );
+            continue;
+          }
+
           idleCycles++;
           const idleWaitMs = Math.min(
             IDLE_POLL_FLOOR_MS * Math.pow(2, Math.min(idleCycles - 1, 4)),
@@ -678,7 +726,13 @@ export abstract class BaseAgent {
       if (capacityPaused) {
         // This is an intentional cost-control state, not a broken task. The
         // queue preserves the work until the exact pacing/cooldown/reset time.
-        const resumeAt = getLLMCapacityResumeAt(msg)?.toISOString();
+        const resumeAtDate = getLLMCapacityResumeAt(msg);
+        const resumeAt = resumeAtDate?.toISOString();
+        // Park every agent until capacity actually returns. A capacity pause
+        // is workspace-wide, so continuing to claim tasks only re-discovers
+        // the same gate. Daily-budget pauses carry no resume-at, so fall back
+        // to a minute rather than spinning until the UTC rollover.
+        noteCapacityPause(resumeAtDate?.getTime() ?? Date.now() + 60_000);
         await this.logger.warn(
           dailyBudgetPaused
             ? `Task deferred until UTC budget reset: ${title}`
