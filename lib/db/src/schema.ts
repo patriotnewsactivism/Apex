@@ -366,9 +366,23 @@ export const strategyRecommendations = pgTable('strategy_recommendations', {
   text: text('text').notNull(),
   expectedImpact: text('expected_impact').notNull(),
   confidence: real('confidence').notNull().default(0.8),
-  status: text('status').notNull().default('pending'), // pending | approved | rejected | applied
+  status: text('status').notNull().default('pending'), // pending | approved | rejected | applied | superseded
   reviewedAt: timestamp('reviewed_at', { withTimezone: true, mode: 'date' }),
   reviewerNote: text('reviewer_note'),
+  fingerprint: text('fingerprint'),
+  lifecycleKey: text('lifecycle_key'),
+  affectedRole: text('affected_role'),
+  failureCategory: text('failure_category'),
+  proposedAction: text('proposed_action'),
+  insightType: text('insight_type'),
+  evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull().default({}),
+  occurrences: integer('occurrences').notNull().default(1),
+  firstObservedAt: timestamp('first_observed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  lastObservedAt: timestamp('last_observed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  supersededById: text('superseded_by_id'),
+  supersededAt: timestamp('superseded_at', { withTimezone: true, mode: 'date' }),
+  supersedeReason: text('supersede_reason'),
+  regressionOfId: text('regression_of_id'),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 

@@ -678,7 +678,9 @@ await recoverStaleLeasedTasks();
     }
   });
 
-  // WebSocket
+  // Both native RFC 6455 endpoints share one authenticated upgrade router.
+  // Registering separate `WebSocketServer({ server, path })` instances installs
+  // overlapping upgrade listeners and can corrupt the first frame after a 101.
   setupWebSocket(server);
   setupLiveVoice(server, ceo);
 
