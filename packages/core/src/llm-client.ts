@@ -42,7 +42,24 @@ import {
 export type ApexProviderName =
   | 'openrouter-minimax-m3'
   | 'openrouter-nemotron-ultra'
+  | 'openrouter-glm-5-2-free'
+  | 'openrouter-nemotron-super'
+  | 'openrouter-gpt-oss-120b-paid'
   | 'openrouter-deepseek-v3-paid';
+
+// Operator policy 2026-09-04 (Don): FREE models first — the most intelligent,
+// most-reasoning free models until exhausted — then fall back to the CHEAPEST
+// high-reasoning PAID models. No sole paid usage without explicit operator
+// authorization; paid keys are last-resort only.
+const OPENROUTER_FREE_KEY_ENVS = [
+  // New-account free-tier key first.
+  'OPENROUTER_FREE_API_KEY',
+  // Old-account key — still serves :free models (its paid credits are gone).
+  'OPENROUTER_API_KEY_2',
+  // Paid key works for :free models too ($0 cost) as a final free-tier slot.
+  'OPENROUTER_API_KEY_3',
+] as const;
+const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_3'] as const;
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -62,7 +79,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     name: 'openrouter-minimax-m3',
     model: DEFAULT_OPENROUTER_MODEL_CHAIN[0],
     baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
+    apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
@@ -70,22 +87,52 @@ const PROVIDERS: readonly ProviderSpec[] = [
     name: 'openrouter-nemotron-ultra',
     model: DEFAULT_OPENROUTER_MODEL_CHAIN[1],
     baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
+    apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
   {
-    // Paid anchor: only reached once both free OpenRouter models above are
-    // exhausted/cooled-down. DeepSeek V3.2 (not R1 — R1's OpenRouter
+    // Free tier slot 3: strong reasoner. Occasionally upstream-429s — the
+    // chain treats that as a normal cooldown and moves on.
+    name: 'openrouter-glm-5-2-free',
+    model: 'z-ai/glm-5.2:free',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+  },
+  {
+    // Free tier slot 4: proven tool-calling workhorse (codeforge-v2's
+    // long-standing free pick).
+    name: 'openrouter-nemotron-super',
+    model: 'nvidia/nemotron-3-super-120b-a12b:free',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+  },
+  {
+    // Paid fallback slot 1 — CHEAPEST high-reasoning model on OpenRouter
+    // ($0.037/M in, $0.17/M out, ~7x cheaper than DeepSeek V3.2). Only
+    // reached after ALL four free models are exhausted.
+    name: 'openrouter-gpt-oss-120b-paid',
+    model: 'openai/gpt-oss-120b',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
+    paid: true,
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+  },
+  {
+    // Paid fallback FINAL slot: DeepSeek V3.2 — not R1 (R1's OpenRouter
     // endpoint does not accept `tools`, which would silently break every
-    // agent turn that fell back to it). V3.2 is ~$0.21/M in + $0.31/M out,
-    // explicitly supports tools/tool_choice, and reports GPT-5-class
-    // benchmark performance. Operator decision 2026-09-02: prevents
-    // cascading swarm-wide stalls when the free-tier chain is rate-limited.
+    // agent turn that fell back to it). V3.2 explicitly supports
+    // tools/tool_choice with GPT-5-class benchmarks. Reached only after all
+    // four free models AND gpt-oss-120b are exhausted.
     name: 'openrouter-deepseek-v3-paid',
     model: 'deepseek/deepseek-v3.2',
     baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: ['OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2'],
+    apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
     minIntervalMs: 500,
     toolCallingReliable: true,
@@ -99,6 +146,9 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-minimax-m3',
   'openrouter-nemotron-ultra',
+  'openrouter-glm-5-2-free',
+  'openrouter-nemotron-super',
+  'openrouter-gpt-oss-120b-paid',
   'openrouter-deepseek-v3-paid',
 ];
 
