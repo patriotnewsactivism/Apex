@@ -12,10 +12,11 @@
  *     13 agents emit, in memory, forever.
  */
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { WebSocket } from 'ws';
 import { setupWebSocket, broadcast, getConnectedClientCount } from '../packages/api-server/src/websocket.js';
 import { issueWebSocketTicket } from '../packages/api-server/src/websocket-auth.js';
+import { registerWebSocketRoute } from '../packages/api-server/src/websocket-upgrade.js';
 
 async function main() {
   const SWEEP_MS = 25;
@@ -25,15 +26,52 @@ async function main() {
 
   const server = createServer();
   const wss = setupWebSocket(server, SWEEP_MS);
+  const secondWss = registerWebSocketRoute(server, '/ws/integration-secondary', () => undefined);
+  assert.equal(server.listenerCount('upgrade'), 1, 'APEX must install exactly one HTTP upgrade listener');
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const { port } = server.address() as { port: number };
 
-  const connect = () =>
-    new Promise<WebSocket>((resolve, reject) => {
+  const connectWithFirstFrame = () =>
+    new Promise<{ socket: WebSocket; firstMessage: string }>((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${issueWebSocketTicket()}`);
-      ws.once('open', () => resolve(ws));
+      let opened = false;
+      let firstMessage: string | undefined;
+      const finish = () => {
+        if (opened && firstMessage !== undefined) resolve({ socket: ws, firstMessage });
+      };
+      ws.once('open', () => {
+        opened = true;
+        finish();
+      });
+      ws.once('message', (data, isBinary) => {
+        assert.equal(isBinary, false, 'first server message must be a text frame');
+        firstMessage = data.toString();
+        finish();
+      });
       ws.once('error', reject);
     });
+  const connect = async () => (await connectWithFirstFrame()).socket;
+
+  // A real ws client must receive a valid text frame as the first bytes after
+  // the library-owned 101 handshake. This reproduces the production failure
+  // that Chrome reported as "Invalid frame header".
+  const { socket: framedClient, firstMessage } = await connectWithFirstFrame();
+  assert.equal(JSON.parse(firstMessage).type, 'connected', 'first frame must contain the connected event');
+  framedClient.close(1000, 'integration check complete');
+  await new Promise<void>((resolve) => framedClient.once('close', () => resolve()));
+
+  const rejectedStatus = await new Promise<number | undefined>((resolve, reject) => {
+    const req = request({
+      host: '127.0.0.1',
+      port,
+      path: '/ws',
+      headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==' },
+    });
+    req.once('response', (response) => resolve(response.statusCode));
+    req.once('error', reject);
+    req.end();
+  });
+  assert.equal(rejectedStatus, 401, 'missing WebSocket ticket must be rejected before the 101 handshake');
 
   const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -94,6 +132,7 @@ async function main() {
   // Closing the server must stop the sweep. If it ever stops doing so, this
   // script hangs here rather than exiting — the leak, observed directly.
   await new Promise<void>((resolve) => wss.close(() => resolve()));
+  await new Promise<void>((resolve) => secondWss.close(() => resolve()));
   await new Promise<void>((resolve) => server.close(() => resolve()));
 
   console.log('✅ WEBSOCKET LIFECYCLE GUARDS PASSED');
