@@ -2,7 +2,7 @@
 import { config } from 'dotenv';
 import { resolve, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
+import { existsSync, statfsSync } from 'fs';
 
 config({ path: resolve(process.cwd(), '.env') });
 
@@ -568,6 +568,20 @@ await recoverStaleLeasedTasks();
           heapTotalMb: mb(usage.heapTotal),
           externalMb: mb(usage.external),
           wsClients: getConnectedClientCount(),
+          // On Cloud Run /tmp is a tmpfs: bytes written there are charged
+          // against the container's memory limit but appear nowhere in
+          // process.memoryUsage(). A container can therefore be OOM-killed
+          // while rss sits flat at 150MB, which is exactly what happened on
+          // 2026-09-04 and exactly what the heap numbers alone could not
+          // explain. Report it so the next occurrence is one curl away.
+          tmpUsedMb: (() => {
+            try {
+              const stat = statfsSync('/tmp');
+              return mb((stat.blocks - stat.bfree) * stat.bsize);
+            } catch {
+              return null;
+            }
+          })(),
         };
       })(),
       timestamp: Date.now(),
