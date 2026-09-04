@@ -111,6 +111,10 @@ async function main(): Promise<void> {
     path.join(root, 'packages/core/src/llm-client.ts'),
     'utf8',
   );
+  const ledgerSrc = fs.readFileSync(
+    path.join(root, 'packages/core/src/token-ledger.ts'),
+    'utf8',
+  );
   const apiSrc = fs.readFileSync(
     path.join(root, 'packages/api-server/src/index.ts'),
     'utf8',
@@ -154,6 +158,33 @@ async function main(): Promise<void> {
     /for \(const provider of PROVIDERS\)[\s\S]{0,700}return true;/.test(
       clientSrc,
     ),
+  );
+  // Review finding (P1): scanning every entry in PROVIDERS let an adapter the
+  // router never reaches clear the latch, so agents would re-latch on the
+  // capped adapter every cycle and grind the queue through the same failure.
+  check(
+    'the probe only counts providers the router would actually reach',
+    /const routable = new Set<string>\(getProviderOrderForRole\(\)\);/.test(
+      clientSrc,
+    ) && /if \(!routable\.has\(provider\.name\)\) continue;/.test(clientSrc),
+  );
+  // Review finding (P2): the health snapshot judges pacing against a fixed
+  // 4,096-token probe, which parks every role while smaller calls would fit.
+  check(
+    'recovery is judged against a viable minimum request size, not the 4k health probe',
+    clientSrc.includes('MIN_VIABLE_REQUEST_TOKENS') &&
+      !/llmCapacityAvailableNow[\s\S]{0,900}getTokenLedgerSnapshot/.test(
+        clientSrc,
+      ),
+  );
+  check(
+    'the capacity check reserves nothing and mutates no ledger state',
+    /export function tokenCapacityAvailableFor[\s\S]{0,900}\}\n/.test(
+      ledgerSrc,
+    ) &&
+      !/export function tokenCapacityAvailableFor[\s\S]{0,900}(providerReservations\.set|totalReservations \+=|recordTokenUsage)/.test(
+        ledgerSrc,
+      ),
   );
   check(
     '/health distinguishes a parked workforce from an idle one',

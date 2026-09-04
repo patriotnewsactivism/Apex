@@ -450,6 +450,53 @@ export function isProviderOverDailyCap(providerName: string): boolean {
   return Boolean(cap && providerTokensToday(providerName) >= cap);
 }
 
+/** Smallest request worth waking the workforce for.
+ *
+ *  `getTokenLedgerSnapshot()` evaluates pacing against a fixed
+ *  CAPACITY_PROBE_TOKENS (4,096). Using that for recovery is too pessimistic:
+ *  with 3,000 tokens of allowance left, a routine 2,048-token call would
+ *  succeed while the snapshot still says "not allowed", parking every role
+ *  until more allowance accrues or the UTC day rolls over.
+ *
+ *  The asymmetry matters. Releasing slightly too early costs one claim that
+ *  defers and re-latches -- bounded and self-correcting. Releasing too late is
+ *  the outage this whole path exists to prevent. So the floor is deliberately
+ *  conservative-small rather than conservative-large.
+ */
+export const MIN_VIABLE_REQUEST_TOKENS = 1_024;
+
+/** Non-mutating: can `requestedTokens` be reserved right now? Reserves nothing
+ *  and is safe to call on every agent poll cycle. */
+export function tokenCapacityAvailableFor(
+  requestedTokens: number = MIN_VIABLE_REQUEST_TOKENS,
+  providerName?: string,
+): boolean {
+  rolloverIfNeeded();
+  const caps = parseCaps();
+
+  const total = calculateTokenCapacityWindow({
+    cap: totalCap(),
+    usedTokens: totalTokensToday(),
+    reservedTokens: totalReservations,
+    requestedTokens,
+  });
+  if (!total.allowed) return false;
+
+  if (providerName === undefined) return true;
+
+  const entry = state.providers[providerName];
+  const usedTokens = entry ? entry.promptTokens + entry.completionTokens : 0;
+  const cap = caps[providerName] ?? 0;
+  if (cap > 0 && usedTokens >= cap) return false;
+
+  return calculateTokenCapacityWindow({
+    cap,
+    usedTokens,
+    reservedTokens: providerReservations.get(providerName) ?? 0,
+    requestedTokens,
+  }).allowed;
+}
+
 export function isTotalDailyCapReached(): boolean {
   const cap = totalCap();
   return Boolean(cap && totalTokensToday() >= cap);

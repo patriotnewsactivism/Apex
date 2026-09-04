@@ -8,8 +8,10 @@ import type {
   LLMToolCall,
 } from './types.js';
 import {
-  getTokenLedgerSnapshot,
+  isProviderOverDailyCap,
   isTotalDailyCapReached,
+  MIN_VIABLE_REQUEST_TOKENS,
+  tokenCapacityAvailableFor,
   msUntilDailyReset,
   recordTokenUsage,
   reserveProviderTokenCapacity,
@@ -438,15 +440,18 @@ export function getProviderBackpressureSnapshot(): {
 export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
   // A hard total cap is genuinely workspace-wide; nothing to re-probe.
   if (isTotalDailyCapReached()) return false;
+  if (!tokenCapacityAvailableFor(MIN_VIABLE_REQUEST_TOKENS)) return false;
 
-  const ledger = getTokenLedgerSnapshot();
-  if (!ledger.pacing.total.allowed) return false;
-
-  const pacingByProvider = new Map(
-    ledger.providers.map((entry) => [entry.provider, entry]),
-  );
+  // Only providers the router would actually reach count. Scanning all of
+  // PROVIDERS would let an idle-but-unroutable adapter clear the latch while
+  // the one adapter routing uses is still capped: agents would claim work,
+  // fail on the same provider, re-latch, and grind the queue through that
+  // failure every probe cycle. `complete()` routes through
+  // getProviderOrderForRole(), so the probe must ask the same question.
+  const routable = new Set<string>(getProviderOrderForRole());
 
   for (const provider of PROVIDERS) {
+    if (!routable.has(provider.name)) continue;
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
@@ -455,8 +460,10 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     const readyAt = providerCooldowns.get(provider.name) ?? 0;
     if (readyAt > now) continue;
 
-    const entry = pacingByProvider.get(provider.name);
-    if (entry && (entry.capReached || !entry.pacing.allowed)) continue;
+    if (isProviderOverDailyCap(provider.name)) continue;
+    if (!tokenCapacityAvailableFor(MIN_VIABLE_REQUEST_TOKENS, provider.name)) {
+      continue;
+    }
 
     return true;
   }
