@@ -114,7 +114,12 @@ function ApprovalCard({
           border: '1px solid rgba(255,255,255,0.06)',
           borderRadius: 6,
           padding: '10px 12px',
+          // Tool args are arbitrary JSON. Keep the horizontal scroll for wide
+          // structures, but confine it to this box so it cannot widen the card.
           overflowX: 'auto',
+          maxWidth: '100%',
+          whiteSpace: 'pre-wrap',
+          overflowWrap: 'anywhere',
           color: '#5a9eae',
           fontFamily: 'var(--font-mono)',
           margin: '0 0 14px 0',
