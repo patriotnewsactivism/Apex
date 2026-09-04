@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { checkAgentLoopSupervision } from './verify-agent-loop-supervision.js';
 
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const worker = fs.readFileSync(path.join(root, 'packages/api-server/src/worker.ts'), 'utf8');
@@ -41,8 +42,12 @@ check('worker does not invoke migration management code',
   !executableWorker.includes('migrate(') && !executableWorker.includes('runMigrations('));
 check('worker handles Cloud Run termination signals',
   worker.includes("process.once('SIGTERM'") && worker.includes("process.once('SIGINT'"));
+// Agent loops are now stopped through their supervisor handle (which calls
+// agent.stop() and cancels any pending restart), not by touching each agent
+// directly — a direct agent.stop() would race a queued supervisor restart.
 check('worker stops scheduler and agent claim loops before shutdown',
-  worker.includes('scheduler.stop()') && worker.includes('agent.stop()'));
+  worker.includes('scheduler.stop()') &&
+  worker.includes('for (const supervisor of supervisors) supervisor.stop()'));
 check('worker does not force successful process exit during shutdown', !executableWorker.includes('process.exit(0)'));
 
 console.log('\n── Architecture guard ──');
@@ -54,9 +59,16 @@ check('ADR forbids guessed resource provisioning',
   adr.includes('does **not** guess or silently create a GCP resource'));
 check('ADR requires a no-browser acceptance test', adr.includes('no-browser acceptance test'));
 
-if (failures > 0) {
-  console.error(`\n❌ Durable worker runtime guard failed: ${failures} invariant(s) missing`);
-  process.exit(1);
-}
+// Durable no-browser autonomy only holds if the worker's agent loops actually
+// stay alive. (Promise chain rather than top-level await: this script is
+// transformed to CJS, which does not support top-level await.)
+void checkAgentLoopSupervision().then((supervisionFailures) => {
+  failures += supervisionFailures;
 
-console.log('\n✅ Durable worker runtime source invariants verified');
+  if (failures > 0) {
+    console.error(`\n❌ Durable worker runtime guard failed: ${failures} invariant(s) missing`);
+    process.exit(1);
+  }
+
+  console.log('\n✅ Durable worker runtime source invariants verified');
+});

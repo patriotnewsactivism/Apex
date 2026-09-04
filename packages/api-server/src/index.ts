@@ -16,7 +16,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger } from '@workspace/core';
+import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, superviseAgentLoop, type AgentSupervisorHandle } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
 import { createGoalsRouter } from './routes/goals.js';
@@ -554,6 +554,11 @@ await recoverStaleLeasedTasks();
       // uptime back to zero, no error anywhere. Reporting the numbers here is
       // what makes the difference visible — RSS that plateaus means the box is
       // simply sized too small, RSS that climbs forever means a leak.
+      // Constructed-agent count is not liveness. An agent whose loop died
+      // pre-fix stayed in `agents` forever while running nothing. This block
+      // reports which loops are actually cycling, how often the supervisor had
+      // to restart them, and which ones it gave up on.
+      workforce: getWorkforceLiveness(),
       memory: (() => {
         const usage = process.memoryUsage();
         const mb = (bytes: number) => Math.round((bytes / 1048576) * 10) / 10;
@@ -798,28 +803,32 @@ await recoverStaleLeasedTasks();
   // loop, spreading the initial burst of LLM calls across a wider window.
   campaignRunner.start();
 
-  console.log('🤖 Starting autonomous agent loops (staggered)...');
+  console.log('🤖 Starting autonomous agent loops (staggered, supervised)...');
+
+  // Supervision (added after finding the gap): start() used to be
+  // fire-and-forget with a `.catch(console.error)`. See
+  // packages/core/src/agent-supervisor.ts for the full rationale — a crashed
+  // loop was never restarted and /health still counted the agent as one of the
+  // 13. The same supervisor is used by the browser-independent worker runtime.
+  const supervisors: AgentSupervisorHandle[] = [];
   let agentIdx = 0;
   for (const agent of workforce.values()) {
-    const delay = 500 + (agentIdx * 300) + Math.floor(Math.random() * 500);
-    setTimeout(() => {
-      agent.start().catch((err: Error) => {
-        console.error(`Agent ${agent.id} crashed:`, err.message);
-      });
-    }, delay);
+    supervisors.push(
+      superviseAgentLoop(agent, {
+        startDelayMs: 500 + agentIdx * 300 + Math.floor(Math.random() * 500),
+      }),
+    );
     agentIdx++;
   }
 
   const shutdown = (signal: string) => {
     console.log(`\n${signal} received. Shutting down APEX...`);
+    for (const supervisor of supervisors) supervisor.stop();
     clearInterval(healthInterval);
     clearInterval(leaseRecoveryInterval);
     clearInterval(escalationSweepInterval);
     campaignRunner.stop();
     scheduler.stop();
-    for (const agent of workforce.values()) {
-      agent.stop();
-    }
     server.close(() => {
       console.log('✅ APEX shut down gracefully');
       process.exit(0);

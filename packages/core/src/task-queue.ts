@@ -44,6 +44,43 @@ function isTimeoutQuarantine(task: Pick<Task, 'status' | 'errorMessage'>): boole
   return task.status === 'blocked' && task.errorMessage?.startsWith(TIMEOUT_QUARANTINE_PREFIX) === true;
 }
 
+/**
+ * Lifecycle transitions (block/unblock/resume/awaitApproval/markInProgress)
+ * used to write unconditionally by task id. That silently undid the ownership
+ * guarantees complete()/fail() work hard to keep:
+ *
+ *   - an operator cancellation could be overwritten and the task resurrected;
+ *   - a task terminalized as done/failed could be dragged back into the queue
+ *     and executed a second time;
+ *   - a hard-timeout quarantine (status 'blocked' with the quarantine prefix,
+ *     whose original execution may still be alive and capable of side effects)
+ *     could be flipped back to pending/in_progress, recreating exactly the
+ *     duplicate-execution race the quarantine exists to prevent.
+ *
+ * Every non-terminal transition now requires the row to still be live and
+ * un-quarantined. The predicate is expressed once, in SQL and in memory, so
+ * the durable and local-fallback paths cannot drift.
+ */
+function liveOwnershipPredicate() {
+  return and(
+    sql`${tasks.status} NOT IN ('done', 'failed', 'cancelled')`,
+    // COALESCE is load-bearing: a blocked row with a NULL error_message would
+    // make the inner AND evaluate to NULL, so `NOT (...)` is NULL and the row
+    // is excluded from EVERY guarded update -- unblock()/resume() would
+    // silently do nothing. That state is reachable via PATCH /api/tasks/:id,
+    // which allows status: 'blocked' without an error message. It would also
+    // disagree with the in-memory isLiveOwnership(), which correctly treats
+    // such a row as live.
+    sql`NOT (${tasks.status} = 'blocked' AND COALESCE(${tasks.errorMessage}, '') LIKE ${`${TIMEOUT_QUARANTINE_PREFIX}%`})`,
+  );
+}
+
+function isLiveOwnership(task: Pick<Task, 'status' | 'errorMessage'>): boolean {
+  if (TERMINAL_TASK_STATUSES.has(task.status)) return false;
+  if (isTimeoutQuarantine(task)) return false;
+  return true;
+}
+
 export class TaskQueue {
   private agentId: string;
   private memoryQueue: Task[] = [];
@@ -341,17 +378,20 @@ export class TaskQueue {
   /** Block a task while waiting on an external dependency. */
   async block(taskId: string, reason: string): Promise<void> {
     try {
-      await db.update(tasks).set({
-        status: 'blocked',
-        errorMessage: reason,
-        updatedAt: new Date(),
-      }).where(eq(tasks.id, taskId));
+      await db
+        .update(tasks)
+        .set({
+          status: 'blocked',
+          errorMessage: reason,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
     } catch (err) {
       requireDurabilityOrAllowLocalFallback('block', err);
     }
 
     const memTask = this.memoryQueue.find((task) => task.id === taskId);
-    if (memTask) {
+    if (memTask && isLiveOwnership(memTask)) {
       memTask.status = 'blocked';
       memTask.errorMessage = reason;
     }
@@ -360,18 +400,21 @@ export class TaskQueue {
   /** Unblock a task and return it to the durable queue. */
   async unblock(taskId: string): Promise<void> {
     try {
-      await db.update(tasks).set({
-        status: 'pending',
-        errorMessage: null,
-        leasedAt: null,
-        updatedAt: new Date(),
-      }).where(eq(tasks.id, taskId));
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          errorMessage: null,
+          leasedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
     } catch (err) {
       requireDurabilityOrAllowLocalFallback('unblock', err);
     }
 
     const memTask = this.memoryQueue.find((task) => task.id === taskId);
-    if (memTask) {
+    if (memTask && isLiveOwnership(memTask)) {
       memTask.status = 'pending';
       memTask.errorMessage = null;
       memTask.leasedAt = null;
@@ -381,54 +424,78 @@ export class TaskQueue {
   /** Mark a task awaiting human approval for a gated tool call. */
   async awaitApproval(taskId: string): Promise<void> {
     try {
-      await db.update(tasks).set({
-        status: 'awaiting_approval',
-        updatedAt: new Date(),
-      }).where(eq(tasks.id, taskId));
+      await db
+        .update(tasks)
+        .set({
+          status: 'awaiting_approval',
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
     } catch (err) {
       requireDurabilityOrAllowLocalFallback('awaitApproval', err);
     }
 
     const memTask = this.memoryQueue.find((task) => task.id === taskId);
-    if (memTask) memTask.status = 'awaiting_approval';
+    if (memTask && isLiveOwnership(memTask)) memTask.status = 'awaiting_approval';
   }
 
   /** Return a task to the queue for a future worker to claim. */
   async resume(taskId: string): Promise<void> {
     try {
-      await db.update(tasks).set({
-        status: 'pending',
-        leasedAt: null,
-        updatedAt: new Date(),
-      }).where(eq(tasks.id, taskId));
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          leasedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
     } catch (err) {
       requireDurabilityOrAllowLocalFallback('resume', err);
     }
 
     const memTask = this.memoryQueue.find((task) => task.id === taskId);
-    if (memTask) {
+    if (memTask && isLiveOwnership(memTask)) {
       memTask.status = 'pending';
       memTask.leasedAt = null;
     }
   }
 
-  /** Restore a live worker's status after an approval decision. */
-  async markInProgress(taskId: string): Promise<void> {
+  /**
+   * Restore a live worker's status after an approval decision.
+   *
+   * Returns false when this execution no longer owns the task — an operator
+   * cancelled it, it was terminalized, or a hard-timeout quarantine took it
+   * away while the approval was pending. Callers MUST abort instead of running
+   * the approved tool: an approval decision is not authority to execute work
+   * whose task was withdrawn, and un-quarantining a task whose original
+   * execution is still detached and alive is the duplicate-side-effect race
+   * fail()'s quarantine exists to prevent.
+   */
+  async markInProgress(taskId: string): Promise<boolean> {
     const now = new Date();
     try {
-      await db.update(tasks).set({
-        status: 'in_progress',
-        leasedAt: now,
-        updatedAt: now,
-      }).where(eq(tasks.id, taskId));
+      const [restored] = await db
+        .update(tasks)
+        .set({
+          status: 'in_progress',
+          leasedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()))
+        .returning({ id: tasks.id });
+      return Boolean(restored);
     } catch (err) {
       requireDurabilityOrAllowLocalFallback('markInProgress', err);
     }
 
     const memTask = this.memoryQueue.find((task) => task.id === taskId);
     if (memTask) {
+      if (!isLiveOwnership(memTask)) return false;
       memTask.status = 'in_progress';
       memTask.leasedAt = now;
+      return true;
     }
+    return false;
   }
 }
