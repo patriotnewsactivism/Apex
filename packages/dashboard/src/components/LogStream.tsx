@@ -86,6 +86,8 @@ export function LogStream() {
       style={{
         height: '100%',
         overflowY: 'auto',
+        overflowX: 'hidden',
+        maxWidth: '100%',
         fontFamily: 'var(--font-mono)',
         fontSize: 12,
         display: 'flex',
@@ -112,6 +114,8 @@ export function LogStream() {
               alignItems: 'flex-start',
               padding: '3px 0',
               borderBottom: '1px solid rgba(255,255,255,0.03)',
+              maxWidth: '100%',
+              minWidth: 0,
             }}
           >
             <span style={{ color: 'var(--color-apex-muted)', flexShrink: 0, fontSize: 10, paddingTop: 1 }}>
@@ -135,7 +139,17 @@ export function LogStream() {
                 [{e.agentId.replace('apex-', '').replace('-001', '')}]
               </span>
             )}
-            <span style={{ color: LEVEL_COLORS[e.level] ?? '#e2e8f0', wordBreak: 'break-word', flex: 1 }}>
+            <span
+              style={{
+                color: LEVEL_COLORS[e.level] ?? '#e2e8f0',
+                wordBreak: 'break-word',
+                overflowWrap: 'anywhere',
+                whiteSpace: 'pre-wrap',
+                flex: 1,
+                minWidth: 0,
+                maxWidth: '100%',
+              }}
+            >
               {e.message}
             </span>
           </motion.div>
