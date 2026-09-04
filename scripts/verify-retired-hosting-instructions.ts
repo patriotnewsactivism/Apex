@@ -38,9 +38,32 @@ const INSTRUCTION_FILES = [
 
 const RETIRED_HOST = /\b(lightsail|codebuild|railway)\b/i;
 
-/** Words that make a line unmistakably historical or prohibitive. */
-const RETIREMENT_MARKER =
-  /\b(retired|historical|history|legacy|former|formerly|deprecated|removed|no longer|not a|never|do not|must not|cannot|is not|are not|prior|old)\b/i;
+/**
+ * A mention is only exempt when the line itself marks that hosting path as
+ * retired or prohibited. Deliberately narrow: vague words like "old", "prior"
+ * or a bare "never" elsewhere in the sentence must NOT buy an exemption, or a
+ * live instruction could smuggle itself past this guard on an unrelated
+ * historical aside.
+ */
+const RETIREMENT_MARKER = new RegExp(
+  [
+    'retired',
+    'historical',
+    'deprecated',
+    'no longer',
+    'formerly',
+    'former ',
+    'legacy',
+    'not (a|an|the)? ?(current|production|apex)',
+    'must not (be )?(restore|revive|use)',
+    'do not (restore|revive|use|reintroduce)',
+    'never (restore|revive|reintroduce|use)',
+    'is not (a|the) apex',
+    'are not apex',
+    'removed',
+  ].join('|'),
+  'i',
+);
 
 export function checkRetiredHostingInstructions(): number {
   let failures = 0;
