@@ -133,6 +133,14 @@ export async function checkTaskOwnershipTransitions(): Promise<number> {
     blockedRow.status,
   );
 
+  const { queue: nullBlocked, row: nullBlockedRow } = await seed('blocked', null);
+  await nullBlocked.unblock(nullBlockedRow.id);
+  check(
+    'a blocked task with no error message is still live and can be unblocked',
+    nullBlockedRow.status === 'pending',
+    nullBlockedRow.status,
+  );
+
   const { queue: prog, row: progRow } = await seed('in_progress');
   await prog.awaitApproval(progRow.id);
   check(
@@ -148,6 +156,14 @@ export async function checkTaskOwnershipTransitions(): Promise<number> {
     queueSrc.includes('function liveOwnershipPredicate()') &&
       queueSrc.includes("NOT IN ('done', 'failed', 'cancelled')") &&
       queueSrc.includes('TIMEOUT_QUARANTINE_PREFIX'),
+  );
+  check(
+    // Without COALESCE a blocked row with a NULL error_message makes the
+    // predicate NULL, excluding it from every guarded update -- unblock() and
+    // resume() would silently no-op, and the SQL path would disagree with the
+    // in-memory fallback. Reachable via PATCH /api/tasks/:id.
+    'the quarantine test is NULL-safe for blocked rows without an error message',
+    queueSrc.includes('COALESCE(${tasks.errorMessage}, \'\')'),
   );
   for (const method of ['block', 'unblock', 'resume', 'awaitApproval', 'markInProgress']) {
     const start = queueSrc.indexOf(`async ${method}(`);

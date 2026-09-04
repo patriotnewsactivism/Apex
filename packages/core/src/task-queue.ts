@@ -64,7 +64,14 @@ function isTimeoutQuarantine(task: Pick<Task, 'status' | 'errorMessage'>): boole
 function liveOwnershipPredicate() {
   return and(
     sql`${tasks.status} NOT IN ('done', 'failed', 'cancelled')`,
-    sql`NOT (${tasks.status} = 'blocked' AND ${tasks.errorMessage} LIKE ${`${TIMEOUT_QUARANTINE_PREFIX}%`})`,
+    // COALESCE is load-bearing: a blocked row with a NULL error_message would
+    // make the inner AND evaluate to NULL, so `NOT (...)` is NULL and the row
+    // is excluded from EVERY guarded update -- unblock()/resume() would
+    // silently do nothing. That state is reachable via PATCH /api/tasks/:id,
+    // which allows status: 'blocked' without an error message. It would also
+    // disagree with the in-memory isLiveOwnership(), which correctly treats
+    // such a row as live.
+    sql`NOT (${tasks.status} = 'blocked' AND COALESCE(${tasks.errorMessage}, '') LIKE ${`${TIMEOUT_QUARANTINE_PREFIX}%`})`,
   );
 }
 
