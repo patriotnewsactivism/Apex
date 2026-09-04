@@ -1,9 +1,9 @@
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocket } from 'ws';
 import { apexEventBus } from '@workspace/core';
 import type { ApexEvent } from '@workspace/core';
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
-import { consumeWebSocketTicket } from './websocket-auth.js';
+import { registerWebSocketRoute } from './websocket-upgrade.js';
 
 // ─── WebSocket Broadcast Service ──────────────────────────────────────────────
 
@@ -47,36 +47,34 @@ export function setupWebSocket(
   server: Server,
   heartbeatIntervalMs: number = HEARTBEAT_INTERVAL_MS,
 ) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
-
-  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    // Browser WebSockets cannot set Authorization headers. Accept only the
-    // short-lived, single-use ticket minted by the authenticated HTTP route;
-    // never put the long-lived admin token in a URL.
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    if (!consumeWebSocketTicket(url.searchParams.get('ticket'))) {
-      ws.close(1008, 'Invalid or expired ticket');
-      return;
-    }
-
+  const wss = registerWebSocketRoute(server, '/ws', (ws: WebSocket, _req: IncomingMessage) => {
     clients.add(ws);
     alive.add(ws);
-    console.log(`📡 WebSocket client connected (total: ${clients.size})`);
+    console.log(`[websocket] Connection opened: /ws (total: ${clients.size})`);
 
     // Send current system status on connect
-    ws.send(JSON.stringify({ type: 'connected', timestamp: Date.now() }));
+    const firstMessage = JSON.stringify({ type: 'connected', timestamp: Date.now() });
+    ws.send(firstMessage, (error) => {
+      if (error) {
+        console.error(`[websocket] First outbound message failed: ${error.message}`);
+        return;
+      }
+      console.log(`[websocket] First outbound message sent: text (${Buffer.byteLength(firstMessage)} bytes)`);
+    });
 
     ws.on('pong', () => {
       alive.add(ws);
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       clients.delete(ws);
-      console.log(`📡 WebSocket client disconnected (total: ${clients.size})`);
+      console.log(
+        `[websocket] Connection closed: /ws code=${code} reason=${reason.toString().slice(0, 120) || '(none)'} (total: ${clients.size})`,
+      );
     });
 
     ws.on('error', (err) => {
-      console.error('WebSocket error:', err.message);
+      console.error(`[websocket] Socket error: /ws: ${err.message}`);
       clients.delete(ws);
     });
   });
