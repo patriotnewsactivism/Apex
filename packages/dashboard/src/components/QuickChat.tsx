@@ -633,7 +633,7 @@ export function QuickChat() {
         }}
       >
         {/* ── Left: Chat + Input ────────────────────────────────────── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
           {/* Chat area */}
           <div
             style={{
@@ -671,7 +671,7 @@ export function QuickChat() {
               >
                 <Sparkles size={14} color="#5a9eae" />
               </div>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-apex-text)' }}>
                   APEX Command
                 </div>
@@ -719,6 +719,9 @@ export function QuickChat() {
                         lineHeight: 1.5,
                         color: 'var(--color-apex-text)',
                         whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
+                        wordBreak: 'break-word',
+                        minWidth: 0,
                       }}
                     >
                       {msg.text}
@@ -781,6 +784,7 @@ export function QuickChat() {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
+              flexWrap: 'wrap',
               gap: 10,
               padding: '8px 12px',
               marginBottom: 8,
@@ -911,6 +915,7 @@ export function QuickChat() {
                 rows={expanded ? 4 : 1}
                 style={{
                   flex: 1,
+                  minWidth: 0,
                   resize: 'none',
                   minHeight: expanded ? 100 : 44,
                   transition: 'min-height 0.2s',

@@ -70,6 +70,24 @@ function base64ToInt16(b64: string): Int16Array {
 const INPUT_RATE = 16000;
 const OUTPUT_RATE = 24000;
 
+// iOS Safari only exposes webkitAudioContext, and it starts every context in
+// the 'suspended' state unless the context is BOTH created and resumed inside
+// the synchronous part of a user gesture. Creating it in ws.onopen (an async
+// callback) is not a gesture, which is why mobile voice produced no audio.
+type AudioContextCtor = new (options?: AudioContextOptions) => AudioContext;
+
+function getAudioContextCtor(): AudioContextCtor | null {
+  const w = window as unknown as {
+    AudioContext?: AudioContextCtor;
+    webkitAudioContext?: AudioContextCtor;
+  };
+  return w.AudioContext ?? w.webkitAudioContext ?? null;
+}
+
+function resumeContext(ctx: AudioContext | null): void {
+  if (ctx && ctx.state === 'suspended') void ctx.resume().catch(() => {});
+}
+
 export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   const [status, setStatus] = useState<LiveVoiceStatus>('idle');
   const wsRef = useRef<WebSocket | null>(null);
@@ -95,11 +113,12 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   }, []);
 
   const playChunk = useCallback((b64: string) => {
-    if (!playbackCtxRef.current) {
-      playbackCtxRef.current = new AudioContext({ sampleRate: OUTPUT_RATE });
-      nextPlayTimeRef.current = playbackCtxRef.current.currentTime;
-    }
+    // The playback context is created inside the user gesture in start(); if it
+    // is missing we have nothing to play into (and creating one here would be
+    // born suspended on iOS anyway).
     const ctx = playbackCtxRef.current;
+    if (!ctx) return;
+    resumeContext(ctx);
     const pcm = base64ToInt16(b64);
     const float = new Float32Array(pcm.length);
     for (let i = 0; i < pcm.length; i++) float[i] = pcm[i] / 0x8000;
@@ -143,6 +162,35 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
 
   const start = useCallback(async () => {
     setStatus('connecting');
+
+    // Everything above the first suspension point still runs inside the click
+    // handler, so this is the only place we can legally create + resume audio
+    // contexts on mobile Safari.
+    const AudioCtx = getAudioContextCtor();
+    if (!AudioCtx) {
+      cbRef.current.onError?.('This browser does not support Web Audio, so voice calls are unavailable.');
+      setStatus('error');
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      cbRef.current.onError?.(
+        'Microphone access is unavailable. Voice calls need a secure (https) connection.',
+      );
+      setStatus('error');
+      return;
+    }
+
+    const captureCtx = new AudioCtx();
+    captureCtxRef.current = captureCtx;
+    resumeContext(captureCtx);
+
+    // No forced sampleRate: iOS rejects/mismatches a hard 24kHz context. We
+    // still author buffers at OUTPUT_RATE and let the browser resample.
+    const playbackCtx = new AudioCtx();
+    playbackCtxRef.current = playbackCtx;
+    nextPlayTimeRef.current = playbackCtx.currentTime;
+    resumeContext(playbackCtx);
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
@@ -154,9 +202,10 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        const AudioCtx = window.AudioContext;
-        const captureCtx = new AudioCtx();
-        captureCtxRef.current = captureCtx;
+        // Gesture-created contexts can still be auto-suspended between the
+        // click and the socket opening; nudge them once more.
+        resumeContext(captureCtx);
+        resumeContext(playbackCtx);
         const source = captureCtx.createMediaStreamSource(stream);
         const processor = captureCtx.createScriptProcessor(4096, 1, 1);
         processorRef.current = processor;
@@ -216,6 +265,12 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
         setStatus((s) => (s === 'error' ? s : 'ended'));
       };
     } catch (err) {
+      captureCtx.close().catch(() => {});
+      captureCtxRef.current = null;
+      playbackCtx.close().catch(() => {});
+      playbackCtxRef.current = null;
+      micStreamRef.current?.getTracks().forEach((t) => t.stop());
+      micStreamRef.current = null;
       cbRef.current.onError?.(err instanceof Error ? err.message : 'Microphone access failed.');
       setStatus('error');
     }
