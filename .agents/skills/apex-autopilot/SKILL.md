@@ -193,7 +193,7 @@ Verification must match the task:
 
 - Code-only task: tests and diff may be sufficient.
 - Runtime bug: reproduce before and after.
-- Deployment: verify active AWS Lightsail deployment AND live `/health` `build.sha` equals the intended commit.
+- Deployment: verify the configured Google Cloud Run service serves a Ready revision built from the intended commit AND live `/health` `build.sha` equals that commit.
 - Agent failure: verify the affected agent/queue processes real work again.
 - Provider/capacity issue: verify provider roster, token caps, cooldown state, and a real completion/task path.
 - Business workflow: verify the record/state exists in the system, not merely that a draft was generated.
@@ -216,7 +216,7 @@ When asked to "check APEX," "fix APEX," "run APEX," or similar broad language, d
 ### Minimum health pass
 
 1. Read current `AGENTS.md`.
-2. Resolve the current production URL from repo/live AWS data if possible; otherwise use the documented APEX domain only as a starting point.
+2. Resolve the current production URL from `AGENTS.md` / `docs/PRODUCTION_OPERATIONS.md` and the configured Cloud Run service; the documented APEX domain (`https://apex.donmatthews.live`) is the expected value, not a guess to be replaced by history.
 3. Call `/health`.
 4. Compare returned `build.sha` with the expected deployed/source commit.
 5. Inspect task queue liveness and recent failure pattern.
@@ -225,7 +225,7 @@ When asked to "check APEX," "fix APEX," "run APEX," or similar broad language, d
    - `/api/tokens`
    - pending approvals/escalations
    - recent jobs/tasks/logs relevant to the symptom
-7. If infrastructure is implicated, inspect CodeBuild and Lightsail state.
+7. If infrastructure is implicated, inspect Google Cloud Build history and the configured Cloud Run service/revision state (never AWS Lightsail/CodeBuild or Railway — those hosting paths are retired).
 8. Classify the incident before changing anything.
 
 ### Common failure classification
