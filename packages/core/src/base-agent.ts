@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { db, agents, approvals, messages, tasks as tasksTable, learningInsights, strategyRecommendations } from '@workspace/db';
 import { eq, and, desc, inArray } from 'drizzle-orm';
-import { createLLMClient, getDefaultLLMConfig, type LLMClient } from './llm-client.js';
+import { createLLMClient, getDefaultLLMConfig, llmCapacityAvailableNow, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
@@ -58,9 +58,53 @@ function noteCapacityPause(resumeAtMs: number): void {
   }
 }
 
+/** The latch above is monotonic: noteCapacityPause only ever moves it further
+ *  into the future, and nothing lowered it when capacity actually returned.
+ *
+ *  That is fine for the case it was written for (short pacing/cooldown waits)
+ *  and wrong for the case production hit on 2026-09-04: one provider's pacing
+ *  window carried resume-at = the next UTC rollover, ~22h out. Because the
+ *  first agent to touch it latched that timestamp workspace-wide, all 13 agents
+ *  stopped dequeuing for the rest of the day while /health still reported
+ *  `status: ok` and 13 idle agents. Idle and starved look identical from
+ *  outside. Recovery required a process restart -- which is precisely the
+ *  "uncontrolled stall that needs a human" class this system is supposed to
+ *  eliminate.
+ *
+ *  So: never sleep on the recorded timestamp alone. Re-probe real capacity and
+ *  release the latch the moment any provider can take work again. The probe is
+ *  in-memory (no DB, no network), and throttled so 13 agents polling every 5s
+ *  cannot turn it into a hot path.
+ */
+const CAPACITY_REPROBE_INTERVAL_MS = 5_000;
+let lastCapacityProbeAtMs = 0;
+
+function releaseCapacityLatchIfRecovered(now: number): void {
+  if (sharedCapacityResumeAtMs <= now) return;
+  if (now - lastCapacityProbeAtMs < CAPACITY_REPROBE_INTERVAL_MS) return;
+  lastCapacityProbeAtMs = now;
+  if (llmCapacityAvailableNow(now)) {
+    sharedCapacityResumeAtMs = 0;
+  }
+}
+
 /** Milliseconds still to wait, or 0 when capacity is available. */
 export function capacityPauseRemainingMs(now: number = Date.now()): number {
+  releaseCapacityLatchIfRecovered(now);
   return Math.max(0, sharedCapacityResumeAtMs - now);
+}
+
+/** Test seam: drop the latch and the probe throttle. */
+export function __resetCapacityLatchForTest(): void {
+  sharedCapacityResumeAtMs = 0;
+  lastCapacityProbeAtMs = 0;
+}
+
+/** Test seam: park the workforce until `resumeAtMs`, as a real pause would. */
+export function __setCapacityLatchForTest(resumeAtMs: number): void {
+  sharedCapacityResumeAtMs = 0;
+  lastCapacityProbeAtMs = 0;
+  noteCapacityPause(resumeAtMs);
 }
 
 export const apexEventBus = new EventEmitter();
