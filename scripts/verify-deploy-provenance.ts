@@ -7,6 +7,7 @@ import {
   immutableImageRef,
   retainHealthResponseBody,
 } from '../packages/cicd-automation/src/cloud-run-deployer.js';
+import { checkRetiredHostingInstructions } from './verify-retired-hosting-instructions.js';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -96,6 +97,11 @@ check('production deployment requires explicit APEX_DEPLOY_ENABLED consent',
   deployWorkflow.includes('APEX_DEPLOY_ENABLED') && deployWorkflow.includes('production|all'));
 check('health verification compares production to DEPLOY_SHA, not workflow metadata SHA',
   deployWorkflow.includes("expected=os.environ.get('DEPLOY_SHA')"));
+
+// Retired AWS Lightsail/CodeBuild/Railway instructions are a deploy-provenance
+// hazard: an agent that follows them verifies the wrong (nonexistent)
+// infrastructure. Folded in here so it runs on every CI pass.
+failures += checkRetiredHostingInstructions();
 
 console.log(
   failures === 0
