@@ -3,9 +3,10 @@
 // Formulates evidence-led strategy recommendations based on measured patterns.
 // Stable identities prevent every learning run from restating the same advice.
 
-import crypto from 'crypto';
 import { db, strategyRecommendations, type NewStrategyRecommendation } from '@workspace/db';
+import { sql } from 'drizzle-orm';
 import type { DetectedPattern } from './pattern-detector.js';
+import { strategyFingerprint, type StrategySemantics } from './strategy-fingerprint.js';
 
 export class StrategyOptimizer {
   /**
@@ -18,10 +19,15 @@ export class StrategyOptimizer {
 
     for (const pattern of patterns) {
       if (pattern.category === 'failure' && pattern.targetRole) {
-        const fingerprint = crypto.createHash('sha256')
-          .update(`failure:${pattern.targetRole}:${pattern.description}`)
-          .digest('hex').slice(0, 16);
-        const id = `rec-error-${pattern.targetRole.toLowerCase()}-${fingerprint}`;
+        const semantics: StrategySemantics = {
+          recommendationType: 'error_mitigation',
+          affectedRole: pattern.targetRole,
+          failureCategory: typeof pattern.evidence.errorType === 'string' ? pattern.evidence.errorType : 'role_failure_rate',
+          proposedAction: 'cluster_and_mitigate_causal_failures',
+          insightType: pattern.category,
+        };
+        const fingerprint = strategyFingerprint(semantics);
+        const id = `rec-error-${fingerprint.slice(0, 24)}`;
         const record: NewStrategyRecommendation = {
           id,
           recommendationType: 'error_mitigation',
@@ -30,16 +36,31 @@ export class StrategyOptimizer {
           expectedImpact: `Reduce the measured ${pattern.targetRole} failure mode without adding blanket approval friction or retry cost (${pattern.description})`,
           confidence: pattern.confidence,
           status: 'pending',
+          fingerprint,
+          lifecycleKey: fingerprint,
+          affectedRole: semantics.affectedRole,
+          failureCategory: semantics.failureCategory,
+          proposedAction: semantics.proposedAction,
+          insightType: semantics.insightType,
+          evidence: pattern.evidence,
+          occurrences: 1,
+          firstObservedAt: now,
+          lastObservedAt: now,
           createdAt: now,
         };
 
-        const inserted = await db.insert(strategyRecommendations).values(record).onConflictDoNothing().returning({ id: strategyRecommendations.id });
+        const inserted = await this.upsertEvidence(record, now);
         createdCount += inserted.length;
       } else if (pattern.category === 'duration' && pattern.targetRole) {
-        const fingerprint = crypto.createHash('sha256')
-          .update(`duration:${pattern.targetRole}:${pattern.description}`)
-          .digest('hex').slice(0, 16);
-        const id = `rec-duration-${pattern.targetRole.toLowerCase()}-${fingerprint}`;
+        const semantics: StrategySemantics = {
+          recommendationType: 'tool_optimization',
+          affectedRole: pattern.targetRole,
+          failureCategory: 'latency_bottleneck',
+          proposedAction: 'remove_dominant_latency_source',
+          insightType: pattern.category,
+        };
+        const fingerprint = strategyFingerprint(semantics);
+        const id = `rec-duration-${fingerprint.slice(0, 24)}`;
         const record: NewStrategyRecommendation = {
           id,
           recommendationType: 'tool_optimization',
@@ -48,14 +69,45 @@ export class StrategyOptimizer {
           expectedImpact: `Reduce ${pattern.targetRole} completion latency without creating duplicated work, provider throttling, or a larger failure blast radius`,
           confidence: pattern.confidence,
           status: 'pending',
+          fingerprint,
+          lifecycleKey: fingerprint,
+          affectedRole: semantics.affectedRole,
+          failureCategory: semantics.failureCategory,
+          proposedAction: semantics.proposedAction,
+          insightType: semantics.insightType,
+          evidence: pattern.evidence,
+          occurrences: 1,
+          firstObservedAt: now,
+          lastObservedAt: now,
           createdAt: now,
         };
 
-        const inserted = await db.insert(strategyRecommendations).values(record).onConflictDoNothing().returning({ id: strategyRecommendations.id });
+        const inserted = await this.upsertEvidence(record, now);
         createdCount += inserted.length;
       }
     }
 
     return createdCount;
+  }
+
+  private async upsertEvidence(record: NewStrategyRecommendation, now: Date) {
+    return db
+      .insert(strategyRecommendations)
+      .values(record)
+      .onConflictDoUpdate({
+        target: strategyRecommendations.lifecycleKey,
+        targetWhere: sql`${strategyRecommendations.lifecycleKey} IS NOT NULL`,
+        set: {
+          evidence: record.evidence,
+          expectedImpact: record.expectedImpact,
+          confidence: record.confidence,
+          lastObservedAt: now,
+          occurrences: sql`${strategyRecommendations.occurrences} + 1`,
+        },
+      })
+      // Only a newly inserted pending row counts as a new recommendation. An
+      // approved/applied/rejected lifecycle merely receives fresher evidence.
+      .returning({ id: strategyRecommendations.id, inserted: sql<boolean>`xmax = 0` })
+      .then((rows) => rows.filter((row) => row.inserted));
   }
 }

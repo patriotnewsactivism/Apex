@@ -1482,17 +1482,19 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       name: 'get_strategy_recommendations',
       description: 'Get active strategy recommendations queue. All recommendations are advisory and await human review/approval.',
       schema: z.object({
-        status: z.string().optional().describe('Filter by status: pending | approved | rejected | applied'),
+        status: z.string().optional().describe('Filter by status: pending | approved | rejected | applied | superseded. Defaults to pending.'),
+        limit: z.number().int().min(1).max(100).optional().describe('Maximum rows (default 25, hard maximum 100).'),
       }),
       requiresApproval: false,
-      async execute({ status }) {
+      async execute({ status, limit }) {
         const { db, strategyRecommendations } = await import('@workspace/db');
         const { eq, desc } = await import('drizzle-orm');
 
         const query = db.select().from(strategyRecommendations);
-        const rows = status
-          ? await query.where(eq(strategyRecommendations.status, status)).orderBy(desc(strategyRecommendations.createdAt))
-          : await query.orderBy(desc(strategyRecommendations.createdAt));
+        const rows = await query
+          .where(eq(strategyRecommendations.status, status ?? 'pending'))
+          .orderBy(desc(strategyRecommendations.createdAt))
+          .limit(limit ?? 25);
 
         return rows;
       },
@@ -2139,4 +2141,3 @@ export function getSharedAlertManager(): AlertManager {
 }
 
 export { ToolRegistry };
-
