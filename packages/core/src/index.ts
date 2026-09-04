@@ -17,6 +17,7 @@ export { BaseAgent as InstrumentedBaseAgent, BaseAgent } from './instrumented-ba
 export * from './non-completion.js';
 export * from './token-ledger.js';
 export * from './runtime-health.js';
+export * from './agent-supervisor.js';
 export * from './provider-failure.js';
 export * from './opportunity-engine.js';
 

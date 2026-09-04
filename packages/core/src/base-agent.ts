@@ -8,6 +8,7 @@ import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
+import { recordAgentLoopStart, recordAgentLoopTick } from './runtime-health.js';
 import {
   getLLMCapacityResumeAt,
   isLLMDailyBudgetPause,
@@ -217,6 +218,10 @@ export abstract class BaseAgent {
    * behavior exactly; roles that receive swarms set a higher concurrency. */
   async start(): Promise<void> {
     this.running = true;
+    // Register liveness before anything that can throw, so an agent that dies
+    // during pre-loop setup shows up as stalled rather than as a silent
+    // no-show that /health still counts as one of the 13.
+    recordAgentLoopStart(this.config.id);
 
     // Startup stampede guard — added 2026-08-06 after confirming the LLM
     // circuit breaker (llm-client.ts) is fully reactive: it only spreads
@@ -249,6 +254,9 @@ export abstract class BaseAgent {
     const inFlight = new Map<string, Promise<unknown>>();
 
     while (this.running) {
+      // Proof of life for /health and the supervisor: this is the only place
+      // that can report the loop is genuinely still cycling.
+      recordAgentLoopTick(this.config.id);
       try {
         // Top up in-flight work up to the concurrency limit — but never while
         // the workspace is out of LLM capacity, since every task claimed then

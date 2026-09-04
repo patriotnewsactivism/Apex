@@ -279,7 +279,7 @@ Production CI currently includes:
 - durable-autonomy/task-claim guard;
 - approval-state-integrity guard;
 - hard-timeout quarantine guard;
-- durable-worker-runtime guard;
+- durable-worker-runtime guard (includes agent-loop supervision/liveness checks);
 - OpenRouter model-routing-policy guard;
 - evidence-driven model-intelligence guard;
 - dashboard build.
