@@ -549,6 +549,22 @@ await recoverStaleLeasedTasks();
         pausedProviders,
         nextResumeAt,
       },
+      // Cloud Run kills and restarts a container that exceeds its memory
+      // limit, which looks identical from outside to a crash: same revision,
+      // uptime back to zero, no error anywhere. Reporting the numbers here is
+      // what makes the difference visible — RSS that plateaus means the box is
+      // simply sized too small, RSS that climbs forever means a leak.
+      memory: (() => {
+        const usage = process.memoryUsage();
+        const mb = (bytes: number) => Math.round((bytes / 1048576) * 10) / 10;
+        return {
+          rssMb: mb(usage.rss),
+          heapUsedMb: mb(usage.heapUsed),
+          heapTotalMb: mb(usage.heapTotal),
+          externalMb: mb(usage.external),
+          wsClients: getConnectedClientCount(),
+        };
+      })(),
       timestamp: Date.now(),
     });
   });
