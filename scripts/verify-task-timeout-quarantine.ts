@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { checkTaskOwnershipTransitions } from './verify-task-ownership-transitions.js';
 
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const queue = fs.readFileSync(path.join(root, 'packages/core/src/task-queue.ts'), 'utf8');
@@ -35,9 +36,16 @@ check('late failure does not overwrite independently terminalized task',
   queue.includes("new Set(['done', 'failed', 'cancelled'])") &&
   queue.includes('TERMINAL_TASK_STATUSES.has(task.status)'));
 
-if (failures > 0) {
-  console.error(`\n❌ Timeout quarantine guard failed: ${failures} invariant(s) missing`);
-  process.exit(1);
-}
+// The quarantine only holds if the other lifecycle transitions cannot undo it.
+// (Wrapped in a promise chain rather than top-level await: this script is
+// transformed to CJS, which does not support top-level await.)
+void checkTaskOwnershipTransitions().then((ownershipFailures) => {
+  failures += ownershipFailures;
 
-console.log('\n✅ Timeout quarantine source invariants verified');
+  if (failures > 0) {
+    console.error(`\n❌ Timeout quarantine guard failed: ${failures} invariant(s) missing`);
+    process.exit(1);
+  }
+
+  console.log('\n✅ Timeout quarantine source invariants verified');
+});

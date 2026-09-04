@@ -271,17 +271,18 @@ Production CI currently includes:
 - provider routing guard;
 - provider backpressure guard;
 - budget-pause guard;
-- Cloud Run deploy-provenance guard;
+- Cloud Run deploy-provenance guard (includes the retired-hosting-instructions check);
 - malformed-tool-call guard;
 - non-completion guard;
 - branch/review guard;
 - opportunity-engine guard;
 - durable-autonomy/task-claim guard;
 - approval-state-integrity guard;
-- hard-timeout quarantine guard;
-- durable-worker-runtime guard (includes agent-loop supervision/liveness checks);
+- hard-timeout quarantine guard (includes the task-ownership-transition behaviour checks);
+- durable-worker-runtime guard;
 - OpenRouter model-routing-policy guard;
 - evidence-driven model-intelligence guard;
+- retired-hosting-instructions guard;
 - dashboard build.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
