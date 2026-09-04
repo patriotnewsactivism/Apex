@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../lib/api.js';
 import type { LearningInsightRow, StrategyRecommendationRow } from '../lib/api.js';
@@ -20,6 +21,10 @@ import {
 
 export function LearningPanel() {
   const queryClient = useQueryClient();
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyStatus, setHistoryStatus] = useState('approved,applied,rejected,superseded');
+  const [historySearch, setHistorySearch] = useState('');
+  const [cleanupPreview, setCleanupPreview] = useState<Awaited<ReturnType<typeof api.learning.cleanupRecommendations>> | null>(null);
 
   const { data: outcomes = [], isLoading: isLoadingOutcomes } = useQuery({
     queryKey: ['learning-outcomes'],
@@ -33,10 +38,17 @@ export function LearningPanel() {
     refetchInterval: 15_000,
   });
 
-  const { data: recommendations = [] } = useQuery({
-    queryKey: ['learning-recommendations'],
-    queryFn: () => api.learning.recommendations(),
+  const { data: recommendationPage } = useQuery({
+    queryKey: ['learning-recommendations', 'pending'],
+    queryFn: () => api.learning.recommendations({ status: 'pending', pageSize: 100 }),
     refetchInterval: 15_000,
+  });
+  const recommendations = recommendationPage?.items ?? [];
+
+  const { data: historyPageData } = useQuery({
+    queryKey: ['learning-recommendations-history', historyPage, historyStatus, historySearch],
+    queryFn: () => api.learning.recommendations({ status: historyStatus, page: historyPage, pageSize: 25, search: historySearch }),
+    refetchInterval: 30_000,
   });
 
   const analyzeMutation = useMutation({
@@ -60,6 +72,15 @@ export function LearningPanel() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['learning-recommendations'] });
       queryClient.invalidateQueries({ queryKey: ['agents'] });
+    },
+  });
+
+  const cleanupMutation = useMutation({
+    mutationFn: (execute: boolean) => api.learning.cleanupRecommendations(execute),
+    onSuccess: (summary) => {
+      setCleanupPreview(summary);
+      queryClient.invalidateQueries({ queryKey: ['learning-recommendations'] });
+      queryClient.invalidateQueries({ queryKey: ['learning-recommendations-history'] });
     },
   });
 
@@ -172,7 +193,7 @@ export function LearningPanel() {
             <Zap size={14} color="#a855f7" /> Strategy Queue
           </div>
           <div style={{ fontSize: 28, fontWeight: 700, color: '#f8fafc', marginTop: 8 }}>
-            {recommendations.filter((r) => r.status === 'pending').length}
+            {recommendationPage?.pagination.total ?? 0}
           </div>
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
             Pending human approval
@@ -314,34 +335,51 @@ export function LearningPanel() {
                       </button>
                     </div>
                   )}
-                  {rec.status === 'approved' && (
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button
-                        onClick={() => applyMutation.mutate(rec.id)}
-                        style={{
-                          padding: '6px 12px',
-                          borderRadius: 6,
-                          background: 'rgba(168,85,247,0.2)',
-                          border: '1px solid rgba(168,85,247,0.4)',
-                          color: '#a855f7',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
-                      >
-                        <Rocket size={14} /> Apply Now
-                      </button>
-                    </div>
-                  )}
+                  {rec.duplicateCount > 0 && <div style={{ fontSize: 11, color: '#64748b' }}>{rec.duplicateCount} duplicate audit record(s)</div>}
                 </motion.div>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      <section style={{ marginTop: 28 }}>
+        <div className="apex-toolbar" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+          <h3 style={{ margin: 0, fontSize: 15, color: '#cbd5e1' }}>Strategy History</h3>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <select className="apex-input" value={historyStatus} onChange={(event) => { setHistoryStatus(event.target.value); setHistoryPage(1); }}>
+              <option value="approved,applied,rejected,superseded">All history</option>
+              <option value="approved">Approved</option><option value="applied">Applied</option>
+              <option value="rejected">Rejected</option><option value="superseded">Superseded</option>
+            </select>
+            <input className="apex-input" value={historySearch} onChange={(event) => { setHistorySearch(event.target.value); setHistoryPage(1); }} placeholder="Filter history" />
+            <button className="apex-button" onClick={() => cleanupMutation.mutate(false)} disabled={cleanupMutation.isPending}>Clean duplicate queue</button>
+          </div>
+        </div>
+        {cleanupPreview && (
+          <div className="glass-card" style={{ padding: 14, marginBottom: 12, color: '#cbd5e1', fontSize: 12 }}>
+            Examined {cleanupPreview.totalRowsExamined}; {cleanupPreview.semanticGroupsFound} groups; pending {cleanupPreview.pendingCountBefore} → {cleanupPreview.pendingCountAfter}; {cleanupPreview.unsafeConcurrencyItemsRejected} unsafe concurrency item(s).
+            {cleanupPreview.dryRun && (
+              <button className="apex-button" style={{ marginLeft: 12 }} onClick={() => { if (window.confirm('Supersede the duplicate queue records shown in this dry run? Audit rows will be preserved.')) cleanupMutation.mutate(true); }}>Confirm cleanup</button>
+            )}
+          </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {(historyPageData?.items ?? []).map((rec) => (
+            <div key={rec.id} className="glass-card" style={{ padding: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}><strong>{rec.title}</strong><span>{rec.status.toUpperCase()}</span></div>
+              <div style={{ fontSize: 12, color: '#94a3b8' }}>{rec.expectedImpact}</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>{rec.duplicateCount} duplicate/superseded record(s) · observed {rec.occurrences} time(s)</div>
+              {rec.status === 'approved' && <button className="apex-button" onClick={() => applyMutation.mutate(rec.id)}><Rocket size={14} /> Apply</button>}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 12 }}>
+          <button className="apex-button" disabled={historyPage <= 1} onClick={() => setHistoryPage((page) => page - 1)}>Previous</button>
+          <span style={{ color: '#94a3b8', padding: 8 }}>Page {historyPage} of {historyPageData?.pagination.totalPages || 1}</span>
+          <button className="apex-button" disabled={historyPage >= (historyPageData?.pagination.totalPages || 1)} onClick={() => setHistoryPage((page) => page + 1)}>Next</button>
+        </div>
+      </section>
     </div>
   );
 }

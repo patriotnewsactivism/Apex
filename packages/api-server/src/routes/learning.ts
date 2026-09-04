@@ -5,10 +5,9 @@ import {
   learningInsights,
   strategyRecommendations,
   performanceBaselines,
-  agents,
 } from '@workspace/db';
-import { PatternDetector, InsightGenerator, StrategyOptimizer } from '@workspace/learning-system';
-import { eq, desc, gte, ilike } from 'drizzle-orm';
+import { PatternDetector, InsightGenerator, StrategyOptimizer, cleanupDuplicateStrategies } from '@workspace/learning-system';
+import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import type { BaseAgent } from '@workspace/core';
 
 // ─── Learning API Routes ───────────────────────────────────────────────────────
@@ -78,12 +77,48 @@ export function createLearningRouter(workforce?: Map<string, BaseAgent>): Router
   // GET /api/learning/recommendations — list strategy recommendations
   router.get('/recommendations', async (req, res) => {
     try {
-      const status = req.query.status as string | undefined;
-      const baseQuery = db.select().from(strategyRecommendations);
-      const rows = status
-        ? await baseQuery.where(eq(strategyRecommendations.status, status)).orderBy(desc(strategyRecommendations.createdAt))
-        : await baseQuery.orderBy(desc(strategyRecommendations.createdAt));
-      res.json(rows);
+      const allowedStatuses = ['pending', 'approved', 'applied', 'rejected', 'superseded'];
+      const requestedStatuses = String(req.query.status ?? 'pending').split(',').filter((status) => allowedStatuses.includes(status));
+      const statuses = requestedStatuses.length > 0 ? requestedStatuses : ['pending'];
+      const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
+      const pageSize = Math.min(100, Math.max(1, Number.parseInt(String(req.query.pageSize ?? '25'), 10) || 25));
+      const search = String(req.query.search ?? '').trim().slice(0, 100);
+      const recommendationType = String(req.query.type ?? '').trim().slice(0, 64);
+      const filters = [inArray(strategyRecommendations.status, statuses)];
+      if (recommendationType) filters.push(eq(strategyRecommendations.recommendationType, recommendationType));
+      if (search) filters.push(or(ilike(strategyRecommendations.title, `%${search}%`), ilike(strategyRecommendations.text, `%${search}%`))!);
+      const where = and(...filters);
+
+      const [items, totals] = await Promise.all([
+        db.select({
+          recommendation: strategyRecommendations,
+          duplicateCount: sql<number>`CASE WHEN ${strategyRecommendations.fingerprint} IS NULL THEN 0 ELSE GREATEST((
+            SELECT count(*) - 1 FROM strategy_recommendations duplicate
+            WHERE duplicate.fingerprint = ${strategyRecommendations.fingerprint}
+          ), 0) END`,
+        }).from(strategyRecommendations).where(where).orderBy(desc(strategyRecommendations.createdAt)).limit(pageSize).offset((page - 1) * pageSize),
+        db.select({ value: count() }).from(strategyRecommendations).where(where),
+      ]);
+      const total = Number(totals[0]?.value ?? 0);
+      res.json({
+        items: items.map(({ recommendation, duplicateCount }) => ({ ...recommendation, duplicateCount: Number(duplicateCount) })),
+        pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/recommendations/cleanup', async (req, res) => {
+    try {
+      const execute = req.body?.execute === true;
+      if (execute && req.body?.confirm !== 'CLEAN_DUPLICATE_STRATEGIES') {
+        res.status(400).json({ error: 'Execute mode requires explicit confirmation' });
+        return;
+      }
+      const summary = await cleanupDuplicateStrategies(!execute);
+      console.log('[strategy-cleanup]', JSON.stringify(summary));
+      res.json(summary);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -127,45 +162,16 @@ export function createLearningRouter(workforce?: Map<string, BaseAgent>): Router
         res.status(404).json({ error: 'Recommendation not found' });
         return;
       }
-      if (rec.status === 'rejected') {
-        res.status(400).json({ error: 'Cannot apply a rejected recommendation' });
+      if (rec.status !== 'approved') {
+        res.status(400).json({ error: `Recommendation must be approved before apply (current status: ${rec.status})` });
         return;
       }
 
-      const applied: Record<string, unknown> = {};
-
-      if (rec.recommendationType === 'tool_optimization') {
-        // Title format: "Optimize task concurrency for role <ROLE>"
-        // Find agents matching that role and bump concurrency
-        const roleMatch = rec.title.match(/role\s+(\S+)/i);
-        const role = roleMatch?.[1];
-        if (role) {
-          const matching = await db.select().from(agents).where(ilike(agents.role, role));
-          for (const a of matching) {
-            const currentMeta = (a.metadata as Record<string, unknown> | null) ?? {};
-            const currentConcurrency = (currentMeta.concurrency as number) ??
-              workforce?.get(a.id)?.currentConcurrency ?? 1;
-            const newConcurrency = Math.min(currentConcurrency + 1, 10);
-
-            const newMeta = { ...currentMeta, concurrency: newConcurrency };
-            await db.update(agents).set({ metadata: newMeta }).where(eq(agents.id, a.id));
-
-            const live = workforce?.get(a.id);
-            if (live) {
-              live.reconfigure({ concurrency: newConcurrency });
-            }
-            applied[a.id] = { role: a.role, concurrency: currentConcurrency + '→' + newConcurrency };
-          }
-        }
+      if (rec.proposedAction === 'increase_task_concurrency' || /concurrenc/i.test(`${rec.title} ${rec.text}`)) {
+        res.status(409).json({ error: 'Concurrency increases are blocked while failure and rate-limit evidence is elevated' });
+        return;
       }
-
-      // Mark as applied
-      await db
-        .update(strategyRecommendations)
-        .set({ status: 'applied', reviewedAt: new Date() })
-        .where(eq(strategyRecommendations.id, req.params.id));
-
-      res.json({ success: true, id: req.params.id, status: 'applied', changes: applied });
+      res.status(422).json({ error: 'This strategy requires a separately reviewed implementation before it can be marked applied' });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }

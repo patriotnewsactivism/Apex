@@ -181,12 +181,24 @@ export const api = {
   learning: {
     outcomes: (role?: string) => apiFetch<TaskOutcomeRow[]>(`/learning/outcomes${role ? `?role=${role}` : ''}`),
     insights: () => apiFetch<LearningInsightRow[]>('/learning/insights'),
-    recommendations: (status?: string) => apiFetch<StrategyRecommendationRow[]>(`/learning/recommendations${status ? `?status=${status}` : ''}`),
+    recommendations: (params?: { status?: string; page?: number; pageSize?: number; search?: string; type?: string }) => {
+      const query = new URLSearchParams();
+      if (params?.status) query.set('status', params.status);
+      if (params?.page) query.set('page', String(params.page));
+      if (params?.pageSize) query.set('pageSize', String(params.pageSize));
+      if (params?.search) query.set('search', params.search);
+      if (params?.type) query.set('type', params.type);
+      return apiFetch<PaginatedStrategyRecommendations>(`/learning/recommendations?${query.toString()}`);
+    },
     respondRecommendation: (id: string, action: 'approve' | 'reject') =>
       apiFetch(`/learning/recommendations/${id}/respond`, { method: 'POST', body: JSON.stringify({ action }) }),
     applyRecommendation: (id: string) =>
       apiFetch<{ success: boolean; status: string; changes: Record<string, unknown> }>(`/learning/recommendations/${id}/apply`, { method: 'POST' }),
     analyze: () => apiFetch<{ success: boolean; patternsCreated: number }>('/learning/analyze', { method: 'POST' }),
+    cleanupRecommendations: (execute: boolean) => apiFetch<StrategyCleanupSummary>('/learning/recommendations/cleanup', {
+      method: 'POST',
+      body: JSON.stringify({ execute, confirm: execute ? 'CLEAN_DUPLICATE_STRATEGIES' : undefined }),
+    }),
     baselines: () => apiFetch<PerformanceBaselineRow[]>('/learning/baselines'),
   },
 
@@ -493,10 +505,32 @@ export interface StrategyRecommendationRow {
   text: string;
   expectedImpact: string;
   confidence: number;
-  status: 'pending' | 'approved' | 'rejected' | 'applied';
+  status: 'pending' | 'approved' | 'rejected' | 'applied' | 'superseded';
   reviewedAt: string | null;
   reviewerNote: string | null;
   createdAt: string;
+  fingerprint: string | null;
+  occurrences: number;
+  lastObservedAt: string;
+  supersededById: string | null;
+  duplicateCount: number;
+}
+
+export interface PaginatedStrategyRecommendations {
+  items: StrategyRecommendationRow[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+}
+
+export interface StrategyCleanupSummary {
+  dryRun: boolean;
+  totalRowsExamined: number;
+  semanticGroupsFound: number;
+  canonicalRecordsRetained: number;
+  pendingDuplicatesSuperseded: number;
+  unsafeConcurrencyItemsRejected: number;
+  pendingCountBefore: number;
+  pendingCountAfter: number;
+  uniquePendingForReview: Array<{ id: string; title: string; fingerprint: string }>;
 }
 
 export interface PerformanceBaselineRow {
@@ -662,5 +696,4 @@ export interface SuggestionsResponse {
     }>;
   };
 }
-
 

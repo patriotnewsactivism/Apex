@@ -1,5 +1,5 @@
-import { WebSocketServer, WebSocket } from 'ws';
-import { consumeWebSocketTicket } from './websocket-auth.js';
+import { WebSocket } from 'ws';
+import { registerWebSocketRoute } from './websocket-upgrade.js';
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import type { ApexCEO } from '@workspace/agents';
@@ -67,15 +67,7 @@ function toGeminiTools(tools: LLMTool[]) {
 const GEMINI_TOOLS = toGeminiTools(CHAT_TOOLS);
 
 export function setupLiveVoice(server: Server, ceo: ApexCEO) {
-  const wss = new WebSocketServer({ server, path: '/ws/voice-live' });
-
-  wss.on('connection', async (client: WebSocket, req: IncomingMessage) => {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    if (!consumeWebSocketTicket(url.searchParams.get('ticket'))) {
-      client.close(1008, 'Invalid or expired ticket');
-      return;
-    }
-
+  const wss = registerWebSocketRoute(server, '/ws/voice-live', async (client: WebSocket, _req: IncomingMessage) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       client.send(JSON.stringify({ type: 'error', message: 'GEMINI_API_KEY is not configured on this deployment.' }));
