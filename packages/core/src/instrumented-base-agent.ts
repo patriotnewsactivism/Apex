@@ -311,7 +311,7 @@ export class BaseAgent extends CoreBaseAgent {
     if (resolved) {
       const consumed = await this.consumeDecision(resolved.id, resolved.status);
       if (consumed) {
-        await this.taskQueue.markInProgress(taskId);
+        await this.requireTaskOwnershipAfterApproval(taskId);
         return resolved.status === 'approved';
       }
     }
@@ -349,7 +349,7 @@ export class BaseAgent extends CoreBaseAgent {
       }
       const consumed = await this.consumeDecision(approvalId, row.status);
       if (!consumed) continue;
-      await this.taskQueue.markInProgress(taskId);
+      await this.requireTaskOwnershipAfterApproval(taskId);
       return row.status === 'approved';
     }
 
@@ -376,14 +376,14 @@ export class BaseAgent extends CoreBaseAgent {
       if (finalRow && isApprovalDecision(finalRow.status) && approvalPayloadsEqual(finalRow.toolArgs, normalizedArgs)) {
         const consumed = await this.consumeDecision(approvalId, finalRow.status);
         if (consumed) {
-          await this.taskQueue.markInProgress(taskId);
+          await this.requireTaskOwnershipAfterApproval(taskId);
           return finalRow.status === 'approved';
         }
       }
       throw new Error(`Approval ${approvalId} changed state at timeout and could not be consumed safely`);
     }
 
-    await this.taskQueue.markInProgress(taskId);
+    await this.requireTaskOwnershipAfterApproval(taskId);
     return false;
   }
 

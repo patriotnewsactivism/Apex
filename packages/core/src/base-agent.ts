@@ -922,11 +922,11 @@ export abstract class BaseAgent {
       await new Promise((r) => setTimeout(r, 1000));
       const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId)).limit(1);
       if (row?.status === 'approved') {
-        await this.taskQueue.markInProgress(taskId);
+        await this.requireTaskOwnershipAfterApproval(taskId);
         return true;
       }
       if (row?.status === 'rejected') {
-        await this.taskQueue.markInProgress(taskId);
+        await this.requireTaskOwnershipAfterApproval(taskId);
         return false;
       }
     }
@@ -941,8 +941,27 @@ export abstract class BaseAgent {
     // so the agent's own loop sees the rejection and can react (retry,
     // report back, try a different approach) instead of the run just dying.
     await db.update(approvals).set({ status: 'rejected' }).where(eq(approvals.id, approvalId));
-    await this.taskQueue.markInProgress(taskId);
+    await this.requireTaskOwnershipAfterApproval(taskId);
     return false; // Timeout = reject
+  }
+
+  /**
+   * Re-take ownership of a task after an approval decision.
+   *
+   * TaskQueue.markInProgress refuses to revive a task that was cancelled,
+   * terminalized, or hard-timeout quarantined while the approval was pending.
+   * When that happens the approval decision is stale authority: the work it
+   * authorized belongs to an execution that no longer owns the task, and
+   * running the approved tool anyway would produce a duplicate or withdrawn
+   * side effect. Abort loudly instead.
+   */
+  protected async requireTaskOwnershipAfterApproval(taskId: string): Promise<void> {
+    const owned = await this.taskQueue.markInProgress(taskId);
+    if (owned) return;
+    throw new Error(
+      `Task ${taskId} is no longer owned by this execution after the approval decision ` +
+        `(cancelled, terminalized, or timeout-quarantined); refusing to continue approved work`,
+    );
   }
 
   // ── Memory shortcuts ───────────────────────────────────────────────────────
