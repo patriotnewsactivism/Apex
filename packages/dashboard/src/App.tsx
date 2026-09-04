@@ -657,6 +657,10 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
       <main
         style={{
           flex: 1,
+          // Without an explicit min-width a flex item defaults to min-width:auto,
+          // so wide chat content pushes <main> past the viewport on mobile.
+          minWidth: 0,
+          maxWidth: '100%',
           overflow: 'auto',
           paddingBottom: isMobile ? 72 : 0,
         }}

@@ -98,6 +98,9 @@ async function main() {
 
   console.log('✅ WEBSOCKET LIFECYCLE GUARDS PASSED');
 
+  // Chained: the CI workflow file is not writable by the agent app, so new
+  // guards attach to an existing guard entry point instead.
+  await import('./verify-mobile-chat-surface.js');
 }
 
 main().catch((err) => {
