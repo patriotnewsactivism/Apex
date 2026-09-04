@@ -79,11 +79,23 @@ export async function checkAgentLoopSupervision(): Promise<number> {
   );
 
   recordAgentLoopCrash('cto', new Error('boom'));
-  recordAgentLoopRestart('cto');
   live = getWorkforceLiveness();
   check(
-    'a restart is counted and clears the stall',
-    live.totalRestarts === 1 && live.alive === 2 && live.stalled.length === 0,
+    'a crashed loop is reported restarting, never alive, during its backoff',
+    live.alive === 1 && live.restarting.length === 1 && live.restarting[0]?.agentId === 'cto',
+    live,
+  );
+  recordAgentLoopRestart('cto');
+  check(
+    'a restart attempt alone does not make the loop alive again',
+    getWorkforceLiveness().alive === 1,
+    getWorkforceLiveness(),
+  );
+  recordAgentLoopStart('cto');
+  live = getWorkforceLiveness();
+  check(
+    'the loop counts alive only once it actually re-enters',
+    live.totalRestarts === 1 && live.alive === 2 && live.restarting.length === 0 && live.stalled.length === 0,
     live,
   );
   recordAgentLoopAbandoned('cto');
@@ -187,6 +199,11 @@ export async function checkAgentLoopSupervision(): Promise<number> {
   const server = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
   const workerRuntime = fs.readFileSync(path.join(root, 'packages/api-server/src/worker.ts'), 'utf8');
   const agent = fs.readFileSync(path.join(root, 'packages/core/src/base-agent.ts'), 'utf8');
+
+  check(
+    'the best-effort agent status mirror cannot become an unhandled rejection',
+    agent.includes('status mirror write failed'),
+  );
 
   check(
     'the HTTP control plane supervises its agents instead of fire-and-forget',

@@ -11,18 +11,34 @@ import {
 //   api-server/src/index.ts : agent.start().catch((err) => console.error(...))
 //   api-server/src/worker.ts: agent.start().catch((err) => { log; throw err; })
 //
-// The polling loop body catches its own errors, but the pre-loop setup
-// (`logger.info`, `setStatus` — both DB-backed) can reject on a boot-time
-// database blip. When it did, that agent never polled again, nothing restarted
-// it, and `/health` still reported `agents: 13` because that number is the size
-// of the constructed workforce map, not a liveness measurement. The workforce
-// silently shrinks and the service still answers `status: ok`.
+// In both cases a rejected start() was logged once and the agent then never
+// polled again. Nothing restarted it, and `/health` still reported
+// `agents: 13` because that number is the size of the constructed workforce
+// map, not a liveness measurement. The workforce silently shrinks while the
+// service keeps answering `status: ok`.
 //
-// This supervisor restarts a crashed loop with bounded, jittered exponential
-// backoff. Bounded on purpose: an agent that crashes instantly and forever must
-// not become an infinite restart loop burning DB/LLM capacity. After
-// `maxRestarts` the supervisor stops and records the agent as abandoned, which
-// `/health.workforce.abandoned` surfaces for an operator.
+// Honest scope note (raised in review, and correct): today's known DB-blip
+// paths do NOT reject start(). AgentLogger.log() swallows its own insert
+// error, and setStatus() fires its update without awaiting it (that unhandled
+// rejection is fixed separately in base-agent.ts). So this supervisor is not
+// primarily a fix for one reproduced crash — it closes the structural hole
+// that any future rejection out of start(), or any refactor that makes those
+// paths awaited, would fall straight through. The paired heartbeat/liveness
+// reporting in runtime-health.ts is what covers the other half: a loop that is
+// wedged rather than crashed.
+//
+// Restarts use bounded, jittered exponential backoff. Bounded on purpose: an
+// agent that crashes instantly and forever must not become an infinite restart
+// loop burning DB/LLM capacity. After `maxRestarts` the supervisor stops and
+// records the agent as abandoned, which `/health.workforce.abandoned` surfaces
+// for an operator.
+//
+// KNOWN LIMITATION (also raised in review): the liveness registry is
+// process-local. When the dedicated `start:worker` runtime is used, the API
+// process serving `/health` cannot see the worker's loops, and the worker has
+// no health endpoint of its own. Cross-process liveness needs a durable or
+// aggregated channel and is deliberately out of scope here; the worker logs
+// supervisor events through its own onEvent hook in the meantime.
 
 export interface SupervisableAgent {
   id: string;

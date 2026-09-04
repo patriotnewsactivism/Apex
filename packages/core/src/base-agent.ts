@@ -986,10 +986,21 @@ export abstract class BaseAgent {
 
   protected setStatus(status: AgentStatus, message?: string) {
     this.status = status;
+    // Best-effort status mirror. `.then(() => {})` alone left the rejection
+    // path unhandled, so a DB blip here surfaced as an unhandled promise
+    // rejection rather than anything actionable. Status display is not worth
+    // destabilising the process; log and carry on.
     db.update(agents)
       .set({ status, lastActiveAt: new Date() })
       .where(eq(agents.id, this.config.id))
-      .then(() => {});
+      .then(
+        () => {},
+        (err: unknown) => {
+          console.warn(
+            `[agent ${this.config.id}] status mirror write failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      );
     emitApexEvent({ type: 'agent:status', agentId: this.config.id, status, message });
   }
 

@@ -133,6 +133,10 @@ interface AgentLoopState {
   lastCrashMessage: string | null;
   lastCrashAt: string | null;
   supervisorGaveUp: boolean;
+  /** True between a crash and the next successful loop entry. No loop exists
+   *  during this window, so the agent must not be counted alive merely because
+   *  its last tick is recent. */
+  down: boolean;
 }
 
 const agentLoops = new Map<string, AgentLoopState>();
@@ -147,6 +151,7 @@ function loopState(agentId: string): AgentLoopState {
       lastCrashMessage: null,
       lastCrashAt: null,
       supervisorGaveUp: false,
+      down: false,
     };
     agentLoops.set(agentId, entry);
   }
@@ -162,14 +167,18 @@ export function recordAgentLoopStart(agentId: string): void {
   const entry = loopState(agentId);
   entry.startedAt = Date.now();
   entry.lastTickAt = Date.now();
+  entry.down = false;
 }
 
 export function recordAgentLoopCrash(agentId: string, err: unknown): void {
   const entry = loopState(agentId);
   entry.lastCrashMessage = deepestMessage(err);
   entry.lastCrashAt = new Date().toISOString();
+  entry.down = true;
 }
 
+/** A restart has been *attempted*. The agent stays `down` until its loop
+ *  actually enters again via recordAgentLoopStart. */
 export function recordAgentLoopRestart(agentId: string): void {
   const entry = loopState(agentId);
   entry.restarts += 1;
@@ -190,11 +199,15 @@ export interface WorkforceLivenessEntry {
   lastCrashAt: string | null;
   lastCrashMessage: string | null;
   abandoned: boolean;
+  /** Crashed and not yet back in its loop (waiting out restart backoff). */
+  down: boolean;
 }
 
 export interface WorkforceLiveness {
   supervised: number;
   alive: number;
+  /** Crashed loops inside their restart backoff window. Not alive. */
+  restarting: WorkforceLivenessEntry[];
   stalled: WorkforceLivenessEntry[];
   abandoned: WorkforceLivenessEntry[];
   totalRestarts: number;
@@ -204,6 +217,7 @@ export function getWorkforceLiveness(): WorkforceLiveness {
   const now = Date.now();
   const stalled: WorkforceLivenessEntry[] = [];
   const abandoned: WorkforceLivenessEntry[] = [];
+  const restarting: WorkforceLivenessEntry[] = [];
   let alive = 0;
   let totalRestarts = 0;
 
@@ -217,9 +231,16 @@ export function getWorkforceLiveness(): WorkforceLiveness {
       lastCrashAt: entry.lastCrashAt,
       lastCrashMessage: entry.lastCrashMessage,
       abandoned: entry.supervisorGaveUp,
+      down: entry.down,
     };
     if (entry.supervisorGaveUp) {
       abandoned.push(record);
+      continue;
+    }
+    // A crashed loop has no loop. Counting it alive for the whole backoff
+    // window (up to 5 min) would hide exactly what this view exists to show.
+    if (entry.down) {
+      restarting.push(record);
       continue;
     }
     if (now - entry.lastTickAt > AGENT_STALL_THRESHOLD_MS) {
@@ -229,7 +250,7 @@ export function getWorkforceLiveness(): WorkforceLiveness {
     alive += 1;
   }
 
-  return { supervised: agentLoops.size, alive, stalled, abandoned, totalRestarts };
+  return { supervised: agentLoops.size, alive, restarting, stalled, abandoned, totalRestarts };
 }
 
 /** Test-only reset. */
@@ -239,6 +260,6 @@ export function resetWorkforceLiveness(): void {
 
 /** Test-only: lets the deterministic guard simulate elapsed silence without
  *  actually waiting out AGENT_STALL_THRESHOLD_MS. Not used at runtime. */
-export function __getAgentLoopsForTest(): Map<string, { lastTickAt: number }> {
+export function __getAgentLoopsForTest(): Map<string, { lastTickAt: number; down: boolean }> {
   return agentLoops;
 }
