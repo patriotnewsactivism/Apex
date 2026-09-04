@@ -16,7 +16,7 @@ import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
-import { getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger } from '@workspace/core';
+import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger } from '@workspace/core';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
 import { createGoalsRouter } from './routes/goals.js';
@@ -503,6 +503,7 @@ await recoverStaleLeasedTasks();
       return counts;
     }, {});
     const tokenLedger = getTokenLedgerSnapshot();
+    const workforceParkedMs = capacityPauseRemainingMs();
     const providerBackpressure = getProviderBackpressureSnapshot();
     const pausedProviders = [...new Set([
       ...tokenLedger.providers
@@ -548,6 +549,11 @@ await recoverStaleLeasedTasks();
         pacingEnabled: tokenLedger.pacing.enabled,
         pausedProviders,
         nextResumeAt,
+        // A parked workforce and an idle one both show 13 idle agents. This
+        // is the only way to tell them apart from outside the process.
+        workforceParkedUntil: workforceParkedMs > 0
+          ? new Date(Date.now() + workforceParkedMs).toISOString()
+          : null,
       },
       // Cloud Run kills and restarts a container that exceeds its memory
       // limit, which looks identical from outside to a crash: same revision,

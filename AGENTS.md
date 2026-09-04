@@ -269,7 +269,7 @@ Production CI currently includes:
 - frozen pnpm install;
 - production TypeScript checks;
 - provider routing guard;
-- provider backpressure guard;
+- provider backpressure guard (includes the LLM capacity-latch release checks);
 - budget-pause guard;
 - Cloud Run deploy-provenance guard (includes the retired-hosting-instructions check);
 - malformed-tool-call guard;

@@ -8,6 +8,7 @@ import type {
   LLMToolCall,
 } from './types.js';
 import {
+  getTokenLedgerSnapshot,
   isTotalDailyCapReached,
   msUntilDailyReset,
   recordTokenUsage,
@@ -417,6 +418,49 @@ export function getProviderBackpressureSnapshot(): {
     pausedProviders: paused.map((entry) => entry.provider),
     nextResumeAt: next === null ? null : new Date(next).toISOString(),
   };
+}
+
+/** Cheap, in-memory answer to "could ANY configured provider take a request
+ *  right now?".
+ *
+ *  Exists because the agent loop's capacity pause is a latch: it records a
+ *  resume-at timestamp and sleeps until it passes. A per-provider pacing window
+ *  can carry a resume-at up to ~24h away (the next UTC rollover), so a single
+ *  paced provider could park the entire workforce for the rest of the day even
+ *  after capacity actually came back -- an operator raising a cap, a cooldown
+ *  expiring, or the ledger rolling over never lowered the latch. This lets the
+ *  loop re-check reality instead of trusting a stale timestamp.
+ *
+ *  Deliberately does NOT reserve anything: it must be safe to call every poll
+ *  cycle from all 13 agents. A true answer means "worth attempting", not a
+ *  guarantee -- the real reservation still happens inside complete().
+ */
+export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
+  // A hard total cap is genuinely workspace-wide; nothing to re-probe.
+  if (isTotalDailyCapReached()) return false;
+
+  const ledger = getTokenLedgerSnapshot();
+  if (!ledger.pacing.total.allowed) return false;
+
+  const pacingByProvider = new Map(
+    ledger.providers.map((entry) => [entry.provider, entry]),
+  );
+
+  for (const provider of PROVIDERS) {
+    if (!providerConfigured(provider)) continue;
+    if (providerActivationIssue(provider)) continue;
+    if (!providerBaseURL(provider)) continue;
+    if (configuredCredentials(provider).length === 0) continue;
+
+    const readyAt = providerCooldowns.get(provider.name) ?? 0;
+    if (readyAt > now) continue;
+
+    const entry = pacingByProvider.get(provider.name);
+    if (entry && (entry.capReached || !entry.pacing.allowed)) continue;
+
+    return true;
+  }
+  return false;
 }
 
 function providerBaseURL(provider: ProviderSpec): string | undefined {
