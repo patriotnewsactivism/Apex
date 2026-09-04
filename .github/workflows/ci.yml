@@ -51,6 +51,7 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-model-intelligence.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-websocket-auth.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-websocket-lifecycle.ts"
+          pnpm --filter @workspace/cicd-automation exec tsx "$GITHUB_WORKSPACE/scripts/verify-ci-workspace-guard.ts"
 
       - name: Build dashboard
         run: pnpm --filter @workspace/dashboard run build

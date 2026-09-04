@@ -21,9 +21,47 @@ const execAsync = promisify(exec);
 const CI_WORKSPACE_ROOT = '/tmp/apex-ci-workspace';
 const REPO_URL = 'https://github.com/patriotnewsactivism/Apex.git';
 
+// On Cloud Run the container has no disk. `/tmp` is a tmpfs, and every byte
+// written to it is charged against the service's memory limit — while being
+// completely invisible to process.memoryUsage(), which reports only the Node
+// heap. A full install of this monorepo is 478MB of node_modules. Against the
+// 512MiB the service ran on until 2026-09-04 (rss alone was ~150MB, leaving
+// ~360MB) it could not fit, so the first agent to call runTests/runLinter/
+// runBuild took the whole container out mid-install: killed by the kernel, no
+// application log, restart on an unchanged revision, and the next agent to try
+// did it again. That is what produced the 7-12 minute restart cycle on
+// 2026-09-04, and why raising the limit to 1Gi stretched the interval to ~45
+// minutes instead of ending it — 487MB fits in 874MB of headroom, until agents
+// are busy enough that it doesn't.
+//
+// So refuse, loudly, instead of taking the workforce down. These tools never
+// actually worked here: every invocation ended in an OOM kill rather than a
+// test result. CI belongs somewhere with a real filesystem — the repo's own
+// GitHub Actions workflows, or packages/cicd-worker, which has its own
+// workspace implementation and is unaffected by this guard.
+const IN_CONTAINER_CI_OPT_IN = 'APEX_ALLOW_IN_CONTAINER_CI';
+
+/** True where building the workspace would eat the container's memory limit.
+ *  Cloud Run always sets K_SERVICE for the running service. Exported so the
+ *  guard can be verified without triggering a real clone. */
+export function isCiWorkspaceBlocked(): boolean {
+  if (process.env[IN_CONTAINER_CI_OPT_IN] === '1') return false;
+  return Boolean(process.env.K_SERVICE);
+}
+
 let syncPromise: Promise<string> | null = null;
 
 async function doSync(): Promise<string> {
+  if (isCiWorkspaceBlocked()) {
+    throw new Error(
+      `Refusing to build a CI workspace on ${process.env.K_SERVICE}: /tmp is RAM-backed here, ` +
+        'and a full install of this monorepo (478MB) is charged against the container memory limit, ' +
+        'which kills the whole agent workforce mid-install. Run tests, lint and builds in GitHub ' +
+        `Actions or on the standalone cicd-worker instead. Set ${IN_CONTAINER_CI_OPT_IN}=1 only on a ` +
+        'host with a real filesystem and memory to spare.',
+    );
+  }
+
   const exists = fs.existsSync(`${CI_WORKSPACE_ROOT}/.git`);
 
   if (!exists) {

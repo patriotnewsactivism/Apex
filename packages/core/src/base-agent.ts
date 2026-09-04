@@ -8,6 +8,7 @@ import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
+import { recordAgentLoopStart, recordAgentLoopTick } from './runtime-health.js';
 import {
   getLLMCapacityResumeAt,
   isLLMDailyBudgetPause,
@@ -261,6 +262,10 @@ export abstract class BaseAgent {
    * behavior exactly; roles that receive swarms set a higher concurrency. */
   async start(): Promise<void> {
     this.running = true;
+    // Register liveness before anything that can throw, so an agent that dies
+    // during pre-loop setup shows up as stalled rather than as a silent
+    // no-show that /health still counts as one of the 13.
+    recordAgentLoopStart(this.config.id);
 
     // Startup stampede guard — added 2026-08-06 after confirming the LLM
     // circuit breaker (llm-client.ts) is fully reactive: it only spreads
@@ -293,6 +298,9 @@ export abstract class BaseAgent {
     const inFlight = new Map<string, Promise<unknown>>();
 
     while (this.running) {
+      // Proof of life for /health and the supervisor: this is the only place
+      // that can report the loop is genuinely still cycling.
+      recordAgentLoopTick(this.config.id);
       try {
         // Top up in-flight work up to the concurrency limit — but never while
         // the workspace is out of LLM capacity, since every task claimed then
@@ -966,11 +974,11 @@ export abstract class BaseAgent {
       await new Promise((r) => setTimeout(r, 1000));
       const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId)).limit(1);
       if (row?.status === 'approved') {
-        await this.taskQueue.markInProgress(taskId);
+        await this.requireTaskOwnershipAfterApproval(taskId);
         return true;
       }
       if (row?.status === 'rejected') {
-        await this.taskQueue.markInProgress(taskId);
+        await this.requireTaskOwnershipAfterApproval(taskId);
         return false;
       }
     }
@@ -985,8 +993,27 @@ export abstract class BaseAgent {
     // so the agent's own loop sees the rejection and can react (retry,
     // report back, try a different approach) instead of the run just dying.
     await db.update(approvals).set({ status: 'rejected' }).where(eq(approvals.id, approvalId));
-    await this.taskQueue.markInProgress(taskId);
+    await this.requireTaskOwnershipAfterApproval(taskId);
     return false; // Timeout = reject
+  }
+
+  /**
+   * Re-take ownership of a task after an approval decision.
+   *
+   * TaskQueue.markInProgress refuses to revive a task that was cancelled,
+   * terminalized, or hard-timeout quarantined while the approval was pending.
+   * When that happens the approval decision is stale authority: the work it
+   * authorized belongs to an execution that no longer owns the task, and
+   * running the approved tool anyway would produce a duplicate or withdrawn
+   * side effect. Abort loudly instead.
+   */
+  protected async requireTaskOwnershipAfterApproval(taskId: string): Promise<void> {
+    const owned = await this.taskQueue.markInProgress(taskId);
+    if (owned) return;
+    throw new Error(
+      `Task ${taskId} is no longer owned by this execution after the approval decision ` +
+        `(cancelled, terminalized, or timeout-quarantined); refusing to continue approved work`,
+    );
   }
 
   // ── Memory shortcuts ───────────────────────────────────────────────────────
@@ -1022,10 +1049,21 @@ export abstract class BaseAgent {
 
   protected setStatus(status: AgentStatus, message?: string) {
     this.status = status;
+    // Best-effort status mirror. `.then(() => {})` alone left the rejection
+    // path unhandled, so a DB blip here surfaced as an unhandled promise
+    // rejection rather than anything actionable. Status display is not worth
+    // destabilising the process; log and carry on.
     db.update(agents)
       .set({ status, lastActiveAt: new Date() })
       .where(eq(agents.id, this.config.id))
-      .then(() => {});
+      .then(
+        () => {},
+        (err: unknown) => {
+          console.warn(
+            `[agent ${this.config.id}] status mirror write failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+      );
     emitApexEvent({ type: 'agent:status', agentId: this.config.id, status, message });
   }
 

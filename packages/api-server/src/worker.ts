@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { createWorkforce, initializeWorkforce } from '@workspace/agents';
 import { JobScheduler } from '@workspace/background-jobs';
 import { db, agents } from '@workspace/db';
+import { superviseAgentLoop } from '@workspace/core';
 
 // ─── APEX Autonomous Worker Runtime ──────────────────────────────────────────
 //
@@ -39,11 +40,13 @@ async function main(): Promise<void> {
   const scheduler = new JobScheduler();
   scheduler.start();
 
-  const workerLoops = [...workforce.values()].map((agent) =>
-    agent.start().catch((err) => {
-      const detail = err instanceof Error ? err.stack ?? err.message : String(err);
-      console.error(`[worker] Agent loop ${agent.id} exited unexpectedly: ${detail}`);
-      throw err;
+  // Supervised, not fire-and-forget: a loop that dies here used to leave the
+  // worker running with a silently smaller workforce and no path back short of
+  // a container replacement. Restarts are bounded and jittered; an agent that
+  // exhausts its budget is reported through /health.workforce.abandoned.
+  const supervisors = [...workforce.values()].map((agent) =>
+    superviseAgentLoop(agent, {
+      onEvent: (message) => console.error(`[worker] ${message}`),
     }),
   );
 
@@ -62,7 +65,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log(`[worker] ${signal} received; stopping scheduler and agent claim loops`);
     scheduler.stop();
-    for (const agent of workforce.values()) agent.stop();
+    for (const supervisor of supervisors) supervisor.stop();
     releaseShutdown?.();
   };
 
@@ -75,7 +78,7 @@ async function main(): Promise<void> {
   // provider I/O to settle naturally within the platform's termination grace
   // period. Durable task/job claims remain recoverable if the platform later
   // terminates the process before a cooperative operation settles.
-  await Promise.allSettled(workerLoops);
+  await Promise.allSettled(supervisors.map((supervisor) => supervisor.settled()));
   console.log('[worker] Autonomous worker stopped');
 }
 
