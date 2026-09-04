@@ -358,6 +358,17 @@ jobs:
             # needs both of these to keep working when nobody is watching.
             --min-instances=1
             --no-cpu-throttling
+
+            # Cloud Run defaults to 512Mi when no size is given, and no size
+            # was ever given. One Node process holding 13 agents, their polling
+            # loops, a WebSocket fan-out and a 20-connection Postgres pool does
+            # not fit in that reliably: production restarted twice on an
+            # unchanged revision (2026-09-03 22:02, and again 2026-09-04 00:15,
+            # eight minutes after the previous start), which is what an
+            # out-of-memory kill looks like from outside — same revision, uptime
+            # back to zero, nothing logged. /health now reports rss/heap so the
+            # next occurrence is measured rather than inferred.
+            --memory=1Gi
           )
 
           delim='__APEX_ENV_94B4F__'
