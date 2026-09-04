@@ -594,7 +594,7 @@ export function Settings() {
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#5a9eae' }} />
             <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>Available Tools</span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 200px), 1fr))', gap: 8 }}>
             {tools.map((tool) => (
               <div key={tool.name} className="glass-card" style={{ padding: '10px 14px' }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-apex-text)', marginBottom: 4 }}>

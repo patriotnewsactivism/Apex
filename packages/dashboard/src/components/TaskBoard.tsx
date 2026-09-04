@@ -131,7 +131,7 @@ export function TaskBoard() {
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 220px), 1fr))',
         gap: 16,
         height: '100%',
         overflowX: 'auto',

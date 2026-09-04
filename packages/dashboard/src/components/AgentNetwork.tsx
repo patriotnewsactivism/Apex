@@ -158,7 +158,7 @@ export function AgentNetwork({ agents }: AgentNetworkProps) {
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: `repeat(auto-fill, minmax(200px, 1fr))`,
+                gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, 200px), 1fr))`,
                 gap: 10,
                 paddingLeft: `${tier * 20}px`,
               }}

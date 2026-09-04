@@ -106,7 +106,7 @@ export function MultiAppPanel() {
       </div>
 
       {/* KPI Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16, marginBottom: 28 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 260px), 1fr))', gap: 16, marginBottom: 28 }}>
         <div className="glass-card" style={{ padding: '20px 24px', borderRadius: 12 }}>
           <div style={{ fontSize: 12, color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Layers size={14} color="#5a9eae" /> Monitored Repositories
@@ -153,7 +153,7 @@ export function MultiAppPanel() {
           No applications registered. Use the Register App button above to add a portfolio repository.
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16, marginBottom: 32 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 320px), 1fr))', gap: 16, marginBottom: 32 }}>
         {portfolioApps.map((app) => (
           <motion.div
             key={app.id}

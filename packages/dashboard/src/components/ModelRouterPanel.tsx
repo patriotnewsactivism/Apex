@@ -573,7 +573,7 @@ export function ModelRouterPanel() {
           <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>A role pin is a hard operator decision. It stays first even in adaptive mode and disables learning trials for that role.</div>
           <div style={{ display: 'grid', gap: 7 }}>
             {roles.map(([role, name]) => (
-              <label key={role} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px,0.8fr) minmax(160px,1.2fr)', gap: 8, alignItems: 'center' }}>
+              <label key={role} className="apex-grid-collapse" style={{ display: 'grid', gridTemplateColumns: 'minmax(120px,0.8fr) minmax(160px,1.2fr)', gap: 8, alignItems: 'center' }}>
                 <span style={{ fontSize: 10, color: 'var(--color-apex-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name} <span style={{ opacity: 0.55 }}>({role})</span></span>
                 <select
                   className="apex-input"
