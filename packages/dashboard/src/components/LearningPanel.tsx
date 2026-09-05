@@ -21,6 +21,8 @@ import {
 
 export function LearningPanel() {
   const queryClient = useQueryClient();
+  const [pendingPage, setPendingPage] = useState(1);
+  const [pendingSearch, setPendingSearch] = useState('');
   const [historyPage, setHistoryPage] = useState(1);
   const [historyStatus, setHistoryStatus] = useState('approved,applied,rejected,superseded');
   const [historySearch, setHistorySearch] = useState('');
@@ -39,8 +41,8 @@ export function LearningPanel() {
   });
 
   const { data: recommendationPage } = useQuery({
-    queryKey: ['learning-recommendations', 'pending'],
-    queryFn: () => api.learning.recommendations({ status: 'pending', pageSize: 100 }),
+    queryKey: ['learning-recommendations', 'pending', pendingPage, pendingSearch],
+    queryFn: () => api.learning.recommendations({ status: 'pending', page: pendingPage, pageSize: 25, search: pendingSearch }),
     refetchInterval: 15_000,
   });
   const recommendations = recommendationPage?.items ?? [];
@@ -248,9 +250,18 @@ export function LearningPanel() {
 
         {/* Strategy Recommendations Queue */}
         <div>
-          <h3 style={{ fontSize: 15, fontWeight: 600, color: '#cbd5e1', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Zap size={16} color="#a855f7" /> Strategy Recommendations (Approval Gated)
-          </h3>
+          <div className="apex-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+            <h3 style={{ fontSize: 15, fontWeight: 600, color: '#cbd5e1', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Zap size={16} color="#a855f7" /> Strategy Recommendations (Approval Gated)
+            </h3>
+            <input
+              className="apex-input"
+              style={{ maxWidth: 200 }}
+              value={pendingSearch}
+              onChange={(event) => { setPendingSearch(event.target.value); setPendingPage(1); }}
+              placeholder="Filter pending"
+            />
+          </div>
           {recommendations.length === 0 ? (
             <div style={{ padding: 24, textAlign: 'center', color: '#64748b', background: 'rgba(255,255,255,0.02)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)' }}>
               No pending strategy recommendations.
@@ -338,6 +349,13 @@ export function LearningPanel() {
                   {rec.duplicateCount > 0 && <div style={{ fontSize: 11, color: '#64748b' }}>{rec.duplicateCount} duplicate audit record(s)</div>}
                 </motion.div>
               ))}
+            </div>
+          )}
+          {(recommendationPage?.pagination.totalPages ?? 1) > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 12 }}>
+              <button className="apex-button" disabled={pendingPage <= 1} onClick={() => setPendingPage((page) => page - 1)}>Previous</button>
+              <span style={{ color: '#94a3b8', padding: 8 }}>Page {pendingPage} of {recommendationPage?.pagination.totalPages || 1}</span>
+              <button className="apex-button" disabled={pendingPage >= (recommendationPage?.pagination.totalPages || 1)} onClick={() => setPendingPage((page) => page + 1)}>Next</button>
             </div>
           )}
         </div>

@@ -6,7 +6,7 @@ import {
   strategyRecommendations,
   performanceBaselines,
 } from '@workspace/db';
-import { PatternDetector, InsightGenerator, StrategyOptimizer, cleanupDuplicateStrategies } from '@workspace/learning-system';
+import { PatternDetector, InsightGenerator, StrategyOptimizer, cleanupDuplicateStrategies, attemptApplyStrategyRecommendation } from '@workspace/learning-system';
 import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import type { BaseAgent } from '@workspace/core';
 
@@ -150,28 +150,18 @@ export function createLearningRouter(workforce?: Map<string, BaseAgent>): Router
   });
 
   // POST /api/learning/recommendations/:id/apply — execute an approved recommendation
+  //
+  // Delegates to attemptApplyStrategyRecommendation, the single shared gate
+  // also used by the apply_strategy_recommendation agent tool — see that
+  // function's doc comment. Do not reimplement this check inline here again.
   router.post('/recommendations/:id/apply', async (req, res) => {
     try {
-      const [rec] = await db
-        .select()
-        .from(strategyRecommendations)
-        .where(eq(strategyRecommendations.id, req.params.id))
-        .limit(1);
-
-      if (!rec) {
-        res.status(404).json({ error: 'Recommendation not found' });
+      const result = await attemptApplyStrategyRecommendation(req.params.id);
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
         return;
       }
-      if (rec.status !== 'approved') {
-        res.status(400).json({ error: `Recommendation must be approved before apply (current status: ${rec.status})` });
-        return;
-      }
-
-      if (rec.proposedAction === 'increase_task_concurrency' || /concurrenc/i.test(`${rec.title} ${rec.text}`)) {
-        res.status(409).json({ error: 'Concurrency increases are blocked while failure and rate-limit evidence is elevated' });
-        return;
-      }
-      res.status(422).json({ error: 'This strategy requires a separately reviewed implementation before it can be marked applied' });
+      res.json({ applied: true, recommendation: result.recommendation });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
