@@ -537,18 +537,39 @@ export function QuickChat() {
 
   // ── Live voice call (Gemini Live, real-time, same tools as text chat) ──
   const [liveActivity, setLiveActivity] = useState<string | null>(null);
+  // Tracks the id of the currently-open voice caption bubble so streaming
+  // transcript fragments merge INTO it instead of each fragment becoming
+  // its own message (Gemini Live captions arrive in tiny chunks — without
+  // this, every word of a spoken turn landed in the chat as a separate
+  // bubble). Cleared on turnComplete / role change.
+  const openVoiceBubbleRef = useRef<{ id: string; role: string } | null>(null);
   const liveVoice = useLiveVoiceCall({
     onTranscript: (role, text) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `voice-${role}-${Date.now()}`,
-          role: role === 'user' ? 'user' : 'system',
-          text,
-          timestamp: Date.now(),
-        },
-      ]);
+      const open = openVoiceBubbleRef.current;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (open && last && last.id === open.id && open.role === role) {
+          // Same turn, same speaker: merge the fragment into the bubble.
+          return [...prev.slice(0, -1), { ...last, text: `${last.text}${last.text ? ' ' : ''}${text}` }];
+        }
+        const id = `voice-${role}-${Date.now()}`;
+        openVoiceBubbleRef.current = { id, role };
+        return [
+          ...prev,
+          {
+            id,
+            role: role === 'user' ? 'user' : 'system',
+            text,
+            timestamp: Date.now(),
+          },
+        ];
+      });
       setLiveActivity(null);
+    },
+    onTurnComplete: () => {
+      // Gemini finished one spoken turn — close the bubble so the next
+      // fragment (user or assistant) starts a fresh message.
+      openVoiceBubbleRef.current = null;
     },
     onGoalCreated: (goal) => {
       setMessages((prev) => [

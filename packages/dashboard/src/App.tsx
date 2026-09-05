@@ -218,7 +218,7 @@ function Sidebar({
     {
       label: 'Command',
       items: [
-        { id: 'chat', label: 'Quick Chat', icon: <MessageSquare size={16} /> },
+        { id: 'chat', label: 'Chat', icon: <MessageSquare size={16} /> },
         { id: 'mission', label: 'Mission Control', icon: <Target size={16} /> },
         { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={16} /> },
       ],
@@ -616,7 +616,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 
   // Plain titles — no emoji decoration
   const pageTitles: Record<string, { title: string; kicker: string }> = {
-    chat: { title: 'Quick Chat', kicker: 'Command' },
+    chat: { title: 'Chat', kicker: 'Command' },
     mission: { title: 'Mission Control', kicker: 'Command' },
     agents: { title: 'Agent Network', kicker: 'Workforce' },
     tasks: { title: 'Task Board', kicker: 'Workforce' },

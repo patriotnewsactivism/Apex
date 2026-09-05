@@ -17,7 +17,7 @@ import type { LLMTool } from '@workspace/core';
 // Architecture: server-to-server. The browser never sees GEMINI_API_KEY —
 // it opens a WebSocket to US (this route), we open our OWN WebSocket to
 // Gemini and relay audio + tool calls both ways. This reuses the exact same
-// tool executor (executeTool) as the text Quick Chat, so "approve that" or
+// tool executor (executeTool) as the text chat, so "approve that" or
 // "deploy a goal to fix X" spoken out loud does the SAME real action as
 // typing it — including approve_pending_approval / reject_pending_approval,
 // which is the "implement the decisions I make" part of the ask.
@@ -176,6 +176,13 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         }
         if (sc.interrupted) {
           safeSendClient({ type: 'interrupted' });
+        }
+        // Turn boundary: the client uses this to close the current caption
+        // bubble. Without it, streaming transcript fragments (which arrive
+        // in small chunks — sometimes word-by-word) have no reliable way to
+        // know when one spoken turn ends and the next begins.
+        if (sc.turnComplete) {
+          safeSendClient({ type: 'turnComplete' });
         }
       }
     });

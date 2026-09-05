@@ -1,6 +1,6 @@
 import express, { Router } from 'express';
 
-// ─── Voice-to-text for the dashboard's Quick Chat ─────────────────────────────
+// ─── Voice-to-text for the dashboard's Chat ───────────────────────────────────
 //
 // Push-to-talk: the browser records a short clip (MediaRecorder), POSTs the
 // raw audio bytes here, and gets back a transcript to drop into the chat

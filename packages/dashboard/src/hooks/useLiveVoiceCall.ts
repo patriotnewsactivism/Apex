@@ -13,7 +13,8 @@ import { api } from '../lib/api.js';
 //   send:    { type: 'end' }
 //   receive: { type: 'ready' | 'interrupted' }
 //   receive: { type: 'audio', data: base64 }  24kHz PCM16
-//   receive: { type: 'transcript', role, text }
+//   receive: { type: 'transcript', role, text }  (streaming FRAGMENTS — merge, don't split)
+//   receive: { type: 'turnComplete' }  (end of one spoken turn — close the bubble)
 //   receive: { type: 'goalCreated', id, title }
 //   receive: { type: 'approvalResolved', id, action }
 //   receive: { type: 'toolActivity', name }
@@ -23,6 +24,7 @@ export type LiveVoiceStatus = 'idle' | 'connecting' | 'live' | 'error' | 'ended'
 
 interface LiveVoiceCallbacks {
   onTranscript?: (role: 'user' | 'assistant', text: string) => void;
+  onTurnComplete?: () => void;
   onGoalCreated?: (goal: { id: string; title: string }) => void;
   onApprovalResolved?: (id: string, action: string) => void;
   onToolActivity?: (name: string) => void;
@@ -217,7 +219,16 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
           ws.send(JSON.stringify({ type: 'audio', data: bufToBase64(pcm16) }));
         };
         source.connect(processor);
-        processor.connect(captureCtx.destination);
+        // The processor needs SOME destination connection to keep pumping on
+        // all browsers, but it must be SILENT: connecting it straight to
+        // captureCtx.destination played raw mic audio out the speakers at
+        // full volume while the mic was open — an acoustic feedback loop
+        // that surfaced as a constant beep/howl on every call. A zero-gain
+        // node keeps the pump alive with zero playback.
+        const silentSink = captureCtx.createGain();
+        silentSink.gain.value = 0;
+        processor.connect(silentSink);
+        silentSink.connect(captureCtx.destination);
       };
 
       ws.onmessage = (event) => {
@@ -239,6 +250,9 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
             break;
           case 'transcript':
             cbRef.current.onTranscript?.(msg.role, msg.text);
+            break;
+          case 'turnComplete':
+            cbRef.current.onTurnComplete?.();
             break;
           case 'goalCreated':
             cbRef.current.onGoalCreated?.({ id: msg.id, title: msg.title });
