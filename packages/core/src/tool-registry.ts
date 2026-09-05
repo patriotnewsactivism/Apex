@@ -1639,17 +1639,23 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── CI/CD: Deploy to environment ───────────────────────────────────
     {
       name: 'deploy_to_environment',
-      // 2026-08-19 (second pass): now REAL. Runs CodeBuild
-      // apex-lightsail-build, redeploys the Lightsail service apex-service
-      // with its existing spec, waits for ACTIVE, and verifies the live
-      // /health endpoint. Requires APEX_DEPLOY_ENABLED plus scoped AWS
-      // credentials; without either it fails with instructions instead of
-      // faking success (which is what it did before today).
+      // CORRECTED 2026-09-05: this description and schema previously named
+      // AWS Lightsail/CodeBuild long after packages/cicd-automation/src/
+      // deployment-manager.ts was rewritten against the real Cloud Run
+      // deployer (cloud-run-deployer.ts) -- the tool worked (deploy-manager
+      // calls deployToCloudRun() unconditionally whenever platform isn't
+      // 'local'), but it recorded a false 'lightsail' platform value on every
+      // deployments row and told the calling agent it had shipped to
+      // infrastructure Apex hasn't run on since ADR-001. Per
+      // docs/ARCHITECTURE_DECISIONS.md, Apex production is the existing
+      // Google Cloud Run service. Requires APEX_DEPLOY_ENABLED plus an
+      // authenticated gcloud identity or Workload Identity; without either it
+      // fails with actionable instructions instead of faking success.
       description:
-        'Deploy Apex to AWS Lightsail for real: triggers CodeBuild project apex-lightsail-build, redeploys container service apex-service with its current spec, waits for the deployment to reach ACTIVE, then verifies the live /health endpoint and returns the real service URL. Takes several minutes. Throws with actionable instructions if deploys are disabled (APEX_DEPLOY_ENABLED) or AWS credentials are missing — a throw means NOTHING shipped, so never report a release as done unless this returns successfully. Requires human approval.',
+        'Deploy Apex to Google Cloud Run for real: builds the exact reviewed commit via Google Cloud Build (cloudbuild.apex.yaml), tags an immutable image, updates the existing configured Cloud Run service with `gcloud run services update`, waits for the new revision to become Ready, then verifies /health.build.sha matches and returns the real service URL. Takes several minutes. Throws with actionable instructions if deploys are disabled (APEX_DEPLOY_ENABLED) or gcloud credentials/config are missing — a throw means NOTHING shipped, so never report a release as done unless this returns successfully. Requires human approval.',
       schema: z.object({
         environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
-        platform: z.enum(['lightsail', 'local']).optional().describe('Deployment platform — use "lightsail" (AWS Lightsail apex-service) for a real deploy; "local" has no deploy target and is rejected. Apex is NOT hosted on Vercel.'),
+        platform: z.enum(['cloud-run', 'local']).optional().describe('Deployment platform — use "cloud-run" (the existing Google Cloud Run service) for a real deploy; "local" has no deploy target and is rejected. Apex is NOT hosted on Vercel, Railway, or AWS Lightsail.'),
       }),
       requiresApproval: true,
       async execute({ environment, platform }) {
@@ -1657,7 +1663,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const manager = new DeploymentManager();
         const result = await manager.deploy({
           environment,
-          platform: platform ?? 'lightsail',
+          platform: platform ?? 'cloud-run',
         });
         return result;
       },
@@ -1667,7 +1673,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     {
       name: 'rollback_deployment',
       description:
-        'Roll the live AWS Lightsail service apex-service back to its previous ACTIVE deployment spec, wait for ACTIVE, and verify the /health endpoint before reporting success. Note: if the bad release overwrote the same :latest image tag, this re-pulls that image — the tool warns when it detects this, and the real fix is rebuilding a known-good commit. Requires approval.',
+        'Roll the live Google Cloud Run service back to its previous known-good revision and verify /health before reporting success. Requires approval.',
       schema: z.object({
         deploymentId: z.string().describe('Deployment ID to roll back'),
       }),
