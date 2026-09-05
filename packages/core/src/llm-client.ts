@@ -44,7 +44,7 @@ export type ApexProviderName =
   | 'openrouter-nemotron-ultra'
   | 'openrouter-glm-5-2-free'
   | 'openrouter-nemotron-super'
-  | 'openrouter-gpt-oss-120b-paid'
+  | 'openrouter-deepseek-v4-flash-paid'
   | 'openrouter-deepseek-v3-paid';
 
 // Operator policy 2026-09-04 (Don): FREE models first — the most intelligent,
@@ -112,11 +112,15 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
   },
   {
-    // Paid fallback slot 1 — CHEAPEST high-reasoning model on OpenRouter
-    // ($0.037/M in, $0.17/M out, ~7x cheaper than DeepSeek V3.2). Only
-    // reached after ALL four free models are exhausted.
-    name: 'openrouter-gpt-oss-120b-paid',
-    model: 'openai/gpt-oss-120b',
+    // Paid fallback slot 1 (PRIMARY paid model, Don's explicit pick
+    // 2026-09-05) — DeepSeek V4 Flash 0731: sparse MoE, 13B active/284B
+    // total params, 1.3M context, explicitly tuned for coding/reasoning/agent
+    // workflows, and confirmed via OpenRouter's live catalog to support
+    // `tools`/`tool_choice` (unlike R1). $0.065/M in, $0.18/M out — replaces
+    // the previous gpt-oss-120b-paid slot as the go-to paid model reached
+    // right after all four free models are exhausted.
+    name: 'openrouter-deepseek-v4-flash-paid',
+    model: 'deepseek/deepseek-v4-flash-0731',
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
@@ -127,8 +131,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // Paid fallback FINAL slot: DeepSeek V3.2 — not R1 (R1's OpenRouter
     // endpoint does not accept `tools`, which would silently break every
     // agent turn that fell back to it). V3.2 explicitly supports
-    // tools/tool_choice with GPT-5-class benchmarks. Reached only after all
-    // four free models AND gpt-oss-120b are exhausted.
+    // tools/tool_choice with GPT-5-class benchmarks. Kept as the last-resort
+    // safety net behind the new primary paid model above — reached only if
+    // all four free models AND deepseek-v4-flash are exhausted/erroring.
     name: 'openrouter-deepseek-v3-paid',
     model: 'deepseek/deepseek-v3.2',
     baseURL: 'https://openrouter.ai/api/v1',
@@ -148,7 +153,7 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-nemotron-ultra',
   'openrouter-glm-5-2-free',
   'openrouter-nemotron-super',
-  'openrouter-gpt-oss-120b-paid',
+  'openrouter-deepseek-v4-flash-paid',
   'openrouter-deepseek-v3-paid',
 ];
 

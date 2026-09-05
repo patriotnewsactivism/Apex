@@ -21,7 +21,7 @@ const expectedProviders = [
   "openrouter-nemotron-ultra",
   "openrouter-glm-5-2-free",
   "openrouter-nemotron-super",
-  "openrouter-gpt-oss-120b-paid",
+  "openrouter-deepseek-v4-flash-paid",
   "openrouter-deepseek-v3-paid",
 ];
 const expectedModels = [
@@ -29,7 +29,7 @@ const expectedModels = [
   "nvidia/nemotron-3-ultra-550b-a55b:free",
   "z-ai/glm-5.2:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
-  "openai/gpt-oss-120b",
+  "deepseek/deepseek-v4-flash-0731",
   "deepseek/deepseek-v3.2",
 ];
 const expectedOrder = [...expectedProviders];
@@ -69,9 +69,9 @@ check(
   catalog,
 );
 check(
-  "gpt-oss-120b (paid) is the cheapest-reasoning first paid fallback rung",
-  catalog[4]?.name === "openrouter-gpt-oss-120b-paid" &&
-    catalog[4]?.model === "openai/gpt-oss-120b" &&
+  "DeepSeek V4 Flash 0731 (paid) is Don's designated primary paid fallback rung",
+  catalog[4]?.name === "openrouter-deepseek-v4-flash-paid" &&
+    catalog[4]?.model === "deepseek/deepseek-v4-flash-0731" &&
     catalog[4]?.paid === true,
   catalog,
 );
