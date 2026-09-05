@@ -19,20 +19,28 @@ const catalog = getProviderCatalog();
 const expectedProviders = [
   "openrouter-minimax-m3",
   "openrouter-nemotron-ultra",
+  "openrouter-glm-5-2-free",
+  "openrouter-nemotron-super",
+  "openrouter-gpt-oss-120b-paid",
   "openrouter-deepseek-v3-paid",
 ];
 const expectedModels = [
   "minimax/minimax-m3:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "z-ai/glm-5.2:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "openai/gpt-oss-120b",
   "deepseek/deepseek-v3.2",
 ];
 const expectedOrder = [...expectedProviders];
 
-// Operator decision 2026-09-02: once both free OpenRouter rungs are
-// exhausted/cooled-down, fall to a cheap-but-capable paid reasoning anchor
-// (DeepSeek R1) instead of stalling the whole swarm. Free rungs stay first.
-console.log("── OpenRouter provider allowlist (free-agent chain + paid reasoning anchor) ──");
-check("exactly three approved OpenRouter routes exist", catalog.length === 3, catalog);
+// Operator decision 2026-09-04: FREE models first — the most intelligent,
+// most-reasoning free models until exhausted — then the CHEAPEST
+// high-reasoning PAID models as strictly last-resort (paid tail routes
+// only through the dedicated paid key; no sole paid usage without the
+// operator's explicit authorization).
+console.log("── OpenRouter provider allowlist (free-agent chain + cheap paid tail) ──");
+check("exactly six approved OpenRouter routes exist", catalog.length === 6, catalog);
 check(
   "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
@@ -56,10 +64,22 @@ check(
   catalog,
 );
 check(
-  "DeepSeek V3.2 (paid) is the last-resort tool-calling-capable anchor",
-  catalog[2]?.name === "openrouter-deepseek-v3-paid" &&
-    catalog[2]?.model === "deepseek/deepseek-v3.2" &&
-    catalog[2]?.paid === true,
+  "the first four rungs are all free-tier",
+  catalog.slice(0, 4).every((provider) => provider.paid !== true),
+  catalog,
+);
+check(
+  "gpt-oss-120b (paid) is the cheapest-reasoning first paid fallback rung",
+  catalog[4]?.name === "openrouter-gpt-oss-120b-paid" &&
+    catalog[4]?.model === "openai/gpt-oss-120b" &&
+    catalog[4]?.paid === true,
+  catalog,
+);
+check(
+  "DeepSeek V3.2 (paid) is the final tool-calling-capable anchor",
+  catalog[5]?.name === "openrouter-deepseek-v3-paid" &&
+    catalog[5]?.model === "deepseek/deepseek-v3.2" &&
+    catalog[5]?.paid === true,
   catalog,
 );
 check(
