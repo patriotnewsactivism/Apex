@@ -30,6 +30,30 @@ function newestBest(rows: StrategyRecommendation[]): StrategyRecommendation {
   )[0]!;
 }
 
+/**
+ * Rows written by the fingerprint-aware optimizer (this lifecycle system
+ * onward) already carry real structured semantics in these columns — trust
+ * them as-is. Re-inferring from prose (as this function used to do
+ * unconditionally) can misread a caveat sentence like "Increase concurrency
+ * only when..." as the row's actual action, silently overwriting a correct
+ * `proposedAction` and changing its lifecycle fingerprint out from under the
+ * optimizer's own deterministic ID — the exact P1 this guards against.
+ * Only rows written before these columns existed (pure prose, still null
+ * here) fall through to best-effort legacy inference.
+ */
+function rowSemantics(row: StrategyRecommendation): ReturnType<typeof inferLegacyStrategySemantics> {
+  if (row.proposedAction) {
+    return {
+      recommendationType: row.recommendationType,
+      affectedRole: row.affectedRole ?? null,
+      failureCategory: row.failureCategory ?? null,
+      proposedAction: row.proposedAction,
+      insightType: row.insightType ?? null,
+    };
+  }
+  return inferLegacyStrategySemantics(row);
+}
+
 /** Transactional and idempotent; no strategy record is physically deleted. */
 export async function cleanupDuplicateStrategies(dryRun: boolean): Promise<StrategyCleanupSummary> {
   return db.transaction(async (tx) => {
@@ -39,7 +63,7 @@ export async function cleanupDuplicateStrategies(dryRun: boolean): Promise<Strat
     const groups = new Map<string, { rows: StrategyRecommendation[]; semantics: ReturnType<typeof inferLegacyStrategySemantics> }>();
 
     for (const row of rows) {
-      const semantics = inferLegacyStrategySemantics(row);
+      const semantics = rowSemantics(row);
       const fingerprint = strategyFingerprint(semantics);
       const group = groups.get(fingerprint) ?? { rows: [], semantics };
       group.rows.push(row);

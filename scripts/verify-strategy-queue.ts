@@ -24,6 +24,8 @@ const migration = readFileSync(new URL('../lib/db/src/client.ts', import.meta.ur
 const cleanup = readFileSync(new URL('../packages/learning-system/src/strategy-cleanup.ts', import.meta.url), 'utf8');
 const api = readFileSync(new URL('../packages/api-server/src/routes/learning.ts', import.meta.url), 'utf8');
 const ui = readFileSync(new URL('../packages/dashboard/src/components/LearningPanel.tsx', import.meta.url), 'utf8');
+const toolRegistry = readFileSync(new URL('../packages/core/src/tool-registry.ts', import.meta.url), 'utf8');
+const applyGate = readFileSync(new URL('../packages/learning-system/src/strategy-apply.ts', import.meta.url), 'utf8');
 
 assert.match(migration, /CREATE UNIQUE INDEX IF NOT EXISTS strategy_recommendations_lifecycle_key_unique/);
 assert.match(optimizer, /onConflictDoUpdate/);
@@ -50,4 +52,32 @@ function awaitableConcurrentFingerprints(): string[] {
   return Array.from({ length: 100 }, () => strategyFingerprint(base));
 }
 
+// ─── PR #115 CodeRabbit follow-up (P1/P1/P2) ────────────────────────────────
+//
+// 1. Cleanup must trust a row's already-populated semantic columns instead
+//    of unconditionally re-inferring from prose (which could misread a
+//    caveat sentence and silently rewrite a correct proposedAction, breaking
+//    the optimizer's deterministic lifecycle key on its next upsert).
+assert.match(cleanup, /function rowSemantics/, 'cleanup must prefer stored semantics over prose re-inference');
+assert.match(cleanup, /const semantics = rowSemantics\(row\)/, 'the grouping loop must call rowSemantics, not inferLegacyStrategySemantics directly');
+
+// 2. Exactly one shared gate decides whether a recommendation may be marked
+//    applied — both the HTTP route and the agent tool must call it, so an
+//    agent can never bypass the HTTP path's stricter rule.
+assert.match(applyGate, /export async function attemptApplyStrategyRecommendation/, 'the shared apply gate must exist');
+assert.match(api, /attemptApplyStrategyRecommendation/, 'the HTTP apply route must use the shared gate');
+assert.match(toolRegistry, /attemptApplyStrategyRecommendation/, 'the agent apply_strategy_recommendation tool must use the shared gate, not its own status update');
+assert.doesNotMatch(
+  toolRegistry.slice(toolRegistry.indexOf("name: 'apply_strategy_recommendation'"), toolRegistry.indexOf("name: 'apply_strategy_recommendation'") + 2000),
+  /status:\s*'applied'/,
+  'the tool must not write the applied transition itself anymore',
+);
+
+// 3. The pending queue must expose the same page/search controls as history
+//    — not just fetch page 1 of 100 with no way to reach the rest.
+assert.match(ui, /pendingPage/, 'the pending queue must track its own page state');
+assert.match(ui, /pendingSearch/, 'the pending queue must expose a search filter, not just history');
+assert.match(ui, /setPendingPage\(\(page\) => page \+ 1\)/, 'the pending queue must render Next/Previous controls');
+
 console.log('✅ STRATEGY QUEUE DEDUPLICATION GUARDS PASSED');
+console.log('✅ PR #115 FOLLOW-UP DEFECT GUARDS PASSED (semantics preservation, shared apply gate, pending pagination)');

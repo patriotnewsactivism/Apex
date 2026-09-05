@@ -1545,52 +1545,27 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: false, // Auto-approved 2026-07-22: marks an internal recommendation row applied, no external side effects by itself.
       // (was requiresApproval: true)
       async execute({ recommendationId }) {
-        const { db, strategyRecommendations, learningInsights } = await import('@workspace/db');
-        const { eq } = await import('drizzle-orm');
-
-        const [existing] = await db.select().from(strategyRecommendations).where(eq(strategyRecommendations.id, recommendationId)).limit(1);
-        if (!existing) {
-          return { success: false, error: `No recommendation found with id ${recommendationId}` };
-        }
-
-        if (existing.status !== 'approved') {
+        // Delegates to attemptApplyStrategyRecommendation, the SAME shared
+        // gate the HTTP route (POST /api/learning/recommendations/:id/apply)
+        // uses. Previously this tool wrote the 'applied' transition itself
+        // and persisted a standing insight from it, bypassing the HTTP
+        // route's stricter gate entirely — an agent could self-report a
+        // strategy as implemented (shaping future prompts) when no
+        // implementation had actually been reviewed. Fixed per PR #115
+        // CodeRabbit review (P1): "the transition must be shared or blocked
+        // consistently across both paths." Do not reintroduce a second
+        // implementation of this check here.
+        const { attemptApplyStrategyRecommendation } = await import('@workspace/learning-system');
+        const result = await attemptApplyStrategyRecommendation(recommendationId);
+        if (!result.ok) {
           return {
             success: false,
-            error: `Recommendation ${recommendationId} must be approved before it can be applied (current status: ${existing.status})`,
-            requiresApproval: true,
-            currentStatus: existing.status,
+            error: result.error,
+            requiresApproval: result.status === 400,
+            currentStatus: result.status === 400 ? 'not_approved' : undefined,
           };
         }
-
-        await db.update(strategyRecommendations).set({
-          status: 'applied',
-          reviewedAt: new Date(),
-        }).where(eq(strategyRecommendations.id, recommendationId));
-
-        // Close the learning loop: persist the approved recommendation as a
-        // standing insight so it is injected into agent prompts (see
-        // BaseAgent.buildLearningContext) and actually shapes future behavior.
-        // Non-fatal — the apply already succeeded even if this insert fails.
-        let persistedAsInsight = false;
-        try {
-          const { randomUUID } = await import('crypto');
-          await db.insert(learningInsights).values({
-            id: randomUUID(),
-            insightType: 'improvement',
-            title: `Applied strategy: ${existing.title}`,
-            description: existing.text,
-            confidence: existing.confidence,
-            evidence: { sourceRecommendationId: recommendationId, type: existing.recommendationType },
-            applied: true,
-            createdAt: new Date(),
-            expiresAt: null,
-          });
-          persistedAsInsight = true;
-        } catch {
-          // insight persistence is best-effort; apply still succeeded
-        }
-
-        return { applied: true, recommendationId, title: existing.title, persistedAsInsight };
+        return { applied: true, recommendationId, title: result.recommendation.title };
       },
     },
 
