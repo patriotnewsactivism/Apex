@@ -72,6 +72,12 @@ type ProviderSpec = {
   /** Minimum spacing between request starts for this logical provider. */
   minIntervalMs: number;
   toolCallingReliable: true;
+  /**
+   * OpenRouter reasoning-effort hint (reasoning models only). Low effort keeps
+   * reasoning from eating the whole max_tokens budget before content is
+   * emitted.
+   */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 };
 
 const PROVIDERS: readonly ProviderSpec[] = [
@@ -126,6 +132,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     paid: true,
     minIntervalMs: 500,
     toolCallingReliable: true,
+    // Reasoning model: run at low effort so thinking doesn't consume the
+    // entire max_tokens budget before any content is emitted.
+    reasoningEffort: 'low',
   },
   {
     // Paid fallback FINAL slot: DeepSeek V3.2 — not R1 (R1's OpenRouter
@@ -668,6 +677,7 @@ type CompatibleResponse = {
       content?: string | null;
       tool_calls?: unknown;
     };
+    finish_reason?: string;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -752,6 +762,9 @@ async function callCompatibleProvider(
       // Explicitly request usage data so OpenRouter returns billed generation
       // cost alongside token counts when available.
       usage: { include: true },
+      ...(provider.reasoningEffort
+        ? { reasoning: { effort: provider.reasoningEffort } }
+        : {}),
     };
     if (customPolicy) {
       // OpenRouter rejects the whole request with HTTP 400 when `models` holds
@@ -809,10 +822,23 @@ async function callCompatibleProvider(
     if (!choice) throw new Error('provider returned no completion choice');
     const servedModel = parsed.model || routedModels[0] || provider.model;
     const rawCost = Number(parsed.usage?.cost);
+    const toolCalls = parseToolCalls(choice.tool_calls);
+    const content = choice.content ?? '';
+    // Reasoning models (e.g. deepseek-v4-flash) can spend the whole
+    // max_tokens budget thinking and return content: null. That must be
+    // treated as a failure so the chain falls through to the next provider —
+    // never as a silent empty success. Tool-call-only turns are exempt.
+    if (!content.trim() && toolCalls.length === 0) {
+      throw new Error(
+        `empty completion content (finish_reason: ${
+          parsed.choices?.[0]?.finish_reason ?? 'unknown'
+        })`,
+      );
+    }
 
     return {
-      content: choice.content ?? '',
-      toolCalls: parseToolCalls(choice.tool_calls),
+      content,
+      toolCalls,
       usage: {
         promptTokens: parsed.usage?.prompt_tokens ?? 0,
         completionTokens: parsed.usage?.completion_tokens ?? 0,
