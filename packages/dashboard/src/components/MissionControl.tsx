@@ -118,7 +118,10 @@ export function MissionControl() {
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+        // minmax(0, ...) not 1fr: a bare 1fr is minmax(auto, 1fr), so a track
+        // can never shrink below its content's min-content width and a single
+        // wide child pushes the whole column past the viewport.
+        gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) minmax(0, 1fr)',
         gap: isMobile ? 16 : 24,
         height: '100%',
       }}
@@ -129,7 +132,10 @@ export function MissionControl() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
+            // Same reason as above. The three labels ('Active Goals',
+            // 'Active Agents', 'Connected') gave the row a 368px min-content
+            // floor, 8px wider than a 360px phone.
+            gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
             gap: isMobile ? 8 : 12,
           }}
         >
