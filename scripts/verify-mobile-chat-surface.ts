@@ -92,8 +92,20 @@ check(
   !/new AudioCtx\(\{\s*sampleRate/.test(voice) && !/new AudioContext\(\{\s*sampleRate/.test(voice),
 );
 check(
-  'buffers are still authored at the wire output rate so the browser resamples',
-  /createBuffer\(1,\s*float\.length,\s*OUTPUT_RATE\)/.test(voice),
+  'chunks are resampled to the device rate at enqueue (wire 24kHz -> ctx.sampleRate)',
+  /resample\(float,\s*OUTPUT_RATE,\s*ctx\.sampleRate\)/.test(voice),
+);
+check(
+  'playback is one continuous drain node — no per-chunk AudioBufferSourceNode scheduling',
+  !/ctx\.createBufferSource\(\)[\s\S]{0,300}source\.connect\(ctx\.destination\)/.test(voice),
+);
+check(
+  'the drain node exists and feeds the destination directly',
+  /playProc\.connect\(playbackCtx\.destination\)/.test(voice),
+);
+check(
+  'idle drain callbacks cannot re-arm the echo gate forever (wasPlaying guard)',
+  /wasPlayingRef\.current/.test(voice),
 );
 check(
   'an unavailable microphone API reports a clear cause instead of failing silently',
