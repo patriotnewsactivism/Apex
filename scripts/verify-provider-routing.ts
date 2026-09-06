@@ -19,7 +19,6 @@ const catalog = getProviderCatalog();
 const expectedProviders = [
   "openrouter-minimax-m3",
   "openrouter-nemotron-ultra",
-  "openrouter-glm-5-2-free",
   "openrouter-nemotron-super",
   "openrouter-deepseek-v4-flash-paid",
   "openrouter-deepseek-v3-paid",
@@ -27,7 +26,6 @@ const expectedProviders = [
 const expectedModels = [
   "minimax/minimax-m3:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "z-ai/glm-5.2:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
   "deepseek/deepseek-v4-flash-0731",
   "deepseek/deepseek-v3.2",
@@ -40,7 +38,7 @@ const expectedOrder = [...expectedProviders];
 // only through the dedicated paid key; no sole paid usage without the
 // operator's explicit authorization).
 console.log("── OpenRouter provider allowlist (free-agent chain + cheap paid tail) ──");
-check("exactly six approved OpenRouter routes exist", catalog.length === 6, catalog);
+check("exactly five approved OpenRouter routes exist", catalog.length === 5, catalog);
 check(
   "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
@@ -64,22 +62,22 @@ check(
   catalog,
 );
 check(
-  "the first four rungs are all free-tier",
-  catalog.slice(0, 4).every((provider) => provider.paid !== true),
+  "the first three rungs are all free-tier",
+  catalog.slice(0, 3).every((provider) => provider.paid !== true),
   catalog,
 );
 check(
   "DeepSeek V4 Flash 0731 (paid) is Don's designated primary paid fallback rung",
-  catalog[4]?.name === "openrouter-deepseek-v4-flash-paid" &&
-    catalog[4]?.model === "deepseek/deepseek-v4-flash-0731" &&
-    catalog[4]?.paid === true,
+  catalog[3]?.name === "openrouter-deepseek-v4-flash-paid" &&
+    catalog[3]?.model === "deepseek/deepseek-v4-flash-0731" &&
+    catalog[3]?.paid === true,
   catalog,
 );
 check(
   "DeepSeek V3.2 (paid) is the final tool-calling-capable anchor",
-  catalog[5]?.name === "openrouter-deepseek-v3-paid" &&
-    catalog[5]?.model === "deepseek/deepseek-v3.2" &&
-    catalog[5]?.paid === true,
+  catalog[4]?.name === "openrouter-deepseek-v3-paid" &&
+    catalog[4]?.model === "deepseek/deepseek-v3.2" &&
+    catalog[4]?.paid === true,
   catalog,
 );
 check(

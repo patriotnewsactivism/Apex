@@ -42,7 +42,6 @@ import {
 export type ApexProviderName =
   | 'openrouter-minimax-m3'
   | 'openrouter-nemotron-ultra'
-  | 'openrouter-glm-5-2-free'
   | 'openrouter-nemotron-super'
   | 'openrouter-deepseek-v4-flash-paid'
   | 'openrouter-deepseek-v3-paid';
@@ -105,18 +104,14 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
   },
   {
-    // Free tier slot 3: strong reasoner. Occasionally upstream-429s — the
-    // chain treats that as a normal cooldown and moves on.
-    name: 'openrouter-glm-5-2-free',
-    model: 'z-ai/glm-5.2:free',
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
-    minIntervalMs: 500,
-    toolCallingReliable: true,
-  },
-  {
-    // Free tier slot 4: proven tool-calling workhorse (codeforge-v2's
-    // long-standing free pick).
+    // Free tier slot 3: proven tool-calling workhorse (codeforge-v2's
+    // long-standing free pick). Slot 3 was 'openrouter-glm-5-2-free'
+    // (z-ai/glm-5.2:free) until removed 2026-09-06 -- OpenRouter retired the
+    // free tier for that model entirely (confirmed via direct API call:
+    // HTTP 404 "This model is unavailable for free. The paid version is
+    // available now"). Not replaced with the paid slug -- that would silently
+    // burn paid credits from inside what's supposed to be the free-only
+    // rungs, defeating the 2026-09-04 operator policy below.
     name: 'openrouter-nemotron-super',
     model: 'nvidia/nemotron-3-super-120b-a12b:free',
     baseURL: 'https://openrouter.ai/api/v1',
@@ -167,7 +162,6 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-minimax-m3',
   'openrouter-nemotron-ultra',
-  'openrouter-glm-5-2-free',
   'openrouter-nemotron-super',
   'openrouter-deepseek-v4-flash-paid',
   'openrouter-deepseek-v3-paid',
