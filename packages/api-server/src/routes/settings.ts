@@ -60,12 +60,22 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
-    id: 'vapi', name: 'Vapi', description: 'Outbound AI phone calls for the Sales agent.', category: 'voice',
+    id: 'vapi', name: 'Vapi', description: 'Outbound AND inbound AI phone calls for the Sales agent (make_outbound_call / configure_inbound_assistant + provision_inbound_number).', category: 'voice',
     docsUrl: 'https://dashboard.vapi.ai',
     envVars: [
       { key: 'VAPI_API_KEY', label: 'Private API Key', placeholder: 'Vapi private key', secret: true },
-      { key: 'VAPI_PHONE_NUMBER_ID', label: 'Phone Number ID', placeholder: 'Vapi phone number ID' },
+      { key: 'VAPI_PHONE_NUMBER_ID', label: 'Outbound Phone Number ID', placeholder: 'Vapi phone number ID used for make_outbound_call' },
       { key: 'VAPI_WEBHOOK_SECRET', label: 'Webhook Secret', placeholder: 'Optional webhook secret', secret: true },
+    ],
+  },
+  {
+    id: 'resend', name: 'Resend', description: 'Outbound sales email for the Sales agent (send_email, start_email_campaign / send_email_campaign_batch). Delivery/open/click/bounce/complaint events arrive at /api/resend/webhook.', category: 'business',
+    docsUrl: 'https://resend.com/api-keys',
+    envVars: [
+      { key: 'RESEND_API_KEY', label: 'API Key', placeholder: 're_...', secret: true },
+      { key: 'RESEND_FROM_EMAIL', label: 'From Address', placeholder: 'sales@buildmybot.app' },
+      { key: 'RESEND_FROM_NAME', label: 'From Name', placeholder: 'BuildMyBot Sales' },
+      { key: 'RESEND_WEBHOOK_SECRET', label: 'Webhook Signing Secret', placeholder: 'whsec_...', secret: true },
     ],
   },
   {
