@@ -23,6 +23,7 @@ import {
   BranchReviewJob,
   StalledWorkRecoveryJob,
   PromptSelfImproveJob,
+  BuildMyBotSmsOverageJob,
 } from './handlers/index.js';
 import { OpportunityDiscoveryJob, WorkforcePlannerJob } from './opportunity-jobs.js';
 import { WorkGenerationJob } from './work-generation-job.js';
@@ -67,6 +68,7 @@ export class JobScheduler {
     this.executor.registerHandler('work_generation', new WorkGenerationJob());
     this.executor.registerHandler('cron_governor', new CronGovernorJob());
     this.executor.registerHandler('executor_dispatch', new ExecutorDispatchJob());
+    this.executor.registerHandler('buildmybot_sms_overage', new BuildMyBotSmsOverageJob());
   }
 
   /** Start the in-process wake loop. Durable ownership remains in Postgres. */

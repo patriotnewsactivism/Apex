@@ -199,7 +199,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
         'Trigger a BuildMyBot worker run immediately instead of waiting for its cron slot: "shifts" runs all role shifts, "lead_followups" runs the 48h follow-up worker, "sales_outreach" runs the outreach agent that picks up researched leads and initiates first contact, "pulse" runs the 10-minute heartbeat. Use sales_outreach right after buildmybot_push_leads so pushed leads are worked without waiting. Requires BUILDMYBOT_CRON_SECRET.',
       schema: z.object({
         worker: z
-          .enum(['shifts', 'lead_followups', 'sales_outreach', 'pulse'])
+          .enum(['shifts', 'lead_followups', 'sales_outreach', 'pulse', 'sms_overage'])
           .describe('Which worker to run'),
       }),
       requiresApproval: true,
@@ -210,12 +210,16 @@ export function createBuildMyBotTools(): ToolDefinition[] {
         // cron route (api/cron/[job].ts), which exists to stay under Vercel's
         // Hobby 12-function cap. sales-outreach in particular has NO
         // vercel.json cron entry, so this tool is the only thing that runs it
-        // short of a manual curl.
+        // short of a manual curl. sms_overage (added 2026-09-06) also has its
+        // own recurring trigger — buildmybot2's own GitHub Actions schedule
+        // AND Apex's 'buildmybot_sms_overage' scheduled job — this tool slot
+        // just gives any Apex agent an on-demand way to run it too.
         const paths: Record<typeof worker, string> = {
           shifts: '/api/cron/all-shifts',
           lead_followups: '/api/cron/lead-followups',
           sales_outreach: '/api/cron/sales-outreach',
           pulse: '/api/cron/pulse',
+          sms_overage: '/api/cron/sms-overage',
         };
         const path = paths[worker];
         const res = await fetch(`${APP_URL()}${path}`, {
