@@ -219,16 +219,16 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
           ws.send(JSON.stringify({ type: 'audio', data: bufToBase64(pcm16) }));
         };
         source.connect(processor);
-        // The processor needs SOME destination connection to keep pumping on
-        // all browsers, but it must be SILENT: connecting it straight to
-        // captureCtx.destination played raw mic audio out the speakers at
-        // full volume while the mic was open — an acoustic feedback loop
-        // that surfaced as a constant beep/howl on every call. A zero-gain
-        // node keeps the pump alive with zero playback.
+        // ScriptProcessorNode needs a downstream connection to keep pumping
+        // on all browsers. Never connect that graph to the speaker destination:
+        // even a zero-gain speaker sink can wake browser/audio-device feedback
+        // processing and produce the long beep that interrupts Gemini audio.
+        // A MediaStreamDestination keeps the graph alive without any audible
+        // output or acoustic path back into the microphone.
         const silentSink = captureCtx.createGain();
         silentSink.gain.value = 0;
         processor.connect(silentSink);
-        silentSink.connect(captureCtx.destination);
+        silentSink.connect(captureCtx.createMediaStreamDestination());
       };
 
       ws.onmessage = (event) => {

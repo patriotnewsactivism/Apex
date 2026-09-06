@@ -37,7 +37,7 @@ APEX currently routes production inference through OpenRouter using the reviewed
 
 Required credential: `OPENROUTER_API_KEY`.
 
-`OPENROUTER_API_KEY_2` is optional credential redundancy. Two keys on the same OpenRouter account do not create separate account balances or independent account-wide quota.
+`OPENROUTER_API_KEY_2` is optional credential redundancy and `OPENROUTER_API_KEY_3` is an optional separately named paid-fallback credential. Two keys on the same OpenRouter account do not create separate account balances or independent account-wide quota; the paid fallback uses the canonical `OPENROUTER_API_KEY` when it is funded.
 
 The old Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first production chain is retired unless an explicit architecture decision changes that policy.
 

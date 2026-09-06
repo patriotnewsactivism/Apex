@@ -56,10 +56,17 @@ const OPENROUTER_FREE_KEY_ENVS = [
   'OPENROUTER_FREE_API_KEY',
   // Old-account key — still serves :free models (its paid credits are gone).
   'OPENROUTER_API_KEY_2',
-  // Paid key works for :free models too ($0 cost) as a final free-tier slot.
+  // Paid keys work for :free models too ($0 cost), then remain available for
+  // the paid tail when the free roster is exhausted.
+  'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_3',
 ] as const;
-const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_3'] as const;
+const OPENROUTER_PAID_KEY_ENVS = [
+  // This is the deployment's canonical paid OpenRouter credential.
+  'OPENROUTER_API_KEY',
+  // Preserve support for the optional separately named paid credential.
+  'OPENROUTER_API_KEY_3',
+] as const;
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -1390,6 +1397,7 @@ export function getProviderCatalog(): Array<{
 export function getKnownApiKeyEnvs(): string[] {
   return [
     ...new Set(PROVIDERS.flatMap((provider) => provider.apiKeyEnvs)),
+    'OPENROUTER_API_KEY_3',
     'YELP_API_KEY',
     'GOOGLE_PLACES_API_KEY',
     'TAVILY_API_KEY',
