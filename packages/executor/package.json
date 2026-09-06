@@ -1,5 +1,5 @@
 {
-  "name": "@workspace/background-jobs",
+  "name": "@workspace/executor",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,19 +8,18 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "start:executor": "tsx src/main.ts"
   },
   "dependencies": {
+    "@workspace/core": "workspace:*",
     "@workspace/db": "workspace:*",
-    "@workspace/executor": "workspace:*",
-    "@workspace/health-monitor": "workspace:*",
-    "@workspace/learning-system": "workspace:*",
     "drizzle-orm": "catalog:",
-    "zod": "catalog:",
-    "@workspace/core": "workspace:*"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:"
   }
 }

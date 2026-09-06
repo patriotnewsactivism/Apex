@@ -8,6 +8,7 @@ import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
+import { drainTaskArtifacts } from './durable-work-tools.js';
 import { recordAgentLoopStart, recordAgentLoopTick } from './runtime-health.js';
 import {
   getLLMCapacityResumeAt,
@@ -382,7 +383,10 @@ export abstract class BaseAgent {
           // means the worst case is "one task takes up to 10 min to be
           // detected as stuck," not "this agent never processes anything
           // again until someone manually restarts the whole process."
-          const TASK_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+          const TASK_HARD_TIMEOUT_MS =
+            (task.context?.runtime as string | undefined) === 'job'
+              ? Number(process.env.EXECUTOR_TASK_HARD_TIMEOUT_MS ?? 55 * 60 * 1000)
+              : 10 * 60 * 1000;
           let hardTimeoutId: ReturnType<typeof setTimeout> | undefined;
           const hardTimeout = new Promise<never>((_, reject) => {
             hardTimeoutId = setTimeout(
@@ -748,12 +752,30 @@ export abstract class BaseAgent {
             return { success: false, error: failMsg };
           }
 
+          // Durable-artifact link (Phase 1.6): drain artifact URLs the agent
+          // published via store_artifact and persist them on the task row so
+          // results carry real links. Best-effort — a DB hiccup here must
+          // never fail a completed task; the artifacts table rows are the
+          // durable record either way.
+          const artifactUrls = drainTaskArtifacts(taskId);
+          if (artifactUrls.length > 0) {
+            try {
+              await db.update(tasksTable).set({ resultArtifacts: artifactUrls, updatedAt: new Date() })
+                .where(eq(tasksTable.id, taskId));
+            } catch (artifactErr) {
+              console.warn(
+                `[base-agent] failed to persist result artifacts for ${taskId}:`,
+                artifactErr instanceof Error ? artifactErr.message : artifactErr,
+              );
+            }
+          }
+
           await this.taskQueue.complete(taskId, result);
           await this.memory.remember(`task:${taskId}:result`, result.slice(0, 500), { importance: 0.6 });
           await this.logger.info(`Task completed: ${title}`, taskId);
           this.setStatus('idle');
           recordMetricsAsync(true);
-          return { success: true, output: result };
+          return { success: true, output: result, artifacts: artifactUrls };
         }
 
         // Execute tool calls

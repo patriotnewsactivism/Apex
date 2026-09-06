@@ -244,6 +244,15 @@ See `SECURITY.md` for the repository-wide security contract.
 - Repeated current failures are engineering defects until evidence shows they are transient/recovered.
 - Never manufacture metrics, status, deploy evidence, test results, or external side effects.
 
+## Durable work, sandbox executor, and cron governance (ADR-013)
+
+- **Durable artifacts**: the container filesystem is ephemeral. Finished deliverables belong in the GCS bucket named by `APEX_ARTIFACT_BUCKET` (`store_artifact` / `read_artifact` / `list_artifacts` / `publish_artifact`), with object names `projects/<projectId>/<taskId>/<file>` and audit rows in the `artifacts` table. Bucket tools fail closed when `APEX_ARTIFACT_BUCKET` is unset. `tasks.result_artifacts` carries result links (drained from `store_artifact` calls on task completion, best-effort).
+- **Durable workspace**: `init_workspace` / `sync_workspace` / `push_workspace` sync project trees to `projects/<projectId>/workspace/<worktree>/` with a checksum manifest; the sandbox executor pulls before and pushes after every run so instance recycle never loses work.
+- **Sandbox executor**: heavy tasks (`context.runtime='job'`, created via `run_executor_job`) never run in the control-plane loop — the 30s dispatch loop fires `gcloud run jobs execute` for the configured `APEX_EXECUTOR_JOB` (a new Cloud Run Jobs resource, NOT the control-plane service). Executor tasks are exempt from the in-process 10-minute lease sweep and get a 55-minute hard timeout. Dispatch is a no-op until `APEX_EXECUTOR_JOB` is set (fail closed, never invented values).
+- **Cron governance**: agent-created crons (`schedule_task`) are marked `dynamic:true`, capped at `APEX_MAX_DYNAMIC_JOBS` (default 25), per-workstream 3, floor 15 min — enforced at insert and hourly by `cron_governor` (pauses only, never creates). `work_generation` (every 10 min) plans deduplicated tasks from open goals, accepted opportunities, and due workstreams; `create_workstream` registers durable deliverable units.
+- **Autonomy mode**: `projects.autoapproveTools` (non-empty) + `autonomyLevel` in the autonomy modes lets a bounded eligible set skip human approval (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated forever: `deploy_to_environment`, `rollback_deployment`, `make_outbound_call`, `runShell`, `register_deploy_hook`, `register_application`, `delegate_to_application`, and BuildMyBot/CaseBuddy connector sends — never auto-approvable (`scripts/verify-approval-policy.ts`).
+- **Deploy hooks**: third-party hosting deploys for client deliverables go through registrable webhooks only (`register_deploy_hook` / `deploy_via_hook`); hook URLs are stored as `env:VAR_NAME` secret references, never logged. They do not change APEX's own hosting (ADR-001 — Cloud Run only).
+
 ## Verification sequence
 
 For any real code fix or feature:
@@ -284,6 +293,11 @@ Production CI currently includes:
 - OpenRouter model-routing-policy guard;
 - evidence-driven model-intelligence guard;
 - retired-hosting-instructions guard;
+- artifact-store guard (Phase 1: storage wiring, artifacts table, tools registered);
+- workspace-sync guard (Phase 3: checksum round-trip determinism);
+- cron-governor guard (Phase 5: frequency floor, dynamic-ceiling constants, schedule_task enum);
+- approval-policy guard (Phase 5.5: hard-gated tools never auto-approvable);
+- executor-dispatch guard (Phase 4: claim-by-id, runtime routing, dispatch wiring);
 - dashboard build.
 
 Experimental Convex checks must not silently become production authority merely because they pass.

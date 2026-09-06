@@ -16,6 +16,7 @@
     "@workspace/cicd-automation": "workspace:*",
     "@workspace/core": "workspace:*",
     "@workspace/db": "workspace:*",
+    "@workspace/executor": "workspace:*",
     "@workspace/health-monitor": "workspace:*",
     "@workspace/learning-system": "workspace:*",
     "@workspace/multiapp": "workspace:*",

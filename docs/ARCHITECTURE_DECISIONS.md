@@ -308,6 +308,27 @@ ADR-012 refines ADR-004's model-adaptation contract; it does not change OpenRout
 - Model-learning telemetry is operational metadata, not prompt/content storage.
 - If Model Intelligence cannot establish safe evidence, production routing falls back to the saved operator order.
 
+## ADR-013 — Durable artifacts, sandbox executor, and cron governance are separate GCP-bounded resources
+
+**Status:** Accepted  
+**Last confirmed:** 2026-09-06
+
+APEX's container filesystem is ephemeral, so finished work needed a durable home, and heavy builds needed isolation beyond the in-process 10-second `runInSandbox`. This change set adds three bounded capabilities, each scoped to the existing GCP project/region and none of them a change of the control-plane host:
+
+1. **GCS artifact store** (`APEX_ARTIFACT_BUCKET`) — durable deliverables (documents, builds, renders) with object names `projects/<projectId>/<taskId>/<file>`; the `artifacts` table is the audit row; `tasks.result_artifacts` carries result links. Every operation fails closed when the bucket env var is unset.
+2. **Cloud Run Jobs sandbox executor** (`APEX_EXECUTOR_JOB`) — heavy `runtime='job'` tasks are claimed by id and executed in a separate Cloud Run Job container (same immutable SHA image, ≤55 min wall clock), with GCS workspace sync (Phase 3) before/after and artifact push. Dispatch uses `gcloud run jobs execute` via `execFile` (the repo's existing CLI pattern). This is a new GCP resource, not the control-plane service — ADR-001/ADR-002 are unchanged.
+3. **Cron governance** — dynamic (agent-created) `scheduled_jobs` are bounded: total ceiling (`APEX_MAX_DYNAMIC_JOBS`, default 25), per-workstream cap 3, frequency floor 15 minutes enforced at insert (`schedule_task`) and hourly by the `cron_governor` job. `work_generation` (every 10 min) is the bounded cron-creating-cron: it plans concrete deduplicated tasks from open goals, accepted opportunities, and due workstreams.
+
+Autonomy-mode approval policy (`projects.autoapproveTools`) allows a bounded class of tools (push/PR on APEX-created repos, registered-hook deploys, executor dispatch, artifact publication) to skip human approval only inside an autonomy-mode project. The hard-gated set (`deploy_to_environment`, `rollback_deployment`, `make_outbound_call`, `runShell`, hook/repo registration, connector sends) is never auto-approvable (enforced by `scripts/verify-approval-policy.ts`).
+
+### Consequences
+
+- Finished work survives instance recycle (bucket + workspace sync + executor).
+- Heavy work executes with minutes-scale budgets and real isolation without touching the control-plane service or its approval paths.
+- Cron growth is governed by ceilings/floors with deterministic guards in CI; the governor only pauses, never creates.
+- New GCP resources require real operator configuration (bucket name, job name); unset means fail-closed tool errors / no-op dispatch, never invented values.
+- Deploy hooks are registrable webhooks (Vercel-style) for hosted client deliverables; hook URLs are secret-ref style (`env:VAR_NAME`) and never logged. APEX's own hosting remains Cloud Run only.
+
 ## How to change an architecture decision
 
 A proposed change should include:

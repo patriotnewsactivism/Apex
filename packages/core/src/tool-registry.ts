@@ -10,6 +10,7 @@ import { normalizeIndustry } from './industry-taxonomy.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector.js';
 import { createOrchestrationTools } from './orchestration-tools.js';
+import { createDurableWorkTools } from './durable-work-tools.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
 import { getNextRunTimes } from './cron-utils.js';
@@ -62,15 +63,22 @@ class ToolRegistry {
       return { success: false, error: `Invalid args for ${name}: ${parsed.error.message}` };
     }
 
-    // Approval gate
+    // Approval gate. Any tool marked requiresApproval consults the autonomy
+    // approval policy first: inside an autonomy-mode project whose
+    // autoapproveTools lists the tool (and the tool is not hard-gated), the
+    // call proceeds without a human. Everything else keeps the ordinary gate.
     if (tool.requiresApproval) {
-      const approved = await context.requestApproval(
-        name,
-        rawArgs,
-        `Agent requests to execute tool: ${name}`,
-      );
-      if (!approved) {
-        return { success: false, error: 'Action rejected by user' };
+      const { evaluateForTask } = await import('./approval-policy.js');
+      const decision = await evaluateForTask({ toolName: name, taskId: context.taskId, goalId: context.goalId });
+      if (!decision.autoApprove) {
+        const approved = await context.requestApproval(
+          name,
+          rawArgs,
+          `Agent requests to execute tool: ${name}. (${decision.reason})`,
+        );
+        if (!approved) {
+          return { success: false, error: 'Action rejected by user' };
+        }
       }
     }
 
@@ -1263,10 +1271,29 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── Schedule a background job ────────────────────────────────────────
     {
       name: 'schedule_task',
-      description: 'Create a scheduled background job (cron recurring or one-time). Job types: task_delegation (delegates a task to an agent), health_check (runs health diagnostics), report_generation (generates daily summary), maintenance (cleans old logs/expired data).',
+      description:
+        'Create a scheduled background job (cron recurring or one-time). Job types: task_delegation (delegates a task to an agent), health_check (runs health diagnostics), report_generation (generates daily summary), maintenance (cleans old logs/expired data), goal_review, learning_analysis, delegation_followup, goal_progress, failure_review, branch_review, stalled_work_recovery, prompt_self_improve, opportunity_discovery, workforce_planner, work_generation (plans the next batch of tasks from goals/opportunities/workstreams), cron_governor (enforces dynamic-job ceilings and the 15-minute frequency floor). Dynamic jobs must fire at most every 15 minutes and are capped by the governor.',
       schema: z.object({
         name: z.string().describe('Human-readable job name'),
-        jobType: z.enum(['task_delegation', 'health_check', 'report_generation', 'maintenance']).describe('Type of job to schedule'),
+        jobType: z.enum([
+          'task_delegation',
+          'health_check',
+          'report_generation',
+          'maintenance',
+          'goal_review',
+          'learning_analysis',
+          'delegation_followup',
+          'goal_progress',
+          'failure_review',
+          'branch_review',
+          'stalled_work_recovery',
+          'prompt_self_improve',
+          'opportunity_discovery',
+          'workforce_planner',
+          'work_generation',
+          'cron_governor',
+          'executor_dispatch',
+        ]).describe('Type of job to schedule'),
         cronExpression: z.string().optional().describe('Standard 5-part cron expression for recurring jobs (e.g. "0 */6 * * *" for every 6 hours)'),
         scheduledAt: z.string().optional().describe('ISO timestamp for one-time jobs (mutually exclusive with cronExpression)'),
         targetAgentId: z.string().optional().describe('Agent to delegate to (for task_delegation jobs)'),
@@ -1278,7 +1305,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ name, jobType, cronExpression, scheduledAt, targetAgentId, payload, priority }) {
         const { randomUUID } = await import('crypto');
         const { db, scheduledJobs } = await import('@workspace/db');
-        const { and, eq, inArray } = await import('drizzle-orm');
+        const { and, eq, inArray, sql, desc } = await import('drizzle-orm');
 
         const id = randomUUID();
         const now = new Date();
@@ -1316,12 +1343,50 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           }
         }
 
+        // ── Cron governance (Phase 5.4): dynamic jobs respect the frequency
+        // floor and the global ceiling at insert time, before the governor's
+        // hourly sweep can see them.
+        if (recurring) {
+          const times = getNextRunTimes(cronExpression!, 2, now);
+          if (times.length === 2 && times[1].getTime() - times[0].getTime() < 15 * 60_000) {
+            return {
+              created: false,
+              error:
+                'Dynamic cron rejected: expressions must fire at most every 15 minutes ' +
+                '(frequency floor enforced by cron_governor). Use a slower cadence.',
+            };
+          }
+          const [{ count }] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(scheduledJobs)
+            .where(and(
+              eq(scheduledJobs.enabled, true),
+              inArray(scheduledJobs.status, ['active', 'running']),
+              sql`${scheduledJobs.payload}->>'dynamic' = 'true'`,
+            ));
+          const cap = Math.max(5, Number(process.env.APEX_MAX_DYNAMIC_JOBS ?? 25));
+          if (count >= cap) {
+            return {
+              created: false,
+              error: `Dynamic cron rejected: ceiling of ${cap} dynamic jobs reached (APEX_MAX_DYNAMIC_JOBS). The cron_governor enforces this cap hourly.`,
+              dynamicJobs: count,
+              cap,
+            };
+          }
+        }
+
         const nextRunAt = recurring
           ? (getNextRunTimes(cronExpression!, 1, now)[0] ??
             new Date(now.getTime() + 60_000))
           : scheduledAt
             ? new Date(scheduledAt)
             : now;
+
+        const dynamicPayload = {
+          ...(payload ?? {}),
+          dynamic: true,
+          createdBy: 'schedule_task',
+        };
 
         await db.insert(scheduledJobs).values({
           id,
@@ -1331,7 +1396,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
           enabled: true,
           targetAgentId: targetAgentId ?? null,
-          payload: payload ?? null,
+          payload: dynamicPayload,
           priority: priority ?? 5,
           status: 'active',
           retryCount: 0,
@@ -1341,7 +1406,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           updatedAt: now,
         });
 
-        return { created: true, jobId: id, name, jobType };
+        void desc;
+        return { created: true, jobId: id, name, jobType, dynamic: true };
       },
     },
 
@@ -2124,6 +2190,12 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     // delegation loop, so an agent can see what happened to work it handed
     // down instead of reporting an initiative complete the moment it is sent.
     for (const tool of createOrchestrationTools()) {
+      _registry.register(tool);
+    }
+    // Durable-work tools (artifact store, GitHub repos, deploy hooks,
+    // workspace sync, executor dispatch, workstreams). Always registered;
+    // each operation fails closed when its bucket/hook/credential is unset.
+    for (const tool of createDurableWorkTools()) {
       _registry.register(tool);
     }
     // Portfolio connectors register only when their env is configured, so a

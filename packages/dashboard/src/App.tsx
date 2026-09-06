@@ -20,6 +20,8 @@ import { LeadsPanel } from './components/LeadsPanel.js';
 import { CampaignsPanel } from './components/CampaignsPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
+import { ArtifactsPanel } from './components/ArtifactsPanel.js';
+import { ScheduledJobsPanel } from './components/ScheduledJobsPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
@@ -42,6 +44,8 @@ import {
   SlidersHorizontal,
   Lightbulb,
   Brain,
+  Package,
+  CalendarClock,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -245,6 +249,8 @@ function Sidebar({
       label: 'Systems',
       items: [
         { id: 'control', label: 'Control Room', icon: <SlidersHorizontal size={16} /> },
+        { id: 'artifacts', label: 'Artifacts', icon: <Package size={16} /> },
+        { id: 'scheduled', label: 'Cron Registry', icon: <CalendarClock size={16} /> },
         { id: 'health', label: 'Health', icon: <Activity size={16} /> },
         { id: 'learning', label: 'Intelligence', icon: <Brain size={16} /> },
         { id: 'pipeline', label: 'CI/CD', icon: <GitBranch size={16} /> },
@@ -595,6 +601,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     campaigns: <CampaignsPanel />,
     leads: <LeadsPanel />,
     control: <ControlRoom />,
+    artifacts: <ArtifactsPanel />,
+    scheduled: <ScheduledJobsPanel />,
     suggestions: <SuggestionsPanel />,
     logs: (
       <div
@@ -624,6 +632,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     campaigns: { title: 'Lead Campaigns', kicker: 'Business' },
     leads: { title: 'Lead Pipeline', kicker: 'Business' },
     control: { title: 'Control Room', kicker: 'Systems' },
+    artifacts: { title: 'Artifacts', kicker: 'Systems' },
+    scheduled: { title: 'Cron Registry', kicker: 'Systems' },
     suggestions: { title: 'Suggestions', kicker: 'Business' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },
     approvals: { title: 'Approval Queue', kicker: 'Command' },

@@ -38,6 +38,8 @@ COPY packages/cicd-worker/package.json ./packages/cicd-worker/
 COPY packages/cicd-worker/tsconfig.json ./packages/cicd-worker/
 COPY packages/orchestrator/package.json ./packages/orchestrator/
 COPY packages/orchestrator/tsconfig.json ./packages/orchestrator/
+COPY packages/executor/package.json ./packages/executor/
+COPY packages/executor/tsconfig.json ./packages/executor/
 # NOTE: packages/frontend is deliberately NOT copied. The directory contains
 # only a stray src/ — it has no package.json, so pnpm does not treat it as a
 # workspace package and nothing depends on it. A `COPY packages/frontend/
@@ -97,6 +99,8 @@ COPY packages/agents/package.json ./packages/agents/
 COPY packages/agents/tsconfig.json ./packages/agents/
 COPY packages/api-server/package.json ./packages/api-server/
 COPY packages/api-server/tsconfig.json ./packages/api-server/
+COPY packages/executor/package.json ./packages/executor/
+COPY packages/executor/tsconfig.json ./packages/executor/
 
 # Production deps only, still pinned to the reviewed lockfile.
 RUN pnpm install --frozen-lockfile --ignore-scripts --prod
@@ -112,6 +116,7 @@ COPY --from=builder /app/packages/predictive ./packages/predictive
 COPY --from=builder /app/packages/core ./packages/core
 COPY --from=builder /app/packages/agents ./packages/agents
 COPY --from=builder /app/packages/api-server ./packages/api-server
+COPY --from=builder /app/packages/executor ./packages/executor
 COPY --from=builder /app/packages/dashboard/dist ./packages/dashboard/dist
 
 # Root docs ARE the agents' workspace: Sales reads BUSINESS_PROFILE.md, every

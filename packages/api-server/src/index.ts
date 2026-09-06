@@ -41,6 +41,8 @@ import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
 import { createLeadsRouter } from './routes/leads.js';
 import { createCampaignsRouter } from './routes/campaigns.js';
+import { createArtifactsRouter } from './routes/artifacts.js';
+import { startExecutorDispatchLoop, executorDispatchConfig } from '@workspace/executor';
 import { requireAdminAuth } from './middleware/auth.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
@@ -239,6 +241,29 @@ async function seedDefaultJobs(): Promise<void> {
             'You run engineering for Apex itself and for buildmybot2. Priorities in order: (1) Stability over features — call health_check first and act only on current degradation. A successful task newer than an old provider-chain failure means that outage recovered; do not request credits or keys from historical errors alone. (2) Repeated current failures are engineering defects until proven otherwise — diagnose the root cause rather than re-running the same work. (3) Delegate exactly once through apex-lead-dev-001; never also assign its Frontend, Backend, DevOps, or QA reports directly. Idle agents need no invented work. (4) BuildMyBot2 work must keep its repository context; do not inspect the Apex filesystem as if it were BuildMyBot2. (5) Ship through PRs, never direct pushes; deploys stay approval-gated. Escalate a missing capability only after a current tool or health check proves it is missing.',
         } as Record<string, unknown>,
       },
+      // ── Autonomous execution scheduler roster (2026-09-06) ───────────────
+      // work_generation is the self-growing task machine: it turns open goals,
+      // accepted opportunities, and due workstreams into concrete tasks every
+      // 10 minutes (deduped — see WorkGenerationJob). cron_governor is the
+      // hourly ceiling/floor enforcement so that machine cannot explode.
+      {
+        id: 'system-work-generation',
+        name: 'Autonomous work generation (goals, opportunities, workstreams)',
+        jobType: 'work_generation',
+        cronExpression: '*/10 * * * *', // every 10 min — the autonomous spark
+        targetAgentId: 'apex-coo-001' as string | null,
+        priority: 3,
+        payload: { systemDefinitionVersion: 1, maxPerRun: 6 } as Record<string, unknown>,
+      },
+      {
+        id: 'system-cron-governor',
+        name: 'Cron governance (ceilings, frequency floor, failed-storm pruning)',
+        jobType: 'cron_governor',
+        cronExpression: '23 * * * *', // hourly, offset off the half-hour
+        targetAgentId: null as string | null,
+        priority: 4,
+        payload: { systemDefinitionVersion: 1 } as Record<string, unknown>,
+      },
     ];
 
     for (const def of defaults) {
@@ -318,6 +343,10 @@ try {
     .from(tasks)
     .where(and(
       eq(tasks.status, 'in_progress'),
+      // Sandbox-executor tasks (context.runtime='job') run inside Cloud Run
+      // Jobs with their own 55-minute wall clock and lease semantics; the
+      // in-process 10-minute recovery sweep must never steal them mid-run.
+      sql`${tasks.context}->>'runtime' IS DISTINCT FROM 'job'`,
       or(
         isNull(tasks.leasedAt),
         lt(tasks.leasedAt, staleThreshold),
@@ -643,6 +672,7 @@ await recoverStaleLeasedTasks();
   app.use('/api/settings', createSettingsRouter());
   app.use('/api/leads', createLeadsRouter());
   app.use('/api/campaigns', createCampaignsRouter());
+  app.use('/api/artifacts', createArtifactsRouter());
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs
@@ -805,6 +835,17 @@ await recoverStaleLeasedTasks();
   setTimeout(() => {
     sweepStaleEscalations().catch(() => {});
   }, 30_000);
+  // Sandbox-executor dispatch loop (Phase 4): the 60s cron-table can't express
+  // a 30s cadence, so this is an interval loop like CampaignRunner. It is a
+  // no-op cycle when APEX_EXECUTOR_JOB is unset — the control plane keeps
+  // running, only dispatch pauses.
+  const executorConfig = executorDispatchConfig();
+  const executorDispatch = startExecutorDispatchLoop({ intervalMs: 30_000 });
+  console.log(
+    executorConfig.configured
+      ? `✅ Executor dispatch loop started (job '${process.env.APEX_EXECUTOR_JOB}')`
+      : `ℹ️  Executor dispatch disabled: ${executorConfig.reason}`,
+  );
   // Run an immediate initial health check after 5s
   setTimeout(runHealthPoll, 5_000);
 
@@ -837,6 +878,7 @@ await recoverStaleLeasedTasks();
     clearInterval(healthInterval);
     clearInterval(leaseRecoveryInterval);
     clearInterval(escalationSweepInterval);
+    executorDispatch.stop();
     campaignRunner.stop();
     scheduler.stop();
     server.close(() => {

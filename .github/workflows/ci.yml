@@ -54,6 +54,11 @@ jobs:
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-websocket-lifecycle.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-strategy-queue.ts"
           pnpm --filter @workspace/cicd-automation exec tsx "$GITHUB_WORKSPACE/scripts/verify-ci-workspace-guard.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-artifact-store.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-workspace-sync.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-cron-governor.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-approval-policy.ts"
+          pnpm --filter @workspace/executor exec tsx "$GITHUB_WORKSPACE/scripts/verify-executor-dispatch.ts"
 
       - name: Build dashboard
         run: pnpm --filter @workspace/dashboard run build

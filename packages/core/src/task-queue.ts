@@ -115,6 +115,7 @@ export class TaskQueue {
       result: null,
       errorMessage: null,
       context: (input.context as Record<string, unknown>) ?? null,
+      resultArtifacts: null,
     };
 
     try {
@@ -130,12 +131,64 @@ export class TaskQueue {
   }
 
   /**
+   * Claim one specific task by id (sandbox-executor path, Phase 4). Uses the
+   * same atomic status transition as dequeue() so two racing dispatchers (or a
+   * dispatcher racing the in-process workers) cannot both win. The task must
+   * be pending with its retry window elapsed; anything else returns null.
+   */
+  async claimById(taskId: string): Promise<Task | null> {
+    try {
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const [task] = await db
+        .update(tasks)
+        .set({ status: 'in_progress', leasedAt: now, startedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(tasks.id, taskId),
+            eq(tasks.status, 'pending'),
+            or(isNull(tasks.nextRetryAt), lte(tasks.nextRetryAt, now)),
+            sql`${tasks.id} = (
+              SELECT id FROM tasks
+              WHERE id = ${taskId}
+                AND status = 'pending'
+                AND (next_retry_at IS NULL OR next_retry_at <= ${nowIso})
+              LIMIT 1
+            )`,
+          ),
+        )
+        .returning();
+      return task ?? null;
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('claimById', err);
+    }
+
+    const memTask = this.memoryQueue.find(
+      (task) =>
+        task.id === taskId &&
+        task.status === 'pending' &&
+        (!task.nextRetryAt || task.nextRetryAt.getTime() <= Date.now()),
+    );
+    if (memTask) {
+      const now = new Date();
+      memTask.status = 'in_progress';
+      memTask.startedAt = now;
+      memTask.leasedAt = now;
+      return memTask;
+    }
+    return null;
+  }
+
+  /**
    * Claim the next highest-priority pending task whose retry window elapsed.
    *
    * The outer UPDATE repeats the pending/agent/retry predicates. That matters:
    * two workers can evaluate the scalar subquery at nearly the same time, but
    * after one changes the row to in_progress the other worker's UPDATE no
    * longer matches and therefore cannot return/execute the same task.
+   *
+   * Tasks with context.runtime === 'job' are owned by the sandbox executor
+   * (Phase 4) and are never claimed by in-process worker loops.
    */
   async dequeue(): Promise<Task | null> {
     recordDequeueAttempt();
@@ -150,11 +203,13 @@ export class TaskQueue {
             eq(tasks.assignedAgentId, this.agentId),
             eq(tasks.status, 'pending'),
             or(isNull(tasks.nextRetryAt), lte(tasks.nextRetryAt, now)),
+            sql`${tasks.context}->>'runtime' IS DISTINCT FROM 'job'`,
             sql`${tasks.id} = (
               SELECT id FROM tasks
               WHERE assigned_agent_id = ${this.agentId}
                 AND status = 'pending'
                 AND (next_retry_at IS NULL OR next_retry_at <= ${nowIso})
+                AND context->>'runtime' IS DISTINCT FROM 'job'
               ORDER BY priority ASC, created_at ASC
               LIMIT 1
             )`,
@@ -194,7 +249,10 @@ export class TaskQueue {
 
     const nowMs = Date.now();
     const nextMemIdx = this.memoryQueue.findIndex(
-      (task) => task.status === 'pending' && (!task.nextRetryAt || task.nextRetryAt.getTime() <= nowMs),
+      (task) =>
+        task.status === 'pending' &&
+        (task.context?.runtime as string | undefined) !== 'job' &&
+        (!task.nextRetryAt || task.nextRetryAt.getTime() <= nowMs),
     );
     if (nextMemIdx !== -1) {
       const task = this.memoryQueue[nextMemIdx];

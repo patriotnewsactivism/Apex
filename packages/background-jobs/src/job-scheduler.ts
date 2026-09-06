@@ -25,6 +25,9 @@ import {
   PromptSelfImproveJob,
 } from './handlers/index.js';
 import { OpportunityDiscoveryJob, WorkforcePlannerJob } from './opportunity-jobs.js';
+import { WorkGenerationJob } from './work-generation-job.js';
+import { CronGovernorJob } from './cron-governor-job.js';
+import { ExecutorDispatchJob } from './executor-dispatch-job.js';
 
 const OPEN_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const;
 const DEFAULT_STALE_CLAIM_MS = 5 * 60 * 1000;
@@ -61,6 +64,9 @@ export class JobScheduler {
     this.executor.registerHandler('prompt_self_improve', new PromptSelfImproveJob());
     this.executor.registerHandler('opportunity_discovery', new OpportunityDiscoveryJob());
     this.executor.registerHandler('workforce_planner', new WorkforcePlannerJob());
+    this.executor.registerHandler('work_generation', new WorkGenerationJob());
+    this.executor.registerHandler('cron_governor', new CronGovernorJob());
+    this.executor.registerHandler('executor_dispatch', new ExecutorDispatchJob());
   }
 
   /** Start the in-process wake loop. Durable ownership remains in Postgres. */

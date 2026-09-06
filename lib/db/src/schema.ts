@@ -34,6 +34,12 @@ export const projects = pgTable('projects', {
   priority: text('priority').notNull().default('normal'), // critical | high | normal | low
   status: text('status').notNull().default('active'), // active | paused | archived
   autonomyLevel: text('autonomy_level').notNull().default('supervisor'), // manual | assisted | supervisor | full_autonomous | experimental
+  // Autonomy-mode approval policy (Phase 5 of the autonomous-execution
+  // scheduler): an empty array means "no tool is ever auto-approved"; only
+  // tools listed here AND in the project's autonomy mode may skip the human
+  // approval gate. Tools in the hard-gated set are never auto-approvable no
+  // matter what this array contains (see approval-policy.ts).
+  autoapproveTools: jsonb('autoapprove_tools').$type<string[]>().notNull().default([]),
   metadata: jsonb('metadata').$type<Record<string, unknown>>(),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
@@ -78,6 +84,10 @@ export const tasks = pgTable('tasks', {
   result: text('result'),
   errorMessage: text('error_message'),
   context: jsonb('context').$type<Record<string, unknown>>(),
+  // Durable artifact links (object store URLs) produced while completing this
+  // task. Populated best-effort from TaskResult.artifacts — never a failure
+  // path. Added 2026-09-06 with the durable artifact store (Phase 1).
+  resultArtifacts: jsonb('result_artifacts').$type<string[]>(),
 }, (t) => ({
   // Prevents duplicate task delegation: two workers racing on the same (goal, title, agent)
   // tuple can't both insert — one gets DO NOTHING. Partial (WHERE goal_id IS NOT NULL)
@@ -304,6 +314,10 @@ export const scheduledJobs = pgTable('scheduled_jobs', {
   error: text('error'),
   nextRunAt: timestamp('next_run_at', { withTimezone: true, mode: 'date' }),
   lastRunAt: timestamp('last_run_at', { withTimezone: true, mode: 'date' }),
+  // Missed-run ledger (Phase 5.6): how many occurrences were collapsed into
+  // the single catch-up run after downtime, and the policy that produced it.
+  missedRuns: integer('missed_runs').notNull().default(0),
+  catchUpMode: text('catch_up_mode').notNull().default('collapsed'), // collapsed | none
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
@@ -321,6 +335,77 @@ export const jobExecutionLog = pgTable('job_execution_log', {
   output: text('output'),
   error: text('error'),
 });
+
+// ─── Artifacts (durable object-store records) ────────────────────────────────
+//
+// Added 2026-09-06 with the durable artifact store (Phase 1 of the
+// autonomous-execution scheduler). Every row maps to one object in the GCS
+// bucket named by APEX_ARTIFACT_BUCKET. The tasks.result link column carries
+// the object name; the DB row is the audit/metadata half, the bucket object is
+// the bytes half. Kind mirrors the plan's taxonomy:
+// document | build | code | workspace | deployment | other.
+
+export const artifacts = pgTable('artifacts', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id'),          // producing task, when there is one
+  projectId: text('project_id'),    // owning project, when there is one
+  objectName: text('object_name').notNull(), // e.g. projects/<projectId>/<taskId>/<filename>
+  fileName: text('file_name').notNull(),
+  mimeType: text('mime_type'),
+  sizeBytes: integer('size_bytes').notNull().default(0),
+  sha256: text('sha256'),
+  publicUrl: text('public_url'),    // set by publish_artifact (autonomy mode / operator)
+  kind: text('kind').notNull().default('other'), // document | build | code | workspace | deployment | other
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (t) => ({
+  taskIdx: uniqueIndex('artifacts_task_object_unique').on(t.taskId, t.objectName),
+  projectIdx: uniqueIndex('artifacts_project_object_unique').on(t.projectId, t.objectName),
+}));
+
+// ─── Deploy Hooks (registrable hosting-platform webhooks) ────────────────────
+//
+// APEX can push finished works (sites/apps) to third-party hosting platforms
+// only through hooks the operator registered here. hookUrl supports either a
+// literal https URL or an `env:VAR_NAME` reference resolved at call time so
+// secret webhook URLs are never stored in plaintext in the DB (they live in
+// Secret Manager / environment config instead). Values are never logged.
+
+export const deployHooks = pgTable('deploy_hooks', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id'),
+  name: text('name').notNull(),
+  hookUrl: text('hook_url').notNull(), // https URL or env:VAR_NAME reference
+  platform: text('platform').notNull().default('custom'), // vercel | railway | render | cloudflare | custom
+  active: boolean('active').notNull().default(true),
+  lastStatus: jsonb('last_status').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (t) => ({
+  projectIdx: uniqueIndex('deploy_hooks_project_name_unique').on(t.projectId, t.name),
+}));
+
+// ─── Workstreams (durable deliverable units) ─────────────────────────────────
+//
+// A workstream is a long-lived unit of autonomous production: one repo/one
+// deliverable family per row. work_generation plans batches of tasks from
+// open workstreams; each workstream may own a GitHub repo (repoUrl) and an
+// artifact prefix (artifactPrefix = projects/<projectId>/workspace/<name>/).
+
+export const workstreams = pgTable('workstreams', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull(),
+  name: text('name').notNull(),
+  goalId: text('goal_id'),
+  repoUrl: text('repo_url'),
+  artifactPrefix: text('artifact_prefix'),
+  scheduleHint: text('schedule_hint').notNull().default('*/15 * * * *'),
+  status: text('status').notNull().default('active'), // active | paused | archived
+  autonomyLevel: text('autonomy_level').notNull().default('supervisor'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (t) => ({
+  projectNameUniq: uniqueIndex('workstreams_project_name_unique').on(t.projectId, t.name),
+}));
 
 // ─── Task Outcomes (learning & analytics) ──────────────────────────────────────
 
@@ -669,3 +754,9 @@ export type PredictiveForecastRow = typeof predictiveForecasts.$inferSelect;
 export type NewPredictiveForecastRow = typeof predictiveForecasts.$inferInsert;
 export type RiskAssessmentRow = typeof riskAssessments.$inferSelect;
 export type NewRiskAssessmentRow = typeof riskAssessments.$inferInsert;
+export type Artifact = typeof artifacts.$inferSelect;
+export type NewArtifact = typeof artifacts.$inferInsert;
+export type DeployHook = typeof deployHooks.$inferSelect;
+export type NewDeployHook = typeof deployHooks.$inferInsert;
+export type Workstream = typeof workstreams.$inferSelect;
+export type NewWorkstream = typeof workstreams.$inferInsert;

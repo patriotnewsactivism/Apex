@@ -237,6 +237,19 @@ export const api = {
     history: (id: string) => apiFetch<JobExecutionRow[]>(`/jobs/${id}/history`),
   },
 
+  artifacts: {
+    list: (params?: { project?: string; task?: string; kind?: string; limit?: number }) => {
+      const qs = new URLSearchParams(params as Record<string, string>).toString();
+      return apiFetch<ArtifactRow[]>(`/artifacts${qs ? `?${qs}` : ''}`);
+    },
+    downloadUrl: (id: string) => `${API}/artifacts/${id}/download`,
+    upload: (data: { fileName: string; content: string; mimeType?: string; kind?: string; projectId?: string; taskId?: string }) =>
+      apiFetch<{ id: string; objectName: string; sizeBytes: number; sha256: string }>('/artifacts', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+  },
+
   learning: {
     outcomes: (role?: string) => apiFetch<TaskOutcomeRow[]>(`/learning/outcomes${role ? `?role=${role}` : ''}`),
     insights: () => apiFetch<LearningInsightRow[]>('/learning/insights'),
@@ -508,6 +521,8 @@ export interface ScheduledJobRow {
   error: string | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
+  missedRuns: number;
+  catchUpMode: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -522,6 +537,22 @@ export interface JobExecutionRow {
   status: string;
   output: string | null;
   error: string | null;
+}
+
+// ─── Artifact Types (durable artifact store) ──────────────────────────────────
+
+export interface ArtifactRow {
+  id: string;
+  taskId: string | null;
+  projectId: string | null;
+  objectName: string;
+  fileName: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  sha256: string | null;
+  publicUrl: string | null;
+  kind: string;
+  createdAt: string;
 }
 
 // ─── Learning Types ───────────────────────────────────────────────────────────

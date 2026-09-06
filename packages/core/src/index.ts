@@ -25,3 +25,7 @@ export { optimizePrompt, evaluateCandidate, preservesImmutableRules } from './pr
 export type { OptimizePromptInput, OptimizePromptResult, PromptCandidateResult } from './prompt-forge.js';
 export * from './context-budget.js';
 export * from './industry-taxonomy.js';
+export * from './artifact-store.js';
+export * from './workspace-sync.js';
+export * from './approval-policy.js';
+export * from './durable-work-tools.js';

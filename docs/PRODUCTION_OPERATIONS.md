@@ -269,6 +269,24 @@ Before a production migration or management-plane operation:
 
 Runtime DB connectivity is not management authorization.
 
+## Durable artifact store, sandbox executor, and cron governance (2026-09-06)
+
+The autonomous-execution scheduler adds three operator-configured GCP-scoped resources. Real values are configuration, never guessed (ADR-010):
+
+- `APEX_ARTIFACT_BUCKET` — GCS bucket in the existing project/region, created once:
+  `gcloud storage buckets create gs://<name> --location=<region>`.
+  Artifact/workspace tools fail closed when unset. Give the runtime service account `roles/storage.objectUser` on the bucket (Workload Identity on Cloud Run authenticates the control plane; the executor job uses the same image and can use its own job service account with the same role).
+- `APEX_EXECUTOR_JOB` — Cloud Run Jobs resource name (e.g. `apex-executor`). Until set, the 30-second dispatch loop is a no-op and `executor_dispatch` cron fires report "no-op". Create once with the same project/region, image = the same immutable SHA image, task timeout ≤ 60 min, no HTTP (jobs API), args = task id (dispatch passes `--args=<taskId>` via `gcloud run jobs execute`). This is a new GCP resource — it is NOT the control-plane service, so ADR-001/002 release rules are unchanged: APEX's own deploy still goes through `gcloud run services update` on the existing service.
+- `GITHUB_TOKEN_4` (existing) needs `repo` create scope for `create_github_repo`; `APEX_GITHUB_ORG` defaults to `patriotnewsactivism`.
+
+Autonomy mode: a project (`projects`) with `autonomyLevel` in the autonomy modes and a non-empty `autoapproveTools` list may auto-approve only the bounded eligible set (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated tools are never auto-approvable regardless of the list.
+
+### Incidents
+
+- **Bucket auth broken**: `store_artifact`/`sync_workspace` throw with an actionable error and the task records the failure; nothing is silently dropped (the tool result carries the error). Check the runtime service account's storage roles and Workload Identity binding; `ArtifactStore.ping()` in /api diagnostics or a `store_artifact` call reports the state.
+- **Executor job queue backlog**: tasks with `context.runtime='job'` sit `pending` with no `dispatchedAt`. Check `APEX_EXECUTOR_JOB` is set, `gcloud run jobs execute` works from the control-plane identity (`gcloud run jobs list`), and the dispatch loop log line `[executor-dispatch]`. Dispatch failures retry with durable backoff; claimed-but-crashed jobs recover via the task lease semantics (executor tasks are exempt from the in-process 10-min sweep — their wall clock lives in the job).
+- **Cron explosion**: the governor pauses offending jobs (frequency floor 15 min, ceiling `APEX_MAX_DYNAMIC_JOBS` default 25, per-workstream 3) and writes `cron-governor:health` memory; `GET /api/jobs` shows `error` text on paused rows.
+
 ## Post-release record
 
 For material production releases, retain a concise record containing:
