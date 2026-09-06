@@ -26,6 +26,7 @@
  * run if the detector cannot see it.
  */
 import { chromium } from 'playwright';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';
 
@@ -44,7 +45,51 @@ const NASTY = [
   'ERROR provider chain exhausted: openrouter/deepseek-v4-flash 400 models_array_too_long; openrouter2/qwen3-max cooldown 30s; cerebras no key configured',
 ];
 const BOTTOM = ['Chat','Mission','Tasks','Agents','Settings'];
-const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Leads','Suggestions','Portfolio','Control Room','Health','Intelligence','CI/CD'];
+const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
+
+// Every nav id in App.tsx mapped to the label this harness clicks to reach it.
+// The bottom bar uses shorthand ('Mission', 'Tasks', 'Agents') where the drawer
+// spells the view out, so the mapping cannot be derived from labels alone.
+//
+// This exists because the view list silently fell behind the app twice: the
+// 'Cron Registry' and 'Artifacts' panels shipped and the harness kept printing
+// a clean result for the views it did know about, never opening the new ones.
+// A clean run that skipped a view is the same lie as a clean run that could not
+// see overflow, so an unknown id is FATAL rather than a warning.
+const NAV_ID_TO_LABEL = {
+  chat: 'Chat', mission: 'Mission', approvals: 'Approvals',
+  agents: 'Agents', tasks: 'Tasks', logs: 'Log Stream',
+  campaigns: 'Campaigns', leads: 'Leads', suggestions: 'Suggestions',
+  multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
+  scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
+  pipeline: 'CI/CD', settings: 'Settings',
+};
+
+{
+  const appTsx = new URL('../../dashboard/src/App.tsx', import.meta.url);
+  let src = '';
+  try { src = readFileSync(appTsx, 'utf8'); } catch { /* checked below */ }
+  if (!src) {
+    console.error(`FATAL: cannot read ${appTsx.pathname} to verify view coverage.`);
+    process.exit(2);
+  }
+  const navIds = [...src.matchAll(/\{ id: '([^']+)', label: '([^']+)'/g)];
+  if (navIds.length === 0) {
+    console.error('FATAL: found no nav items in App.tsx — the nav shape changed, coverage is unverifiable.');
+    process.exit(2);
+  }
+  const checked = new Set([...BOTTOM, ...DRAWER]);
+  const missing = navIds
+    .filter(([, id]) => !NAV_ID_TO_LABEL[id] || !checked.has(NAV_ID_TO_LABEL[id]))
+    .map(([, id, label]) => `${id} ("${label}")`);
+  if (missing.length) {
+    console.error(`FATAL: ${missing.length} view(s) in App.tsx are not checked by this harness:`);
+    for (const m of missing) console.error(`   ${m}`);
+    console.error('Add each to NAV_ID_TO_LABEL and to BOTTOM or DRAWER, then re-run.');
+    process.exit(2);
+  }
+  console.log(`   view coverage: all ${navIds.length} nav views are checked`);
+}
 const WIDTHS = [360, 390, 430];
 
 // PLAYWRIGHT_CHROMIUM lets a sandbox point at a pre-installed browser whose
