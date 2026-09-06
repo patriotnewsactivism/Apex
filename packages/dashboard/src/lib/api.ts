@@ -29,6 +29,26 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Same auth as apiFetch, but returns the body verbatim. `/diagnostics?format=text`
+ *  answers in plain text on purpose — it is meant to be pasted into an issue or a
+ *  chat, so parsing it into JSON and re-rendering it would defeat the point. */
+async function apiFetchText(path: string): Promise<string> {
+  const token = localStorage.getItem('apex_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${API}${path}`, { headers });
+  if (!res.ok) {
+    // Same 401 handling as apiFetch — otherwise an expired token leaves the
+    // button silently dead instead of returning the operator to login.
+    if (res.status === 401) {
+      localStorage.removeItem('apex_token');
+      window.dispatchEvent(new Event('apex:unauthorized'));
+    }
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return res.text();
+}
+
 // ─── Goals ────────────────────────────────────────────────────────────────────
 
 export interface Goal {
@@ -51,6 +71,40 @@ export interface ChatTurn {
 export interface ChatResponse {
   reply: string;
   goalCreated?: { id: string; title: string };
+}
+
+// ─── Diagnostics ──────────────────────────────────────────────────────────────
+
+export type DiagnosticSeverity = 'critical' | 'warning' | 'ok';
+
+export interface DiagnosticFinding {
+  severity: DiagnosticSeverity;
+  code: string;
+  title: string;
+  detail: string;
+  action?: string;
+}
+
+export interface DiagnosticsReport {
+  status: DiagnosticSeverity;
+  generatedAt: string;
+  build: { sha: string | null; builtAt: string | null; startedAt: string; uptimeSeconds: number };
+  agents: { total: number; statuses: Record<string, number> };
+  taskQueue: {
+    attempts: number;
+    successes: number;
+    failures: number;
+    consecutiveFailures: number;
+    tasksClaimed: number;
+    lastFailureMessage: string | null;
+  };
+  capacity: {
+    deferrals: { lastMinute: number; last15Minutes: number; parkedForMs: number };
+    pausedProviders: string[];
+    configuredProviders: number;
+  };
+  memory: { rssMb: number; heapUsedMb: number; tmpUsedMb: number | null };
+  findings: DiagnosticFinding[];
 }
 
 export const api = {
@@ -157,6 +211,11 @@ export const api = {
       apiFetch<{ ok: boolean; key: string; configured: boolean }>(`/settings/integrations/${encodeURIComponent(key)}`, {
         method: 'DELETE',
       }),
+  },
+
+  diagnostics: {
+    get: () => apiFetch<DiagnosticsReport>('/diagnostics'),
+    text: () => apiFetchText('/diagnostics?format=text'),
   },
 
   health: {

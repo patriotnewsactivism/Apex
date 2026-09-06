@@ -4,6 +4,7 @@ import { Copy, Check, Download } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import { useWebSocket, type ApexEvent } from '../hooks/useWebSocket.js';
+import { copyText, downloadText, fileStamp } from '../lib/clipboard.js';
 
 const LEVEL_COLORS: Record<string, string> = {
   debug: '#64748b',
@@ -95,34 +96,13 @@ export function LogStream() {
   const [copied, setCopied] = useState(false);
 
   const copyLogs = useCallback(async () => {
-    const text = toPlainText(merged);
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // clipboard API needs a secure context and a user gesture; a hidden
-      // textarea + execCommand still works where it is unavailable.
-      const el = document.createElement('textarea');
-      el.value = text;
-      el.style.position = 'fixed';
-      el.style.opacity = '0';
-      document.body.appendChild(el);
-      el.select();
-      try { document.execCommand('copy'); } finally { el.remove(); }
-    }
+    await copyText(toPlainText(merged));
     setCopied(true);
     setTimeout(() => setCopied(false), 1_500);
   }, [merged]);
 
   const downloadLogs = useCallback(() => {
-    const blob = new Blob([toPlainText(merged)], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `apex-log-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadText(`apex-log-${fileStamp()}.log`, toPlainText(merged));
   }, [merged]);
 
   return (
