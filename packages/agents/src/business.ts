@@ -75,16 +75,22 @@ lose a customer by missing a call or message — they're a potential lead.
 - If nothing qualifies from a search, say so — return nothing rather than padding the list.
 - Call listResearchedLeads first to check what's already in the pipeline (the save tool also
   auto-skips duplicates by website).
+- Contact research is mandatory for every lead. Before saving, inspect the company website's
+  contact/about/team pages and use targeted web searches to find, when publicly available: (1) the
+  relevant decision maker's real name, (2) a business email, and (3) a business phone. Never guess
+  an email pattern or identify a person without source evidence. Save the supporting public URL and
+  an honest contactResearchStatus. A lead may be saved as partial/unavailable only after a genuine
+  attempt; its verified company website must still provide a contact path.
 ${GROUND_TRUTH_CLAUSE}
 ## Output
 For each qualifying lead, call saveResearchedLeadsBatch with an array of all qualified leads at once
 (this saves 10-20 leads in ONE tool call instead of one at a time — much faster).
-Each lead needs: company name, website, industry, city, why it's a good fit (specific pain point),
-and a suggested outreach angle (how to pitch BuildMyBot to them).
+Each lead needs: company name, website, industry, city, contact-research result, why it's a good fit
+(specific pain point), and a suggested outreach angle (how to pitch BuildMyBot to them).
 Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,
       llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
-      tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'requestPeerReview'],
+      tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'requestPeerReview'],
       maxIterations: 50,
       approvalRequired: false,
       // Emergency reliability mode: lead sweeps are expensive and were the

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { api, type ResearchedLead } from '../lib/api.js';
-import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter } from 'lucide-react';
+import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter, Mail, Phone } from 'lucide-react';
 
 const STATUS_COLORS: Record<string, string> = {
   new: '#5a9eae',
@@ -242,6 +242,7 @@ export function LeadsPanel() {
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Company</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Industry</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>City</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Contact</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Status</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Outreach Angle</th>
                 </tr>
@@ -289,6 +290,12 @@ export function LeadsPanel() {
                         </td>
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>{lead.industry || '—'}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>{lead.city || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>
+                          <div style={{ fontWeight: 600, color: 'var(--color-apex-text)' }}>{lead.decisionMakerName || 'Decision maker pending'}</div>
+                          {lead.contactEmail && <a href={`mailto:${lead.contactEmail}`} onClick={(e) => e.stopPropagation()} style={{ color: '#5a9eae', display: 'flex', gap: 4, alignItems: 'center' }}><Mail size={10} />{lead.contactEmail}</a>}
+                          {lead.contactPhone && <a href={`tel:${lead.contactPhone}`} onClick={(e) => e.stopPropagation()} style={{ color: '#5a9eae', display: 'flex', gap: 4, alignItems: 'center' }}><Phone size={10} />{lead.contactPhone}</a>}
+                          {!lead.contactEmail && !lead.contactPhone && <span style={{ fontSize: 10, textTransform: 'uppercase' }}>{lead.contactResearchStatus}</span>}
+                        </td>
                         <td style={{ padding: '8px 12px' }}>
                           <select
                             value={lead.status}
@@ -328,7 +335,7 @@ export function LeadsPanel() {
                       </motion.tr>
                       {isExpanded && (
                         <tr key={`${lead.id}-detail`}>
-                          <td colSpan={6} style={{ padding: '12px 24px', background: 'rgba(0,0,0,0.2)' }}>
+                          <td colSpan={7} style={{ padding: '12px 24px', background: 'rgba(0,0,0,0.2)' }}>
                             <div className="apex-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                               <div>
                                 <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 4 }}>

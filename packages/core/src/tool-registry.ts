@@ -530,12 +530,17 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         website: z.string().optional().describe('Company website URL, used for de-dup'),
         industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa, Real Estate'),
         city: z.string().optional(),
+        decisionMakerName: z.string().optional().describe('Publicly verified owner, founder, office manager, or other relevant decision maker; never guess'),
+        contactEmail: z.string().email().optional().describe('Publicly listed business email'),
+        contactPhone: z.string().optional().describe('Publicly listed business phone number'),
+        contactSourceUrl: z.string().url().optional().describe('Page that supports the contact details'),
+        contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively checking the company site and public sources for a decision maker, email, and phone'),
         fitReason: z.string().describe('Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)'),
         outreachAngle: z.string().optional().describe('Suggested angle for the first outreach message'),
         campaignId: z.string().optional().describe('Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.'),
       }),
       requiresApproval: false,
-      async execute({ companyName, website, industry, city, fitReason, outreachAngle, campaignId }, ctx) {
+      async execute({ companyName, website, industry, city, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus, fitReason, outreachAngle, campaignId }, ctx) {
         const { randomUUID } = await import('crypto');
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
@@ -560,6 +565,12 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           // and OSM category vocabularies converge. See industry-taxonomy.ts.
           industry: normalizeIndustry(industry),
           city,
+          decisionMakerName,
+          contactEmail,
+          contactPhone,
+          contactSourceUrl,
+          contactResearchStatus,
+          contactResearchedAt: new Date(),
           fitReason,
           outreachAngle,
           status: 'new',
@@ -572,6 +583,34 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    {
+      name: 'updateLeadContactInfo',
+      description: 'Persist contact enrichment for an existing lead after checking its website and public sources. Never infer or fabricate a person, email, or phone. Record unavailable when a genuine search finds none; the website remains the minimum contact path.',
+      schema: z.object({
+        leadId: z.string(),
+        decisionMakerName: z.string().optional(),
+        contactEmail: z.string().email().optional(),
+        contactPhone: z.string().optional(),
+        contactSourceUrl: z.string().url().optional(),
+        contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']),
+      }),
+      requiresApproval: false,
+      async execute({ leadId, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus }) {
+        const { db, researchedLeads } = await import('@workspace/db');
+        const { eq } = await import('drizzle-orm');
+        const [updated] = await db.update(researchedLeads).set({
+          decisionMakerName,
+          contactEmail,
+          contactPhone,
+          contactSourceUrl,
+          contactResearchStatus,
+          contactResearchedAt: new Date(),
+        }).where(eq(researchedLeads.id, leadId)).returning({ id: researchedLeads.id });
+        if (!updated) throw new Error(`Lead not found: ${leadId}`);
+        return { updated: true, leadId, contactResearchStatus };
+      },
+    },
+
     // Read the researched leads pipeline (for Sales/BizDev review, status reporting)
     {
       name: 'listResearchedLeads',
@@ -579,16 +618,21 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         'List researched/qualified outbound leads from the researched_leads table, most recent first. Use to review pipeline status honestly instead of guessing counts.',
       schema: z.object({
         status: z.string().optional().describe('Filter by status: new | contacted | qualified | rejected'),
+        needsContactResearch: z.boolean().optional().describe('Return only leads whose contact research is pending'),
         limit: z.number().optional().describe('Max rows (default 25)'),
       }),
       requiresApproval: false,
-      async execute({ status, limit }) {
+      async execute({ status, needsContactResearch, limit }) {
         const { db, researchedLeads } = await import('@workspace/db');
-        const { eq, desc } = await import('drizzle-orm');
+        const { and, eq, desc } = await import('drizzle-orm');
 
         const query = db.select().from(researchedLeads);
-        const rows = status
-          ? await query.where(eq(researchedLeads.status, status)).orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25)
+        const conditions = [
+          ...(status ? [eq(researchedLeads.status, status)] : []),
+          ...(needsContactResearch ? [eq(researchedLeads.contactResearchStatus, 'pending')] : []),
+        ];
+        const rows = conditions.length
+          ? await query.where(and(...conditions)).orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25)
           : await query.orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25);
 
         return rows;
@@ -820,6 +864,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           website: z.string().optional().describe('Company website URL'),
           industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa'),
           city: z.string().optional(),
+          decisionMakerName: z.string().optional().describe('Publicly verified decision maker; never guess'),
+          contactEmail: z.string().email().optional(),
+          contactPhone: z.string().optional(),
+          contactSourceUrl: z.string().url().optional(),
+          contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively searching for contact details'),
           fitReason: z.string().describe('Why this company is a good fit for BuildMyBot'),
           outreachAngle: z.string().optional().describe('Suggested outreach pitch'),
         })).describe('Array of leads to save (10-20 at a time is ideal)'),
@@ -856,6 +905,12 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               website: lead.website,
               industry: normalizeIndustry(lead.industry),
               city: lead.city,
+              decisionMakerName: lead.decisionMakerName,
+              contactEmail: lead.contactEmail,
+              contactPhone: lead.contactPhone,
+              contactSourceUrl: lead.contactSourceUrl,
+              contactResearchStatus: lead.contactResearchStatus,
+              contactResearchedAt: new Date(),
               fitReason: lead.fitReason,
               outreachAngle: lead.outreachAngle,
               status: 'new',
