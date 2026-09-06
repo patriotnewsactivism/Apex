@@ -696,8 +696,8 @@ export function QuickChat() {
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
-              height: isMobile ? 'min(56vh, 440px)' : undefined,
-              minHeight: isMobile ? 280 : 400,
+              height: isMobile ? 'min(42vh, 320px)' : undefined,
+              minHeight: isMobile ? 220 : 400,
             }}
           >
             {/* Chat header */}
@@ -850,6 +850,9 @@ export function QuickChat() {
               border: `1px solid ${
                 liveVoice.status === 'live' ? 'rgba(106,159,120,0.25)' : 'rgba(90,158,174,0.08)'
               }`,
+              position: isMobile ? 'sticky' : 'static',
+              bottom: isMobile ? 76 : undefined,
+              zIndex: isMobile ? 5 : undefined,
             }}
           >
             <div
@@ -924,7 +927,15 @@ export function QuickChat() {
           </div>
 
           {/* Input area */}
-          <div>
+          <div
+            style={{
+              position: isMobile ? 'sticky' : 'static',
+              bottom: isMobile ? 0 : undefined,
+              zIndex: isMobile ? 6 : undefined,
+              paddingBottom: isMobile ? 6 : undefined,
+              background: isMobile ? 'var(--color-apex-bg)' : undefined,
+            }}
+          >
             {expanded && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
@@ -972,6 +983,7 @@ export function QuickChat() {
               <textarea
                 ref={inputRef}
                 className="apex-input"
+                aria-label="Chat message"
                 placeholder="Ask me anything, or tell me what to do..."
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -992,6 +1004,7 @@ export function QuickChat() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 title={isRecording ? 'Stop recording' : 'Voice input'}
+                aria-label={isRecording ? 'Stop recording' : 'Voice input'}
                 style={{
                   padding: '11px',
                   display: 'flex',
@@ -1017,6 +1030,7 @@ export function QuickChat() {
                 className="btn-primary"
                 onClick={handleSubmit}
                 disabled={!input.trim() || chatMut.isPending}
+                aria-label="Send chat message"
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 style={{
