@@ -662,7 +662,12 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           // so wide chat content pushes <main> past the viewport on mobile.
           minWidth: 0,
           maxWidth: '100%',
-          overflow: 'auto',
+          // overflowY only: `overflow: auto` also enabled a horizontal swipe
+          // inside <main> whenever any content ran wide, which read as the
+          // page "running off the side" of the phone. Vertical scrolling still
+          // works; stray wide content is clipped instead of swipeable.
+          overflowY: 'auto',
+          overflowX: 'hidden',
           paddingBottom: isMobile ? 72 : 0,
         }}
       >

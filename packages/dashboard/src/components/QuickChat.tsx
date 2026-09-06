@@ -344,9 +344,10 @@ function GoalCard({ goal }: { goal: Goal }) {
             padding: '4px 8px',
             background: 'rgba(106,159,120,0.05)',
             borderRadius: 4,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
+            overflowWrap: 'anywhere',
+            // Wraps instead of nowrap: a nowrap line is a ~900px min-content
+            // item that previously stretched the whole mobile page sideways.
+            whiteSpace: 'normal',
           }}
         >
           ✓ {goal.result.slice(0, 120)}
@@ -386,7 +387,6 @@ export function QuickChat() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const qc = useQueryClient();
   const isMobile = useIsMobile();
@@ -410,13 +410,32 @@ export function QuickChat() {
     refetchInterval: 8000,
   });
 
+  // Follow-the-tail scrolling, gated to the messages container ONLY:
+  //  - scrollIntoView would scroll EVERY scrollable ancestor (<main> on both
+  //    axes), nudging the whole page sideways/vertically on every message —
+  //    that was the "won't stay steady" bug. Setting scrollTop on the
+  //    messages container itself touches only its own vertical overflow.
+  //  - Gated on near-bottom so scrolling up to re-read stops the view from
+  //    yanking back down on every incoming message; it re-follows once the
+  //    user returns near the tail.
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
+
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    // Instant, not smooth: streaming updates (voice captions, rapid
+    // back-and-forth) fire constantly and restart a smooth scroll every
+    // time, which reads as jitter. Instant keeps the tail pinned.
+    el.scrollTop = el.scrollHeight;
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  const handleMessagesScroll = () => {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
 
   // A real conversational turn: send the message + recent history to
   // /api/chat/message and let Apex decide whether to answer directly or
@@ -460,6 +479,12 @@ export function QuickChat() {
     },
   });
 
+
+  // Follow-the-tail: keep the newest message in view when the user is at
+  // (or near) the bottom; never yank the view if they scrolled up to re-read.
+  useEffect(() => {
+    if (nearBottomRef.current) scrollToBottom();
+  }, [messages, chatMut.isPending]);
   const handleSubmit = () => {
     const text = input.trim();
     if (!text) return;
@@ -607,7 +632,7 @@ export function QuickChat() {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)',
+          gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
           gap: isMobile ? 10 : 14,
         }}
       >
@@ -648,7 +673,7 @@ export function QuickChat() {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: isMobile ? '1fr' : '1fr 320px',
+          gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) 320px',
           gap: isMobile ? 16 : 20,
           minHeight: isMobile ? 'auto' : 'calc(100vh - 300px)',
         }}
@@ -658,7 +683,12 @@ export function QuickChat() {
           {/* Chat area */}
           <div
             style={{
-              flex: 1,
+              // Mobile: flex:none + explicit height. CRITICAL: `flex: 1`
+              // (flex-basis: 0%) OVERRIDES the height property on a flex
+              // item, so the panel used to grow with its message content and
+              // reflow the whole page on every exchange. flex:none pins the
+              // panel and the messages scroll inside it instead.
+              flex: isMobile ? 'none' : 1,
               borderRadius: 14,
               background: 'rgba(13,17,23,0.6)',
               border: '1px solid rgba(90,158,174,0.08)',
@@ -666,6 +696,7 @@ export function QuickChat() {
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
+              height: isMobile ? 'min(56vh, 440px)' : undefined,
               minHeight: isMobile ? 280 : 400,
             }}
           >
@@ -704,9 +735,12 @@ export function QuickChat() {
 
             {/* Messages */}
             <div
+              ref={messagesScrollRef}
+              onScroll={handleMessagesScroll}
               style={{
                 flex: 1,
                 overflowY: 'auto',
+                overscrollBehavior: 'contain',
                 padding: 16,
                 display: 'flex',
                 flexDirection: 'column',
@@ -795,7 +829,6 @@ export function QuickChat() {
                   {voiceError}
                 </motion.div>
               )}
-              <div ref={messagesEndRef} />
             </div>
           </div>
 
@@ -819,7 +852,17 @@ export function QuickChat() {
               }`,
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-apex-muted)' }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+                color: 'var(--color-apex-muted)',
+                flex: 1,
+                minWidth: 0,
+              }}
+            >
               {liveVoice.status === 'live' && (
                 <motion.span
                   animate={{ opacity: [1, 0.3, 1] }}
@@ -992,7 +1035,14 @@ export function QuickChat() {
         </div>
 
         {/* ── Right Sidebar ──────────────────────────────────────────── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 16 : 14 }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: isMobile ? 16 : 14,
+            minWidth: 0,
+          }}
+        >
           {/* Agent roster */}
           <div
             style={{
