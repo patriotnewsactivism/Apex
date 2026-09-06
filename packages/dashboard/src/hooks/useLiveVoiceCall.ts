@@ -99,6 +99,12 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   const playbackCtxRef = useRef<AudioContext | null>(null);
   const nextPlayTimeRef = useRef(0);
   const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Echo gate: timestamp (performance.now) until which the mic is zeroed
+  // because agent audio is playing through the speaker. The browser's AEC
+  // is unreliable on mobile, so we don't rely on it alone — see the gate in
+  // processor.onaudioprocess.
+  const agentSpeakingUntilRef = useRef(0);
+  const ECHO_TAIL_MS = 250;
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
 
@@ -112,6 +118,9 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     }
     scheduledSourcesRef.current = [];
     if (playbackCtxRef.current) nextPlayTimeRef.current = playbackCtxRef.current.currentTime;
+    // Keep the mic gated for a short tail: speakers/reverb decay for a moment
+    // after playback stops, and an interruption stops audio mid-word.
+    agentSpeakingUntilRef.current = performance.now() + ECHO_TAIL_MS;
   }, []);
 
   const playChunk = useCallback((b64: string) => {
@@ -132,6 +141,9 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
     source.start(startAt);
     nextPlayTimeRef.current = startAt + audioBuffer.duration;
+    // Extend the echo gate across the full scheduled span of this chunk.
+    const endsInMs = (startAt + audioBuffer.duration - ctx.currentTime) * 1000;
+    agentSpeakingUntilRef.current = Math.max(agentSpeakingUntilRef.current, performance.now() + endsInMs);
     scheduledSourcesRef.current.push(source);
     source.onended = () => {
       scheduledSourcesRef.current = scheduledSourcesRef.current.filter((s) => s !== source);
@@ -194,7 +206,19 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     resumeContext(playbackCtx);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Explicitly request echo cancellation / noise suppression / AGC.
+      // `{ audio: true }` is supposed to default these on, but mobile
+      // browsers (especially iOS Safari when the track is consumed through
+      // WebAudio) are unreliable about it. The echo gate above is the
+      // deterministic layer; this maximizes the chance the browser's own AEC
+      // also engages where supported.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       micStreamRef.current = stream;
 
       const { ticket } = await api.auth.websocketTicket();
@@ -215,7 +239,20 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
           if (ws.readyState !== WebSocket.OPEN) return;
           const input = e.inputBuffer.getChannelData(0);
           const down = downsample(input, captureCtx.sampleRate, INPUT_RATE);
-          const pcm16 = floatTo16BitPCM(down);
+          let pcm16: Int16Array;
+          if (performance.now() < agentSpeakingUntilRef.current) {
+            // ECHO GATE: agent audio is playing out the speaker right now.
+            // The mic WILL pick it up acoustically (phone speakers are next
+            // to the mic and browser AEC is unreliable on mobile), and
+            // Gemini hearing its own voice back as "user input" was the
+            // awful interference sound during agent speech. Send silence
+            // instead — the stream cadence is preserved, the gate reopens
+            // ECHO_TAIL_MS after playback ends, and the user's very next
+            // words go through normally.
+            pcm16 = new Int16Array(down.length);
+          } else {
+            pcm16 = floatTo16BitPCM(down);
+          }
           ws.send(JSON.stringify({ type: 'audio', data: bufToBase64(pcm16) }));
         };
         source.connect(processor);
