@@ -123,10 +123,12 @@ export const api = {
   chat: {
     // A real conversational turn — Apex decides for itself whether to answer
     // directly or deploy a goal. See packages/api-server/src/routes/chat.ts.
-    message: (message: string, history: ChatTurn[]) =>
+    // `page` = the Apex screen Don is currently viewing, sent so the model
+    // can resolve "this/that" references to what's on his screen.
+    message: (message: string, history: ChatTurn[], page?: string) =>
       apiFetch<ChatResponse>('/chat/message', {
         method: 'POST',
-        body: JSON.stringify({ message, history }),
+        body: JSON.stringify({ message, history, page }),
       }),
   },
 

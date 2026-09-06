@@ -45,9 +45,26 @@ const mainStyle = app.slice(app.indexOf('<main'), app.indexOf('<main') + 400);
 check('<main> can shrink below its content width', /minWidth:\s*0/.test(mainStyle));
 check('<main> is capped at the viewport width', /maxWidth:\s*'100%'/.test(mainStyle));
 
+// The chat no longer lives in a page grid — ChatPanel is mounted once in
+// FloatingChat (a fixed-position shell) so it survives navigation. The old
+// "chat column can shrink inside the grid" check is replaced: the shell
+// itself must never overflow the viewport, and ChatPanel's root must be a
+// shrinkable column.
 check(
-  'the chat column can shrink inside the grid',
-  /flexDirection:\s*'column',\s*gap:\s*12,\s*minWidth:\s*0/.test(quickChat),
+  'ChatPanel is a shrinkable column that fills the floating shell',
+  /height:\s*'100%',\s*\n\s*minWidth:\s*0/.test(quickChat) || /minWidth:\s*0,\s*\n\s*height:\s*'100%'/.test(quickChat),
+);
+const floatingChat = readFileSync(
+  new URL('../packages/dashboard/src/components/FloatingChat.tsx', import.meta.url),
+  'utf8',
+);
+check(
+  'the floating chat shell is capped inside the viewport',
+  /min\(58vh,\s*500px\)/.test(floatingChat) && /min\(72vh,\s*640px\)/.test(floatingChat),
+);
+check(
+  'the floating shell is mounted outside the page swap (survives navigation)',
+  /<FloatingChat pageId=\{activePage\} pageTitle=\{meta\.title\}\s*\/>/.test(app),
 );
 check(
   'chat bubbles break unbroken strings instead of widening the page',

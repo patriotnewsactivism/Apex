@@ -29,6 +29,9 @@ const chatTurnSchema = z.object({
 const chatRequestSchema = z.object({
   message: z.string().min(1).max(4000),
   history: z.array(chatTurnSchema).max(30).optional().default([]),
+  // The Apex screen Don is currently viewing, so "this", "that graph", "the
+  // thing on my screen" resolve against what he is actually looking at.
+  page: z.string().max(120).optional(),
 });
 
 export const CHAT_SYSTEM_PROMPT = `You are Apex, talking directly with Don — the founder who built you and the whole
@@ -277,12 +280,15 @@ export function createChatRouter(ceo: ApexCEO) {
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.flatten() });
     }
-    const { message, history } = parsed.data;
+    const { message, history, page } = parsed.data;
 
     try {
       const snapshot = await buildLiveSnapshot();
+      const screenContext = page
+        ? `\n\nDon's current screen: the "${page}" page. When he says "this", "that", or "it", he usually means something on that screen.\n`
+        : '';
       const llmHistory: LLMMessage[] = [
-        { role: 'system', content: `${CHAT_SYSTEM_PROMPT}\n\nCurrent live snapshot:\n${snapshot}` },
+        { role: 'system', content: `${CHAT_SYSTEM_PROMPT}${screenContext}\n\nCurrent live snapshot:\n${snapshot}` },
         ...history.map((h): LLMMessage => ({ role: h.role, content: h.content })),
         { role: 'user', content: message },
       ];

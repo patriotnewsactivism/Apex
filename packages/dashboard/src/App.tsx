@@ -10,6 +10,7 @@ import { TaskBoard } from './components/TaskBoard.js';
 import { LogStream } from './components/LogStream.js';
 import { ApprovalQueue } from './components/ApprovalQueue.js';
 import { QuickChat } from './components/QuickChat.js';
+import { FloatingChat } from './components/FloatingChat.js';
 import { Settings } from './components/Settings.js';
 import { HealthPanel } from './components/HealthPanel.js';
 import { PanelErrorBoundary } from './components/PanelErrorBoundary.js';
@@ -769,6 +770,12 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
       {isMobile && (
         <MobileBottomBar active={activePage} onNavigate={setActivePage} />
       )}
+
+      {/* The chat floats ABOVE the page swap and is mounted ONCE — it never
+          unmounts when activePage changes, so the conversation and any live
+          voice call survive navigation. It receives the page Don is viewing
+          so the agent knows what's on his screen. */}
+      <FloatingChat pageId={activePage} pageTitle={meta.title} />
     </div>
   );
 }

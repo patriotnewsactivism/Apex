@@ -193,7 +193,17 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     setStatus((s) => (s === 'error' ? s : 'ended'));
   }, [stopPlayback]);
 
-  const start = useCallback(async () => {
+  // Tell the agent what screen Don is looking at mid-call. Relayed server-side
+  // into the Gemini Live session as a silent context note.
+  const sendContext = useCallback((text: string) => {
+    try {
+      wsRef.current?.send(JSON.stringify({ type: 'context', text }));
+    } catch {
+      // socket may be closed — nothing to do
+    }
+  }, []);
+
+  const start = useCallback(async (startPage?: string) => {
     setStatus('connecting');
 
     // Everything above the first suspension point still runs inside the click
@@ -297,7 +307,8 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
 
       const { ticket } = await api.auth.websocketTicket();
       const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
+      const pageQs = startPage ? `&page=${encodeURIComponent(startPage)}` : '';
+      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}${pageQs}`);
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
@@ -401,5 +412,5 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     }
   }, [playChunk, stopPlayback]);
 
-  return { status, start, stop };
+  return { status, start, stop, sendContext };
 }

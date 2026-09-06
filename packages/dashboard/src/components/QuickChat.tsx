@@ -25,6 +25,7 @@ import {
   Square,
   Phone,
   PhoneOff,
+  Minus,
 } from 'lucide-react';
 
 import { useIsMobile } from '../hooks/useIsMobile.js';
@@ -371,7 +372,27 @@ interface ChatMessage {
 /* ██  MAIN COMPONENT                                                       ██ */
 /* ════════════════════════════════════════════════════════════════════════════ */
 
-export function QuickChat() {
+// ChatPanel is the persistent, page-aware chat surface. It is mounted ONCE
+// (inside FloatingChat, OUTSIDE the page swap in App.tsx) so navigating
+// between Apex pages never unmounts it — an active live voice call and the
+// message history survive navigation. It receives the page Don is currently
+// viewing and feeds that to both the text chat and the live voice call, so
+// "this", "that graph", "the thing on my screen" resolve correctly.
+export interface ChatPanelProps {
+  pageId?: string;
+  pageTitle?: string;
+  onMinimize?: () => void;
+  onHeaderPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onVoiceStatus?: (status: import('../hooks/useLiveVoiceCall.js').LiveVoiceStatus) => void;
+}
+
+export function ChatPanel({
+  pageId,
+  pageTitle,
+  onMinimize,
+  onHeaderPointerDown,
+  onVoiceStatus,
+}: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -389,26 +410,6 @@ export function QuickChat() {
   const audioChunksRef = useRef<Blob[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const qc = useQueryClient();
-  const isMobile = useIsMobile();
-  const { connected, agentStatuses } = useWebSocket();
-
-  const { data: goals = [] } = useQuery({
-    queryKey: ['goals'],
-    queryFn: () => api.goals.list(),
-    refetchInterval: 10000,
-  });
-
-  const { data: agents = [] } = useQuery({
-    queryKey: ['agents'],
-    queryFn: () => api.agents.list(),
-    refetchInterval: 15000,
-  });
-
-  const { data: logs = [] } = useQuery({
-    queryKey: ['logs-recent'],
-    queryFn: () => api.logs.list(8),
-    refetchInterval: 8000,
-  });
 
   // Follow-the-tail scrolling, gated to the messages container ONLY:
   //  - scrollIntoView would scroll EVERY scrollable ancestor (<main> on both
@@ -449,7 +450,7 @@ export function QuickChat() {
         .filter((m) => m.id !== 'welcome')
         .slice(-20)
         .map((m) => ({ role: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }));
-      return api.chat.message(text, history);
+      return api.chat.message(text, history, pageTitle);
     },
     onSuccess: (result) => {
       setMessages((prev) => [
@@ -621,65 +622,34 @@ export function QuickChat() {
     },
   });
 
-  // Derived stats
-  const activeGoals = goals.filter((g) => g.status === 'active').length;
-  const completedGoals = goals.filter((g) => g.status === 'completed').length;
-  const activeAgentCount = Object.values(agentStatuses).filter((s) => s !== 'idle').length;
+  // Lift the live-call status to the floating shell so a minimized FAB can
+  // show the pulsing "on a call" dot.
+  useEffect(() => {
+    onVoiceStatus?.(liveVoice.status);
+  }, [liveVoice.status, onVoiceStatus]);
+
+  // Screen awareness, part 1: when a live voice call is active and Don
+  // navigates to a different Apex page, tell the agent what he is now
+  // looking at. The server relays this into the Gemini Live session as a
+  // silent context note, so he can say "what about this one" while staring
+  // at a goal/agent/log and be understood.
+  useEffect(() => {
+    if (!pageTitle) return;
+    if (liveVoice.status !== 'live') return;
+    liveVoice.sendContext(`Don just switched to the "${pageTitle}" screen (${pageId ?? 'unknown page'}).`);
+  }, [pageTitle, pageId, liveVoice.status]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 16 : 20 }}>
-      {/* ── Top Stats Row ─────────────────────────────────────────────── */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
-          gap: isMobile ? 10 : 14,
-        }}
-      >
-        <StatCard
-          label="Active Goals"
-          value={activeGoals}
-          icon={<Target size={16} />}
-          color="#5a9eae"
-          glow="#5a9eae"
-          sub={`${goals.length} total`}
-        />
-        <StatCard
-          label="Completed"
-          value={completedGoals}
-          icon={<CheckCircle2 size={16} />}
-          color="#6a9f78"
-          glow="#6a9f78"
-        />
-        <StatCard
-          label="Agents"
-          value={`${activeAgentCount}/${agents.length}`}
-          icon={<Users size={16} />}
-          color="#8b7ec8"
-          glow="#8b7ec8"
-          sub={activeAgentCount > 0 ? 'working' : 'standing by'}
-        />
-        <StatCard
-          label="Status"
-          value={connected ? 'LIVE' : 'OFF'}
-          icon={<Zap size={16} />}
-          color={connected ? '#6a9f78' : '#c45c66'}
-          glow={connected ? '#6a9f78' : '#c45c66'}
-          sub={connected ? 'WebSocket connected' : 'Reconnecting...'}
-        />
-      </div>
-
-      {/* ── Main Grid: Chat + Sidebar ─────────────────────────────────── */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) 320px',
-          gap: isMobile ? 16 : 20,
-          minHeight: isMobile ? 'auto' : 'calc(100vh - 300px)',
-        }}
-      >
-        {/* ── Left: Chat + Input ────────────────────────────────────── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        minWidth: 0,
+        height: '100%',
+        minHeight: 0,
+      }}
+    >
           {/* Chat area */}
           <div
             style={{
@@ -688,7 +658,8 @@ export function QuickChat() {
               // item, so the panel used to grow with its message content and
               // reflow the whole page on every exchange. flex:none pins the
               // panel and the messages scroll inside it instead.
-              flex: isMobile ? 'none' : 1,
+              flex: 1,
+              minHeight: 0,
               borderRadius: 14,
               background: 'rgba(13,17,23,0.6)',
               border: '1px solid rgba(90,158,174,0.08)',
@@ -696,18 +667,19 @@ export function QuickChat() {
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
-              height: isMobile ? 'min(42vh, 320px)' : undefined,
-              minHeight: isMobile ? 220 : 400,
             }}
           >
-            {/* Chat header */}
+            {/* Chat header — doubles as the drag handle on desktop */}
             <div
+              onPointerDown={onHeaderPointerDown}
               style={{
                 padding: '12px 16px',
                 borderBottom: '1px solid rgba(90,158,174,0.06)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
+                cursor: onHeaderPointerDown ? 'grab' : undefined,
+                touchAction: 'none',
               }}
             >
               <div
@@ -728,9 +700,29 @@ export function QuickChat() {
                   APEX Command
                 </div>
                 <div style={{ fontSize: 9, color: 'var(--color-apex-muted)' }}>
-                  Natural language → agent orchestration
+                  Sees your screen: {pageTitle ?? '—'}
                 </div>
               </div>
+              {onMinimize && (
+                <button
+                  onClick={onMinimize}
+                  aria-label="Minimize chat"
+                  title="Minimize — chat and calls keep running"
+                  style={{
+                    marginLeft: 'auto',
+                    background: 'transparent',
+                    border: '1px solid rgba(90,158,174,0.15)',
+                    borderRadius: 6,
+                    padding: '4px 6px',
+                    cursor: 'pointer',
+                    color: 'var(--color-apex-muted)',
+                    display: 'flex',
+                    flexShrink: 0,
+                  }}
+                >
+                  <Minus size={13} />
+                </button>
+              )}
             </div>
 
             {/* Messages */}
@@ -850,9 +842,6 @@ export function QuickChat() {
               border: `1px solid ${
                 liveVoice.status === 'live' ? 'rgba(106,159,120,0.25)' : 'rgba(90,158,174,0.08)'
               }`,
-              position: isMobile ? 'sticky' : 'static',
-              bottom: isMobile ? 76 : undefined,
-              zIndex: isMobile ? 5 : undefined,
             }}
           >
             <div
@@ -905,7 +894,7 @@ export function QuickChat() {
               </motion.button>
             ) : (
               <motion.button
-                onClick={() => liveVoice.start()}
+                onClick={() => liveVoice.start(pageTitle ? `${pageTitle} (${pageId ?? 'chat'})` : undefined)}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 style={{
@@ -927,15 +916,7 @@ export function QuickChat() {
           </div>
 
           {/* Input area */}
-          <div
-            style={{
-              position: isMobile ? 'sticky' : 'static',
-              bottom: isMobile ? 0 : undefined,
-              zIndex: isMobile ? 6 : undefined,
-              paddingBottom: isMobile ? 6 : undefined,
-              background: isMobile ? 'var(--color-apex-bg)' : undefined,
-            }}
-          >
+          <div>
             {expanded && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
@@ -1046,205 +1027,296 @@ export function QuickChat() {
               </motion.button>
             </div>
           </div>
-        </div>
+    </div>
+  );
+}
 
-        {/* ── Right Sidebar ──────────────────────────────────────────── */}
+// QuickChat is now the overview PAGE (stats + roster + goals + live feed).
+// The actual chat surface lives in ChatPanel, mounted once inside
+// FloatingChat so it follows Don around Apex instead of dying on every
+// page switch.
+export function QuickChat() {
+  const isMobile = useIsMobile();
+  const { connected, agentStatuses } = useWebSocket();
+
+  const { data: goals = [] } = useQuery({
+    queryKey: ['goals'],
+    queryFn: () => api.goals.list(),
+    refetchInterval: 10000,
+  });
+
+  const { data: agents = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => api.agents.list(),
+    refetchInterval: 15000,
+  });
+
+  const { data: logs = [] } = useQuery({
+    queryKey: ['logs-recent'],
+    queryFn: () => api.logs.list(8),
+    refetchInterval: 8000,
+  });
+
+  const activeGoals = goals.filter((g) => g.status === 'active').length;
+  const completedGoals = goals.filter((g) => g.status === 'completed').length;
+  const activeAgentCount = Object.values(agentStatuses).filter((st) => st !== 'idle').length;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 16 : 20 }}>
+      {/* ── Top Stats Row ─────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
+          gap: isMobile ? 10 : 14,
+        }}
+      >
+        <StatCard
+          label="Active Goals"
+          value={activeGoals}
+          icon={<Target size={16} />}
+          color="#5a9eae"
+          glow="#5a9eae"
+          sub={`${goals.length} total`}
+        />
+        <StatCard
+          label="Completed"
+          value={completedGoals}
+          icon={<CheckCircle2 size={16} />}
+          color="#6a9f78"
+          glow="#6a9f78"
+        />
+        <StatCard
+          label="Agents"
+          value={`${activeAgentCount}/${agents.length}`}
+          icon={<Users size={16} />}
+          color="#8b7ec8"
+          glow="#8b7ec8"
+          sub={activeAgentCount > 0 ? 'working' : 'standing by'}
+        />
+        <StatCard
+          label="Status"
+          value={connected ? 'LIVE' : 'OFF'}
+          icon={<Zap size={16} />}
+          color={connected ? '#6a9f78' : '#c45c66'}
+          glow={connected ? '#6a9f78' : '#c45c66'}
+          sub={connected ? 'WebSocket connected' : 'Reconnecting...'}
+        />
+      </div>
+
+      {/* The chat itself now floats — it follows you across every Apex
+          page and stays open (voice calls keep running) while you browse.
+          Expand it from the corner panel or the Chat nav item. */}
+      <div
+        style={{
+          fontSize: 11,
+          color: 'var(--color-apex-muted)',
+          padding: '8px 12px',
+          background: 'rgba(90,158,174,0.03)',
+          border: '1px solid rgba(90,158,174,0.08)',
+          borderRadius: 8,
+        }}
+      >
+        Chat floats with you now — open the corner panel (or tap Chat) and jump around Apex;
+        it sees whichever screen you're on.
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'repeat(auto-fit, minmax(320px, 1fr))',
+          gap: isMobile ? 16 : 20,
+          alignItems: 'start',
+        }}
+      >
+
+        {/* Agent roster */}
         <div
           style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: isMobile ? 16 : 14,
-            minWidth: 0,
+            borderRadius: 14,
+            background: 'rgba(13,17,23,0.6)',
+            border: '1px solid rgba(139,126,200,0.08)',
+            backdropFilter: 'blur(8px)',
+            overflow: 'hidden',
           }}
         >
-          {/* Agent roster */}
           <div
             style={{
-              borderRadius: 14,
-              background: 'rgba(13,17,23,0.6)',
-              border: '1px solid rgba(139,126,200,0.08)',
-              backdropFilter: 'blur(8px)',
-              overflow: 'hidden',
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(139,126,200,0.06)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
             }}
           >
-            <div
+            <Bot size={14} color="#8b7ec8" />
+            <span
               style={{
-                padding: '12px 14px',
-                borderBottom: '1px solid rgba(139,126,200,0.06)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
+                fontSize: 12,
+                fontWeight: 700,
+                color: 'var(--color-apex-text)',
               }}
             >
-              <Bot size={14} color="#8b7ec8" />
-              <span
-                style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: 'var(--color-apex-text)',
-                }}
-              >
-                Agent Roster
-              </span>
-              <span
-                style={{
-                  marginLeft: 'auto',
-                  fontSize: 9,
-                  color: 'var(--color-apex-muted)',
-                  fontFamily: 'var(--font-mono)',
-                }}
-              >
-                {agents.length} registered
-              </span>
-            </div>
-            <div
+              Agent Roster
+            </span>
+            <span
               style={{
-                padding: '8px 10px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                maxHeight: isMobile ? 200 : 240,
-                overflowY: 'auto',
+                marginLeft: 'auto',
+                fontSize: 9,
+                color: 'var(--color-apex-muted)',
+                fontFamily: 'var(--font-mono)',
               }}
             >
-              {agents.length === 0 ? (
-                <div
-                  style={{
-                    padding: '20px 12px',
-                    textAlign: 'center',
-                    color: 'var(--color-apex-muted)',
-                    fontSize: 11,
-                  }}
-                >
-                  No agents registered yet
-                </div>
-              ) : (
-                agents.slice(0, 10).map((a) => <AgentPill key={a.id} agent={a} />)
-              )}
-            </div>
+              {agents.length} registered
+            </span>
           </div>
-
-          {/* Recent goals */}
           <div
             style={{
-              borderRadius: 14,
-              background: 'rgba(13,17,23,0.6)',
-              border: '1px solid rgba(90,158,174,0.08)',
-              backdropFilter: 'blur(8px)',
-              overflow: 'hidden',
+              padding: '8px 10px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              maxHeight: isMobile ? 200 : 240,
+              overflowY: 'auto',
             }}
           >
-            <div
-              style={{
-                padding: '12px 14px',
-                borderBottom: '1px solid rgba(90,158,174,0.06)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-              }}
-            >
-              <Target size={14} color="#5a9eae" />
-              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-                Recent Goals
-              </span>
-              <span
-                style={{
-                  marginLeft: 'auto',
-                  fontSize: 9,
-                  color: 'var(--color-apex-muted)',
-                  fontFamily: 'var(--font-mono)',
-                }}
-              >
-                {activeGoals} active
-              </span>
-            </div>
-            <div
-              style={{
-                padding: '8px 10px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-                maxHeight: isMobile ? 250 : 300,
-                overflowY: 'auto',
-              }}
-            >
-              {goals.length === 0 ? (
-                <div
-                  style={{
-                    padding: '24px 12px',
-                    textAlign: 'center',
-                    color: 'var(--color-apex-muted)',
-                    fontSize: 11,
-                  }}
-                >
-                  <div style={{ fontSize: 24, marginBottom: 6 }}>🎯</div>
-                  No goals yet — type a command above
-                </div>
-              ) : (
-                goals.slice(0, 5).map((g) => <GoalCard key={g.id} goal={g} />)
-              )}
-            </div>
-          </div>
-
-          {/* Live log tail */}
-          <div
-            style={{
-              borderRadius: 14,
-              background: 'rgba(13,17,23,0.6)',
-              border: '1px solid rgba(106,159,120,0.08)',
-              backdropFilter: 'blur(8px)',
-              overflow: 'hidden',
-              flex: 1,
-              minHeight: 0,
-            }}
-          >
-            <div
-              style={{
-                padding: '12px 14px',
-                borderBottom: '1px solid rgba(106,159,120,0.06)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-              }}
-            >
-              <Terminal size={14} color="#6a9f78" />
-              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-                Live Feed
-              </span>
+            {agents.length === 0 ? (
               <div
                 style={{
-                  marginLeft: 'auto',
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: connected ? '#6a9f78' : '#c45c66',
-                  boxShadow: connected ? '0 0 6px #6a9f7880' : 'none',
+                  padding: '20px 12px',
+                  textAlign: 'center',
+                  color: 'var(--color-apex-muted)',
+                  fontSize: 11,
                 }}
-              />
-            </div>
-            <div
+              >
+                No agents registered yet
+              </div>
+            ) : (
+              agents.slice(0, 10).map((a) => <AgentPill key={a.id} agent={a} />)
+            )}
+          </div>
+        </div>
+
+        {/* Recent goals */}
+        <div
+          style={{
+            borderRadius: 14,
+            background: 'rgba(13,17,23,0.6)',
+            border: '1px solid rgba(90,158,174,0.08)',
+            backdropFilter: 'blur(8px)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(90,158,174,0.06)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <Target size={14} color="#5a9eae" />
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
+              Recent Goals
+            </span>
+            <span
               style={{
-                padding: '6px 12px',
-                maxHeight: isMobile ? 160 : 200,
-                overflowY: 'auto',
+                marginLeft: 'auto',
+                fontSize: 9,
+                color: 'var(--color-apex-muted)',
+                fontFamily: 'var(--font-mono)',
               }}
             >
-              {logs.length === 0 ? (
-                <div
-                  style={{
-                    padding: '16px 8px',
-                    textAlign: 'center',
-                    color: 'var(--color-apex-muted)',
-                    fontSize: 10,
-                    fontFamily: 'var(--font-mono)',
-                  }}
-                >
-                  Waiting for activity...
-                </div>
-              ) : (
-                logs.slice(0, 8).map((l) => <LogLine key={l.id} entry={l} />)
-              )}
-            </div>
+              {activeGoals} active
+            </span>
+          </div>
+          <div
+            style={{
+              padding: '8px 10px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              maxHeight: isMobile ? 250 : 300,
+              overflowY: 'auto',
+            }}
+          >
+            {goals.length === 0 ? (
+              <div
+                style={{
+                  padding: '24px 12px',
+                  textAlign: 'center',
+                  color: 'var(--color-apex-muted)',
+                  fontSize: 11,
+                }}
+              >
+                <div style={{ fontSize: 24, marginBottom: 6 }}>🎯</div>
+                No goals yet — type a command above
+              </div>
+            ) : (
+              goals.slice(0, 5).map((g) => <GoalCard key={g.id} goal={g} />)
+            )}
+          </div>
+        </div>
+
+        {/* Live log tail */}
+        <div
+          style={{
+            borderRadius: 14,
+            background: 'rgba(13,17,23,0.6)',
+            border: '1px solid rgba(106,159,120,0.08)',
+            backdropFilter: 'blur(8px)',
+            overflow: 'hidden',
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
+          <div
+            style={{
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(106,159,120,0.06)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <Terminal size={14} color="#6a9f78" />
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
+              Live Feed
+            </span>
+            <div
+              style={{
+                marginLeft: 'auto',
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: connected ? '#6a9f78' : '#c45c66',
+                boxShadow: connected ? '0 0 6px #6a9f7880' : 'none',
+              }}
+            />
+          </div>
+          <div
+            style={{
+              padding: '6px 12px',
+              maxHeight: isMobile ? 160 : 200,
+              overflowY: 'auto',
+            }}
+          >
+            {logs.length === 0 ? (
+              <div
+                style={{
+                  padding: '16px 8px',
+                  textAlign: 'center',
+                  color: 'var(--color-apex-muted)',
+                  fontSize: 10,
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                Waiting for activity...
+              </div>
+            ) : (
+              logs.slice(0, 8).map((l) => <LogLine key={l.id} entry={l} />)
+            )}
           </div>
         </div>
       </div>
