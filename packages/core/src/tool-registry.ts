@@ -12,9 +12,10 @@ import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector
 import { createOrchestrationTools } from './orchestration-tools.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
+import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager } from '@workspace/health-monitor';
 import { db, messages } from '@workspace/db';
-import { eq } from 'drizzle-orm';
+import { eq, isNull } from 'drizzle-orm';
 
 const execAsync = promisify(exec);
 
@@ -1277,9 +1278,50 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ name, jobType, cronExpression, scheduledAt, targetAgentId, payload, priority }) {
         const { randomUUID } = await import('crypto');
         const { db, scheduledJobs } = await import('@workspace/db');
+        const { and, eq, inArray } = await import('drizzle-orm');
 
         const id = randomUUID();
         const now = new Date();
+        const recurring = Boolean(cronExpression);
+
+        if (recurring) {
+          // Goal reviews run repeatedly. Re-creating an equivalent row on every
+          // review would multiply LLM work forever, so recurring schedules are
+          // idempotent by their operator-visible identity.
+          const [existing] = await db
+            .select({ id: scheduledJobs.id, name: scheduledJobs.name })
+            .from(scheduledJobs)
+            .where(
+              and(
+                eq(scheduledJobs.name, name),
+                eq(scheduledJobs.jobType, jobType),
+                eq(scheduledJobs.cronExpression, cronExpression!),
+                targetAgentId
+                  ? eq(scheduledJobs.targetAgentId, targetAgentId)
+                  : isNull(scheduledJobs.targetAgentId),
+                inArray(scheduledJobs.status, ['active', 'running']),
+                eq(scheduledJobs.enabled, true),
+              ),
+            )
+            .limit(1);
+
+          if (existing) {
+            return {
+              created: false,
+              deduplicated: true,
+              jobId: existing.id,
+              name: existing.name,
+              jobType,
+            };
+          }
+        }
+
+        const nextRunAt = recurring
+          ? (getNextRunTimes(cronExpression!, 1, now)[0] ??
+            new Date(now.getTime() + 60_000))
+          : scheduledAt
+            ? new Date(scheduledAt)
+            : now;
 
         await db.insert(scheduledJobs).values({
           id,
@@ -1294,7 +1336,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           status: 'active',
           retryCount: 0,
           maxRetries: 3,
-          nextRunAt: scheduledAt ? new Date(scheduledAt) : now,
+          nextRunAt,
           createdAt: now,
           updatedAt: now,
         });

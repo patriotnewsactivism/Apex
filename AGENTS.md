@@ -163,6 +163,7 @@ Credential environment variables:
 
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_API_KEY_2` — optional credential redundancy
+- `OPENROUTER_API_KEY_3` — optional separately named paid-fallback credential
 
 Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only.
 
