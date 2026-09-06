@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { api } from '../lib/api.js';
 import type { ComponentCheck, HealthAlert } from '../lib/api.js';
+import { DiagnosticsPanel } from './DiagnosticsPanel.js';
 import {
   Activity,
   Database,
@@ -192,8 +193,17 @@ export function HealthPanel() {
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1200 }}>
+      {/* What is wrong right now, and what to do about it. Deliberately above
+          the component grid: the grid says which subsystem is unhappy, this
+          says why and what fixes it. */}
+      <DiagnosticsPanel />
+
       {/* Overall Status Banner */}
       <motion.div
+        /* apex-toolbar so the Refresh button wraps below the text at mobile
+           widths instead of being pushed past the card's right edge by
+           marginLeft:auto. */
+        className="apex-toolbar"
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
         style={{

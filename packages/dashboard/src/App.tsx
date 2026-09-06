@@ -12,6 +12,7 @@ import { ApprovalQueue } from './components/ApprovalQueue.js';
 import { QuickChat } from './components/QuickChat.js';
 import { Settings } from './components/Settings.js';
 import { HealthPanel } from './components/HealthPanel.js';
+import { PanelErrorBoundary } from './components/PanelErrorBoundary.js';
 import { LearningPanel } from './components/LearningPanel.js';
 import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
@@ -747,7 +748,14 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
               exit={{ opacity: 0, y: -6 }}
               transition={{ duration: 0.18 }}
             >
-              {pages[activePage]}
+              {/* Keyed on the page so navigating away clears a crash rather than
+                  stranding the operator on an error they cannot leave. Without
+                  a boundary here React unmounts the whole tree on any panel
+                  throw, and the dashboard goes white with the reason only in
+                  the console. */}
+              <PanelErrorBoundary key={activePage} name={meta.title}>
+                {pages[activePage]}
+              </PanelErrorBoundary>
             </motion.div>
           </AnimatePresence>
         </div>

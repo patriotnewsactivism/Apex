@@ -68,6 +68,12 @@ for (const width of WIDTHS) {
   },{nasty:NASTY});
 
   const page = await ctx.newPage();
+  // A React tree that throws during render unmounts to an empty #root. That
+  // page cannot overflow, so without this the harness reports the crashed view
+  // as "clean" — a second way for this check to pass vacuously, after the
+  // canary. Track the throw and the rendered element count, and fail on both.
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message));
   await page.route('**/api/**', (route)=>{ const u=route.request().url();
     const j=(b)=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(b)});
     if(u.includes('/auth/websocket-ticket')) return j({ticket:'tkt'});
@@ -117,9 +123,14 @@ for (const width of WIDTHS) {
         }
       }
       out.sort((a,b)=>b.over-a.over);
-      return { scroll: de.scrollWidth>de.clientWidth, sw:de.scrollWidth, cw:de.clientWidth, n:out.length, top:out.slice(0,6) };
+      const root=document.getElementById('root');
+      return { scroll: de.scrollWidth>de.clientWidth, sw:de.scrollWidth, cw:de.clientWidth, n:out.length, top:out.slice(0,6),
+               els: root ? root.querySelectorAll('*').length : 0,
+               chars: (root?.innerText || '').trim().length };
     }, width);
-    findings.push({ width, view: viewName, ...r });
+    // Errors are cumulative across the context; attribute only the new ones.
+    const errs = pageErrors.splice(0);
+    findings.push({ width, view: viewName, errs, ...r });
   };
 
   // CANARY. This harness already produced one false all-clear: the ancestor
@@ -155,14 +166,24 @@ for (const width of WIDTHS) {
 }
 await browser.close(); server.close();
 
+// A view that rendered almost nothing is not clean, it is broken. Real views
+// run to hundreds of elements; a crashed one is empty.
+const MIN_ELEMENTS = 10;
+
 let bad=0;
 for(const f of findings){
-  const flag = f.scroll ? 'SCROLL' : (f.n>0 ? 'CLIPPED' : 'clean');
-  if(f.scroll||f.n>0) bad++;
+  const blank = f.els < MIN_ELEMENTS || f.errs.length > 0;
+  const flag = blank ? 'BLANK' : f.scroll ? 'SCROLL' : (f.n>0 ? 'CLIPPED' : 'clean');
+  if(blank||f.scroll||f.n>0) bad++;
   if(flag==='clean') { console.log(`${String(f.width).padStart(3)}px  ${f.view.padEnd(14)} clean`); continue; }
+  if(blank){
+    console.log(`${String(f.width).padStart(3)}px  ${f.view.padEnd(14)} BLANK  ${f.els} element(s), ${f.chars} chars rendered`);
+    for(const e of f.errs) console.log(`         uncaught: ${e}`);
+    continue;
+  }
   console.log(`${String(f.width).padStart(3)}px  ${f.view.padEnd(14)} ${flag}  sw=${f.sw}/cw=${f.cw}  ${f.n} el(s) past edge`);
   for(const o of f.top) console.log(`         +${String(o.over).padStart(4)}px <${o.tag}> w=${o.w} ws=${o.ws} minW=${o.minW} wb=${o.wb} ow=${o.ow}${o.txt?`\n              "${o.txt}"`:''}`);
 }
-console.log(`\n${bad}/${findings.length} view+width combinations have overflow`);
+console.log(`\n${bad}/${findings.length} view+width combinations failed (overflow or blank render)`);
 if (bad > 0) process.exitCode = 1;
 if (process.exitCode === 2) console.error('Detector canary failed — treat the run as inconclusive, not as a pass.');
