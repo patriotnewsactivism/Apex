@@ -40,8 +40,8 @@ function floatTo16BitPCM(input: Float32Array): Int16Array {
   return out;
 }
 
-function downsample(buffer: Float32Array, fromRate: number, toRate: number): Float32Array {
-  if (toRate >= fromRate) return buffer;
+function resample(buffer: Float32Array, fromRate: number, toRate: number): Float32Array {
+  if (toRate === fromRate) return buffer;
   const ratio = fromRate / toRate;
   const newLength = Math.round(buffer.length / ratio);
   const result = new Float32Array(newLength);
@@ -97,8 +97,22 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   const captureCtxRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const playbackCtxRef = useRef<AudioContext | null>(null);
-  const nextPlayTimeRef = useRef(0);
-  const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Continuous playback ring buffer: incoming 24kHz chunks are resampled to
+  // the device rate once and appended; a single long-lived ScriptProcessor
+  // node drains it into the speakers. This replaces one AudioBufferSourceNode
+  // per chunk — consecutive source nodes click at every chunk boundary
+  // (sub-sample scheduling gaps), which sounds like interference/crackle
+  // for the whole time the agent is speaking.
+  const playQueueRef = useRef<Float32Array[]>([]);
+  const playQueueLenRef = useRef(0);
+  const playChunkOffsetRef = useRef(0);
+  const playProcRef = useRef<ScriptProcessorNode | null>(null);
+  const playSilentSrcRef = useRef<AudioBufferSourceNode | null>(null);
+  // True while agent audio is queued/playing. Guards the drain-detector: an
+  // idle playback node fires onaudioprocess continuously with an empty queue,
+  // and without this flag every idle callback would re-arm the echo gate and
+  // keep the mic permanently closed.
+  const wasPlayingRef = useRef(false);
   // Echo gate: timestamp (performance.now) until which the mic is zeroed
   // because agent audio is playing through the speaker. The browser's AEC
   // is unreliable on mobile, so we don't rely on it alone — see the gate in
@@ -109,15 +123,10 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   cbRef.current = callbacks;
 
   const stopPlayback = useCallback(() => {
-    for (const src of scheduledSourcesRef.current) {
-      try {
-        src.stop();
-      } catch {
-        // already stopped/ended — fine
-      }
-    }
-    scheduledSourcesRef.current = [];
-    if (playbackCtxRef.current) nextPlayTimeRef.current = playbackCtxRef.current.currentTime;
+    playQueueRef.current = [];
+    playQueueLenRef.current = 0;
+    playChunkOffsetRef.current = 0;
+    wasPlayingRef.current = false;
     // Keep the mic gated for a short tail: speakers/reverb decay for a moment
     // after playback stops, and an interruption stops audio mid-word.
     agentSpeakingUntilRef.current = performance.now() + ECHO_TAIL_MS;
@@ -133,21 +142,16 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     const pcm = base64ToInt16(b64);
     const float = new Float32Array(pcm.length);
     for (let i = 0; i < pcm.length; i++) float[i] = pcm[i] / 0x8000;
-    const audioBuffer = ctx.createBuffer(1, float.length, OUTPUT_RATE);
-    audioBuffer.copyToChannel(float, 0);
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    const startAt = Math.max(ctx.currentTime, nextPlayTimeRef.current);
-    source.start(startAt);
-    nextPlayTimeRef.current = startAt + audioBuffer.duration;
-    // Extend the echo gate across the full scheduled span of this chunk.
-    const endsInMs = (startAt + audioBuffer.duration - ctx.currentTime) * 1000;
-    agentSpeakingUntilRef.current = Math.max(agentSpeakingUntilRef.current, performance.now() + endsInMs);
-    scheduledSourcesRef.current.push(source);
-    source.onended = () => {
-      scheduledSourcesRef.current = scheduledSourcesRef.current.filter((s) => s !== source);
-    };
+    // Resample 24kHz -> device rate once at enqueue time.
+    const atDeviceRate = resample(float, OUTPUT_RATE, ctx.sampleRate);
+    if (atDeviceRate.length > 0) {
+      playQueueRef.current.push(atDeviceRate);
+      playQueueLenRef.current += atDeviceRate.length;
+      wasPlayingRef.current = true;
+    }
+    // Extend the echo gate across everything now queued.
+    const queuedMs = (playQueueLenRef.current / ctx.sampleRate) * 1000;
+    agentSpeakingUntilRef.current = Math.max(agentSpeakingUntilRef.current, performance.now() + queuedMs);
   }, []);
 
   const stop = useCallback(() => {
@@ -167,6 +171,21 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     micStreamRef.current = null;
     stopPlayback();
+    try {
+      playSilentSrcRef.current?.stop();
+    } catch {
+      // already stopped
+    }
+    playSilentSrcRef.current = null;
+    try {
+      playProcRef.current?.disconnect();
+    } catch {
+      // already disconnected
+    }
+    playProcRef.current = null;
+    playQueueRef.current = [];
+    playQueueLenRef.current = 0;
+    playChunkOffsetRef.current = 0;
     if (playbackCtxRef.current) {
       playbackCtxRef.current.close().catch(() => {});
       playbackCtxRef.current = null;
@@ -199,11 +218,66 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     resumeContext(captureCtx);
 
     // No forced sampleRate: iOS rejects/mismatches a hard 24kHz context. We
-    // still author buffers at OUTPUT_RATE and let the browser resample.
+    // resample each chunk to the device rate ourselves at enqueue time.
     const playbackCtx = new AudioCtx();
     playbackCtxRef.current = playbackCtx;
-    nextPlayTimeRef.current = playbackCtx.currentTime;
     resumeContext(playbackCtx);
+
+    // Continuous playback: ONE ScriptProcessor drains the ring buffer for the
+    // whole call. One long-lived node = no per-chunk scheduling boundaries
+    // (the periodic clicking that reads as interference during speech).
+    const playProc = playbackCtx.createScriptProcessor(2048, 1, 1);
+    playProcRef.current = playProc;
+    playProc.onaudioprocess = (e) => {
+      const out = e.outputBuffer.getChannelData(0);
+      let written = 0;
+      while (written < out.length) {
+        const queue = playQueueRef.current;
+        if (queue.length === 0) break;
+        const chunk = queue[0];
+        const offset = playChunkOffsetRef.current;
+        const need = out.length - written;
+        const available = chunk.length - offset;
+        if (available <= 0) {
+          // fully consumed chunk — drop it
+          queue.shift();
+          playChunkOffsetRef.current = 0;
+          continue;
+        }
+        const take = Math.min(available, need);
+        out.set(chunk.subarray(offset, offset + take), written);
+        written += take;
+        playQueueLenRef.current -= take;
+        playChunkOffsetRef.current = offset + take;
+        if (playChunkOffsetRef.current >= chunk.length) {
+          queue.shift();
+          playChunkOffsetRef.current = 0;
+        }
+      }
+      if (written < out.length) {
+        // underrun: silence the rest of this block (network jitter gap)
+        out.fill(0, written);
+        // Queue drained AFTER actually playing -> agent audio just stopped
+        // reaching the speakers; hold the echo gate for the decay tail, then
+        // reopen the mic. The wasPlaying guard stops idle callbacks from
+        // re-arming the gate forever.
+        if (playQueueLenRef.current === 0 && wasPlayingRef.current) {
+          agentSpeakingUntilRef.current = performance.now() + ECHO_TAIL_MS;
+          wasPlayingRef.current = false;
+        }
+      }
+    };
+    playProc.connect(playbackCtx.destination);
+    // ScriptProcessor only fires while it has an active input on some
+    // browsers (Safari): feed it a looping silent buffer so the graph is
+    // alive for the whole call.
+    const silentBuf = playbackCtx.createBuffer(1, 1, playbackCtx.sampleRate);
+    const silentSrc = playbackCtx.createBufferSource();
+    silentSrc.buffer = silentBuf;
+    silentSrc.loop = true;
+    silentSrc.connect(playProc);
+    silentSrc.start();
+    playSilentSrcRef.current = silentSrc;
 
     try {
       // Explicitly request echo cancellation / noise suppression / AGC.
@@ -238,7 +312,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
         processor.onaudioprocess = (e) => {
           if (ws.readyState !== WebSocket.OPEN) return;
           const input = e.inputBuffer.getChannelData(0);
-          const down = downsample(input, captureCtx.sampleRate, INPUT_RATE);
+          const down = resample(input, captureCtx.sampleRate, INPUT_RATE);
           let pcm16: Int16Array;
           if (performance.now() < agentSpeakingUntilRef.current) {
             // ECHO GATE: agent audio is playing out the speaker right now.
