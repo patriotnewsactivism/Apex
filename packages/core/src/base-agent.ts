@@ -52,9 +52,62 @@ const CAPACITY_WAIT_CAP_MS = 60_000;
  * real failures under thousands of deferral lines. */
 let sharedCapacityResumeAtMs = 0;
 
+/** Minimum length of a capacity pause, regardless of the resume-at reported.
+ *
+ *  capacityPauseError() takes Math.min() across every blocking provider, so
+ *  under "daily allowance pacing" — which spreads spend across the day and
+ *  therefore lets you through again almost immediately — the resume-at it
+ *  reports is a few hundred milliseconds out, and has usually already elapsed
+ *  by the time it is recorded here. The latch is then zero-length: the gate
+ *  reopens on the very next lap, the agent claims a task, rebuilds its history
+ *  and learning context, hits the same gate and defers again.
+ *
+ *  Observed in production 2026-09-05: ~57 defer/re-claim cycles in 50 seconds
+ *  across the workforce, each one paying for a claim, a context rebuild and a
+ *  Postgres write to learn nothing. This is the same waste #104 removed for
+ *  long pauses, reappearing at the short end because nothing floored it.
+ *
+ *  Five seconds matches CAPACITY_REPROBE_INTERVAL_MS, so a pause always lasts
+ *  at least one probe cycle. The latch is workspace-wide, so this is ~12
+ *  attempts per minute in total rather than per agent, and the probe still
+ *  releases it early the moment real capacity returns. */
+const CAPACITY_PAUSE_FLOOR_MS = 5_000;
+
+/** Rolling record of capacity deferrals, so "the workforce is spinning" is a
+ *  number instead of something you have to notice by reading the feed. The
+ *  2026-09-05 spin was only caught because a human pasted 50 seconds of log
+ *  into a chat window; this makes it a field in /api/diagnostics. */
+const CAPACITY_DEFERRAL_WINDOW_MS = 15 * 60_000;
+const capacityDeferralsAtMs: number[] = [];
+
+function recordCapacityDeferral(now: number): void {
+  capacityDeferralsAtMs.push(now);
+  const cutoff = now - CAPACITY_DEFERRAL_WINDOW_MS;
+  while (capacityDeferralsAtMs.length > 0 && capacityDeferralsAtMs[0] < cutoff) {
+    capacityDeferralsAtMs.shift();
+  }
+}
+
+export function getCapacityDeferralStats(now: number = Date.now()): {
+  lastMinute: number;
+  last15Minutes: number;
+  parkedForMs: number;
+} {
+  const minuteAgo = now - 60_000;
+  return {
+    lastMinute: capacityDeferralsAtMs.filter((t) => t >= minuteAgo).length,
+    last15Minutes: capacityDeferralsAtMs.length,
+    parkedForMs: capacityPauseRemainingMs(now),
+  };
+}
+
 function noteCapacityPause(resumeAtMs: number): void {
-  if (Number.isFinite(resumeAtMs) && resumeAtMs > sharedCapacityResumeAtMs) {
-    sharedCapacityResumeAtMs = resumeAtMs;
+  recordCapacityDeferral(Date.now());
+  if (!Number.isFinite(resumeAtMs)) return;
+  // A resume-at in the past or the immediate future is not a usable pause.
+  const flooredResumeAtMs = Math.max(resumeAtMs, Date.now() + CAPACITY_PAUSE_FLOOR_MS);
+  if (flooredResumeAtMs > sharedCapacityResumeAtMs) {
+    sharedCapacityResumeAtMs = flooredResumeAtMs;
   }
 }
 
