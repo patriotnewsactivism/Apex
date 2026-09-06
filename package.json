@@ -9,6 +9,7 @@
     "typecheck": "pnpm run typecheck:production",
     "typecheck:production": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./packages/**\" --filter \"./scripts\" --filter \"!@workspace/convex-backend\" --filter \"!@workspace/apex-cicd-worker\" --if-present run typecheck",
     "typecheck:experimental": "pnpm --filter @workspace/convex-backend --filter @workspace/apex-cicd-worker --if-present run typecheck",
+    "verify:lead-contact-enrichment": "node packages/core/node_modules/tsx/dist/cli.mjs scripts/verify-lead-contact-enrichment.ts",
     "dev:api": "pnpm --filter @workspace/api-server run dev",
     "dev:dashboard": "pnpm --filter @workspace/dashboard run dev",
     "dev": "concurrently \"pnpm run dev:api\" \"pnpm run dev:dashboard\""

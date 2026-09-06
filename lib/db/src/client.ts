@@ -261,6 +261,14 @@ export async function migrate() {
   await client`
     ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS campaign_segment_id text
   `;
+  // Contact enrichment is deliberately additive and idempotent. Existing leads
+  // remain pending so the autonomous enrichment sweep can work the backlog.
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS decision_maker_name text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_email text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_phone text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_source_url text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_research_status text NOT NULL DEFAULT 'pending'`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_researched_at timestamptz`;
   await client`
     CREATE INDEX IF NOT EXISTS researched_leads_campaign_idx
     ON researched_leads (campaign_id, status)

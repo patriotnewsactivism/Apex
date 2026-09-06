@@ -44,7 +44,7 @@ export function createLeadsRouter(): Router {
     };
 
     const headers = [
-      'Company Name', 'Website', 'Industry', 'City', 'Status',
+      'Company Name', 'Website', 'Industry', 'City', 'Decision Maker', 'Email', 'Phone', 'Contact Source', 'Contact Research Status', 'Status',
       'Fit Reason', 'Outreach Angle', 'Researched By', 'Created At',
     ];
 
@@ -53,6 +53,11 @@ export function createLeadsRouter(): Router {
       escapeCsv(l.website),
       escapeCsv(l.industry),
       escapeCsv(l.city),
+      escapeCsv(l.decisionMakerName),
+      escapeCsv(l.contactEmail),
+      escapeCsv(l.contactPhone),
+      escapeCsv(l.contactSourceUrl),
+      escapeCsv(l.contactResearchStatus),
       escapeCsv(l.status),
       escapeCsv(l.fitReason),
       escapeCsv(l.outreachAngle),

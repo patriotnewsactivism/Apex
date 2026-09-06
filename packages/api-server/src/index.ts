@@ -92,7 +92,19 @@ async function seedDefaultJobs(): Promise<void> {
         payload: {
           title: 'Lead generation sweep',
           description:
-            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered (rotate through the full target list in your system prompt). Use searchBusinessDirectory and webSearch to find 20-50 real qualifying businesses, then save them in one batch with saveResearchedLeadsBatch. Quality over quantity, but aim high.',
+            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered. Use searchBusinessDirectory and webSearch to find real qualifying businesses. For every lead, inspect public contact/about/team sources and attempt to find the decision maker, business email, and phone; never guess. Save the source and honest contact research status with saveResearchedLeadsBatch. Every saved lead must retain at least its verified company website as a contact path. Quality over quantity.',
+        },
+      },
+      {
+        id: 'system-lead-contact-enrichment',
+        name: 'Lead contact enrichment backlog',
+        jobType: 'task_delegation',
+        cronExpression: '30 * * * *',
+        targetAgentId: 'apex-lead-research-001' as string | null,
+        priority: 3,
+        payload: {
+          title: 'Enrich pending lead contacts',
+          description: 'Call listResearchedLeads with needsContactResearch=true. For up to 25 pending leads, inspect each verified website and targeted public web results for the relevant decision maker name, business email, and business phone. Never guess or synthesize contact data. Call updateLeadContactInfo for every attempted lead, include a supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
         },
       },
       {
