@@ -72,6 +72,11 @@ export function PipelinePanel() {
     <div style={{ padding: '24px 32px', maxWidth: 1200 }}>
       {/* Header & Controls */}
       <div
+        // apex-toolbar so the title and the action row stack at phone widths.
+        // space-between gave the title block the width and pushed the 331px
+        // button row off the right edge — with <main> now overflow-x:hidden
+        // that put 'Deploy Production' 203px off-screen and unreachable.
+        className="apex-toolbar"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -79,7 +84,7 @@ export function PipelinePanel() {
           marginBottom: 24,
         }}
       >
-        <div>
+        <div style={{ minWidth: 0 }}>
           <h2
             style={{
               margin: 0,
@@ -99,7 +104,7 @@ export function PipelinePanel() {
         </div>
 
         {/* Action Controls */}
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div className="apex-toolbar" style={{ display: 'flex', gap: 10 }}>
           <button
             onClick={() => testMutation.mutate()}
             disabled={testMutation.isPending}
