@@ -68,6 +68,16 @@ const GEMINI_TOOLS = toGeminiTools(CHAT_TOOLS);
 
 export function setupLiveVoice(server: Server, ceo: ApexCEO) {
   const wss = registerWebSocketRoute(server, '/ws/voice-live', async (client: WebSocket, _req: IncomingMessage) => {
+    // The Apex page Don was viewing when he started the call — the client
+    // sends ?page=<Title (pageId)>. Mid-call navigation updates arrive as
+    // { type: 'context' } messages.
+    const startPage = (() => {
+      try {
+        return new URL(_req.url ?? '', 'http://apex.local').searchParams.get('page') ?? undefined;
+      } catch {
+        return undefined;
+      }
+    })();
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       client.send(JSON.stringify({ type: 'error', message: 'GEMINI_API_KEY is not configured on this deployment.' }));
@@ -97,6 +107,9 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
       } catch (err) {
         console.error('[live-voice] buildLiveSnapshot failed:', err);
       }
+      const screenNote = startPage
+        ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
+        : '';
       safeSendGemini({
         setup: {
           model: GEMINI_LIVE_MODEL,
@@ -110,7 +123,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
                   `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
                   `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
                   `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
-                  `tool — don't just say you will.\n\nCurrent live snapshot:\n${snapshot}`,
+                  `tool — don't just say you will.${screenNote}` +
+                  `You will receive "[screen context]" updates whenever Don moves to a different Apex page. ` +
+                  `Use them to understand what "this" or "that" refers to — NEVER read a screen update aloud, ` +
+                  `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
               },
             ],
           },
@@ -209,6 +225,20 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
       }
       if (msg.type === 'audio' && msg.data) {
         safeSendGemini({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: msg.data } } });
+      } else if (msg.type === 'context' && typeof msg.text === 'string' && msg.text.length <= 300) {
+        // Don navigated to a different Apex page mid-call. Inject it as a
+        // text turn the model treats as silent context, not something to
+        // respond to out loud (behavior is pinned by the system prompt).
+        safeSendGemini({
+          clientContent: {
+            turns: [
+              {
+                role: 'user',
+                parts: [{ text: `[screen context — do not read aloud or comment] ${msg.text}` }],
+              },
+            ],
+          },
+        });
       } else if (msg.type === 'end') {
         safeSendGemini({ realtimeInput: { audioStreamEnd: true } });
       }
