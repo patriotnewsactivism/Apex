@@ -44,6 +44,7 @@ export type ApexProviderName =
   | 'openrouter-nemotron-ultra'
   | 'openrouter-nemotron-super'
   | 'openrouter-deepseek-v4-flash-paid'
+  | 'openrouter-gpt-oss-120b-paid'
   | 'openrouter-deepseek-v3-paid'
   | 'openrouter-grok-4-6-bedrock';
 
@@ -102,7 +103,22 @@ type ProviderSpec = {
    * them is the right target -- e.g. a BYOK endpoint, which is only used when
    * the request actually lands on that provider.
    */
-  providerRouting?: { only?: readonly string[]; allow_fallbacks?: boolean };
+  providerRouting?: {
+    only?: readonly string[];
+    allow_fallbacks?: boolean;
+    /**
+     * OpenRouter's own price-aware routing: prefer the cheapest live provider
+     * for this model while still keeping every other provider available as
+     * an automatic fallback if the cheapest one is rate-limited or down.
+     * Deliberately NOT paired with `only`/`allow_fallbacks:false` here --
+     * unlike the Bedrock BYOK rung, these are ordinary OpenRouter-billed
+     * paid rungs, so hard-pinning to one cheap-but-small provider would trade
+     * a large load-balanced pool for a single new point of failure just to
+     * shave pennies. `sort: 'price'` gets most of the savings with none of
+     * that risk.
+     */
+    sort?: 'price' | 'throughput' | 'latency';
+  };
 };
 
 const PROVIDERS: readonly ProviderSpec[] = [
@@ -156,6 +172,36 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // Reasoning model: run at low effort so thinking doesn't consume the
     // entire max_tokens budget before any content is emitted.
     reasoningEffort: 'low',
+    // 2026-09-07: this model is served by 28 different OpenRouter providers
+    // ranging $0.05-$0.44/M input -- sort:'price' asks OpenRouter to prefer
+    // the cheapest live one while still keeping the full pool as automatic
+    // fallback, so a rate-limited cheap provider doesn't fail the request.
+    providerRouting: { sort: 'price' },
+  },
+  {
+    // Cheaper paid rung, added 2026-09-07 on Don's explicit tier policy:
+    // individual-contributor roles (FRONTEND/BACKEND/DEVOPS/QA/MARKETING/
+    // CUSTOMER_SUCCESS/DOCS/OPS/COMMUNITY_WATCH) route here FIRST once the
+    // three free rungs are exhausted -- gpt-oss-120b is ~4x cheaper on input
+    // tokens than deepseek-v4-flash-0731 ($0.037 vs $0.14/M in per Apex's own
+    // live OpenRouter catalog scoring) while still tool-calling-reliable and
+    // reasoning-capable. Leadership roles (see HIGH_TIER_ROLES below) still
+    // reach deepseek-v4-flash-paid first for more reasoning headroom, with
+    // this rung as their own second paid fallback if that one is exhausted --
+    // so every role can reach both paid models, only the PRIORITY differs by
+    // tier. Not reasoning-effort-pinned: unlike deepseek-v4-flash and
+    // grok-4.6, gpt-oss-120b has not shown the silent content:null failure
+    // mode that made reasoningEffort:'low' load-bearing for those two.
+    name: 'openrouter-gpt-oss-120b-paid',
+    model: 'openai/gpt-oss-120b',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
+    paid: true,
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+    // 2026-09-07: 22 providers serve this model, $0.03-$0.35/M input --
+    // same price-sort reasoning as the deepseek-v4-flash rung above.
+    providerRouting: { sort: 'price' },
   },
   {
     // Paid fallback FINAL slot: DeepSeek V3.2 — not R1 (R1's OpenRouter
@@ -234,18 +280,47 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-nemotron-ultra',
   'openrouter-nemotron-super',
   'openrouter-deepseek-v4-flash-paid',
+  'openrouter-gpt-oss-120b-paid',
   'openrouter-deepseek-v3-paid',
-  // Behind both DeepSeek rungs on purpose: those are ~34x cheaper per input
+  // Behind every other paid rung on purpose: those are all cheaper per input
   // token, so Grok is reached only once they are exhausted or erroring.
   'openrouter-grok-4-6-bedrock',
 ];
 
-export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
+// Operator tier policy, 2026-09-07 (Don): give leadership more reasoning
+// headroom on the paid tail, keep individual-contributor work on the cheaper
+// paid model, to hold down spend without starving the roles whose output
+// quality matters most. Matches the existing token-budget tier split in
+// getDefaultLLMConfig below (the 8192-max-token roles) rather than inventing
+// a second, possibly-drifting notion of "leadership."
+const HIGH_TIER_ROLES = new Set([
+  'CEO', 'CTO', 'COO', 'LEAD_DEV', 'RESEARCH', 'LEAD_RESEARCH', 'SALES', 'QA_DIRECTOR',
+]);
+
+export function getProviderOrderForRole(role?: string): ApexProviderName[] {
   // A custom roster is one OpenRouter gateway request with native model
   // fallback. Repeating that same roster through three logical adapters would
   // multiply identical requests and defeat provider pacing/circuit breaking.
   if (hasCustomOpenRouterModelPolicy()) return ['openrouter-minimax-m3'];
-  return [...PROVIDER_ORDER];
+
+  const roleKey = (role ?? '').trim().toUpperCase();
+  const isHighTier = HIGH_TIER_ROLES.has(roleKey);
+  // Both paid models stay reachable for every role -- only which one is
+  // reached FIRST after the free rungs differs by tier. A role never loses
+  // access to the stronger model outright, it just falls back to it only if
+  // its priority pick is unavailable.
+  const paidTail: ApexProviderName[] = isHighTier
+    ? ['openrouter-deepseek-v4-flash-paid', 'openrouter-gpt-oss-120b-paid']
+    : ['openrouter-gpt-oss-120b-paid', 'openrouter-deepseek-v4-flash-paid'];
+
+  return [
+    'openrouter-minimax-m3',
+    'openrouter-nemotron-ultra',
+    'openrouter-nemotron-super',
+    ...paidTail,
+    'openrouter-deepseek-v3-paid',
+    'openrouter-grok-4-6-bedrock',
+  ];
 }
 
 /** Paid inference is no longer gated — the selected OpenRouter roster is an

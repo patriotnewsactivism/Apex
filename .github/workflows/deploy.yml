@@ -423,6 +423,22 @@ jobs:
               ;;
           esac
 
+          # Same type-conflict gcloud enforces for DATABASE_URL above applies to
+          # every one of these: if a name is currently bound as a Secret
+          # Manager reference on the live service and this deploy wants to
+          # attach a literal GitHub-sourced value instead, gcloud rejects the
+          # combined update with "already been set with a different type".
+          # Drop any existing secret binding for that exact name first, in its
+          # own tolerant call, before the real literal value is applied below.
+          drop_secret_binding_if_present() {
+            local name="$1"
+            gcloud run services update "${{ secrets.APEX_CLOUD_RUN_SERVICE }}"               --project "$GCP_PROJECT_ID"               --region "${{ secrets.APEX_CLOUD_RUN_REGION }}"               --remove-secrets="$name"               --quiet >/tmp/remove-secret-generic.log 2>&1 || true
+            if grep -qi 'error' /tmp/remove-secret-generic.log && ! grep -qi 'no changes\|not found\|does not exist' /tmp/remove-secret-generic.log; then
+              echo "Unexpected error while removing existing $name secret binding:" >&2
+              cat /tmp/remove-secret-generic.log >&2
+            fi
+          }
+
           attach_optional() {
             local name="$1"
             local source="$2"
@@ -430,6 +446,8 @@ jobs:
             local github_value="$4"
             case "$source" in
               github)
+                echo "$name: dropping any pre-existing Secret Manager binding so it can be re-bound as a literal env var..."
+                drop_secret_binding_if_present "$name"
                 add_env "$name" "$github_value"
                 echo "$name: attaching masked GitHub secret."
                 ;;

@@ -28,15 +28,18 @@ try {
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
-  // 6 = 3 free rungs (minimax-m3, nemotron-ultra, nemotron-super) + 3 paid tail
-  // (deepseek-v4-flash, deepseek-v3, grok-4.6 via Bedrock BYOK). Was 6, then 5
-  // when z-ai/glm-5.2:free was removed
-  // in 1f631e9 for being retired upstream; verify-provider-routing.ts was
-  // updated to 5 in that commit but this second copy of the count was missed,
-  // which is what turned main red. Deliberately still a literal: the guard
-  // exists to catch a rung disappearing by accident, so it has to be changed
-  // on purpose when one is removed on purpose.
-  check('no policy preserves all guarded gateway rungs (free chain + paid tail)', getProviderOrderForRole('CEO').length === 6);
+  // 7 = 3 free rungs (minimax-m3, nemotron-ultra, nemotron-super) + 4 paid tail
+  // (deepseek-v4-flash, gpt-oss-120b, deepseek-v3, grok-4.6 via Bedrock BYOK).
+  // Was 6 until gpt-oss-120b-paid was added 2026-09-07 for the tier-aware paid
+  // routing policy (see HIGH_TIER_ROLES in llm-client.ts) -- CEO is high-tier
+  // so this stays a stable count check regardless of per-tier ordering.
+  // History: was 6, then 5 when z-ai/glm-5.2:free was removed in 1f631e9 for
+  // being retired upstream; verify-provider-routing.ts was updated to 5 in
+  // that commit but this second copy of the count was missed, which is what
+  // turned main red. Deliberately still a literal: the guard exists to catch
+  // a rung disappearing by accident, so it has to be changed on purpose when
+  // one is removed (or added) on purpose.
+  check('no policy preserves all guarded gateway rungs (free chain + paid tail)', getProviderOrderForRole('CEO').length === 7);
 
   console.log('\n── Policy validation ──');
   check('empty roster is rejected', parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: [], rolePrimary: {} })) === null);
