@@ -64,7 +64,7 @@ export const outcomeEventSchema = z.object({
     confidence: z.number().min(0).max(1).optional(),
     attributedRevenue: z.number().finite().optional(),
     influencedRevenue: z.number().finite().optional(),
-    directCost: z.number().finite().optional(),
+    directCost: z.number().finite().nonnegative().optional(),
     estimatedLaborSavedHours: z.number().finite().nonnegative().optional(),
     qualityScore: z.number().min(0).max(1).optional(),
     status: z.string().max(80).optional(),
