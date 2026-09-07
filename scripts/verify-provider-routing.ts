@@ -84,6 +84,23 @@ check(
     catalog[4]?.paid === true,
   catalog,
 );
+// The BYOK rung is only a BYOK rung while it is pinned to a region-suffixed
+// Bedrock endpoint. A bare "amazon-bedrock" slug is silently dropped by
+// OpenRouter's regional-surcharge filter before `only` is applied (verified
+// 2026-09-07: bare slug -> HTTP 404, "/us-west-2" -> served), so losing the
+// suffix does not widen the match, it disables the rung and hands the fleet
+// back the exact outage this provider was added to survive. Assert the shape
+// rather than trusting a comment to survive the next edit.
+check(
+  "Grok 4.6 BYOK rung is pinned to a region-suffixed Bedrock endpoint",
+  catalog[5]?.name === "openrouter-grok-4-6-bedrock" &&
+    catalog[5]?.model === "x-ai/grok-4.6" &&
+    catalog[5]?.paid === true &&
+    catalog[5]?.providerRouting?.allow_fallbacks === false &&
+    catalog[5]?.providerRouting?.only?.length === 1 &&
+    /^amazon-bedrock\/[a-z0-9-]+$/.test(catalog[5]?.providerRouting?.only?.[0] ?? ""),
+  catalog[5]?.providerRouting,
+);
 check(
   "all approved routes use OpenRouter logical providers",
   catalog.every((provider) => provider.name.startsWith("openrouter-")),
