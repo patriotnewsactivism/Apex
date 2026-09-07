@@ -63,6 +63,47 @@ jobs:
       - name: Build dashboard
         run: pnpm --filter @workspace/dashboard run build
 
+  # The mobile layout guard. Kept as its own job rather than appended to
+  # production-checks so a browser download never slows the fast gate, and so a
+  # failure here names itself instead of hiding inside a 24-script guard step.
+  #
+  # This exists because the guard was written to make "zero horizontal scroll at
+  # 360-430px" enforceable, then was never wired up -- it only ever ran when
+  # someone invoked it by hand. 6e59118 (#124) changed LeadsPanel.tsx and
+  # dashboard/src/lib/api.ts and shipped with no mobile check at all. It happens
+  # to be clean (verified: 0/54), but that was luck, not a guarantee.
+  mobile-layout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The script serves packages/dashboard/dist, so the build must precede it.
+      - name: Build dashboard
+        run: pnpm --filter @workspace/dashboard run build
+
+      # playwright is already a dependency of @workspace/core; only the browser
+      # binary is missing on a clean runner.
+      - name: Install Chromium
+        run: pnpm --filter @workspace/core exec playwright install --with-deps chromium
+
+      # Fails the job on: any horizontal overflow at 360/390/430px, a view that
+      # renders blank (a crashed tree cannot overflow, so blankness would
+      # otherwise read as clean), or a nav view the harness does not visit.
+      - name: Verify mobile layout
+        run: node packages/core/scripts/verify-mobile-overflow.mjs
+
   convex-experimental:
     runs-on: ubuntu-latest
     timeout-minutes: 15
