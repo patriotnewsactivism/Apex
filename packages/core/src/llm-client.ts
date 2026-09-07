@@ -179,13 +179,31 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // the fleet down on 2026-09-06.
     //
     // Routed through the operator's own Amazon Bedrock BYOK credential, so it
-    // bills AWS rather than OpenRouter credits. `only: ['amazon-bedrock']`
-    // is load-bearing, not a preference: x-ai/grok-4.6 is served by five
-    // endpoints and xAI direct is both cheaper ($2/M vs $2.2/M) and ~13x
-    // faster, so unpinned requests route there and bill the very credits this
-    // rung exists to avoid. allow_fallbacks:false keeps a Bedrock outage from
-    // silently becoming a paid-credit call -- it should fail and let the
-    // caller's own retry/backpressure handle it.
+    // bills AWS rather than OpenRouter credits. Pinning is load-bearing, not a
+    // preference: x-ai/grok-4.6 is served by five endpoints and xAI direct is
+    // both cheaper ($2/M vs $2.2/M) and ~13x faster, so unpinned requests route
+    // there and bill the very credits this rung exists to avoid.
+    // allow_fallbacks:false keeps a Bedrock outage from silently becoming a
+    // paid-credit call -- it should fail and let the caller's own
+    // retry/backpressure handle it.
+    //
+    // The region suffix is REQUIRED. OpenRouter's docs say a base provider slug
+    // matches all of that provider's endpoints including regional ones, but for
+    // this model it does not: the bare slug is dropped by the router's
+    // "Filter by Regional Surcharge" step (Bedrock is $2.2/M against xAI's $2/M)
+    // before `only` is ever applied. Verified against the live API on
+    // 2026-09-07 -- identical request, identical everything else:
+    //
+    //   only: ['amazon-bedrock']           -> HTTP 404 "No allowed providers
+    //                                         are available for the selected
+    //                                         model", routing_funnel shows
+    //                                         5 endpoints -> 4 at the surcharge
+    //                                         filter, leaving only xai
+    //   only: ['amazon-bedrock/us-west-2'] -> served, 64 output tokens returned
+    //
+    // So do not "simplify" this back to the bare slug. It does not widen the
+    // match, it silently disables the rung -- the failure mode this whole
+    // provider exists to prevent.
     //
     // reasoningEffort is mandatory here, not a tuning choice: grok-4.6 has
     // reasoning.mandatory = true with a default effort of 'high'. Left at the
@@ -200,7 +218,10 @@ const PROVIDERS: readonly ProviderSpec[] = [
     minIntervalMs: 500,
     toolCallingReliable: true,
     reasoningEffort: 'low',
-    providerRouting: { only: ['amazon-bedrock'], allow_fallbacks: false },
+    providerRouting: {
+      only: ['amazon-bedrock/us-west-2'],
+      allow_fallbacks: false,
+    },
   },
 ] as const;
 
@@ -1428,6 +1449,7 @@ export function getProviderCatalog(): Array<{
   tier: number;
   paid: boolean;
   toolCallingReliable: boolean;
+  providerRouting?: { only?: readonly string[]; allow_fallbacks?: boolean };
 }> {
   return PROVIDER_ORDER.map((name, index) => {
     const provider = PROVIDER_BY_NAME.get(name)!;
@@ -1437,6 +1459,10 @@ export function getProviderCatalog(): Array<{
       tier: index,
       paid: provider.paid === true,
       toolCallingReliable: true,
+      // Exposed so the routing guard can assert the BYOK pin. Which endpoint a
+      // rung is pinned to decides whose account pays for it, so it belongs in
+      // the introspection surface rather than only in the private spec.
+      ...(provider.providerRouting ? { providerRouting: provider.providerRouting } : {}),
     };
   });
 }
