@@ -22,6 +22,9 @@ const expectedProviders = [
   "openrouter-nemotron-super",
   "openrouter-deepseek-v4-flash-paid",
   "openrouter-deepseek-v3-paid",
+  // Operator-authorised 2026-09-07: BYOK rung billed to the operator's own
+  // Amazon Bedrock account, so it survives OpenRouter credit exhaustion.
+  "openrouter-grok-4-6-bedrock",
 ];
 const expectedModels = [
   "minimax/minimax-m3:free",
@@ -29,6 +32,7 @@ const expectedModels = [
   "nvidia/nemotron-3-super-120b-a12b:free",
   "deepseek/deepseek-v4-flash-0731",
   "deepseek/deepseek-v3.2",
+  "x-ai/grok-4.6",
 ];
 const expectedOrder = [...expectedProviders];
 
@@ -38,7 +42,7 @@ const expectedOrder = [...expectedProviders];
 // only through the dedicated paid key; no sole paid usage without the
 // operator's explicit authorization).
 console.log("── OpenRouter provider allowlist (free-agent chain + cheap paid tail) ──");
-check("exactly five approved OpenRouter routes exist", catalog.length === 5, catalog);
+check("exactly six approved OpenRouter routes exist", catalog.length === 6, catalog);
 check(
   "provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),

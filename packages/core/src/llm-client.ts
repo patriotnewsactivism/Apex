@@ -44,7 +44,8 @@ export type ApexProviderName =
   | 'openrouter-nemotron-ultra'
   | 'openrouter-nemotron-super'
   | 'openrouter-deepseek-v4-flash-paid'
-  | 'openrouter-deepseek-v3-paid';
+  | 'openrouter-deepseek-v3-paid'
+  | 'openrouter-grok-4-6-bedrock';
 
 // Operator policy 2026-09-04 (Don): FREE models first — the most intelligent,
 // most-reasoning free models until exhausted — then fall back to the CHEAPEST
@@ -57,6 +58,17 @@ const OPENROUTER_FREE_KEY_ENVS = [
   'OPENROUTER_API_KEY_2',
   // Paid keys work for :free models too ($0 cost), then remain available for
   // the paid tail when the free roster is exhausted.
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_API_KEY_3',
+] as const;
+// The BYOK rung. BYOK is configured per OpenRouter ACCOUNT, so the key here
+// must belong to the account that holds the Amazon Bedrock provider key --
+// otherwise the request routes as ordinary paid capacity and bills OpenRouter
+// credits instead of AWS. A dedicated env is checked first so the BYOK account
+// can be a different one from the paid credentials; if it is the same account,
+// leave it unset and the existing paid keys are used.
+const OPENROUTER_BYOK_KEY_ENVS = [
+  'OPENROUTER_BYOK_API_KEY',
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_3',
 ] as const;
@@ -84,6 +96,13 @@ type ProviderSpec = {
    * emitted.
    */
   reasoningEffort?: 'low' | 'medium' | 'high';
+  /**
+   * OpenRouter provider-routing preference, sent as the request's `provider`
+   * block. Needed when a model is served by several providers and only one of
+   * them is the right target -- e.g. a BYOK endpoint, which is only used when
+   * the request actually lands on that provider.
+   */
+  providerRouting?: { only?: readonly string[]; allow_fallbacks?: boolean };
 };
 
 const PROVIDERS: readonly ProviderSpec[] = [
@@ -153,6 +172,36 @@ const PROVIDERS: readonly ProviderSpec[] = [
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
+  {
+    // Last-resort rung, added 2026-09-07 on operator instruction: keep the
+    // workforce running when every free model is rate-capped AND the paid
+    // OpenRouter credits are exhausted, which is exactly the state that took
+    // the fleet down on 2026-09-06.
+    //
+    // Routed through the operator's own Amazon Bedrock BYOK credential, so it
+    // bills AWS rather than OpenRouter credits. `only: ['amazon-bedrock']`
+    // is load-bearing, not a preference: x-ai/grok-4.6 is served by five
+    // endpoints and xAI direct is both cheaper ($2/M vs $2.2/M) and ~13x
+    // faster, so unpinned requests route there and bill the very credits this
+    // rung exists to avoid. allow_fallbacks:false keeps a Bedrock outage from
+    // silently becoming a paid-credit call -- it should fail and let the
+    // caller's own retry/backpressure handle it.
+    //
+    // reasoningEffort is mandatory here, not a tuning choice: grok-4.6 has
+    // reasoning.mandatory = true with a default effort of 'high'. Left at the
+    // default, thinking consumes the whole max_tokens budget and the model
+    // returns content: null -- the same silent-empty-completion failure that
+    // 74d2fc7 had to guard for deepseek-v4-flash.
+    name: 'openrouter-grok-4-6-bedrock',
+    model: 'x-ai/grok-4.6',
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: OPENROUTER_BYOK_KEY_ENVS,
+    paid: true,
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+    reasoningEffort: 'low',
+    providerRouting: { only: ['amazon-bedrock'], allow_fallbacks: false },
+  },
 ] as const;
 
 const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
@@ -165,6 +214,9 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-nemotron-super',
   'openrouter-deepseek-v4-flash-paid',
   'openrouter-deepseek-v3-paid',
+  // Behind both DeepSeek rungs on purpose: those are ~34x cheaper per input
+  // token, so Grok is reached only once they are exhausted or erroring.
+  'openrouter-grok-4-6-bedrock',
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
@@ -766,6 +818,7 @@ async function callCompatibleProvider(
       ...(provider.reasoningEffort
         ? { reasoning: { effort: provider.reasoningEffort } }
         : {}),
+      ...(provider.providerRouting ? { provider: provider.providerRouting } : {}),
     };
     if (customPolicy) {
       // OpenRouter rejects the whole request with HTTP 400 when `models` holds
