@@ -298,7 +298,8 @@ Production CI currently includes:
 - cron-governor guard (Phase 5: frequency floor, dynamic-ceiling constants, schedule_task enum);
 - approval-policy guard (Phase 5.5: hard-gated tools never auto-approvable);
 - executor-dispatch guard (Phase 4: claim-by-id, runtime routing, dispatch wiring);
-- dashboard build.
+- dashboard build;
+- mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across all 17 nav views at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
 
