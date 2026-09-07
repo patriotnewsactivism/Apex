@@ -103,7 +103,22 @@ type ProviderSpec = {
    * them is the right target -- e.g. a BYOK endpoint, which is only used when
    * the request actually lands on that provider.
    */
-  providerRouting?: { only?: readonly string[]; allow_fallbacks?: boolean };
+  providerRouting?: {
+    only?: readonly string[];
+    allow_fallbacks?: boolean;
+    /**
+     * OpenRouter's own price-aware routing: prefer the cheapest live provider
+     * for this model while still keeping every other provider available as
+     * an automatic fallback if the cheapest one is rate-limited or down.
+     * Deliberately NOT paired with `only`/`allow_fallbacks:false` here --
+     * unlike the Bedrock BYOK rung, these are ordinary OpenRouter-billed
+     * paid rungs, so hard-pinning to one cheap-but-small provider would trade
+     * a large load-balanced pool for a single new point of failure just to
+     * shave pennies. `sort: 'price'` gets most of the savings with none of
+     * that risk.
+     */
+    sort?: 'price' | 'throughput' | 'latency';
+  };
 };
 
 const PROVIDERS: readonly ProviderSpec[] = [
@@ -157,6 +172,11 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // Reasoning model: run at low effort so thinking doesn't consume the
     // entire max_tokens budget before any content is emitted.
     reasoningEffort: 'low',
+    // 2026-09-07: this model is served by 28 different OpenRouter providers
+    // ranging $0.05-$0.44/M input -- sort:'price' asks OpenRouter to prefer
+    // the cheapest live one while still keeping the full pool as automatic
+    // fallback, so a rate-limited cheap provider doesn't fail the request.
+    providerRouting: { sort: 'price' },
   },
   {
     // Cheaper paid rung, added 2026-09-07 on Don's explicit tier policy:
@@ -179,6 +199,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     paid: true,
     minIntervalMs: 500,
     toolCallingReliable: true,
+    // 2026-09-07: 22 providers serve this model, $0.03-$0.35/M input --
+    // same price-sort reasoning as the deepseek-v4-flash rung above.
+    providerRouting: { sort: 'price' },
   },
   {
     // Paid fallback FINAL slot: DeepSeek V3.2 — not R1 (R1's OpenRouter
