@@ -329,7 +329,7 @@ export function createCaseBuddyTools(): ToolDefinition[] {
         spec: z.string().describe('Full engineering spec: what to change, where, acceptance criteria'),
         priority: z.number().min(1).max(10).optional().describe('1 (highest) – 10 (lowest); default 4'),
       }),
-      requiresApproval: false,
+      requiresApproval: true, // Hard-gated in approval-policy.ts (HARD_GATED_TOOLS) -- fixed 2026-09-07, was incorrectly false. ToolRegistry.execute() now enforces the hard gate centrally regardless of this flag, but keeping it accurate here too so the registry-consistency guard actually means something.
       async execute({ title, spec, priority }) {
         const { randomUUID } = await import('crypto');
         const { db, tasks } = await import('@workspace/db');
