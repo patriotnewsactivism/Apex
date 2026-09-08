@@ -183,6 +183,11 @@ export interface TaskResult {
   artifacts?: string[]; // file paths created
   error?: string;
   subTasks?: string[]; // IDs of spawned sub-tasks
+  // Set when this execution slice ended by checkpointing and yielding back to
+  // the queue (soft deadline or approval yield) rather than by completing or
+  // failing the task. `success` stays true because a yield is neither — see
+  // task-checkpoint.ts.
+  yielded?: boolean;
 }
 
 // ─── Events (for WebSocket broadcast) ────────────────────────────────────────

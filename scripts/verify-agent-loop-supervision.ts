@@ -199,6 +199,12 @@ export async function checkAgentLoopSupervision(): Promise<number> {
   const server = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
   const workerRuntime = fs.readFileSync(path.join(root, 'packages/api-server/src/worker.ts'), 'utf8');
   const agent = fs.readFileSync(path.join(root, 'packages/core/src/base-agent.ts'), 'utf8');
+  // Phase 5 of the autonomous-OS upgrade moved workforce/scheduler/supervisor
+  // wiring out of both entrypoints and into one shared routine so a standalone
+  // worker cannot silently diverge from the HTTP control plane again (see that
+  // module's doc comment for the gap this closed). The supervision invariants
+  // below now live there; both entrypoints are checked for actually calling it.
+  const bootstrap = fs.readFileSync(path.join(root, 'packages/api-server/src/runtime-bootstrap.ts'), 'utf8');
 
   check(
     'the best-effort agent status mirror cannot become an unhandled rejection',
@@ -206,17 +212,32 @@ export async function checkAgentLoopSupervision(): Promise<number> {
   );
 
   check(
-    'the HTTP control plane supervises its agents instead of fire-and-forget',
-    server.includes('superviseAgentLoop(') && !/agent\.start\(\)\.catch\(/.test(server),
+    'the shared runtime bootstrap supervises agents instead of fire-and-forget',
+    bootstrap.includes('superviseAgentLoop(') && !/agent\.start\(\)\.catch\(/.test(bootstrap),
   );
   check(
-    'the browser-independent worker runtime uses the same supervisor',
-    workerRuntime.includes('superviseAgentLoop(') && !/agent\.start\(\)\.catch\(/.test(workerRuntime),
+    'the HTTP control plane uses the shared bootstrap rather than its own workforce/supervisor wiring',
+    server.includes('bootstrapApexRuntime(') &&
+      !server.includes('superviseAgentLoop(') &&
+      !/agent\.start\(\)\.catch\(/.test(server),
   );
   check(
-    'both entrypoints stop supervision on shutdown',
-    server.includes('for (const supervisor of supervisors) supervisor.stop()') &&
-      workerRuntime.includes('for (const supervisor of supervisors) supervisor.stop()'),
+    'the browser-independent worker runtime uses the exact same shared bootstrap',
+    workerRuntime.includes('bootstrapApexRuntime(') &&
+      !workerRuntime.includes('superviseAgentLoop(') &&
+      !/agent\.start\(\)\.catch\(/.test(workerRuntime),
+  );
+  check(
+    'the shared bootstrap stops every supervisor on shutdown',
+    bootstrap.includes('for (const supervisor of supervisors) supervisor.stop()'),
+  );
+  check(
+    'the HTTP entrypoint routes its shutdown signal through the shared bootstrap',
+    server.includes('bootstrap.shutdown('),
+  );
+  check(
+    'the worker entrypoint routes its shutdown signal through the shared bootstrap',
+    workerRuntime.includes('bootstrap.shutdown('),
   );
   check(
     '/health publishes real workforce liveness, not just the constructed count',

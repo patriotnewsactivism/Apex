@@ -29,3 +29,8 @@ export * from './artifact-store.js';
 export * from './workspace-sync.js';
 export * from './approval-policy.js';
 export * from './durable-work-tools.js';
+export * from './task-checkpoint.js';
+export * from './execution-budget.js';
+export * from './work-classifier.js';
+export * from './worker-heartbeat.js';
+export * from './execution-outcome.js';

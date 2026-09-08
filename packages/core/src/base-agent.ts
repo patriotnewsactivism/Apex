@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
-import { db, agents, approvals, messages, tasks as tasksTable, learningInsights, strategyRecommendations } from '@workspace/db';
+import { db, agents, approvals, messages, tasks as tasksTable, taskCheckpoints, learningInsights, strategyRecommendations } from '@workspace/db';
 import { eq, and, desc, inArray } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, llmCapacityAvailableNow, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
@@ -8,15 +8,42 @@ import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
 import { TaskQueue } from './task-queue.js';
-import { drainTaskArtifacts } from './durable-work-tools.js';
-import { recordAgentLoopStart, recordAgentLoopTick } from './runtime-health.js';
+import { drainTaskArtifacts, peekTaskArtifacts } from './durable-work-tools.js';
+import {
+  recordAgentLoopStart,
+  recordAgentLoopTick,
+  recordCheckpointCreated,
+  recordTaskSoftYielded,
+  recordTaskResumedFromCheckpoint,
+} from './runtime-health.js';
+import { recordTaskStarted, recordTaskFinished } from './worker-heartbeat.js';
 import {
   getLLMCapacityResumeAt,
   isLLMDailyBudgetPause,
   isLLMIntentionalPause,
 } from './provider-failure.js';
+import { isApprovalYieldSignal } from './approval-continuation.js';
 import { OutcomeAnalyzer } from '@workspace/learning-system';
 import { applyHistoryBudget, resolveBudget, truncateToolResult } from './context-budget.js';
+import {
+  buildCheckpoint,
+  extractCheckpointHistory,
+  formatResumePreamble,
+  isResumableCheckpoint,
+  mergeCheckpointIntoContext,
+  priorYieldCountFromContext,
+} from './task-checkpoint.js';
+import {
+  classifyToolCallForCheckpoint,
+  detectRepetition,
+  toolCallArgsKey,
+  buildRepetitionInterventionMessage,
+  shouldPromptForConcreteAction,
+  buildConcreteActionPrompt,
+  type ToolCallRecord,
+} from './execution-budget.js';
+import { classifyWorkload, buildHeavyWorkAdvisory, buildHeavyWorkExecutionNudge } from './work-classifier.js';
+import { logTaskOutcome, logToolCallOutcome } from './execution-outcome.js';
 import type {
   AgentConfig,
   AgentStatus,
@@ -159,6 +186,41 @@ export function __setCapacityLatchForTest(resumeAtMs: number): void {
   sharedCapacityResumeAtMs = 0;
   lastCapacityProbeAtMs = 0;
   noteCapacityPause(resumeAtMs);
+}
+
+// ─── Hard timeout / soft deadline ─────────────────────────────────────────────
+//
+// The hard timeout is an emergency backstop, not the normal way work gets
+// sliced (see docs/ARCHITECTURE_DECISIONS.md, checkpoint/resume ADR). The
+// soft deadline below it is what actually slices long tasks: executeTask()
+// checks it once per iteration and, if crossed, stops starting new LLM/tool
+// work, writes a checkpoint, and yields the task back to the queue cleanly —
+// so the hard Promise.race timeout in start() should only ever fire for a
+// genuinely wedged await (a tool call or DB round-trip that never settles),
+// exactly the case it was originally added for.
+
+/** Longest a single execution attempt may run before the emergency hard
+ *  timeout fires. Job-runtime tasks (sandbox executor, Phase 4) get a much
+ *  longer ceiling since they run in an isolated Cloud Run Job container, not
+ *  an in-process concurrency slot. */
+export function resolveHardTimeoutMs(context: Record<string, unknown> | null | undefined): number {
+  const isJob = (context?.runtime as string | undefined) === 'job';
+  return isJob
+    ? Number(process.env.EXECUTOR_TASK_HARD_TIMEOUT_MS ?? 55 * 60 * 1000)
+    : Number(process.env.APEX_TASK_HARD_TIMEOUT_MS ?? 10 * 60 * 1000);
+}
+
+const DEFAULT_SOFT_TIMEOUT_RATIO = 0.7;
+
+/** Fraction of the hard timeout at which executeTask must stop beginning
+ *  expensive new work and checkpoint instead. Clamped so a misconfigured
+ *  value cannot make the soft deadline meaningless (>=0.95 of the hard
+ *  ceiling leaves no room to checkpoint before the race fires) or starve
+ *  every task of real work time (<=0.3). */
+export function resolveSoftDeadlineMs(hardTimeoutMs: number): number {
+  const raw = Number(process.env.APEX_SOFT_TIMEOUT_RATIO ?? DEFAULT_SOFT_TIMEOUT_RATIO);
+  const ratio = Number.isFinite(raw) ? Math.min(0.95, Math.max(0.3, raw)) : DEFAULT_SOFT_TIMEOUT_RATIO;
+  return Math.floor(hardTimeoutMs * ratio);
 }
 
 export const apexEventBus = new EventEmitter();
@@ -370,6 +432,7 @@ export abstract class BaseAgent {
           consecutiveErrors = 0;
           idleCycles = 0; // real work arrived — back to the fast 5s poll
           this.currentTaskIds.add(task.id);
+          recordTaskStarted(task.id);
           // Hard wall-clock ceiling on the WHOLE task, not just individual LLM
           // calls. Root-caused 2026-08-19: Apex's worker loop went completely
           // silent for ~46h (zero completions, zero failures, zero DB writes)
@@ -383,10 +446,7 @@ export abstract class BaseAgent {
           // means the worst case is "one task takes up to 10 min to be
           // detected as stuck," not "this agent never processes anything
           // again until someone manually restarts the whole process."
-          const TASK_HARD_TIMEOUT_MS =
-            (task.context?.runtime as string | undefined) === 'job'
-              ? Number(process.env.EXECUTOR_TASK_HARD_TIMEOUT_MS ?? 55 * 60 * 1000)
-              : 10 * 60 * 1000;
+          const TASK_HARD_TIMEOUT_MS = resolveHardTimeoutMs(task.context);
           let hardTimeoutId: ReturnType<typeof setTimeout> | undefined;
           const hardTimeout = new Promise<never>((_, reject) => {
             hardTimeoutId = setTimeout(
@@ -429,6 +489,7 @@ export abstract class BaseAgent {
             .finally(() => {
               this.currentTaskIds.delete(task.id);
               inFlight.delete(task.id);
+              recordTaskFinished(task.id);
             });
           inFlight.set(task.id, p);
         }
@@ -509,6 +570,22 @@ export abstract class BaseAgent {
     const startTime = Date.now();
     const analyzer = new OutcomeAnalyzer();
 
+    // ── Checkpoint / soft-deadline yield state (Phase 2 + Phase 6) ─────────
+    const executionId = randomUUID();
+    const hardTimeoutMs = resolveHardTimeoutMs(context);
+    const softDeadlineMs = resolveSoftDeadlineMs(hardTimeoutMs);
+    // Real, observed events only — never fabricated. Populated as tool calls
+    // actually execute below and, if the task yields, become the checkpoint's
+    // completedSteps/findings/decisions/unresolvedBlockers.
+    const completedStepsLog: string[] = [];
+    const findingsLog: string[] = [];
+    const decisionsLog: string[] = [];
+    const blockersLog: string[] = [];
+    const toolCallLog: ToolCallRecord[] = [];
+    let decisionToolCallCount = 0;
+    let repetitionIntervened = false;
+    let budgetPrompted = false;
+
     const recordMetricsAsync = (success: boolean, errorMsg?: string) => {
       const durationMs = Date.now() - startTime;
       // Fire-and-forget async execution so task completion is never delayed (<100ms guaranteed)
@@ -534,19 +611,64 @@ export abstract class BaseAgent {
 
       const contextBudget = resolveBudget();
 
-      // Build initial message history
-      const memContext = await this.memory.buildMemoryContext(description);
-      const learningContext = await this.buildLearningContext(this.config.role);
-      const systemPrompt =
-        this.config.systemPrompt + STANDING_OPERATING_RULES + memContext + learningContext;
+      // ── Checkpoint resume (Phase 2) ─────────────────────────────────────
+      // A task yielded at a soft deadline carries its exact prior
+      // conversation in context.checkpoint.history. Restoring it verbatim —
+      // rather than a hand-written prose summary — is what lets this slice
+      // continue without re-deriving work already done: the model sees its
+      // own prior tool calls and results, not a paraphrase of them. The
+      // memory/learning context baked into that history's own system message
+      // is deliberately not refreshed here; rebuilding it risks a second,
+      // conflicting system message for one conversation, which is worse than
+      // a system prompt that is very slightly stale for the rest of this task.
+      const rawCheckpoint = context.checkpoint;
+      const priorCheckpoint = isResumableCheckpoint(rawCheckpoint) ? rawCheckpoint : null;
+      const priorYieldCount = priorYieldCountFromContext(context);
+      let history: LLMMessage[];
+      if (priorCheckpoint) {
+        history = extractCheckpointHistory(priorCheckpoint);
+        history.push({ role: 'user', content: formatResumePreamble(priorCheckpoint) });
+        recordTaskResumedFromCheckpoint();
+        await this.logger.info(
+          `Resuming from checkpoint (yield #${priorCheckpoint.retryMetadata.yieldCount}, reason: ${priorCheckpoint.reason})`,
+          taskId,
+        );
+        // Best-effort audit link: marks the checkpoint as actually consumed
+        // rather than merely written (a cancelled/reassigned task might never
+        // resume its own checkpoint). Never blocks execution on a DB hiccup.
+        db.update(taskCheckpoints)
+          .set({ resumedAt: new Date() })
+          .where(and(
+            eq(taskCheckpoints.taskId, taskId),
+            eq(taskCheckpoints.executionId, priorCheckpoint.executionId),
+          ))
+          .then(() => {}, () => {});
+      } else {
+        // Build initial message history
+        const memContext = await this.memory.buildMemoryContext(description);
+        const learningContext = await this.buildLearningContext(this.config.role);
+        const systemPrompt =
+          this.config.systemPrompt + STANDING_OPERATING_RULES + memContext + learningContext;
 
-      const history: LLMMessage[] = [
-        { role: 'system', content: systemPrompt },
-        {
-          role: 'user',
-          content: `## Task: ${title}\n\n${description}\n\nContext: ${JSON.stringify(context, null, 2)}`,
-        },
-      ];
+        history = [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: `## Task: ${title}\n\n${description}\n\nContext: ${JSON.stringify(context, null, 2)}`,
+          },
+        ];
+
+        // Heavy-work nudge (Phase 4): only on a fresh execution (a resumed
+        // one already has this context, and re-nudging every resume would be
+        // noise) and only when this agent actually holds the tool the nudge
+        // recommends and this task is not already executor-bound.
+        if (context.runtime !== 'job' && this.config.tools.includes('run_executor_job')) {
+          const classification = classifyWorkload(title, description);
+          if (classification.heavy) {
+            history.push({ role: 'user', content: buildHeavyWorkExecutionNudge(classification) });
+          }
+        }
+      }
 
       const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
       const tools = registry.getLLMToolSchemas(this.config.tools);
@@ -570,6 +692,99 @@ export abstract class BaseAgent {
 
       // Agentic loop
       while (iterations < maxIter) {
+        // Soft deadline (Phase 2): checked BEFORE starting another LLM
+        // round-trip, never mid-tool-call, so a checkpoint can only ever land
+        // on a clean iteration boundary and the resumed execution can never
+        // re-enter a half-finished side effect. `iterations > 0` guarantees at
+        // least one full iteration always runs, even under a very tight soft
+        // budget — and because the soft deadline is computed fresh from THIS
+        // execution's own start time, a repeatedly-yielded task's next slice
+        // always gets a full new window rather than an ever-shrinking one.
+        if (iterations > 0 && Date.now() - startTime >= softDeadlineMs) {
+          const checkpoint = buildCheckpoint({
+            taskId,
+            executionId,
+            goalId: taskGoalId ?? priorCheckpoint?.goalId ?? null,
+            agentId: this.config.id,
+            history,
+            completedSteps: completedStepsLog,
+            findings: findingsLog,
+            decisions: decisionsLog,
+            unresolvedBlockers: blockersLog,
+            approvalRequirement: requiredApprovals > 0,
+            iterationsUsed: iterations,
+            toolExecutions,
+            maxIterations: maxIter,
+            priorYieldCount,
+            artifactRefs: peekTaskArtifacts(taskId),
+            reason: 'soft_deadline',
+          });
+          const took = await this.taskQueue.checkpointAndResume(
+            taskId,
+            mergeCheckpointIntoContext(context, checkpoint),
+          );
+          if (took) {
+            recordCheckpointCreated();
+            recordTaskSoftYielded();
+            try {
+              await db.insert(taskCheckpoints).values({
+                id: randomUUID(),
+                taskId,
+                executionId,
+                goalId: checkpoint.goalId,
+                agentId: this.config.id,
+                reason: checkpoint.reason,
+                iterationsUsed: checkpoint.retryMetadata.iterationsUsed,
+                toolExecutions: checkpoint.retryMetadata.toolExecutions,
+                yieldCount: checkpoint.retryMetadata.yieldCount,
+                workingSummary: checkpoint.workingSummary.slice(0, 4000),
+                createdAt: new Date(),
+              });
+            } catch {
+              // Audit row only — the resumable state already landed on the
+              // task row itself. Never fail the yield over a log write.
+            }
+            await this.logger.info(
+              `Soft deadline reached (${Math.round((Date.now() - startTime) / 1000)}s) — checkpointed and yielded for continuation (yield #${checkpoint.retryMetadata.yieldCount})`,
+              taskId,
+            );
+          } else {
+            // Ownership was lost while this execution ran (cancelled,
+            // terminalized, or hard-timeout quarantined by another actor).
+            // The task is already in its correct terminal/quarantined state;
+            // writing a checkpoint over it would be exactly the resurrection
+            // race liveOwnershipPredicate() exists to prevent. Nothing more
+            // to do — fall through and let this execution end quietly.
+            await this.logger.warn(
+              'Soft deadline reached but task ownership was lost before the checkpoint could be saved; not yielding.',
+              taskId,
+            );
+          }
+          this.setStatus('idle');
+          logTaskOutcome({
+            taskId,
+            goalId: taskGoalId ?? null,
+            agentId: this.config.id,
+            reason: 'soft_yield',
+            elapsedMs: Date.now() - startTime,
+            iterations,
+            toolExecutions,
+            detail: took ? `yield #${checkpoint.retryMetadata.yieldCount}` : 'ownership lost before checkpoint could save',
+          });
+          // Deliberately not recordMetricsAsync(): a soft-yield is neither a
+          // completed nor a failed task outcome, and crediting it as either
+          // would let one long task register as several fake samples in the
+          // learning system (task_outcomes) — the same reason a completed
+          // task is credited once, not once per LLM iteration.
+          return {
+            success: true,
+            yielded: took,
+            output: took
+              ? '[soft-deadline checkpoint: task yielded for continuation]'
+              : '[soft-deadline reached, but task ownership was already withdrawn]',
+          };
+        }
+
         iterations++;
 
         // Keep the re-sent context bounded. Elides oldest tool results only;
@@ -791,6 +1006,26 @@ export abstract class BaseAgent {
           if (tc.name === 'get_delegation_status' || tc.name === 'collectSwarmResults') {
             delegationVerified = true;
           }
+          // Real, observed record of what this execution actually did —
+          // feeds both the repetition guard below and, if this task later
+          // hits its soft deadline, the checkpoint it yields with.
+          const argsSummary = JSON.stringify(tc.args).slice(0, 100);
+          completedStepsLog.push(`${tc.name}(${argsSummary})`);
+          toolCallLog.push({ name: tc.name, argsKey: toolCallArgsKey(tc.args) });
+          switch (classifyToolCallForCheckpoint(tc.name)) {
+            case 'finding':
+              findingsLog.push(`${tc.name}(${argsSummary})`);
+              break;
+            case 'decision':
+              decisionsLog.push(`${tc.name}(${argsSummary})`);
+              decisionToolCallCount++;
+              break;
+            case 'blocker':
+              blockersLog.push(`${tc.name}: ${argsSummary}`);
+              break;
+            default:
+              break;
+          }
           await this.logger.acting(`Calling tool: ${tc.name}(${JSON.stringify(tc.args).slice(0, 100)})`, taskId);
 
           const toolContext: ToolContext = {
@@ -824,7 +1059,26 @@ export abstract class BaseAgent {
             },
           };
 
+          const toolCallStartedAt = Date.now();
           const result = await registry.execute(tc.name, tc.args, toolContext);
+          // Reaching here means the call did not yield (ApprovalYieldSignal
+          // throws out of registry.execute() before this line — that path
+          // gets its own logTaskOutcome at the outer catch instead).
+          const toolCategory = classifyToolCallForCheckpoint(tc.name);
+          logToolCallOutcome({
+            taskId,
+            agentId: this.config.id,
+            tool: tc.name,
+            argsSummary,
+            startedAt: toolCallStartedAt,
+            durationMs: Date.now() - toolCallStartedAt,
+            success: result.success,
+            sideEffect: toolCategory === 'decision' || toolCategory === 'blocker' ? 'write' : toolCategory === 'finding' ? 'read' : 'none',
+            // Only asserted when directly evidenced by the result; guessing
+            // 'approved' vs 'auto_approved' from this scope would overclaim
+            // knowledge this call site does not actually have.
+            approvalStatus: result.error === 'Action rejected by user' ? 'rejected' : undefined,
+          });
 
           // Capped on the way in: an uncapped result is re-sent on every
           // remaining iteration, so one large payload is billed many times.
@@ -837,6 +1091,38 @@ export abstract class BaseAgent {
         }
 
         history.push(...toolResults);
+
+        // ── Task economy (Phase 6) ──────────────────────────────────────
+        // Deterministic, no extra LLM call: catch circular investigation and
+        // budget drift the same way malformed-tool-calls.ts and
+        // non-completion.ts catch other process failures, by inspecting what
+        // actually happened rather than asking a model to judge itself.
+        // Each intervention fires at most once per task so a model that
+        // still repeats after being told is left to the existing
+        // max-iterations/non-completion guards rather than an escalating
+        // nag loop.
+        if (!repetitionIntervened) {
+          const finding = detectRepetition(toolCallLog);
+          if (finding) {
+            repetitionIntervened = true;
+            history.push({ role: 'user', content: buildRepetitionInterventionMessage(finding) });
+            await this.logger.warn(
+              `Repetition detected: ${finding.toolName} called ${finding.count}x with identical arguments`,
+              taskId,
+            );
+          }
+        }
+        if (
+          !budgetPrompted &&
+          shouldPromptForConcreteAction({ iterations, toolExecutions, maxIterations: maxIter }, decisionToolCallCount)
+        ) {
+          budgetPrompted = true;
+          history.push({
+            role: 'user',
+            content: buildConcreteActionPrompt({ iterations, toolExecutions, maxIterations: maxIter }),
+          });
+        }
+
         this.setStatus('thinking');
       }
 
@@ -846,6 +1132,26 @@ export abstract class BaseAgent {
       recordMetricsAsync(false, failMsg);
       return { success: false, error: 'Max iterations exceeded' };
     } catch (err) {
+      if (isApprovalYieldSignal(err)) {
+        // Not a failure: requestHumanApproval already persisted the pending
+        // approval and marked the task `awaiting_approval` in Postgres before
+        // throwing this. Ending the execution here — instead of the old
+        // five-minute in-process poll — is the entire point of the approval
+        // yield (Phase 3): no execution stays alive waiting on a human, so it
+        // can never race the hard task timeout while a decision that might
+        // come hours later, while the owner is offline, is still pending.
+        this.setStatus('idle');
+        logTaskOutcome({
+          taskId,
+          agentId: this.config.id,
+          reason: 'approval_yield',
+          elapsedMs: Date.now() - startTime,
+          iterations,
+          toolExecutions,
+          detail: `approvalId=${err.approvalId}`,
+        });
+        return { success: true, yielded: true, output: `[approval yield: awaiting human decision on ${err.approvalId}]` };
+      }
       const msg = err instanceof Error ? err.message : String(err);
       const dailyBudgetPaused = isLLMDailyBudgetPause(msg);
       const capacityPaused = isLLMIntentionalPause(msg);
@@ -935,6 +1241,14 @@ export abstract class BaseAgent {
     const now = new Date();
     const taskId = randomUUID();
 
+    // Heavy-work advisory (Phase 4): informational only — never changes
+    // routing or reassigns the task away from targetAgentId. See
+    // work-classifier.ts for why silent reassignment is unsafe here.
+    const classification = classifyWorkload(input.title, input.description);
+    const description = classification.heavy
+      ? `${input.description}\n\n${buildHeavyWorkAdvisory(classification)}`
+      : input.description;
+
     // DB-level idempotency: ON CONFLICT (goal_id, title, assigned_agent_id) DO NOTHING.
     // The unique partial index (WHERE goal_id IS NOT NULL) in the migration ensures two
     // concurrent workers racing to delegate the same (goal, title, agent) task both
@@ -945,7 +1259,7 @@ export abstract class BaseAgent {
       goalId: input.goalId ?? null,
       parentTaskId: input.parentTaskId ?? null,
       title: input.title,
-      description: input.description,
+      description,
       status: 'pending',
       priority: input.priority ?? 5,
       assignedAgentId: targetAgentId,

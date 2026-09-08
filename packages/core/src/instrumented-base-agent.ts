@@ -4,13 +4,14 @@ import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { BaseAgent as CoreBaseAgent, emitApexEvent } from './base-agent.js';
 import { getToolRegistry } from './tool-registry.js';
 import {
-  APPROVAL_RECOVERY_STALE_MS,
-  APPROVAL_WAIT_MAX_MS,
+  ApprovalYieldSignal,
   approvalPayloadsEqual,
   consumedApprovalStatus,
   isApprovalDecision,
+  resolveApprovalAutoRejectMs,
   type ApprovalDecision,
 } from './approval-continuation.js';
+import { recordApprovalYield } from './runtime-health.js';
 import {
   estimatePreRunComplexity,
   getCurrentLLMExecutionContext,
@@ -18,7 +19,13 @@ import {
 } from './model-execution-context.js';
 import type { AgentConfig, TaskResult, ToolContext } from './types.js';
 
-const APPROVAL_RECOVERY_SWEEP_MS = 60_000;
+// No live in-process waiter exists anymore (see ApprovalYieldSignal), so this
+// sweep is no longer racing anything it must "outlive" — it is purely a
+// backstop for the approvals API's own immediate requeue-on-decision (a
+// crash between that write and the requeue, or a decision resolved through
+// some future non-route path). Frequent and cheap: each tick is a handful of
+// guarded, idempotent UPDATEs that no-op when there is nothing to recover.
+const APPROVAL_RECOVERY_SWEEP_MS = 20_000;
 const APPROVAL_RECOVERY_BATCH = 200;
 let approvalRecoveryLoopStarted = false;
 
@@ -34,15 +41,15 @@ function summarizeRecoveredToolResult(value: unknown): string {
 }
 
 /**
- * Recover only approval waits that are older than the maximum live in-process
- * waiter. This is what makes recovery safe across multiple Cloud Run workers:
- * a newly started worker never races a still-live five-minute approval poll in
- * another process. Resolved rows are not replayed here; the task is merely put
- * back on the durable queue, and the exact decision is consumed by the claiming
- * execution before any side effect can happen.
+ * Requeue every task still `awaiting_approval` whose gated approval already
+ * has a human decision. There is no live in-process waiter to race anymore
+ * (see ApprovalYieldSignal), so this is unconditional — the only remaining
+ * question is real Postgres state, not process timing. Resolved rows are not
+ * replayed here; the task is merely put back on the durable queue, and the
+ * exact decision is consumed by the claiming execution (consumeRecoveredContinuation)
+ * before any side effect can happen.
  */
 async function recoverResolvedApprovalWaits(): Promise<number> {
-  const cutoff = new Date(Date.now() - APPROVAL_RECOVERY_STALE_MS);
   const candidates = await db
     .select({ taskId: tasksTable.id })
     .from(tasksTable)
@@ -54,10 +61,7 @@ async function recoverResolvedApprovalWaits(): Promise<number> {
         inArray(approvals.status, ['approved', 'rejected']),
       ),
     )
-    .where(and(
-      eq(tasksTable.status, 'awaiting_approval'),
-      lt(tasksTable.updatedAt, cutoff),
-    ))
+    .where(eq(tasksTable.status, 'awaiting_approval'))
     .limit(APPROVAL_RECOVERY_BATCH);
 
   const taskIds = [...new Set(candidates.map((row) => row.taskId))];
@@ -66,15 +70,44 @@ async function recoverResolvedApprovalWaits(): Promise<number> {
     const rows = await db
       .update(tasksTable)
       .set({ status: 'pending', leasedAt: null, updatedAt: new Date() })
-      .where(and(
-        eq(tasksTable.id, taskId),
-        eq(tasksTable.status, 'awaiting_approval'),
-        lt(tasksTable.updatedAt, cutoff),
-      ))
+      .where(and(eq(tasksTable.id, taskId), eq(tasksTable.status, 'awaiting_approval')))
       .returning({ id: tasksTable.id });
     recovered += rows.length;
   }
   return recovered;
+}
+
+/**
+ * Durable replacement for the old 5-minute in-process wait timeout. That
+ * timeout's real job was giving every approval SOME eventual resolution so a
+ * task could never wait forever — but 5 minutes is far too short for a human
+ * who may be offline for hours, which is the entire premise of this upgrade.
+ * This sweep gives approvals a much longer, operator-configurable window
+ * (APEX_APPROVAL_AUTO_REJECT_HOURS, default 24h; 0 disables it) and, when it
+ * elapses, sets the SAME plain 'rejected' status a human clicking Reject
+ * would — never 'consumed_rejected' directly, so the existing one-shot
+ * recovery/consumption path (consumeRecoveredContinuation) is what actually
+ * delivers it, exactly like any other rejection. Auto-REJECT only: this can
+ * never auto-approve, preserving the fail-closed default.
+ */
+async function sweepExpiredPendingApprovals(): Promise<number> {
+  const autoRejectMs = resolveApprovalAutoRejectMs();
+  if (autoRejectMs <= 0) return 0;
+  const cutoff = new Date(Date.now() - autoRejectMs);
+  const expired = await db
+    .update(approvals)
+    .set({
+      status: 'rejected',
+      reviewedAt: new Date(),
+      reviewerNote: `Auto-rejected: no human decision within ${Math.round(autoRejectMs / 3_600_000)}h. The task will react to this as an ordinary rejection.`,
+    })
+    .where(and(
+      eq(approvals.kind, 'approval'),
+      eq(approvals.status, 'pending'),
+      lt(approvals.createdAt, cutoff),
+    ))
+    .returning({ id: approvals.id });
+  return expired.length;
 }
 
 function ensureApprovalRecoveryLoop(): void {
@@ -83,9 +116,13 @@ function ensureApprovalRecoveryLoop(): void {
 
   const sweep = async () => {
     try {
+      const expired = await sweepExpiredPendingApprovals();
+      if (expired > 0) {
+        console.log(`[approvals] Auto-rejected ${expired} approval(s) that exceeded the durable decision window.`);
+      }
       const recovered = await recoverResolvedApprovalWaits();
       if (recovered > 0) {
-        console.log(`[approvals] Re-queued ${recovered} resolved stale approval wait(s) for durable continuation.`);
+        console.log(`[approvals] Re-queued ${recovered} resolved approval wait(s) for durable continuation.`);
       }
     } catch (err) {
       console.warn('[approvals] Durable approval recovery sweep failed:', err instanceof Error ? err.message : err);
@@ -291,10 +328,19 @@ export class BaseAgent extends CoreBaseAgent {
   }
 
   /**
-   * Override only the persistence/wait semantics. Core ToolRegistry still owns
-   * the approval gate; this method independently re-parses through that tool's
-   * Zod schema so the row binds to the exact normalized payload Core will
-   * execute, never the raw LLM argument object.
+   * Override only the persistence/yield semantics. Core ToolRegistry still
+   * owns the approval gate; this method independently re-parses through that
+   * tool's Zod schema so the row binds to the exact normalized payload Core
+   * will execute, never the raw LLM argument object.
+   *
+   * This never waits in-process (Phase 3 of the autonomous-OS upgrade — see
+   * ApprovalYieldSignal's doc comment for why the old 5-minute poll had to
+   * go): it either consumes an already-resolved decision immediately, or
+   * persists the pending approval and throws to yield the execution cleanly.
+   * A resumed execution re-enters this exact call site — via
+   * consumeRecoveredContinuation at the top of executeTask, or by naturally
+   * reaching the same gated tool call again — and the first branch below is
+   * what lets it consume the decision the yielded execution never got to see.
    */
   override async requestHumanApproval(
     taskId: string,
@@ -304,9 +350,10 @@ export class BaseAgent extends CoreBaseAgent {
   ): Promise<boolean> {
     const normalizedArgs = this.normalizedApprovalArgs(toolName, args);
 
-    // Restart path: a stale waiter may have been re-queued before the reasoning
-    // loop reaches the same call. Only an exact normalized-payload match can
-    // consume that prior decision; different args always require new approval.
+    // A decision may already exist — from a human who decided before this
+    // resumed execution got here, or from the durable auto-reject sweep. Only
+    // an exact normalized-payload match can consume it; different args always
+    // require a fresh approval.
     const resolved = await this.resolvedDecisionForExactPayload(taskId, toolName, normalizedArgs);
     if (resolved) {
       const consumed = await this.consumeDecision(resolved.id, resolved.status);
@@ -334,57 +381,13 @@ export class BaseAgent extends CoreBaseAgent {
 
     await this.taskQueue.awaitApproval(taskId);
     emitApexEvent({ type: 'approval:requested', approvalId, agentId: this.id, toolName, reason });
+    recordApprovalYield();
 
-    const deadline = Date.now() + APPROVAL_WAIT_MAX_MS;
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      const [row] = await db
-        .select({ status: approvals.status, toolArgs: approvals.toolArgs })
-        .from(approvals)
-        .where(eq(approvals.id, approvalId))
-        .limit(1);
-      if (!row || !isApprovalDecision(row.status)) continue;
-      if (!approvalPayloadsEqual(row.toolArgs, normalizedArgs)) {
-        throw new Error(`Approval payload integrity failure for ${approvalId}; normalized args changed while waiting`);
-      }
-      const consumed = await this.consumeDecision(approvalId, row.status);
-      if (!consumed) continue;
-      await this.requireTaskOwnershipAfterApproval(taskId);
-      return row.status === 'approved';
-    }
-
-    // Preserve the historical five-minute live-wait behavior, but consume the
-    // timeout as a one-shot rejection so it can never be re-used after restart.
-    const [timedOut] = await db
-      .update(approvals)
-      .set({
-        status: 'consumed_rejected',
-        reviewedAt: new Date(),
-        reviewerNote: `Auto-rejected after ${APPROVAL_WAIT_MAX_MS / 60_000} minutes with no human decision.`,
-      })
-      .where(and(eq(approvals.id, approvalId), eq(approvals.status, 'pending')))
-      .returning({ id: approvals.id });
-
-    if (!timedOut) {
-      // Decision may have landed exactly at the timeout boundary. Consume it if
-      // possible rather than incorrectly treating a real approval as timeout.
-      const [finalRow] = await db
-        .select({ status: approvals.status, toolArgs: approvals.toolArgs })
-        .from(approvals)
-        .where(eq(approvals.id, approvalId))
-        .limit(1);
-      if (finalRow && isApprovalDecision(finalRow.status) && approvalPayloadsEqual(finalRow.toolArgs, normalizedArgs)) {
-        const consumed = await this.consumeDecision(approvalId, finalRow.status);
-        if (consumed) {
-          await this.requireTaskOwnershipAfterApproval(taskId);
-          return finalRow.status === 'approved';
-        }
-      }
-      throw new Error(`Approval ${approvalId} changed state at timeout and could not be consumed safely`);
-    }
-
-    await this.requireTaskOwnershipAfterApproval(taskId);
-    return false;
+    // Yield now. The task is durably `awaiting_approval`; the approvals API's
+    // immediate requeue on approve/reject (fast path) and the durable
+    // recovery sweep above (backstop) are what bring a resumed execution back
+    // to this exact call site once a human decides — never a live wait here.
+    throw new ApprovalYieldSignal(taskId, approvalId);
   }
 
   protected override async executeTask(

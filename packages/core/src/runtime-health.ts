@@ -263,3 +263,67 @@ export function resetWorkforceLiveness(): void {
 export function __getAgentLoopsForTest(): Map<string, { lastTickAt: number; down: boolean }> {
   return agentLoops;
 }
+
+// ─── Checkpoint / soft-yield / approval-yield counters ───────────────────────
+//
+// Process-local rolling counters for the autonomy dashboard (Phase 8). The
+// durable record of what happened is task_checkpoints and the approvals
+// table; these exist only so "is this happening at all, right now" is a
+// cheap in-memory read rather than a query on every /health hit. Reset on
+// restart by design — the durable tables are the source of truth for
+// anything that must survive a restart.
+
+export interface AutonomyCounters {
+  checkpointsCreated: number;
+  tasksSoftYielded: number;
+  tasksResumedFromCheckpoint: number;
+  approvalYields: number;
+  hardTimeoutQuarantines: number;
+  heavyWorkRoutedToExecutor: number;
+  duplicateSideEffectsPrevented: number;
+}
+
+const autonomyCounters: AutonomyCounters = {
+  checkpointsCreated: 0,
+  tasksSoftYielded: 0,
+  tasksResumedFromCheckpoint: 0,
+  approvalYields: 0,
+  hardTimeoutQuarantines: 0,
+  heavyWorkRoutedToExecutor: 0,
+  duplicateSideEffectsPrevented: 0,
+};
+
+export function recordCheckpointCreated(): void {
+  autonomyCounters.checkpointsCreated += 1;
+}
+export function recordTaskSoftYielded(): void {
+  autonomyCounters.tasksSoftYielded += 1;
+}
+export function recordTaskResumedFromCheckpoint(): void {
+  autonomyCounters.tasksResumedFromCheckpoint += 1;
+}
+export function recordApprovalYield(): void {
+  autonomyCounters.approvalYields += 1;
+}
+export function recordHardTimeoutQuarantine(): void {
+  autonomyCounters.hardTimeoutQuarantines += 1;
+}
+export function recordHeavyWorkRoutedToExecutor(): void {
+  autonomyCounters.heavyWorkRoutedToExecutor += 1;
+}
+export function recordDuplicateSideEffectPrevented(): void {
+  autonomyCounters.duplicateSideEffectsPrevented += 1;
+}
+export function getAutonomyCounters(): AutonomyCounters {
+  return { ...autonomyCounters };
+}
+/** Test-only reset. */
+export function __resetAutonomyCountersForTest(): void {
+  autonomyCounters.checkpointsCreated = 0;
+  autonomyCounters.tasksSoftYielded = 0;
+  autonomyCounters.tasksResumedFromCheckpoint = 0;
+  autonomyCounters.approvalYields = 0;
+  autonomyCounters.hardTimeoutQuarantines = 0;
+  autonomyCounters.heavyWorkRoutedToExecutor = 0;
+  autonomyCounters.duplicateSideEffectsPrevented = 0;
+}
