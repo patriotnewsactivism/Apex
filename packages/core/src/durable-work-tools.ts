@@ -27,6 +27,7 @@ import {
 } from './artifact-store.js';
 import { db, artifacts, tasks, goals, projects, deployHooks, workstreams, deployments } from '@workspace/db';
 import { eq, and, desc, ilike } from 'drizzle-orm';
+import { recordHeavyWorkRoutedToExecutor } from './runtime-health.js';
 
 // ─── In-process artifact tracker (TaskResult.artifacts wiring) ───────────────
 //
@@ -46,6 +47,13 @@ export function drainTaskArtifacts(taskId: string): string[] {
   const list = taskArtifacts.get(taskId) ?? [];
   taskArtifacts.delete(taskId);
   return list;
+}
+
+/** Non-destructive read, for a checkpoint written mid-task (Phase 2): the
+ *  task is not complete, so its artifact refs must survive to be drained for
+ *  real when it eventually does complete. */
+export function peekTaskArtifacts(taskId: string): string[] {
+  return [...(taskArtifacts.get(taskId) ?? [])];
 }
 
 // ─── Project resolution helpers ──────────────────────────────────────────────
@@ -572,6 +580,7 @@ export function createDurableWorkTools(): ToolDefinition[] {
           dispatchSource: ctx.taskId ?? null,
         },
       });
+      recordHeavyWorkRoutedToExecutor();
       return { taskId: id, runtime: 'job', assignedAgentId: 'apex-executor-001', note: 'dispatched to Cloud Run Jobs sandbox' };
     },
   );

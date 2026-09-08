@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  APPROVAL_RECOVERY_STALE_MS,
-  APPROVAL_WAIT_MAX_MS,
   approvalPayloadsEqual,
   canonicalApprovalPayload,
   consumedApprovalStatus,
+  isApprovalYieldSignal,
+  ApprovalYieldSignal,
+  resolveApprovalAutoRejectMs,
 } from '../packages/core/src/approval-continuation.js';
 
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
@@ -15,6 +16,10 @@ const routeSource = fs.readFileSync(
 );
 const agentSource = fs.readFileSync(
   path.join(root, 'packages/core/src/instrumented-base-agent.ts'),
+  'utf8',
+);
+const coreAgentSource = fs.readFileSync(
+  path.join(root, 'packages/core/src/base-agent.ts'),
   'utf8',
 );
 
@@ -50,9 +55,21 @@ check('acknowledge verifies transition result',
   acknowledge.includes('.returning({ id: approvals.id })') && acknowledge.includes('if (!resolved)'));
 check('acknowledge rejects replay/stale resolution with conflict', acknowledge.includes('res.status(409)'));
 
-check('no approval resolution path blindly updates by id alone',
-  !approve.includes('.where(eq(approvals.id, req.params.id))') &&
-  !reject.includes('.where(eq(approvals.id, req.params.id))'));
+function updateBody(body: string): string {
+  const start = body.indexOf('db.update(approvals)');
+  if (start < 0) return '';
+  const end = body.indexOf('.returning(', start);
+  return end < 0 ? body.slice(start) : body.slice(start, end);
+}
+check('no approval resolution UPDATE blindly targets id alone (must also pin kind/status)',
+  (() => {
+    const approveUpdate = updateBody(approve);
+    const rejectUpdate = updateBody(reject);
+    return (
+      approveUpdate.length > 0 && approveUpdate.includes('eq(approvals.status,') &&
+      rejectUpdate.length > 0 && rejectUpdate.includes('eq(approvals.status,')
+    );
+  })());
 
 console.log('\n── Exact normalized payload binding ──');
 const payloadA = { command: 'pnpm test', timeoutMs: 30_000, nested: { z: 2, a: 1 } };
@@ -80,15 +97,87 @@ check('restart reuse requires exact normalized payload equality',
   agentSource.includes('resolvedDecisionForExactPayload') &&
   agentSource.includes('approvalPayloadsEqual(row.toolArgs, normalizedArgs)'));
 
-console.log('\n── Restart-safe one-shot continuation ──');
-check('recovery grace is longer than the maximum live approval waiter',
-  APPROVAL_RECOVERY_STALE_MS > APPROVAL_WAIT_MAX_MS);
+console.log('\n── Approval yield (Phase 3): no live in-process wait ──');
+check('requestHumanApproval no longer polls in-process for a decision',
+  !agentSource.includes("while (Date.now() < deadline)") &&
+  !/setTimeout\(resolve, 1000\)/.test(agentSource));
+check('requestHumanApproval persists the pending approval before yielding',
+  agentSource.includes("status: 'pending'") &&
+  agentSource.includes('kind: \'approval\'') &&
+  agentSource.includes('await this.taskQueue.awaitApproval(taskId)'));
+check('requestHumanApproval yields by throwing a dedicated signal, not returning a value',
+  agentSource.includes('throw new ApprovalYieldSignal(taskId, approvalId)'));
+check('the yield signal is a real Error subclass distinguishable from an ordinary failure',
+  new ApprovalYieldSignal('t1', 'a1') instanceof Error &&
+  isApprovalYieldSignal(new ApprovalYieldSignal('t1', 'a1')) &&
+  !isApprovalYieldSignal(new Error('ordinary failure')));
+check('BaseAgent.executeTask treats the yield signal as neither success nor failure completion',
+  coreAgentSource.includes('isApprovalYieldSignal(err)') &&
+  coreAgentSource.includes('yielded: true') &&
+  !/isApprovalYieldSignal\(err\)[\s\S]{0,200}taskQueue\.fail/.test(coreAgentSource));
+check('the yield path never calls taskQueue.fail (task stays durably awaiting_approval, not failed)',
+  (() => {
+    const idx = coreAgentSource.indexOf('isApprovalYieldSignal(err)');
+    const block = coreAgentSource.slice(idx, coreAgentSource.indexOf('const msg = err instanceof Error', idx));
+    return idx >= 0 && !block.includes('taskQueue.fail');
+  })());
+
+console.log('\n── Immediate requeue on decision (fast path) + durable backstop ──');
+check('approve resolves and then requeues the task immediately (fast path)',
+  (() => {
+    const idx = approve.indexOf("res.json({ approved: true })");
+    const before = approve.slice(0, idx);
+    return before.includes('requeueAwaitingApprovalTask');
+  })());
+check('reject resolves and then requeues the task immediately (fast path)',
+  (() => {
+    const idx = reject.indexOf("res.json({ rejected: true })");
+    const before = reject.slice(0, idx);
+    return before.includes('requeueAwaitingApprovalTask');
+  })());
+check('the fast-path requeue only touches a task still awaiting_approval (cannot resurrect a withdrawn task)',
+  routeSource.includes("eq(tasksTable.status, 'awaiting_approval')") &&
+  routeSource.includes('async function requeueAwaitingApprovalTask'));
+check('durable recovery sweep is unconditional (no stale-live-waiter cutoff to outlive anymore)',
+  agentSource.includes('async function recoverResolvedApprovalWaits') &&
+  !agentSource.includes('APPROVAL_RECOVERY_STALE_MS'));
 check('recovery only considers resolved approval decisions',
   agentSource.includes("inArray(approvals.status, ['approved', 'rejected'])") &&
   !agentSource.includes("inArray(approvals.status, ['pending', 'approved', 'rejected'])"));
-check('recovery only requeues tasks still awaiting approval after stale cutoff',
-  agentSource.includes("eq(tasksTable.status, 'awaiting_approval')") &&
-  agentSource.includes('lt(tasksTable.updatedAt, cutoff)'));
+check('recovery only requeues tasks still awaiting approval',
+  agentSource.includes("eq(tasksTable.status, 'awaiting_approval')"));
+
+console.log('\n── Durable auto-reject replaces the old 5-minute in-process timeout ──');
+check('auto-reject window defaults to hours, not minutes, and is operator-configurable',
+  agentSource.includes('resolveApprovalAutoRejectMs') &&
+  fs.readFileSync(path.join(root, 'packages/core/src/approval-continuation.ts'), 'utf8')
+    .includes('APEX_APPROVAL_AUTO_REJECT_HOURS'));
+check('a zero/negative/non-finite configured window disables auto-reject rather than defaulting to something short',
+  (() => {
+    const prior = process.env.APEX_APPROVAL_AUTO_REJECT_HOURS;
+    try {
+      process.env.APEX_APPROVAL_AUTO_REJECT_HOURS = '0';
+      const zero = resolveApprovalAutoRejectMs();
+      process.env.APEX_APPROVAL_AUTO_REJECT_HOURS = '-5';
+      const negative = resolveApprovalAutoRejectMs();
+      process.env.APEX_APPROVAL_AUTO_REJECT_HOURS = 'not-a-number';
+      const nonFinite = resolveApprovalAutoRejectMs();
+      process.env.APEX_APPROVAL_AUTO_REJECT_HOURS = '2';
+      const positive = resolveApprovalAutoRejectMs();
+      return zero === 0 && negative === 0 && nonFinite === 0 && positive === 2 * 60 * 60 * 1000;
+    } finally {
+      if (prior === undefined) delete process.env.APEX_APPROVAL_AUTO_REJECT_HOURS;
+      else process.env.APEX_APPROVAL_AUTO_REJECT_HOURS = prior;
+    }
+  })());
+check('auto-reject sets plain "rejected", never "consumed_rejected" directly (must flow through the same one-shot consumption as a human decision)',
+  (() => {
+    const idx = agentSource.indexOf('async function sweepExpiredPendingApprovals');
+    const body = agentSource.slice(idx, agentSource.indexOf('function ensureApprovalRecoveryLoop', idx));
+    return idx >= 0 && body.includes("status: 'rejected'") && !body.includes("'consumed_rejected'");
+  })());
+
+console.log('\n── Restart-safe one-shot continuation (unchanged core invariants) ──');
 check('resolved approvals are compare-and-set consumed',
   agentSource.includes('eq(approvals.status, decision)') &&
   agentSource.includes('status: consumedApprovalStatus(decision)'));
@@ -102,9 +191,6 @@ check('policy/schema drift makes recovered approval stale instead of executing i
 check('recovered approval continuation runs before the ordinary reasoning loop',
   agentSource.includes('const continuation = await this.consumeRecoveredContinuation(taskId)') &&
   agentSource.indexOf('consumeRecoveredContinuation(taskId)') < agentSource.indexOf('super.executeTask(taskId'));
-check('timeout is itself consumed and cannot become a reusable rejection',
-  agentSource.includes("status: 'consumed_rejected'") &&
-  agentSource.includes('Auto-rejected after'));
 check('a successful side effect cannot become a fake failure because its return value is not JSON serializable',
   agentSource.includes('summarizeRecoveredToolResult') &&
   agentSource.includes('[tool executed successfully; return value was not JSON-serializable]'));
@@ -114,4 +200,4 @@ if (failures > 0) {
   process.exit(1);
 }
 
-console.log('\n✅ Approval state integrity and restart-safe continuation invariants verified');
+console.log('\n✅ Approval state integrity, yield, and restart-safe continuation invariants verified');

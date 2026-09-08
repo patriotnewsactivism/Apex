@@ -142,14 +142,29 @@ For a controlled test task whose execution exceeds the BaseAgent hard wall-clock
 For a gated action:
 
 1. create the exact proposed action;
-2. verify a durable pending approval exists;
-3. verify execution stops before the side effect;
-4. race two resolution attempts and verify only one can transition the pending row;
-5. verify an escalation cannot be approved as a gated action;
-6. verify rejection stays rejected;
-7. verify stale/replayed approval requests return conflict instead of rewriting history.
+2. verify a durable pending approval exists and the task is `awaiting_approval`;
+3. verify the execution that requested it has already ended (yielded, not blocked waiting) before any human decision exists;
+4. approve or reject through `POST /api/approvals/:id/approve|reject` and verify the task is requeued within the fast-path window, not only after the durable recovery sweep's next tick;
+5. race two resolution attempts and verify only one can transition the pending row;
+6. verify an escalation cannot be approved as a gated action;
+7. verify rejection stays rejected and the resumed execution reacts to it rather than silently retrying the same gated call;
+8. verify stale/replayed approval requests return conflict instead of rewriting history;
+9. verify a gated approval left pending past `APEX_APPROVAL_AUTO_REJECT_HOURS` is auto-rejected through the same one-shot consumption path as a real human rejection, never auto-approved.
 
-Restart-safe approval continuation and immutable normalized payload binding remain separate release requirements until their implementation and acceptance tests are complete.
+Restart-safe approval continuation, immutable normalized payload binding, and the approval-yield mechanism (ADR-014) are implemented and covered by `scripts/verify-approval-state-integrity.ts`. This acceptance test's steps 3–4 and 9 have not yet been exercised against live production traffic — see the checkpoint/resume acceptance test below for the same caveat.
+
+## Checkpoint/resume acceptance test (ADR-014)
+
+For a task expected to run longer than its soft deadline (`APEX_SOFT_TIMEOUT_RATIO` of the hard wall-clock ceiling):
+
+1. verify the task checkpoints and returns to `pending` before the hard timeout fires — the hard-timeout quarantine path (above) should NOT be the one that ends this task;
+2. verify a `task_checkpoints` row exists recording the yield;
+3. verify the resumed execution's history contains the prior execution's own conversation (not a fresh restart) by inspecting its first few tool calls/results;
+4. verify no tool call that produced an external side effect in the first execution is repeated after resume;
+5. verify the task eventually completes exactly once;
+6. for an executor-sandbox (`context.runtime='job'`) task, verify a soft-yield clears `dispatchedAt`/`dispatchAttempts` so the dispatch loop actually re-dispatches it to a fresh Cloud Run Job execution rather than stalling with a stale dispatch marker.
+
+Implemented and covered by `scripts/verify-checkpoint-resume.ts` and `scripts/verify-crash-recovery-integration.ts` against TaskQueue's in-memory fallback (no live database in CI). **Not yet exercised against live production traffic or a real multi-instance Cloud Run topology** — do not report this acceptance test as satisfied until it has been run against production evidence per the completion standard below.
 
 ## Rollback
 

@@ -8,6 +8,7 @@
 
 import { db, scheduledJobs, tasks } from '@workspace/db';
 import { and, asc, eq, inArray, isNotNull, lte, sql } from 'drizzle-orm';
+import { touchSchedulerHeartbeat } from '@workspace/core';
 import { CronParser } from './cron-parser.js';
 import { JobExecutor } from './job-executor.js';
 import {
@@ -96,6 +97,7 @@ export class JobScheduler {
    * a permanently alive JavaScript timer.
    */
   async runOnce(): Promise<number> {
+    touchSchedulerHeartbeat();
     await this.recoverStaleClaims();
     return this.processDueJobs();
   }
