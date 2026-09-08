@@ -1,0 +1,150 @@
+name: Scale Cloud Run (manual)
+
+# Manual-only. Never runs on push/PR/schedule — this exists specifically so a
+# Cloud Run scaling change (min-instances / cpu-throttling) is a deliberate,
+# audited, human-triggered action instead of a one-off `gcloud` command run
+# from an ephemeral sandbox with a pasted service-account key. Reuses the
+# exact Workload Identity Federation auth deploy.yml already trusts — no new
+# credential is created or granted to run this.
+#
+# Two modes, chosen by the `apply` input:
+#   - apply=false (default): read-only. Prints the CURRENT minScale and
+#     cpu-throttling annotations for the real service/region (from repo
+#     secrets, never guessed/hardcoded) so you see ground truth before
+#     anything changes.
+#   - apply=true: also requires typing APPLY into `confirm`. Only then does it
+#     run `gcloud run services update --min-instances 1 --no-cpu-throttling`.
+#     This moves billing from request-based to instance-based (an always-on
+#     minimum instance) — a real, ongoing cost, so the confirm phrase is
+#     deliberate friction, not decoration.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Apply --min-instances 1 --no-cpu-throttling (default: describe only)"
+        type: boolean
+        default: false
+      confirm:
+        description: "Required if apply=true: type APPLY to confirm the ongoing-cost change"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: apex-503709
+  EXPECTED_DEPLOY_SERVICE_ACCOUNT: 429262820734-compute@developer.gserviceaccount.com
+  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/429262820734/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+
+jobs:
+  describe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      min_scale: ${{ steps.describe.outputs.min_scale }}
+      cpu_throttling: ${{ steps.describe.outputs.cpu_throttling }}
+    steps:
+      - name: Authenticate with Google Workload Identity
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.EXPECTED_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify deployment identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          active="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n1)"
+          if [[ "$active" != "$EXPECTED_DEPLOY_SERVICE_ACCOUNT" ]]; then
+            echo "Wrong Google identity. Expected $EXPECTED_DEPLOY_SERVICE_ACCOUNT but authenticated as ${active:-unknown}." >&2
+            exit 3
+          fi
+
+      - name: Describe current scaling config (ground truth, before anything changes)
+        id: describe
+        env:
+          SERVICE: ${{ secrets.APEX_CLOUD_RUN_SERVICE }}
+          REGION: ${{ secrets.APEX_CLOUD_RUN_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${SERVICE:-}" || -z "${REGION:-}" ]]; then
+            echo 'Missing APEX_CLOUD_RUN_SERVICE or APEX_CLOUD_RUN_REGION repo secret.' >&2
+            exit 1
+          fi
+
+          echo "Describing service (name/region withheld from this log by design; see repo secrets)..."
+          full_yaml="$(gcloud run services describe "$SERVICE" --project "$GCP_PROJECT_ID" --region "$REGION" \
+            --format="yaml(spec.template.metadata.annotations,spec.template.spec.containerConcurrency)")"
+          echo "$full_yaml"
+
+          min_scale="$(echo "$full_yaml" | grep -o 'autoscaling.knative.dev/minScale: .*' | awk '{print $2}' || echo 'unset')"
+          cpu_throttling="$(echo "$full_yaml" | grep -o 'run.googleapis.com/cpu-throttling: .*' | awk '{print $2}' || echo 'unset')"
+          echo "min_scale=${min_scale:-unset}" >> "$GITHUB_OUTPUT"
+          echo "cpu_throttling=${cpu_throttling:-unset}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo '### Current Cloud Run scaling config'
+            echo "- \`autoscaling.knative.dev/minScale\`: ${min_scale:-unset (defaults to 0 — scale-to-zero)}"
+            echo "- \`run.googleapis.com/cpu-throttling\`: ${cpu_throttling:-unset (defaults to throttled/request-based billing)}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    needs: describe
+    if: ${{ github.event.inputs.apply == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require explicit confirmation phrase (real, ongoing-cost change)
+        if: ${{ github.event.inputs.confirm != 'APPLY' }}
+        run: |
+          echo "apply=true requires confirm=APPLY exactly. Got: '${{ github.event.inputs.confirm }}'." >&2
+          echo 'Re-run this workflow with confirm set to the literal text APPLY to proceed.' >&2
+          exit 1
+
+      - name: Authenticate with Google Workload Identity
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.EXPECTED_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify deployment identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          active="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n1)"
+          if [[ "$active" != "$EXPECTED_DEPLOY_SERVICE_ACCOUNT" ]]; then
+            echo "Wrong Google identity. Expected $EXPECTED_DEPLOY_SERVICE_ACCOUNT but authenticated as ${active:-unknown}." >&2
+            exit 3
+          fi
+
+      - name: Apply --min-instances 1 --no-cpu-throttling
+        env:
+          SERVICE: ${{ secrets.APEX_CLOUD_RUN_SERVICE }}
+          REGION: ${{ secrets.APEX_CLOUD_RUN_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${SERVICE:-}" || -z "${REGION:-}" ]]; then
+            echo 'Missing APEX_CLOUD_RUN_SERVICE or APEX_CLOUD_RUN_REGION repo secret.' >&2
+            exit 1
+          fi
+          echo "Was: min_scale=${{ needs.describe.outputs.min_scale }} cpu_throttling=${{ needs.describe.outputs.cpu_throttling }}"
+          gcloud run services update "$SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$REGION" \
+            --min-instances 1 \
+            --no-cpu-throttling \
+            --quiet
+          echo '### Applied: --min-instances 1 --no-cpu-throttling' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This moves this service from request-based to instance-based billing (always-on minimum instance). Verify cost impact in GCP billing.' >> "$GITHUB_STEP_SUMMARY"
