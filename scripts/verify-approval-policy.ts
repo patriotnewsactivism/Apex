@@ -242,9 +242,30 @@ function buildMinimalValidArgs(tool: { schema: unknown }): Record<string, unknow
   for (const [key, fieldSchema] of Object.entries(shape)) {
     const typeName = (fieldSchema as { _def?: { typeName?: string } })?._def?.typeName;
     const def = (fieldSchema as { _def?: { typeName?: string; values?: unknown[]; innerType?: unknown } })?._def;
+    // ZodString stores format refinements (.email(), .url(), .uuid(), ...)
+    // as entries in _def.checks -- a plain 'guard-script-test-value' fails
+    // schema.safeParse() for any of those, which made execute() reject at
+    // the validation step (line ~62) BEFORE ever reaching the hard-gate
+    // check this script exists to test. That produced a false FAIL reading
+    // as "requestApproval never invoked" for send_email's toEmail field
+    // (send_email/provision_inbound_number's PR added the first hard-gated
+    // tool with an .email()-refined field) -- a guard-script gap, not a
+    // real approval-gate bug: confirmed by inspecting ToolRegistry.execute(),
+    // which validates schema.safeParse() first and only then checks
+    // HARD_GATED_TOOLS, for every tool, unconditionally.
+    const stringChecks = (fieldSchema as { _def?: { checks?: Array<{ kind?: string }> } })?._def?.checks ?? [];
+    const stringCheckKinds = new Set(stringChecks.map((c) => c.kind));
     switch (typeName) {
       case 'ZodString':
-        args[key] = 'guard-script-test-value';
+        if (stringCheckKinds.has('email')) {
+          args[key] = 'guard-script-test@example.com';
+        } else if (stringCheckKinds.has('url')) {
+          args[key] = 'https://guard-script-test.example.com';
+        } else if (stringCheckKinds.has('uuid')) {
+          args[key] = '00000000-0000-4000-8000-000000000000';
+        } else {
+          args[key] = 'guard-script-test-value';
+        }
         break;
       case 'ZodNumber':
         args[key] = 1;

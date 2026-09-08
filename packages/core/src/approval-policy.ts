@@ -30,6 +30,16 @@ export const HARD_GATED_TOOLS = new Set<string>([
   'rollback_deployment',
   // Real phone calls to real people.
   'make_outbound_call',
+  // Real outbound sales email to real inboxes (2026-09-06). One-off and
+  // batch share the same hard gate — a "batch" is just N of these in a row.
+  'send_email',
+  'send_email_campaign_batch',
+  // Provisions a REAL, billed, public phone number (2026-09-06).
+  'provision_inbound_number',
+  // Updates a PERSISTENT inbound-call assistant in place; if a number is
+  // already assigned it takes effect for real callers with no separate
+  // activation step (2026-09-06).
+  'configure_inbound_assistant',
   // Raw shell execution stays a human gate unless an executor sandbox
   // replaces it (plan Decisions #3).
   'runShell',

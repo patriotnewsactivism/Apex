@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, real, timestamp, jsonb, boolean, serial, uniqueIndex, index, primaryKey } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
@@ -200,6 +200,13 @@ export const researchedLeads = pgTable('researched_leads', {
   // campaigns keep NULL, and ad-hoc agent research still works without one.
   campaignId: text('campaign_id'),
   campaignSegmentId: text('campaign_segment_id'),
+  // NOTE (2026-09-08): outbound email/call outreach (email_sends,
+  // make_outbound_call) deliberately reuses the existing contactEmail/
+  // contactPhone fields above (from the contact-enrichment work, PR #124)
+  // instead of adding a second, parallel email/phone pair — those already
+  // hold exactly this data, populated by the Lead Researcher's mandatory
+  // contact-research step, and duplicating them would just split the same
+  // information across two columns for no reason.
 });
 
 // ─── Lead Campaigns ───────────────────────────────────────────────────────────
@@ -320,6 +327,84 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   schedulerHeartbeatAt: timestamp('scheduler_heartbeat_at', { withTimezone: true, mode: 'date' }),
   lastError: text('last_error'),
   status: text('status').notNull().default('starting'), // starting | running | draining | stopped
+});
+
+// ─── Email Campaigns (outbound email via Resend, 2026-09-06) ──────────────────
+//
+// Deliberately mirrors the lead_campaigns pattern above rather than inventing
+// a new shape: targets are enqueued as emailSends rows up front (status
+// 'queued'), and a batch tool works through them a slice at a time under
+// approval — so a bulk send can be paused, resumed, or watched for a bounce/
+// complaint spike exactly the way a lead campaign can be paused mid-territory.
+// This is APEX's own outreach layer; it is independent of BuildMyBot's
+// customer-facing product (see BUSINESS_PROFILE.md) and of Vapi calling below.
+
+export const emailCampaigns = pgTable('email_campaigns', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  // The lead-research campaign these targets were pulled from, if any. Nullable:
+  // an email campaign can also target an explicit, hand-picked list of leads.
+  leadCampaignId: text('lead_campaign_id'),
+  goalId: text('goal_id'),
+  subjectTemplate: text('subject_template').notNull(),
+  // May contain {{companyName}} / {{outreachAngle}} merge fields, resolved per
+  // recipient at send time from the sourcing researched_leads row.
+  bodyTemplate: text('body_template').notNull(),
+  // draft | running | paused | completed | cancelled
+  status: text('status').notNull().default('draft'),
+  totalTargets: integer('total_targets').notNull().default(0),
+  sentCount: integer('sent_count').notNull().default(0),
+  failedCount: integer('failed_count').notNull().default(0),
+  createdByAgentId: text('created_by_agent_id'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+  // Stall detection reads this, same convention as lead_campaigns.
+  lastProgressAt: timestamp('last_progress_at', { withTimezone: true, mode: 'date' }),
+  result: text('result'),
+});
+
+// One outbound email, whether sent ad hoc via send_email or enqueued by an
+// email campaign. A row is written BEFORE the Resend API call so a crash
+// mid-send still leaves an honest 'queued'/'failed' record instead of silence.
+// providerId (Resend's own email id) is filled in on acceptance and is what
+// the Resend webhook uses to correlate delivery/bounce/open/click events back
+// to a row — never trusting recipient/campaign identity out of the webhook body.
+export const emailSends = pgTable('email_sends', {
+  id: text('id').primaryKey(),
+  campaignId: text('campaign_id'), // email_campaigns.id — nullable for one-off sends
+  leadId: text('lead_id'), // researched_leads.id, when the recipient is a lead
+  toEmail: text('to_email').notNull(),
+  toName: text('to_name'),
+  subject: text('subject').notNull(),
+  // queued | sent | delivered | opened | clicked | bounced | complained | failed | suppressed
+  status: text('status').notNull().default('queued'),
+  providerId: text('provider_id'),
+  errorMessage: text('error_message'),
+  sentAt: timestamp('sent_at', { withTimezone: true, mode: 'date' }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true, mode: 'date' }),
+  openedAt: timestamp('opened_at', { withTimezone: true, mode: 'date' }),
+  clickedAt: timestamp('clicked_at', { withTimezone: true, mode: 'date' }),
+  bouncedAt: timestamp('bounced_at', { withTimezone: true, mode: 'date' }),
+  complainedAt: timestamp('complained_at', { withTimezone: true, mode: 'date' }),
+  createdByAgentId: text('created_by_agent_id'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  campaignIdx: index('email_sends_campaign_idx').on(table.campaignId, table.status),
+  // Partial: rows not yet accepted by Resend have no providerId yet.
+  providerIdUniq: uniqueIndex('email_sends_provider_id_unique')
+    .on(table.providerId)
+    .where(sql`provider_id IS NOT NULL`),
+}));
+
+// Permanent do-not-email list, checked before every send. A bounce or spam
+// complaint on any send adds the address here automatically via the Resend
+// webhook, so a bad address or an annoyed prospect can never be re-emailed by
+// a later campaign. 'manual' rows are added deliberately (add_email_suppression).
+export const emailSuppressions = pgTable('email_suppressions', {
+  email: text('email').primaryKey(),
+  reason: text('reason').notNull(), // bounced | complained | unsubscribed | manual
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
 // ─── Health Metrics (time-series) ─────────────────────────────────────────────

@@ -34,6 +34,7 @@ import { createJobsRouter } from './routes/jobs.js';
 import { createLearningRouter } from './routes/learning.js';
 import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
+import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
@@ -134,7 +135,18 @@ async function main() {
   const server = createServer(app);
 
   app.use(cors({ origin: '*' }));
-  app.use(express.json({ limit: '10mb' }));
+  // `verify` stashes the exact request bytes on req.rawBody for every request.
+  // Cheap (one Buffer, discarded per-request), and it's the only way the
+  // Resend webhook below can verify a Svix HMAC signature — that signature is
+  // computed over the exact bytes Resend sent, and re-serializing req.body
+  // with JSON.stringify is NOT guaranteed to reproduce them byte-for-byte
+  // (key order, whitespace). Every other route ignores req.rawBody entirely.
+  app.use(express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }));
 
   // Health check.
   //
@@ -294,6 +306,11 @@ async function main() {
   // Vapi webhook — receives call results from Vapi's server (server-to-server,
   // no Bearer token available). Must be mounted BEFORE requireAdminAuth.
   app.use('/api/vapi', createVapiWebhookRouter());
+
+  // Resend webhook — receives delivery/open/click/bounce/complaint events for
+  // outbound sales email (server-to-server, verified via Svix signature
+  // instead of a Bearer token). Must be mounted BEFORE requireAdminAuth.
+  app.use('/api/resend', createResendWebhookRouter());
 
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
