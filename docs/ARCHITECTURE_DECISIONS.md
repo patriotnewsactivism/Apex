@@ -329,6 +329,152 @@ Autonomy-mode approval policy (`projects.autoapproveTools`) allows a bounded cla
 - New GCP resources require real operator configuration (bucket name, job name); unset means fail-closed tool errors / no-op dispatch, never invented values.
 - Deploy hooks are registrable webhooks (Vercel-style) for hosted client deliverables; hook URLs are secret-ref style (`env:VAR_NAME`) and never logged. APEX's own hosting remains Cloud Run only.
 
+## ADR-014 — Task execution is checkpointed and resumable; approval waits yield instead of blocking
+
+**Status:** Accepted
+**Last confirmed:** 2026-09-08
+
+Before this decision, `BaseAgent.executeTask` treated one execution attempt as
+indivisible: all progress lived in a local, in-memory conversation array, and
+the only two outcomes were a completed/failed task or the 10-minute hard
+wall-clock timeout firing and discarding every bit of intermediate progress
+into a `blocked` quarantine that required manual operator unblock. Separately,
+`requestHumanApproval` polled in-process for up to five minutes waiting for a
+human decision — holding a concurrency slot and racing that same hard timeout
+the entire time, and auto-rejecting anything nobody clicked within five
+minutes. Both were fundamentally incompatible with the goal of continuing
+useful work while the operator is offline for hours, not minutes.
+
+### Decision
+
+1. **Checkpoint/resume.** A soft deadline — `APEX_SOFT_TIMEOUT_RATIO` (default
+   0.7) of the hard timeout returned by `resolveHardTimeoutMs()` — is checked
+   once per iteration, only between tool-call batches, never mid tool-call.
+   When crossed, `executeTask` stops starting new LLM/tool work, builds a
+   `TaskCheckpoint` (`packages/core/src/task-checkpoint.ts`) containing the
+   real, budget-capped resumable conversation history plus real
+   completed-steps/findings/decisions/unresolved-blockers — never a fabricated
+   summary — and calls the new guarded `TaskQueue.checkpointAndResume()`,
+   which atomically persists the checkpoint into `tasks.context` and returns
+   the row to `pending` in one ownership-checked UPDATE
+   (`liveOwnershipPredicate()`, the same guard `resume()`/`markInProgress()`
+   already used). A resumed execution restores that exact history rather than
+   starting a fresh conversation. Every checkpoint is additionally logged to
+   the append-only `task_checkpoints` audit table. The 10-minute (55-minute
+   for sandbox-executor `runtime='job'` tasks) hard timeout remains an
+   emergency-only backstop for a truly wedged await; it should rarely fire for
+   ordinary long-running work now that the soft deadline slices it first.
+2. **Approval yield.** `requestHumanApproval` (the instrumented, production
+   `BaseAgent` in `instrumented-base-agent.ts`) no longer waits in-process. It
+   persists the pending approval, marks the task `awaiting_approval`, and
+   throws `ApprovalYieldSignal` — a dedicated signal `executeTask`'s outer
+   catch recognizes and returns cleanly from (neither success nor failure),
+   the same way it already special-cased an LLM capacity pause. `POST
+   /api/approvals/:id/approve|reject` now requeues the task the instant a
+   human decides (fast path); the existing durable recovery sweep in
+   `instrumented-base-agent.ts` is an unconditional backstop (no stale-live-
+   waiter cutoff is needed anymore — there is no live waiter to outlive). The
+   old 5-minute auto-reject timeout is replaced by a durable,
+   operator-configurable auto-reject window (`APEX_APPROVAL_AUTO_REJECT_HOURS`,
+   default 24h; 0 disables it) that sets the SAME plain `rejected` status a
+   human clicking Reject would, so it flows through the existing one-shot
+   compare-and-set consumption in `consumeRecoveredContinuation` rather than a
+   separate code path. This is auto-**reject** only — it can never
+   auto-approve, preserving the fail-closed default.
+3. **Heavy-work classifier is advisory only.** `work-classifier.ts` detects
+   test-suite/build/render/static-analysis/browser-automation/data-processing
+   signals in task text and injects a nudge recommending the existing
+   `run_executor_job` sandbox tool, both at delegation time (appended to the
+   task description) and at execution time (only when the executing agent
+   actually holds that tool and the task is not already executor-bound). It
+   never sets `context.runtime` itself: doing so would silently reassign the
+   task to the fixed `apex-executor-001` identity and its own tool set
+   (exactly what `run_executor_job` does deliberately today), discarding
+   whatever role-specific tools/persona the task's actual assignee has.
+4. **Shared runtime bootstrap.** The dedicated `start:worker` runtime
+   (ADR-011) previously built its workforce and scheduler directly and
+   silently skipped everything the HTTP control plane did around them:
+   `loadSettingsIntoEnv`, token-ledger hydration, lease-expiry recovery,
+   default job seeding, `CampaignRunner`, and the sandbox-executor dispatch
+   loop. `packages/api-server/src/runtime-bootstrap.ts` is now the single
+   routine both `index.ts` and `worker.ts` call for every piece of
+   runtime-critical initialization; only migrations (HTTP-only, per ADR-011)
+   and HTTP-specific concerns (Express app, routes, the browser health-poll
+   loop, WebSocket, dashboard static serving) remain outside it.
+5. **Durable worker heartbeat.** `worker-heartbeat.ts` adds a
+   `worker_heartbeats` table every runtime (HTTP or standalone worker)
+   upserts a row to on a 15-second interval — worker instance id, build SHA,
+   started/last-heartbeat timestamps, agent/alive-agent counts, current/last
+   task, scheduler heartbeat, last error, status. `/health` reads it as a
+   field distinct from the existing process-local `workforce` liveness block:
+   a healthy HTTP listener must never be read as proof that a separately
+   deployed autonomous worker process is alive, which was previously an
+   explicitly documented, unresolved gap (see `agent-supervisor.ts`'s
+   "KNOWN LIMITATION" comment, now closed).
+6. **Task economy.** `execution-budget.ts` adds deterministic (no extra LLM
+   call) repetition detection — three identical `(tool, args)` calls outside
+   the polling/decision tool exemptions force a one-time intervention message
+   — and a budget nudge ("what concrete artifact moves this forward") once a
+   task has burned most of its iteration budget on pure investigation with no
+   decision-category tool call yet. Both fire at most once per task,
+   mirroring the existing malformed-tool-call/non-completion guard pattern.
+7. **Structured outcome taxonomy.** `execution-outcome.ts` gives
+   `task_hard_timeout` / `soft_yield` / `approval_yield` /
+   `task_ownership_loss` / `rate_limit` / `circuit_breaker` /
+   `provider_timeout` a shared vocabulary and one structured JSON log-line
+   shape (`apex.task_outcome`, `apex.tool_call`), instead of the free-text/
+   substring-matched error strings this previously relied on exclusively.
+   Existing detection functions (`isHardTaskTimeout`, `isLLMIntentionalPause`,
+   etc.) remain the source of truth; this only labels their result
+   consistently.
+8. **Autonomy dashboard.** `GET /api/autonomy` answers "is APEX actually doing
+   useful unattended work": healthy/total worker heartbeats, active agents,
+   pending/in-progress/blocked task counts and oldest pending task, durable
+   checkpoints-created/resumed counts, executor job breakdown, retry backlog,
+   pending approvals, 1h/24h throughput, goal counts, and
+   duplicate-side-effect-prevention events (wired to three real guard events —
+   ownership-loss refusal, unique-index delegation dedupe, lost
+   compare-and-set race on approval consumption — never fabricated).
+
+### Consequences
+
+- A checkpoint's resumable state lives on `tasks.context.checkpoint`; the
+  `task_checkpoints` table is an append-only audit/dashboard log, not the
+  resumable state itself, and must not be treated as such.
+- An executor-sandbox task (`context.runtime='job'`) that soft-yields has its
+  `dispatchedAt`/`dispatchAttempts` markers cleared as part of the same
+  guarded write, or the dispatch loop's `dispatchedAt IS NULL` predicate would
+  never re-fire it — this reset is load-bearing, not incidental.
+- No new duplicate side effects: a checkpoint can only land on a clean
+  iteration boundary (never mid tool-call), `checkpointAndResume` uses the
+  same ownership predicate as every other non-terminal transition, and the
+  approval-yield path never executes a gated tool without first re-verifying
+  and one-shot-consuming the human decision (unchanged from ADR-013).
+- The soft-deadline/approval-yield mechanisms are additive: they do not
+  relax, bypass, or replace any existing approval gate, hard-gated tool set,
+  autonomy-mode policy, or the hard-timeout quarantine's manual-unblock
+  requirement.
+- Both entrypoints (`index.ts`, `worker.ts`) must continue to call
+  `bootstrapApexRuntime()` for any future runtime-critical initialization;
+  adding a subsystem to only one of them silently reintroduces the divergence
+  this decision closed.
+- Deterministic guards: `scripts/verify-checkpoint-resume.ts`,
+  `verify-soft-deadline-yield.ts`, `verify-heavy-work-routing.ts`,
+  `verify-task-repetition-guard.ts`, `verify-durable-worker-heartbeat.ts`,
+  `verify-autonomy-dashboard.ts`, `verify-crash-recovery-integration.ts`, plus
+  updates to `verify-approval-state-integrity.ts`,
+  `verify-agent-loop-supervision.ts`, `verify-durable-worker-runtime.ts`, and
+  `verify-executor-dispatch.ts` for the refactored bootstrap locations.
+- **Not yet production-verified.** This decision's implementation has passed
+  full production typecheck and every deterministic guard in a sandboxed
+  environment with no live database or Cloud Run access. It has NOT been
+  deployed, and the checkpoint/resume and approval-yield mechanisms have not
+  yet been exercised against real production traffic or a real multi-instance
+  Cloud Run topology. Treat this ADR as describing reviewed, tested source —
+  not a completed release — until a deploy following
+  `docs/PRODUCTION_OPERATIONS.md` records the verification evidence that
+  standard requires.
+
 ## How to change an architecture decision
 
 A proposed change should include:
