@@ -59,6 +59,13 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-cron-governor.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-approval-policy.ts"
           pnpm --filter @workspace/executor exec tsx "$GITHUB_WORKSPACE/scripts/verify-executor-dispatch.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-checkpoint-resume.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-soft-deadline-yield.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-heavy-work-routing.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-task-repetition-guard.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-durable-worker-heartbeat.ts"
+          pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-autonomy-dashboard.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-crash-recovery-integration.ts"
 
       - name: Build dashboard
         run: pnpm --filter @workspace/dashboard run build

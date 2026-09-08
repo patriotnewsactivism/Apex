@@ -15,6 +15,7 @@ import {
   recordCheckpointCreated,
   recordTaskSoftYielded,
   recordTaskResumedFromCheckpoint,
+  recordDuplicateSideEffectPrevented,
 } from './runtime-health.js';
 import { recordTaskStarted, recordTaskFinished } from './worker-heartbeat.js';
 import {
@@ -1287,6 +1288,10 @@ export abstract class BaseAgent {
         .limit(1);
 
       const existingId = existing?.id ?? taskId;
+      // The unique index (ON CONFLICT DO NOTHING above) is what actually
+      // prevented the duplicate row; this just makes that real event visible
+      // to the autonomy dashboard instead of only a log line.
+      recordDuplicateSideEffectPrevented();
       await this.logger.info(
         `Skipping duplicate task "${input.title}" for goal ${input.goalId} — already exists (${existingId})`,
         input.parentTaskId,
@@ -1399,6 +1404,10 @@ export abstract class BaseAgent {
   protected async requireTaskOwnershipAfterApproval(taskId: string): Promise<void> {
     const owned = await this.taskQueue.markInProgress(taskId);
     if (owned) return;
+    // A real prevented duplicate: without this check, an approved (possibly
+    // irreversible) tool call would execute against a task this process no
+    // longer owns.
+    recordDuplicateSideEffectPrevented();
     throw new Error(
       `Task ${taskId} is no longer owned by this execution after the approval decision ` +
         `(cancelled, terminalized, or timeout-quarantined); refusing to continue approved work`,

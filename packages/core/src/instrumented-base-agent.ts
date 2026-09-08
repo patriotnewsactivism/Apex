@@ -11,7 +11,7 @@ import {
   resolveApprovalAutoRejectMs,
   type ApprovalDecision,
 } from './approval-continuation.js';
-import { recordApprovalYield } from './runtime-health.js';
+import { recordApprovalYield, recordDuplicateSideEffectPrevented } from './runtime-health.js';
 import {
   estimatePreRunComplexity,
   getCurrentLLMExecutionContext,
@@ -185,7 +185,14 @@ export class BaseAgent extends CoreBaseAgent {
         eq(approvals.status, decision),
       ))
       .returning({ id: approvals.id });
-    return Boolean(consumed);
+    const won = Boolean(consumed);
+    if (!won) {
+      // Another execution already consumed this exact decision first — this
+      // compare-and-set loss is what stopped the gated tool from running
+      // twice for the same human decision.
+      recordDuplicateSideEffectPrevented();
+    }
+    return won;
   }
 
   private async resolvedDecisionForExactPayload(
