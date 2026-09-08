@@ -7,12 +7,21 @@
  * regressions here are invisible to any static check — they only show up when
  * something is actually laid out.
  *
- * Not wired into CI: it needs a browser binary the runner does not install.
- * Run it on demand after touching dashboard layout:
+ * Runs in CI as the `mobile-layout` job in .github/workflows/ci.yml, which
+ * installs the browser itself via `playwright install --with-deps chromium`.
+ * deploy.yml gates on the whole CI workflow's conclusion, so a failure here
+ * blocks production deploys — that is deliberate.
+ *
+ * To run it locally after touching dashboard layout:
  *
  *   pnpm --filter @workspace/dashboard run build
- *   PLAYWRIGHT_CHROMIUM=/opt/pw-browsers/chromium \
- *     pnpm --filter @workspace/core exec node scripts/verify-mobile-overflow.mjs
+ *   node packages/core/scripts/verify-mobile-overflow.mjs
+ *
+ * PLAYWRIGHT_CHROMIUM overrides the browser path, for a sandbox that ships a
+ * prebuilt Chromium at a version Playwright's own resolution would miss:
+ *
+ *   PLAYWRIGHT_CHROMIUM=/opt/pw-browsers/chromium-1194/chrome-linux/chrome \
+ *     node packages/core/scripts/verify-mobile-overflow.mjs
  *
  * Two things this deliberately does NOT count as a defect:
  *   - content inside an overflow-x:auto/scroll ancestor, which the reader can
