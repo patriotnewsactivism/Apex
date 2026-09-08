@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>APEX Outcome Ledger</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e7e9ee;background:#111318;--panel:#181b22;--line:#2b303a;--muted:#939aa8;--accent:#c9a86a;--good:#79b98b;--bad:#cf7b84}
+    *{box-sizing:border-box}body{margin:0;min-width:0}.shell{max-width:1440px;margin:0 auto;padding:22px}.top{display:flex;gap:16px;align-items:flex-end;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap}.eyebrow{font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}h1{font-size:28px;margin:5px 0 0}.controls{display:flex;gap:8px;flex-wrap:wrap}.controls input,.controls select,.controls button{background:#151820;border:1px solid var(--line);color:#e7e9ee;border-radius:7px;padding:9px 10px}.controls button{cursor:pointer;border-color:#574b35}.status{font-size:12px;color:var(--muted);margin:8px 0 16px}.grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px}.card{padding:15px;min-width:0}.label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.value{font:650 23px ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:7px;overflow-wrap:anywhere}.sub{font-size:11px;color:var(--muted);margin-top:5px}.panels{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin-top:12px}.panel{padding:15px;min-width:0}.panel h2{font-size:14px;margin:0 0 12px}.table-wrap{overflow-x:auto;width:100%}table{width:100%;border-collapse:collapse;font-size:12px;min-width:560px}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}td.num{text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.badge{display:inline-block;border:1px solid var(--line);padding:2px 6px;border-radius:999px;font:10px ui-monospace,SFMono-Regular,Menlo,monospace}.measured{color:var(--good)}.estimated{color:#d5b56d}.unknown{color:var(--muted)}.empty{padding:16px 0;color:var(--muted);font-size:12px}.policy{margin-top:12px;padding:12px 14px;border:1px dashed #464d5a;border-radius:9px;color:var(--muted);font-size:12px;line-height:1.55}.danger{color:var(--bad)}@media(max-width:1050px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}.panels{grid-template-columns:1fr}}@media(max-width:640px){.shell{padding:14px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}h1{font-size:22px}.card{padding:12px}.value{font-size:19px}.controls{width:100%}.controls input{min-width:0;flex:1}.controls button{width:100%}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="top">
+      <div><div class="eyebrow">CEO / operator evidence</div><h1>What did the AI workforce accomplish?</h1></div>
+      <div class="controls">
+        <input id="tenant" placeholder="tenant (blank = all)" aria-label="Tenant" />
+        <select id="window" aria-label="Window"><option value="1d">Today / 1d</option><option value="7d">7 days</option><option value="30d">30 days</option><option value="90d">90 days</option></select>
+        <button id="refresh">Refresh</button>
+      </div>
+    </div>
+    <div id="status" class="status">Loading outcome evidence…</div>
+    <section class="grid" id="cards"></section>
+    <section class="panels">
+      <div class="panel"><h2>Accomplishments</h2><div class="table-wrap"><table><thead><tr><th>Event</th><th>Evidence</th><th style="text-align:right">Count</th></tr></thead><tbody id="accomplishments"></tbody></table></div></div>
+      <div class="panel"><h2>Labor saved by evidence class</h2><div id="labor"></div></div>
+      <div class="panel"><h2>Workflow economics</h2><div class="table-wrap"><table><thead><tr><th>Workflow</th><th style="text-align:right">Sourced</th><th style="text-align:right">Influenced</th><th style="text-align:right">Cost</th><th style="text-align:right">Direct ROI</th></tr></thead><tbody id="workflows"></tbody></table></div></div>
+      <div class="panel"><h2>Agents consuming spend without measured outcomes</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th style="text-align:right">Cost</th><th style="text-align:right">Outcomes</th></tr></thead><tbody id="burn"></tbody></table></div></div>
+      <div class="panel"><h2>Experiment performance</h2><div class="table-wrap"><table><thead><tr><th>Experiment / cohort</th><th>Metric</th><th>Evidence</th><th style="text-align:right">N</th><th style="text-align:right">Average</th></tr></thead><tbody id="experiments"></tbody></table></div></div>
+      <div class="panel"><h2>Positive measured direct ROI</h2><div id="positive"></div></div>
+    </section>
+    <div class="policy"><strong>Evidence rule:</strong> measured, estimated, inferred, and unknown values stay separate. The direct ROI shown here is intentionally conservative: measured sourced revenue minus measured cost. Influenced revenue is displayed but is not counted in measured direct ROI. Missing money or labor evidence remains unknown rather than being invented.</div>
+  </main>
+<script>
+const $=id=>document.getElementById(id);const money=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(Number(n||0));const num=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(Number(n||0));
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function badge(v){const c=String(v||'UNKNOWN').toLowerCase();return `<span class="badge ${c}">${esc(v||'UNKNOWN')}</span>`}
+function empty(cols){return `<tr><td colspan="${cols}" class="empty">No evidence in this window.</td></tr>`}
+async function load(){
+ const tenant=$('tenant').value.trim(),windowValue=$('window').value,token=localStorage.getItem('apex_token');
+ if(!token){$('status').innerHTML='No APEX admin token is present. <a href="/" style="color:var(--accent)">Sign in to APEX first.</a>';return}
+ const q=new URLSearchParams({window:windowValue});if(tenant)q.set('tenant',tenant);$('status').textContent='Loading outcome evidence…';
+ try{const r=await fetch('/api/learning/outcome-ledger/dashboard?'+q,{headers:{Authorization:'Bearer '+token}});if(r.status===401){localStorage.removeItem('apex_token');throw new Error('Session expired. Sign in to APEX again.')}if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||`HTTP ${r.status}`);const d=await r.json();render(d);$('status').textContent=`Generated ${new Date(d.generatedAt).toLocaleString()} · tenant ${d.tenantId||'all'} · ${d.window.label}`;}catch(e){$('status').innerHTML=`<span class="danger">${esc(e.message||e)}</span>`}
+}
+function render(d){const m=d.money||{},measuredLabor=(d.laborSaved||[]).find(x=>x.measurement_class==='MEASURED')?.hours||0,estimatedLabor=(d.laborSaved||[]).find(x=>x.measurement_class==='ESTIMATED')?.hours||0;const cards=[['Measured sourced revenue',money(m.measured_sourced_revenue),'Direct attribution only'],['Measured influenced revenue',money(m.measured_influenced_revenue),'Reported separately'],['Measured AI / operating cost',money(m.measured_cost),'Authoritative measured cost'],['Measured labor saved',num(measuredLabor)+' h','Only when directly measured'],['Estimated labor saved',num(estimatedLabor)+' h','Never merged into measured']];$('cards').innerHTML=cards.map(x=>`<div class="card"><div class="label">${x[0]}</div><div class="value">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join('');
+ $('accomplishments').innerHTML=(d.accomplishments||[]).map(x=>`<tr><td>${esc(x.event_type)}</td><td>${badge(x.measurement_class)}</td><td class="num">${esc(x.count)}</td></tr>`).join('')||empty(3);
+ $('labor').innerHTML=(d.laborSaved||[]).map(x=>`<div style="display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)"><div>${badge(x.measurement_class)}</div><div class="num">${num(x.hours)} h <span class="sub">(${x.samples} samples)</span></div></div>`).join('')||'<div class="empty">No labor-savings evidence.</div>';
+ $('workflows').innerHTML=(d.workflows||[]).map(x=>`<tr><td>${esc(x.workflow)}</td><td class="num">${money(x.measured_sourced_revenue)}</td><td class="num">${money(x.measured_influenced_revenue)}</td><td class="num">${money(x.measured_cost)}</td><td class="num">${x.measured_direct_roi==null?'—':num(x.measured_direct_roi*100)+'%'}</td></tr>`).join('')||empty(5);
+ $('burn').innerHTML=(d.agentsConsumingWithoutMeasuredOutcomes||[]).map(x=>`<tr><td>${esc(x.agent)}</td><td class="num danger">${money(x.measured_cost)}</td><td class="num">${esc(x.outcome_count)}</td></tr>`).join('')||empty(3);
+ $('experiments').innerHTML=(d.experiments||[]).filter(x=>x.cohort).map(x=>`<tr><td>${esc(x.name)} / ${esc(x.cohort)}</td><td>${esc(x.metric_name)}</td><td>${badge(x.measurement_class)}</td><td class="num">${esc(x.observations)}</td><td class="num">${x.average_value==null?'—':num(x.average_value)}</td></tr>`).join('')||empty(5);
+ $('positive').innerHTML=(d.positiveRoiWorkflows||[]).map(x=>`<div style="padding:9px 0;border-bottom:1px solid var(--line)"><strong>${esc(x.workflow)}</strong><div class="sub">ROI ${num(x.measured_direct_roi*100)}% · sourced ${money(x.measured_sourced_revenue)} · cost ${money(x.measured_cost)}</div></div>`).join('')||'<div class="empty">No workflow has enough measured direct economics to prove positive ROI in this window.</div>';
+}
+$('refresh').addEventListener('click',load);$('window').addEventListener('change',load);const params=new URLSearchParams(location.search);if(params.get('tenant'))$('tenant').value=params.get('tenant');if(params.get('window'))$('window').value=params.get('window');load();
+</script>
+</body>
+</html>
