@@ -63,11 +63,31 @@ class ToolRegistry {
       return { success: false, error: `Invalid args for ${name}: ${parsed.error.message}` };
     }
 
-    // Approval gate. Any tool marked requiresApproval consults the autonomy
-    // approval policy first: inside an autonomy-mode project whose
-    // autoapproveTools lists the tool (and the tool is not hard-gated), the
-    // call proceeds without a human. Everything else keeps the ordinary gate.
-    if (tool.requiresApproval) {
+    // Central hard-gate enforcement, checked for EVERY invocation regardless
+    // of the individual tool's own requiresApproval flag. Fixed 2026-09-07:
+    // buildmybot_dispatch_engineering and casebuddy_dispatch_engineering were
+    // both found declaring requiresApproval:false in their own tool
+    // definitions while also being listed in HARD_GATED_TOOLS -- because the
+    // approval policy below only ran `if (tool.requiresApproval)`, that one
+    // boolean silently bypassed the hard gate for both, and would for any
+    // future tool with the same mismatch. A hard gate must not depend on a
+    // second, independently-maintained flag agreeing with it -- so this now
+    // checks HARD_GATED_TOOLS directly, first, unconditionally.
+    const { HARD_GATED_TOOLS } = await import('./approval-policy.js');
+    if (HARD_GATED_TOOLS.has(name)) {
+      const approved = await context.requestApproval(
+        name,
+        rawArgs,
+        `Agent requests to execute hard-gated tool: ${name}. Hard-gated tools always require explicit human approval, regardless of any other policy or metadata.`,
+      );
+      if (!approved) {
+        return { success: false, error: 'Action rejected by user' };
+      }
+    } else if (tool.requiresApproval) {
+      // Approval gate for non-hard-gated tools: consults the autonomy
+      // approval policy — inside an autonomy-mode project whose
+      // autoapproveTools lists the tool, the call proceeds without a human.
+      // Everything else keeps the ordinary gate.
       const { evaluateForTask } = await import('./approval-policy.js');
       const decision = await evaluateForTask({ toolName: name, taskId: context.taskId, goalId: context.goalId });
       if (!decision.autoApprove) {
