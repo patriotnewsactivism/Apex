@@ -18,7 +18,8 @@ function replaceExact(content, before, after, label) {
 }
 
 function replaceRegex(content, regex, after, label) {
-  const matches = [...content.matchAll(regex)];
+  const flags = regex.flags.includes('g') ? regex.flags : `${regex.flags}g`;
+  const matches = [...content.matchAll(new RegExp(regex.source, flags))];
   if (matches.length !== 1) {
     throw new Error(`${label}: expected exactly one match, found ${matches.length}`);
   }
