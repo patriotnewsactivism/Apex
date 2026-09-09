@@ -22,24 +22,22 @@ const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
 
 try {
   delete process.env[OPENROUTER_MODEL_POLICY_ENV];
-  console.log('── Reviewed fallback ──');
+  console.log('── Reliability-first fallback ──');
   check(
-    'no policy preserves the reviewed MiniMax/Nemotron free chain',
+    'no policy preserves the guarded fast paid model chain',
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
-  // 7 = 3 free rungs (minimax-m3, nemotron-ultra, nemotron-super) + 4 paid tail
-  // (deepseek-v4-flash, gpt-oss-120b, deepseek-v3, grok-4.6 via Bedrock BYOK).
-  // Was 6 until gpt-oss-120b-paid was added 2026-09-07 for the tier-aware paid
-  // routing policy (see HIGH_TIER_ROLES in llm-client.ts) -- CEO is high-tier
-  // so this stays a stable count check regardless of per-tier ordering.
-  // History: was 6, then 5 when z-ai/glm-5.2:free was removed in 1f631e9 for
-  // being retired upstream; verify-provider-routing.ts was updated to 5 in
-  // that commit but this second copy of the count was missed, which is what
-  // turned main red. Deliberately still a literal: the guard exists to catch
-  // a rung disappearing by accident, so it has to be changed on purpose when
-  // one is removed (or added) on purpose.
-  check('no policy preserves all guarded gateway rungs (free chain + paid tail)', getProviderOrderForRole('CEO').length === 7);
+  check(
+    'no policy preserves all four automatic continuity routes',
+    getProviderOrderForRole('CEO').length === 4,
+    getProviderOrderForRole('CEO'),
+  );
+  check(
+    'automatic default chain contains no free-tier model',
+    DEFAULT_OPENROUTER_MODEL_CHAIN.every((model) => !model.endsWith(':free')),
+    DEFAULT_OPENROUTER_MODEL_CHAIN,
+  );
 
   console.log('\n── Policy validation ──');
   check('empty roster is rejected', parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: [], rolePrimary: {} })) === null);
@@ -80,7 +78,7 @@ try {
   process.env[OPENROUTER_MODEL_POLICY_ENV] = serialized;
 
   const parsed = parseOpenRouterModelPolicy(serialized);
-  check('operator can select multiple OpenRouter models including :free variants', parsed?.selectedModelIds.length === 4, parsed);
+  check('operator can explicitly select multiple OpenRouter models including :free variants', parsed?.selectedModelIds.length === 4, parsed);
   check('unselected role primary is discarded fail-closed', parsed?.rolePrimary.QA === undefined, parsed?.rolePrimary);
   check('routing mode survives serialization', parsed?.routingMode === 'advisor', parsed);
   check('optimization objective survives serialization', parsed?.optimizationObjective === 'quality', parsed);
@@ -103,11 +101,15 @@ try {
   console.log('\n── Runtime routing ──');
   const ceoChain = getOpenRouterModelChainForRole('CEO');
   check('CEO preferred model is moved to the front', ceoChain[0] === '~openai/gpt-latest', ceoChain);
-  check('CEO retains every selected model as fallback exactly once', new Set(ceoChain).size === 4 && ceoChain.length === 4, ceoChain);
+  check('CEO retains every explicitly selected model as fallback exactly once', new Set(ceoChain).size === 4 && ceoChain.length === 4, ceoChain);
   const backendChain = getOpenRouterModelChainForRole('BACKEND');
   check('BACKEND can have a different first-choice model', backendChain[0] === 'deepseek/deepseek-v4-pro-0813', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'openrouter/auto');
-  check('custom model roster uses one paced OpenRouter gateway request', JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(['openrouter-minimax-m3']), getProviderOrderForRole('CEO'));
+  check(
+    'custom model roster uses one paced paid OpenRouter gateway adapter',
+    JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(['openrouter-gpt-oss-120b-paid']),
+    getProviderOrderForRole('CEO'),
+  );
   check('default LLM config reflects the role-selected primary model', getDefaultLLMConfig('CEO').model === '~openai/gpt-latest', getDefaultLLMConfig('CEO'));
 
   console.log('\n── OpenRouter native fallback wire contract ──');
@@ -117,6 +119,7 @@ try {
   check('custom routing sends an OpenRouter models array', clientSource.includes('body.models = routedModels'));
   check('actual served model is read from the OpenRouter response', clientSource.includes('const servedModel = parsed.model'));
   check('adaptive routing is explicit rather than silently enabled', clientSource.includes("policy?.routingMode === 'adaptive'"));
+  check('request timeout is bounded and operator-configurable', clientSource.includes('APEX_LLM_REQUEST_TIMEOUT_MS ?? 30_000'));
   check('model catalog pricing comes from live OpenRouter API', routeSource.includes("https://openrouter.ai/api/v1/models") && routeSource.includes('usdPerMillion'));
   check('efficiency is explicitly described as heuristic, not benchmark', routeSource.includes('It is not an intelligence benchmark'));
   check('intelligence API reports effective objective rather than hiding escalation', routeSource.includes('effectiveObjective') && routeSource.includes('baseObjective'));
