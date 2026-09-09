@@ -90,7 +90,9 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'BUILDMYBOT_SUPABASE_SERVICE_KEY', label: 'Supabase Service Key', placeholder: 'service_role key', secret: true },
       { key: 'BUILDMYBOT_APP_URL', label: 'Application URL', placeholder: 'https://www.buildmybot.app' },
       { key: 'BUILDMYBOT_CRON_SECRET', label: 'Cron Secret', placeholder: 'cron secret', secret: true },
-      { key: 'BUILDMYBOT_VERCEL_DEPLOY_HOOK', label: 'Deploy Hook', placeholder: 'legacy deploy hook', secret: true },
+      { key: 'BUILDMYBOT_RAILWAY_TOKEN', label: 'Railway API Token', placeholder: 'Railway token', secret: true },
+      { key: 'BUILDMYBOT_RAILWAY_SERVICE_ID', label: 'Railway Service ID', placeholder: '60b6d260-f5d8-463d-87be-58339545eaaf' },
+      { key: 'BUILDMYBOT_RAILWAY_ENVIRONMENT_ID', label: 'Railway Environment ID', placeholder: '6ce38db0-789b-4fe9-ad02-f068fe6866ae' },
     ],
   },
   {

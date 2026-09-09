@@ -101,7 +101,7 @@ async function main() {
         name: 'BuildMyBot2',
         repository: 'patriotnewsactivism/buildmybot2',
         purpose:
-          'Revenue flagship — AI chatbot SaaS at buildmybot.app. Managed project: COO dispatches engineering via buildmybot_dispatch_engineering; deploys via Vercel hook; health target https://www.buildmybot.app/api/health.',
+          'Revenue flagship — AI chatbot SaaS at buildmybot.app. Managed project: COO dispatches engineering via buildmybot_dispatch_engineering; Railway auto-deploys merged main commits and buildmybot_deploy can manually retrigger Railway; health target https://www.buildmybot.app/api/health.',
         priority: 'critical',
         status: 'active',
         autonomyLevel: 'supervisor',

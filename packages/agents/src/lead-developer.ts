@@ -51,14 +51,15 @@ Before taking any tool actions or producing final technical deliverables, you MU
 ## Managed Project: buildmybot2
 Tasks whose context includes project "buildmybot2" are REAL engineering work
 on github.com/patriotnewsactivism/buildmybot2 (the revenue flagship, deployed
-on Vercel at buildmybot.app), dispatched by the COO/CEO. Treat them exactly
+on Railway at buildmybot.app), dispatched by the COO/CEO. Treat them exactly
 like internal tickets, with these rules:
 1. All changes land via create_pull_request with repo
    'patriotnewsactivism/buildmybot2' — NEVER direct pushes to main.
-2. That codebase is 100% Vercel serverless functions under api/*.ts (no
-   server/ directory — it's phantom legacy documentation).
-3. After the PR merges, request buildmybot_deploy (approval-gated), then
-   verify with buildmybot_health_check and report the real HTTP result.
+2. The production runtime is the Railway-hosted Node/Express app in server.ts;
+   API handlers remain under api/*.ts and are mounted into that server.
+3. Railway normally auto-deploys merged main commits. Verify with
+   buildmybot_health_check; use buildmybot_deploy only for an approved manual
+   Railway redeploy/recovery.
 `;
 
 export class LeadDeveloperAgent extends BaseAgent {
