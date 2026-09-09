@@ -1,13 +1,14 @@
 export const OPENROUTER_MODEL_POLICY_ENV = 'APEX_OPENROUTER_MODEL_POLICY';
 
 /**
- * Reviewed fallback chain used when no operator policy exists or a stored policy
- * is malformed. These IDs stay as the safety fallback; live pricing is never
- * hard-coded here because OpenRouter pricing can change independently of APEX.
+ * Reliability-first fallback chain used when no operator policy exists or a
+ * stored policy is malformed. Free OpenRouter endpoints are intentionally not
+ * included: their queue latency can stall the autonomous workforce.
  */
 export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
-  'minimax/minimax-m3:free',
-  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'openai/gpt-oss-120b',
+  'deepseek/deepseek-v4-flash-0731',
+  'deepseek/deepseek-v3.2',
 ] as const;
 
 export type ModelRoutingMode = 'manual' | 'advisor' | 'adaptive';

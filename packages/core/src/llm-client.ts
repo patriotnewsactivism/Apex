@@ -276,51 +276,21 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 );
 
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  'openrouter-minimax-m3',
-  'openrouter-nemotron-ultra',
-  'openrouter-nemotron-super',
-  'openrouter-deepseek-v4-flash-paid',
   'openrouter-gpt-oss-120b-paid',
+  'openrouter-deepseek-v4-flash-paid',
   'openrouter-deepseek-v3-paid',
-  // Behind every other paid rung on purpose: those are all cheaper per input
-  // token, so Grok is reached only once they are exhausted or erroring.
+  // Emergency continuity anchor. This remains last because it is materially
+  // more expensive and is intentionally pinned to Bedrock BYOK.
   'openrouter-grok-4-6-bedrock',
 ];
 
-// Operator tier policy, 2026-09-07 (Don): give leadership more reasoning
-// headroom on the paid tail, keep individual-contributor work on the cheaper
-// paid model, to hold down spend without starving the roles whose output
-// quality matters most. Matches the existing token-budget tier split in
-// getDefaultLLMConfig below (the 8192-max-token roles) rather than inventing
-// a second, possibly-drifting notion of "leadership."
-const HIGH_TIER_ROLES = new Set([
-  'CEO', 'CTO', 'COO', 'LEAD_DEV', 'RESEARCH', 'LEAD_RESEARCH', 'SALES', 'QA_DIRECTOR',
-]);
-
-export function getProviderOrderForRole(role?: string): ApexProviderName[] {
-  // A custom roster is one OpenRouter gateway request with native model
-  // fallback. Repeating that same roster through three logical adapters would
-  // multiply identical requests and defeat provider pacing/circuit breaking.
-  if (hasCustomOpenRouterModelPolicy()) return ['openrouter-minimax-m3'];
-
-  const roleKey = (role ?? '').trim().toUpperCase();
-  const isHighTier = HIGH_TIER_ROLES.has(roleKey);
-  // Both paid models stay reachable for every role -- only which one is
-  // reached FIRST after the free rungs differs by tier. A role never loses
-  // access to the stronger model outright, it just falls back to it only if
-  // its priority pick is unavailable.
-  const paidTail: ApexProviderName[] = isHighTier
-    ? ['openrouter-deepseek-v4-flash-paid', 'openrouter-gpt-oss-120b-paid']
-    : ['openrouter-gpt-oss-120b-paid', 'openrouter-deepseek-v4-flash-paid'];
-
-  return [
-    'openrouter-minimax-m3',
-    'openrouter-nemotron-ultra',
-    'openrouter-nemotron-super',
-    ...paidTail,
-    'openrouter-deepseek-v3-paid',
-    'openrouter-grok-4-6-bedrock',
-  ];
+export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
+  // Operator policy 2026-09-09: continuity beats free-tier queue latency.
+  // GPT-OSS is the fast/cheap primary observed succeeding in seconds, followed
+  // by DeepSeek V4 for reasoning depth, then V3.2 and the BYOK emergency rung.
+  // Free OpenRouter models are deliberately excluded from automatic fallback.
+  if (hasCustomOpenRouterModelPolicy()) return ['openrouter-gpt-oss-120b-paid'];
+  return [...PROVIDER_ORDER];
 }
 
 /** Paid inference is no longer gated — the selected OpenRouter roster is an
@@ -465,6 +435,11 @@ const providerNextAttemptAt = new Map<ApexProviderName, number>();
  * more earns "HTTP 400 'models' array must have 3 items or fewer" on every
  * request, whichever credential is used. */
 export const OPENROUTER_MAX_FALLBACK_MODELS = 3;
+
+const configuredRequestTimeoutMs = Number(process.env.APEX_LLM_REQUEST_TIMEOUT_MS ?? 30_000);
+export const LLM_REQUEST_TIMEOUT_MS = Number.isFinite(configuredRequestTimeoutMs)
+  ? Math.min(60_000, Math.max(10_000, Math.floor(configuredRequestTimeoutMs)))
+  : 30_000;
 
 const COOLDOWN_429_MS = 30_000;
 /** A request that timed out says nothing about the credential's quota, so it
@@ -659,7 +634,12 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     ledger.providers.map((entry) => [entry.provider, entry]),
   );
 
-  for (const provider of PROVIDERS) {
+  const activeOrder = hasCustomOpenRouterModelPolicy()
+    ? (['openrouter-gpt-oss-120b-paid'] as const)
+    : PROVIDER_ORDER;
+  for (const providerName of activeOrder) {
+    const provider = PROVIDER_BY_NAME.get(providerName);
+    if (!provider) continue;
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
@@ -882,7 +862,7 @@ async function callCompatibleProvider(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 75_000);
+  const timeout = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
   const startedAt = Date.now();
   let routedModels = [provider.model];
 
@@ -1253,6 +1233,11 @@ class MultiProviderClient {
                     `${status ? `HTTP ${status} ` : ''}${message}`,
                 );
 
+
+                // A timeout is an endpoint/model latency failure, not evidence
+                // that every credential is bad. Move to the next model instead
+                // of burning another full timeout on the same provider.
+                if (message === 'request timed out') break;
                 if (capacityFailure) break;
 
                 if (isRequestTooLargeError(status, message)) {
@@ -1363,7 +1348,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model = getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
-    provider: 'openrouter-minimax-m3',
+    provider: 'openrouter-gpt-oss-120b-paid',
     model,
     temperature: 0.7,
     maxTokens,
