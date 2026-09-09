@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/llm-continuity-hotfix.yml
+      - scripts/llm-reliability-hotfix.mjs
 
 permissions:
   contents: write
