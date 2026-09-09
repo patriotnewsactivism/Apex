@@ -1,0 +1,70 @@
+name: Apply lead enrichment scheduler hardening
+
+on:
+  push:
+    branches:
+      - fix/lead-enrichment-backlog
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/lead-enrichment-backlog
+          fetch-depth: 0
+
+      - name: Patch bounded, versioned enrichment job
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('packages/api-server/src/bootstrap-jobs.ts')
+          s = p.read_text()
+          marker = "id: 'system-lead-contact-enrichment'"
+          start = s.index(marker)
+          end = s.index("id: 'system-daily-report'", start)
+          block = s[start:end]
+
+          if "systemDefinitionVersion:" in block:
+              raise SystemExit('lead enrichment job is already versioned; refusing ambiguous patch')
+          if "cronExpression: '30 * * * *'" not in block:
+              raise SystemExit('expected hourly enrichment cron not found')
+          old_desc = "description: 'Call listResearchedLeads with needsContactResearch=true. For up to 25 pending leads, inspect each verified website and targeted public web results for the relevant decision maker name, business email, and business phone. Never guess or synthesize contact data. Call updateLeadContactInfo for every attempted lead, include a supporting public source URL when found, and honestly mark partial, complete, or unavailable.',"
+          if old_desc not in block:
+              raise SystemExit('expected enrichment description not found')
+
+          block = block.replace("cronExpression: '30 * * * *',", "cronExpression: '*/15 * * * *', // bounded catch-up cadence; serialized agent prevents overlap")
+          block = block.replace("payload: {\n          title: 'Enrich pending lead contacts',", "payload: {\n          systemDefinitionVersion: 1,\n          maxPerRun: 12,\n          title: 'Enrich pending lead contacts',")
+          new_desc = "description: 'Call listResearchedLeads with needsContactResearch=true and limit=12. Process at most 12 pending leads this run. Prefer the verified first-party business website, then one targeted public web-search pass for missing decision-maker/email/phone fields. Reject directory-domain, franchise-branch, city, and company-name mismatches. Never guess or synthesize contact data or email patterns. Do not repeat the same failed search/provider call in this task: on provider, quota, pacing, or capacity errors, stop cleanly rather than looping and leave remaining leads pending for the next scheduled run. Call updateLeadContactInfo for every genuinely attempted lead, include the supporting public source URL when found, and honestly mark partial, complete, or unavailable.',"
+          block = block.replace(old_desc, new_desc)
+          s = s[:start] + block + s[end:]
+          p.write_text(s)
+
+          final = p.read_text()
+          bstart = final.index(marker)
+          bend = final.index("id: 'system-daily-report'", bstart)
+          b = final[bstart:bend]
+          assert "systemDefinitionVersion: 1" in b
+          assert "maxPerRun: 12" in b
+          assert "cronExpression: '*/15 * * * *'" in b
+          assert "Do not repeat the same failed search/provider call" in b
+          PY
+
+      - name: Remove one-shot workflow from branch
+        run: rm .github/workflows/apply-lead-enrichment-hardening.yml
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packages/api-server/src/bootstrap-jobs.ts .github/workflows/apply-lead-enrichment-hardening.yml
+          git diff --cached --check
+          git commit -m "fix(leads): bound and version contact enrichment backlog"
+          git push origin HEAD:fix/lead-enrichment-backlog
