@@ -65,10 +65,10 @@ core = replaceExact(
   'core HTTP timeout',
 );
 
-core = replaceExact(
+core = replaceRegex(
   core,
-  `                providerErrors.push(\n                  \`${'${provider.name}/${attemptedModel} via ${credential.env}: '}\` +\n                    \`${'${status ? `HTTP ${status} ` : ``}${message}'}\`,\n                );\n\n                if (capacityFailure) break;`,
-  `                providerErrors.push(\n                  \`${'${provider.name}/${attemptedModel} via ${credential.env}: '}\` +\n                    \`${'${status ? `HTTP ${status} ` : ``}${message}'}\`,\n                );\n\n                // A timeout is an endpoint/model latency failure, not evidence\n                // that every credential is bad. Move to the next model instead\n                // of burning another full timeout on the same provider.\n                if (message === 'request timed out') break;\n                if (capacityFailure) break;`,
+  /(\s+providerErrors\.push\([\s\S]*?\n\s+\);\n\n)(\s+if \(capacityFailure\) break;)/,
+  `$1\n                // A timeout is an endpoint/model latency failure, not evidence\n                // that every credential is bad. Move to the next model instead\n                // of burning another full timeout on the same provider.\n                if (message === 'request timed out') break;\n$2`,
   'timeout failover break',
 );
 
