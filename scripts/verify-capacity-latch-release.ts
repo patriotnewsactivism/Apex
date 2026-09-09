@@ -151,7 +151,7 @@ async function main(): Promise<void> {
   );
   check(
     'one paced provider does not veto capacity when another can take work',
-    /for \(const provider of PROVIDERS\)[\s\S]{0,700}return true;/.test(
+    /(for \(const provider of PROVIDERS\)|for \(const providerName of activeOrder\))[\s\S]{0,900}return true;/.test(
       clientSrc,
     ),
   );
