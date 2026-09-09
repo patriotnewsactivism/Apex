@@ -120,8 +120,37 @@ Required release evidence includes:
 - `build.sha` equals the exact release commit;
 - `taskQueue.verdict` is healthy;
 - no new repeated queue failures are accumulating;
-- LLM capacity state is understood if degraded;
+- LLM capacity state is understood if degraded (see below);
 - the changed user/operator path works in a real smoke test.
+
+### Reading `llmCapacity.state`
+
+The four values are not degrees of the same thing. Two of them mean the
+workforce has stopped:
+
+| `state` | Meaning | Is work being claimed? |
+|---|---|---|
+| `available` | No capacity constraint. | Yes |
+| `paced` | One or more individual providers are resting or capped. | **Yes** — other providers still serve |
+| `workforce_paused` | The workspace-wide daily allowance is exhausted. | **No** — every agent stops |
+| `capped` | A hard total or per-provider cap is reached. | **No** |
+
+`workforce_paused` reports the same condition `llmCapacityAvailableNow()`
+gates on (`!ledger.pacing.total.allowed`), which stops task claiming for every
+agent in the process. It typically clears at the 00:00 UTC allowance reset —
+`nextResumeAt` gives the time.
+
+This distinction is not cosmetic. Before 2026-09-08, `paced` covered both the
+benign per-provider case and the total stall, and a 64-minute production
+outage was invisible: `status: ok`, `taskQueue.verdict: ok`, zero failures, a
+healthy poll loop, and `tasksClaimed` frozen. `workforceParkedUntil` does not
+help here — it reports the base-agent shared latch and stays `null` when the
+workspace allowance is the cause. `scripts/verify-capacity-observability.ts`
+guards the distinction in CI.
+
+**A stalled workforce looks healthy.** When triaging "APEX is doing nothing",
+`tasksClaimed` failing to advance over a 2-minute sample is the symptom;
+`llmCapacity.state` is the cause. Neither `status` nor `verdict` will tell you.
 
 When the change affects authentication, dashboard behavior, agent execution, provider routing, deployment, scheduler behavior, or a connector, smoke-test that specific path rather than relying only on `/health`.
 
