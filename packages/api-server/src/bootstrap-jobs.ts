@@ -56,12 +56,14 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-lead-contact-enrichment',
         name: 'Lead contact enrichment backlog',
         jobType: 'task_delegation',
-        cronExpression: '30 * * * *',
+        cronExpression: '*/15 * * * *', // bounded catch-up cadence; serialized agent prevents overlap
         targetAgentId: 'apex-lead-research-001' as string | null,
         priority: 3,
         payload: {
+          systemDefinitionVersion: 1,
+          maxPerRun: 12,
           title: 'Enrich pending lead contacts',
-          description: 'Call listResearchedLeads with needsContactResearch=true. For up to 25 pending leads, inspect each verified website and targeted public web results for the relevant decision maker name, business email, and business phone. Never guess or synthesize contact data. Call updateLeadContactInfo for every attempted lead, include a supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
+          description: 'Call listResearchedLeads with needsContactResearch=true and limit=12. Process at most 12 pending leads this run. Prefer the verified first-party business website, then one targeted public web-search pass for missing decision-maker/email/phone fields. Reject directory-domain, franchise-branch, city, and company-name mismatches. Never guess or synthesize contact data or email patterns. Do not repeat the same failed search/provider call in this task: on provider, quota, pacing, or capacity errors, stop cleanly rather than looping and leave remaining leads pending for the next scheduled run. Call updateLeadContactInfo for every genuinely attempted lead, include the supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
         },
       },
       {
