@@ -1,0 +1,69 @@
+name: One-shot BuildMyBot Railway authority hotfix v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/buildmybot-railway-authority-hotfix-v2.yml
+      - scripts/fix-buildmybot-railway-authority-v2.mjs
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+
+      - name: Validate patcher syntax
+        run: node --check scripts/fix-buildmybot-railway-authority-v2.mjs
+
+      - name: Apply fail-closed Railway authority patch
+        run: node scripts/fix-buildmybot-railway-authority-v2.mjs
+
+      - name: Verify BuildMyBot deployment invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R "BUILDMYBOT_VERCEL_DEPLOY_HOOK" packages/core/src packages/api-server/src packages/agents/src packages/convex-backend/convex .env.example
+          grep -q "BUILDMYBOT_RAILWAY_TOKEN" packages/core/src/buildmybot-connector.ts
+          grep -q "backboard.railway.com/graphql/v2" packages/core/src/buildmybot-connector.ts
+          grep -q "on Railway at buildmybot.app" packages/agents/src/lead-developer.ts
+          grep -q "Railway auto-deploys merged main commits" packages/api-server/src/index.ts
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck production runtime
+        run: pnpm run typecheck:production
+
+      - name: Remove one-shot machinery
+        run: |
+          rm -f .github/workflows/buildmybot-railway-authority-hotfix.yml
+          rm -f scripts/fix-buildmybot-railway-authority.mjs
+          rm .github/workflows/buildmybot-railway-authority-hotfix-v2.yml
+          rm scripts/fix-buildmybot-railway-authority-v2.mjs
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(buildmybot): make Railway the deployment authority"
+          git push origin HEAD:main
