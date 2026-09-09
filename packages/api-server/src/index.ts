@@ -183,12 +183,31 @@ async function main() {
     const hardCapped =
       tokenLedger.totalCapReached ||
       tokenLedger.providers.some((provider) => provider.capReached);
+    // `aggregatePaused` is the SAME expression llmCapacityAvailableNow() uses
+    // to return false (`!ledger.pacing.total.allowed`), and that function gates
+    // task claiming for every agent in the process. So this condition does not
+    // mean "throttled" -- it means the entire workforce has stopped.
     const aggregatePaused = !tokenLedger.pacing.total.allowed;
+    // These two conditions used to collapse into one "paced" string, and that
+    // cost a full day of production ambiguity on 2026-09-08: at 15:19 /health
+    // read `paced` while claiming ran at ~15 tasks/min (two Nemotron providers
+    // resting -- benign), and at 21:46 it read `paced` with tasksClaimed frozen
+    // at 2083 for 64 minutes (the workspace allowance exhausted -- total
+    // stall). Identical payloads, opposite meanings, and the stall was
+    // invisible: status ok, verdict ok, zero failures, poll loop healthy at
+    // ~13 polls/min. It self-cleared at the 00:00 UTC reset, when state flipped
+    // to `available` and 12 idle agents became 11 thinking within seconds.
+    //
+    // verify-capacity-latch-release.ts already named this gap in 2026-09-04:
+    // "nothing outside the process could tell a parked workforce from an idle
+    // one". It fixed the base-agent latch; this fixes the reporting.
     const capacityState = hardCapped
       ? "capped"
-      : aggregatePaused || pausedProviders.length > 0
-        ? "paced"
-        : "available";
+      : aggregatePaused
+        ? "workforce_paused"
+        : pausedProviders.length > 0
+          ? "paced"
+          : "available";
     const resumeCandidates = [
       tokenLedger.pacing.nextResumeAt,
       providerBackpressure.nextResumeAt,
@@ -228,7 +247,9 @@ async function main() {
         pausedProviders,
         nextResumeAt,
         // A parked workforce and an idle one both show 13 idle agents. This
-        // is the only way to tell them apart from outside the process.
+        // reports the base-agent shared latch (capacityPauseRemainingMs) only
+        // -- it stays null when the workspace-wide allowance is what stopped
+        // the workforce. For that case read `state: workforce_paused` above.
         workforceParkedUntil: workforceParkedMs > 0
           ? new Date(Date.now() + workforceParkedMs).toISOString()
           : null,
