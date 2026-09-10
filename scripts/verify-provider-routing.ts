@@ -12,14 +12,14 @@ const check = (label: string, condition: boolean, detail?: unknown) => {
 };
 
 const expectedProviders = [
-  "openrouter-gpt-oss-120b-paid",
   "openrouter-deepseek-v4-flash-paid",
+  "openrouter-gpt-oss-120b-paid",
   "openrouter-deepseek-v3-paid",
   "openrouter-grok-4-6-bedrock",
 ];
 const expectedModels = [
-  "openai/gpt-oss-120b",
   "deepseek/deepseek-v4-flash-0731",
+  "openai/gpt-oss-120b",
   "deepseek/deepseek-v3.2",
   "x-ai/grok-4.6",
 ];
@@ -38,16 +38,16 @@ check(
   catalog,
 );
 check(
-  "GPT-OSS 120B is the fast/cheap primary",
-  catalog[0]?.name === "openrouter-gpt-oss-120b-paid" &&
-    catalog[0]?.model === "openai/gpt-oss-120b" &&
+  "DeepSeek V4 Flash is the production primary",
+  catalog[0]?.name === "openrouter-deepseek-v4-flash-paid" &&
+    catalog[0]?.model === "deepseek/deepseek-v4-flash-0731" &&
     catalog[0]?.paid === true,
   catalog[0],
 );
 check(
-  "DeepSeek V4 Flash is the reasoning fallback",
-  catalog[1]?.name === "openrouter-deepseek-v4-flash-paid" &&
-    catalog[1]?.model === "deepseek/deepseek-v4-flash-0731" &&
+  "GPT-OSS 120B is the fast/cheap fallback",
+  catalog[1]?.name === "openrouter-gpt-oss-120b-paid" &&
+    catalog[1]?.model === "openai/gpt-oss-120b" &&
     catalog[1]?.paid === true,
   catalog[1],
 );
@@ -87,8 +87,8 @@ for (const role of [
   check(`${role} uses the reliability-first order`, JSON.stringify(order) === JSON.stringify(expectedProviders), order);
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to GPT-OSS 120B via OpenRouter`,
-    config.provider === "openrouter-gpt-oss-120b-paid" && config.model === "openai/gpt-oss-120b",
+    `${role} defaults to DeepSeek V4 Flash via OpenRouter`,
+    config.provider === "openrouter-deepseek-v4-flash-paid" && config.model === "deepseek/deepseek-v4-flash-0731",
     config,
   );
 }

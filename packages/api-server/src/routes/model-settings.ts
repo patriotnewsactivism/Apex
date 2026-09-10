@@ -233,7 +233,7 @@ export function createModelSettingsRouter(): Router {
       const candidate = parseOpenRouterModelPolicy(JSON.stringify(req.body));
       if (!candidate) {
         res.status(400).json({
-          error: 'Invalid model policy. Select 1-500 valid OpenRouter model IDs; role primaries must be selected models.',
+          error: 'Invalid production model policy. Select 1-500 valid non-free OpenRouter model IDs; :free endpoints are experiment-only and cannot be persisted for the autonomous fleet.',
         });
         return;
       }

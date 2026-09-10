@@ -98,10 +98,14 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 `packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
 
-With no valid operator policy, the reviewed high-capability free fallback remains:
+With no valid operator policy, the reviewed production fallback is:
 
-1. `minimax/minimax-m3:free`
-2. `nvidia/nemotron-3-ultra-550b-a55b:free`
+1. `deepseek/deepseek-v4-flash-0731`
+2. `openai/gpt-oss-120b`
+3. `deepseek/deepseek-v3.2`
+4. `x-ai/grok-4.6` via the pinned Amazon Bedrock BYOK emergency route
+
+OpenRouter `:free` endpoints are experiment-only. They must not be persisted into the autonomous production fleet policy.
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
@@ -113,7 +117,7 @@ The authenticated Settings → OpenRouter Model Control panel may persist `APEX_
 - an optional controlled-learning trial rate from 0 to 25%;
 - an optional smart complexity-escalation flag.
 
-Saved policies from before the intelligence layer remain backward-compatible and parse as `manual`, with learning trials off and complexity escalation off, preserving their prior behavior.
+Saved policies from before the intelligence layer remain backward-compatible only when every selected model is production-eligible. Any persisted policy containing an OpenRouter `:free` endpoint is rejected and the reviewed production chain is used instead.
 
 ### Routing modes and operator authority
 
@@ -171,8 +175,8 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 ### Routing behavior
 
-- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed MiniMax M3 Free → Nemotron 3 Ultra Free chain.
-- Operator-selected free model variants are allowed; free availability or rate limits never justify false completion or bypass backpressure.
+- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed DeepSeek V4 Flash -> GPT-OSS 120B -> DeepSeek V3.2 -> Grok/Bedrock chain.
+- Persisted production policies containing `:free` model variants are invalid. Test free models only in isolated experiments; never let them enter the autonomous fleet fallback chain.
 - Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.
 - Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
 - Record the model OpenRouter actually served, not merely the requested first choice, and keep it separate from the route candidate used for learning attribution.

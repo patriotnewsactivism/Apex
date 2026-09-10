@@ -34,6 +34,15 @@ try {
     getProviderOrderForRole('CEO'),
   );
   check(
+    'automatic default chain is the validated DeepSeek -> GPT-OSS -> DeepSeek continuity order',
+    JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN) === JSON.stringify([
+      'deepseek/deepseek-v4-flash-0731',
+      'openai/gpt-oss-120b',
+      'deepseek/deepseek-v3.2',
+    ]),
+    DEFAULT_OPENROUTER_MODEL_CHAIN,
+  );
+  check(
     'automatic default chain contains no free-tier model',
     DEFAULT_OPENROUTER_MODEL_CHAIN.every((model) => !model.endsWith(':free')),
     DEFAULT_OPENROUTER_MODEL_CHAIN,
@@ -45,10 +54,14 @@ try {
 
   const legacyPolicy = parseOpenRouterModelPolicy(JSON.stringify({
     version: 1,
-    selectedModelIds: ['openrouter/auto', 'qwen/qwen3-coder:free'],
+    selectedModelIds: ['openrouter/auto', 'openai/gpt-oss-120b'],
     rolePrimary: {},
   }));
-  check('pre-intelligence saved policy remains valid', legacyPolicy !== null, legacyPolicy);
+  check('pre-intelligence paid saved policy remains valid', legacyPolicy !== null, legacyPolicy);
+  check(
+    'persisted free-model policy is rejected',
+    parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: ['qwen/qwen3-coder:free'], rolePrimary: {} })) === null,
+  );
   check('pre-intelligence policy fails safe to manual routing', legacyPolicy?.routingMode === 'manual', legacyPolicy);
   check('pre-intelligence policy defaults to balanced objective', legacyPolicy?.optimizationObjective === 'balanced', legacyPolicy);
   check('pre-intelligence policy gets conservative sample threshold', legacyPolicy?.minimumSamples === 5, legacyPolicy);
@@ -60,7 +73,7 @@ try {
     selectedModelIds: [
       'openrouter/auto',
       'deepseek/deepseek-v4-pro-0813',
-      'qwen/qwen3-coder:free',
+      'openai/gpt-oss-120b',
       '~openai/gpt-latest',
     ],
     rolePrimary: {
@@ -78,7 +91,7 @@ try {
   process.env[OPENROUTER_MODEL_POLICY_ENV] = serialized;
 
   const parsed = parseOpenRouterModelPolicy(serialized);
-  check('operator can explicitly select multiple OpenRouter models including :free variants', parsed?.selectedModelIds.length === 4, parsed);
+  check('operator can explicitly select multiple production-eligible OpenRouter models', parsed?.selectedModelIds.length === 4, parsed);
   check('unselected role primary is discarded fail-closed', parsed?.rolePrimary.QA === undefined, parsed?.rolePrimary);
   check('routing mode survives serialization', parsed?.routingMode === 'advisor', parsed);
   check('optimization objective survives serialization', parsed?.optimizationObjective === 'quality', parsed);
