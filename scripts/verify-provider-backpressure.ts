@@ -6,11 +6,11 @@ function check(label: string, condition: boolean, detail?: unknown): void {
   else { failures++; console.error(`  ❌ ${label}`, detail ?? ''); }
 }
 
-check('OpenRouter MiniMax default spacing is 500ms', getProviderRequestSpacingMs('openrouter-minimax-m3') === 500);
-check('OpenRouter Nemotron default spacing is 500ms', getProviderRequestSpacingMs('openrouter-nemotron-ultra') === 500);
-process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_MINIMAX_M3 = '';
-check('empty spacing override falls back safely', getProviderRequestSpacingMs('openrouter-minimax-m3') === 500);
-delete process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_MINIMAX_M3;
+check('primary free batch default spacing is 500ms', getProviderRequestSpacingMs('openrouter-free-agent-primary') === 500);
+check('secondary free batch default spacing is 500ms', getProviderRequestSpacingMs('openrouter-free-agent-secondary') === 500);
+process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_FREE_AGENT_PRIMARY = '';
+check('empty spacing override falls back safely', getProviderRequestSpacingMs('openrouter-free-agent-primary') === 500);
+delete process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_FREE_AGENT_PRIMARY;
 check('Retry-After numeric seconds are honored', parseRetryAfterMs('2', 0) === 2000);
 check('Retry-After HTTP dates are honored', parseRetryAfterMs('Thu, 01 Jan 1970 00:00:05 GMT', 1000) === 4000);
 check('invalid Retry-After is ignored', parseRetryAfterMs('nonsense', 0) === undefined);
