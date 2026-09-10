@@ -31,10 +31,10 @@ import {
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// OpenRouter is the production gateway. With no operator policy, APEX preserves
-// the reviewed MiniMax/Nemotron free-agent chain below. When APEX_OPENROUTER_MODEL_POLICY is a
-// valid persisted policy, the selected model roster is sent to OpenRouter via
-// its native `models` fallback parameter in role-specific priority order.
+// OpenRouter is the production gateway. With no valid operator policy, APEX uses
+// the validated paid reliability chain: DeepSeek V4 Flash, GPT-OSS 120B, then
+// DeepSeek V3.2, with Grok/Bedrock as the emergency provider rung. Persisted
+// policies containing :free endpoints are invalid and fall back to this chain.
 //
 // Pricing is deliberately NOT hard-coded here. The Settings model-control API
 // reads OpenRouter's live catalog because per-model prices may change.
@@ -48,10 +48,9 @@ export type ApexProviderName =
   | 'openrouter-deepseek-v3-paid'
   | 'openrouter-grok-4-6-bedrock';
 
-// Operator policy 2026-09-04 (Don): FREE models first — the most intelligent,
-// most-reasoning free models until exhausted — then fall back to the CHEAPEST
-// high-reasoning PAID models. No sole paid usage without explicit operator
-// authorization; paid keys are last-resort only.
+// Legacy free adapters are retained only for isolated diagnostics/experiments.
+// They are deliberately absent from PROVIDER_ORDER and cannot be admitted by a
+// persisted production model policy. Production continuity uses the paid chain.
 const OPENROUTER_FREE_KEY_ENVS = [
   // New-account free-tier key first.
   'OPENROUTER_FREE_API_KEY',
@@ -124,7 +123,7 @@ type ProviderSpec = {
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'openrouter-minimax-m3',
-    model: DEFAULT_OPENROUTER_MODEL_CHAIN[0],
+    model: 'minimax/minimax-m3:free',
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
     minIntervalMs: 500,
@@ -132,7 +131,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     name: 'openrouter-nemotron-ultra',
-    model: DEFAULT_OPENROUTER_MODEL_CHAIN[1],
+    model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
     minIntervalMs: 500,
@@ -276,8 +275,8 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 );
 
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  'openrouter-gpt-oss-120b-paid',
   'openrouter-deepseek-v4-flash-paid',
+  'openrouter-gpt-oss-120b-paid',
   'openrouter-deepseek-v3-paid',
   // Emergency continuity anchor. This remains last because it is materially
   // more expensive and is intentionally pinned to Bedrock BYOK.
@@ -285,10 +284,9 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
-  // Operator policy 2026-09-09: continuity beats free-tier queue latency.
-  // GPT-OSS is the fast/cheap primary observed succeeding in seconds, followed
-  // by DeepSeek V4 for reasoning depth, then V3.2 and the BYOK emergency rung.
-  // Free OpenRouter models are deliberately excluded from automatic fallback.
+  // Operator policy 2026-09-10: validated production hotfix. DeepSeek V4 Flash
+  // is primary, GPT-OSS 120B is the fast/cheap fallback, then DeepSeek V3.2 and
+  // the pinned Bedrock BYOK emergency rung. Free endpoints are experiment-only.
   if (hasCustomOpenRouterModelPolicy()) return ['openrouter-gpt-oss-120b-paid'];
   return [...PROVIDER_ORDER];
 }
@@ -514,6 +512,14 @@ function credentialCooldown(id: string): CredentialCooldown | null {
     return null;
   }
   return cooldown;
+}
+
+export function shouldCooldownCredential(status: number | undefined, message: string): boolean {
+  if (status === 400) return false;
+  // A timeout/abort is endpoint latency, not evidence that an otherwise valid
+  // credential is bad. Do not create a fleet-wide key cooldown from it.
+  if (status === undefined && /request timed out|aborted/i.test(message)) return false;
+  return true;
 }
 
 function setCredentialCooldown(
@@ -1214,7 +1220,7 @@ class MultiProviderClient {
                 // malformed payload they had no part in — which is how one bad
                 // model-policy selection became "credential in cooldown"
                 // across the whole workforce.
-                if (status !== 400) {
+                if (shouldCooldownCredential(status, message)) {
                   setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
@@ -1348,7 +1354,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model = getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
-    provider: 'openrouter-gpt-oss-120b-paid',
+    provider: 'openrouter-deepseek-v4-flash-paid',
     model,
     temperature: 0.7,
     maxTokens,

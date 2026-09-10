@@ -89,7 +89,7 @@ Each lead needs: company name, website, industry, city, contact-research result,
 (specific pain point), and a suggested outreach angle (how to pitch BuildMyBot to them).
 Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'requestPeerReview'],
       maxIterations: 50,
       approvalRequired: false,
@@ -178,7 +178,7 @@ ${GROUND_TRUTH_CLAUSE}
 Prioritized lead list with next action per lead, which channel(s) you used or recommend, and an
 honest status: what actually sent/was called vs. what's blocked on missing infrastructure or a
 missing email/phone on the lead itself.`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: [
         'readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview',
         'make_outbound_call', 'get_call_status',
@@ -228,7 +228,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clean, ready-to-post drafts labeled by platform, plus a short rationale for why this angle will
 land with the ICP (Home Services, Legal, Medical/Esthetics, Real Estate).`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: ['readFile', 'writeFile', 'webSearch', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: true,
@@ -271,7 +271,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clear, honest customer-facing responses. When escalating a gap between marketing and reality,
 flag it explicitly as a "sold but not built" item for the CEO/engineering team to prioritize.`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: ['readFile', 'writeFile', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: false,

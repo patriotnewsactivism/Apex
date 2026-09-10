@@ -71,7 +71,7 @@ export class LeadDeveloperAgent extends BaseAgent {
       tier: 2,
       parentId: 'apex-cto-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: [
         'sendMessage',
         'readFile',

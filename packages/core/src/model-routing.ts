@@ -6,8 +6,8 @@ export const OPENROUTER_MODEL_POLICY_ENV = 'APEX_OPENROUTER_MODEL_POLICY';
  * included: their queue latency can stall the autonomous workforce.
  */
 export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
-  'openai/gpt-oss-120b',
   'deepseek/deepseek-v4-flash-0731',
+  'openai/gpt-oss-120b',
   'deepseek/deepseek-v3.2',
 ] as const;
 
@@ -62,6 +62,12 @@ export function validateOpenRouterModelId(modelId: string): boolean {
   return modelId.length <= 200 && MODEL_ID_PATTERN.test(modelId);
 }
 
+/** Production APEX policies must never route through OpenRouter :free endpoints.
+ * Free models remain available for isolated experiments, not the autonomous fleet. */
+export function validateProductionOpenRouterModelId(modelId: string): boolean {
+  return validateOpenRouterModelId(modelId) && !/:free$/i.test(modelId);
+}
+
 export function parseOpenRouterModelPolicy(raw: string | undefined | null): OpenRouterModelPolicy | null {
   if (!raw?.trim()) return null;
   try {
@@ -72,7 +78,7 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
     if (
       selectedModelIds.length < 1 ||
       selectedModelIds.length > MAX_SELECTED_MODELS ||
-      selectedModelIds.some((modelId) => !validateOpenRouterModelId(modelId))
+      selectedModelIds.some((modelId) => !validateProductionOpenRouterModelId(modelId))
     ) {
       return null;
     }
