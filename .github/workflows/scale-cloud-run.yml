@@ -95,6 +95,35 @@ jobs:
             echo "- \`run.googleapis.com/cpu-throttling\`: ${cpu_throttling:-unset (defaults to throttled/request-based billing)}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Describe non-secret LLM capacity controls
+        env:
+          SERVICE: ${{ secrets.APEX_CLOUD_RUN_SERVICE }}
+          REGION: ${{ secrets.APEX_CLOUD_RUN_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services describe "$SERVICE" --project "$GCP_PROJECT_ID" --region "$REGION" --format=json > /tmp/apex-runtime.json
+          python3 - <<'PY'
+          import json
+          service = json.load(open('/tmp/apex-runtime.json'))
+          containers = service.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
+          env = {item.get('name'): item for item in (containers[0].get('env', []) if containers else [])}
+          names = (
+              'APEX_TOKEN_CAP_TOTAL', 'APEX_TOKEN_CAPS', 'APEX_TOKEN_PACING_ENABLED',
+              'APEX_TOKEN_PACING_BURST_TOKENS', 'APEX_MAX_CONCURRENT_LLM_CALLS',
+              'APEX_LLM_REQUEST_TIMEOUT_MS', 'APEX_OPENROUTER_MODEL_POLICY',
+          )
+          for name in names:
+              item = env.get(name)
+              if not item:
+                  print(f'{name}=<unset>')
+              elif item.get('valueFrom'):
+                  print(f'{name}=<secret-bound>')
+              elif name == 'APEX_OPENROUTER_MODEL_POLICY':
+                  print(f'{name}=<set>')
+              else:
+                  print(f'{name}={item.get("value", "") or "<empty>"}')
+          PY
   apply:
     needs: describe
     if: ${{ github.event.inputs.apply == 'true' }}
