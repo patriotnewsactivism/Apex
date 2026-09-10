@@ -6,12 +6,12 @@
 // runtime directive needed here — no external deps, no ctx, nothing that
 // isn't plain JS.
 
-// Mirrors the PROVIDERS list in llm.ts (name + apiKeyEnv only — this file
-// doesn't need baseURL/fallbackModel/extraHeaders since it never makes a
-// request itself).
+// Mirrors the logical free provider batches used by the core OpenRouter client.
+// This file only exposes configuration diagnostics; request routing lives in the
+// Node LLM client.
 const PROVIDERS = [
-  { name: 'openrouter-minimax-m3', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
-  { name: 'openrouter-nemotron-ultra', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
+  { name: 'openrouter-free-agent-primary', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
+  { name: 'openrouter-free-agent-secondary', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
 ];
 
 const TOKEN_BUDGETS: Record<string, number> = {
