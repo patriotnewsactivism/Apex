@@ -22,20 +22,34 @@ const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
 
 try {
   delete process.env[OPENROUTER_MODEL_POLICY_ENV];
-  console.log('── Reliability-first fallback ──');
+  console.log('── Free-first default routing ──');
   check(
-    'no policy preserves the guarded fast paid model chain',
+    'no policy preserves the reviewed free-first model chain',
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
   check(
-    'no policy preserves all four automatic continuity routes',
-    getProviderOrderForRole('CEO').length === 4,
+    'no policy preserves six automatic continuity routes',
+    getProviderOrderForRole('CEO').length === 6,
     getProviderOrderForRole('CEO'),
   );
   check(
-    'automatic default chain contains no free-tier model',
-    DEFAULT_OPENROUTER_MODEL_CHAIN.every((model) => !model.endsWith(':free')),
+    'default chain starts with six free models',
+    DEFAULT_OPENROUTER_MODEL_CHAIN.slice(0, 6).every((model) => model.endsWith(':free')),
+    DEFAULT_OPENROUTER_MODEL_CHAIN,
+  );
+  check(
+    'dead MiniMax M3 free endpoint is absent',
+    !DEFAULT_OPENROUTER_MODEL_CHAIN.includes('minimax/minimax-m3:free' as never),
+    DEFAULT_OPENROUTER_MODEL_CHAIN,
+  );
+  check(
+    'paid continuity tail remains explicit',
+    JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN.slice(6)) === JSON.stringify([
+      'openai/gpt-oss-120b',
+      'deepseek/deepseek-v4-flash-0731',
+      'deepseek/deepseek-v3.2',
+    ]),
     DEFAULT_OPENROUTER_MODEL_CHAIN,
   );
 
@@ -106,7 +120,7 @@ try {
   check('BACKEND can have a different first-choice model', backendChain[0] === 'deepseek/deepseek-v4-pro-0813', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'openrouter/auto');
   check(
-    'custom model roster uses one paced paid OpenRouter gateway adapter',
+    'custom model roster uses one paced OpenRouter gateway adapter',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(['openrouter-gpt-oss-120b-paid']),
     getProviderOrderForRole('CEO'),
   );
@@ -117,6 +131,7 @@ try {
   const clientSource = fs.readFileSync(path.join(root, 'packages/core/src/llm-client.ts'), 'utf8');
   const routeSource = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/model-settings.ts'), 'utf8');
   check('custom routing sends an OpenRouter models array', clientSource.includes('body.models = routedModels'));
+  check('default free batches also use native fallback arrays', clientSource.includes('provider.fallbackModels?.length'));
   check('actual served model is read from the OpenRouter response', clientSource.includes('const servedModel = parsed.model'));
   check('adaptive routing is explicit rather than silently enabled', clientSource.includes("policy?.routingMode === 'adaptive'"));
   check('request timeout is bounded and operator-configurable', clientSource.includes('APEX_LLM_REQUEST_TIMEOUT_MS ?? 30_000'));
