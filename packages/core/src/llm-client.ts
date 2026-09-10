@@ -31,58 +31,49 @@ import {
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// OpenRouter is the production gateway. With no operator policy, APEX preserves
-// the reviewed MiniMax/Nemotron free-agent chain below. When APEX_OPENROUTER_MODEL_POLICY is a
-// valid persisted policy, the selected model roster is sent to OpenRouter via
-// its native `models` fallback parameter in role-specific priority order.
+// OpenRouter is the production gateway. The default path is free-first: two
+// three-model native fallback batches are exhausted before paid continuity
+// models are attempted. A persisted operator policy still overrides this
+// reviewed default and is sent through OpenRouter's native `models` fallback.
 //
 // Pricing is deliberately NOT hard-coded here. The Settings model-control API
 // reads OpenRouter's live catalog because per-model prices may change.
 
 export type ApexProviderName =
-  | 'openrouter-minimax-m3'
-  | 'openrouter-nemotron-ultra'
-  | 'openrouter-nemotron-super'
+  | 'openrouter-free-agent-primary'
+  | 'openrouter-free-agent-secondary'
   | 'openrouter-deepseek-v4-flash-paid'
   | 'openrouter-gpt-oss-120b-paid'
   | 'openrouter-deepseek-v3-paid'
   | 'openrouter-grok-4-6-bedrock';
 
-// Operator policy 2026-09-04 (Don): FREE models first — the most intelligent,
-// most-reasoning free models until exhausted — then fall back to the CHEAPEST
-// high-reasoning PAID models. No sole paid usage without explicit operator
-// authorization; paid keys are last-resort only.
+// Operator policy 2026-09-10: use capable free models first, but do not let a
+// slow/degraded free endpoint strand the autonomous workforce. OpenRouter's
+// native fallback array is capped at three models, so APEX uses two logical
+// free batches, then the cheapest reliable paid continuity models.
 const OPENROUTER_FREE_KEY_ENVS = [
-  // New-account free-tier key first.
   'OPENROUTER_FREE_API_KEY',
-  // Old-account key — still serves :free models (its paid credits are gone).
   'OPENROUTER_API_KEY_2',
-  // Paid keys work for :free models too ($0 cost), then remain available for
-  // the paid tail when the free roster is exhausted.
+  // Paid keys can also serve :free endpoints without token charges.
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_3',
 ] as const;
-// The BYOK rung. BYOK is configured per OpenRouter ACCOUNT, so the key here
-// must belong to the account that holds the Amazon Bedrock provider key --
-// otherwise the request routes as ordinary paid capacity and bills OpenRouter
-// credits instead of AWS. A dedicated env is checked first so the BYOK account
-// can be a different one from the paid credentials; if it is the same account,
-// leave it unset and the existing paid keys are used.
+
 const OPENROUTER_BYOK_KEY_ENVS = [
   'OPENROUTER_BYOK_API_KEY',
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_3',
 ] as const;
 const OPENROUTER_PAID_KEY_ENVS = [
-  // This is the deployment's canonical paid OpenRouter credential.
   'OPENROUTER_API_KEY',
-  // Preserve support for the optional separately named paid credential.
   'OPENROUTER_API_KEY_3',
 ] as const;
 
 type ProviderSpec = {
   name: ApexProviderName;
   model: string;
+  /** Optional OpenRouter-native fallback batch. Hard-capped again at send time. */
+  fallbackModels?: readonly string[];
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
@@ -110,12 +101,6 @@ type ProviderSpec = {
      * OpenRouter's own price-aware routing: prefer the cheapest live provider
      * for this model while still keeping every other provider available as
      * an automatic fallback if the cheapest one is rate-limited or down.
-     * Deliberately NOT paired with `only`/`allow_fallbacks:false` here --
-     * unlike the Bedrock BYOK rung, these are ordinary OpenRouter-billed
-     * paid rungs, so hard-pinning to one cheap-but-small provider would trade
-     * a large load-balanced pool for a single new point of failure just to
-     * shave pennies. `sort: 'price'` gets most of the savings with none of
-     * that risk.
      */
     sort?: 'price' | 'throughput' | 'latency';
   };
@@ -123,45 +108,29 @@ type ProviderSpec = {
 
 const PROVIDERS: readonly ProviderSpec[] = [
   {
-    name: 'openrouter-minimax-m3',
+    // Fast free agent batch. Nex Mini has excellent current latency/tool-call
+    // support; Nemotron Super and Poolside Laguna provide independent fallbacks
+    // without spending a second OpenRouter request unless the whole batch fails.
+    name: 'openrouter-free-agent-primary',
     model: DEFAULT_OPENROUTER_MODEL_CHAIN[0],
+    fallbackModels: DEFAULT_OPENROUTER_MODEL_CHAIN.slice(0, 3),
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
   {
-    name: 'openrouter-nemotron-ultra',
-    model: DEFAULT_OPENROUTER_MODEL_CHAIN[1],
+    // Secondary free batch. Nex Pro is kept ahead of the two slower NVIDIA
+    // reasoning endpoints; all three remain useful for complex agent work.
+    name: 'openrouter-free-agent-secondary',
+    model: DEFAULT_OPENROUTER_MODEL_CHAIN[3],
+    fallbackModels: DEFAULT_OPENROUTER_MODEL_CHAIN.slice(3, 6),
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
     minIntervalMs: 500,
     toolCallingReliable: true,
   },
   {
-    // Free tier slot 3: proven tool-calling workhorse (codeforge-v2's
-    // long-standing free pick). Slot 3 was 'openrouter-glm-5-2-free'
-    // (z-ai/glm-5.2:free) until removed 2026-09-06 -- OpenRouter retired the
-    // free tier for that model entirely (confirmed via direct API call:
-    // HTTP 404 "This model is unavailable for free. The paid version is
-    // available now"). Not replaced with the paid slug -- that would silently
-    // burn paid credits from inside what's supposed to be the free-only
-    // rungs, defeating the 2026-09-04 operator policy below.
-    name: 'openrouter-nemotron-super',
-    model: 'nvidia/nemotron-3-super-120b-a12b:free',
-    baseURL: 'https://openrouter.ai/api/v1',
-    apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
-    minIntervalMs: 500,
-    toolCallingReliable: true,
-  },
-  {
-    // Paid fallback slot 1 (PRIMARY paid model, Don's explicit pick
-    // 2026-09-05) — DeepSeek V4 Flash 0731: sparse MoE, 13B active/284B
-    // total params, 1.3M context, explicitly tuned for coding/reasoning/agent
-    // workflows, and confirmed via OpenRouter's live catalog to support
-    // `tools`/`tool_choice` (unlike R1). $0.065/M in, $0.18/M out — replaces
-    // the previous gpt-oss-120b-paid slot as the go-to paid model reached
-    // right after all four free models are exhausted.
     name: 'openrouter-deepseek-v4-flash-paid',
     model: 'deepseek/deepseek-v4-flash-0731',
     baseURL: 'https://openrouter.ai/api/v1',
@@ -169,29 +138,11 @@ const PROVIDERS: readonly ProviderSpec[] = [
     paid: true,
     minIntervalMs: 500,
     toolCallingReliable: true,
-    // Reasoning model: run at low effort so thinking doesn't consume the
-    // entire max_tokens budget before any content is emitted.
     reasoningEffort: 'low',
-    // 2026-09-07: this model is served by 28 different OpenRouter providers
-    // ranging $0.05-$0.44/M input -- sort:'price' asks OpenRouter to prefer
-    // the cheapest live one while still keeping the full pool as automatic
-    // fallback, so a rate-limited cheap provider doesn't fail the request.
     providerRouting: { sort: 'price' },
   },
   {
-    // Cheaper paid rung, added 2026-09-07 on Don's explicit tier policy:
-    // individual-contributor roles (FRONTEND/BACKEND/DEVOPS/QA/MARKETING/
-    // CUSTOMER_SUCCESS/DOCS/OPS/COMMUNITY_WATCH) route here FIRST once the
-    // three free rungs are exhausted -- gpt-oss-120b is ~4x cheaper on input
-    // tokens than deepseek-v4-flash-0731 ($0.037 vs $0.14/M in per Apex's own
-    // live OpenRouter catalog scoring) while still tool-calling-reliable and
-    // reasoning-capable. Leadership roles (see HIGH_TIER_ROLES below) still
-    // reach deepseek-v4-flash-paid first for more reasoning headroom, with
-    // this rung as their own second paid fallback if that one is exhausted --
-    // so every role can reach both paid models, only the PRIORITY differs by
-    // tier. Not reasoning-effort-pinned: unlike deepseek-v4-flash and
-    // grok-4.6, gpt-oss-120b has not shown the silent content:null failure
-    // mode that made reasoningEffort:'low' load-bearing for those two.
+    // Cheapest paid continuity rung first after free capacity is exhausted.
     name: 'openrouter-gpt-oss-120b-paid',
     model: 'openai/gpt-oss-120b',
     baseURL: 'https://openrouter.ai/api/v1',
@@ -199,17 +150,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     paid: true,
     minIntervalMs: 500,
     toolCallingReliable: true,
-    // 2026-09-07: 22 providers serve this model, $0.03-$0.35/M input --
-    // same price-sort reasoning as the deepseek-v4-flash rung above.
     providerRouting: { sort: 'price' },
   },
   {
-    // Paid fallback FINAL slot: DeepSeek V3.2 — not R1 (R1's OpenRouter
-    // endpoint does not accept `tools`, which would silently break every
-    // agent turn that fell back to it). V3.2 explicitly supports
-    // tools/tool_choice with GPT-5-class benchmarks. Kept as the last-resort
-    // safety net behind the new primary paid model above — reached only if
-    // all four free models AND deepseek-v4-flash are exhausted/erroring.
     name: 'openrouter-deepseek-v3-paid',
     model: 'deepseek/deepseek-v3.2',
     baseURL: 'https://openrouter.ai/api/v1',
@@ -219,43 +162,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
   },
   {
-    // Last-resort rung, added 2026-09-07 on operator instruction: keep the
-    // workforce running when every free model is rate-capped AND the paid
-    // OpenRouter credits are exhausted, which is exactly the state that took
-    // the fleet down on 2026-09-06.
-    //
-    // Routed through the operator's own Amazon Bedrock BYOK credential, so it
-    // bills AWS rather than OpenRouter credits. Pinning is load-bearing, not a
-    // preference: x-ai/grok-4.6 is served by five endpoints and xAI direct is
-    // both cheaper ($2/M vs $2.2/M) and ~13x faster, so unpinned requests route
-    // there and bill the very credits this rung exists to avoid.
-    // allow_fallbacks:false keeps a Bedrock outage from silently becoming a
-    // paid-credit call -- it should fail and let the caller's own
-    // retry/backpressure handle it.
-    //
-    // The region suffix is REQUIRED. OpenRouter's docs say a base provider slug
-    // matches all of that provider's endpoints including regional ones, but for
-    // this model it does not: the bare slug is dropped by the router's
-    // "Filter by Regional Surcharge" step (Bedrock is $2.2/M against xAI's $2/M)
-    // before `only` is ever applied. Verified against the live API on
-    // 2026-09-07 -- identical request, identical everything else:
-    //
-    //   only: ['amazon-bedrock']           -> HTTP 404 "No allowed providers
-    //                                         are available for the selected
-    //                                         model", routing_funnel shows
-    //                                         5 endpoints -> 4 at the surcharge
-    //                                         filter, leaving only xai
-    //   only: ['amazon-bedrock/us-west-2'] -> served, 64 output tokens returned
-    //
-    // So do not "simplify" this back to the bare slug. It does not widen the
-    // match, it silently disables the rung -- the failure mode this whole
-    // provider exists to prevent.
-    //
-    // reasoningEffort is mandatory here, not a tuning choice: grok-4.6 has
-    // reasoning.mandatory = true with a default effort of 'high'. Left at the
-    // default, thinking consumes the whole max_tokens budget and the model
-    // returns content: null -- the same silent-empty-completion failure that
-    // 74d2fc7 had to guard for deepseek-v4-flash.
+    // Emergency continuity anchor. BYOK is intentionally hard-pinned to the
+    // operator's Bedrock account so this cannot silently consume OpenRouter
+    // credits when the ordinary paid rungs are unavailable.
     name: 'openrouter-grok-4-6-bedrock',
     model: 'x-ai/grok-4.6',
     baseURL: 'https://openrouter.ai/api/v1',
@@ -276,26 +185,23 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
 );
 
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
+  'openrouter-free-agent-primary',
+  'openrouter-free-agent-secondary',
   'openrouter-gpt-oss-120b-paid',
   'openrouter-deepseek-v4-flash-paid',
   'openrouter-deepseek-v3-paid',
-  // Emergency continuity anchor. This remains last because it is materially
-  // more expensive and is intentionally pinned to Bedrock BYOK.
   'openrouter-grok-4-6-bedrock',
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
-  // Operator policy 2026-09-09: continuity beats free-tier queue latency.
-  // GPT-OSS is the fast/cheap primary observed succeeding in seconds, followed
-  // by DeepSeek V4 for reasoning depth, then V3.2 and the BYOK emergency rung.
-  // Free OpenRouter models are deliberately excluded from automatic fallback.
+  // Custom model policies continue to use one OpenRouter gateway adapter; the
+  // policy's own `models` roster controls routing inside that request.
   if (hasCustomOpenRouterModelPolicy()) return ['openrouter-gpt-oss-120b-paid'];
   return [...PROVIDER_ORDER];
 }
 
-/** Paid inference is no longer gated — the selected OpenRouter roster is an
- * explicit operator decision. Kept for backward compatibility with callers
- * that still inspect APEX_PAID_LLM_MODE. */
+/** Paid inference is enabled by default only as continuity after free routes.
+ * Operators can still disable all paid fallbacks with APEX_PAID_LLM_MODE=off. */
 export function paidLLMFallbackEnabled(mode?: string): boolean {
   const normalized = (mode ?? 'on').trim().toLowerCase();
   return ['1', 'true', 'on', 'enabled', 'fallback'].includes(normalized);
@@ -871,7 +777,9 @@ async function callCompatibleProvider(
     const customPolicy = Boolean(policy);
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
-      : [provider.model];
+      : provider.fallbackModels?.length
+        ? [...provider.fallbackModels]
+        : [provider.model];
 
     if (policy?.routingMode === 'adaptive') {
       routedModels = await getAdaptiveModelOrder({
@@ -888,20 +796,13 @@ async function callCompatibleProvider(
       messages: toWireMessages(messages),
       temperature: config.temperature ?? 0.7,
       max_tokens: config.maxTokens ?? 2048,
-      // Explicitly request usage data so OpenRouter returns billed generation
-      // cost alongside token counts when available.
       usage: { include: true },
       ...(provider.reasoningEffort
         ? { reasoning: { effort: provider.reasoningEffort } }
         : {}),
       ...(provider.providerRouting ? { provider: provider.providerRouting } : {}),
     };
-    if (customPolicy) {
-      // OpenRouter rejects the whole request with HTTP 400 when `models` holds
-      // more than OPENROUTER_MAX_FALLBACK_MODELS entries, and the Settings
-      // model picker does not stop an operator selecting more than that. A
-      // sixth selection must degrade to "route the best three", never to a
-      // gateway that refuses every call.
+    if (customPolicy || provider.fallbackModels?.length) {
       routedModels = routedModels.slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
       body.models = routedModels;
     } else body.model = provider.model;
@@ -919,8 +820,6 @@ async function callCompatibleProvider(
         Authorization: `Bearer ${key}`,
         'HTTP-Referer': 'https://apex.donmatthews.live',
         'X-Title': 'APEX Agent Workforce',
-        // OpenRouter documents this as the stable opt-in for route audit data.
-        // Only a privacy-minimized subset is retained by APEX.
         'X-OpenRouter-Metadata': 'enabled',
       },
       body: JSON.stringify(body),
@@ -954,10 +853,6 @@ async function callCompatibleProvider(
     const rawCost = Number(parsed.usage?.cost);
     const toolCalls = parseToolCalls(choice.tool_calls);
     const content = choice.content ?? '';
-    // Reasoning models (e.g. deepseek-v4-flash) can spend the whole
-    // max_tokens budget thinking and return content: null. That must be
-    // treated as a failure so the chain falls through to the next provider —
-    // never as a silent empty success. Tool-call-only turns are exempt.
     if (!content.trim() && toolCalls.length === 0) {
       throw new Error(
         `empty completion content (finish_reason: ${
@@ -1178,7 +1073,9 @@ class MultiProviderClient {
                   ? err.requestedModels
                   : hasCustomOpenRouterModelPolicy()
                     ? getOpenRouterModelChainForRole(this.config.role)
-                    : [provider.model];
+                    : provider.fallbackModels?.length
+                      ? [...provider.fallbackModels]
+                      : [provider.model];
                 const attemptedModel = requestedModels[0] ?? provider.model;
                 recordProviderFailure(
                   provider.name,
@@ -1193,9 +1090,6 @@ class MultiProviderClient {
                   provider: provider.name,
                   requestedModels,
                   routerMetadata: err.routerMetadata,
-                  // Only attribute a gateway failure to a specific model when
-                  // exactly one model was requested; a multi-model OpenRouter
-                  // fallback failure cannot honestly identify which rung failed.
                   servedModel: requestedModels.length === 1 ? requestedModels[0] : undefined,
                   success: false,
                   latencyMs: err.latencyMs ?? 0,
@@ -1209,11 +1103,6 @@ class MultiProviderClient {
                   complexityHint: execution?.complexityHint,
                   errorType: status ? `http_${status}` : err.name || 'provider_error',
                 });
-                // A 400 indicts the request body, not the key. Parking the
-                // credential for it takes every other agent down over a
-                // malformed payload they had no part in — which is how one bad
-                // model-policy selection became "credential in cooldown"
-                // across the whole workforce.
                 if (status !== 400) {
                   setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 }
@@ -1233,10 +1122,8 @@ class MultiProviderClient {
                     `${status ? `HTTP ${status} ` : ''}${message}`,
                 );
 
-
                 // A timeout is an endpoint/model latency failure, not evidence
-                // that every credential is bad. Move to the next model instead
-                // of burning another full timeout on the same provider.
+                // that every credential is bad. Move to the next model batch.
                 if (message === 'request timed out') break;
                 if (capacityFailure) break;
 
@@ -1346,9 +1233,10 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
     ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
     : defaultMaxTokens;
   const model = getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
+  const provider = getProviderOrderForRole(role)[0] ?? 'openrouter-free-agent-primary';
 
   return {
-    provider: 'openrouter-gpt-oss-120b-paid',
+    provider,
     model,
     temperature: 0.7,
     maxTokens,
@@ -1506,6 +1394,7 @@ export function logProviderRoster(): void {
 export function getProviderCatalog(): Array<{
   name: string;
   model: string;
+  fallbackModels?: readonly string[];
   tier: number;
   paid: boolean;
   toolCallingReliable: boolean;
@@ -1516,12 +1405,10 @@ export function getProviderCatalog(): Array<{
     return {
       name: provider.name,
       model: provider.model,
+      ...(provider.fallbackModels?.length ? { fallbackModels: provider.fallbackModels } : {}),
       tier: index,
       paid: provider.paid === true,
       toolCallingReliable: true,
-      // Exposed so the routing guard can assert the BYOK pin. Which endpoint a
-      // rung is pinned to decides whose account pays for it, so it belongs in
-      // the introspection surface rather than only in the private spec.
       ...(provider.providerRouting ? { providerRouting: provider.providerRouting } : {}),
     };
   });
