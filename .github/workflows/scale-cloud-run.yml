@@ -124,6 +124,48 @@ jobs:
               else:
                   print(f'{name}={item.get("value", "") or "<empty>"}')
           PY
+      - name: Summarize recent LLM capacity logs
+        env:
+          SERVICE: ${{ secrets.APEX_CLOUD_RUN_SERVICE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud logging read "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\"" \
+            --project "$GCP_PROJECT_ID" --freshness=30m --limit=1000 --format=json > /tmp/apex-logs.json
+          python3 - <<'PY'
+          import json, re
+          rows = json.load(open('/tmp/apex-logs.json'))
+          patterns = {
+              'capacity_pause': re.compile(r'APEX LLM capacity paused', re.I),
+              'local_pacing': re.compile(r'provider pacing/cooldown', re.I),
+              'chain_failure': re.compile(r'All LLM providers failed', re.I),
+              'timeout': re.compile(r'request timed out|aborted', re.I),
+              'rate_limit': re.compile(r'\b429\b|rate limit', re.I),
+              'credits': re.compile(r'\b402\b|insufficient credits', re.I),
+          }
+          counts = {k: 0 for k in patterns}
+          samples = []
+          def strings(value):
+              if isinstance(value, str):
+                  yield value
+              elif isinstance(value, dict):
+                  for child in value.values(): yield from strings(child)
+              elif isinstance(value, list):
+                  for child in value: yield from strings(child)
+          for row in rows:
+              text = ' | '.join(strings(row.get('textPayload') or row.get('jsonPayload') or row.get('protoPayload') or ''))
+              if not text: continue
+              hit = False
+              for key, pattern in patterns.items():
+                  if pattern.search(text):
+                      counts[key] += 1; hit = True
+              if hit and len(samples) < 12:
+                  safe = re.sub(r'(Task deferred[^:]*):.*', r'\1:<task-title-redacted>', text)
+                  safe = re.sub(r'Bearer\s+[A-Za-z0-9._-]+', 'Bearer <redacted>', safe, flags=re.I)
+                  samples.append(safe[:900])
+          print('LLM_LOG_COUNTS ' + json.dumps(counts, sort_keys=True))
+          for sample in samples: print('LLM_LOG_SAMPLE ' + sample)
+          PY
   apply:
     needs: describe
     if: ${{ github.event.inputs.apply == 'true' }}
