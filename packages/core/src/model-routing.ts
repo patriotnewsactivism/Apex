@@ -1,11 +1,33 @@
 export const OPENROUTER_MODEL_POLICY_ENV = 'APEX_OPENROUTER_MODEL_POLICY';
 
 /**
- * Reliability-first fallback chain used when no operator policy exists or a
- * stored policy is malformed. Free OpenRouter endpoints are intentionally not
- * included: their queue latency can stall the autonomous workforce.
+ * Free-first agent batches. OpenRouter's native `models` fallback list accepts
+ * at most three models, so the runtime sends these as two logical batches.
+ *
+ * The former MiniMax M3 free endpoint is intentionally absent: OpenRouter
+ * removed `minimax/minimax-m3:free`. The paid MiniMax slug must never be
+ * substituted silently into a free rung.
+ */
+export const OPENROUTER_PRIMARY_FREE_MODELS = [
+  'nex-agi/nex-n2.5-mini:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'poolside/laguna-s-2.1:free',
+] as const;
+
+export const OPENROUTER_SECONDARY_FREE_MODELS = [
+  'nex-agi/nex-n2.5-pro:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+] as const;
+
+/**
+ * Default model roster used when no operator policy exists. The first six
+ * entries are zero-cost agent-capable models. Paid models are reached only
+ * after both free batches fail or are unavailable.
  */
 export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
+  ...OPENROUTER_PRIMARY_FREE_MODELS,
+  ...OPENROUTER_SECONDARY_FREE_MODELS,
   'openai/gpt-oss-120b',
   'deepseek/deepseek-v4-flash-0731',
   'deepseek/deepseek-v3.2',
