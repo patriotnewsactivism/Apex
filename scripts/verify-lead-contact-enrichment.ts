@@ -9,7 +9,14 @@ const schema = readFileSync('lib/db/src/schema.ts', 'utf8');
 const migration = readFileSync('lib/db/src/client.ts', 'utf8');
 const tools = readFileSync('packages/core/src/tool-registry.ts', 'utf8');
 const agent = readFileSync('packages/agents/src/business.ts', 'utf8');
-const scheduler = readFileSync('packages/api-server/src/index.ts', 'utf8');
+// seedDefaultJobs() (and the recurring job list it seeds, including the
+// contact-enrichment sweep this check looks for) moved from index.ts to
+// bootstrap-jobs.ts during #131's autonomous-OS upgrade, so both the HTTP
+// server and the standalone worker entrypoint share one seeding path. Point
+// this check at the file that actually owns the job list now -- this check
+// silently regressed to a false pass (comparing against index.ts, which no
+// longer contains the string) for as long as it read the pre-#131 location.
+const scheduler = readFileSync('packages/api-server/src/bootstrap-jobs.ts', 'utf8');
 const csv = readFileSync('packages/api-server/src/routes/leads.ts', 'utf8');
 
 for (const field of ['decisionMakerName', 'contactEmail', 'contactPhone', 'contactSourceUrl', 'contactResearchStatus', 'contactResearchedAt']) {

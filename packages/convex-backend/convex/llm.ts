@@ -29,6 +29,11 @@
 import { v } from 'convex/values';
 import { internalAction } from './_generated/server';
 
+const configuredRequestTimeoutMs = Number(process.env.APEX_LLM_REQUEST_TIMEOUT_MS ?? 30_000);
+const LLM_REQUEST_TIMEOUT_MS = Number.isFinite(configuredRequestTimeoutMs)
+  ? Math.min(60_000, Math.max(10_000, Math.floor(configuredRequestTimeoutMs)))
+  : 30_000;
+
 const PROVIDERS: Array<{
   name: string;
   baseURL: string;
@@ -37,10 +42,10 @@ const PROVIDERS: Array<{
   extraHeaders?: Record<string, string>;
   protocol?: 'openai' | 'anthropic';
 }> = [
-  // Primary free long-horizon agent, coding, tool-use, and multimodal model.
-  { name: 'openrouter-minimax-m3', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'minimax/minimax-m3:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
-  // Free reasoning, planning, orchestration, and coding fallback.
-  { name: 'openrouter-nemotron-ultra', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'nvidia/nemotron-3-ultra-550b-a55b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  // Reliability-first OpenRouter chain. Free endpoints are excluded because
+  // their concurrency queues caused long TTFT stalls and fallback cascades.
+  { name: 'openrouter-gpt-oss-120b-paid', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-120b', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  { name: 'openrouter-deepseek-v3-paid', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'deepseek/deepseek-v3.2', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
 ];
 
 // Role-aware Qwen Cloud model selection — mirrors packages/core/src/llm-client.ts
@@ -134,13 +139,13 @@ async function completeViaAnthropic(
 ): Promise<LLMResponse> {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
 
-  const client = new Anthropic({ apiKey, baseURL: provider.baseURL, timeout: 75_000, maxRetries: 0 });
+  const client = new Anthropic({ apiKey, baseURL: provider.baseURL, timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 });
 
   const { system, messages: anthropicMessages } = buildAnthropicMessages(messages);
   const anthropicTools = tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 75_000);
+  const timeoutId = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
   let res;
   try {
     res = await client.messages.create(
@@ -245,12 +250,12 @@ async function completeImpl(
         apiKey,
         baseURL: provider.baseURL,
         defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
-        timeout: 75_000,
+        timeout: LLM_REQUEST_TIMEOUT_MS,
         maxRetries: 0,
       });
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 75_000);
+      const timeoutId = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
       let res;
       try {
         res = await client.chat.completions.create(

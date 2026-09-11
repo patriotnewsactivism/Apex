@@ -3,7 +3,8 @@ import { db, tasks } from '@workspace/db';
 import { eq, and, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task } from '@workspace/db';
 import type { TaskInput } from './types.js';
-import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure } from './runtime-health.js';
+import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure, recordHardTimeoutQuarantine } from './runtime-health.js';
+import { logTaskOutcome } from './execution-outcome.js';
 import {
   getLLMPauseRetryAt,
   getTransientLLMRetryDelayMs,
@@ -351,6 +352,15 @@ export class TaskQueue {
             leasedAt: null,
             updatedAt: new Date(),
           }).where(and(eq(tasks.id, taskId), eq(tasks.status, 'in_progress')));
+          recordHardTimeoutQuarantine();
+          logTaskOutcome({
+            taskId,
+            agentId: task.assignedAgentId ?? 'unknown',
+            goalId: task.goalId,
+            reason: 'task_hard_timeout',
+            elapsedMs: task.startedAt ? Date.now() - task.startedAt.getTime() : 0,
+            detail: 'quarantined — the original execution may still be alive; operator unblock required',
+          });
           return;
         }
 
@@ -477,6 +487,48 @@ export class TaskQueue {
       memTask.errorMessage = null;
       memTask.leasedAt = null;
     }
+  }
+
+  /**
+   * Atomically persist a checkpoint into the task's context AND return it to
+   * the durable queue, in one guarded write (Phase 2 — soft-deadline yield).
+   * Combining both into a single UPDATE closes the race a separate
+   * "write context, then resume" pair would leave open: there is no window
+   * where the checkpoint is saved but ownership has not yet been confirmed
+   * live, and no window where the task is back in 'pending' but still
+   * missing the checkpoint another worker would need to resume it.
+   *
+   * Guarded by the same liveOwnershipPredicate() as every other non-terminal
+   * transition: a task independently cancelled, terminalized, or
+   * hard-timeout quarantined while this execution was running must not be
+   * resurrected by a stale checkpoint write. Returns false when that
+   * happened — the caller must not report the yield as having taken effect.
+   */
+  async checkpointAndResume(taskId: string, context: Record<string, unknown>): Promise<boolean> {
+    try {
+      const [updated] = await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          leasedAt: null,
+          context,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()))
+        .returning({ id: tasks.id });
+      return Boolean(updated);
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('checkpointAndResume', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask && isLiveOwnership(memTask)) {
+      memTask.status = 'pending';
+      memTask.leasedAt = null;
+      memTask.context = context;
+      return true;
+    }
+    return false;
   }
 
   /** Mark a task awaiting human approval for a gated tool call. */

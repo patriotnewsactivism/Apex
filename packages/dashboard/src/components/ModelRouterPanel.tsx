@@ -229,12 +229,16 @@ export function ModelRouterPanel() {
         explorationRate: result.policy.explorationRate ?? 0,
         complexityEscalation: result.policy.complexityEscalation ?? false,
       });
-      setSavedMessage('Restored the reviewed MiniMax M3 Free → Nemotron 3 Ultra Free fallback chain.');
+      setSavedMessage('Restored the reviewed DeepSeek V4 Flash -> GPT-OSS 120B -> DeepSeek V3.2 production chain.');
       queryClient.invalidateQueries({ queryKey: ['settings', 'models'] });
     },
   });
 
   const toggleModel = (modelId: string) => {
+    if (modelById.get(modelId)?.isFree) {
+      setSavedMessage('Free OpenRouter models are experiment-only and cannot be saved into the APEX production fleet policy.');
+      return;
+    }
     setPolicy((previous) => {
       const selected = previous.selectedModelIds.includes(modelId)
         ? previous.selectedModelIds.filter((id) => id !== modelId)
@@ -438,7 +442,7 @@ export function ModelRouterPanel() {
                 return (
                   <tr key={model.id} style={{ borderTop: '1px solid var(--color-apex-border)', background: selected ? 'rgba(139,126,200,0.06)' : 'transparent' }}>
                     <td style={{ padding: 9 }}>
-                      <input type="checkbox" checked={selected} onChange={() => toggleModel(model.id)} aria-label={`Select ${model.name}`} />
+                      <input type="checkbox" checked={selected} disabled={model.isFree} onChange={() => toggleModel(model.id)} aria-label={`Select ${model.name}`} title={model.isFree ? 'Free models are experiment-only in production' : undefined} />
                     </td>
                     <td style={{ padding: 9, maxWidth: 300 }}>
                       <div style={{ fontWeight: 650, color: 'var(--color-apex-text)', display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>

@@ -2033,15 +2033,15 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     },
   },
 
-  // ─── BuildMyBot: Deploy (sync — Vercel deploy hook; approval required) ───────
+  // ─── BuildMyBot: Deploy (sync — Railway redeploy; approval required) ────────
   buildmybot_deploy: {
     schema: {
       name: 'buildmybot_deploy',
       description:
-        'Trigger a production rebuild+deploy of buildmybot2 via its Vercel deploy hook. Only rebuilds what is already merged to the production branch — this is NOT a way around PR review. Requires BUILDMYBOT_VERCEL_DEPLOY_HOOK and approval.',
+        'Manually retrigger the Railway production service for buildmybot2. Railway normally auto-deploys merged main commits. Requires BUILDMYBOT_RAILWAY_TOKEN and approval.',
       parameters: {
         type: 'object',
-        properties: { reason: { type: 'string', description: 'Why this deploy is being triggered (audit trail)' } },
+        properties: { reason: { type: 'string', description: 'Why this Railway redeploy is being triggered (audit trail)' } },
         required: ['reason'],
       },
     },
@@ -2049,15 +2049,27 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
     kind: 'sync',
     run: async (_ctx, args) => {
       const { reason } = args as { reason: string };
-      const hook = process.env.BUILDMYBOT_VERCEL_DEPLOY_HOOK;
-      if (!hook) throw new Error('BUILDMYBOT_VERCEL_DEPLOY_HOOK is not configured');
-      const res = await fetch(hook, { method: 'POST' });
-      const body = await res.text();
-      if (!res.ok) throw new Error(`Deploy hook returned ${res.status}: ${body.slice(0, 300)}`);
-      return { success: true, reason, response: body.slice(0, 500) };
+      const token = process.env.BUILDMYBOT_RAILWAY_TOKEN;
+      if (!token) throw new Error('BUILDMYBOT_RAILWAY_TOKEN is not configured');
+      const serviceId = process.env.BUILDMYBOT_RAILWAY_SERVICE_ID ?? '60b6d260-f5d8-463d-87be-58339545eaaf';
+      const environmentId = process.env.BUILDMYBOT_RAILWAY_ENVIRONMENT_ID ?? '6ce38db0-789b-4fe9-ad02-f068fe6866ae';
+      const query = 'mutation serviceInstanceRedeploy($environmentId: String!, $serviceId: String!) { serviceInstanceRedeploy(environmentId: $environmentId, serviceId: $serviceId) }';
+      const res = await fetch('https://backboard.railway.com/graphql/v2', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, variables: { environmentId, serviceId } }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const payload = await res.json().catch(() => null) as
+        | { data?: { serviceInstanceRedeploy?: boolean }; errors?: Array<{ message?: string }> }
+        | null;
+      const railwayError = payload?.errors?.map((error) => error.message).filter(Boolean).join('; ');
+      if (!res.ok || railwayError || payload?.data?.serviceInstanceRedeploy !== true) {
+        throw new Error('Railway redeploy failed (' + res.status + '): ' + (railwayError || 'unexpected response'));
+      }
+      return { success: true, platform: 'railway', reason, serviceId, environmentId };
     },
   },
-
   // ─── BuildMyBot: Health Check (sync — live HTTP check) ───────────────────────
   buildmybot_health_check: {
     schema: {

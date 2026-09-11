@@ -1,8 +1,4 @@
-import {
-  getProviderRequestSpacingMs,
-  isCapacityFailure,
-  parseRetryAfterMs,
-} from '../packages/core/src/llm-client.js';
+import { getProviderRequestSpacingMs, isCapacityFailure, parseRetryAfterMs, shouldCooldownCredential } from '../packages/core/src/llm-client.js';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -30,6 +26,9 @@ check(
   'ordinary provider errors remain task failures',
   !isCapacityFailure(undefined, 'Malformed response: no choices'),
 );
+check('timeouts never cooldown a valid credential', shouldCooldownCredential(undefined, 'request timed out') === false);
+check('aborts never cooldown a valid credential', shouldCooldownCredential(undefined, 'request aborted') === false);
+check('HTTP 429 still cools a credential', shouldCooldownCredential(429, 'rate limited') === true);
 
 if (failures > 0) {
   console.error(`❌ ${failures} CHECK(S) FAILED`);

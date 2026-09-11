@@ -10,8 +10,9 @@
 // doesn't need baseURL/fallbackModel/extraHeaders since it never makes a
 // request itself).
 const PROVIDERS = [
-  { name: 'openrouter-minimax-m3', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
-  { name: 'openrouter-nemotron-ultra', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
+  { name: 'openrouter-deepseek-v4-flash-paid', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  { name: 'openrouter-gpt-oss-120b-paid', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  { name: 'openrouter-deepseek-v3-paid', apiKeyEnv: 'OPENROUTER_API_KEY' },
 ];
 
 const TOKEN_BUDGETS: Record<string, number> = {

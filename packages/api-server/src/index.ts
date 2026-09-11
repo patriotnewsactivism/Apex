@@ -9,14 +9,12 @@ config({ path: resolve(process.cwd(), '.env') });
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
-import { db, migrate, tasks, componentHealth, healthMetrics } from '@workspace/db';
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
-import { createWorkforce, initializeWorkforce, ApexCEO } from '@workspace/agents';
-import { loadSettingsIntoEnv } from './settingsLoader.js';
+import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
+import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
-import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, initializeTokenLedgerPersistence, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, logProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, superviseAgentLoop, type AgentSupervisorHandle } from '@workspace/core';
+import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters } from '@workspace/core';
+import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
 import { createGoalsRouter } from './routes/goals.js';
@@ -37,13 +35,14 @@ import { createLearningRouter } from './routes/learning.js';
 import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
+import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
 import { createLeadsRouter } from './routes/leads.js';
 import { createCampaignsRouter } from './routes/campaigns.js';
 import { createArtifactsRouter } from './routes/artifacts.js';
-import { startExecutorDispatchLoop, executorDispatchConfig } from '@workspace/executor';
+import { createAutonomyRouter } from './routes/autonomy.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
@@ -59,360 +58,7 @@ process.on('unhandledRejection', (reason) => {
   console.warn('⚠️  Unhandled rejection caught (server protected):', reason instanceof Error ? reason.message : String(reason));
 });
 
-// Seed the default recurring system jobs — the baseline work schedule that
-// scheduling/HR owns. On conflict (job already exists), revive ONLY jobs
-// currently stuck in 'failed' status: a transient outage (LLM exhaustion, DB
-// blip) must never permanently silence autonomous work. Jobs an operator
-// disabled via /api/jobs/:id/toggle stay disabled (enabled=false is untouched;
-// only status='failed' rows are reset to 'active'). Versioned system
-// definitions are also synchronized on startup so a prompt/cron safety fix
-// actually reaches existing production rows instead of applying only to a
-// fresh database. The CEO can create separate crons via schedule_task.
-async function seedDefaultJobs(): Promise<void> {
-  try {
-    const { db, scheduledJobs } = await import('@workspace/db');
-    const { CronParser } = await import('@workspace/background-jobs');
-    const { eq } = await import('drizzle-orm');
-
-    const now = new Date();
-    const defaults = [
-      {
-        id: 'system-ceo-goal-review',
-        name: 'CEO autonomous goal review',
-        jobType: 'goal_review',
-        cronExpression: '*/15 * * * *', // every 15 min — the autonomous spark
-        targetAgentId: 'apex-ceo-001' as string | null,
-        priority: 4,
-        payload: {} as Record<string, unknown>,
-      },
-      {
-        id: 'system-lead-gen-sweep',
-        name: 'Lead generation research sweep',
-        jobType: 'task_delegation',
-        cronExpression: '0 */2 * * *', // every 2 h
-        targetAgentId: 'apex-lead-research-001' as string | null,
-        priority: 3,
-        payload: {
-          title: 'Lead generation sweep',
-          description:
-            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered. Use searchBusinessDirectory and webSearch to find real qualifying businesses. For every lead, inspect public contact/about/team sources and attempt to find the decision maker, business email, and phone; never guess. Save the source and honest contact research status with saveResearchedLeadsBatch. Every saved lead must retain at least its verified company website as a contact path. Quality over quantity.',
-        },
-      },
-      {
-        id: 'system-lead-contact-enrichment',
-        name: 'Lead contact enrichment backlog',
-        jobType: 'task_delegation',
-        cronExpression: '30 * * * *',
-        targetAgentId: 'apex-lead-research-001' as string | null,
-        priority: 3,
-        payload: {
-          title: 'Enrich pending lead contacts',
-          description: 'Call listResearchedLeads with needsContactResearch=true. For up to 25 pending leads, inspect each verified website and targeted public web results for the relevant decision maker name, business email, and business phone. Never guess or synthesize contact data. Call updateLeadContactInfo for every attempted lead, include a supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
-        },
-      },
-      {
-        id: 'system-daily-report',
-        name: 'Daily activity report',
-        jobType: 'report_generation',
-        cronExpression: '0 9 * * *', // daily at 09:00
-        targetAgentId: null as string | null,
-        priority: 7,
-        payload: {} as Record<string, unknown>,
-      },
-      {
-        id: 'system-daily-maintenance',
-        name: 'Daily cleanup (logs, expired memories)',
-        jobType: 'maintenance',
-        cronExpression: '0 3 * * *', // daily at 03:00
-        targetAgentId: null as string | null,
-        priority: 8,
-        payload: {} as Record<string, unknown>,
-      },
-      {
-        id: 'system-learning-analysis',
-        name: 'Autonomous learning analysis',
-        jobType: 'learning_analysis',
-        cronExpression: '0 */6 * * *', // every 6 h
-        targetAgentId: null as string | null,
-        priority: 6,
-        payload: {} as Record<string, unknown>,
-      },
-      {
-        id: 'system-opportunity-discovery',
-        name: 'Novel opportunity discovery across projects',
-        jobType: 'opportunity_discovery',
-        cronExpression: '47 */2 * * *',
-        targetAgentId: null as string | null,
-        priority: 4,
-        payload: {
-          systemDefinitionVersion: 1,
-          maxProjectsPerRun: 6,
-          maxCandidatesPerProject: 4,
-        } as Record<string, unknown>,
-      },
-      {
-        id: 'system-workforce-planner',
-        name: 'Bounded autonomous workforce coverage planner',
-        jobType: 'workforce_planner',
-        cronExpression: '7 * * * *',
-        targetAgentId: null as string | null,
-        priority: 4,
-        payload: { systemDefinitionVersion: 1 } as Record<string, unknown>,
-      },
-      {
-        id: 'system-prompt-evolution',
-        name: 'Continuous agent prompt evolution',
-        jobType: 'prompt_self_improve',
-        cronExpression: '27 */6 * * *',
-        targetAgentId: null as string | null,
-        priority: 5,
-        payload: {
-          systemDefinitionVersion: 1,
-          role: 'auto',
-          maxIterations: 4,
-        } as Record<string, unknown>,
-      },
-      // ── Closed-loop autonomy roster ──────────────────────────────────────
-      // Delegation used to be one-way: a manager handed work down and its own
-      // task finished immediately, so nothing ever read the outcome back. This
-      // is the return leg — it routes finished sub-work to whoever delegated it.
-      {
-        id: 'system-delegation-followup',
-        name: 'Delegation results follow-up',
-        jobType: 'delegation_followup',
-        cronExpression: '*/5 * * * *', // every 5 min — keeps the feedback tight
-        targetAgentId: null as string | null,
-        priority: 3,
-        payload: { maxPerRun: 8 } as Record<string, unknown>,
-      },
-      // Goals only ever left 'active' when a human clicked. This drives each
-      // one to a real conclusion: decompose it, close it, or change approach.
-      {
-        id: 'system-goal-progress',
-        name: 'Goal progress & close-out review',
-        jobType: 'goal_progress',
-        cronExpression: '*/30 * * * *', // every 30 min
-        targetAgentId: 'apex-ceo-001' as string | null,
-        priority: 4,
-        payload: { maxPerRun: 4, minAgeMinutes: 20 } as Record<string, unknown>,
-      },
-      // Failed tasks used to be terminal and unseen. Cluster them and put the
-      // recurring ones in front of the CEO.
-      {
-        id: 'system-failure-review',
-        name: 'Failure triage review',
-        jobType: 'failure_review',
-        cronExpression: '15 */2 * * *', // every 2 h, offset off the hour
-        targetAgentId: 'apex-ceo-001' as string | null,
-        priority: 5,
-        payload: { windowHours: 24, minClusterSize: 2 } as Record<string, unknown>,
-      },
-      // The COO and CTO had no heartbeat of their own — whole branches sat idle
-      // between CEO reviews. These give each branch manager its own cadence.
-      // Provider outages are transient; the work they killed should not be.
-      // Runs often enough that a recovered chain resumes business work within
-      // minutes rather than waiting for the next sparse business cron.
-      {
-        id: 'system-stalled-work-recovery',
-        name: 'Recover work killed by LLM provider outages',
-        jobType: 'stalled_work_recovery',
-        cronExpression: '*/10 * * * *', // every 10 min
-        targetAgentId: null as string | null,
-        priority: 2,
-        payload: { windowHours: 24, maxPerRun: 15, maxRequeues: 3 } as Record<string, unknown>,
-      },
-      {
-        id: 'system-coo-branch-review',
-        name: 'COO operations branch review',
-        jobType: 'branch_review',
-        cronExpression: '5 * * * *', // hourly, after :00 provider-work recovery
-        targetAgentId: 'apex-coo-001' as string | null,
-        priority: 4,
-        payload: {
-          systemDefinitionVersion: 2,
-          subordinates: ['apex-lead-research-001', 'apex-sales-001', 'apex-marketing-001', 'apex-success-001'],
-          includeBuildMyBot2: true,
-          focus:
-            'You run BuildMyBot.App day-to-day operations. Priorities in order: (1) BuildMyBot2 health — if snapshot.buildmybot2 shows current open critical errors, flagged/escalated shifts, or leads stalling without a reply, act: read buildmybot_status, then send a corrective briefing with buildmybot_send_briefing or file one real ticket with buildmybot_dispatch_engineering. Historical provider failures listed as recovered are not current incidents. (2) Pipeline — leads researched but never worked are wasted spend; make sure the Lead Researcher is covering new industries/regions rather than re-covering the same ones, and that Sales is actually reviewing what was found. (3) Content and support cadence. Be honest about what is genuinely not wired yet (real outbound email/SMS and payments are not) — never report outreach that did not happen.',
-        } as Record<string, unknown>,
-      },
-      {
-        id: 'system-cto-branch-review',
-        name: 'CTO engineering branch review',
-        jobType: 'branch_review',
-        cronExpression: '35 */2 * * *', // every 2 h, after :30 provider-work recovery
-        targetAgentId: 'apex-cto-001' as string | null,
-        priority: 4,
-        payload: {
-          systemDefinitionVersion: 2,
-          subordinates: [
-            'apex-lead-dev-001',
-            'apex-frontend-001',
-            'apex-backend-001',
-            'apex-devops-001',
-            'apex-qa-001',
-          ],
-          focus:
-            'You run engineering for Apex itself and for buildmybot2. Priorities in order: (1) Stability over features — call health_check first and act only on current degradation. A successful task newer than an old provider-chain failure means that outage recovered; do not request credits or keys from historical errors alone. (2) Repeated current failures are engineering defects until proven otherwise — diagnose the root cause rather than re-running the same work. (3) Delegate exactly once through apex-lead-dev-001; never also assign its Frontend, Backend, DevOps, or QA reports directly. Idle agents need no invented work. (4) BuildMyBot2 work must keep its repository context; do not inspect the Apex filesystem as if it were BuildMyBot2. (5) Ship through PRs, never direct pushes; deploys stay approval-gated. Escalate a missing capability only after a current tool or health check proves it is missing.',
-        } as Record<string, unknown>,
-      },
-      // ── Autonomous execution scheduler roster (2026-09-06) ───────────────
-      // work_generation is the self-growing task machine: it turns open goals,
-      // accepted opportunities, and due workstreams into concrete tasks every
-      // 10 minutes (deduped — see WorkGenerationJob). cron_governor is the
-      // hourly ceiling/floor enforcement so that machine cannot explode.
-      {
-        id: 'system-work-generation',
-        name: 'Autonomous work generation (goals, opportunities, workstreams)',
-        jobType: 'work_generation',
-        cronExpression: '*/10 * * * *', // every 10 min — the autonomous spark
-        targetAgentId: 'apex-coo-001' as string | null,
-        priority: 3,
-        payload: { systemDefinitionVersion: 1, maxPerRun: 6 } as Record<string, unknown>,
-      },
-      {
-        id: 'system-cron-governor',
-        name: 'Cron governance (ceilings, frequency floor, failed-storm pruning)',
-        jobType: 'cron_governor',
-        cronExpression: '23 * * * *', // hourly, offset off the half-hour
-        targetAgentId: null as string | null,
-        priority: 4,
-        payload: { systemDefinitionVersion: 1 } as Record<string, unknown>,
-      },
-    ];
-
-    for (const def of defaults) {
-      const nextRunAt = CronParser.nextRun(def.cronExpression, now) ?? new Date(now.getTime() + 60_000);
-      await db
-        .insert(scheduledJobs)
-        .values({
-          id: def.id,
-          name: def.name,
-          jobType: def.jobType,
-          cronExpression: def.cronExpression,
-          enabled: true,
-          targetAgentId: def.targetAgentId,
-          payload: def.payload,
-          priority: def.priority,
-          status: 'active',
-          retryCount: 0,
-          maxRetries: 3,
-          nextRunAt,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: scheduledJobs.id,
-          set: {
-            enabled: true,
-            status: 'active',
-            retryCount: 0,
-            error: null,
-            nextRunAt,
-            updatedAt: now,
-          },
-          where: eq(scheduledJobs.status, 'failed'),
-        });
-
-      // Existing active rows were historically never updated, which left old
-      // prompts and colliding cron expressions live forever after code fixes.
-      // Only explicitly versioned code-owned definitions are synchronized;
-      // unversioned/user-created schedules remain operator-controlled.
-      const desiredDefinitionVersion = Number(def.payload.systemDefinitionVersion ?? 0);
-      if (desiredDefinitionVersion > 0) {
-        // Keep the version comparison in the UPDATE predicate. An older
-        // deployment can never overwrite a newer definition after a stale read.
-        await db
-          .update(scheduledJobs)
-          .set({
-            name: def.name,
-            jobType: def.jobType,
-            cronExpression: def.cronExpression,
-            targetAgentId: def.targetAgentId,
-            payload: def.payload,
-            priority: def.priority,
-            nextRunAt,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(scheduledJobs.id, def.id),
-              sql`coalesce((${scheduledJobs.payload} ->> 'systemDefinitionVersion')::int, 0) < ${desiredDefinitionVersion}`,
-            ),
-          );
-      }
-    }
-    console.log(
-      '✅ Seeded default system jobs (goals, learning, opportunity discovery, workforce planning, prompt evolution, recovery, branch reviews, reporting)',
-    );
-  } catch (err) {
-    console.warn('⚠️  Default job seeding skipped:', err instanceof Error ? err.message : String(err));
-  }
-}
-
-async function recoverStaleLeasedTasks(): Promise<void> {
-try {
-  const staleThreshold = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
-  const staleTasks = await db
-    .select()
-    .from(tasks)
-    .where(and(
-      eq(tasks.status, 'in_progress'),
-      // Sandbox-executor tasks (context.runtime='job') run inside Cloud Run
-      // Jobs with their own 55-minute wall clock and lease semantics; the
-      // in-process 10-minute recovery sweep must never steal them mid-run.
-      sql`${tasks.context}->>'runtime' IS DISTINCT FROM 'job'`,
-      or(
-        isNull(tasks.leasedAt),
-        lt(tasks.leasedAt, staleThreshold),
-      ),
-    ));
-
-  let recovered = 0;
-  let exhausted = 0;
-  for (const task of staleTasks) {
-    const newRetryCount = task.retryCount + 1;
-    if (task.retryCount >= task.maxRetries) {
-      await db
-        .update(tasks)
-        .set({
-          status: 'failed',
-          errorMessage: 'Process crash: lease expired (max retries exceeded)',
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(tasks.id, task.id),
-          eq(tasks.status, 'in_progress'),
-          or(isNull(tasks.leasedAt), lt(tasks.leasedAt, staleThreshold))
-        ));
-      exhausted++;
-    } else {
-      const retryDelayMs = Math.min(Math.pow(2, newRetryCount) * 1000, 300_000);
-      const nextRetryAt = new Date(Date.now() + retryDelayMs);
-      await db
-        .update(tasks)
-        .set({
-          status: 'pending',
-          retryCount: newRetryCount,
-          leasedAt: null,
-          nextRetryAt,
-          errorMessage: 'Process crash: lease expired',
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(tasks.id, task.id),
-          eq(tasks.status, 'in_progress'),
-          or(isNull(tasks.leasedAt), lt(tasks.leasedAt, staleThreshold))
-        ));
-      recovered++;
-    }
-  }
-  console.log(`✅ Lease-expiry recovery: ${recovered} task(s) requeued, ${exhausted} task(s) failed (max retries)`);
-} catch (err) {
-  console.warn('⚠️  Crash recovery skipped:', err instanceof Error ? err.message : String(err));
-}
-}
-
+import { seedDefaultJobs, recoverStaleLeasedTasks } from './bootstrap-jobs.js';
 async function main() {
   console.log('🚀 APEX starting up...');
 
@@ -423,53 +69,21 @@ async function main() {
     console.warn('⚠️  Database migration skipped or deferred:', err instanceof Error ? err.message : String(err));
   }
 
-  // Apply any DB-persisted integration API keys into process.env BEFORE the
-  // workforce (and its LLM clients) are created, so a key saved via the
-  // dashboard's Settings panel is live from the very first LLM call.
-  await loadSettingsIntoEnv();
-
-  // Audit the provider roster the moment keys are in process.env, before any
-  // agent can make a call. An empty free slot is a silent capacity loss —
-  // this is the one place it becomes visible without reading failure logs.
-  logProviderRoster();
-
-  const durableTokenLedger = await initializeTokenLedgerPersistence();
-  console.log(
-    durableTokenLedger
-      ? '✅ Daily token ledger hydrated from Postgres'
-      : '⚠️  Daily token ledger is memory-only; restart-safe budget accounting unavailable',
-  );
-
-  // Lease-expiry crash recovery: only recover tasks whose lease has expired (>10 min)
-  // or whose leased_at is NULL (tasks left in_progress before leased_at was added).
-  // Increments retryCount and applies backoff, or marks failed if maxRetries exceeded.
-  // The old naive reset (`SET status='pending' WHERE status='in_progress'`) blindly
-  // requeued tasks without incrementing retryCount, allowing crash-looping tasks to
-  // ignore maxRetries and spin forever.
-await recoverStaleLeasedTasks();
-
   let mode = process.env.APEX_APPROVAL_MODE ?? 'normal';
   if (mode === 'off') {
     console.warn('⚠️  APEX_APPROVAL_MODE=off is not allowed; reverting to normal (per-role default gating).');
     mode = 'normal';
   }
   const approvalRequired = mode === 'strict' ? true : undefined;
-  // Campaign tools live in background-jobs (they need the runner's
-  // createCampaign), so they are registered here rather than inside
-  // getToolRegistry() — core cannot import background-jobs without a cycle.
-  // Registered BEFORE the workforce is built so every agent sees them on its
-  // first turn.
-  for (const tool of createCampaignTools()) {
-    getToolRegistry().register(tool);
-  }
 
-  const workforce = createWorkforce({ approvalRequired });
-  try {
-    await initializeWorkforce(workforce);
-    console.log(`✅ Workforce initialized (${workforce.size} agents)`);
-  } catch (err) {
-    console.warn('⚠️  Workforce DB state sync skipped:', err instanceof Error ? err.message : String(err));
-  }
+  // Shared bootstrap (Phase 5): settings/provider-roster/token-ledger init,
+  // lease-expiry recovery, campaign-tool registration, workforce creation,
+  // default job seeding, the scheduler, campaign runner, executor dispatch
+  // loop, durable worker heartbeat, and supervised agent loops — everything
+  // the dedicated `start:worker` runtime (ADR-011) also needs and, before
+  // this, did not get. See runtime-bootstrap.ts.
+  const bootstrap = await bootstrapApexRuntime({ kind: 'http', approvalRequired });
+  const { workforce } = bootstrap;
   console.log(`   Approval mode: ${mode === 'strict' ? 'STRICT (all agents gated)' : 'PER-ROLE DEFAULT (dev/infra gated, business/orchestration autonomous)'}`);
 
   // buildmybot2 as a registered MANAGED project (2026-07-23): idempotent
@@ -488,7 +102,7 @@ await recoverStaleLeasedTasks();
         name: 'BuildMyBot2',
         repository: 'patriotnewsactivism/buildmybot2',
         purpose:
-          'Revenue flagship — AI chatbot SaaS at buildmybot.app. Managed project: COO dispatches engineering via buildmybot_dispatch_engineering; deploys via Vercel hook; health target https://www.buildmybot.app/api/health.',
+          'Revenue flagship — AI chatbot SaaS at buildmybot.app. Managed project: COO dispatches engineering via buildmybot_dispatch_engineering; Railway auto-deploys merged main commits and buildmybot_deploy can manually retrigger Railway; health target https://www.buildmybot.app/api/health.',
         priority: 'critical',
         status: 'active',
         autonomyLevel: 'supervisor',
@@ -522,7 +136,18 @@ await recoverStaleLeasedTasks();
   const server = createServer(app);
 
   app.use(cors({ origin: '*' }));
-  app.use(express.json({ limit: '10mb' }));
+  // `verify` stashes the exact request bytes on req.rawBody for every request.
+  // Cheap (one Buffer, discarded per-request), and it's the only way the
+  // Resend webhook below can verify a Svix HMAC signature — that signature is
+  // computed over the exact bytes Resend sent, and re-serializing req.body
+  // with JSON.stringify is NOT guaranteed to reproduce them byte-for-byte
+  // (key order, whitespace). Every other route ignores req.rawBody entirely.
+  app.use(express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }));
 
   // Health check.
   //
@@ -537,7 +162,7 @@ await recoverStaleLeasedTasks();
   // A provably broken queue returns HTTP 503, which makes the automated deploy
   // verifier in @workspace/cicd-automation reject such a release instead of
   // reporting a healthy deploy of a service that cannot do any work.
-  app.get('/health', (_req, res) => {
+  app.get('/health', async (_req, res) => {
     const queue = getDequeueHealth();
     const broken = isTaskQueueBroken();
     const agentStatusCounts = [...workforce.values()].reduce<
@@ -559,12 +184,31 @@ await recoverStaleLeasedTasks();
     const hardCapped =
       tokenLedger.totalCapReached ||
       tokenLedger.providers.some((provider) => provider.capReached);
+    // `aggregatePaused` is the SAME expression llmCapacityAvailableNow() uses
+    // to return false (`!ledger.pacing.total.allowed`), and that function gates
+    // task claiming for every agent in the process. So this condition does not
+    // mean "throttled" -- it means the entire workforce has stopped.
     const aggregatePaused = !tokenLedger.pacing.total.allowed;
+    // These two conditions used to collapse into one "paced" string, and that
+    // cost a full day of production ambiguity on 2026-09-08: at 15:19 /health
+    // read `paced` while claiming ran at ~15 tasks/min (two Nemotron providers
+    // resting -- benign), and at 21:46 it read `paced` with tasksClaimed frozen
+    // at 2083 for 64 minutes (the workspace allowance exhausted -- total
+    // stall). Identical payloads, opposite meanings, and the stall was
+    // invisible: status ok, verdict ok, zero failures, poll loop healthy at
+    // ~13 polls/min. It self-cleared at the 00:00 UTC reset, when state flipped
+    // to `available` and 12 idle agents became 11 thinking within seconds.
+    //
+    // verify-capacity-latch-release.ts already named this gap in 2026-09-04:
+    // "nothing outside the process could tell a parked workforce from an idle
+    // one". It fixed the base-agent latch; this fixes the reporting.
     const capacityState = hardCapped
       ? "capped"
-      : aggregatePaused || pausedProviders.length > 0
-        ? "paced"
-        : "available";
+      : aggregatePaused
+        ? "workforce_paused"
+        : pausedProviders.length > 0
+          ? "paced"
+          : "available";
     const resumeCandidates = [
       tokenLedger.pacing.nextResumeAt,
       providerBackpressure.nextResumeAt,
@@ -572,6 +216,15 @@ await recoverStaleLeasedTasks();
     const nextResumeAt = resumeCandidates.length
       ? resumeCandidates.sort((a, b) => Date.parse(a) - Date.parse(b))[0]
       : null;
+    // Durable, cross-process worker health (Phase 5). This process answering
+    // HTTP proves nothing about whether a separately deployed `start:worker`
+    // process (ADR-011 Path B) is alive — that is exactly the gap this table
+    // closes. A broken/absent read degrades this section to 'unknown' rather
+    // than failing the whole health check: process.memoryUsage() and the
+    // in-process workforce block above remain valid even if Postgres itself
+    // is the thing that is down.
+    const heartbeats = await getWorkerHeartbeatSummary();
+    const noHealthyWorkers = heartbeats.totalWorkerCount > 0 && heartbeats.healthyWorkerCount === 0;
     res.status(broken ? 503 : 200).json({
       status: broken ? 'degraded' : 'ok',
       agents: workforce.size,
@@ -595,7 +248,9 @@ await recoverStaleLeasedTasks();
         pausedProviders,
         nextResumeAt,
         // A parked workforce and an idle one both show 13 idle agents. This
-        // is the only way to tell them apart from outside the process.
+        // reports the base-agent shared latch (capacityPauseRemainingMs) only
+        // -- it stays null when the workspace-wide allowance is what stopped
+        // the workforce. For that case read `state: workforce_paused` above.
         workforceParkedUntil: workforceParkedMs > 0
           ? new Date(Date.now() + workforceParkedMs).toISOString()
           : null,
@@ -610,6 +265,22 @@ await recoverStaleLeasedTasks();
       // reports which loops are actually cycling, how often the supervisor had
       // to restart them, and which ones it gave up on.
       workforce: getWorkforceLiveness(),
+      // Cross-process worker health (Phase 5) — deliberately separate from
+      // the `workforce` block above, which is only ever THIS process's
+      // in-memory view. A web server being healthy must not imply that
+      // autonomous workers are healthy: read this before trusting that any
+      // background progress is actually happening.
+      workerHeartbeats: {
+        ...heartbeats,
+        status: heartbeats.error
+          ? 'unknown'
+          : heartbeats.totalWorkerCount === 0
+            ? 'no_workers_registered'
+            : noHealthyWorkers
+              ? 'unhealthy'
+              : 'healthy',
+      },
+      autonomy: getAutonomyCounters(),
       memory: (() => {
         const usage = process.memoryUsage();
         const mb = (bytes: number) => Math.round((bytes / 1048576) * 10) / 10;
@@ -648,12 +319,8 @@ await recoverStaleLeasedTasks();
   });
   const alertManager = getSharedAlertManager();
 
-  // Background Job Scheduler setup
-  const scheduler = new JobScheduler();
-
-  // Lead campaign runner. Separate from the JobScheduler on purpose: this is a
-  // tight territory-working loop with its own lease semantics, not a cron job.
-  const campaignRunner = new CampaignRunner();
+  // scheduler/campaignRunner/executorDispatch already started by
+  // bootstrapApexRuntime() above — destructured from `bootstrap`.
 
   // Login is the front door — not behind requireAdminAuth.
   app.use('/api/auth', createAuthRouter());
@@ -665,6 +332,11 @@ await recoverStaleLeasedTasks();
   // Telnyx webhook — receives inbound call events from Telnyx (server-to-server).
   // Must be mounted BEFORE requireAdminAuth for the same reason as Vapi.
   app.use('/api/telnyx', createTelnyxWebhookRouter());
+
+  // Resend webhook — receives delivery/open/click/bounce/complaint events for
+  // outbound sales email (server-to-server, verified via Svix signature
+  // instead of a Bearer token). Must be mounted BEFORE requireAdminAuth.
+  app.use('/api/resend', createResendWebhookRouter());
 
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
@@ -692,6 +364,7 @@ await recoverStaleLeasedTasks();
   app.use('/api/leads', createLeadsRouter());
   app.use('/api/campaigns', createCampaignsRouter());
   app.use('/api/artifacts', createArtifactsRouter());
+  app.use('/api/autonomy', createAutonomyRouter());
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs
@@ -813,13 +486,6 @@ await recoverStaleLeasedTasks();
     console.log(`🤖 Approval mode: ${mode === 'strict' ? 'HUMAN APPROVAL REQUIRED (strict)' : mode === 'off' ? 'FULLY AUTONOMOUS' : 'PER-ROLE DEFAULT'}`);
   });
 
-  // Seed default recurring system jobs (CEO goal review + learning analysis),
-  // then start the scheduler that fires them.
-  await seedDefaultJobs();
-
-  // Start background job scheduler
-  scheduler.start();
-
   // 60s Background Health Monitoring Loop
   const runHealthPoll = async () => {
     try {
@@ -880,17 +546,12 @@ await recoverStaleLeasedTasks();
   };
 
   const healthInterval = setInterval(runHealthPoll, 60_000);
-  // Recurring safety net (2026-08-19): the original lease-expiry recovery
-  // only ran once at boot, so a task wedged mid-run had no path back to
-  // 'pending' short of a full process restart. Every 5 minutes is cheap
-  // (one SELECT when nothing is stale) and bounds the worst case to ~15
-  // minutes total (10 min stale threshold + up to 5 min until next sweep).
-  const leaseRecoveryInterval = setInterval(() => {
-    recoverStaleLeasedTasks().catch((err) => console.warn('⚠️  Periodic lease recovery failed:', err instanceof Error ? err.message : String(err)));
-  }, 5 * 60 * 1000);
   // Escalations nobody answers are noise, and noise is what made the queue
   // unusable in the first place. Hourly is plenty for a 7-day window; the
   // sweep never touches a gated approval, only escalate_to_human rows.
+  // (Lease-expiry recovery and executor dispatch are now recurring inside
+  // bootstrapApexRuntime() so the standalone worker runtime gets them too —
+  // see runtime-bootstrap.ts.)
   const escalationSweepInterval = setInterval(() => {
     sweepStaleEscalations().catch((err) =>
       console.warn('⚠️  Escalation sweep failed:', err instanceof Error ? err.message : String(err)),
@@ -899,55 +560,20 @@ await recoverStaleLeasedTasks();
   setTimeout(() => {
     sweepStaleEscalations().catch(() => {});
   }, 30_000);
-  // Sandbox-executor dispatch loop (Phase 4): the 60s cron-table can't express
-  // a 30s cadence, so this is an interval loop like CampaignRunner. It is a
-  // no-op cycle when APEX_EXECUTOR_JOB is unset — the control plane keeps
-  // running, only dispatch pauses.
-  const executorConfig = executorDispatchConfig();
-  const executorDispatch = startExecutorDispatchLoop({ intervalMs: 30_000 });
-  console.log(
-    executorConfig.configured
-      ? `✅ Executor dispatch loop started (job '${process.env.APEX_EXECUTOR_JOB}')`
-      : `ℹ️  Executor dispatch disabled: ${executorConfig.reason}`,
-  );
   // Run an immediate initial health check after 5s
   setTimeout(runHealthPoll, 5_000);
 
-  // Stagger agent startup to avoid all 13 agents hitting the first LLM provider
-  // simultaneously on deploy. Each agent waits a random 1-5s before starting its
-  // loop, spreading the initial burst of LLM calls across a wider window.
-  campaignRunner.start();
-
-  console.log('🤖 Starting autonomous agent loops (staggered, supervised)...');
-
-  // Supervision (added after finding the gap): start() used to be
-  // fire-and-forget with a `.catch(console.error)`. See
-  // packages/core/src/agent-supervisor.ts for the full rationale — a crashed
-  // loop was never restarted and /health still counted the agent as one of the
-  // 13. The same supervisor is used by the browser-independent worker runtime.
-  const supervisors: AgentSupervisorHandle[] = [];
-  let agentIdx = 0;
-  for (const agent of workforce.values()) {
-    supervisors.push(
-      superviseAgentLoop(agent, {
-        startDelayMs: 500 + agentIdx * 300 + Math.floor(Math.random() * 500),
-      }),
-    );
-    agentIdx++;
-  }
+  console.log(`🤖 Autonomous agent loops running (${workforce.size} agents, staggered, supervised)`);
 
   const shutdown = (signal: string) => {
     console.log(`\n${signal} received. Shutting down APEX...`);
-    for (const supervisor of supervisors) supervisor.stop();
     clearInterval(healthInterval);
-    clearInterval(leaseRecoveryInterval);
     clearInterval(escalationSweepInterval);
-    executorDispatch.stop();
-    campaignRunner.stop();
-    scheduler.stop();
-    server.close(() => {
-      console.log('✅ APEX shut down gracefully');
-      process.exit(0);
+    bootstrap.shutdown(signal).finally(() => {
+      server.close(() => {
+        console.log('✅ APEX shut down gracefully');
+        process.exit(0);
+      });
     });
   };
 

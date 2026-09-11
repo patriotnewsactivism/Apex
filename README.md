@@ -71,11 +71,14 @@ APEX can execute and ship deliverables durably even though the container filesys
 
 - finished work (documents, builds, renders) goes to the GCS bucket named by `APEX_ARTIFACT_BUCKET` via `store_artifact`, with audit rows in the `artifacts` table and result links on tasks;
 - durable project workspaces (`init_workspace` / `sync_workspace` / `push_workspace`) sync trees to `projects/<projectId>/workspace/<worktree>/` with checksum manifests;
-- heavy tasks run in a separate Cloud Run Jobs sandbox (`run_executor_job`, dispatched when `APEX_EXECUTOR_JOB` is configured);
+- heavy tasks run in a separate Cloud Run Jobs sandbox (`run_executor_job`, dispatched when `APEX_EXECUTOR_JOB` is configured), and a deterministic classifier nudges agents toward it for test-suite/build/render/static-analysis/browser-automation/data-processing work instead of blocking a normal execution slot;
 - code deliverables ship to new GitHub repos per workstream; hosted deliverables deploy through registered deploy hooks (`deploy_via_hook`);
-- a managed `work_generation` cron plans deduplicated batches of work from goals, accepted opportunities, and workstreams; `cron_governor` keeps dynamic crons within ceilings and the 15-minute floor.
+- a managed `work_generation` cron plans deduplicated batches of work from goals, accepted opportunities, and workstreams; `cron_governor` keeps dynamic crons within ceilings and the 15-minute floor;
+- a long task checkpoints and resumes across execution slices instead of losing progress at the 10-minute hard timeout, and a gated approval yields the execution cleanly (no live in-process wait) rather than blocking a concurrency slot while a human decides — see `docs/ARCHITECTURE_DECISIONS.md` (ADR-014);
+- both the HTTP control plane and the dedicated `start:worker` runtime share one bootstrap routine, and every runtime reports a durable heartbeat so `/health` can tell a healthy web server apart from a healthy autonomous worker;
+- `GET /api/autonomy` (admin-auth) reports whether APEX is actually doing useful unattended work: worker health, checkpoint/yield activity, executor jobs, retry backlog, approvals, and throughput.
 
-See `docs/ARCHITECTURE_DECISIONS.md` (ADR-013) and `docs/PRODUCTION_OPERATIONS.md`.
+See `docs/ARCHITECTURE_DECISIONS.md` (ADR-013, ADR-014) and `docs/PRODUCTION_OPERATIONS.md`.
 
 ## Repository layout
 

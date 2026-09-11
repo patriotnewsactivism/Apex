@@ -1509,3 +1509,41 @@ export class StalledWorkRecoveryJob implements JobHandler {
     };
   }
 }
+
+// ── BuildMyBotSmsOverageJob: recurring trigger for buildmybot2's SMS
+// overage reconciliation, from Apex's side ─────────────────────────────────
+//
+// Added 2026-09-06. buildmybot2 already has its OWN GitHub Actions schedule
+// (.github/workflows/sms-overage-reconcile.yml) hitting the same endpoint
+// every 6 hours — this is a deliberate SECOND, independent trigger from
+// Apex, matching the portfolio-commander role buildmybot-connector.ts
+// already documents ("Direct trigger: /api/cron/all-shifts and
+// /api/cron/lead-followups, authenticated with the shared CRON_SECRET").
+// Safe to run redundantly: buildmybot2's reconcileOverages() is idempotent
+// per billing period (it filters on stripe_invoice_item_id IS NULL and
+// clears that field immediately after creating the invoice), so two
+// triggers racing at worst skip a period that was just claimed, never
+// double-invoice it.
+export class BuildMyBotSmsOverageJob implements JobHandler {
+  async execute(_job: ScheduledJob): Promise<unknown> {
+    const secret = process.env.BUILDMYBOT_CRON_SECRET;
+    const appUrl = process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app';
+    if (!secret) {
+      return { skipped: true, reason: 'BUILDMYBOT_CRON_SECRET is not configured' };
+    }
+    const res = await fetch(`${appUrl}/api/cron/sms-overage`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${secret}` },
+      signal: AbortSignal.timeout(60_000),
+    });
+    const body = await res.text();
+    if (!res.ok) {
+      throw new Error(`buildmybot2 sms-overage cron returned ${res.status}: ${body.slice(0, 300)}`);
+    }
+    try {
+      return JSON.parse(body);
+    } catch {
+      return { raw: body.slice(0, 300) };
+    }
+  }
+}

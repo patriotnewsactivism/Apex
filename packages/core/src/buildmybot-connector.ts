@@ -5,8 +5,8 @@ import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-tax
 // ─── BuildMyBot Connector ─────────────────────────────────────────────────────
 //
 // Gives APEX command-and-supervision authority over the BuildMyBot.app AI
-// workforce (the persistent, role-specific agents that run as Vercel cron
-// workers backed by Supabase). APEX is the portfolio-level commander; the
+// workforce (the persistent, role-specific agents served by the Railway-hosted
+// Node/Express application, with durable state in Supabase). APEX is the portfolio-level commander; the
 // BuildMyBot agents are its hands for that product.
 //
 // Command channel:  manager_briefings — every BuildMyBot role reads the
@@ -23,18 +23,18 @@ import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-tax
 //   BUILDMYBOT_SUPABASE_SERVICE_KEY  service-role key (server-side only, never
 //                                    committed; APEX runs on the owner's machine)
 //   BUILDMYBOT_APP_URL               default https://www.buildmybot.app
-//   BUILDMYBOT_CRON_SECRET           same value as Vercel's CRON_SECRET
-//   BUILDMYBOT_VERCEL_DEPLOY_HOOK    Vercel deploy-hook URL for the
-//                                    buildmybot2 project (managed-project
-//                                    deploy authority; approval-gated tool)
+//   BUILDMYBOT_CRON_SECRET           shared secret protecting BuildMyBot cron routes
+//   BUILDMYBOT_RAILWAY_TOKEN         Railway API token (approval-gated redeploy tool)
+//   BUILDMYBOT_RAILWAY_SERVICE_ID    defaults to 60b6d260-f5d8-463d-87be-58339545eaaf
+//   BUILDMYBOT_RAILWAY_ENVIRONMENT_ID defaults to 6ce38db0-789b-4fe9-ad02-f068fe6866ae
 //
 // Security posture (updated 2026-07-23 — buildmybot2 promoted from monitored
 // to MANAGED project): APEX's COO/Lead-Dev branch can now dispatch real
 // engineering tasks into the buildmybot2 codebase (buildmybot_dispatch_
 // engineering → Lead Developer, who lands changes via the existing
 // approval-gated create_pull_request tool with repo
-// 'patriotnewsactivism/buildmybot2'), trigger deploys via the Vercel deploy
-// hook (approval-gated), and run live health checks against buildmybot.app.
+// 'patriotnewsactivism/buildmybot2'), manually retrigger Railway when required (approval-gated), and run live health
+// checks against buildmybot.app. Railway normally auto-deploys merged main commits.
 // Direct pushes to main remain off the table — code still lands through
 // branch-protected PRs; the deploy hook only rebuilds what's merged.
 
@@ -199,23 +199,25 @@ export function createBuildMyBotTools(): ToolDefinition[] {
         'Trigger a BuildMyBot worker run immediately instead of waiting for its cron slot: "shifts" runs all role shifts, "lead_followups" runs the 48h follow-up worker, "sales_outreach" runs the outreach agent that picks up researched leads and initiates first contact, "pulse" runs the 10-minute heartbeat. Use sales_outreach right after buildmybot_push_leads so pushed leads are worked without waiting. Requires BUILDMYBOT_CRON_SECRET.',
       schema: z.object({
         worker: z
-          .enum(['shifts', 'lead_followups', 'sales_outreach', 'pulse'])
+          .enum(['shifts', 'lead_followups', 'sales_outreach', 'pulse', 'sms_overage'])
           .describe('Which worker to run'),
       }),
       requiresApproval: true,
       async execute({ worker }) {
         const secret = process.env.BUILDMYBOT_CRON_SECRET;
         if (!secret) throw new Error('BUILDMYBOT_CRON_SECRET is not configured');
-        // Every one of these resolves through buildmybot2's single dynamic
-        // cron route (api/cron/[job].ts), which exists to stay under Vercel's
-        // Hobby 12-function cap. sales-outreach in particular has NO
-        // vercel.json cron entry, so this tool is the only thing that runs it
-        // short of a manual curl.
+        // These resolve through buildmybot2's dynamic cron routes mounted by the
+        // Railway/Express runtime. This tool provides an on-demand trigger independent
+        // of the recurring GitHub/BuildMyBot schedules. sms_overage (added 2026-09-06) also has its
+        // own recurring trigger — buildmybot2's own GitHub Actions schedule
+        // AND Apex's 'buildmybot_sms_overage' scheduled job — this tool slot
+        // just gives any Apex agent an on-demand way to run it too.
         const paths: Record<typeof worker, string> = {
           shifts: '/api/cron/all-shifts',
           lead_followups: '/api/cron/lead-followups',
           sales_outreach: '/api/cron/sales-outreach',
           pulse: '/api/cron/pulse',
+          sms_overage: '/api/cron/sms-overage',
         };
         const path = paths[worker];
         const res = await fetch(`${APP_URL()}${path}`, {
@@ -301,7 +303,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .optional()
           .describe('1 (highest) – 10 (lowest); default 4'),
       }),
-      requiresApproval: false,
+      requiresApproval: true, // Hard-gated in approval-policy.ts (HARD_GATED_TOOLS) -- fixed 2026-09-07, was incorrectly false. ToolRegistry.execute() now enforces the hard gate centrally regardless of this flag, but keeping it accurate here too so the registry-consistency guard actually means something.
       async execute({ title, spec, priority }) {
         const { randomUUID } = await import('crypto');
         const { db, tasks } = await import('@workspace/db');
@@ -326,7 +328,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
             prInstructions:
               "Land changes via create_pull_request with repo 'patriotnewsactivism/buildmybot2' — never direct pushes to main",
             deployInstructions:
-              'After merge, request buildmybot_deploy (approval-gated Vercel deploy hook)',
+              'Railway auto-deploys merged main commits; use buildmybot_deploy only to manually retrigger production when needed',
             healthCheckUrl: `${APP_URL()}/api/health`,
           },
         });
@@ -340,29 +342,39 @@ export function createBuildMyBotTools(): ToolDefinition[] {
       },
     },
 
-    // ── Manage: trigger a production deploy via Vercel deploy hook ─────────
+    // ── Manage: manually retrigger the Railway production service ───────────
     {
       name: 'buildmybot_deploy',
       description:
-        'Trigger a production rebuild+deploy of buildmybot2 via its Vercel deploy hook. Only rebuilds what is already merged to the production branch — this is NOT a way around PR review. Requires BUILDMYBOT_VERCEL_DEPLOY_HOOK and approval.',
+        'Manually retrigger the Railway production service for buildmybot2. Railway normally auto-deploys merged main commits, so use this only for an explicit recovery/redeploy. Requires BUILDMYBOT_RAILWAY_TOKEN and approval.',
       schema: z.object({
         reason: z
           .string()
-          .describe('Why this deploy is being triggered (audit trail)'),
+          .describe('Why this Railway redeploy is being triggered (audit trail)'),
       }),
       requiresApproval: true,
       async execute({ reason }) {
-        const hook = process.env.BUILDMYBOT_VERCEL_DEPLOY_HOOK;
-        if (!hook) throw new Error('BUILDMYBOT_VERCEL_DEPLOY_HOOK is not configured');
-        const res = await fetch(hook, { method: 'POST' });
-        const body = await res.text();
-        if (!res.ok) {
-          throw new Error(`Deploy hook returned ${res.status}: ${body.slice(0, 300)}`);
+        const token = process.env.BUILDMYBOT_RAILWAY_TOKEN;
+        if (!token) throw new Error('BUILDMYBOT_RAILWAY_TOKEN is not configured');
+        const serviceId = process.env.BUILDMYBOT_RAILWAY_SERVICE_ID ?? '60b6d260-f5d8-463d-87be-58339545eaaf';
+        const environmentId = process.env.BUILDMYBOT_RAILWAY_ENVIRONMENT_ID ?? '6ce38db0-789b-4fe9-ad02-f068fe6866ae';
+        const query = 'mutation serviceInstanceRedeploy($environmentId: String!, $serviceId: String!) { serviceInstanceRedeploy(environmentId: $environmentId, serviceId: $serviceId) }';
+        const res = await fetch('https://backboard.railway.com/graphql/v2', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables: { environmentId, serviceId } }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        const payload = await res.json().catch(() => null) as
+          | { data?: { serviceInstanceRedeploy?: boolean }; errors?: Array<{ message?: string }> }
+          | null;
+        const railwayError = payload?.errors?.map((error) => error.message).filter(Boolean).join('; ');
+        if (!res.ok || railwayError || payload?.data?.serviceInstanceRedeploy !== true) {
+          throw new Error('Railway redeploy failed (' + res.status + '): ' + (railwayError || 'unexpected response'));
         }
-        return { success: true, reason, response: body.slice(0, 500) };
+        return { success: true, platform: 'railway', reason, serviceId, environmentId };
       },
     },
-
     // ── Manage: live health check against the deployed product ─────────────
     {
       name: 'buildmybot_health_check',

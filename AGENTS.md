@@ -98,10 +98,14 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 `packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
 
-With no valid operator policy, the reviewed high-capability free fallback remains:
+With no valid operator policy, the reviewed production fallback is:
 
-1. `minimax/minimax-m3:free`
-2. `nvidia/nemotron-3-ultra-550b-a55b:free`
+1. `deepseek/deepseek-v4-flash-0731`
+2. `openai/gpt-oss-120b`
+3. `deepseek/deepseek-v3.2`
+4. `x-ai/grok-4.6` via the pinned Amazon Bedrock BYOK emergency route
+
+OpenRouter `:free` endpoints are experiment-only. They must not be persisted into the autonomous production fleet policy.
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
@@ -113,7 +117,7 @@ The authenticated Settings → OpenRouter Model Control panel may persist `APEX_
 - an optional controlled-learning trial rate from 0 to 25%;
 - an optional smart complexity-escalation flag.
 
-Saved policies from before the intelligence layer remain backward-compatible and parse as `manual`, with learning trials off and complexity escalation off, preserving their prior behavior.
+Saved policies from before the intelligence layer remain backward-compatible only when every selected model is production-eligible. Any persisted policy containing an OpenRouter `:free` endpoint is rejected and the reviewed production chain is used instead.
 
 ### Routing modes and operator authority
 
@@ -171,8 +175,8 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 ### Routing behavior
 
-- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed MiniMax M3 Free → Nemotron 3 Ultra Free chain.
-- Operator-selected free model variants are allowed; free availability or rate limits never justify false completion or bypass backpressure.
+- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed DeepSeek V4 Flash -> GPT-OSS 120B -> DeepSeek V3.2 -> Grok/Bedrock chain.
+- Persisted production policies containing `:free` model variants are invalid. Test free models only in isolated experiments; never let them enter the autonomous fleet fallback chain.
 - Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.
 - Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
 - Record the model OpenRouter actually served, not merely the requested first choice, and keep it separate from the route candidate used for learning attribution.
@@ -253,6 +257,18 @@ See `SECURITY.md` for the repository-wide security contract.
 - **Autonomy mode**: `projects.autoapproveTools` (non-empty) + `autonomyLevel` in the autonomy modes lets a bounded eligible set skip human approval (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated forever: `deploy_to_environment`, `rollback_deployment`, `make_outbound_call`, `runShell`, `register_deploy_hook`, `register_application`, `delegate_to_application`, and BuildMyBot/CaseBuddy connector sends — never auto-approvable (`scripts/verify-approval-policy.ts`).
 - **Deploy hooks**: third-party hosting deploys for client deliverables go through registrable webhooks only (`register_deploy_hook` / `deploy_via_hook`); hook URLs are stored as `env:VAR_NAME` secret references, never logged. They do not change APEX's own hosting (ADR-001 — Cloud Run only).
 
+## Checkpoint/resume, approval yield, and shared worker bootstrap (ADR-014)
+
+- **Checkpoint/resume**: `executeTask` checks a soft deadline (`APEX_SOFT_TIMEOUT_RATIO`, default 0.7 of the hard timeout) once per iteration, only between tool-call batches. When crossed it stops starting new work, writes a `TaskCheckpoint` (`packages/core/src/task-checkpoint.ts` — real resumable history plus real completed-steps/findings/decisions, never fabricated) via the guarded `TaskQueue.checkpointAndResume()`, and returns the task to `pending`. The 10-/55-minute hard timeout is an emergency-only backstop, not the normal way work gets sliced — it should rarely fire now. The resumable state lives on `tasks.context.checkpoint`; `task_checkpoints` is an append-only audit/dashboard log, not the resumable state itself.
+- **Approval yield**: `requestHumanApproval` never waits in-process anymore — it persists the pending approval and yields immediately via `ApprovalYieldSignal`. `POST /api/approvals/:id/approve|reject` requeues the task immediately (fast path); the durable recovery sweep in `instrumented-base-agent.ts` is the backstop. A gated approval durably waits until a human decides or `APEX_APPROVAL_AUTO_REJECT_HOURS` elapses (default 24h; 0 disables it) — auto-**reject** only, never auto-approve.
+- **Heavy-work classifier** (`work-classifier.ts`) is advisory only: it nudges agents toward the existing `run_executor_job` tool but never sets `context.runtime` itself, since that silently reassigns a task to the fixed executor identity/tool set.
+- **Shared runtime bootstrap** (`packages/api-server/src/runtime-bootstrap.ts`): both `index.ts` and `worker.ts` call this one routine for settings load, token-ledger hydration, lease recovery, workforce/scheduler creation, default job seeding, `CampaignRunner`, executor dispatch, and the durable worker heartbeat. Adding a new runtime-critical subsystem to only one entrypoint reintroduces the divergence this closed — always add it here.
+- **Durable worker heartbeat**: every runtime upserts to `worker_heartbeats` on a 15s interval; `/health`'s `workerHeartbeats` field is separate from the process-local `workforce` liveness block. A healthy HTTP listener is never proof that an autonomous worker process is alive.
+- **Task economy** (`execution-budget.ts`): deterministic repetition detection (3× identical tool+args outside polling/decision exemptions) and a budget nudge, each firing at most once per task.
+- **Autonomy dashboard**: `GET /api/autonomy` reports worker health, task-queue shape, checkpoint/yield counts, executor jobs, retry backlog, approvals, throughput, goals, and duplicate-side-effect-prevention events.
+
+See `docs/ARCHITECTURE_DECISIONS.md` (ADR-014) for the full decision and consequences, including the explicit note that this has not yet been production-deployed or verified against live traffic.
+
 ## Verification sequence
 
 For any real code fix or feature:
@@ -298,7 +314,15 @@ Production CI currently includes:
 - cron-governor guard (Phase 5: frequency floor, dynamic-ceiling constants, schedule_task enum);
 - approval-policy guard (Phase 5.5: hard-gated tools never auto-approvable);
 - executor-dispatch guard (Phase 4: claim-by-id, runtime routing, dispatch wiring);
-- dashboard build.
+- checkpoint/resume guard (ADR-014: checkpoint construction, ownership-guarded resume, executor-job dispatch-marker reset);
+- soft-deadline yield guard (hard/soft timeout resolution, no silent drift between start() and executeTask());
+- heavy-work routing guard (classifier true/false positives, advisory-only wiring);
+- task-repetition guard (circular-investigation detection, budget nudge);
+- durable-worker-heartbeat guard (schema/migration, /health separation from process-local liveness);
+- autonomy-dashboard guard (every metric backed by a real query/counter);
+- crash-recovery integration guard (create → claim → disappear → resume → exactly-one-side-effect → complete);
+- dashboard build;
+- mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across all 17 nav views at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
 

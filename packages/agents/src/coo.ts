@@ -93,7 +93,7 @@ export class COOAgent extends BaseAgent {
       tier: 1,
       parentId: 'apex-ceo-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: [
         'sendMessage',
         'readFile',

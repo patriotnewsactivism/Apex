@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, approvals } from '@workspace/db';
+import { db, approvals, tasks as tasksTable } from '@workspace/db';
 import { and, eq, desc, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { broadcast } from '../websocket.js';
@@ -22,6 +22,33 @@ const KINDS = ['approval', 'escalation', 'all'] as const;
 const ESCALATION_STALE_AFTER_DAYS = 7;
 
 const reviewBodySchema = z.object({ note: z.string().optional() });
+
+/**
+ * Fast path for Phase 3 (approval yield): requestHumanApproval no longer
+ * polls in-process, so nothing else notices a decision landed until the
+ * task's next dequeue. Requeuing it the instant a human resolves the
+ * approval — rather than waiting for the durable recovery sweep's next tick
+ * — is what keeps "approve at 2am while the owner is offline" turning into
+ * real progress within seconds instead of up to APPROVAL_RECOVERY_SWEEP_MS
+ * later. Guarded exactly like every other non-terminal task transition: only
+ * a task still actually `awaiting_approval` is touched, so this can never
+ * resurrect a task an operator independently cancelled or that hard-timeout
+ * quarantine took ownership of in the meantime. The sweep in
+ * instrumented-base-agent.ts remains the backstop if this write is lost to a
+ * crash between the two statements.
+ */
+async function requeueAwaitingApprovalTask(taskId: string): Promise<void> {
+  await db
+    .update(tasksTable)
+    .set({ status: 'pending', leasedAt: null, updatedAt: new Date() })
+    .where(and(eq(tasksTable.id, taskId), eq(tasksTable.status, 'awaiting_approval')))
+    .catch((err) => {
+      console.warn(
+        `[approvals] Fast-path requeue failed for task ${taskId} (durable sweep will retry):`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+}
 
 function conflictMessage(action: 'approve' | 'reject' | 'acknowledge'): string {
   if (action === 'acknowledge') {
@@ -91,6 +118,9 @@ export function createApprovalsRouter() {
       return;
     }
 
+    const [approvalRow] = await db.select({ taskId: approvals.taskId }).from(approvals).where(eq(approvals.id, req.params.id)).limit(1);
+    if (approvalRow?.taskId) await requeueAwaitingApprovalTask(approvalRow.taskId);
+
     broadcast({ type: 'approval:resolved', approvalId: req.params.id, status: 'approved' });
     res.json({ approved: true });
   });
@@ -111,6 +141,9 @@ export function createApprovalsRouter() {
       res.status(409).json({ error: conflictMessage('reject') });
       return;
     }
+
+    const [approvalRow] = await db.select({ taskId: approvals.taskId }).from(approvals).where(eq(approvals.id, req.params.id)).limit(1);
+    if (approvalRow?.taskId) await requeueAwaitingApprovalTask(approvalRow.taskId);
 
     broadcast({ type: 'approval:resolved', approvalId: req.params.id, status: 'rejected' });
     res.json({ rejected: true });

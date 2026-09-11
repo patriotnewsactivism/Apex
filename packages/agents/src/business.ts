@@ -89,7 +89,7 @@ Each lead needs: company name, website, industry, city, contact-research result,
 (specific pain point), and a suggested outreach angle (how to pitch BuildMyBot to them).
 Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'requestPeerReview'],
       maxIterations: 50,
       approvalRequired: false,
@@ -105,9 +105,25 @@ businesses per call), then webSearch for additional coverage. Never give up afte
 
 // ─── Sales & Business Development Agent ───────────────────────────────────────
 // Handles what the current AI Team's Sales Director / VP Sales / 5 Sales Agents
-// do today — reviewing the pipeline and reporting outreach status. Real calling/
-// emailing is NOT wired yet (Twilio shows disconnected in buildmybot2) — this
-// agent must say so honestly rather than claim outreach happened.
+// do today — reviewing the pipeline, and now REAL outreach on two independent
+// channels (updated 2026-09-06; previously this said calling/emailing was not
+// wired — that was stale even for calling, which has used Vapi since before
+// this file's last edit, and is now stale for email too):
+//
+//   VOICE   make_outbound_call / get_call_status (Vapi) — places a real call.
+//           Config: VAPI_API_KEY + VAPI_PHONE_NUMBER_ID.
+//   EMAIL   send_email (one-off) / start_email_campaign + send_email_campaign_batch
+//           (bulk, paced, resumable) / get_email_campaign_status (Resend).
+//           Config: RESEND_API_KEY.
+//   INBOUND configure_inbound_assistant + provision_inbound_number set up a
+//           number the public can call INTO; get_inbound_call_config reports
+//           what's live. Independent of outbound — a business can have one,
+//           the other, both, or neither configured at any time.
+//
+// Each channel is independently configured and independently gated: a tool
+// call against an unconfigured channel returns a clear "not configured"
+// result rather than a crash or a fabricated success, so ALWAYS relay that
+// literally instead of inferring the channel is broken or guessing why.
 
 export class SalesAgent extends BaseAgent {
   constructor(overrides?: Partial<AgentConfig>) {
@@ -120,30 +136,56 @@ export class SalesAgent extends BaseAgent {
       systemPrompt: `You are the Sales & Business Development lead for BuildMyBot.app.
 
 ## Reasoning & Planning Before Action (CRITICAL)
-Before prioritizing the pipeline or drafting any outreach, you MUST explicitly conduct step-by-step reasoning:
-1. **Identify the Real Problem**: Determine what's actually being asked — a pipeline review, a prioritization pass, or outreach drafting — and for which lead segment.
-2. **Consider Edge Cases, Risks & Trade-offs**: Check which claims you're about to make are actually backed by live infrastructure (Twilio, Stripe) versus marketed-only, per BUSINESS_PROFILE.md.
+Before prioritizing the pipeline or launching any outreach, you MUST explicitly conduct step-by-step reasoning:
+1. **Identify the Real Problem**: Determine what's actually being asked — a pipeline review, a prioritization pass, a test send/call, or a real campaign launch — and on which channel(s): email only, calls only, or both.
+2. **Consider Edge Cases, Risks & Trade-offs**: Check which claims you're about to make are actually backed by live infrastructure (Vapi, Resend, Stripe) versus marketed-only, per BUSINESS_PROFILE.md. Check get_inbound_call_config / get_email_campaign_status rather than assuming.
 3. **Form an Execution Plan**: Decide the exact lead order and messaging angle per tier (Bronze/Silver/Gold/Platinum) before writing anything, rather than improvising lead-by-lead.
 
 ## Your Job
 Review the lead pipeline (both inbound signups and researched/qualified outbound leads), prioritize
-who to reach out to, draft outreach messaging, and track deal status through the sales-agent
-commission tiers (Bronze/Silver/Gold/Platinum — see BUSINESS_PROFILE.md for exact commission rates).
+who to reach out to, and run real outreach campaigns on the channels below — tracking deal status
+through the sales-agent commission tiers (Bronze/Silver/Gold/Platinum — see BUSINESS_PROFILE.md).
+
+## Outreach channels (each independent — never assume one implies the other)
+- **Email-only**: start_email_campaign (enqueue targets from a lead campaign or an explicit list —
+  this sends nothing yet), then send_email_campaign_batch repeatedly to actually send, in batches,
+  under approval. Check get_email_campaign_status for real progress. A lead needs an email on file
+  to be enqueued — if a campaign came up short, say so and say why (see skippedNoEmail).
+- **Calls-only (outbound)**: make_outbound_call per prospect (approval-gated, one call at a time —
+  there is no bulk call-campaign tool; call it once per lead you're ready to reach). get_call_status
+  for the transcript/outcome afterward.
+- **Both**: run them independently — nothing links an email send to a call for the same lead unless
+  you do that coordination yourself (e.g. email first, then call the ones who opened/clicked).
+- **Test before a real campaign**: send_email or make_outbound_call to a single address/number IS the
+  test mechanism — there is no separate "test mode." Suggest Don's own address/number for a dry run
+  before enqueuing a real campaign.
+- **Inbound**: configure_inbound_assistant + provision_inbound_number set up a number the public can
+  call into BuildMyBot; provisioning a number is a real recurring cost and is approval-gated. Check
+  get_inbound_call_config before claiming inbound calling is or isn't live — don't guess.
 
 ## Hard Rules
-- Real automated calling/SMS outreach is NOT currently wired (Twilio integration shows
-  disconnected in the buildmybot2 codebase). If asked to report on outreach activity and no real
-  send/call mechanism exists yet, say plainly "no automated outreach capability yet — this is
-  pipeline review only," never invent call/email activity that didn't happen.
+- Every outreach tool self-reports whether its channel is configured. Relay that literally — never
+  claim a send/call happened if the tool result says otherwise, and never claim a channel is
+  permanently unavailable just because it's unconfigured right now (that's a Settings decision, not
+  a code limitation — say "not configured yet," not "not possible").
+- Never enqueue or send to an address/number outside the researched_leads pipeline or an address Don
+  gives you directly — no scraping arbitrary contact lists.
 - Never quote a price or feature to a prospect without checking BUSINESS_PROFILE.md's Ground Truth
   section first — several marketed add-ons are not confirmed functional.
 - Payments: Stripe is test-mode only — do not tell any lead they can subscribe today.
 ${GROUND_TRUTH_CLAUSE}
 ## Output
-Prioritized lead list with next action per lead, and an honest status: what's pipeline-ready vs.
-what's blocked on missing infrastructure (Twilio, live Stripe, etc).`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
-      tools: ['readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview', 'make_outbound_call', 'get_call_status'],
+Prioritized lead list with next action per lead, which channel(s) you used or recommend, and an
+honest status: what actually sent/was called vs. what's blocked on missing infrastructure or a
+missing email/phone on the lead itself.`,
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
+      tools: [
+        'readFile', 'webSearch', 'writeFile', 'listResearchedLeads', 'requestPeerReview',
+        'make_outbound_call', 'get_call_status',
+        'send_email', 'get_email_status', 'start_email_campaign', 'send_email_campaign_batch',
+        'get_email_campaign_status', 'add_email_suppression',
+        'configure_inbound_assistant', 'provision_inbound_number', 'get_inbound_call_config',
+      ],
       maxIterations: 20,
       approvalRequired: false,
       ...overrides,
@@ -186,7 +228,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clean, ready-to-post drafts labeled by platform, plus a short rationale for why this angle will
 land with the ICP (Home Services, Legal, Medical/Esthetics, Real Estate).`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: ['readFile', 'writeFile', 'webSearch', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: true,
@@ -229,7 +271,7 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 Clear, honest customer-facing responses. When escalating a gap between marketing and reality,
 flag it explicitly as a "sold but not built" item for the CEO/engineering team to prioritize.`,
-      llm: { provider: 'openrouter-minimax-m3', model: 'minimax/minimax-m3:free' },
+      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
       tools: ['readFile', 'writeFile', 'requestPeerReview'],
       maxIterations: 15,
       approvalRequired: false,

@@ -4,21 +4,14 @@ import crypto from 'crypto';
 /**
  * Locks down every /api/* route behind a bearer token.
  *
- * Was previously WIDE OPEN: cors({ origin: '*' }) + zero auth checks meant
- * anyone who found the public Railway URL could approve/reject actions,
- * create goals/tasks, or hit tools — a live control-plane exposure.
- *
- * APEX_ADMIN_TOKEN is the long-lived secret sent as `Authorization: Bearer <token>`.
- * /api/auth/login (routes/auth.ts) lets a human exchange a memorable
- * APEX_ADMIN_PASSWORD for this token, for a future login UI — the token
- * itself is what's actually checked here, the password is just the
- * human-friendly front door to it.
- *
- * No hardcoded fallback: a fallback secret baked into source is a secret
- * that isn't one (this repo's fallback used to be the actual live admin
- * password). Fail startup instead if the env var is missing.
+ * APEX_ADMIN_TOKEN is the operator/control-plane credential. Portfolio apps
+ * may additionally receive APEX_OUTCOME_INGEST_TOKEN, but that credential is
+ * accepted for exactly one append-only route: POST /api/learning/outcome-ledger/events.
+ * It cannot read the ledger, approve actions, create goals, invoke tools, or
+ * otherwise inherit APEX admin authority.
  */
 const configuredToken = requireEnv('APEX_ADMIN_TOKEN');
+const configuredOutcomeIngestToken = process.env.APEX_OUTCOME_INGEST_TOKEN?.trim() || null;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -28,21 +21,41 @@ function requireEnv(name: string): string {
   return value;
 }
 
-export function validateAdminToken(authHeader: string | undefined): boolean {
-  const [scheme, token] = (authHeader || '').split(' ');
-  if (scheme !== 'Bearer' || !token) return false;
-  if (token.length !== configuredToken.length) return false;
+function constantTimeTokenMatch(candidate: string | undefined, configured: string | null): boolean {
+  if (!candidate || !configured || candidate.length !== configured.length) return false;
   try {
-    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(configuredToken));
+    return crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(configured));
   } catch {
     return false;
   }
 }
 
+function bearerToken(authHeader: string | undefined): string | undefined {
+  const [scheme, token] = (authHeader || '').split(' ');
+  return scheme === 'Bearer' && token ? token : undefined;
+}
+
+export function validateAdminToken(authHeader: string | undefined): boolean {
+  return constantTimeTokenMatch(bearerToken(authHeader), configuredToken);
+}
+
+export function validateOutcomeIngestToken(authHeader: string | undefined): boolean {
+  return constantTimeTokenMatch(bearerToken(authHeader), configuredOutcomeIngestToken);
+}
+
+function isOutcomeIngestRoute(req: Request): boolean {
+  const path = req.originalUrl.split('?')[0];
+  return req.method === 'POST' && path === '/api/learning/outcome-ledger/events';
+}
+
 export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
   if (validateAdminToken(req.headers.authorization)) {
     next();
-  } else {
-    res.status(401).json({ error: 'Invalid token' });
+    return;
   }
+  if (isOutcomeIngestRoute(req) && validateOutcomeIngestToken(req.headers.authorization)) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: 'Invalid token' });
 }

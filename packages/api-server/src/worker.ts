@@ -1,9 +1,7 @@
 import 'dotenv/config';
 
-import { createWorkforce, initializeWorkforce } from '@workspace/agents';
-import { JobScheduler } from '@workspace/background-jobs';
 import { db, agents } from '@workspace/db';
-import { superviseAgentLoop } from '@workspace/core';
+import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 
 // ─── APEX Autonomous Worker Runtime ──────────────────────────────────────────
 //
@@ -14,8 +12,14 @@ import { superviseAgentLoop } from '@workspace/core';
 // IMPORTANT:
 // - It does NOT run migrations or schema-management operations.
 // - It fails closed if the durable Postgres state is unavailable.
-// - It uses the exact same workforce and JobScheduler implementation as the
-//   control plane, so task/job ownership remains in Postgres rather than here.
+// - It uses the exact same shared bootstrap as the HTTP control plane
+//   (runtime-bootstrap.ts, Phase 5 of the autonomous-OS upgrade) — settings
+//   load, token-ledger hydration, lease recovery, workforce/scheduler,
+//   default job seeding, CampaignRunner, executor dispatch, and the durable
+//   worker heartbeat. Before that shared module existed, this file built the
+//   workforce and scheduler directly and skipped ALL of the above, so a
+//   standalone worker was never actually equivalent to the control plane for
+//   autonomous execution — see runtime-bootstrap.ts's doc comment.
 // - Selecting/provisioning the production Cloud Run primitive is an explicit
 //   infrastructure decision; this file does not guess project/region/resource
 //   identifiers or create any GCP resource.
@@ -34,24 +38,10 @@ async function assertDurableDatabaseReady(): Promise<void> {
 async function main(): Promise<void> {
   await assertDurableDatabaseReady();
 
-  const workforce = createWorkforce();
-  await initializeWorkforce(workforce);
-
-  const scheduler = new JobScheduler();
-  scheduler.start();
-
-  // Supervised, not fire-and-forget: a loop that dies here used to leave the
-  // worker running with a silently smaller workforce and no path back short of
-  // a container replacement. Restarts are bounded and jittered; an agent that
-  // exhausts its budget is reported through /health.workforce.abandoned.
-  const supervisors = [...workforce.values()].map((agent) =>
-    superviseAgentLoop(agent, {
-      onEvent: (message) => console.error(`[worker] ${message}`),
-    }),
-  );
+  const bootstrap = await bootstrapApexRuntime({ kind: 'worker', logPrefix: '[worker]' });
 
   console.log(
-    `[worker] APEX autonomous worker started with ${workforce.size} agents; durable state is Postgres-backed`,
+    `[worker] APEX autonomous worker started with ${bootstrap.workforce.size} agents; durable state is Postgres-backed`,
   );
 
   let shuttingDown = false;
@@ -63,10 +53,7 @@ async function main(): Promise<void> {
   const requestShutdown = (signal: NodeJS.Signals) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`[worker] ${signal} received; stopping scheduler and agent claim loops`);
-    scheduler.stop();
-    for (const supervisor of supervisors) supervisor.stop();
-    releaseShutdown?.();
+    void bootstrap.shutdown(signal).finally(() => releaseShutdown?.());
   };
 
   process.once('SIGTERM', () => requestShutdown('SIGTERM'));
@@ -78,7 +65,6 @@ async function main(): Promise<void> {
   // provider I/O to settle naturally within the platform's termination grace
   // period. Durable task/job claims remain recoverable if the platform later
   // terminates the process before a cooperative operation settles.
-  await Promise.allSettled(supervisors.map((supervisor) => supervisor.settled()));
   console.log('[worker] Autonomous worker stopped');
 }
 

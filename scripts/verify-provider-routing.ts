@@ -7,118 +7,91 @@ import {
 
 let failures = 0;
 const check = (label: string, condition: boolean, detail?: unknown) => {
-  console.log(
-    condition
-      ? `  ✅ ${label}`
-      : `  ❌ ${label}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`,
-  );
+  console.log(condition ? `  ✅ ${label}` : `  ❌ ${label}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`);
   if (!condition) failures++;
 };
 
-const catalog = getProviderCatalog();
 const expectedProviders = [
-  "openrouter-minimax-m3",
-  "openrouter-nemotron-ultra",
-  "openrouter-glm-5-2-free",
-  "openrouter-nemotron-super",
   "openrouter-deepseek-v4-flash-paid",
+  "openrouter-gpt-oss-120b-paid",
   "openrouter-deepseek-v3-paid",
+  "openrouter-grok-4-6-bedrock",
 ];
 const expectedModels = [
-  "minimax/minimax-m3:free",
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "z-ai/glm-5.2:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
   "deepseek/deepseek-v4-flash-0731",
+  "openai/gpt-oss-120b",
   "deepseek/deepseek-v3.2",
+  "x-ai/grok-4.6",
 ];
-const expectedOrder = [...expectedProviders];
 
-// Operator decision 2026-09-04: FREE models first — the most intelligent,
-// most-reasoning free models until exhausted — then the CHEAPEST
-// high-reasoning PAID models as strictly last-resort (paid tail routes
-// only through the dedicated paid key; no sole paid usage without the
-// operator's explicit authorization).
-console.log("── OpenRouter provider allowlist (free-agent chain + cheap paid tail) ──");
-check("exactly six approved OpenRouter routes exist", catalog.length === 6, catalog);
+const catalog = getProviderCatalog();
+console.log("── Reliability-first OpenRouter provider allowlist ──");
+check("exactly four automatic routes exist", catalog.length === 4, catalog);
 check(
-  "provider order is exact",
+  "automatic provider order is exact",
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(expectedProviders),
   catalog,
 );
 check(
-  "approved models are pinned exactly",
+  "automatic models are pinned exactly",
   JSON.stringify(catalog.map((provider) => provider.model)) === JSON.stringify(expectedModels),
   catalog,
 );
 check(
-  "MiniMax M3 Free is the primary rung",
-  catalog[0]?.name === "openrouter-minimax-m3" &&
-    catalog[0]?.model === "minimax/minimax-m3:free",
+  "DeepSeek V4 Flash is the production primary",
+  catalog[0]?.name === "openrouter-deepseek-v4-flash-paid" &&
+    catalog[0]?.model === "deepseek/deepseek-v4-flash-0731" &&
+    catalog[0]?.paid === true,
+  catalog[0],
+);
+check(
+  "GPT-OSS 120B is the fast/cheap fallback",
+  catalog[1]?.name === "openrouter-gpt-oss-120b-paid" &&
+    catalog[1]?.model === "openai/gpt-oss-120b" &&
+    catalog[1]?.paid === true,
+  catalog[1],
+);
+check(
+  "DeepSeek V3.2 is the secondary continuity fallback",
+  catalog[2]?.name === "openrouter-deepseek-v3-paid" &&
+    catalog[2]?.model === "deepseek/deepseek-v3.2" &&
+    catalog[2]?.paid === true,
+  catalog[2],
+);
+check(
+  "no automatic route uses a free model",
+  catalog.every((provider) => provider.paid === true && !provider.model.endsWith(":free")),
   catalog,
 );
 check(
-  "Nemotron 3 Ultra Free is the orchestration fallback rung",
-  catalog[1]?.name === "openrouter-nemotron-ultra" &&
-    catalog[1]?.model === "nvidia/nemotron-3-ultra-550b-a55b:free",
-  catalog,
+  "Grok BYOK emergency rung remains pinned to regional Bedrock",
+  catalog[3]?.name === "openrouter-grok-4-6-bedrock" &&
+    catalog[3]?.providerRouting?.allow_fallbacks === false &&
+    catalog[3]?.providerRouting?.only?.length === 1 &&
+    /^amazon-bedrock\/[a-z0-9-]+$/.test(catalog[3]?.providerRouting?.only?.[0] ?? ""),
+  catalog[3]?.providerRouting,
 );
-check(
-  "the first four rungs are all free-tier",
-  catalog.slice(0, 4).every((provider) => provider.paid !== true),
-  catalog,
-);
-check(
-  "DeepSeek V4 Flash 0731 (paid) is Don's designated primary paid fallback rung",
-  catalog[4]?.name === "openrouter-deepseek-v4-flash-paid" &&
-    catalog[4]?.model === "deepseek/deepseek-v4-flash-0731" &&
-    catalog[4]?.paid === true,
-  catalog,
-);
-check(
-  "DeepSeek V3.2 (paid) is the final tool-calling-capable anchor",
-  catalog[5]?.name === "openrouter-deepseek-v3-paid" &&
-    catalog[5]?.model === "deepseek/deepseek-v3.2" &&
-    catalog[5]?.paid === true,
-  catalog,
-);
-check(
-  "all approved routes use OpenRouter logical providers",
-  catalog.every((provider) => provider.name.startsWith("openrouter-")),
-  catalog,
-);
-check(
-  "all approved routes require structured tool calling",
-  catalog.every((provider) => provider.toolCallingReliable),
-  catalog,
-);
+check("all automatic routes support structured tool calling", catalog.every((provider) => provider.toolCallingReliable), catalog);
 
-console.log("\n── Cost policy ──");
-check("OpenRouter inference is enabled by default", paidLLMFallbackEnabled(undefined) === true);
-check("explicit off still disables paid fallback mode", paidLLMFallbackEnabled("off") === false);
-check("explicit fallback enables inference", paidLLMFallbackEnabled("fallback") === true);
+console.log("\n── Cost/continuity policy ──");
+check("paid OpenRouter inference is enabled by default", paidLLMFallbackEnabled(undefined) === true);
+check("explicit off still disables paid inference", paidLLMFallbackEnabled("off") === false);
 
 console.log("\n── All-unit routing ──");
 for (const role of [
   "CEO", "CTO", "COO", "LEAD_DEV", "LEAD_RESEARCH", "QA_DIRECTOR",
   "FRONTEND", "BACKEND", "DEVOPS", "QA", "SALES", "MARKETING",
-  "CUSTOMER_SUCCESS", "RESEARCH", "OPS", "DOCS",
+  "CUSTOMER_SUCCESS", "RESEARCH", "OPS", "DOCS", "COMMUNITY_WATCH",
 ]) {
-  check(
-    `${role} follows the exact OpenRouter order`,
-    JSON.stringify(getProviderOrderForRole(role)) === JSON.stringify(expectedOrder),
-    getProviderOrderForRole(role),
-  );
+  const order = getProviderOrderForRole(role);
+  check(`${role} uses the reliability-first order`, JSON.stringify(order) === JSON.stringify(expectedProviders), order);
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to MiniMax M3 Free via OpenRouter`,
-    config.provider === "openrouter-minimax-m3" &&
-      config.model === "minimax/minimax-m3:free",
+    `${role} defaults to DeepSeek V4 Flash via OpenRouter`,
+    config.provider === "openrouter-deepseek-v4-flash-paid" && config.model === "deepseek/deepseek-v4-flash-0731",
     config,
   );
 }
 
-console.log(
-  `\n${failures === 0 ? "✅ OPENROUTER ROUTING GUARDS PASSED" : `❌ ${failures} PROVIDER ROUTING GUARD(S) FAILED`}`,
-);
+console.log(`\n${failures === 0 ? "✅ OPENROUTER ROUTING GUARDS PASSED" : `❌ ${failures} PROVIDER ROUTING GUARD(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

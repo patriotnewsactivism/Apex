@@ -22,13 +22,31 @@ const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
 
 try {
   delete process.env[OPENROUTER_MODEL_POLICY_ENV];
-  console.log('── Reviewed fallback ──');
+  console.log('── Reliability-first fallback ──');
   check(
-    'no policy preserves the reviewed MiniMax/Nemotron free chain',
+    'no policy preserves the guarded fast paid model chain',
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
-  check('no policy preserves all guarded gateway rungs (free chain + paid tail)', getProviderOrderForRole('CEO').length === 6);
+  check(
+    'no policy preserves all four automatic continuity routes',
+    getProviderOrderForRole('CEO').length === 4,
+    getProviderOrderForRole('CEO'),
+  );
+  check(
+    'automatic default chain is the validated DeepSeek -> GPT-OSS -> DeepSeek continuity order',
+    JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN) === JSON.stringify([
+      'deepseek/deepseek-v4-flash-0731',
+      'openai/gpt-oss-120b',
+      'deepseek/deepseek-v3.2',
+    ]),
+    DEFAULT_OPENROUTER_MODEL_CHAIN,
+  );
+  check(
+    'automatic default chain contains no free-tier model',
+    DEFAULT_OPENROUTER_MODEL_CHAIN.every((model) => !model.endsWith(':free')),
+    DEFAULT_OPENROUTER_MODEL_CHAIN,
+  );
 
   console.log('\n── Policy validation ──');
   check('empty roster is rejected', parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: [], rolePrimary: {} })) === null);
@@ -36,10 +54,14 @@ try {
 
   const legacyPolicy = parseOpenRouterModelPolicy(JSON.stringify({
     version: 1,
-    selectedModelIds: ['openrouter/auto', 'qwen/qwen3-coder:free'],
+    selectedModelIds: ['openrouter/auto', 'openai/gpt-oss-120b'],
     rolePrimary: {},
   }));
-  check('pre-intelligence saved policy remains valid', legacyPolicy !== null, legacyPolicy);
+  check('pre-intelligence paid saved policy remains valid', legacyPolicy !== null, legacyPolicy);
+  check(
+    'persisted free-model policy is rejected',
+    parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: ['qwen/qwen3-coder:free'], rolePrimary: {} })) === null,
+  );
   check('pre-intelligence policy fails safe to manual routing', legacyPolicy?.routingMode === 'manual', legacyPolicy);
   check('pre-intelligence policy defaults to balanced objective', legacyPolicy?.optimizationObjective === 'balanced', legacyPolicy);
   check('pre-intelligence policy gets conservative sample threshold', legacyPolicy?.minimumSamples === 5, legacyPolicy);
@@ -51,7 +73,7 @@ try {
     selectedModelIds: [
       'openrouter/auto',
       'deepseek/deepseek-v4-pro-0813',
-      'qwen/qwen3-coder:free',
+      'openai/gpt-oss-120b',
       '~openai/gpt-latest',
     ],
     rolePrimary: {
@@ -69,7 +91,7 @@ try {
   process.env[OPENROUTER_MODEL_POLICY_ENV] = serialized;
 
   const parsed = parseOpenRouterModelPolicy(serialized);
-  check('operator can select multiple OpenRouter models including :free variants', parsed?.selectedModelIds.length === 4, parsed);
+  check('operator can explicitly select multiple production-eligible OpenRouter models', parsed?.selectedModelIds.length === 4, parsed);
   check('unselected role primary is discarded fail-closed', parsed?.rolePrimary.QA === undefined, parsed?.rolePrimary);
   check('routing mode survives serialization', parsed?.routingMode === 'advisor', parsed);
   check('optimization objective survives serialization', parsed?.optimizationObjective === 'quality', parsed);
@@ -92,11 +114,15 @@ try {
   console.log('\n── Runtime routing ──');
   const ceoChain = getOpenRouterModelChainForRole('CEO');
   check('CEO preferred model is moved to the front', ceoChain[0] === '~openai/gpt-latest', ceoChain);
-  check('CEO retains every selected model as fallback exactly once', new Set(ceoChain).size === 4 && ceoChain.length === 4, ceoChain);
+  check('CEO retains every explicitly selected model as fallback exactly once', new Set(ceoChain).size === 4 && ceoChain.length === 4, ceoChain);
   const backendChain = getOpenRouterModelChainForRole('BACKEND');
   check('BACKEND can have a different first-choice model', backendChain[0] === 'deepseek/deepseek-v4-pro-0813', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'openrouter/auto');
-  check('custom model roster uses one paced OpenRouter gateway request', JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(['openrouter-minimax-m3']), getProviderOrderForRole('CEO'));
+  check(
+    'custom model roster uses one paced paid OpenRouter gateway adapter',
+    JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(['openrouter-gpt-oss-120b-paid']),
+    getProviderOrderForRole('CEO'),
+  );
   check('default LLM config reflects the role-selected primary model', getDefaultLLMConfig('CEO').model === '~openai/gpt-latest', getDefaultLLMConfig('CEO'));
 
   console.log('\n── OpenRouter native fallback wire contract ──');
@@ -106,6 +132,7 @@ try {
   check('custom routing sends an OpenRouter models array', clientSource.includes('body.models = routedModels'));
   check('actual served model is read from the OpenRouter response', clientSource.includes('const servedModel = parsed.model'));
   check('adaptive routing is explicit rather than silently enabled', clientSource.includes("policy?.routingMode === 'adaptive'"));
+  check('request timeout is bounded and operator-configurable', clientSource.includes('APEX_LLM_REQUEST_TIMEOUT_MS ?? 30_000'));
   check('model catalog pricing comes from live OpenRouter API', routeSource.includes("https://openrouter.ai/api/v1/models") && routeSource.includes('usdPerMillion'));
   check('efficiency is explicitly described as heuristic, not benchmark', routeSource.includes('It is not an intelligence benchmark'));
   check('intelligence API reports effective objective rather than hiding escalation', routeSource.includes('effectiveObjective') && routeSource.includes('baseObjective'));

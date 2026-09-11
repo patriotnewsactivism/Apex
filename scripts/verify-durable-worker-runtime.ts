@@ -4,6 +4,14 @@ import { checkAgentLoopSupervision } from './verify-agent-loop-supervision.js';
 
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const worker = fs.readFileSync(path.join(root, 'packages/api-server/src/worker.ts'), 'utf8');
+// Phase 5 of the autonomous-OS upgrade extracted the workforce/scheduler/
+// supervisor wiring both entrypoints need into one shared routine (see its
+// doc comment for why: worker.ts previously built these directly and silently
+// diverged from index.ts, skipping settings load, lease recovery, job
+// seeding, the campaign runner, and executor dispatch entirely). worker.ts
+// now only has to call it; the invariants that used to be checked inline here
+// are checked against the shared module instead.
+const bootstrap = fs.readFileSync(path.join(root, 'packages/api-server/src/runtime-bootstrap.ts'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'packages/api-server/package.json'), 'utf8')) as {
   scripts?: Record<string, string>;
 };
@@ -30,24 +38,28 @@ function check(label: string, condition: boolean): void {
 
 console.log('── Dedicated autonomous worker ──');
 check('worker has an explicit production command', pkg.scripts?.['start:worker'] === 'tsx src/worker.ts');
-check('worker uses the governed workforce factory', worker.includes('createWorkforce()'));
-check('worker initializes the governed workforce', worker.includes('initializeWorkforce(workforce)'));
-check('worker starts the governed JobScheduler', worker.includes('new JobScheduler()') && worker.includes('scheduler.start()'));
-check('worker performs a durable DB probe before creating the workforce', (() => {
+check('worker uses the shared runtime bootstrap', worker.includes('bootstrapApexRuntime('));
+check('the shared bootstrap uses the governed workforce factory', bootstrap.includes('createWorkforce('));
+check('the shared bootstrap initializes the governed workforce', bootstrap.includes('initializeWorkforce(workforce)'));
+check('the shared bootstrap starts the governed JobScheduler', bootstrap.includes('new JobScheduler()') && bootstrap.includes('scheduler.start()'));
+check('worker performs a durable DB probe before bootstrapping the workforce', (() => {
   const probe = worker.indexOf('await assertDurableDatabaseReady()');
-  const workforce = worker.indexOf('createWorkforce()');
-  return probe >= 0 && workforce > probe;
+  const bootstrapCall = worker.indexOf('bootstrapApexRuntime(');
+  return probe >= 0 && bootstrapCall > probe;
 })());
 check('worker does not invoke migration management code',
   !executableWorker.includes('migrate(') && !executableWorker.includes('runMigrations('));
+check('the shared bootstrap does not invoke migration management code either',
+  !stripComments(bootstrap).includes('migrate(') && !stripComments(bootstrap).includes('runMigrations('));
 check('worker handles Cloud Run termination signals',
   worker.includes("process.once('SIGTERM'") && worker.includes("process.once('SIGINT'"));
 // Agent loops are now stopped through their supervisor handle (which calls
 // agent.stop() and cancels any pending restart), not by touching each agent
 // directly — a direct agent.stop() would race a queued supervisor restart.
-check('worker stops scheduler and agent claim loops before shutdown',
-  worker.includes('scheduler.stop()') &&
-  worker.includes('for (const supervisor of supervisors) supervisor.stop()'));
+check('the shared bootstrap stops scheduler and agent claim loops on shutdown',
+  bootstrap.includes('scheduler.stop()') &&
+  bootstrap.includes('for (const supervisor of supervisors) supervisor.stop()'));
+check('worker routes its shutdown signal through the shared bootstrap', worker.includes('bootstrap.shutdown('));
 check('worker does not force successful process exit during shutdown', !executableWorker.includes('process.exit(0)'));
 
 console.log('\n── Architecture guard ──');

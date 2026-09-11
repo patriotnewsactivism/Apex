@@ -63,11 +63,31 @@ class ToolRegistry {
       return { success: false, error: `Invalid args for ${name}: ${parsed.error.message}` };
     }
 
-    // Approval gate. Any tool marked requiresApproval consults the autonomy
-    // approval policy first: inside an autonomy-mode project whose
-    // autoapproveTools lists the tool (and the tool is not hard-gated), the
-    // call proceeds without a human. Everything else keeps the ordinary gate.
-    if (tool.requiresApproval) {
+    // Central hard-gate enforcement, checked for EVERY invocation regardless
+    // of the individual tool's own requiresApproval flag. Fixed 2026-09-07:
+    // buildmybot_dispatch_engineering and casebuddy_dispatch_engineering were
+    // both found declaring requiresApproval:false in their own tool
+    // definitions while also being listed in HARD_GATED_TOOLS -- because the
+    // approval policy below only ran `if (tool.requiresApproval)`, that one
+    // boolean silently bypassed the hard gate for both, and would for any
+    // future tool with the same mismatch. A hard gate must not depend on a
+    // second, independently-maintained flag agreeing with it -- so this now
+    // checks HARD_GATED_TOOLS directly, first, unconditionally.
+    const { HARD_GATED_TOOLS } = await import('./approval-policy.js');
+    if (HARD_GATED_TOOLS.has(name)) {
+      const approved = await context.requestApproval(
+        name,
+        rawArgs,
+        `Agent requests to execute hard-gated tool: ${name}. Hard-gated tools always require explicit human approval, regardless of any other policy or metadata.`,
+      );
+      if (!approved) {
+        return { success: false, error: 'Action rejected by user' };
+      }
+    } else if (tool.requiresApproval) {
+      // Approval gate for non-hard-gated tools: consults the autonomy
+      // approval policy — inside an autonomy-mode project whose
+      // autoapproveTools lists the tool, the call proceeds without a human.
+      // Everything else keeps the ordinary gate.
       const { evaluateForTask } = await import('./approval-policy.js');
       const decision = await evaluateForTask({ toolName: name, taskId: context.taskId, goalId: context.goalId });
       if (!decision.autoApprove) {
@@ -118,6 +138,140 @@ function zodTypeToJson(t: z.ZodTypeAny): Record<string, unknown> {
   if (t instanceof z.ZodEnum) return { type: 'string', enum: t.options };
   if (t instanceof z.ZodObject) return zodToJsonSchema(t);
   return { type: 'string' };
+}
+
+// ─── Email (Resend) helpers ────────────────────────────────────────────────────
+//
+// Shared by the send_email / email-campaign tools below. Deliberately mirrors
+// the Vapi tools' pattern just above: env vars are checked at CALL time, not
+// at registration, so the tool is always visible to an agent (and to Settings/
+// get_system_status) but returns a clear "not configured" message instead of
+// a cryptic fetch error when RESEND_API_KEY is unset. See Settings → Resend.
+//
+// Env:
+//   RESEND_API_KEY     sending-scoped key, restricted to the verified sending
+//                       domain — never full_access, this key never needs to
+//                       manage domains/contacts/other keys.
+//   RESEND_FROM_EMAIL  default sales@buildmybot.app
+//   RESEND_FROM_NAME   default "BuildMyBot Sales"
+//   RESEND_WEBHOOK_SECRET  Svix signing secret for /api/resend/webhook (see
+//                       routes/resend-webhook.ts) — delivery/open/click/
+//                       bounce/complaint events land there, not here.
+
+const RESEND_API_URL = 'https://api.resend.com/emails';
+
+function resendFromAddress(): string {
+  const name = process.env.RESEND_FROM_NAME || 'BuildMyBot Sales';
+  const email = process.env.RESEND_FROM_EMAIL || 'sales@buildmybot.app';
+  return `${name} <${email}>`;
+}
+
+/** Deliberately dumb {{field}} substitution: case-sensitive, and a field with
+ * no value is left as the literal "{{field}}" rather than blanked out, so a
+ * typo'd merge field is obvious in a preview instead of silently vanishing. */
+function resolveMergeFields(template: string, fields: Record<string, string | null | undefined>): string {
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
+    const val = fields[key];
+    return val === undefined || val === null || val === '' ? match : val;
+  });
+}
+
+async function isEmailSuppressed(email: string): Promise<boolean> {
+  const { db, emailSuppressions } = await import('@workspace/db');
+  const { eq } = await import('drizzle-orm');
+  const rows = await db.select().from(emailSuppressions).where(eq(emailSuppressions.email, email)).limit(1);
+  return rows.length > 0;
+}
+
+/** Inserts a 'queued' email_sends row. Split from delivery (below) so
+ * start_email_campaign can enqueue hundreds of rows up front — visible,
+ * pausable, cancellable — without sending anything until a batch tool runs. */
+async function createQueuedEmailSend(args: {
+  id: string;
+  campaignId?: string | null;
+  leadId?: string | null;
+  toEmail: string;
+  toName?: string | null;
+  subject: string;
+  createdByAgentId: string;
+}): Promise<void> {
+  const { db, emailSends } = await import('@workspace/db');
+  await db.insert(emailSends).values({
+    id: args.id,
+    campaignId: args.campaignId ?? null,
+    leadId: args.leadId ?? null,
+    toEmail: args.toEmail.trim().toLowerCase(),
+    toName: args.toName ?? null,
+    subject: args.subject,
+    status: 'queued',
+    createdByAgentId: args.createdByAgentId,
+    createdAt: new Date(),
+  });
+}
+
+/** Delivers an already-queued email_sends row via Resend and updates its
+ * status. Shared by send_email (create-then-deliver in one call) and
+ * send_email_campaign_batch (deliver rows start_email_campaign already
+ * queued) so both paths get identical suppression-checking, DB bookkeeping,
+ * and error handling. */
+async function deliverQueuedEmailSend(
+  sendId: string,
+  toEmail: string,
+  subject: string,
+  html: string,
+): Promise<{ success: boolean; status: string; providerId?: string; error?: string }> {
+  const { db, emailSends } = await import('@workspace/db');
+  const { eq } = await import('drizzle-orm');
+  const email = toEmail.trim().toLowerCase();
+
+  if (await isEmailSuppressed(email)) {
+    await db.update(emailSends)
+      .set({ status: 'suppressed', errorMessage: 'Recipient is on the suppression list' })
+      .where(eq(emailSends.id, sendId));
+    return { success: false, status: 'suppressed', error: 'Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).' };
+  }
+
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    await db.update(emailSends)
+      .set({ status: 'failed', errorMessage: 'RESEND_API_KEY not configured' })
+      .where(eq(emailSends.id, sendId));
+    return { success: false, status: 'failed', error: 'Resend is not configured. Set RESEND_API_KEY (and RESEND_FROM_EMAIL) in Settings. Sign up at https://resend.com.' };
+  }
+
+  try {
+    const res = await fetch(RESEND_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        from: resendFromAddress(),
+        to: [email],
+        subject,
+        html,
+        tags: [{ name: 'apex_send_id', value: sendId }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      await db.update(emailSends)
+        .set({ status: 'failed', errorMessage: errText.slice(0, 500) })
+        .where(eq(emailSends.id, sendId));
+      return { success: false, status: 'failed', error: `Resend ${res.status}: ${errText.slice(0, 300)}` };
+    }
+
+    const data = await res.json() as { id: string };
+    await db.update(emailSends)
+      .set({ status: 'sent', providerId: data.id, sentAt: new Date() })
+      .where(eq(emailSends.id, sendId));
+    return { success: true, status: 'sent', providerId: data.id };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await db.update(emailSends)
+      .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
+      .where(eq(emailSends.id, sendId));
+    return { success: false, status: 'failed', error: msg };
+  }
 }
 
 // ─── Built-in Tool Definitions ────────────────────────────────────────────────
@@ -857,7 +1011,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // Batch save multiple researched leads in one tool call (saves iterations)
     {
       name: 'saveResearchedLeadsBatch',
-      description: 'Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once.',
+      description: 'Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.',
       schema: z.object({
         leads: z.array(z.object({
           companyName: z.string().describe('Real company name'),
@@ -2223,6 +2377,466 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           analysis: data.analysis ?? null,
           costs: data.costs ?? null,
           totalCost: data.cost ?? null,
+        };
+      },
+    },
+
+    // ─── Resend: Send one outbound email ──────────────────────────────────
+    {
+      name: 'send_email',
+      description: 'Send ONE outbound email via Resend — to a specific lead, a test address, or anyone else. Use this for a single test send (e.g. to your own inbox) before committing to start_email_campaign, or for a one-off follow-up. Requires RESEND_API_KEY to be configured. Checks the suppression list first and will not send to a bounced/complained/unsubscribed address.',
+      schema: z.object({
+        toEmail: z.string().email().describe('Recipient email address'),
+        toName: z.string().optional().describe('Recipient display name, for personalization only'),
+        subject: z.string().min(1).max(200),
+        html: z.string().min(1).max(50000).describe('Email body as simple HTML (e.g. wrap paragraphs in <p>). Plain text also works — Resend renders it as-is.'),
+        leadId: z.string().optional().describe('researched_leads.id, if this email is going to a specific lead — links the send back to the pipeline'),
+      }),
+      requiresApproval: true, // Sends real email to a real inbox — externally visible, irreversible.
+      async execute({ toEmail, toName, subject, html, leadId }, ctx) {
+        const { randomUUID } = await import('crypto');
+        const id = randomUUID();
+        await createQueuedEmailSend({
+          id,
+          leadId: leadId ?? null,
+          toEmail,
+          toName: toName ?? null,
+          subject,
+          createdByAgentId: ctx.agentId,
+        });
+        const result = await deliverQueuedEmailSend(id, toEmail, subject, html);
+        return {
+          emailSendId: id,
+          ...result,
+          message: result.success
+            ? `Email sent to ${toEmail}. Resend id: ${result.providerId}. Delivery/open/click/bounce status updates automatically via webhook — check with get_email_status.`
+            : `Email NOT sent to ${toEmail}: ${result.error}`,
+        };
+      },
+    },
+
+    // ─── Resend: Check status of a previously sent email ──────────────────
+    {
+      name: 'get_email_status',
+      description: "Check the status of a previously sent email (queued/sent/delivered/opened/clicked/bounced/complained/failed/suppressed). Status updates arrive via the Resend webhook, not by polling Resend directly, so this reads APEX's own record.",
+      schema: z.object({
+        emailSendId: z.string().describe('The id returned by send_email, or listed by get_email_campaign_status'),
+      }),
+      requiresApproval: false,
+      async execute({ emailSendId }) {
+        const { db, emailSends } = await import('@workspace/db');
+        const { eq } = await import('drizzle-orm');
+        const [row] = await db.select().from(emailSends).where(eq(emailSends.id, emailSendId)).limit(1);
+        if (!row) return { error: `No email send with id ${emailSendId}` };
+        return row;
+      },
+    },
+
+    // ─── Resend: Start an email campaign (enqueue only — nothing sent yet) ─
+    {
+      name: 'start_email_campaign',
+      description: "Create an email campaign and enqueue its targets — this does NOT send anything yet; call send_email_campaign_batch to actually send. Targets come from a lead-research campaign's researched leads (leadCampaignId) and/or an explicit list (leadIds). Only leads with an email on file are enqueued; leads missing one are skipped and counted, since directory-sourced leads rarely have an email. Merge fields {{companyName}}, {{toName}}, {{outreachAngle}}, {{fitReason}}, {{industry}}, {{city}} are resolved per recipient from their researched_leads row.",
+      schema: z.object({
+        name: z.string().min(3).max(120),
+        subjectTemplate: z.string().min(1).max(200),
+        bodyTemplate: z.string().min(1).max(20000).describe('Simple HTML or plain text, with optional {{mergeField}} placeholders'),
+        leadCampaignId: z.string().optional().describe('Pull targets from every lead this lead-research campaign produced that has an email on file'),
+        leadIds: z.array(z.string()).optional().describe('Explicit researched_leads ids to target, in addition to or instead of leadCampaignId'),
+        maxTargets: z.number().int().min(1).max(2000).optional().describe('Safety cap on how many leads to enqueue at once (default 500)'),
+        goalId: z.string().optional(),
+      }),
+      requiresApproval: false, // Only enqueues rows in APEX's own DB; nothing reaches a real inbox until send_email_campaign_batch.
+      async execute({ name, subjectTemplate, bodyTemplate, leadCampaignId, leadIds, maxTargets, goalId }, ctx) {
+        const { randomUUID } = await import('crypto');
+        const { db, emailCampaigns, emailSends, researchedLeads } = await import('@workspace/db');
+        const { eq, inArray, or } = await import('drizzle-orm');
+
+        if (!leadCampaignId && (!leadIds || leadIds.length === 0)) {
+          throw new Error('Provide leadCampaignId and/or leadIds — start_email_campaign needs at least one source of targets.');
+        }
+
+        const cap = maxTargets ?? 500;
+        const conditions = [];
+        if (leadCampaignId) conditions.push(eq(researchedLeads.campaignId, leadCampaignId));
+        if (leadIds && leadIds.length > 0) conditions.push(inArray(researchedLeads.id, leadIds));
+
+        // Over-fetch since some candidates will be filtered out below for
+        // lacking an email — otherwise a cap of 500 could resolve to far
+        // fewer real targets with no way to tell why.
+        const candidates = await db
+          .select()
+          .from(researchedLeads)
+          .where(conditions.length === 1 ? conditions[0] : or(...conditions))
+          .limit(cap * 3);
+
+        const withEmail = candidates.filter((l) => Boolean(l.contactEmail));
+        const skippedNoEmail = candidates.length - withEmail.length;
+        const targets = withEmail.slice(0, cap);
+
+        const campaignId = randomUUID();
+        await db.insert(emailCampaigns).values({
+          id: campaignId,
+          name,
+          leadCampaignId: leadCampaignId ?? null,
+          goalId: goalId ?? ctx.goalId ?? null,
+          subjectTemplate,
+          bodyTemplate,
+          status: 'draft',
+          totalTargets: targets.length,
+          createdByAgentId: ctx.agentId,
+          createdAt: new Date(),
+        });
+
+        for (const lead of targets) {
+          const fields = {
+            companyName: lead.companyName,
+            toName: lead.companyName,
+            outreachAngle: lead.outreachAngle ?? '',
+            fitReason: lead.fitReason,
+            industry: lead.industry ?? '',
+            city: lead.city ?? '',
+          };
+          await db.insert(emailSends).values({
+            id: randomUUID(),
+            campaignId,
+            leadId: lead.id,
+            toEmail: lead.contactEmail as string,
+            toName: lead.companyName,
+            subject: resolveMergeFields(subjectTemplate, fields),
+            status: 'queued',
+            createdByAgentId: ctx.agentId,
+            createdAt: new Date(),
+          });
+        }
+
+        return {
+          campaignId,
+          name,
+          totalTargets: targets.length,
+          skippedNoEmail,
+          skippedNote: skippedNoEmail > 0
+            ? `${skippedNoEmail} candidate lead(s) had no contactEmail on file and were skipped. The Lead Researcher's contact-research step captures one when publicly findable, but many directory-sourced leads won't have it — see get_email_campaign_status.`
+            : undefined,
+          message: `Campaign "${name}" created with ${targets.length} queued target(s). Nothing has been sent yet — call send_email_campaign_batch to start sending.`,
+        };
+      },
+    },
+
+    // ─── Resend: Send the next batch of a queued email campaign ───────────
+    {
+      name: 'send_email_campaign_batch',
+      description: 'Send the next batch of queued emails for an email campaign (default up to 25 per call). Paced and approval-gated on purpose — call it repeatedly to work through a large campaign under supervision instead of blasting the whole list in one irreversible call. Reports and stops early if the campaign is paused or cancelled.',
+      schema: z.object({
+        campaignId: z.string(),
+        batchSize: z.number().int().min(1).max(100).optional().describe('Max emails to send this call (default 25)'),
+      }),
+      requiresApproval: true, // Sends real email to real inboxes — externally visible, costs money, irreversible per send.
+      async execute({ campaignId, batchSize }) {
+        const { db, emailCampaigns, emailSends, researchedLeads } = await import('@workspace/db');
+        const { eq, and, inArray } = await import('drizzle-orm');
+
+        const [campaign] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaignId)).limit(1);
+        if (!campaign) throw new Error(`No email campaign with id ${campaignId}`);
+        if (campaign.status === 'cancelled' || campaign.status === 'completed') {
+          return { campaignId, status: campaign.status, sent: 0, message: `Campaign is already ${campaign.status} — nothing to send.` };
+        }
+        if (campaign.status === 'paused') {
+          return { campaignId, status: campaign.status, sent: 0, message: 'Campaign is paused. Resume it (set its status back to running) before sending.' };
+        }
+
+        const limit = batchSize ?? 25;
+        const queued = await db
+          .select()
+          .from(emailSends)
+          .where(and(eq(emailSends.campaignId, campaignId), eq(emailSends.status, 'queued')))
+          .limit(limit);
+
+        if (queued.length === 0) {
+          const done = campaign.sentCount + campaign.failedCount >= campaign.totalTargets;
+          if (done && campaign.status !== 'completed') {
+            await db.update(emailCampaigns).set({ status: 'completed', completedAt: new Date() }).where(eq(emailCampaigns.id, campaignId));
+          }
+          return { campaignId, sent: 0, remaining: 0, status: done ? 'completed' : campaign.status, message: 'No queued emails remain for this campaign.' };
+        }
+
+        await db.update(emailCampaigns)
+          .set({ status: 'running', startedAt: campaign.startedAt ?? new Date(), lastProgressAt: new Date() })
+          .where(eq(emailCampaigns.id, campaignId));
+
+        const leadIds = queued.map((r) => r.leadId).filter((id): id is string => Boolean(id));
+        const leads = leadIds.length > 0 ? await db.select().from(researchedLeads).where(inArray(researchedLeads.id, leadIds)) : [];
+        const leadById = new Map(leads.map((l) => [l.id, l]));
+
+        let sent = 0;
+        let failed = 0;
+        let suppressed = 0;
+        for (const row of queued) {
+          const lead = row.leadId ? leadById.get(row.leadId) : undefined;
+          const fields = {
+            companyName: lead?.companyName ?? row.toName ?? '',
+            toName: row.toName ?? lead?.companyName ?? '',
+            outreachAngle: lead?.outreachAngle ?? '',
+            fitReason: lead?.fitReason ?? '',
+            industry: lead?.industry ?? '',
+            city: lead?.city ?? '',
+          };
+          const html = resolveMergeFields(campaign.bodyTemplate, fields);
+          const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html);
+          if (result.success) sent++;
+          else if (result.status === 'suppressed') suppressed++;
+          else failed++;
+        }
+
+        const newSentCount = campaign.sentCount + sent;
+        const newFailedCount = campaign.failedCount + failed + suppressed;
+        const stillQueued = Math.max(0, campaign.totalTargets - newSentCount - newFailedCount);
+        await db.update(emailCampaigns)
+          .set({
+            sentCount: newSentCount,
+            failedCount: newFailedCount,
+            lastProgressAt: new Date(),
+            ...(stillQueued <= 0 ? { status: 'completed', completedAt: new Date() } : {}),
+          })
+          .where(eq(emailCampaigns.id, campaignId));
+
+        return {
+          campaignId,
+          sentThisBatch: sent,
+          failedThisBatch: failed,
+          suppressedThisBatch: suppressed,
+          totalSent: newSentCount,
+          totalFailed: newFailedCount,
+          remaining: stillQueued,
+          status: stillQueued <= 0 ? 'completed' : 'running',
+          message: `Sent ${sent}, failed ${failed}, skipped ${suppressed} suppressed this batch. ${stillQueued} still queued.`,
+        };
+      },
+    },
+
+    // ─── Resend: Email campaign progress ───────────────────────────────────
+    {
+      name: 'get_email_campaign_status',
+      description: 'Get REAL progress on email campaigns: queued/sent/failed counts, percent complete, and status. Use this to report outreach status instead of guessing.',
+      schema: z.object({
+        campaignId: z.string().optional().describe('One campaign. Omit to get every campaign, newest first.'),
+      }),
+      requiresApproval: false,
+      async execute({ campaignId }) {
+        const { db, emailCampaigns, emailSends } = await import('@workspace/db');
+        const { eq, desc, and } = await import('drizzle-orm');
+
+        const campaigns = campaignId
+          ? await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaignId)).limit(1)
+          : await db.select().from(emailCampaigns).orderBy(desc(emailCampaigns.createdAt)).limit(20);
+
+        if (campaigns.length === 0) {
+          return campaignId
+            ? { error: `No email campaign with id ${campaignId}` }
+            : { campaigns: [], note: 'No email campaigns started yet. Use start_email_campaign.' };
+        }
+
+        const out = [];
+        for (const c of campaigns) {
+          const queuedRows = await db
+            .select()
+            .from(emailSends)
+            .where(and(eq(emailSends.campaignId, c.id), eq(emailSends.status, 'queued')));
+          out.push({
+            campaignId: c.id,
+            name: c.name,
+            status: c.status,
+            targets: c.totalTargets,
+            sent: c.sentCount,
+            failed: c.failedCount,
+            queued: queuedRows.length,
+            percentComplete: c.totalTargets > 0 ? Math.round(((c.sentCount + c.failedCount) / c.totalTargets) * 100) : 0,
+            result: c.result ?? undefined,
+          });
+        }
+        return campaignId ? out[0] : { campaigns: out };
+      },
+    },
+
+    // ─── Resend: Manual suppression management ─────────────────────────────
+    {
+      name: 'add_email_suppression',
+      description: "Manually add an email address to the permanent do-not-email list (e.g. someone asked to be removed, or a hard bounce wasn't auto-caught). Bounces and spam complaints are added automatically via the Resend webhook — this is for manual/explicit opt-outs.",
+      schema: z.object({
+        email: z.string().email(),
+        reason: z.enum(['unsubscribed', 'manual', 'bounced', 'complained']).optional().describe('Default "manual"'),
+      }),
+      requiresApproval: false,
+      async execute({ email, reason }) {
+        const { db, emailSuppressions } = await import('@workspace/db');
+        await db.insert(emailSuppressions)
+          .values({ email: email.trim().toLowerCase(), reason: reason ?? 'manual', createdAt: new Date() })
+          .onConflictDoNothing();
+        return { email: email.trim().toLowerCase(), suppressed: true, reason: reason ?? 'manual' };
+      },
+    },
+
+    // ─── Vapi: Configure the persistent inbound assistant ──────────────────
+    {
+      name: 'configure_inbound_assistant',
+      description: "Create or update the persistent Vapi AI assistant that answers INBOUND calls (as opposed to make_outbound_call, which places calls out). This alone does not put it on a live phone number — call provision_inbound_number afterward for that. Safe to call repeatedly to revise the script; it updates the same assistant in place (matched by name) rather than creating duplicates.",
+      schema: z.object({
+        systemPrompt: z.string().describe('System prompt for the inbound AI — how it should greet callers, answer FAQs from BUSINESS_PROFILE.md, and when to offer a checkout link vs. escalate to a human'),
+        firstMessage: z.string().describe('Exact greeting when a call connects, e.g. "Thanks for calling BuildMyBot, this is Alex — how can I help?"'),
+      }),
+      requiresApproval: true, // Updates a PERSISTENT assistant in place — if a number is already assigned to it (see provision_inbound_number), this takes effect for real inbound callers immediately, with no separate activation step.
+      async execute({ systemPrompt, firstMessage }) {
+        const apiKey = process.env.VAPI_API_KEY;
+        if (!apiKey) {
+          return { success: false, error: 'Vapi is not configured. Set VAPI_API_KEY in Settings.' };
+        }
+        const webhookUrl = process.env.VAPI_WEBHOOK_URL ?? `${process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live'}/api/vapi/webhook`;
+        const ASSISTANT_NAME = 'APEX Inbound — BuildMyBot';
+
+        const assistantBody = {
+          name: ASSISTANT_NAME,
+          firstMessage,
+          model: {
+            provider: 'openai',
+            model: 'gpt-4o',
+            messages: [{ role: 'system', content: systemPrompt }],
+            temperature: 0.7,
+            maxTokens: 250,
+          },
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'send_checkout_link',
+                description: "Send a Stripe checkout link to the caller so they can sign up for BuildMyBot.app right now. Call this when they agree to sign up. Ask for their email first if you don't have it.",
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    plan: {
+                      type: 'string',
+                      enum: ['starter', 'professional', 'executive', 'enterprise'],
+                      description: 'Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
+                    },
+                    email: { type: 'string', description: "The caller's email address" },
+                  },
+                  required: ['plan', 'email'],
+                },
+              },
+            },
+          ],
+          voice: { provider: '11labs', voiceId: '21m00Tcm4TlvDq8ikWAM', stability: 0.5, similarityBoost: 0.75, speed: 1.0 },
+          transcriber: { provider: 'deepgram', model: 'nova-2-phonecall', language: 'en-US', smartFormat: true },
+          server: { url: webhookUrl },
+          silenceTimeoutSeconds: 30,
+          responseDelaySeconds: 0.4,
+        };
+
+        // Find an existing assistant with this name so repeat calls update it
+        // in place instead of accumulating duplicate assistants in Vapi.
+        const listRes = await fetch('https://api.vapi.ai/assistant?limit=100', { headers: { Authorization: `Bearer ${apiKey}` } });
+        let existingId: string | null = null;
+        if (listRes.ok) {
+          const list = await listRes.json() as Array<{ id: string; name?: string }>;
+          existingId = list.find((a) => a.name === ASSISTANT_NAME)?.id ?? null;
+        }
+
+        const res = await fetch(
+          existingId ? `https://api.vapi.ai/assistant/${existingId}` : 'https://api.vapi.ai/assistant',
+          {
+            method: existingId ? 'PATCH' : 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify(assistantBody),
+          },
+        );
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          return { success: false, error: `Vapi assistant ${existingId ? 'update' : 'create'} failed (${res.status}): ${errText.slice(0, 500)}` };
+        }
+
+        const data = await res.json() as { id: string };
+        return {
+          success: true,
+          assistantId: data.id,
+          updated: Boolean(existingId),
+          message: `Inbound assistant ${existingId ? 'updated' : 'created'} (id: ${data.id}). Call provision_inbound_number with this assistantId to put it on a live phone number, or get_inbound_call_config to see what's already assigned.`,
+        };
+      },
+    },
+
+    // ─── Vapi: Provision a real phone number for inbound calls ─────────────
+    {
+      name: 'provision_inbound_number',
+      description: 'Buy/import a real phone number from Vapi and assign the inbound assistant to it, so people can call it and reach the AI. This is a REAL recurring cost and a REAL public phone number — approval-gated. Run configure_inbound_assistant first to get an assistantId.',
+      schema: z.object({
+        assistantId: z.string().describe('The Vapi assistant id from configure_inbound_assistant'),
+        areaCode: z.string().length(3).optional().describe('Preferred 3-digit US area code for a new Vapi-hosted number, e.g. "832". Best-effort — Vapi assigns from availability.'),
+      }),
+      requiresApproval: true, // Real recurring money, real public phone number — not something to provision unattended.
+      async execute({ assistantId, areaCode }) {
+        const apiKey = process.env.VAPI_API_KEY;
+        if (!apiKey) {
+          return { success: false, error: 'Vapi is not configured. Set VAPI_API_KEY in Settings.' };
+        }
+        const res = await fetch('https://api.vapi.ai/phone-number', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            provider: 'vapi',
+            ...(areaCode ? { numberDesiredAreaCode: areaCode } : {}),
+            assistantId,
+          }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          return { success: false, error: `Vapi phone number provisioning failed (${res.status}): ${errText.slice(0, 500)}` };
+        }
+
+        const data = await res.json() as { id: string; number?: string };
+        return {
+          success: true,
+          phoneNumberId: data.id,
+          number: data.number,
+          assistantId,
+          message: `Inbound number provisioned: ${data.number ?? '(pending)'} (id: ${data.id}), assigned to assistant ${assistantId}. Billed by Vapi monthly — see https://dashboard.vapi.ai for pricing. This is a separate inbound-only line unless you also set VAPI_PHONE_NUMBER_ID to this id to make make_outbound_call place OUTBOUND calls from it too.`,
+        };
+      },
+    },
+
+    // ─── Vapi: Read-only inbound configuration status ───────────────────────
+    {
+      name: 'get_inbound_call_config',
+      description: "See what inbound calling is currently configured: phone numbers and which assistant (if any) is assigned to each. Read-only — check this before claiming inbound calling is or isn't live.",
+      schema: z.object({}),
+      requiresApproval: false,
+      async execute() {
+        const apiKey = process.env.VAPI_API_KEY;
+        if (!apiKey) {
+          return { configured: false, error: 'Vapi is not configured. Set VAPI_API_KEY in Settings.' };
+        }
+        const [numbersRes, assistantsRes] = await Promise.all([
+          fetch('https://api.vapi.ai/phone-number?limit=100', { headers: { Authorization: `Bearer ${apiKey}` } }),
+          fetch('https://api.vapi.ai/assistant?limit=100', { headers: { Authorization: `Bearer ${apiKey}` } }),
+        ]);
+        if (!numbersRes.ok) {
+          return { configured: false, error: `Vapi phone-number list failed (${numbersRes.status})` };
+        }
+        const numbers = await numbersRes.json() as Array<{ id: string; number?: string; assistantId?: string }>;
+        const assistants = assistantsRes.ok ? await assistantsRes.json() as Array<{ id: string; name?: string }> : [];
+        const assistantNameById = new Map(assistants.map((a) => [a.id, a.name]));
+
+        return {
+          configured: numbers.length > 0,
+          numbers: numbers.map((n) => ({
+            phoneNumberId: n.id,
+            number: n.number ?? '(pending)',
+            assistantId: n.assistantId ?? null,
+            assistantName: n.assistantId ? assistantNameById.get(n.assistantId) ?? null : null,
+            live: Boolean(n.assistantId),
+          })),
+          message: numbers.length === 0
+            ? 'No phone numbers provisioned yet. Run configure_inbound_assistant then provision_inbound_number.'
+            : `${numbers.filter((n) => n.assistantId).length} of ${numbers.length} number(s) have an assistant assigned and can answer real inbound calls.`,
         };
       },
     },
