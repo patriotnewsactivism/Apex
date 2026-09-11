@@ -1,22 +1,32 @@
-import { readFile, writeFile, mkdir, readdir, rm } from 'fs/promises';
-import { existsSync } from 'fs';
-import { join, resolve, relative, dirname } from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import { randomUUID } from 'crypto';
-import { z } from 'zod';
-import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
-import { normalizeIndustry } from './industry-taxonomy.js';
-import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
-import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector.js';
-import { createOrchestrationTools } from './orchestration-tools.js';
-import { createDurableWorkTools } from './durable-work-tools.js';
-import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
-import { getConfiguredProviders } from './llm-client.js';
-import { getNextRunTimes } from './cron-utils.js';
-import { HealthMonitor, AlertManager } from '@workspace/health-monitor';
-import { db, messages } from '@workspace/db';
-import { eq, isNull } from 'drizzle-orm';
+import { readFile, writeFile, mkdir, readdir, rm } from "fs/promises";
+import { existsSync } from "fs";
+import { join, resolve, relative, dirname } from "path";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { randomUUID } from "crypto";
+import { z } from "zod";
+import type { ToolDefinition, ToolContext, ToolResult } from "./types.js";
+import { normalizeIndustry } from "./industry-taxonomy.js";
+import {
+  buildMyBotConfigured,
+  createBuildMyBotTools,
+} from "./buildmybot-connector.js";
+import { createBuildMyBotRetentionTools } from "./buildmybot-retention-tools.js";
+import {
+  caseBuddyConfigured,
+  createCaseBuddyTools,
+} from "./casebuddy-connector.js";
+import { createOrchestrationTools } from "./orchestration-tools.js";
+import { createDurableWorkTools } from "./durable-work-tools.js";
+import {
+  tubeScribeConfigured,
+  createTubeScribeTools,
+} from "./tubescribe-connector.js";
+import { getConfiguredProviders } from "./llm-client.js";
+import { getNextRunTimes } from "./cron-utils.js";
+import { HealthMonitor, AlertManager } from "@workspace/health-monitor";
+import { db, messages } from "@workspace/db";
+import { eq, isNull } from "drizzle-orm";
 
 const execAsync = promisify(exec);
 
@@ -39,7 +49,9 @@ class ToolRegistry {
 
   getLLMToolSchemas(allowedTools?: string[]) {
     const tools = allowedTools
-      ? Array.from(this.tools.values()).filter((t) => allowedTools.includes(t.name))
+      ? Array.from(this.tools.values()).filter((t) =>
+          allowedTools.includes(t.name),
+        )
       : Array.from(this.tools.values());
 
     return tools.map((t) => ({
@@ -47,11 +59,15 @@ class ToolRegistry {
       description: t.description,
       parameters: (t.schema as z.ZodObject<z.ZodRawShape>).shape
         ? zodToJsonSchema(t.schema as z.ZodObject<z.ZodRawShape>)
-        : { type: 'object', properties: {} },
+        : { type: "object", properties: {} },
     }));
   }
 
-  async execute(name: string, rawArgs: unknown, context: ToolContext): Promise<ToolResult> {
+  async execute(
+    name: string,
+    rawArgs: unknown,
+    context: ToolContext,
+  ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
       return { success: false, error: `Unknown tool: ${name}` };
@@ -60,7 +76,10 @@ class ToolRegistry {
     // Parse and validate input
     const parsed = tool.schema.safeParse(rawArgs);
     if (!parsed.success) {
-      return { success: false, error: `Invalid args for ${name}: ${parsed.error.message}` };
+      return {
+        success: false,
+        error: `Invalid args for ${name}: ${parsed.error.message}`,
+      };
     }
 
     // Central hard-gate enforcement, checked for EVERY invocation regardless
@@ -73,7 +92,7 @@ class ToolRegistry {
     // future tool with the same mismatch. A hard gate must not depend on a
     // second, independently-maintained flag agreeing with it -- so this now
     // checks HARD_GATED_TOOLS directly, first, unconditionally.
-    const { HARD_GATED_TOOLS } = await import('./approval-policy.js');
+    const { HARD_GATED_TOOLS } = await import("./approval-policy.js");
     if (HARD_GATED_TOOLS.has(name)) {
       const approved = await context.requestApproval(
         name,
@@ -81,15 +100,19 @@ class ToolRegistry {
         `Agent requests to execute hard-gated tool: ${name}. Hard-gated tools always require explicit human approval, regardless of any other policy or metadata.`,
       );
       if (!approved) {
-        return { success: false, error: 'Action rejected by user' };
+        return { success: false, error: "Action rejected by user" };
       }
     } else if (tool.requiresApproval) {
       // Approval gate for non-hard-gated tools: consults the autonomy
       // approval policy — inside an autonomy-mode project whose
       // autoapproveTools lists the tool, the call proceeds without a human.
       // Everything else keeps the ordinary gate.
-      const { evaluateForTask } = await import('./approval-policy.js');
-      const decision = await evaluateForTask({ toolName: name, taskId: context.taskId, goalId: context.goalId });
+      const { evaluateForTask } = await import("./approval-policy.js");
+      const decision = await evaluateForTask({
+        toolName: name,
+        taskId: context.taskId,
+        goalId: context.goalId,
+      });
       if (!decision.autoApprove) {
         const approved = await context.requestApproval(
           name,
@@ -97,7 +120,7 @@ class ToolRegistry {
           `Agent requests to execute tool: ${name}. (${decision.reason})`,
         );
         if (!approved) {
-          return { success: false, error: 'Action rejected by user' };
+          return { success: false, error: "Action rejected by user" };
         }
       }
     }
@@ -106,14 +129,19 @@ class ToolRegistry {
       const result = await tool.execute(parsed.data, context);
       return { success: true, data: result };
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 }
 
 // ─── JSON Schema helper (minimal Zod → JSON Schema) ──────────────────────────
 
-function zodToJsonSchema(schema: z.ZodObject<z.ZodRawShape>): Record<string, unknown> {
+function zodToJsonSchema(
+  schema: z.ZodObject<z.ZodRawShape>,
+): Record<string, unknown> {
   const shape = schema.shape;
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
@@ -126,18 +154,20 @@ function zodToJsonSchema(schema: z.ZodObject<z.ZodRawShape>): Record<string, unk
     }
   }
 
-  return { type: 'object', properties, required };
+  return { type: "object", properties, required };
 }
 
 function zodTypeToJson(t: z.ZodTypeAny): Record<string, unknown> {
-  if (t instanceof z.ZodString) return { type: 'string', description: t.description };
-  if (t instanceof z.ZodNumber) return { type: 'number' };
-  if (t instanceof z.ZodBoolean) return { type: 'boolean' };
-  if (t instanceof z.ZodArray) return { type: 'array', items: zodTypeToJson(t.element) };
+  if (t instanceof z.ZodString)
+    return { type: "string", description: t.description };
+  if (t instanceof z.ZodNumber) return { type: "number" };
+  if (t instanceof z.ZodBoolean) return { type: "boolean" };
+  if (t instanceof z.ZodArray)
+    return { type: "array", items: zodTypeToJson(t.element) };
   if (t instanceof z.ZodOptional) return zodTypeToJson(t.unwrap());
-  if (t instanceof z.ZodEnum) return { type: 'string', enum: t.options };
+  if (t instanceof z.ZodEnum) return { type: "string", enum: t.options };
   if (t instanceof z.ZodObject) return zodToJsonSchema(t);
-  return { type: 'string' };
+  return { type: "string" };
 }
 
 // ─── Email (Resend) helpers ────────────────────────────────────────────────────
@@ -158,28 +188,35 @@ function zodTypeToJson(t: z.ZodTypeAny): Record<string, unknown> {
 //                       routes/resend-webhook.ts) — delivery/open/click/
 //                       bounce/complaint events land there, not here.
 
-const RESEND_API_URL = 'https://api.resend.com/emails';
+const RESEND_API_URL = "https://api.resend.com/emails";
 
 function resendFromAddress(): string {
-  const name = process.env.RESEND_FROM_NAME || 'BuildMyBot Sales';
-  const email = process.env.RESEND_FROM_EMAIL || 'sales@buildmybot.app';
+  const name = process.env.RESEND_FROM_NAME || "BuildMyBot Sales";
+  const email = process.env.RESEND_FROM_EMAIL || "sales@buildmybot.app";
   return `${name} <${email}>`;
 }
 
 /** Deliberately dumb {{field}} substitution: case-sensitive, and a field with
  * no value is left as the literal "{{field}}" rather than blanked out, so a
  * typo'd merge field is obvious in a preview instead of silently vanishing. */
-function resolveMergeFields(template: string, fields: Record<string, string | null | undefined>): string {
+function resolveMergeFields(
+  template: string,
+  fields: Record<string, string | null | undefined>,
+): string {
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
     const val = fields[key];
-    return val === undefined || val === null || val === '' ? match : val;
+    return val === undefined || val === null || val === "" ? match : val;
   });
 }
 
 async function isEmailSuppressed(email: string): Promise<boolean> {
-  const { db, emailSuppressions } = await import('@workspace/db');
-  const { eq } = await import('drizzle-orm');
-  const rows = await db.select().from(emailSuppressions).where(eq(emailSuppressions.email, email)).limit(1);
+  const { db, emailSuppressions } = await import("@workspace/db");
+  const { eq } = await import("drizzle-orm");
+  const rows = await db
+    .select()
+    .from(emailSuppressions)
+    .where(eq(emailSuppressions.email, email))
+    .limit(1);
   return rows.length > 0;
 }
 
@@ -195,7 +232,7 @@ async function createQueuedEmailSend(args: {
   subject: string;
   createdByAgentId: string;
 }): Promise<void> {
-  const { db, emailSends } = await import('@workspace/db');
+  const { db, emailSends } = await import("@workspace/db");
   await db.insert(emailSends).values({
     id: args.id,
     campaignId: args.campaignId ?? null,
@@ -203,7 +240,7 @@ async function createQueuedEmailSend(args: {
     toEmail: args.toEmail.trim().toLowerCase(),
     toName: args.toName ?? null,
     subject: args.subject,
-    status: 'queued',
+    status: "queued",
     createdByAgentId: args.createdByAgentId,
     createdAt: new Date(),
   });
@@ -219,58 +256,88 @@ async function deliverQueuedEmailSend(
   toEmail: string,
   subject: string,
   html: string,
-): Promise<{ success: boolean; status: string; providerId?: string; error?: string }> {
-  const { db, emailSends } = await import('@workspace/db');
-  const { eq } = await import('drizzle-orm');
+): Promise<{
+  success: boolean;
+  status: string;
+  providerId?: string;
+  error?: string;
+}> {
+  const { db, emailSends } = await import("@workspace/db");
+  const { eq } = await import("drizzle-orm");
   const email = toEmail.trim().toLowerCase();
 
   if (await isEmailSuppressed(email)) {
-    await db.update(emailSends)
-      .set({ status: 'suppressed', errorMessage: 'Recipient is on the suppression list' })
+    await db
+      .update(emailSends)
+      .set({
+        status: "suppressed",
+        errorMessage: "Recipient is on the suppression list",
+      })
       .where(eq(emailSends.id, sendId));
-    return { success: false, status: 'suppressed', error: 'Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).' };
+    return {
+      success: false,
+      status: "suppressed",
+      error:
+        "Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).",
+    };
   }
 
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
-    await db.update(emailSends)
-      .set({ status: 'failed', errorMessage: 'RESEND_API_KEY not configured' })
+    await db
+      .update(emailSends)
+      .set({ status: "failed", errorMessage: "RESEND_API_KEY not configured" })
       .where(eq(emailSends.id, sendId));
-    return { success: false, status: 'failed', error: 'Resend is not configured. Set RESEND_API_KEY (and RESEND_FROM_EMAIL) in Settings. Sign up at https://resend.com.' };
+    return {
+      success: false,
+      status: "failed",
+      error:
+        "Resend is not configured. Set RESEND_API_KEY (and RESEND_FROM_EMAIL) in Settings. Sign up at https://resend.com.",
+    };
   }
 
   try {
     const res = await fetch(RESEND_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
       body: JSON.stringify({
         from: resendFromAddress(),
         to: [email],
         subject,
         html,
-        tags: [{ name: 'apex_send_id', value: sendId }],
+        tags: [{ name: "apex_send_id", value: sendId }],
       }),
     });
 
     if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      await db.update(emailSends)
-        .set({ status: 'failed', errorMessage: errText.slice(0, 500) })
+      const errText = await res.text().catch(() => "");
+      await db
+        .update(emailSends)
+        .set({ status: "failed", errorMessage: errText.slice(0, 500) })
         .where(eq(emailSends.id, sendId));
-      return { success: false, status: 'failed', error: `Resend ${res.status}: ${errText.slice(0, 300)}` };
+      return {
+        success: false,
+        status: "failed",
+        error: `Resend ${res.status}: ${errText.slice(0, 300)}`,
+      };
     }
 
-    const data = await res.json() as { id: string };
-    await db.update(emailSends)
-      .set({ status: 'sent', providerId: data.id, sentAt: new Date() })
+    const data = (await res.json()) as { id: string };
+    await db
+      .update(emailSends)
+      .set({ status: "sent", providerId: data.id, sentAt: new Date() })
       .where(eq(emailSends.id, sendId));
-    return { success: true, status: 'sent', providerId: data.id };
+    return { success: true, status: "sent", providerId: data.id };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await db.update(emailSends)
-      .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
+    await db
+      .update(emailSends)
+      .set({ status: "failed", errorMessage: msg.slice(0, 500) })
       .where(eq(emailSends.id, sendId));
-    return { success: false, status: 'failed', error: msg };
+    return { success: false, status: "failed", error: msg };
   }
 }
 
@@ -280,23 +347,25 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
   return [
     // Read File
     {
-      name: 'readFile',
-      description: 'Read the contents of a file. Path is relative to the workspace root.',
+      name: "readFile",
+      description:
+        "Read the contents of a file. Path is relative to the workspace root.",
       schema: z.object({
-        path: z.string().describe('File path relative to workspace root'),
-        startLine: z.number().optional().describe('Start line (1-indexed)'),
-        endLine: z.number().optional().describe('End line (1-indexed)'),
+        path: z.string().describe("File path relative to workspace root"),
+        startLine: z.number().optional().describe("Start line (1-indexed)"),
+        endLine: z.number().optional().describe("End line (1-indexed)"),
       }),
       requiresApproval: false,
       async execute({ path, startLine, endLine }) {
         const abs = resolve(workspaceRoot, path);
-        if (!abs.startsWith(workspaceRoot)) throw new Error('Path outside workspace');
-        const content = await readFile(abs, 'utf8');
+        if (!abs.startsWith(workspaceRoot))
+          throw new Error("Path outside workspace");
+        const content = await readFile(abs, "utf8");
         if (startLine !== undefined || endLine !== undefined) {
-          const lines = content.split('\n');
+          const lines = content.split("\n");
           const sl = (startLine ?? 1) - 1;
           const el = endLine ?? lines.length;
-          return lines.slice(sl, el).join('\n');
+          return lines.slice(sl, el).join("\n");
         }
         return content;
       },
@@ -304,12 +373,13 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // Write File
     {
-      name: 'writeFile',
-      description: 'Write content to a file. Creates parent directories if needed. Path is relative to workspace root.',
+      name: "writeFile",
+      description:
+        "Write content to a file. Creates parent directories if needed. Path is relative to workspace root.",
       schema: z.object({
-        path: z.string().describe('File path relative to workspace root'),
-        content: z.string().describe('File content to write'),
-        append: z.boolean().optional().describe('Append instead of overwrite'),
+        path: z.string().describe("File path relative to workspace root"),
+        content: z.string().describe("File content to write"),
+        append: z.boolean().optional().describe("Append instead of overwrite"),
       }),
       // Reversible via git (working-tree edit only, no execution/push/deploy) — auto-approved
       // to cut approval-fatigue. runShell/runInSandbox (actual command execution) and any
@@ -317,13 +387,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: false,
       async execute({ path, content, append }, ctx) {
         const abs = resolve(workspaceRoot, path);
-        if (!abs.startsWith(workspaceRoot)) throw new Error('Path outside workspace');
+        if (!abs.startsWith(workspaceRoot))
+          throw new Error("Path outside workspace");
         await mkdir(dirname(abs), { recursive: true });
         if (append && existsSync(abs)) {
-          const existing = await readFile(abs, 'utf8');
-          await writeFile(abs, existing + content, 'utf8');
+          const existing = await readFile(abs, "utf8");
+          await writeFile(abs, existing + content, "utf8");
         } else {
-          await writeFile(abs, content, 'utf8');
+          await writeFile(abs, content, "utf8");
         }
         return { path: relative(workspaceRoot, abs), written: true };
       },
@@ -331,28 +402,43 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // List Directory
     {
-      name: 'listDir',
-      description: 'List files and directories at the given path. Path is relative to workspace root.',
+      name: "listDir",
+      description:
+        "List files and directories at the given path. Path is relative to workspace root.",
       schema: z.object({
-        path: z.string().describe('Directory path relative to workspace root').optional(),
+        path: z
+          .string()
+          .describe("Directory path relative to workspace root")
+          .optional(),
       }),
       requiresApproval: false,
       async execute({ path: p }) {
-        const abs = resolve(workspaceRoot, p ?? '.');
-        if (!abs.startsWith(workspaceRoot)) throw new Error('Path outside workspace');
+        const abs = resolve(workspaceRoot, p ?? ".");
+        if (!abs.startsWith(workspaceRoot))
+          throw new Error("Path outside workspace");
         const entries = await readdir(abs, { withFileTypes: true });
-        return entries.map((e) => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' }));
+        return entries.map((e) => ({
+          name: e.name,
+          type: e.isDirectory() ? "dir" : "file",
+        }));
       },
     },
 
     // Run Shell Command (approval required)
     {
-      name: 'runShell',
-      description: 'Execute a shell command in the workspace directory. Use with caution.',
+      name: "runShell",
+      description:
+        "Execute a shell command in the workspace directory. Use with caution.",
       schema: z.object({
-        command: z.string().describe('Shell command to run'),
-        cwd: z.string().optional().describe('Working directory relative to workspace root'),
-        timeoutMs: z.number().optional().describe('Timeout in milliseconds (default 30000)'),
+        command: z.string().describe("Shell command to run"),
+        cwd: z
+          .string()
+          .optional()
+          .describe("Working directory relative to workspace root"),
+        timeoutMs: z
+          .number()
+          .optional()
+          .describe("Timeout in milliseconds (default 30000)"),
       }),
       requiresApproval: true,
       async execute({ command, cwd, timeoutMs }) {
@@ -361,52 +447,79 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           cwd: execCwd,
           timeout: timeoutMs ?? 30000,
         });
-        return { stdout: stdout.slice(0, 10000), stderr: stderr.slice(0, 2000) };
+        return {
+          stdout: stdout.slice(0, 10000),
+          stderr: stderr.slice(0, 2000),
+        };
       },
     },
 
     // Web Search — multi-strategy: Brave Search API (free tier) → DuckDuckGo
     // HTML scrape → DuckDuckGo Instant Answer API fallback
     {
-      name: 'webSearch',
-      description: 'Search the web for information. Returns real search results with titles, URLs, and snippets. For broad topics, use specific queries (e.g. "real estate companies Texas" instead of "real estate companies in the south"). Call multiple times with different queries to build comprehensive results.',
+      name: "webSearch",
+      description:
+        'Search the web for information. Returns real search results with titles, URLs, and snippets. For broad topics, use specific queries (e.g. "real estate companies Texas" instead of "real estate companies in the south"). Call multiple times with different queries to build comprehensive results.',
       schema: z.object({
-        query: z.string().describe('Search query — be specific for best results'),
-        maxResults: z.number().optional().describe('Maximum results to return (default 10)'),
+        query: z
+          .string()
+          .describe("Search query — be specific for best results"),
+        maxResults: z
+          .number()
+          .optional()
+          .describe("Maximum results to return (default 10)"),
       }),
       requiresApproval: false,
       async execute({ query, maxResults }) {
         const n = maxResults ?? 10;
-        const results: Array<{ title: string; url: string; snippet: string }> = [];
+        const results: Array<{ title: string; url: string; snippet: string }> =
+          [];
 
         // ── Strategy 0: Tavily Search API (best quality, AI-optimized) ──
         const tavilyKey = process.env.TAVILY_API_KEY;
         if (tavilyKey) {
           try {
-            const tavilyRes = await fetch('https://api.tavily.com/search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+            const tavilyRes = await fetch("https://api.tavily.com/search", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 api_key: tavilyKey,
                 query,
                 max_results: n,
-                search_depth: 'advanced',
+                search_depth: "advanced",
                 include_answer: true,
               }),
             });
             if (tavilyRes.ok) {
-              const tavilyData = await tavilyRes.json() as {
+              const tavilyData = (await tavilyRes.json()) as {
                 answer?: string;
-                results?: Array<{ title: string; url: string; content: string }>;
+                results?: Array<{
+                  title: string;
+                  url: string;
+                  content: string;
+                }>;
               };
               // Include the AI-generated answer as the first result if present
               if (tavilyData.answer) {
-                results.push({ title: 'Tavily AI Summary', url: '', snippet: tavilyData.answer });
+                results.push({
+                  title: "Tavily AI Summary",
+                  url: "",
+                  snippet: tavilyData.answer,
+                });
               }
               for (const r of tavilyData.results ?? []) {
-                results.push({ title: r.title, url: r.url, snippet: r.content });
+                results.push({
+                  title: r.title,
+                  url: r.url,
+                  snippet: r.content,
+                });
               }
-              if (results.length > 0) return { query, provider: 'tavily', results: results.slice(0, n + 1) };
+              if (results.length > 0)
+                return {
+                  query,
+                  provider: "tavily",
+                  results: results.slice(0, n + 1),
+                };
             }
           } catch (e) {
             console.warn(`[webSearch] Tavily failed for "${query}": ${e}`);
@@ -419,14 +532,35 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           try {
             const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
             const braveRes = await fetch(braveUrl, {
-              headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
+              headers: {
+                Accept: "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": braveKey,
+              },
             });
             if (braveRes.ok) {
-              const braveData = await braveRes.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
+              const braveData = (await braveRes.json()) as {
+                web?: {
+                  results?: Array<{
+                    title: string;
+                    url: string;
+                    description: string;
+                  }>;
+                };
+              };
               for (const r of braveData.web?.results ?? []) {
-                results.push({ title: r.title, url: r.url, snippet: r.description });
+                results.push({
+                  title: r.title,
+                  url: r.url,
+                  snippet: r.description,
+                });
               }
-              if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n) };
+              if (results.length > 0)
+                return {
+                  query,
+                  provider: "brave",
+                  results: results.slice(0, n),
+                };
             }
           } catch (e) {
             console.warn(`[webSearch] Brave failed for "${query}": ${e}`);
@@ -438,102 +572,162 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const ddgUrl = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
           const ddgRes = await fetch(ddgUrl, {
             headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html',
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+              Accept: "text/html",
             },
           });
           const html = await ddgRes.text();
-          
+
           // Parse results from DDG lite HTML — results are in <a> tags with
           // class="result-link" followed by <td> with snippet text
-          const linkRegex = /<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi;
-          const snippetRegex = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
-          
+          const linkRegex =
+            /<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi;
+          const snippetRegex =
+            /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
+
           const links: Array<{ url: string; title: string }> = [];
           let linkMatch;
           while ((linkMatch = linkRegex.exec(html)) !== null) {
             links.push({ url: linkMatch[1], title: linkMatch[2].trim() });
           }
-          
+
           const snippets: string[] = [];
           let snippetMatch;
           while ((snippetMatch = snippetRegex.exec(html)) !== null) {
-            snippets.push(snippetMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim());
+            snippets.push(
+              snippetMatch[1]
+                .replace(/<[^>]+>/g, "")
+                .replace(/&amp;/g, "&")
+                .replace(/&lt;/g, "<")
+                .replace(/&gt;/g, ">")
+                .replace(/&quot;/g, '"')
+                .replace(/\s+/g, " ")
+                .trim(),
+            );
           }
 
           for (let i = 0; i < links.length && i < n; i++) {
             results.push({
               title: links[i].title,
               url: links[i].url,
-              snippet: snippets[i] ?? '',
+              snippet: snippets[i] ?? "",
             });
           }
 
-          if (results.length > 0) return { query, provider: 'duckduckgo-html', results: results.slice(0, n) };
+          if (results.length > 0)
+            return {
+              query,
+              provider: "duckduckgo-html",
+              results: results.slice(0, n),
+            };
 
           // DDG lite format may vary — try a more general link extraction
-          const generalLinkRegex = /<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+          const generalLinkRegex =
+            /<a[^>]*rel="nofollow"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
           let generalMatch;
           while ((generalMatch = generalLinkRegex.exec(html)) !== null) {
             const href = generalMatch[1];
-            const text = generalMatch[2].replace(/<[^>]+>/g, '').trim();
-            if (href.startsWith('http') && text.length > 5 && !href.includes('duckduckgo.com')) {
-              results.push({ title: text, url: href, snippet: '' });
+            const text = generalMatch[2].replace(/<[^>]+>/g, "").trim();
+            if (
+              href.startsWith("http") &&
+              text.length > 5 &&
+              !href.includes("duckduckgo.com")
+            ) {
+              results.push({ title: text, url: href, snippet: "" });
             }
           }
 
-          if (results.length > 0) return { query, provider: 'duckduckgo-html-fallback', results: results.slice(0, n) };
+          if (results.length > 0)
+            return {
+              query,
+              provider: "duckduckgo-html-fallback",
+              results: results.slice(0, n),
+            };
         } catch (e) {
-          console.warn(`[webSearch] DuckDuckGo HTML failed for "${query}": ${e}`);
+          console.warn(
+            `[webSearch] DuckDuckGo HTML failed for "${query}": ${e}`,
+          );
         }
 
         // ── Strategy 3: DuckDuckGo Instant Answer API (limited but reliable) ──
         try {
           const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`;
           const res = await fetch(url);
-          const data = await res.json() as Record<string, unknown>;
-          
+          const data = (await res.json()) as Record<string, unknown>;
+
           if (data.AbstractText) {
-            results.push({ title: String(data.AbstractSource ?? 'Result'), url: String(data.AbstractURL ?? ''), snippet: String(data.AbstractText ?? '') });
+            results.push({
+              title: String(data.AbstractSource ?? "Result"),
+              url: String(data.AbstractURL ?? ""),
+              snippet: String(data.AbstractText ?? ""),
+            });
           }
-          const relatedTopics = data.RelatedTopics as Array<{ Text?: string; FirstURL?: string }> ?? [];
+          const relatedTopics =
+            (data.RelatedTopics as Array<{
+              Text?: string;
+              FirstURL?: string;
+            }>) ?? [];
           for (const topic of relatedTopics.slice(0, n)) {
             if (topic.Text) {
-              results.push({ title: topic.Text.slice(0, 80), url: topic.FirstURL ?? '', snippet: topic.Text });
+              results.push({
+                title: topic.Text.slice(0, 80),
+                url: topic.FirstURL ?? "",
+                snippet: topic.Text,
+              });
             }
           }
         } catch (e) {
-          console.warn(`[webSearch] DuckDuckGo API also failed for "${query}": ${e}`);
+          console.warn(
+            `[webSearch] DuckDuckGo API also failed for "${query}": ${e}`,
+          );
         }
 
         if (results.length === 0) {
           return {
             query,
-            provider: 'none',
+            provider: "none",
             results: [],
-            suggestion: 'No results found. Try a more specific query — for example, search by specific state, city, or industry keyword instead of broad regional terms.',
+            suggestion:
+              "No results found. Try a more specific query — for example, search by specific state, city, or industry keyword instead of broad regional terms.",
           };
         }
 
-        return { query, provider: 'duckduckgo-api', results: results.slice(0, n) };
+        return {
+          query,
+          provider: "duckduckgo-api",
+          results: results.slice(0, n),
+        };
       },
     },
 
     // Fetch URL
     {
-      name: 'fetchUrl',
-      description: 'Fetch the content of a URL and return its text.',
+      name: "fetchUrl",
+      description: "Fetch the content of a URL and return its text.",
       schema: z.object({
-        url: z.string().url().describe('URL to fetch'),
-        maxChars: z.number().optional().describe('Max characters to return (default 8000)'),
+        url: z.string().url().describe("URL to fetch"),
+        maxChars: z
+          .number()
+          .optional()
+          .describe("Max characters to return (default 8000)"),
       }),
       requiresApproval: false,
       async execute({ url, maxChars }) {
-        const res = await fetch(url, { headers: { 'User-Agent': 'APEX-Agent/1.0' } });
+        const res = await fetch(url, {
+          headers: { "User-Agent": "APEX-Agent/1.0" },
+        });
         const text = await res.text();
         // Strip HTML tags
-        const plain = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-        return { url, content: plain.slice(0, maxChars ?? 8000), status: res.status };
+        const plain = text
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        return {
+          url,
+          content: plain.slice(0, maxChars ?? 8000),
+          status: res.status,
+        };
       },
     },
 
@@ -542,50 +736,63 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // actually renders the page in a real browser, executes its JS, and
     // reports real console errors + real page-load status, not a guess.
     {
-      name: 'browserCheck',
-      description: 'Load a URL in a real headless Chromium browser and report whether it rendered successfully: HTTP status, page title, any JavaScript console errors, and any uncaught page exceptions. Use this for real browser-level QA, not just raw HTML fetching.',
+      name: "browserCheck",
+      description:
+        "Load a URL in a real headless Chromium browser and report whether it rendered successfully: HTTP status, page title, any JavaScript console errors, and any uncaught page exceptions. Use this for real browser-level QA, not just raw HTML fetching.",
       schema: z.object({
-        url: z.string().url().describe('URL to load in the browser'),
-        maxConsoleMessages: z.number().optional().describe('Max console messages to return (default 20)'),
+        url: z.string().url().describe("URL to load in the browser"),
+        maxConsoleMessages: z
+          .number()
+          .optional()
+          .describe("Max console messages to return (default 20)"),
       }),
       requiresApproval: false,
       async execute({ url, maxConsoleMessages }) {
-        const { chromium } = await import('playwright');
-        const { existsSync } = await import('fs');
+        const { chromium } = await import("playwright");
+        const { existsSync } = await import("fs");
         // This image is Alpine (musl) -- Playwright's own bundled Chromium
         // needs glibc and was never downloaded anyway (repo installs with
         // --ignore-scripts). Use Alpine's native chromium apk package
         // instead via executablePath. Check both common install paths.
-        const candidatePaths = ['/usr/bin/chromium-browser', '/usr/bin/chromium'];
+        const candidatePaths = [
+          "/usr/bin/chromium-browser",
+          "/usr/bin/chromium",
+        ];
         const executablePath = candidatePaths.find((p) => existsSync(p));
         if (!executablePath) {
           throw new Error(
-            `No system Chromium binary found at ${candidatePaths.join(' or ')}. ` +
-            `browserCheck requires the 'chromium' apk package to be installed in this image.`
+            `No system Chromium binary found at ${candidatePaths.join(" or ")}. ` +
+              `browserCheck requires the 'chromium' apk package to be installed in this image.`,
           );
         }
         const browser = await chromium.launch({
           headless: true,
           executablePath,
-          args: ['--no-sandbox', '--disable-dev-shm-usage'],
+          args: ["--no-sandbox", "--disable-dev-shm-usage"],
         });
         try {
           const page = await browser.newPage();
           const consoleMessages: { type: string; text: string }[] = [];
           const pageErrors: string[] = [];
-          page.on('console', (msg) => {
-            if (msg.type() === 'error' || msg.type() === 'warning') {
-              consoleMessages.push({ type: msg.type(), text: msg.text().slice(0, 300) });
+          page.on("console", (msg) => {
+            if (msg.type() === "error" || msg.type() === "warning") {
+              consoleMessages.push({
+                type: msg.type(),
+                text: msg.text().slice(0, 300),
+              });
             }
           });
-          page.on('pageerror', (err) => {
+          page.on("pageerror", (err) => {
             pageErrors.push(String(err?.message || err).slice(0, 300));
           });
 
           let status: number | null = null;
           let loadError: string | null = null;
           try {
-            const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 });
+            const response = await page.goto(url, {
+              waitUntil: "networkidle",
+              timeout: 20000,
+            });
             status = response ? response.status() : null;
           } catch (e: any) {
             loadError = String(e?.message || e).slice(0, 300);
@@ -613,12 +820,19 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // target agent actually picks up the work, and persists the message for
     // audit/dashboard visibility.
     {
-      name: 'sendMessage',
-      description: 'Send a message to another agent, delegating a task to them. The message body becomes the task description the target agent will execute.',
+      name: "sendMessage",
+      description:
+        "Send a message to another agent, delegating a task to them. The message body becomes the task description the target agent will execute.",
       schema: z.object({
-        toAgentId: z.string().describe('ID of the target agent (e.g. "apex-cto-001")'),
-        subject: z.string().describe('Message subject — becomes the delegated task title'),
-        body: z.string().describe('Message body — becomes the delegated task description'),
+        toAgentId: z
+          .string()
+          .describe('ID of the target agent (e.g. "apex-cto-001")'),
+        subject: z
+          .string()
+          .describe("Message subject — becomes the delegated task title"),
+        body: z
+          .string()
+          .describe("Message body — becomes the delegated task description"),
       }),
       requiresApproval: false,
       async execute({ toAgentId, subject, body }, ctx) {
@@ -631,16 +845,20 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
         const messageId = randomUUID();
 
-        const insertedRows = await db.insert(messages).values({
-          id: messageId,
-          fromAgentId: ctx.agentId,
-          toAgentId,
-          subject,
-          body,
-          read: false,
-          idempotencyKey,
-          createdAt: new Date(),
-        }).onConflictDoNothing().returning();
+        const insertedRows = await db
+          .insert(messages)
+          .values({
+            id: messageId,
+            fromAgentId: ctx.agentId,
+            toAgentId,
+            subject,
+            body,
+            read: false,
+            idempotencyKey,
+            createdAt: new Date(),
+          })
+          .onConflictDoNothing()
+          .returning();
 
         // If DO NOTHING fired, the message already exists — find it by idempotency key.
         let finalMessageId: string;
@@ -659,7 +877,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
         // 2. Actually delegate a task to the target agent so it gets executed.
         if (!ctx.delegateToAgent) {
-          throw new Error('delegateToAgent is not available in this context');
+          throw new Error("delegateToAgent is not available in this context");
         }
 
         const taskId = await ctx.delegateToAgent(toAgentId, {
@@ -670,34 +888,97 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           context: { messageId: finalMessageId, fromAgentId: ctx.agentId },
         });
 
-        return { sent: true, taskId, messageId: finalMessageId, fromAgentId: ctx.agentId, toAgentId, subject };
+        return {
+          sent: true,
+          taskId,
+          messageId: finalMessageId,
+          fromAgentId: ctx.agentId,
+          toAgentId,
+          subject,
+        };
       },
     },
 
     // Persist a qualified outbound lead found by the Lead Research Agent
     {
-      name: 'saveResearchedLead',
+      name: "saveResearchedLead",
       description:
         "Save a qualified outbound lead to the researched_leads table. Call this once per qualifying company found via web search — do NOT just describe leads in your final answer, they must be persisted here to count as pipeline output. Checks for an existing row with the same website first and skips the insert if found (returns duplicate: true) so the team never double-works a company.",
       schema: z.object({
-        companyName: z.string().describe('Real company name as found in search results'),
-        website: z.string().optional().describe('Company website URL, used for de-dup'),
-        industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa, Real Estate'),
+        companyName: z
+          .string()
+          .describe("Real company name as found in search results"),
+        website: z
+          .string()
+          .optional()
+          .describe("Company website URL, used for de-dup"),
+        industry: z
+          .string()
+          .optional()
+          .describe("e.g. HVAC, Roofing, Personal Injury, MedSpa, Real Estate"),
         city: z.string().optional(),
-        decisionMakerName: z.string().optional().describe('Publicly verified owner, founder, office manager, or other relevant decision maker; never guess'),
-        contactEmail: z.string().email().optional().describe('Publicly listed business email'),
-        contactPhone: z.string().optional().describe('Publicly listed business phone number'),
-        contactSourceUrl: z.string().url().optional().describe('Page that supports the contact details'),
-        contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively checking the company site and public sources for a decision maker, email, and phone'),
-        fitReason: z.string().describe('Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)'),
-        outreachAngle: z.string().optional().describe('Suggested angle for the first outreach message'),
-        campaignId: z.string().optional().describe('Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.'),
+        decisionMakerName: z
+          .string()
+          .optional()
+          .describe(
+            "Publicly verified owner, founder, office manager, or other relevant decision maker; never guess",
+          ),
+        contactEmail: z
+          .string()
+          .email()
+          .optional()
+          .describe("Publicly listed business email"),
+        contactPhone: z
+          .string()
+          .optional()
+          .describe("Publicly listed business phone number"),
+        contactSourceUrl: z
+          .string()
+          .url()
+          .optional()
+          .describe("Page that supports the contact details"),
+        contactResearchStatus: z
+          .enum(["partial", "complete", "unavailable"])
+          .describe(
+            "Result after actively checking the company site and public sources for a decision maker, email, and phone",
+          ),
+        fitReason: z
+          .string()
+          .describe(
+            "Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)",
+          ),
+        outreachAngle: z
+          .string()
+          .optional()
+          .describe("Suggested angle for the first outreach message"),
+        campaignId: z
+          .string()
+          .optional()
+          .describe(
+            "Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.",
+          ),
       }),
       requiresApproval: false,
-      async execute({ companyName, website, industry, city, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus, fitReason, outreachAngle, campaignId }, ctx) {
-        const { randomUUID } = await import('crypto');
-        const { db, researchedLeads } = await import('@workspace/db');
-        const { eq } = await import('drizzle-orm');
+      async execute(
+        {
+          companyName,
+          website,
+          industry,
+          city,
+          decisionMakerName,
+          contactEmail,
+          contactPhone,
+          contactSourceUrl,
+          contactResearchStatus,
+          fitReason,
+          outreachAngle,
+          campaignId,
+        },
+        ctx,
+      ) {
+        const { randomUUID } = await import("crypto");
+        const { db, researchedLeads } = await import("@workspace/db");
+        const { eq } = await import("drizzle-orm");
 
         if (website) {
           const existing = await db
@@ -706,7 +987,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             .where(eq(researchedLeads.website, website))
             .limit(1);
           if (existing.length > 0) {
-            return { duplicate: true, existingLeadId: existing[0].id, companyName };
+            return {
+              duplicate: true,
+              existingLeadId: existing[0].id,
+              companyName,
+            };
           }
         }
 
@@ -727,7 +1012,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           contactResearchedAt: new Date(),
           fitReason,
           outreachAngle,
-          status: 'new',
+          status: "new",
           researchedByAgentId: ctx.agentId,
           campaignId,
           createdAt: new Date(),
@@ -738,28 +1023,40 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     },
 
     {
-      name: 'updateLeadContactInfo',
-      description: 'Persist contact enrichment for an existing lead after checking its website and public sources. Never infer or fabricate a person, email, or phone. Record unavailable when a genuine search finds none; the website remains the minimum contact path.',
+      name: "updateLeadContactInfo",
+      description:
+        "Persist contact enrichment for an existing lead after checking its website and public sources. Never infer or fabricate a person, email, or phone. Record unavailable when a genuine search finds none; the website remains the minimum contact path.",
       schema: z.object({
         leadId: z.string(),
         decisionMakerName: z.string().optional(),
         contactEmail: z.string().email().optional(),
         contactPhone: z.string().optional(),
         contactSourceUrl: z.string().url().optional(),
-        contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']),
+        contactResearchStatus: z.enum(["partial", "complete", "unavailable"]),
       }),
       requiresApproval: false,
-      async execute({ leadId, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus }) {
-        const { db, researchedLeads } = await import('@workspace/db');
-        const { eq } = await import('drizzle-orm');
-        const [updated] = await db.update(researchedLeads).set({
-          decisionMakerName,
-          contactEmail,
-          contactPhone,
-          contactSourceUrl,
-          contactResearchStatus,
-          contactResearchedAt: new Date(),
-        }).where(eq(researchedLeads.id, leadId)).returning({ id: researchedLeads.id });
+      async execute({
+        leadId,
+        decisionMakerName,
+        contactEmail,
+        contactPhone,
+        contactSourceUrl,
+        contactResearchStatus,
+      }) {
+        const { db, researchedLeads } = await import("@workspace/db");
+        const { eq } = await import("drizzle-orm");
+        const [updated] = await db
+          .update(researchedLeads)
+          .set({
+            decisionMakerName,
+            contactEmail,
+            contactPhone,
+            contactSourceUrl,
+            contactResearchStatus,
+            contactResearchedAt: new Date(),
+          })
+          .where(eq(researchedLeads.id, leadId))
+          .returning({ id: researchedLeads.id });
         if (!updated) throw new Error(`Lead not found: ${leadId}`);
         return { updated: true, leadId, contactResearchStatus };
       },
@@ -767,27 +1064,40 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // Read the researched leads pipeline (for Sales/BizDev review, status reporting)
     {
-      name: 'listResearchedLeads',
+      name: "listResearchedLeads",
       description:
-        'List researched/qualified outbound leads from the researched_leads table, most recent first. Use to review pipeline status honestly instead of guessing counts.',
+        "List researched/qualified outbound leads from the researched_leads table, most recent first. Use to review pipeline status honestly instead of guessing counts.",
       schema: z.object({
-        status: z.string().optional().describe('Filter by status: new | contacted | qualified | rejected'),
-        needsContactResearch: z.boolean().optional().describe('Return only leads whose contact research is pending'),
-        limit: z.number().optional().describe('Max rows (default 25)'),
+        status: z
+          .string()
+          .optional()
+          .describe("Filter by status: new | contacted | qualified | rejected"),
+        needsContactResearch: z
+          .boolean()
+          .optional()
+          .describe("Return only leads whose contact research is pending"),
+        limit: z.number().optional().describe("Max rows (default 25)"),
       }),
       requiresApproval: false,
       async execute({ status, needsContactResearch, limit }) {
-        const { db, researchedLeads } = await import('@workspace/db');
-        const { and, eq, desc } = await import('drizzle-orm');
+        const { db, researchedLeads } = await import("@workspace/db");
+        const { and, eq, desc } = await import("drizzle-orm");
 
         const query = db.select().from(researchedLeads);
         const conditions = [
           ...(status ? [eq(researchedLeads.status, status)] : []),
-          ...(needsContactResearch ? [eq(researchedLeads.contactResearchStatus, 'pending')] : []),
+          ...(needsContactResearch
+            ? [eq(researchedLeads.contactResearchStatus, "pending")]
+            : []),
         ];
         const rows = conditions.length
-          ? await query.where(and(...conditions)).orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25)
-          : await query.orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25);
+          ? await query
+              .where(and(...conditions))
+              .orderBy(desc(researchedLeads.createdAt))
+              .limit(limit ?? 25)
+          : await query
+              .orderBy(desc(researchedLeads.createdAt))
+              .limit(limit ?? 25);
 
         return rows;
       },
@@ -796,10 +1106,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // Search a structured business directory for real businesses by industry + location
     // Multi-provider: Yelp Fusion (50/call, free, no card) → Google Places (20/call) → OSM Overpass (no key, always works)
     {
-      name: 'searchBusinessDirectory',
-      description: 'Search a structured business directory for real businesses by industry and location. Returns up to 50 businesses per call with company name, address, phone, website, rating, and review count. MUCH faster than webSearch for finding leads — one call replaces 10+ web searches. Use this FIRST before webSearch when looking for businesses in a specific industry/location.',
+      name: "searchBusinessDirectory",
+      description:
+        "Search a structured business directory for real businesses by industry and location. Returns up to 50 businesses per call with company name, address, phone, website, rating, and review count. MUCH faster than webSearch for finding leads — one call replaces 10+ web searches. Use this FIRST before webSearch when looking for businesses in a specific industry/location.",
       schema: z.object({
-        query: z.string().describe('Search query combining industry and location, e.g. "HVAC contractor Dallas Texas" or "personal injury lawyer Miami FL"'),
+        query: z
+          .string()
+          .describe(
+            'Search query combining industry and location, e.g. "HVAC contractor Dallas Texas" or "personal injury lawyer Miami FL"',
+          ),
       }),
       requiresApproval: false,
       async execute({ query }) {
@@ -814,16 +1129,71 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             const parts = query.split(/\s+/);
             // Find where the location starts (look for common city/state patterns)
             let locationStart = parts.length;
-            const stateAbbrev = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY']);
+            const stateAbbrev = new Set([
+              "AL",
+              "AK",
+              "AZ",
+              "AR",
+              "CA",
+              "CO",
+              "CT",
+              "DE",
+              "FL",
+              "GA",
+              "HI",
+              "ID",
+              "IL",
+              "IN",
+              "IA",
+              "KS",
+              "KY",
+              "LA",
+              "ME",
+              "MD",
+              "MA",
+              "MI",
+              "MN",
+              "MS",
+              "MO",
+              "MT",
+              "NE",
+              "NV",
+              "NH",
+              "NJ",
+              "NM",
+              "NY",
+              "NC",
+              "ND",
+              "OH",
+              "OK",
+              "OR",
+              "PA",
+              "RI",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VT",
+              "VA",
+              "WA",
+              "WV",
+              "WI",
+              "WY",
+            ]);
             for (let i = 0; i < parts.length; i++) {
-              if (stateAbbrev.has(parts[i].toUpperCase()) || (i > 0 && i < parts.length - 1 && parts[i].length >= 3)) {
+              if (
+                stateAbbrev.has(parts[i].toUpperCase()) ||
+                (i > 0 && i < parts.length - 1 && parts[i].length >= 3)
+              ) {
                 // Heuristic: location starts 1-2 words before the state or city name
                 locationStart = Math.max(0, i - 1);
                 break;
               }
             }
-            const term = parts.slice(0, locationStart).join(' ') || query;
-            const location = parts.slice(locationStart).join(' ') || 'United States';
+            const term = parts.slice(0, locationStart).join(" ") || query;
+            const location =
+              parts.slice(locationStart).join(" ") || "United States";
 
             const yelpUrl = `https://api.yelp.com/v3/businesses/search?term=${encodeURIComponent(term)}&location=${encodeURIComponent(location)}&limit=20`;
             const yelpRes = await fetch(yelpUrl, {
@@ -831,11 +1201,16 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               signal: AbortSignal.timeout(10_000),
             });
             if (yelpRes.ok) {
-              const yelpData = await yelpRes.json() as {
+              const yelpData = (await yelpRes.json()) as {
                 businesses: Array<{
                   name: string;
                   phone?: string;
-                  location?: { display_address?: string[]; city?: string; state?: string; zip_code?: string };
+                  location?: {
+                    display_address?: string[];
+                    city?: string;
+                    state?: string;
+                    zip_code?: string;
+                  };
                   url?: string;
                   rating?: number;
                   review_count?: number;
@@ -850,12 +1225,17 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 n: b.name,
                 p: b.phone,
                 w: b.url,
-                i: b.categories?.map((c) => c.title).join(', ') ?? '',
-                c: b.location?.city ?? '',
+                i: b.categories?.map((c) => c.title).join(", ") ?? "",
+                c: b.location?.city ?? "",
               }));
 
               if (businesses.length > 0) {
-                return { query, total: businesses.length, businesses, provider: 'yelp' };
+                return {
+                  query,
+                  total: businesses.length,
+                  businesses,
+                  provider: "yelp",
+                };
               }
             }
           } catch {
@@ -878,24 +1258,24 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             // tool advertises without spending requests nobody asked for.
             for (let page = 0; page < 3 && collected.length < 50; page++) {
               const res: Response = await fetch(
-                'https://places.googleapis.com/v1/places:searchText',
+                "https://places.googleapis.com/v1/places:searchText",
                 {
-                  method: 'POST',
+                  method: "POST",
                   headers: {
-                    'Content-Type': 'application/json',
-                    'X-Goog-Api-Key': googleKey,
+                    "Content-Type": "application/json",
+                    "X-Goog-Api-Key": googleKey,
                     // Billing is per requested field, so ask only for what a
                     // lead actually needs.
-                    'X-Goog-FieldMask': [
-                      'places.displayName',
-                      'places.formattedAddress',
-                      'places.nationalPhoneNumber',
-                      'places.websiteUri',
-                      'places.primaryTypeDisplayName',
-                      'places.rating',
-                      'places.userRatingCount',
-                      'nextPageToken',
-                    ].join(','),
+                    "X-Goog-FieldMask": [
+                      "places.displayName",
+                      "places.formattedAddress",
+                      "places.nationalPhoneNumber",
+                      "places.websiteUri",
+                      "places.primaryTypeDisplayName",
+                      "places.rating",
+                      "places.userRatingCount",
+                      "nextPageToken",
+                    ].join(","),
                   },
                   body: JSON.stringify({
                     textQuery: query,
@@ -908,7 +1288,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
               if (!res.ok) break;
 
-              const data = await res.json() as {
+              const data = (await res.json()) as {
                 places?: Array<{
                   displayName?: { text?: string };
                   formattedAddress?: string;
@@ -926,14 +1306,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 if (!name) continue;
                 collected.push({
                   name,
-                  address: place.formattedAddress ?? '',
+                  address: place.formattedAddress ?? "",
                   phone: place.nationalPhoneNumber,
                   website: place.websiteUri,
-                  industry: place.primaryTypeDisplayName?.text ?? '',
-                  city: '',
+                  industry: place.primaryTypeDisplayName?.text ?? "",
+                  city: "",
                   rating: place.rating,
                   reviewCount: place.userRatingCount,
-                  source: 'google' as const,
+                  source: "google" as const,
                 });
               }
 
@@ -946,7 +1326,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 query,
                 total: collected.length,
                 businesses: collected.slice(0, 50),
-                provider: 'google',
+                provider: "google",
               };
             }
           } catch {
@@ -959,25 +1339,33 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           // Extract a broad search area from the query
           // Overpass uses a bounding box; we use a large US region as default
           // and search for businesses by name keyword
-          const keyword = query.replace(/\b(in|near|around|Texas|Florida|California|Arizona|Georgia|Oklahoma|Louisiana|Alabama|Mississippi|South Carolina|North Carolina|New York|New Jersey|Illinois|Michigan|Washington|Dallas|Houston|Miami|Tampa|Orlando|San Antonio|Austin|Charlotte|Jacksonville|Fort Lauderdale|Naples|Deerfield)\b/gi, '').trim();
+          const keyword = query
+            .replace(
+              /\b(in|near|around|Texas|Florida|California|Arizona|Georgia|Oklahoma|Louisiana|Alabama|Mississippi|South Carolina|North Carolina|New York|New Jersey|Illinois|Michigan|Washington|Dallas|Houston|Miami|Tampa|Orlando|San Antonio|Austin|Charlotte|Jacksonville|Fort Lauderdale|Naples|Deerfield)\b/gi,
+              "",
+            )
+            .trim();
 
           const overpassQuery = `[out:json][timeout:15];
             area["name"="United States"]->.us;
             (
-              node["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}",i](area.us);
-              way["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}",i](area.us);
+              node["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}",i](area.us);
+              way["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}",i](area.us);
             );
             out body 50;`;
 
-          const osmRes = await fetch('https://overpass-api.de/api/interpreter', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `data=${encodeURIComponent(overpassQuery)}`,
-            signal: AbortSignal.timeout(15_000),
-          });
+          const osmRes = await fetch(
+            "https://overpass-api.de/api/interpreter",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: `data=${encodeURIComponent(overpassQuery)}`,
+              signal: AbortSignal.timeout(15_000),
+            },
+          );
 
           if (osmRes.ok) {
-            const osmData = await osmRes.json() as {
+            const osmData = (await osmRes.json()) as {
               elements: Array<{
                 tags?: Record<string, string>;
               }>;
@@ -988,51 +1376,100 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               .slice(0, 50)
               .map((e) => ({
                 name: e.tags!.name,
-                address: [e.tags!['addr:street'], e.tags!['addr:city'], e.tags!['addr:state']].filter(Boolean).join(', ') || '',
-                phone: e.tags!['phone'] ?? e.tags!['contact:phone'],
-                website: e.tags!['website'] ?? e.tags!['contact:website'],
-                industry: e.tags!.office ?? e.tags!.craft ?? e.tags!.shop ?? e.tags!.amenity ?? keyword,
-                city: e.tags!['addr:city'] ?? '',
-                source: 'osm' as const,
+                address:
+                  [
+                    e.tags!["addr:street"],
+                    e.tags!["addr:city"],
+                    e.tags!["addr:state"],
+                  ]
+                    .filter(Boolean)
+                    .join(", ") || "",
+                phone: e.tags!["phone"] ?? e.tags!["contact:phone"],
+                website: e.tags!["website"] ?? e.tags!["contact:website"],
+                industry:
+                  e.tags!.office ??
+                  e.tags!.craft ??
+                  e.tags!.shop ??
+                  e.tags!.amenity ??
+                  keyword,
+                city: e.tags!["addr:city"] ?? "",
+                source: "osm" as const,
               }));
 
             if (businesses.length > 0) {
-              return { query, total: businesses.length, businesses, provider: 'osm' };
+              return {
+                query,
+                total: businesses.length,
+                businesses,
+                provider: "osm",
+              };
             }
           }
         } catch {
           // All providers failed
         }
 
-        return { query, total: 0, businesses: [], provider: 'none', error: 'No business directory API returned results. Set GOOGLE_PLACES_API_KEY (Places API (New), enabled in the same Google Cloud project APEX already deploys to) for real phone numbers and company websites; YELP_API_KEY is also supported but returns Yelp listing URLs rather than the business’s own site. OSM Overpass is the keyless fallback and is sparse for US small businesses. Use webSearch as an alternative.' };
+        return {
+          query,
+          total: 0,
+          businesses: [],
+          provider: "none",
+          error:
+            "No business directory API returned results. Set GOOGLE_PLACES_API_KEY (Places API (New), enabled in the same Google Cloud project APEX already deploys to) for real phone numbers and company websites; YELP_API_KEY is also supported but returns Yelp listing URLs rather than the business’s own site. OSM Overpass is the keyless fallback and is sparse for US small businesses. Use webSearch as an alternative.",
+        };
       },
     },
 
     // Batch save multiple researched leads in one tool call (saves iterations)
     {
-      name: 'saveResearchedLeadsBatch',
-      description: 'Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.',
+      name: "saveResearchedLeadsBatch",
+      description:
+        "Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.",
       schema: z.object({
-        leads: z.array(z.object({
-          companyName: z.string().describe('Real company name'),
-          website: z.string().optional().describe('Company website URL'),
-          industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa'),
-          city: z.string().optional(),
-          decisionMakerName: z.string().optional().describe('Publicly verified decision maker; never guess'),
-          contactEmail: z.string().email().optional(),
-          contactPhone: z.string().optional(),
-          contactSourceUrl: z.string().url().optional(),
-          contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively searching for contact details'),
-          fitReason: z.string().describe('Why this company is a good fit for BuildMyBot'),
-          outreachAngle: z.string().optional().describe('Suggested outreach pitch'),
-        })).describe('Array of leads to save (10-20 at a time is ideal)'),
-        campaignId: z.string().optional().describe('Attribute every lead in this batch to a lead campaign. Omit for ad-hoc research.'),
+        leads: z
+          .array(
+            z.object({
+              companyName: z.string().describe("Real company name"),
+              website: z.string().optional().describe("Company website URL"),
+              industry: z
+                .string()
+                .optional()
+                .describe("e.g. HVAC, Roofing, Personal Injury, MedSpa"),
+              city: z.string().optional(),
+              decisionMakerName: z
+                .string()
+                .optional()
+                .describe("Publicly verified decision maker; never guess"),
+              contactEmail: z.string().email().optional(),
+              contactPhone: z.string().optional(),
+              contactSourceUrl: z.string().url().optional(),
+              contactResearchStatus: z
+                .enum(["partial", "complete", "unavailable"])
+                .describe(
+                  "Result after actively searching for contact details",
+                ),
+              fitReason: z
+                .string()
+                .describe("Why this company is a good fit for BuildMyBot"),
+              outreachAngle: z
+                .string()
+                .optional()
+                .describe("Suggested outreach pitch"),
+            }),
+          )
+          .describe("Array of leads to save (10-20 at a time is ideal)"),
+        campaignId: z
+          .string()
+          .optional()
+          .describe(
+            "Attribute every lead in this batch to a lead campaign. Omit for ad-hoc research.",
+          ),
       }),
       requiresApproval: false,
       async execute({ leads, campaignId }, ctx) {
-        const { randomUUID } = await import('crypto');
-        const { db, researchedLeads } = await import('@workspace/db');
-        const { eq } = await import('drizzle-orm');
+        const { randomUUID } = await import("crypto");
+        const { db, researchedLeads } = await import("@workspace/db");
+        const { eq } = await import("drizzle-orm");
 
         let saved = 0;
         let duplicates = 0;
@@ -1067,7 +1504,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               contactResearchedAt: new Date(),
               fitReason: lead.fitReason,
               outreachAngle: lead.outreachAngle,
-              status: 'new',
+              status: "new",
               researchedByAgentId: ctx.agentId,
               campaignId,
               createdAt: new Date(),
@@ -1085,17 +1522,46 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // Request peer review from another specialized role
     {
-      name: 'requestPeerReview',
-      description: 'Request another specialized agent role (e.g. QA, DEVOPS, BACKEND) to review code, features, or design and create a subtask for them.',
+      name: "requestPeerReview",
+      description:
+        "Request another specialized agent role (e.g. QA, DEVOPS, BACKEND) to review code, features, or design and create a subtask for them.",
       schema: z.object({
-        targetRole: z.enum(['CEO', 'CTO', 'COO', 'LEAD_DEV', 'FRONTEND', 'BACKEND', 'DEVOPS', 'QA', 'RESEARCH', 'DOCS', 'OPS', 'QA_DIRECTOR', 'LEAD_RESEARCH', 'SALES', 'MARKETING', 'CUSTOMER_SUCCESS']).describe('The specialized role requested for peer review'),
-        reviewObjective: z.string().describe('Clear objective and instructions explaining what they should review'),
-        contextData: z.record(z.any()).optional().describe('Any context variables, directories, or files that the reviewer should know about'),
+        targetRole: z
+          .enum([
+            "CEO",
+            "CTO",
+            "COO",
+            "LEAD_DEV",
+            "FRONTEND",
+            "BACKEND",
+            "DEVOPS",
+            "QA",
+            "RESEARCH",
+            "DOCS",
+            "OPS",
+            "QA_DIRECTOR",
+            "LEAD_RESEARCH",
+            "SALES",
+            "MARKETING",
+            "CUSTOMER_SUCCESS",
+          ])
+          .describe("The specialized role requested for peer review"),
+        reviewObjective: z
+          .string()
+          .describe(
+            "Clear objective and instructions explaining what they should review",
+          ),
+        contextData: z
+          .record(z.any())
+          .optional()
+          .describe(
+            "Any context variables, directories, or files that the reviewer should know about",
+          ),
       }),
       requiresApproval: false,
       async execute({ targetRole, reviewObjective, contextData }, ctx) {
         if (!ctx.delegateToRole) {
-          throw new Error('delegateToRole is not supported in this context');
+          throw new Error("delegateToRole is not supported in this context");
         }
         const taskId = await ctx.delegateToRole(targetRole, {
           title: `Peer Review Request`,
@@ -1103,7 +1569,12 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           parentTaskId: ctx.taskId,
           context: contextData,
         });
-        return { success: true, taskId, targetRole, message: `Review request dispatched to ${targetRole}` };
+        return {
+          success: true,
+          taskId,
+          targetRole,
+          message: `Review request dispatched to ${targetRole}`,
+        };
       },
     },
 
@@ -1116,26 +1587,75 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // role, tasks execute truly concurrently; with a single instance they run
     // sequentially — the data model supports both.
     {
-      name: 'dispatchSwarm',
-      description: 'Fan out a shared objective to N independent instances/personas of a target role. Creates one real task per instance, each parameterized with its own context. Returns a swarmId for later collection via collectSwarmResults.',
+      name: "dispatchSwarm",
+      description:
+        "Fan out a shared objective to N independent instances/personas of a target role. Creates one real task per instance, each parameterized with its own context. Returns a swarmId for later collection via collectSwarmResults.",
       schema: z.object({
-        targetRole: z.enum(['CEO', 'CTO', 'COO', 'LEAD_DEV', 'FRONTEND', 'BACKEND', 'DEVOPS', 'QA', 'RESEARCH', 'DOCS', 'OPS', 'QA_DIRECTOR', 'LEAD_RESEARCH', 'SALES', 'MARKETING', 'CUSTOMER_SUCCESS']).describe('The role to dispatch tasks to'),
-        objective: z.string().describe('Shared objective/instructions all instances will work on'),
-        instances: z.array(z.object({
-          name: z.string().describe('Human-readable instance name (e.g. "Susan-novice", "Marcus-security")'),
-          instructions: z.string().describe('Instance-specific instructions, persona description, or parameters that differentiate this task from the others'),
-          context: z.record(z.any()).optional().describe('Additional context data specific to this instance'),
-        })).min(1).describe('List of instances to dispatch — one task per instance'),
-        sharedContext: z.record(z.any()).optional().describe('Context data shared across all instances (e.g. URLs to test, feature to review)'),
-        priority: z.number().optional().describe('Task priority (1=highest, 10=lowest, default 5)'),
+        targetRole: z
+          .enum([
+            "CEO",
+            "CTO",
+            "COO",
+            "LEAD_DEV",
+            "FRONTEND",
+            "BACKEND",
+            "DEVOPS",
+            "QA",
+            "RESEARCH",
+            "DOCS",
+            "OPS",
+            "QA_DIRECTOR",
+            "LEAD_RESEARCH",
+            "SALES",
+            "MARKETING",
+            "CUSTOMER_SUCCESS",
+          ])
+          .describe("The role to dispatch tasks to"),
+        objective: z
+          .string()
+          .describe("Shared objective/instructions all instances will work on"),
+        instances: z
+          .array(
+            z.object({
+              name: z
+                .string()
+                .describe(
+                  'Human-readable instance name (e.g. "Susan-novice", "Marcus-security")',
+                ),
+              instructions: z
+                .string()
+                .describe(
+                  "Instance-specific instructions, persona description, or parameters that differentiate this task from the others",
+                ),
+              context: z
+                .record(z.any())
+                .optional()
+                .describe("Additional context data specific to this instance"),
+            }),
+          )
+          .min(1)
+          .describe("List of instances to dispatch — one task per instance"),
+        sharedContext: z
+          .record(z.any())
+          .optional()
+          .describe(
+            "Context data shared across all instances (e.g. URLs to test, feature to review)",
+          ),
+        priority: z
+          .number()
+          .optional()
+          .describe("Task priority (1=highest, 10=lowest, default 5)"),
       }),
       requiresApproval: false,
-      async execute({ targetRole, objective, instances, sharedContext, priority }, ctx) {
+      async execute(
+        { targetRole, objective, instances, sharedContext, priority },
+        ctx,
+      ) {
         if (!ctx.delegateToRole) {
-          throw new Error('delegateToRole is not available in this context');
+          throw new Error("delegateToRole is not available in this context");
         }
 
-        const { randomUUID } = await import('crypto');
+        const { randomUUID } = await import("crypto");
         const swarmId = randomUUID();
 
         const taskIds: Array<{ name: string; taskId: string }> = [];
@@ -1169,15 +1689,16 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // Collect results from a previously dispatched swarm
     {
-      name: 'collectSwarmResults',
-      description: 'Check the status of a previously dispatched swarm and collect results from completed tasks. Use after dispatchSwarm to gather and synthesize findings.',
+      name: "collectSwarmResults",
+      description:
+        "Check the status of a previously dispatched swarm and collect results from completed tasks. Use after dispatchSwarm to gather and synthesize findings.",
       schema: z.object({
-        swarmId: z.string().describe('The swarmId returned by dispatchSwarm'),
+        swarmId: z.string().describe("The swarmId returned by dispatchSwarm"),
       }),
       requiresApproval: false,
       async execute({ swarmId }) {
-        const { db, tasks: tasksTable } = await import('@workspace/db');
-        const { sql } = await import('drizzle-orm');
+        const { db, tasks: tasksTable } = await import("@workspace/db");
+        const { sql } = await import("drizzle-orm");
 
         // Query all tasks with this swarmId in their context
         const swarmTasks = await db
@@ -1186,7 +1707,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           .where(sql`${tasksTable.context}->>'swarmId' = ${swarmId}`);
 
         if (swarmTasks.length === 0) {
-          return { success: false, error: `No tasks found for swarmId: ${swarmId}` };
+          return {
+            success: false,
+            error: `No tasks found for swarmId: ${swarmId}`,
+          };
         }
 
         const summary = {
@@ -1212,11 +1736,21 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const instanceName = (ctx?.instanceName as string) ?? task.title;
 
           switch (task.status) {
-            case 'done': summary.done++; break;
-            case 'failed': summary.failed++; break;
-            case 'pending': summary.pending++; break;
-            case 'in_progress': summary.inProgress++; break;
-            default: summary.other++; break;
+            case "done":
+              summary.done++;
+              break;
+            case "failed":
+              summary.failed++;
+              break;
+            case "pending":
+              summary.pending++;
+              break;
+            case "in_progress":
+              summary.inProgress++;
+              break;
+            default:
+              summary.other++;
+              break;
           }
 
           results.push({
@@ -1241,44 +1775,51 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // Run Code in Sandbox
     {
-      name: 'runInSandbox',
-      description: 'Execute TypeScript, JavaScript, Python, or Shell code in an isolated temporary sandbox directory with a strict timeout and automatic cleanup.',
+      name: "runInSandbox",
+      description:
+        "Execute TypeScript, JavaScript, Python, or Shell code in an isolated temporary sandbox directory with a strict timeout and automatic cleanup.",
       schema: z.object({
-        code: z.string().describe('The code or script content to execute'),
-        language: z.enum(['typescript', 'javascript', 'python', 'shell']).describe('The programming language or script type'),
-        timeoutMs: z.number().optional().describe('Strict timeout in milliseconds (default: 10000)'),
+        code: z.string().describe("The code or script content to execute"),
+        language: z
+          .enum(["typescript", "javascript", "python", "shell"])
+          .describe("The programming language or script type"),
+        timeoutMs: z
+          .number()
+          .optional()
+          .describe("Strict timeout in milliseconds (default: 10000)"),
       }),
       requiresApproval: false, // Auto-approved 2026-07-22: runs in an isolated temp dir with strict timeout + automatic cleanup by design -- gating it same as raw shell defeated the whole point of a sandboxed tool.
       // (was requiresApproval: true)
       async execute({ code, language, timeoutMs }) {
-        const { randomUUID } = await import('crypto');
+        const { randomUUID } = await import("crypto");
         const uuid = randomUUID();
-        const sandboxDir = resolve(workspaceRoot, '.local', 'sandboxes', uuid);
+        const sandboxDir = resolve(workspaceRoot, ".local", "sandboxes", uuid);
         await mkdir(sandboxDir, { recursive: true });
 
-        let fileName = 'script';
-        let command = '';
+        let fileName = "script";
+        let command = "";
 
-        if (language === 'typescript') {
-          fileName = 'index.ts';
-          command = 'npx tsx index.ts';
-        } else if (language === 'javascript') {
-          fileName = 'index.js';
-          command = 'node index.js';
-        } else if (language === 'python') {
-          fileName = 'index.py';
-          command = 'python index.py';
-        } else if (language === 'shell') {
-          fileName = process.platform === 'win32' ? 'index.bat' : 'index.sh';
-          command = process.platform === 'win32' ? 'index.bat' : 'bash index.sh';
+        if (language === "typescript") {
+          fileName = "index.ts";
+          command = "npx tsx index.ts";
+        } else if (language === "javascript") {
+          fileName = "index.js";
+          command = "node index.js";
+        } else if (language === "python") {
+          fileName = "index.py";
+          command = "python index.py";
+        } else if (language === "shell") {
+          fileName = process.platform === "win32" ? "index.bat" : "index.sh";
+          command =
+            process.platform === "win32" ? "index.bat" : "bash index.sh";
         }
 
         const filePath = join(sandboxDir, fileName);
-        await writeFile(filePath, code, 'utf8');
+        await writeFile(filePath, code, "utf8");
 
         try {
-          const { exec } = await import('child_process');
-          const { promisify } = await import('util');
+          const { exec } = await import("child_process");
+          const { promisify } = await import("util");
           const execAsync = promisify(exec);
 
           const { stdout, stderr } = await execAsync(command, {
@@ -1296,7 +1837,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         } catch (err: any) {
           return {
             success: false,
-            stdout: err.stdout?.slice(0, 5000) ?? '',
+            stdout: err.stdout?.slice(0, 5000) ?? "",
             stderr: err.stderr?.slice(0, 5000) ?? err.message,
             exitCode: err.code ?? 1,
             sandboxDir: uuid,
@@ -1305,7 +1846,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           try {
             await rm(sandboxDir, { recursive: true, force: true });
           } catch (cleanErr) {
-            console.error('Failed to clean up sandbox directory:', cleanErr);
+            console.error("Failed to clean up sandbox directory:", cleanErr);
           }
         }
       },
@@ -1322,8 +1863,9 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // AlertManager/dashboard/scheduled polling are follow-on work once this
     // primitive exists and is verified.
     {
-      name: 'health_check',
-      description: 'Run fast, read-only diagnostics across Apex core components (database, tool registry, configured LLM fallback providers, memory system, task backlog, WebSocket liveness) and return a health summary. No side effects, no live LLM calls -- safe to call anytime.',
+      name: "health_check",
+      description:
+        "Run fast, read-only diagnostics across Apex core components (database, tool registry, configured LLM fallback providers, memory system, task backlog, WebSocket liveness) and return a health summary. No side effects, no live LLM calls -- safe to call anytime.",
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
@@ -1337,7 +1879,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // routes (not yet built) will inject the real one.
         const monitor = new HealthMonitor({
           getConfiguredProviders,
-          getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
+          getRegisteredToolCount: () =>
+            getToolRegistry().getLLMToolSchemas().length,
         });
         const report = await monitor.runAll();
         return { success: true, data: report };
@@ -1346,19 +1889,21 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── System status: health + component_health table context ────────────
     {
-      name: 'get_system_status',
-      description: 'Get comprehensive system status including live health checks, per-component historical status from the database, and alert summary. More detailed than health_check — includes component_health table data and active alert counts.',
+      name: "get_system_status",
+      description:
+        "Get comprehensive system status including live health checks, per-component historical status from the database, and alert summary. More detailed than health_check — includes component_health table data and active alert counts.",
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
         const monitor = new HealthMonitor({
           getConfiguredProviders,
-          getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
+          getRegisteredToolCount: () =>
+            getToolRegistry().getLLMToolSchemas().length,
         });
         const report = await monitor.runAll();
 
         // Read component_health table for historical context
-        const { db, componentHealth } = await import('@workspace/db');
+        const { db, componentHealth } = await import("@workspace/db");
         const components = await db.select().from(componentHealth);
 
         // Get alert summary from the shared singleton
@@ -1377,8 +1922,9 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Active alerts ────────────────────────────────────────────────────
     {
-      name: 'get_active_alerts',
-      description: 'Get all currently active alerts from the AlertManager. Alerts fire when health thresholds are breached (component critical, task backlog > 50, approval backlog > 10, 3+ components degraded). Includes severity, component, and when the alert fired.',
+      name: "get_active_alerts",
+      description:
+        "Get all currently active alerts from the AlertManager. Alerts fire when health thresholds are breached (component critical, task backlog > 50, approval backlog > 10, 3+ components degraded). Includes severity, component, and when the alert fired.",
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
@@ -1393,25 +1939,53 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Metrics view (tasks/agents/approvals/logs snapshot) ──────────────
     {
-      name: 'get_metrics_view',
-      description: 'Get a live metrics snapshot: task counts by status, agent counts by status, pending approval backlog, and log volume by level over the last 24h. Complements get_active_alerts (thresholds) and health_check (component diagnostics) with raw counts for trend-spotting.',
+      name: "get_metrics_view",
+      description:
+        "Get a live metrics snapshot: task counts by status, agent counts by status, pending approval backlog, and log volume by level over the last 24h. Complements get_active_alerts (thresholds) and health_check (component diagnostics) with raw counts for trend-spotting.",
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
-        const { db, tasks, agents, approvals, logs } = await import('@workspace/db');
-        const { sql, eq, gte } = await import('drizzle-orm');
+        const { db, tasks, agents, approvals, logs } =
+          await import("@workspace/db");
+        const { sql, eq, gte } = await import("drizzle-orm");
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-        const [taskRows, agentRows, pendingApprovalRows, recentLogRows] = await Promise.all([
-          db.select({ status: tasks.status, count: sql<number>`count(*)::int` }).from(tasks).groupBy(tasks.status),
-          db.select({ status: agents.status, count: sql<number>`count(*)::int` }).from(agents).groupBy(agents.status),
-          db.select({ count: sql<number>`count(*)::int` }).from(approvals).where(eq(approvals.status, 'pending')),
-          db.select({ level: logs.level, count: sql<number>`count(*)::int` }).from(logs).where(gte(logs.timestamp, since)).groupBy(logs.level),
-        ]);
+        const [taskRows, agentRows, pendingApprovalRows, recentLogRows] =
+          await Promise.all([
+            db
+              .select({
+                status: tasks.status,
+                count: sql<number>`count(*)::int`,
+              })
+              .from(tasks)
+              .groupBy(tasks.status),
+            db
+              .select({
+                status: agents.status,
+                count: sql<number>`count(*)::int`,
+              })
+              .from(agents)
+              .groupBy(agents.status),
+            db
+              .select({ count: sql<number>`count(*)::int` })
+              .from(approvals)
+              .where(eq(approvals.status, "pending")),
+            db
+              .select({ level: logs.level, count: sql<number>`count(*)::int` })
+              .from(logs)
+              .where(gte(logs.timestamp, since))
+              .groupBy(logs.level),
+          ]);
 
-        const tasksByStatus = Object.fromEntries(taskRows.map((r) => [r.status, r.count]));
-        const agentsByStatus = Object.fromEntries(agentRows.map((r) => [r.status, r.count]));
-        const logsByLevel24h = Object.fromEntries(recentLogRows.map((r) => [r.level, r.count]));
+        const tasksByStatus = Object.fromEntries(
+          taskRows.map((r) => [r.status, r.count]),
+        );
+        const agentsByStatus = Object.fromEntries(
+          agentRows.map((r) => [r.status, r.count]),
+        );
+        const logsByLevel24h = Object.fromEntries(
+          recentLogRows.map((r) => [r.level, r.count]),
+        );
         const totalLogs24h = recentLogRows.reduce((s, r) => s + r.count, 0);
         const errorCount24h = logsByLevel24h.error ?? 0;
 
@@ -1431,37 +2005,68 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Error summary (grouped recent error logs) ─────────────────────────
     {
-      name: 'get_error_summary',
-      description: 'Get recent error-level logs grouped by message pattern (IDs redacted) with counts and last-seen times, to spot systemic/recurring failures vs one-offs.',
+      name: "get_error_summary",
+      description:
+        "Get recent error-level logs grouped by message pattern (IDs redacted) with counts and last-seen times, to spot systemic/recurring failures vs one-offs.",
       schema: z.object({
-        hours: z.number().optional().describe('Look-back window in hours (default 24)'),
-        limit: z.number().optional().describe('Max distinct error patterns to return (default 20)'),
+        hours: z
+          .number()
+          .optional()
+          .describe("Look-back window in hours (default 24)"),
+        limit: z
+          .number()
+          .optional()
+          .describe("Max distinct error patterns to return (default 20)"),
       }),
       requiresApproval: false,
       async execute({ hours, limit }): Promise<ToolResult> {
-        const { db, logs } = await import('@workspace/db');
-        const { and, eq, gte, desc } = await import('drizzle-orm');
+        const { db, logs } = await import("@workspace/db");
+        const { and, eq, gte, desc } = await import("drizzle-orm");
         const since = new Date(Date.now() - (hours ?? 24) * 60 * 60 * 1000);
 
-        const rows = await db.select().from(logs)
-          .where(and(eq(logs.level, 'error'), gte(logs.timestamp, since)))
+        const rows = await db
+          .select()
+          .from(logs)
+          .where(and(eq(logs.level, "error"), gte(logs.timestamp, since)))
           .orderBy(desc(logs.timestamp))
           .limit(500);
 
-        const grouped = new Map<string, { count: number; lastSeen: Date; agentId: string | null; taskId: string | null }>();
+        const grouped = new Map<
+          string,
+          {
+            count: number;
+            lastSeen: Date;
+            agentId: string | null;
+            taskId: string | null;
+          }
+        >();
         for (const row of rows) {
-          const key = row.message.replace(/[0-9a-f-]{8,}/gi, '<id>').slice(0, 120);
+          const key = row.message
+            .replace(/[0-9a-f-]{8,}/gi, "<id>")
+            .slice(0, 120);
           const existing = grouped.get(key);
           if (existing) {
             existing.count += 1;
-            if (row.timestamp > existing.lastSeen) existing.lastSeen = row.timestamp;
+            if (row.timestamp > existing.lastSeen)
+              existing.lastSeen = row.timestamp;
           } else {
-            grouped.set(key, { count: 1, lastSeen: row.timestamp, agentId: row.agentId, taskId: row.taskId });
+            grouped.set(key, {
+              count: 1,
+              lastSeen: row.timestamp,
+              agentId: row.agentId,
+              taskId: row.taskId,
+            });
           }
         }
 
         const summary = Array.from(grouped.entries())
-          .map(([pattern, v]) => ({ pattern, count: v.count, lastSeen: v.lastSeen, agentId: v.agentId, taskId: v.taskId }))
+          .map(([pattern, v]) => ({
+            pattern,
+            count: v.count,
+            lastSeen: v.lastSeen,
+            agentId: v.agentId,
+            taskId: v.taskId,
+          }))
           .sort((a, b) => b.count - a.count)
           .slice(0, limit ?? 20);
 
@@ -1479,42 +2084,68 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Schedule a background job ────────────────────────────────────────
     {
-      name: 'schedule_task',
+      name: "schedule_task",
       description:
-        'Create a scheduled background job (cron recurring or one-time). Job types: task_delegation (delegates a task to an agent), health_check (runs health diagnostics), report_generation (generates daily summary), maintenance (cleans old logs/expired data), goal_review, learning_analysis, delegation_followup, goal_progress, failure_review, branch_review, stalled_work_recovery, prompt_self_improve, opportunity_discovery, workforce_planner, work_generation (plans the next batch of tasks from goals/opportunities/workstreams), cron_governor (enforces dynamic-job ceilings and the 15-minute frequency floor). Dynamic jobs must fire at most every 15 minutes and are capped by the governor.',
+        "Create a scheduled background job (cron recurring or one-time). Job types: task_delegation (delegates a task to an agent), health_check (runs health diagnostics), report_generation (generates daily summary), maintenance (cleans old logs/expired data), goal_review, learning_analysis, delegation_followup, goal_progress, failure_review, branch_review, stalled_work_recovery, prompt_self_improve, opportunity_discovery, workforce_planner, work_generation (plans the next batch of tasks from goals/opportunities/workstreams), cron_governor (enforces dynamic-job ceilings and the 15-minute frequency floor). Dynamic jobs must fire at most every 15 minutes and are capped by the governor.",
       schema: z.object({
-        name: z.string().describe('Human-readable job name'),
-        jobType: z.enum([
-          'task_delegation',
-          'health_check',
-          'report_generation',
-          'maintenance',
-          'goal_review',
-          'learning_analysis',
-          'delegation_followup',
-          'goal_progress',
-          'failure_review',
-          'branch_review',
-          'stalled_work_recovery',
-          'prompt_self_improve',
-          'opportunity_discovery',
-          'workforce_planner',
-          'work_generation',
-          'cron_governor',
-          'executor_dispatch',
-        ]).describe('Type of job to schedule'),
-        cronExpression: z.string().optional().describe('Standard 5-part cron expression for recurring jobs (e.g. "0 */6 * * *" for every 6 hours)'),
-        scheduledAt: z.string().optional().describe('ISO timestamp for one-time jobs (mutually exclusive with cronExpression)'),
-        targetAgentId: z.string().optional().describe('Agent to delegate to (for task_delegation jobs)'),
-        payload: z.record(z.any()).optional().describe('Job-specific payload data'),
-        priority: z.number().optional().describe('Priority 1-10 (default 5)'),
+        name: z.string().describe("Human-readable job name"),
+        jobType: z
+          .enum([
+            "task_delegation",
+            "health_check",
+            "report_generation",
+            "maintenance",
+            "goal_review",
+            "learning_analysis",
+            "delegation_followup",
+            "goal_progress",
+            "failure_review",
+            "branch_review",
+            "stalled_work_recovery",
+            "prompt_self_improve",
+            "opportunity_discovery",
+            "workforce_planner",
+            "work_generation",
+            "cron_governor",
+            "executor_dispatch",
+          ])
+          .describe("Type of job to schedule"),
+        cronExpression: z
+          .string()
+          .optional()
+          .describe(
+            'Standard 5-part cron expression for recurring jobs (e.g. "0 */6 * * *" for every 6 hours)',
+          ),
+        scheduledAt: z
+          .string()
+          .optional()
+          .describe(
+            "ISO timestamp for one-time jobs (mutually exclusive with cronExpression)",
+          ),
+        targetAgentId: z
+          .string()
+          .optional()
+          .describe("Agent to delegate to (for task_delegation jobs)"),
+        payload: z
+          .record(z.any())
+          .optional()
+          .describe("Job-specific payload data"),
+        priority: z.number().optional().describe("Priority 1-10 (default 5)"),
       }),
       requiresApproval: false, // Auto-approved 2026-07-22: only inserts into internal scheduledJobs table, no external side effects until the scheduled job itself runs (which goes through its own gated tools).
       // (was requiresApproval: true)
-      async execute({ name, jobType, cronExpression, scheduledAt, targetAgentId, payload, priority }) {
-        const { randomUUID } = await import('crypto');
-        const { db, scheduledJobs } = await import('@workspace/db');
-        const { and, eq, inArray, sql, desc } = await import('drizzle-orm');
+      async execute({
+        name,
+        jobType,
+        cronExpression,
+        scheduledAt,
+        targetAgentId,
+        payload,
+        priority,
+      }) {
+        const { randomUUID } = await import("crypto");
+        const { db, scheduledJobs } = await import("@workspace/db");
+        const { and, eq, inArray, sql, desc } = await import("drizzle-orm");
 
         const id = randomUUID();
         const now = new Date();
@@ -1535,7 +2166,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 targetAgentId
                   ? eq(scheduledJobs.targetAgentId, targetAgentId)
                   : isNull(scheduledJobs.targetAgentId),
-                inArray(scheduledJobs.status, ['active', 'running']),
+                inArray(scheduledJobs.status, ["active", "running"]),
                 eq(scheduledJobs.enabled, true),
               ),
             )
@@ -1557,23 +2188,31 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // hourly sweep can see them.
         if (recurring) {
           const times = getNextRunTimes(cronExpression!, 2, now);
-          if (times.length === 2 && times[1].getTime() - times[0].getTime() < 15 * 60_000) {
+          if (
+            times.length === 2 &&
+            times[1].getTime() - times[0].getTime() < 15 * 60_000
+          ) {
             return {
               created: false,
               error:
-                'Dynamic cron rejected: expressions must fire at most every 15 minutes ' +
-                '(frequency floor enforced by cron_governor). Use a slower cadence.',
+                "Dynamic cron rejected: expressions must fire at most every 15 minutes " +
+                "(frequency floor enforced by cron_governor). Use a slower cadence.",
             };
           }
           const [{ count }] = await db
             .select({ count: sql<number>`count(*)::int` })
             .from(scheduledJobs)
-            .where(and(
-              eq(scheduledJobs.enabled, true),
-              inArray(scheduledJobs.status, ['active', 'running']),
-              sql`${scheduledJobs.payload}->>'dynamic' = 'true'`,
-            ));
-          const cap = Math.max(5, Number(process.env.APEX_MAX_DYNAMIC_JOBS ?? 25));
+            .where(
+              and(
+                eq(scheduledJobs.enabled, true),
+                inArray(scheduledJobs.status, ["active", "running"]),
+                sql`${scheduledJobs.payload}->>'dynamic' = 'true'`,
+              ),
+            );
+          const cap = Math.max(
+            5,
+            Number(process.env.APEX_MAX_DYNAMIC_JOBS ?? 25),
+          );
           if (count >= cap) {
             return {
               created: false,
@@ -1594,7 +2233,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const dynamicPayload = {
           ...(payload ?? {}),
           dynamic: true,
-          createdBy: 'schedule_task',
+          createdBy: "schedule_task",
         };
 
         await db.insert(scheduledJobs).values({
@@ -1607,7 +2246,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           targetAgentId: targetAgentId ?? null,
           payload: dynamicPayload,
           priority: priority ?? 5,
-          status: 'active',
+          status: "active",
           retryCount: 0,
           maxRetries: 3,
           nextRunAt,
@@ -1622,21 +2261,30 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── List scheduled jobs ──────────────────────────────────────────────
     {
-      name: 'list_scheduled_tasks',
-      description: 'List all scheduled background jobs with their status, next run time, and last execution result.',
+      name: "list_scheduled_tasks",
+      description:
+        "List all scheduled background jobs with their status, next run time, and last execution result.",
       schema: z.object({
-        status: z.string().optional().describe('Filter by status: active | paused | completed | failed'),
-        limit: z.number().optional().describe('Max rows (default 25)'),
+        status: z
+          .string()
+          .optional()
+          .describe("Filter by status: active | paused | completed | failed"),
+        limit: z.number().optional().describe("Max rows (default 25)"),
       }),
       requiresApproval: false,
       async execute({ status, limit }) {
-        const { db, scheduledJobs } = await import('@workspace/db');
-        const { eq, desc } = await import('drizzle-orm');
+        const { db, scheduledJobs } = await import("@workspace/db");
+        const { eq, desc } = await import("drizzle-orm");
 
         const query = db.select().from(scheduledJobs);
         const rows = status
-          ? await query.where(eq(scheduledJobs.status, status)).orderBy(desc(scheduledJobs.createdAt)).limit(limit ?? 25)
-          : await query.orderBy(desc(scheduledJobs.createdAt)).limit(limit ?? 25);
+          ? await query
+              .where(eq(scheduledJobs.status, status))
+              .orderBy(desc(scheduledJobs.createdAt))
+              .limit(limit ?? 25)
+          : await query
+              .orderBy(desc(scheduledJobs.createdAt))
+              .limit(limit ?? 25);
 
         return rows;
       },
@@ -1644,27 +2292,35 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Cancel/disable a scheduled job ───────────────────────────────────
     {
-      name: 'cancel_scheduled_task',
-      description: 'Cancel or disable a scheduled background job by ID. The job will stop executing but its history is preserved.',
+      name: "cancel_scheduled_task",
+      description:
+        "Cancel or disable a scheduled background job by ID. The job will stop executing but its history is preserved.",
       schema: z.object({
-        jobId: z.string().describe('The scheduled job ID to cancel'),
+        jobId: z.string().describe("The scheduled job ID to cancel"),
       }),
       requiresApproval: false, // Auto-approved 2026-07-22: only disables an internal scheduled job row, fully reversible, no external side effects.
       // (was requiresApproval: true)
       async execute({ jobId }) {
-        const { db, scheduledJobs } = await import('@workspace/db');
-        const { eq } = await import('drizzle-orm');
+        const { db, scheduledJobs } = await import("@workspace/db");
+        const { eq } = await import("drizzle-orm");
 
-        const [existing] = await db.select().from(scheduledJobs).where(eq(scheduledJobs.id, jobId)).limit(1);
+        const [existing] = await db
+          .select()
+          .from(scheduledJobs)
+          .where(eq(scheduledJobs.id, jobId))
+          .limit(1);
         if (!existing) {
           return { success: false, error: `No scheduled job with id ${jobId}` };
         }
 
-        await db.update(scheduledJobs).set({
-          enabled: false,
-          status: 'paused',
-          updatedAt: new Date(),
-        }).where(eq(scheduledJobs.id, jobId));
+        await db
+          .update(scheduledJobs)
+          .set({
+            enabled: false,
+            status: "paused",
+            updatedAt: new Date(),
+          })
+          .where(eq(scheduledJobs.id, jobId));
 
         return { cancelled: true, jobId, name: existing.name };
       },
@@ -1672,18 +2328,21 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Job execution history ────────────────────────────────────────────
     {
-      name: 'get_job_history',
-      description: 'Get the execution history for a specific scheduled job, including run times, duration, status, and any errors.',
+      name: "get_job_history",
+      description:
+        "Get the execution history for a specific scheduled job, including run times, duration, status, and any errors.",
       schema: z.object({
-        jobId: z.string().describe('The scheduled job ID'),
-        limit: z.number().optional().describe('Max rows (default 20)'),
+        jobId: z.string().describe("The scheduled job ID"),
+        limit: z.number().optional().describe("Max rows (default 20)"),
       }),
       requiresApproval: false,
       async execute({ jobId, limit }) {
-        const { db, jobExecutionLog } = await import('@workspace/db');
-        const { eq, desc } = await import('drizzle-orm');
+        const { db, jobExecutionLog } = await import("@workspace/db");
+        const { eq, desc } = await import("drizzle-orm");
 
-        const rows = await db.select().from(jobExecutionLog)
+        const rows = await db
+          .select()
+          .from(jobExecutionLog)
           .where(eq(jobExecutionLog.jobId, jobId))
           .orderBy(desc(jobExecutionLog.startedAt))
           .limit(limit ?? 20);
@@ -1694,25 +2353,37 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Learning: Analyze performance ───────────────────────────────────
     {
-      name: 'analyze_performance',
-      description: 'Analyze task execution outcomes, success rates, avg durations, and tool execution counts across agents and roles.',
+      name: "analyze_performance",
+      description:
+        "Analyze task execution outcomes, success rates, avg durations, and tool execution counts across agents and roles.",
       schema: z.object({
-        role: z.string().optional().describe('Filter metrics by agent role'),
-        limit: z.number().optional().describe('Max outcomes to analyze (default 50)'),
+        role: z.string().optional().describe("Filter metrics by agent role"),
+        limit: z
+          .number()
+          .optional()
+          .describe("Max outcomes to analyze (default 50)"),
       }),
       requiresApproval: false,
       async execute({ role, limit }) {
-        const { db, taskOutcomes } = await import('@workspace/db');
-        const { eq, desc } = await import('drizzle-orm');
+        const { db, taskOutcomes } = await import("@workspace/db");
+        const { eq, desc } = await import("drizzle-orm");
 
         const query = db.select().from(taskOutcomes);
         const rows = role
-          ? await query.where(eq(taskOutcomes.role, role)).orderBy(desc(taskOutcomes.recordedAt)).limit(limit ?? 50)
-          : await query.orderBy(desc(taskOutcomes.recordedAt)).limit(limit ?? 50);
+          ? await query
+              .where(eq(taskOutcomes.role, role))
+              .orderBy(desc(taskOutcomes.recordedAt))
+              .limit(limit ?? 50)
+          : await query
+              .orderBy(desc(taskOutcomes.recordedAt))
+              .limit(limit ?? 50);
 
         const total = rows.length;
         const successCount = rows.filter((r) => r.success).length;
-        const avgDurationMs = total > 0 ? rows.reduce((sum, r) => sum + r.durationMs, 0) / total : 0;
+        const avgDurationMs =
+          total > 0
+            ? rows.reduce((sum, r) => sum + r.durationMs, 0) / total
+            : 0;
         const totalTools = rows.reduce((sum, r) => sum + r.toolExecutions, 0);
 
         return {
@@ -1729,64 +2400,113 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Learning: Record task outcome ────────────────────────────────────
     {
-      name: 'record_outcome',
-      description: 'Record the outcome of a completed task execution (success/failure, duration, quality) so the learning system has real data to analyze. Call this automatically whenever a task finishes.',
+      name: "record_outcome",
+      description:
+        "Record the outcome of a completed task execution (success/failure, duration, quality) so the learning system has real data to analyze. Call this automatically whenever a task finishes.",
       schema: z.object({
-        taskId: z.string().describe('ID of the completed task'),
-        agentId: z.string().describe('ID of the agent that executed the task'),
-        role: z.string().describe('Role of the executing agent'),
-        durationMs: z.number().describe('Total execution duration in milliseconds'),
-        success: z.boolean().describe('Whether the task completed successfully'),
-        qualityScore: z.number().optional().describe('Self-assessed quality score 0.0-1.0 (default 1.0)'),
-        toolExecutions: z.number().optional().describe('Number of tool calls made (default 0)'),
-        llmCalls: z.number().optional().describe('Number of LLM calls made (default 0)'),
-        iterations: z.number().optional().describe('Number of reasoning iterations (default 1)'),
-        requiredApprovals: z.number().optional().describe('Number of human approvals required (default 0)'),
-        errorType: z.string().optional().describe('Error category if the task failed'),
-        complexity: z.number().optional().describe('Estimated task complexity 0.0-1.0 (default 0.5)'),
-        satisfactionMetric: z.number().optional().describe('Downstream satisfaction signal 0.0-1.0 (default 1.0)'),
-        tags: z.array(z.string()).optional().describe('Free-form tags for later filtering'),
+        taskId: z.string().describe("ID of the completed task"),
+        agentId: z.string().describe("ID of the agent that executed the task"),
+        role: z.string().describe("Role of the executing agent"),
+        durationMs: z
+          .number()
+          .describe("Total execution duration in milliseconds"),
+        success: z
+          .boolean()
+          .describe("Whether the task completed successfully"),
+        qualityScore: z
+          .number()
+          .optional()
+          .describe("Self-assessed quality score 0.0-1.0 (default 1.0)"),
+        toolExecutions: z
+          .number()
+          .optional()
+          .describe("Number of tool calls made (default 0)"),
+        llmCalls: z
+          .number()
+          .optional()
+          .describe("Number of LLM calls made (default 0)"),
+        iterations: z
+          .number()
+          .optional()
+          .describe("Number of reasoning iterations (default 1)"),
+        requiredApprovals: z
+          .number()
+          .optional()
+          .describe("Number of human approvals required (default 0)"),
+        errorType: z
+          .string()
+          .optional()
+          .describe("Error category if the task failed"),
+        complexity: z
+          .number()
+          .optional()
+          .describe("Estimated task complexity 0.0-1.0 (default 0.5)"),
+        satisfactionMetric: z
+          .number()
+          .optional()
+          .describe("Downstream satisfaction signal 0.0-1.0 (default 1.0)"),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Free-form tags for later filtering"),
       }),
       requiresApproval: false,
       async execute({
-        taskId, agentId, role, durationMs, success, qualityScore,
-        toolExecutions, llmCalls, iterations, requiredApprovals,
-        errorType, complexity, satisfactionMetric, tags,
+        taskId,
+        agentId,
+        role,
+        durationMs,
+        success,
+        qualityScore,
+        toolExecutions,
+        llmCalls,
+        iterations,
+        requiredApprovals,
+        errorType,
+        complexity,
+        satisfactionMetric,
+        tags,
       }) {
-        const { db, taskOutcomes } = await import('@workspace/db');
-        const [row] = await db.insert(taskOutcomes).values({
-          taskId,
-          agentId,
-          role,
-          durationMs,
-          success,
-          qualityScore: qualityScore ?? 1.0,
-          toolExecutions: toolExecutions ?? 0,
-          llmCalls: llmCalls ?? 0,
-          iterations: iterations ?? 1,
-          requiredApprovals: requiredApprovals ?? 0,
-          errorType: errorType ?? null,
-          complexity: complexity ?? 0.5,
-          satisfactionMetric: satisfactionMetric ?? 1.0,
-          tags: tags ?? null,
-        }).returning();
+        const { db, taskOutcomes } = await import("@workspace/db");
+        const [row] = await db
+          .insert(taskOutcomes)
+          .values({
+            taskId,
+            agentId,
+            role,
+            durationMs,
+            success,
+            qualityScore: qualityScore ?? 1.0,
+            toolExecutions: toolExecutions ?? 0,
+            llmCalls: llmCalls ?? 0,
+            iterations: iterations ?? 1,
+            requiredApprovals: requiredApprovals ?? 0,
+            errorType: errorType ?? null,
+            complexity: complexity ?? 0.5,
+            satisfactionMetric: satisfactionMetric ?? 1.0,
+            tags: tags ?? null,
+          })
+          .returning();
         return { recorded: true, id: row.id };
       },
     },
 
     // ─── Learning: Get insights ───────────────────────────────────────────
     {
-      name: 'get_insights',
-      description: 'Get active learning insights and detected patterns across task executions.',
+      name: "get_insights",
+      description:
+        "Get active learning insights and detected patterns across task executions.",
       schema: z.object({
-        limit: z.number().optional().describe('Max insights (default 20)'),
+        limit: z.number().optional().describe("Max insights (default 20)"),
       }),
       requiresApproval: false,
       async execute({ limit }) {
-        const { db, learningInsights } = await import('@workspace/db');
-        const { desc } = await import('drizzle-orm');
+        const { db, learningInsights } = await import("@workspace/db");
+        const { desc } = await import("drizzle-orm");
 
-        const rows = await db.select().from(learningInsights)
+        const rows = await db
+          .select()
+          .from(learningInsights)
           .orderBy(desc(learningInsights.createdAt))
           .limit(limit ?? 20);
 
@@ -1796,20 +2516,32 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Learning: Get strategy recommendations ──────────────────────────
     {
-      name: 'get_strategy_recommendations',
-      description: 'Get active strategy recommendations queue. All recommendations are advisory and await human review/approval.',
+      name: "get_strategy_recommendations",
+      description:
+        "Get active strategy recommendations queue. All recommendations are advisory and await human review/approval.",
       schema: z.object({
-        status: z.string().optional().describe('Filter by status: pending | approved | rejected | applied | superseded. Defaults to pending.'),
-        limit: z.number().int().min(1).max(100).optional().describe('Maximum rows (default 25, hard maximum 100).'),
+        status: z
+          .string()
+          .optional()
+          .describe(
+            "Filter by status: pending | approved | rejected | applied | superseded. Defaults to pending.",
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("Maximum rows (default 25, hard maximum 100)."),
       }),
       requiresApproval: false,
       async execute({ status, limit }) {
-        const { db, strategyRecommendations } = await import('@workspace/db');
-        const { eq, desc } = await import('drizzle-orm');
+        const { db, strategyRecommendations } = await import("@workspace/db");
+        const { eq, desc } = await import("drizzle-orm");
 
         const query = db.select().from(strategyRecommendations);
         const rows = await query
-          .where(eq(strategyRecommendations.status, status ?? 'pending'))
+          .where(eq(strategyRecommendations.status, status ?? "pending"))
           .orderBy(desc(strategyRecommendations.createdAt))
           .limit(limit ?? 25);
 
@@ -1819,34 +2551,49 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Learning: Set performance baseline ─────────────────────────────
     {
-      name: 'set_performance_baseline',
-      description: 'Set or update a target performance baseline metric (e.g. avg_task_duration_ms, overall_success_rate). Requires approval.',
+      name: "set_performance_baseline",
+      description:
+        "Set or update a target performance baseline metric (e.g. avg_task_duration_ms, overall_success_rate). Requires approval.",
       schema: z.object({
-        metricName: z.string().describe('Metric identifier name'),
-        baselineValue: z.number().describe('Target numeric baseline value'),
-        measurementWindow: z.string().optional().describe('Time window (default "30d")'),
-        sampleSize: z.number().optional().describe('Number of samples benchmarked'),
+        metricName: z.string().describe("Metric identifier name"),
+        baselineValue: z.number().describe("Target numeric baseline value"),
+        measurementWindow: z
+          .string()
+          .optional()
+          .describe('Time window (default "30d")'),
+        sampleSize: z
+          .number()
+          .optional()
+          .describe("Number of samples benchmarked"),
       }),
       requiresApproval: false, // Auto-approved 2026-07-22: internal learning-system metric config only, no external side effects.
       // (was requiresApproval: true)
-      async execute({ metricName, baselineValue, measurementWindow, sampleSize }) {
-        const { db, performanceBaselines } = await import('@workspace/db');
+      async execute({
+        metricName,
+        baselineValue,
+        measurementWindow,
+        sampleSize,
+      }) {
+        const { db, performanceBaselines } = await import("@workspace/db");
 
-        await db.insert(performanceBaselines).values({
-          metricName,
-          baselineValue,
-          measurementWindow: measurementWindow ?? '30d',
-          sampleSize: sampleSize ?? 0,
-          updatedAt: new Date(),
-        }).onConflictDoUpdate({
-          target: performanceBaselines.metricName,
-          set: {
+        await db
+          .insert(performanceBaselines)
+          .values({
+            metricName,
             baselineValue,
-            measurementWindow: measurementWindow ?? '30d',
+            measurementWindow: measurementWindow ?? "30d",
             sampleSize: sampleSize ?? 0,
             updatedAt: new Date(),
-          },
-        });
+          })
+          .onConflictDoUpdate({
+            target: performanceBaselines.metricName,
+            set: {
+              baselineValue,
+              measurementWindow: measurementWindow ?? "30d",
+              sampleSize: sampleSize ?? 0,
+              updatedAt: new Date(),
+            },
+          });
 
         return { updated: true, metricName, baselineValue };
       },
@@ -1854,10 +2601,13 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Learning: Apply strategy recommendation ─────────────────────────
     {
-      name: 'apply_strategy_recommendation',
-      description: 'Mark an approved strategy recommendation as applied. Requires human approval.',
+      name: "apply_strategy_recommendation",
+      description:
+        "Mark an approved strategy recommendation as applied. Requires human approval.",
       schema: z.object({
-        recommendationId: z.string().describe('ID of the strategy recommendation to apply'),
+        recommendationId: z
+          .string()
+          .describe("ID of the strategy recommendation to apply"),
       }),
       requiresApproval: false, // Auto-approved 2026-07-22: marks an internal recommendation row applied, no external side effects by itself.
       // (was requiresApproval: true)
@@ -1872,28 +2622,35 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // CodeRabbit review (P1): "the transition must be shared or blocked
         // consistently across both paths." Do not reintroduce a second
         // implementation of this check here.
-        const { attemptApplyStrategyRecommendation } = await import('@workspace/learning-system');
-        const result = await attemptApplyStrategyRecommendation(recommendationId);
+        const { attemptApplyStrategyRecommendation } =
+          await import("@workspace/learning-system");
+        const result =
+          await attemptApplyStrategyRecommendation(recommendationId);
         if (!result.ok) {
           return {
             success: false,
             error: result.error,
             requiresApproval: result.status === 400,
-            currentStatus: result.status === 400 ? 'not_approved' : undefined,
+            currentStatus: result.status === 400 ? "not_approved" : undefined,
           };
         }
-        return { applied: true, recommendationId, title: result.recommendation.title };
+        return {
+          applied: true,
+          recommendationId,
+          title: result.recommendation.title,
+        };
       },
     },
 
     // ─── CI/CD: Run test suite ───────────────────────────────────────────
     {
-      name: 'run_tests',
-      description: 'Run automated test suite and typechecks across workspace packages. Returns detailed test pass/fail report.',
+      name: "run_tests",
+      description:
+        "Run automated test suite and typechecks across workspace packages. Returns detailed test pass/fail report.",
       schema: z.object({}),
       requiresApproval: false,
       async execute() {
-        const { TestRunner } = await import('@workspace/cicd-automation');
+        const { TestRunner } = await import("@workspace/cicd-automation");
         const runner = new TestRunner();
         const report = await runner.runTests();
         return report;
@@ -1902,12 +2659,13 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Run linter ───────────────────────────────────────────────
     {
-      name: 'run_lint',
-      description: 'Run linter and strict typecheck audit across workspace packages.',
+      name: "run_lint",
+      description:
+        "Run linter and strict typecheck audit across workspace packages.",
       schema: z.object({}),
       requiresApproval: false,
       async execute() {
-        const { LinterRunner } = await import('@workspace/cicd-automation');
+        const { LinterRunner } = await import("@workspace/cicd-automation");
         const runner = new LinterRunner();
         const report = await runner.runLint();
         return report;
@@ -1916,12 +2674,13 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Build project ────────────────────────────────────────────
     {
-      name: 'build_project',
-      description: 'Build production assets for workspace packages including Vite dashboard.',
+      name: "build_project",
+      description:
+        "Build production assets for workspace packages including Vite dashboard.",
       schema: z.object({}),
       requiresApproval: false,
       async execute() {
-        const { BuildManager } = await import('@workspace/cicd-automation');
+        const { BuildManager } = await import("@workspace/cicd-automation");
         const manager = new BuildManager();
         const result = await manager.buildProject();
         return result;
@@ -1930,7 +2689,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Deploy to environment ───────────────────────────────────
     {
-      name: 'deploy_to_environment',
+      name: "deploy_to_environment",
       // CORRECTED 2026-09-05: this description and schema previously named
       // AWS Lightsail/CodeBuild long after packages/cicd-automation/src/
       // deployment-manager.ts was rewritten against the real Cloud Run
@@ -1944,18 +2703,26 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       // authenticated gcloud identity or Workload Identity; without either it
       // fails with actionable instructions instead of faking success.
       description:
-        'Deploy Apex to Google Cloud Run for real: builds the exact reviewed commit via Google Cloud Build (cloudbuild.apex.yaml), tags an immutable image, updates the existing configured Cloud Run service with `gcloud run services update`, waits for the new revision to become Ready, then verifies /health.build.sha matches and returns the real service URL. Takes several minutes. Throws with actionable instructions if deploys are disabled (APEX_DEPLOY_ENABLED) or gcloud credentials/config are missing — a throw means NOTHING shipped, so never report a release as done unless this returns successfully. Requires human approval.',
+        "Deploy Apex to Google Cloud Run for real: builds the exact reviewed commit via Google Cloud Build (cloudbuild.apex.yaml), tags an immutable image, updates the existing configured Cloud Run service with `gcloud run services update`, waits for the new revision to become Ready, then verifies /health.build.sha matches and returns the real service URL. Takes several minutes. Throws with actionable instructions if deploys are disabled (APEX_DEPLOY_ENABLED) or gcloud credentials/config are missing — a throw means NOTHING shipped, so never report a release as done unless this returns successfully. Requires human approval.",
       schema: z.object({
-        environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
-        platform: z.enum(['cloud-run', 'local']).optional().describe('Deployment platform — use "cloud-run" (the existing Google Cloud Run service) for a real deploy; "local" has no deploy target and is rejected. Apex is NOT hosted on Vercel, Railway, or AWS Lightsail.'),
+        environment: z
+          .enum(["staging", "production"])
+          .describe("Target deployment environment"),
+        platform: z
+          .enum(["cloud-run", "local"])
+          .optional()
+          .describe(
+            'Deployment platform — use "cloud-run" (the existing Google Cloud Run service) for a real deploy; "local" has no deploy target and is rejected. Apex is NOT hosted on Vercel, Railway, or AWS Lightsail.',
+          ),
       }),
       requiresApproval: true,
       async execute({ environment, platform }) {
-        const { DeploymentManager } = await import('@workspace/cicd-automation');
+        const { DeploymentManager } =
+          await import("@workspace/cicd-automation");
         const manager = new DeploymentManager();
         const result = await manager.deploy({
           environment,
-          platform: platform ?? 'cloud-run',
+          platform: platform ?? "cloud-run",
         });
         return result;
       },
@@ -1963,15 +2730,16 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Rollback deployment ──────────────────────────────────────
     {
-      name: 'rollback_deployment',
+      name: "rollback_deployment",
       description:
-        'Roll the live Google Cloud Run service back to its previous known-good revision and verify /health before reporting success. Requires approval.',
+        "Roll the live Google Cloud Run service back to its previous known-good revision and verify /health before reporting success. Requires approval.",
       schema: z.object({
-        deploymentId: z.string().describe('Deployment ID to roll back'),
+        deploymentId: z.string().describe("Deployment ID to roll back"),
       }),
       requiresApproval: true,
       async execute({ deploymentId }) {
-        const { DeploymentManager } = await import('@workspace/cicd-automation');
+        const { DeploymentManager } =
+          await import("@workspace/cicd-automation");
         const manager = new DeploymentManager();
         const result = await manager.rollback(deploymentId);
         return result;
@@ -1980,22 +2748,33 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Create feature branch ───────────────────────────────────
     {
-      name: 'create_feature_branch',
-      description: 'Create a new git feature branch for isolated feature development. Requires approval.',
+      name: "create_feature_branch",
+      description:
+        "Create a new git feature branch for isolated feature development. Requires approval.",
       schema: z.object({
-        branchName: z.string().describe('Name of feature branch to create (e.g. "feat/learning-system")'),
+        branchName: z
+          .string()
+          .describe(
+            'Name of feature branch to create (e.g. "feat/learning-system")',
+          ),
       }),
       requiresApproval: false, // Auto-approved 2026-07-22: local git branch creation only (no push), fully reversible and isolated from main.
       // (was requiresApproval: true)
       async execute({ branchName }) {
-        const { exec } = await import('child_process');
-        const { promisify } = await import('util');
+        const { exec } = await import("child_process");
+        const { promisify } = await import("util");
         const execAsync = promisify(exec);
 
         // Guard against shell metacharacters and path-style branch names.
-        const valid = /^[A-Za-z0-9_\-/.]+$/.test(branchName) && !branchName.startsWith('-') && !branchName.includes('..');
+        const valid =
+          /^[A-Za-z0-9_\-/.]+$/.test(branchName) &&
+          !branchName.startsWith("-") &&
+          !branchName.includes("..");
         if (!valid) {
-          return { success: false, error: `Invalid branch name: ${branchName}` };
+          return {
+            success: false,
+            error: `Invalid branch name: ${branchName}`,
+          };
         }
 
         try {
@@ -2009,21 +2788,25 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Git status (read-only) ───────────────────────────────────
     {
-      name: 'git_status',
-      description: 'Get current git status: branch, uncommitted changes, and last commit. Read-only, no side effects.',
+      name: "git_status",
+      description:
+        "Get current git status: branch, uncommitted changes, and last commit. Read-only, no side effects.",
       schema: z.object({}),
       requiresApproval: false,
       async execute() {
         try {
           const [branch, status, lastCommit] = await Promise.all([
-            execAsync('git rev-parse --abbrev-ref HEAD'),
-            execAsync('git status --short'),
-            execAsync('git log -1 --format=%H%n%an%n%s'),
+            execAsync("git rev-parse --abbrev-ref HEAD"),
+            execAsync("git status --short"),
+            execAsync("git log -1 --format=%H%n%an%n%s"),
           ]);
-          const [hash, author, subject] = lastCommit.stdout.trim().split('\n');
+          const [hash, author, subject] = lastCommit.stdout.trim().split("\n");
           return {
             branch: branch.stdout.trim(),
-            uncommittedChanges: status.stdout.trim().split('\n').filter(Boolean),
+            uncommittedChanges: status.stdout
+              .trim()
+              .split("\n")
+              .filter(Boolean),
             lastCommit: { hash, author, subject },
           };
         } catch (err: any) {
@@ -2034,32 +2817,71 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Push to remote ───────────────────────────────────────────
     {
-      name: 'push_to_remote',
-      description: 'Push committed changes on a branch to the GitHub remote. Requires approval and GITHUB_TOKEN_4 configured in this environment.',
+      name: "push_to_remote",
+      description:
+        "Push committed changes on a branch to the GitHub remote. Requires approval and GITHUB_TOKEN_4 configured in this environment.",
       schema: z.object({
-        branch: z.string().optional().describe('Branch to push (default: current branch)'),
-        remote: z.string().optional().describe('Remote name (default "origin")'),
+        branch: z
+          .string()
+          .optional()
+          .describe("Branch to push (default: current branch)"),
+        remote: z
+          .string()
+          .optional()
+          .describe('Remote name (default "origin")'),
       }),
       requiresApproval: true,
       async execute({ branch, remote }) {
         const token = process.env.GITHUB_TOKEN_4;
         if (!token) {
-          return { success: false, error: 'GITHUB_TOKEN_4 is not configured in this environment' };
+          return {
+            success: false,
+            error: "GITHUB_TOKEN_4 is not configured in this environment",
+          };
         }
         try {
-          const targetBranch = branch ?? (await execAsync('git rev-parse --abbrev-ref HEAD')).stdout.trim();
-          const remoteName = remote ?? 'origin';
+          const targetBranch =
+            branch ??
+            (await execAsync("git rev-parse --abbrev-ref HEAD")).stdout.trim();
+          const remoteName = remote ?? "origin";
           // Validate branch and remote names to prevent shell injection.
-          if (!/^[A-Za-z0-9_\-/.]+$/.test(targetBranch) || targetBranch.startsWith('-') || targetBranch.includes('..')) {
-            return { success: false, error: `Invalid branch name: ${targetBranch}` };
+          if (
+            !/^[A-Za-z0-9_\-/.]+$/.test(targetBranch) ||
+            targetBranch.startsWith("-") ||
+            targetBranch.includes("..")
+          ) {
+            return {
+              success: false,
+              error: `Invalid branch name: ${targetBranch}`,
+            };
           }
-          if (!/^[A-Za-z0-9_\-/.]+$/.test(remoteName) || remoteName.startsWith('-')) {
-            return { success: false, error: `Invalid remote name: ${remoteName}` };
+          if (
+            !/^[A-Za-z0-9_\-/.]+$/.test(remoteName) ||
+            remoteName.startsWith("-")
+          ) {
+            return {
+              success: false,
+              error: `Invalid remote name: ${remoteName}`,
+            };
           }
-          const { stdout: remoteUrlRaw } = await execAsync(`git remote get-url -- ${remoteName}`);
-          const authedUrl = remoteUrlRaw.trim().replace('https://github.com/', `https://x-access-token:${token}@github.com/`);
-          const { stdout, stderr } = await execAsync(`git push -- ${authedUrl} ${targetBranch}`);
-          return { success: true, branch: targetBranch, remote: remoteName, output: (stdout || stderr).slice(0, 4000) };
+          const { stdout: remoteUrlRaw } = await execAsync(
+            `git remote get-url -- ${remoteName}`,
+          );
+          const authedUrl = remoteUrlRaw
+            .trim()
+            .replace(
+              "https://github.com/",
+              `https://x-access-token:${token}@github.com/`,
+            );
+          const { stdout, stderr } = await execAsync(
+            `git push -- ${authedUrl} ${targetBranch}`,
+          );
+          return {
+            success: true,
+            branch: targetBranch,
+            remote: remoteName,
+            output: (stdout || stderr).slice(0, 4000),
+          };
         } catch (err: any) {
           return { success: false, error: err?.message || String(err) };
         }
@@ -2068,54 +2890,89 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── CI/CD: Create pull request ──────────────────────────────────────
     {
-      name: 'create_pull_request',
-      description: 'Create a real pull request on GitHub via the GitHub API for code review. Requires approval and GITHUB_TOKEN_4 configured in this environment.',
+      name: "create_pull_request",
+      description:
+        "Create a real pull request on GitHub via the GitHub API for code review. Requires approval and GITHUB_TOKEN_4 configured in this environment.",
       schema: z.object({
-        title: z.string().describe('PR Title'),
-        body: z.string().describe('PR Description'),
-        headBranch: z.string().describe('Feature branch name'),
-        baseBranch: z.string().optional().describe('Base branch (default "main")'),
-        repo: z.string().optional().describe('owner/repo (default "patriotnewsactivism/Apex")'),
+        title: z.string().describe("PR Title"),
+        body: z.string().describe("PR Description"),
+        headBranch: z.string().describe("Feature branch name"),
+        baseBranch: z
+          .string()
+          .optional()
+          .describe('Base branch (default "main")'),
+        repo: z
+          .string()
+          .optional()
+          .describe('owner/repo (default "patriotnewsactivism/Apex")'),
       }),
       requiresApproval: true,
       async execute({ title, body, headBranch, baseBranch, repo }) {
         const token = process.env.GITHUB_TOKEN_4;
         if (!token) {
-          return { success: false, error: 'GITHUB_TOKEN_4 is not configured in this environment' };
+          return {
+            success: false,
+            error: "GITHUB_TOKEN_4 is not configured in this environment",
+          };
         }
-        const targetRepo = repo ?? 'patriotnewsactivism/Apex';
+        const targetRepo = repo ?? "patriotnewsactivism/Apex";
         if (!/^[-\w]+\/[-\w]+$/.test(targetRepo)) {
-          return { success: false, error: `Invalid repo format: ${targetRepo}` };
+          return {
+            success: false,
+            error: `Invalid repo format: ${targetRepo}`,
+          };
         }
-        const res = await fetch(`https://api.github.com/repos/${targetRepo}/pulls`, {
-          method: 'POST',
-          headers: {
-            Authorization: `token ${token}`,
-            Accept: 'application/vnd.github+json',
-            'Content-Type': 'application/json',
+        const res = await fetch(
+          `https://api.github.com/repos/${targetRepo}/pulls`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `token ${token}`,
+              Accept: "application/vnd.github+json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              title,
+              body,
+              head: headBranch,
+              base: baseBranch ?? "main",
+            }),
           },
-          body: JSON.stringify({ title, body, head: headBranch, base: baseBranch ?? 'main' }),
-        });
+        );
         const data: any = await res.json();
         if (!res.ok) {
-          return { success: false, error: data?.message || `GitHub API error ${res.status}`, details: data };
+          return {
+            success: false,
+            error: data?.message || `GitHub API error ${res.status}`,
+            details: data,
+          };
         }
-        return { success: true, prUrl: data.html_url, number: data.number, title, headBranch, baseBranch: baseBranch ?? 'main' };
+        return {
+          success: true,
+          prUrl: data.html_url,
+          number: data.number,
+          title,
+          headBranch,
+          baseBranch: baseBranch ?? "main",
+        };
       },
     },
 
     // ─── MultiApp: Register application ──────────────────────────────────
     {
-      name: 'register_application',
-      description: 'Register a new portfolio application repository for multi-application orchestration. Requires approval.',
+      name: "register_application",
+      description:
+        "Register a new portfolio application repository for multi-application orchestration. Requires approval.",
       schema: z.object({
-        id: z.string().describe('Application identifier (e.g. "buildmybot2", "aria")'),
-        name: z.string().describe('Display name'),
-        repoUrl: z.string().describe('GitHub repository URL'),
+        id: z
+          .string()
+          .describe('Application identifier (e.g. "buildmybot2", "aria")'),
+        name: z.string().describe("Display name"),
+        repoUrl: z.string().describe("GitHub repository URL"),
       }),
       requiresApproval: true,
       async execute({ id, name, repoUrl }) {
-        const { ApplicationManager } = await import('@workspace/multiapp');
+        const { ApplicationManager } = await import("@workspace/multiapp");
         const manager = new ApplicationManager();
         const success = await manager.registerApplication(id, name, repoUrl);
         return { success, id, name };
@@ -2124,14 +2981,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── MultiApp: Check application health ──────────────────────────────
     {
-      name: 'app_health_check',
-      description: 'Check health status and sync reachability of a registered portfolio application.',
+      name: "app_health_check",
+      description:
+        "Check health status and sync reachability of a registered portfolio application.",
       schema: z.object({
-        id: z.string().describe('Application identifier'),
+        id: z.string().describe("Application identifier"),
       }),
       requiresApproval: false,
       async execute({ id }) {
-        const { ApplicationManager } = await import('@workspace/multiapp');
+        const { ApplicationManager } = await import("@workspace/multiapp");
         const manager = new ApplicationManager();
         const health = await manager.checkHealth(id);
         return health;
@@ -2140,15 +2998,16 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── MultiApp: Delegate to application ───────────────────────────────
     {
-      name: 'delegate_to_application',
-      description: 'Delegate a task to a registered target application repository. Requires approval.',
+      name: "delegate_to_application",
+      description:
+        "Delegate a task to a registered target application repository. Requires approval.",
       schema: z.object({
-        appId: z.string().describe('Target application ID'),
-        taskName: z.string().describe('Task name / specification'),
+        appId: z.string().describe("Target application ID"),
+        taskName: z.string().describe("Task name / specification"),
       }),
       requiresApproval: true,
       async execute({ appId, taskName }) {
-        const { OrchestrationEngine } = await import('@workspace/multiapp');
+        const { OrchestrationEngine } = await import("@workspace/multiapp");
         const engine = new OrchestrationEngine();
         const result = await engine.delegateToApplication(appId, taskName);
         return result;
@@ -2157,14 +3016,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── MultiApp: Read shared insights ─────────────────────────────────
     {
-      name: 'shared_insights',
-      description: 'Get read-only cross-application shared insights and global learnings.',
+      name: "shared_insights",
+      description:
+        "Get read-only cross-application shared insights and global learnings.",
       schema: z.object({
-        limit: z.number().optional().describe('Max rows (default 20)'),
+        limit: z.number().optional().describe("Max rows (default 20)"),
       }),
       requiresApproval: false,
       async execute({ limit }) {
-        const { KnowledgeBridge } = await import('@workspace/multiapp');
+        const { KnowledgeBridge } = await import("@workspace/multiapp");
         const bridge = new KnowledgeBridge();
         const insights = await bridge.getSharedInsights(limit);
         return insights;
@@ -2173,15 +3033,19 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Predictive: Forecast tasks ──────────────────────────────────────
     {
-      name: 'forecast_tasks',
-      description: 'Compute predictive task completion velocity and success rate forecasts with confidence intervals.',
+      name: "forecast_tasks",
+      description:
+        "Compute predictive task completion velocity and success rate forecasts with confidence intervals.",
       schema: z.object({
-        metricName: z.string().optional().describe('Metric name (default "task_completion_rate")'),
+        metricName: z
+          .string()
+          .optional()
+          .describe('Metric name (default "task_completion_rate")'),
         window: z.string().optional().describe('Time window (default "7d")'),
       }),
       requiresApproval: false,
       async execute({ metricName, window }) {
-        const { Forecaster } = await import('@workspace/predictive');
+        const { Forecaster } = await import("@workspace/predictive");
         const forecaster = new Forecaster();
         const result = await forecaster.forecastTasks(metricName, window);
         return result;
@@ -2190,14 +3054,18 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Predictive: Risk assessment ─────────────────────────────────────
     {
-      name: 'risk_assessment',
-      description: 'Run automated risk detection across portfolio applications and systemic performance trends.',
+      name: "risk_assessment",
+      description:
+        "Run automated risk detection across portfolio applications and systemic performance trends.",
       schema: z.object({
-        target: z.string().optional().describe('Risk assessment target (default "global")'),
+        target: z
+          .string()
+          .optional()
+          .describe('Risk assessment target (default "global")'),
       }),
       requiresApproval: false,
       async execute({ target }) {
-        const { RiskDetector } = await import('@workspace/predictive');
+        const { RiskDetector } = await import("@workspace/predictive");
         const detector = new RiskDetector();
         const result = await detector.riskAssessment(target);
         return result;
@@ -2206,28 +3074,52 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Vapi: Make outbound AI phone call ────────────────────────────────
     {
-      name: 'make_outbound_call',
-      description: 'Make an outbound AI phone call to a prospect/customer. The AI voice agent will use the provided script as its system prompt and conduct the conversation. Returns a call ID. Costs ~$0.05-0.30/min (Vapi platform + provider pass-through). Requires VAPI_API_KEY and VAPI_PHONE_NUMBER_ID to be configured.',
+      name: "make_outbound_call",
+      description:
+        "Make an outbound AI phone call to a prospect/customer. The AI voice agent will use the provided script as its system prompt and conduct the conversation. Returns a call ID. Costs ~$0.05-0.30/min (Vapi platform + provider pass-through). Requires VAPI_API_KEY and VAPI_PHONE_NUMBER_ID to be configured.",
       schema: z.object({
-        customerNumber: z.string().describe('Destination phone number in E.164 format (e.g. "+18328804970")'),
-        customerName: z.string().optional().describe('Name of the person being called (for personalization)'),
-        assistantPrompt: z.string().describe('System prompt for the AI caller — the cold call script, value proposition, objection handling, and goal of the call. Be specific and conversational.'),
-        firstMessage: z.string().describe('The exact words the AI says when the call connects (e.g. "Hi, is this {{customerName}}? I\'m Alex from BuildMyBot.app...")'),
+        customerNumber: z
+          .string()
+          .describe(
+            'Destination phone number in E.164 format (e.g. "+18328804970")',
+          ),
+        customerName: z
+          .string()
+          .optional()
+          .describe("Name of the person being called (for personalization)"),
+        assistantPrompt: z
+          .string()
+          .describe(
+            "System prompt for the AI caller — the cold call script, value proposition, objection handling, and goal of the call. Be specific and conversational.",
+          ),
+        firstMessage: z
+          .string()
+          .describe(
+            'The exact words the AI says when the call connects (e.g. "Hi, is this {{customerName}}? I\'m Alex from BuildMyBot.app...")',
+          ),
       }),
       requiresApproval: true, // Makes a real phone call to a real person — externally visible, costs money, irreversible.
-      async execute({ customerNumber, customerName, assistantPrompt, firstMessage }) {
+      async execute({
+        customerNumber,
+        customerName,
+        assistantPrompt,
+        firstMessage,
+      }) {
         const apiKey = process.env.VAPI_API_KEY;
         const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
 
         if (!apiKey || !phoneNumberId) {
           return {
             success: false,
-            error: 'Vapi is not configured. Set VAPI_API_KEY and VAPI_PHONE_NUMBER_ID env vars. Sign up at https://dashboard.vapi.ai to get started.',
+            error:
+              "Vapi is not configured. Set VAPI_API_KEY and VAPI_PHONE_NUMBER_ID env vars. Sign up at https://dashboard.vapi.ai to get started.",
           };
         }
 
         // Build the webhook URL for receiving call results (end-of-call-report)
-        const webhookUrl = process.env.VAPI_WEBHOOK_URL ?? `${process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live'}/api/vapi/webhook`;
+        const webhookUrl =
+          process.env.VAPI_WEBHOOK_URL ??
+          `${process.env.PUBLIC_URL ?? "https://apex.donmatthews.live"}/api/vapi/webhook`;
 
         // Create a transient (inline) assistant — no need to pre-create one via POST /assistant.
         // The assistant config includes the cold call script as the system prompt,
@@ -2238,14 +3130,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // the checkout URL — the AI then tells the prospect "I've sent you a link."
         const callBody = {
           assistant: {
-            name: 'APEX Outbound SDR',
+            name: "APEX Outbound SDR",
             firstMessage,
             model: {
-              provider: 'openai',
-              model: 'gpt-4o',
+              provider: "openai",
+              model: "gpt-4o",
               messages: [
                 {
-                  role: 'system',
+                  role: "system",
                   content: assistantPrompt,
                 },
               ],
@@ -2254,39 +3146,47 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             },
             tools: [
               {
-                type: 'function',
+                type: "function",
                 function: {
-                  name: 'send_checkout_link',
-                  description: 'Send a Stripe checkout link to the prospect so they can sign up for BuildMyBot.app right now. Call this when the prospect agrees to sign up. Ask for their email first if you don\'t have it.',
+                  name: "send_checkout_link",
+                  description:
+                    "Send a Stripe checkout link to the prospect so they can sign up for BuildMyBot.app right now. Call this when the prospect agrees to sign up. Ask for their email first if you don't have it.",
                   parameters: {
-                    type: 'object',
+                    type: "object",
                     properties: {
                       plan: {
-                        type: 'string',
-                        enum: ['starter', 'professional', 'executive', 'enterprise'],
-                        description: 'Which plan the prospect wants. Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
+                        type: "string",
+                        enum: [
+                          "starter",
+                          "professional",
+                          "executive",
+                          "enterprise",
+                        ],
+                        description:
+                          "Which plan the prospect wants. Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo",
                       },
                       email: {
-                        type: 'string',
-                        description: "The prospect's email address to send the checkout link to",
+                        type: "string",
+                        description:
+                          "The prospect's email address to send the checkout link to",
                       },
                     },
-                    required: ['plan', 'email'],
+                    required: ["plan", "email"],
                   },
                 },
               },
             ],
             voice: {
-              provider: '11labs',
-              voiceId: '21m00Tcm4TlvDq8ikWAM',
+              provider: "11labs",
+              voiceId: "21m00Tcm4TlvDq8ikWAM",
               stability: 0.5,
               similarityBoost: 0.75,
               speed: 1.0,
             },
             transcriber: {
-              provider: 'deepgram',
-              model: 'nova-2-phonecall',
-              language: 'en-US',
+              provider: "deepgram",
+              model: "nova-2-phonecall",
+              language: "en-US",
               smartFormat: true,
             },
             server: {
@@ -2302,46 +3202,53 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           },
         };
 
-        const res = await fetch('https://api.vapi.ai/call', {
-          method: 'POST',
+        const res = await fetch("https://api.vapi.ai/call", {
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify(callBody),
         });
 
         if (!res.ok) {
-          const errText = await res.text().catch(() => '');
+          const errText = await res.text().catch(() => "");
           return {
             success: false,
             error: `Vapi call failed (${res.status}): ${errText.slice(0, 500)}`,
           };
         }
 
-        const data = await res.json() as { id: string; status: string; startedAt?: string };
+        const data = (await res.json()) as {
+          id: string;
+          status: string;
+          startedAt?: string;
+        };
         return {
           success: true,
           callId: data.id,
           status: data.status,
           startedAt: data.startedAt,
-          message: `Outbound call initiated to ${customerNumber}${customerName ? ` (${customerName})` : ''}. Call ID: ${data.id}. The AI agent will use your script and conduct the conversation. Results will be logged via webhook.`,
+          message: `Outbound call initiated to ${customerNumber}${customerName ? ` (${customerName})` : ""}. Call ID: ${data.id}. The AI agent will use your script and conduct the conversation. Results will be logged via webhook.`,
         };
       },
     },
 
     // ─── Vapi: Get call status + transcript ───────────────────────────────
     {
-      name: 'get_call_status',
-      description: 'Check the status of an outbound call — includes current status (ringing/in-progress/ended), transcript, AI analysis summary, success evaluation, recording URLs, and cost breakdown. Poll this after making a call to get results.',
+      name: "get_call_status",
+      description:
+        "Check the status of an outbound call — includes current status (ringing/in-progress/ended), transcript, AI analysis summary, success evaluation, recording URLs, and cost breakdown. Poll this after making a call to get results.",
       schema: z.object({
-        callId: z.string().describe('The Vapi call ID returned from make_outbound_call'),
+        callId: z
+          .string()
+          .describe("The Vapi call ID returned from make_outbound_call"),
       }),
       requiresApproval: false, // Read-only — just checks status, no side effects.
       async execute({ callId }) {
         const apiKey = process.env.VAPI_API_KEY;
         if (!apiKey) {
-          return { success: false, error: 'VAPI_API_KEY not configured' };
+          return { success: false, error: "VAPI_API_KEY not configured" };
         }
 
         const res = await fetch(`https://api.vapi.ai/call/${callId}`, {
@@ -2349,18 +3256,29 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         });
 
         if (!res.ok) {
-          return { success: false, error: `Vapi GET call failed (${res.status})` };
+          return {
+            success: false,
+            error: `Vapi GET call failed (${res.status})`,
+          };
         }
 
-        const data = await res.json() as {
+        const data = (await res.json()) as {
           id: string;
           status: string;
           type?: string;
           startedAt?: string;
           endedAt?: string;
           endedReason?: string;
-          artifact?: { transcript?: string; recordingUrl?: string; stereoRecordingUrl?: string };
-          analysis?: { summary?: string; structuredData?: unknown; successEvaluation?: string };
+          artifact?: {
+            transcript?: string;
+            recordingUrl?: string;
+            stereoRecordingUrl?: string;
+          };
+          analysis?: {
+            summary?: string;
+            structuredData?: unknown;
+            successEvaluation?: string;
+          };
           costs?: unknown[];
           cost?: number;
         };
@@ -2373,7 +3291,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           endedAt: data.endedAt,
           endedReason: data.endedReason,
           transcript: data.artifact?.transcript ?? null,
-          recordingUrl: data.artifact?.recordingUrl ?? data.artifact?.stereoRecordingUrl ?? null,
+          recordingUrl:
+            data.artifact?.recordingUrl ??
+            data.artifact?.stereoRecordingUrl ??
+            null,
           analysis: data.analysis ?? null,
           costs: data.costs ?? null,
           totalCost: data.cost ?? null,
@@ -2383,18 +3304,33 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Resend: Send one outbound email ──────────────────────────────────
     {
-      name: 'send_email',
-      description: 'Send ONE outbound email via Resend — to a specific lead, a test address, or anyone else. Use this for a single test send (e.g. to your own inbox) before committing to start_email_campaign, or for a one-off follow-up. Requires RESEND_API_KEY to be configured. Checks the suppression list first and will not send to a bounced/complained/unsubscribed address.',
+      name: "send_email",
+      description:
+        "Send ONE outbound email via Resend — to a specific lead, a test address, or anyone else. Use this for a single test send (e.g. to your own inbox) before committing to start_email_campaign, or for a one-off follow-up. Requires RESEND_API_KEY to be configured. Checks the suppression list first and will not send to a bounced/complained/unsubscribed address.",
       schema: z.object({
-        toEmail: z.string().email().describe('Recipient email address'),
-        toName: z.string().optional().describe('Recipient display name, for personalization only'),
+        toEmail: z.string().email().describe("Recipient email address"),
+        toName: z
+          .string()
+          .optional()
+          .describe("Recipient display name, for personalization only"),
         subject: z.string().min(1).max(200),
-        html: z.string().min(1).max(50000).describe('Email body as simple HTML (e.g. wrap paragraphs in <p>). Plain text also works — Resend renders it as-is.'),
-        leadId: z.string().optional().describe('researched_leads.id, if this email is going to a specific lead — links the send back to the pipeline'),
+        html: z
+          .string()
+          .min(1)
+          .max(50000)
+          .describe(
+            "Email body as simple HTML (e.g. wrap paragraphs in <p>). Plain text also works — Resend renders it as-is.",
+          ),
+        leadId: z
+          .string()
+          .optional()
+          .describe(
+            "researched_leads.id, if this email is going to a specific lead — links the send back to the pipeline",
+          ),
       }),
       requiresApproval: true, // Sends real email to a real inbox — externally visible, irreversible.
       async execute({ toEmail, toName, subject, html, leadId }, ctx) {
-        const { randomUUID } = await import('crypto');
+        const { randomUUID } = await import("crypto");
         const id = randomUUID();
         await createQueuedEmailSend({
           id,
@@ -2417,16 +3353,25 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Resend: Check status of a previously sent email ──────────────────
     {
-      name: 'get_email_status',
-      description: "Check the status of a previously sent email (queued/sent/delivered/opened/clicked/bounced/complained/failed/suppressed). Status updates arrive via the Resend webhook, not by polling Resend directly, so this reads APEX's own record.",
+      name: "get_email_status",
+      description:
+        "Check the status of a previously sent email (queued/sent/delivered/opened/clicked/bounced/complained/failed/suppressed). Status updates arrive via the Resend webhook, not by polling Resend directly, so this reads APEX's own record.",
       schema: z.object({
-        emailSendId: z.string().describe('The id returned by send_email, or listed by get_email_campaign_status'),
+        emailSendId: z
+          .string()
+          .describe(
+            "The id returned by send_email, or listed by get_email_campaign_status",
+          ),
       }),
       requiresApproval: false,
       async execute({ emailSendId }) {
-        const { db, emailSends } = await import('@workspace/db');
-        const { eq } = await import('drizzle-orm');
-        const [row] = await db.select().from(emailSends).where(eq(emailSends.id, emailSendId)).limit(1);
+        const { db, emailSends } = await import("@workspace/db");
+        const { eq } = await import("drizzle-orm");
+        const [row] = await db
+          .select()
+          .from(emailSends)
+          .where(eq(emailSends.id, emailSendId))
+          .limit(1);
         if (!row) return { error: `No email send with id ${emailSendId}` };
         return row;
       },
@@ -2434,31 +3379,72 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Resend: Start an email campaign (enqueue only — nothing sent yet) ─
     {
-      name: 'start_email_campaign',
-      description: "Create an email campaign and enqueue its targets — this does NOT send anything yet; call send_email_campaign_batch to actually send. Targets come from a lead-research campaign's researched leads (leadCampaignId) and/or an explicit list (leadIds). Only leads with an email on file are enqueued; leads missing one are skipped and counted, since directory-sourced leads rarely have an email. Merge fields {{companyName}}, {{toName}}, {{outreachAngle}}, {{fitReason}}, {{industry}}, {{city}} are resolved per recipient from their researched_leads row.",
+      name: "start_email_campaign",
+      description:
+        "Create an email campaign and enqueue its targets — this does NOT send anything yet; call send_email_campaign_batch to actually send. Targets come from a lead-research campaign's researched leads (leadCampaignId) and/or an explicit list (leadIds). Only leads with an email on file are enqueued; leads missing one are skipped and counted, since directory-sourced leads rarely have an email. Merge fields {{companyName}}, {{toName}}, {{outreachAngle}}, {{fitReason}}, {{industry}}, {{city}} are resolved per recipient from their researched_leads row.",
       schema: z.object({
         name: z.string().min(3).max(120),
         subjectTemplate: z.string().min(1).max(200),
-        bodyTemplate: z.string().min(1).max(20000).describe('Simple HTML or plain text, with optional {{mergeField}} placeholders'),
-        leadCampaignId: z.string().optional().describe('Pull targets from every lead this lead-research campaign produced that has an email on file'),
-        leadIds: z.array(z.string()).optional().describe('Explicit researched_leads ids to target, in addition to or instead of leadCampaignId'),
-        maxTargets: z.number().int().min(1).max(2000).optional().describe('Safety cap on how many leads to enqueue at once (default 500)'),
+        bodyTemplate: z
+          .string()
+          .min(1)
+          .max(20000)
+          .describe(
+            "Simple HTML or plain text, with optional {{mergeField}} placeholders",
+          ),
+        leadCampaignId: z
+          .string()
+          .optional()
+          .describe(
+            "Pull targets from every lead this lead-research campaign produced that has an email on file",
+          ),
+        leadIds: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Explicit researched_leads ids to target, in addition to or instead of leadCampaignId",
+          ),
+        maxTargets: z
+          .number()
+          .int()
+          .min(1)
+          .max(2000)
+          .optional()
+          .describe(
+            "Safety cap on how many leads to enqueue at once (default 500)",
+          ),
         goalId: z.string().optional(),
       }),
       requiresApproval: false, // Only enqueues rows in APEX's own DB; nothing reaches a real inbox until send_email_campaign_batch.
-      async execute({ name, subjectTemplate, bodyTemplate, leadCampaignId, leadIds, maxTargets, goalId }, ctx) {
-        const { randomUUID } = await import('crypto');
-        const { db, emailCampaigns, emailSends, researchedLeads } = await import('@workspace/db');
-        const { eq, inArray, or } = await import('drizzle-orm');
+      async execute(
+        {
+          name,
+          subjectTemplate,
+          bodyTemplate,
+          leadCampaignId,
+          leadIds,
+          maxTargets,
+          goalId,
+        },
+        ctx,
+      ) {
+        const { randomUUID } = await import("crypto");
+        const { db, emailCampaigns, emailSends, researchedLeads } =
+          await import("@workspace/db");
+        const { eq, inArray, or } = await import("drizzle-orm");
 
         if (!leadCampaignId && (!leadIds || leadIds.length === 0)) {
-          throw new Error('Provide leadCampaignId and/or leadIds — start_email_campaign needs at least one source of targets.');
+          throw new Error(
+            "Provide leadCampaignId and/or leadIds — start_email_campaign needs at least one source of targets.",
+          );
         }
 
         const cap = maxTargets ?? 500;
         const conditions = [];
-        if (leadCampaignId) conditions.push(eq(researchedLeads.campaignId, leadCampaignId));
-        if (leadIds && leadIds.length > 0) conditions.push(inArray(researchedLeads.id, leadIds));
+        if (leadCampaignId)
+          conditions.push(eq(researchedLeads.campaignId, leadCampaignId));
+        if (leadIds && leadIds.length > 0)
+          conditions.push(inArray(researchedLeads.id, leadIds));
 
         // Over-fetch since some candidates will be filtered out below for
         // lacking an email — otherwise a cap of 500 could resolve to far
@@ -2481,7 +3467,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           goalId: goalId ?? ctx.goalId ?? null,
           subjectTemplate,
           bodyTemplate,
-          status: 'draft',
+          status: "draft",
           totalTargets: targets.length,
           createdByAgentId: ctx.agentId,
           createdAt: new Date(),
@@ -2491,10 +3477,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const fields = {
             companyName: lead.companyName,
             toName: lead.companyName,
-            outreachAngle: lead.outreachAngle ?? '',
+            outreachAngle: lead.outreachAngle ?? "",
             fitReason: lead.fitReason,
-            industry: lead.industry ?? '',
-            city: lead.city ?? '',
+            industry: lead.industry ?? "",
+            city: lead.city ?? "",
           };
           await db.insert(emailSends).values({
             id: randomUUID(),
@@ -2503,7 +3489,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             toEmail: lead.contactEmail as string,
             toName: lead.companyName,
             subject: resolveMergeFields(subjectTemplate, fields),
-            status: 'queued',
+            status: "queued",
             createdByAgentId: ctx.agentId,
             createdAt: new Date(),
           });
@@ -2514,9 +3500,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           name,
           totalTargets: targets.length,
           skippedNoEmail,
-          skippedNote: skippedNoEmail > 0
-            ? `${skippedNoEmail} candidate lead(s) had no contactEmail on file and were skipped. The Lead Researcher's contact-research step captures one when publicly findable, but many directory-sourced leads won't have it — see get_email_campaign_status.`
-            : undefined,
+          skippedNote:
+            skippedNoEmail > 0
+              ? `${skippedNoEmail} candidate lead(s) had no contactEmail on file and were skipped. The Lead Researcher's contact-research step captures one when publicly findable, but many directory-sourced leads won't have it — see get_email_campaign_status.`
+              : undefined,
           message: `Campaign "${name}" created with ${targets.length} queued target(s). Nothing has been sent yet — call send_email_campaign_batch to start sending.`,
         };
       },
@@ -2524,47 +3511,102 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Resend: Send the next batch of a queued email campaign ───────────
     {
-      name: 'send_email_campaign_batch',
-      description: 'Send the next batch of queued emails for an email campaign (default up to 25 per call). Paced and approval-gated on purpose — call it repeatedly to work through a large campaign under supervision instead of blasting the whole list in one irreversible call. Reports and stops early if the campaign is paused or cancelled.',
+      name: "send_email_campaign_batch",
+      description:
+        "Send the next batch of queued emails for an email campaign (default up to 25 per call). Paced and approval-gated on purpose — call it repeatedly to work through a large campaign under supervision instead of blasting the whole list in one irreversible call. Reports and stops early if the campaign is paused or cancelled.",
       schema: z.object({
         campaignId: z.string(),
-        batchSize: z.number().int().min(1).max(100).optional().describe('Max emails to send this call (default 25)'),
+        batchSize: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("Max emails to send this call (default 25)"),
       }),
       requiresApproval: true, // Sends real email to real inboxes — externally visible, costs money, irreversible per send.
       async execute({ campaignId, batchSize }) {
-        const { db, emailCampaigns, emailSends, researchedLeads } = await import('@workspace/db');
-        const { eq, and, inArray } = await import('drizzle-orm');
+        const { db, emailCampaigns, emailSends, researchedLeads } =
+          await import("@workspace/db");
+        const { eq, and, inArray } = await import("drizzle-orm");
 
-        const [campaign] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaignId)).limit(1);
-        if (!campaign) throw new Error(`No email campaign with id ${campaignId}`);
-        if (campaign.status === 'cancelled' || campaign.status === 'completed') {
-          return { campaignId, status: campaign.status, sent: 0, message: `Campaign is already ${campaign.status} — nothing to send.` };
+        const [campaign] = await db
+          .select()
+          .from(emailCampaigns)
+          .where(eq(emailCampaigns.id, campaignId))
+          .limit(1);
+        if (!campaign)
+          throw new Error(`No email campaign with id ${campaignId}`);
+        if (
+          campaign.status === "cancelled" ||
+          campaign.status === "completed"
+        ) {
+          return {
+            campaignId,
+            status: campaign.status,
+            sent: 0,
+            message: `Campaign is already ${campaign.status} — nothing to send.`,
+          };
         }
-        if (campaign.status === 'paused') {
-          return { campaignId, status: campaign.status, sent: 0, message: 'Campaign is paused. Resume it (set its status back to running) before sending.' };
+        if (campaign.status === "paused") {
+          return {
+            campaignId,
+            status: campaign.status,
+            sent: 0,
+            message:
+              "Campaign is paused. Resume it (set its status back to running) before sending.",
+          };
         }
 
         const limit = batchSize ?? 25;
         const queued = await db
           .select()
           .from(emailSends)
-          .where(and(eq(emailSends.campaignId, campaignId), eq(emailSends.status, 'queued')))
+          .where(
+            and(
+              eq(emailSends.campaignId, campaignId),
+              eq(emailSends.status, "queued"),
+            ),
+          )
           .limit(limit);
 
         if (queued.length === 0) {
-          const done = campaign.sentCount + campaign.failedCount >= campaign.totalTargets;
-          if (done && campaign.status !== 'completed') {
-            await db.update(emailCampaigns).set({ status: 'completed', completedAt: new Date() }).where(eq(emailCampaigns.id, campaignId));
+          const done =
+            campaign.sentCount + campaign.failedCount >= campaign.totalTargets;
+          if (done && campaign.status !== "completed") {
+            await db
+              .update(emailCampaigns)
+              .set({ status: "completed", completedAt: new Date() })
+              .where(eq(emailCampaigns.id, campaignId));
           }
-          return { campaignId, sent: 0, remaining: 0, status: done ? 'completed' : campaign.status, message: 'No queued emails remain for this campaign.' };
+          return {
+            campaignId,
+            sent: 0,
+            remaining: 0,
+            status: done ? "completed" : campaign.status,
+            message: "No queued emails remain for this campaign.",
+          };
         }
 
-        await db.update(emailCampaigns)
-          .set({ status: 'running', startedAt: campaign.startedAt ?? new Date(), lastProgressAt: new Date() })
+        await db
+          .update(emailCampaigns)
+          .set({
+            status: "running",
+            startedAt: campaign.startedAt ?? new Date(),
+            lastProgressAt: new Date(),
+          })
           .where(eq(emailCampaigns.id, campaignId));
 
-        const leadIds = queued.map((r) => r.leadId).filter((id): id is string => Boolean(id));
-        const leads = leadIds.length > 0 ? await db.select().from(researchedLeads).where(inArray(researchedLeads.id, leadIds)) : [];
+        const leadIds = queued
+          .map((r) => r.leadId)
+          .filter((id): id is string => Boolean(id));
+        const leads =
+          leadIds.length > 0
+            ? await db
+                .select()
+                .from(researchedLeads)
+                .where(inArray(researchedLeads.id, leadIds))
+            : [];
         const leadById = new Map(leads.map((l) => [l.id, l]));
 
         let sent = 0;
@@ -2573,29 +3615,40 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         for (const row of queued) {
           const lead = row.leadId ? leadById.get(row.leadId) : undefined;
           const fields = {
-            companyName: lead?.companyName ?? row.toName ?? '',
-            toName: row.toName ?? lead?.companyName ?? '',
-            outreachAngle: lead?.outreachAngle ?? '',
-            fitReason: lead?.fitReason ?? '',
-            industry: lead?.industry ?? '',
-            city: lead?.city ?? '',
+            companyName: lead?.companyName ?? row.toName ?? "",
+            toName: row.toName ?? lead?.companyName ?? "",
+            outreachAngle: lead?.outreachAngle ?? "",
+            fitReason: lead?.fitReason ?? "",
+            industry: lead?.industry ?? "",
+            city: lead?.city ?? "",
           };
           const html = resolveMergeFields(campaign.bodyTemplate, fields);
-          const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html);
+          const result = await deliverQueuedEmailSend(
+            row.id,
+            row.toEmail,
+            row.subject,
+            html,
+          );
           if (result.success) sent++;
-          else if (result.status === 'suppressed') suppressed++;
+          else if (result.status === "suppressed") suppressed++;
           else failed++;
         }
 
         const newSentCount = campaign.sentCount + sent;
         const newFailedCount = campaign.failedCount + failed + suppressed;
-        const stillQueued = Math.max(0, campaign.totalTargets - newSentCount - newFailedCount);
-        await db.update(emailCampaigns)
+        const stillQueued = Math.max(
+          0,
+          campaign.totalTargets - newSentCount - newFailedCount,
+        );
+        await db
+          .update(emailCampaigns)
           .set({
             sentCount: newSentCount,
             failedCount: newFailedCount,
             lastProgressAt: new Date(),
-            ...(stillQueued <= 0 ? { status: 'completed', completedAt: new Date() } : {}),
+            ...(stillQueued <= 0
+              ? { status: "completed", completedAt: new Date() }
+              : {}),
           })
           .where(eq(emailCampaigns.id, campaignId));
 
@@ -2607,7 +3660,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           totalSent: newSentCount,
           totalFailed: newFailedCount,
           remaining: stillQueued,
-          status: stillQueued <= 0 ? 'completed' : 'running',
+          status: stillQueued <= 0 ? "completed" : "running",
           message: `Sent ${sent}, failed ${failed}, skipped ${suppressed} suppressed this batch. ${stillQueued} still queued.`,
         };
       },
@@ -2615,24 +3668,40 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Resend: Email campaign progress ───────────────────────────────────
     {
-      name: 'get_email_campaign_status',
-      description: 'Get REAL progress on email campaigns: queued/sent/failed counts, percent complete, and status. Use this to report outreach status instead of guessing.',
+      name: "get_email_campaign_status",
+      description:
+        "Get REAL progress on email campaigns: queued/sent/failed counts, percent complete, and status. Use this to report outreach status instead of guessing.",
       schema: z.object({
-        campaignId: z.string().optional().describe('One campaign. Omit to get every campaign, newest first.'),
+        campaignId: z
+          .string()
+          .optional()
+          .describe("One campaign. Omit to get every campaign, newest first."),
       }),
       requiresApproval: false,
       async execute({ campaignId }) {
-        const { db, emailCampaigns, emailSends } = await import('@workspace/db');
-        const { eq, desc, and } = await import('drizzle-orm');
+        const { db, emailCampaigns, emailSends } =
+          await import("@workspace/db");
+        const { eq, desc, and } = await import("drizzle-orm");
 
         const campaigns = campaignId
-          ? await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, campaignId)).limit(1)
-          : await db.select().from(emailCampaigns).orderBy(desc(emailCampaigns.createdAt)).limit(20);
+          ? await db
+              .select()
+              .from(emailCampaigns)
+              .where(eq(emailCampaigns.id, campaignId))
+              .limit(1)
+          : await db
+              .select()
+              .from(emailCampaigns)
+              .orderBy(desc(emailCampaigns.createdAt))
+              .limit(20);
 
         if (campaigns.length === 0) {
           return campaignId
             ? { error: `No email campaign with id ${campaignId}` }
-            : { campaigns: [], note: 'No email campaigns started yet. Use start_email_campaign.' };
+            : {
+                campaigns: [],
+                note: "No email campaigns started yet. Use start_email_campaign.",
+              };
         }
 
         const out = [];
@@ -2640,7 +3709,12 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const queuedRows = await db
             .select()
             .from(emailSends)
-            .where(and(eq(emailSends.campaignId, c.id), eq(emailSends.status, 'queued')));
+            .where(
+              and(
+                eq(emailSends.campaignId, c.id),
+                eq(emailSends.status, "queued"),
+              ),
+            );
           out.push({
             campaignId: c.id,
             name: c.name,
@@ -2649,7 +3723,12 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             sent: c.sentCount,
             failed: c.failedCount,
             queued: queuedRows.length,
-            percentComplete: c.totalTargets > 0 ? Math.round(((c.sentCount + c.failedCount) / c.totalTargets) * 100) : 0,
+            percentComplete:
+              c.totalTargets > 0
+                ? Math.round(
+                    ((c.sentCount + c.failedCount) / c.totalTargets) * 100,
+                  )
+                : 0,
             result: c.result ?? undefined,
           });
         }
@@ -2659,72 +3738,120 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
     // ─── Resend: Manual suppression management ─────────────────────────────
     {
-      name: 'add_email_suppression',
-      description: "Manually add an email address to the permanent do-not-email list (e.g. someone asked to be removed, or a hard bounce wasn't auto-caught). Bounces and spam complaints are added automatically via the Resend webhook — this is for manual/explicit opt-outs.",
+      name: "add_email_suppression",
+      description:
+        "Manually add an email address to the permanent do-not-email list (e.g. someone asked to be removed, or a hard bounce wasn't auto-caught). Bounces and spam complaints are added automatically via the Resend webhook — this is for manual/explicit opt-outs.",
       schema: z.object({
         email: z.string().email(),
-        reason: z.enum(['unsubscribed', 'manual', 'bounced', 'complained']).optional().describe('Default "manual"'),
+        reason: z
+          .enum(["unsubscribed", "manual", "bounced", "complained"])
+          .optional()
+          .describe('Default "manual"'),
       }),
       requiresApproval: false,
       async execute({ email, reason }) {
-        const { db, emailSuppressions } = await import('@workspace/db');
-        await db.insert(emailSuppressions)
-          .values({ email: email.trim().toLowerCase(), reason: reason ?? 'manual', createdAt: new Date() })
+        const { db, emailSuppressions } = await import("@workspace/db");
+        await db
+          .insert(emailSuppressions)
+          .values({
+            email: email.trim().toLowerCase(),
+            reason: reason ?? "manual",
+            createdAt: new Date(),
+          })
           .onConflictDoNothing();
-        return { email: email.trim().toLowerCase(), suppressed: true, reason: reason ?? 'manual' };
+        return {
+          email: email.trim().toLowerCase(),
+          suppressed: true,
+          reason: reason ?? "manual",
+        };
       },
     },
 
     // ─── Vapi: Configure the persistent inbound assistant ──────────────────
     {
-      name: 'configure_inbound_assistant',
-      description: "Create or update the persistent Vapi AI assistant that answers INBOUND calls (as opposed to make_outbound_call, which places calls out). This alone does not put it on a live phone number — call provision_inbound_number afterward for that. Safe to call repeatedly to revise the script; it updates the same assistant in place (matched by name) rather than creating duplicates.",
+      name: "configure_inbound_assistant",
+      description:
+        "Create or update the persistent Vapi AI assistant that answers INBOUND calls (as opposed to make_outbound_call, which places calls out). This alone does not put it on a live phone number — call provision_inbound_number afterward for that. Safe to call repeatedly to revise the script; it updates the same assistant in place (matched by name) rather than creating duplicates.",
       schema: z.object({
-        systemPrompt: z.string().describe('System prompt for the inbound AI — how it should greet callers, answer FAQs from BUSINESS_PROFILE.md, and when to offer a checkout link vs. escalate to a human'),
-        firstMessage: z.string().describe('Exact greeting when a call connects, e.g. "Thanks for calling BuildMyBot, this is Alex — how can I help?"'),
+        systemPrompt: z
+          .string()
+          .describe(
+            "System prompt for the inbound AI — how it should greet callers, answer FAQs from BUSINESS_PROFILE.md, and when to offer a checkout link vs. escalate to a human",
+          ),
+        firstMessage: z
+          .string()
+          .describe(
+            'Exact greeting when a call connects, e.g. "Thanks for calling BuildMyBot, this is Alex — how can I help?"',
+          ),
       }),
       requiresApproval: true, // Updates a PERSISTENT assistant in place — if a number is already assigned to it (see provision_inbound_number), this takes effect for real inbound callers immediately, with no separate activation step.
       async execute({ systemPrompt, firstMessage }) {
         const apiKey = process.env.VAPI_API_KEY;
         if (!apiKey) {
-          return { success: false, error: 'Vapi is not configured. Set VAPI_API_KEY in Settings.' };
+          return {
+            success: false,
+            error: "Vapi is not configured. Set VAPI_API_KEY in Settings.",
+          };
         }
-        const webhookUrl = process.env.VAPI_WEBHOOK_URL ?? `${process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live'}/api/vapi/webhook`;
-        const ASSISTANT_NAME = 'APEX Inbound — BuildMyBot';
+        const webhookUrl =
+          process.env.VAPI_WEBHOOK_URL ??
+          `${process.env.PUBLIC_URL ?? "https://apex.donmatthews.live"}/api/vapi/webhook`;
+        const ASSISTANT_NAME = "APEX Inbound — BuildMyBot";
 
         const assistantBody = {
           name: ASSISTANT_NAME,
           firstMessage,
           model: {
-            provider: 'openai',
-            model: 'gpt-4o',
-            messages: [{ role: 'system', content: systemPrompt }],
+            provider: "openai",
+            model: "gpt-4o",
+            messages: [{ role: "system", content: systemPrompt }],
             temperature: 0.7,
             maxTokens: 250,
           },
           tools: [
             {
-              type: 'function',
+              type: "function",
               function: {
-                name: 'send_checkout_link',
-                description: "Send a Stripe checkout link to the caller so they can sign up for BuildMyBot.app right now. Call this when they agree to sign up. Ask for their email first if you don't have it.",
+                name: "send_checkout_link",
+                description:
+                  "Send a Stripe checkout link to the caller so they can sign up for BuildMyBot.app right now. Call this when they agree to sign up. Ask for their email first if you don't have it.",
                 parameters: {
-                  type: 'object',
+                  type: "object",
                   properties: {
                     plan: {
-                      type: 'string',
-                      enum: ['starter', 'professional', 'executive', 'enterprise'],
-                      description: 'Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
+                      type: "string",
+                      enum: [
+                        "starter",
+                        "professional",
+                        "executive",
+                        "enterprise",
+                      ],
+                      description:
+                        "Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo",
                     },
-                    email: { type: 'string', description: "The caller's email address" },
+                    email: {
+                      type: "string",
+                      description: "The caller's email address",
+                    },
                   },
-                  required: ['plan', 'email'],
+                  required: ["plan", "email"],
                 },
               },
             },
           ],
-          voice: { provider: '11labs', voiceId: '21m00Tcm4TlvDq8ikWAM', stability: 0.5, similarityBoost: 0.75, speed: 1.0 },
-          transcriber: { provider: 'deepgram', model: 'nova-2-phonecall', language: 'en-US', smartFormat: true },
+          voice: {
+            provider: "11labs",
+            voiceId: "21m00Tcm4TlvDq8ikWAM",
+            stability: 0.5,
+            similarityBoost: 0.75,
+            speed: 1.0,
+          },
+          transcriber: {
+            provider: "deepgram",
+            model: "nova-2-phonecall",
+            language: "en-US",
+            smartFormat: true,
+          },
           server: { url: webhookUrl },
           silenceTimeoutSeconds: 30,
           responseDelaySeconds: 0.4,
@@ -2732,111 +3859,167 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
         // Find an existing assistant with this name so repeat calls update it
         // in place instead of accumulating duplicate assistants in Vapi.
-        const listRes = await fetch('https://api.vapi.ai/assistant?limit=100', { headers: { Authorization: `Bearer ${apiKey}` } });
+        const listRes = await fetch("https://api.vapi.ai/assistant?limit=100", {
+          headers: { Authorization: `Bearer ${apiKey}` },
+        });
         let existingId: string | null = null;
         if (listRes.ok) {
-          const list = await listRes.json() as Array<{ id: string; name?: string }>;
+          const list = (await listRes.json()) as Array<{
+            id: string;
+            name?: string;
+          }>;
           existingId = list.find((a) => a.name === ASSISTANT_NAME)?.id ?? null;
         }
 
         const res = await fetch(
-          existingId ? `https://api.vapi.ai/assistant/${existingId}` : 'https://api.vapi.ai/assistant',
+          existingId
+            ? `https://api.vapi.ai/assistant/${existingId}`
+            : "https://api.vapi.ai/assistant",
           {
-            method: existingId ? 'PATCH' : 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+            method: existingId ? "PATCH" : "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
             body: JSON.stringify(assistantBody),
           },
         );
 
         if (!res.ok) {
-          const errText = await res.text().catch(() => '');
-          return { success: false, error: `Vapi assistant ${existingId ? 'update' : 'create'} failed (${res.status}): ${errText.slice(0, 500)}` };
+          const errText = await res.text().catch(() => "");
+          return {
+            success: false,
+            error: `Vapi assistant ${existingId ? "update" : "create"} failed (${res.status}): ${errText.slice(0, 500)}`,
+          };
         }
 
-        const data = await res.json() as { id: string };
+        const data = (await res.json()) as { id: string };
         return {
           success: true,
           assistantId: data.id,
           updated: Boolean(existingId),
-          message: `Inbound assistant ${existingId ? 'updated' : 'created'} (id: ${data.id}). Call provision_inbound_number with this assistantId to put it on a live phone number, or get_inbound_call_config to see what's already assigned.`,
+          message: `Inbound assistant ${existingId ? "updated" : "created"} (id: ${data.id}). Call provision_inbound_number with this assistantId to put it on a live phone number, or get_inbound_call_config to see what's already assigned.`,
         };
       },
     },
 
     // ─── Vapi: Provision a real phone number for inbound calls ─────────────
     {
-      name: 'provision_inbound_number',
-      description: 'Buy/import a real phone number from Vapi and assign the inbound assistant to it, so people can call it and reach the AI. This is a REAL recurring cost and a REAL public phone number — approval-gated. Run configure_inbound_assistant first to get an assistantId.',
+      name: "provision_inbound_number",
+      description:
+        "Buy/import a real phone number from Vapi and assign the inbound assistant to it, so people can call it and reach the AI. This is a REAL recurring cost and a REAL public phone number — approval-gated. Run configure_inbound_assistant first to get an assistantId.",
       schema: z.object({
-        assistantId: z.string().describe('The Vapi assistant id from configure_inbound_assistant'),
-        areaCode: z.string().length(3).optional().describe('Preferred 3-digit US area code for a new Vapi-hosted number, e.g. "832". Best-effort — Vapi assigns from availability.'),
+        assistantId: z
+          .string()
+          .describe("The Vapi assistant id from configure_inbound_assistant"),
+        areaCode: z
+          .string()
+          .length(3)
+          .optional()
+          .describe(
+            'Preferred 3-digit US area code for a new Vapi-hosted number, e.g. "832". Best-effort — Vapi assigns from availability.',
+          ),
       }),
       requiresApproval: true, // Real recurring money, real public phone number — not something to provision unattended.
       async execute({ assistantId, areaCode }) {
         const apiKey = process.env.VAPI_API_KEY;
         if (!apiKey) {
-          return { success: false, error: 'Vapi is not configured. Set VAPI_API_KEY in Settings.' };
+          return {
+            success: false,
+            error: "Vapi is not configured. Set VAPI_API_KEY in Settings.",
+          };
         }
-        const res = await fetch('https://api.vapi.ai/phone-number', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        const res = await fetch("https://api.vapi.ai/phone-number", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
           body: JSON.stringify({
-            provider: 'vapi',
+            provider: "vapi",
             ...(areaCode ? { numberDesiredAreaCode: areaCode } : {}),
             assistantId,
           }),
         });
 
         if (!res.ok) {
-          const errText = await res.text().catch(() => '');
-          return { success: false, error: `Vapi phone number provisioning failed (${res.status}): ${errText.slice(0, 500)}` };
+          const errText = await res.text().catch(() => "");
+          return {
+            success: false,
+            error: `Vapi phone number provisioning failed (${res.status}): ${errText.slice(0, 500)}`,
+          };
         }
 
-        const data = await res.json() as { id: string; number?: string };
+        const data = (await res.json()) as { id: string; number?: string };
         return {
           success: true,
           phoneNumberId: data.id,
           number: data.number,
           assistantId,
-          message: `Inbound number provisioned: ${data.number ?? '(pending)'} (id: ${data.id}), assigned to assistant ${assistantId}. Billed by Vapi monthly — see https://dashboard.vapi.ai for pricing. This is a separate inbound-only line unless you also set VAPI_PHONE_NUMBER_ID to this id to make make_outbound_call place OUTBOUND calls from it too.`,
+          message: `Inbound number provisioned: ${data.number ?? "(pending)"} (id: ${data.id}), assigned to assistant ${assistantId}. Billed by Vapi monthly — see https://dashboard.vapi.ai for pricing. This is a separate inbound-only line unless you also set VAPI_PHONE_NUMBER_ID to this id to make make_outbound_call place OUTBOUND calls from it too.`,
         };
       },
     },
 
     // ─── Vapi: Read-only inbound configuration status ───────────────────────
     {
-      name: 'get_inbound_call_config',
-      description: "See what inbound calling is currently configured: phone numbers and which assistant (if any) is assigned to each. Read-only — check this before claiming inbound calling is or isn't live.",
+      name: "get_inbound_call_config",
+      description:
+        "See what inbound calling is currently configured: phone numbers and which assistant (if any) is assigned to each. Read-only — check this before claiming inbound calling is or isn't live.",
       schema: z.object({}),
       requiresApproval: false,
       async execute() {
         const apiKey = process.env.VAPI_API_KEY;
         if (!apiKey) {
-          return { configured: false, error: 'Vapi is not configured. Set VAPI_API_KEY in Settings.' };
+          return {
+            configured: false,
+            error: "Vapi is not configured. Set VAPI_API_KEY in Settings.",
+          };
         }
         const [numbersRes, assistantsRes] = await Promise.all([
-          fetch('https://api.vapi.ai/phone-number?limit=100', { headers: { Authorization: `Bearer ${apiKey}` } }),
-          fetch('https://api.vapi.ai/assistant?limit=100', { headers: { Authorization: `Bearer ${apiKey}` } }),
+          fetch("https://api.vapi.ai/phone-number?limit=100", {
+            headers: { Authorization: `Bearer ${apiKey}` },
+          }),
+          fetch("https://api.vapi.ai/assistant?limit=100", {
+            headers: { Authorization: `Bearer ${apiKey}` },
+          }),
         ]);
         if (!numbersRes.ok) {
-          return { configured: false, error: `Vapi phone-number list failed (${numbersRes.status})` };
+          return {
+            configured: false,
+            error: `Vapi phone-number list failed (${numbersRes.status})`,
+          };
         }
-        const numbers = await numbersRes.json() as Array<{ id: string; number?: string; assistantId?: string }>;
-        const assistants = assistantsRes.ok ? await assistantsRes.json() as Array<{ id: string; name?: string }> : [];
-        const assistantNameById = new Map(assistants.map((a) => [a.id, a.name]));
+        const numbers = (await numbersRes.json()) as Array<{
+          id: string;
+          number?: string;
+          assistantId?: string;
+        }>;
+        const assistants = assistantsRes.ok
+          ? ((await assistantsRes.json()) as Array<{
+              id: string;
+              name?: string;
+            }>)
+          : [];
+        const assistantNameById = new Map(
+          assistants.map((a) => [a.id, a.name]),
+        );
 
         return {
           configured: numbers.length > 0,
           numbers: numbers.map((n) => ({
             phoneNumberId: n.id,
-            number: n.number ?? '(pending)',
+            number: n.number ?? "(pending)",
             assistantId: n.assistantId ?? null,
-            assistantName: n.assistantId ? assistantNameById.get(n.assistantId) ?? null : null,
+            assistantName: n.assistantId
+              ? (assistantNameById.get(n.assistantId) ?? null)
+              : null,
             live: Boolean(n.assistantId),
           })),
-          message: numbers.length === 0
-            ? 'No phone numbers provisioned yet. Run configure_inbound_assistant then provision_inbound_number.'
-            : `${numbers.filter((n) => n.assistantId).length} of ${numbers.length} number(s) have an assistant assigned and can answer real inbound calls.`,
+          message:
+            numbers.length === 0
+              ? "No phone numbers provisioned yet. Run configure_inbound_assistant then provision_inbound_number."
+              : `${numbers.filter((n) => n.assistantId).length} of ${numbers.length} number(s) have an assistant assigned and can answer real inbound calls.`,
         };
       },
     },
@@ -2852,7 +4035,7 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     _registry = new ToolRegistry();
     const root = workspaceRoot ?? process.cwd();
     for (const tool of createBuiltinTools(root)) {
-     _registry.register(tool);
+      _registry.register(tool);
     }
     // Goal-lifecycle / delegation-feedback / escalation tools. Always
     // registered (no external credentials involved) — these close the
@@ -2870,7 +4053,10 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     // Portfolio connectors register only when their env is configured, so a
     // bare APEX install never exposes half-working tools to the agents.
     if (buildMyBotConfigured()) {
-      for (const tool of createBuildMyBotTools()) {
+      for (const tool of [
+        ...createBuildMyBotTools(),
+        ...createBuildMyBotRetentionTools(),
+      ]) {
         _registry.register(tool);
       }
     }

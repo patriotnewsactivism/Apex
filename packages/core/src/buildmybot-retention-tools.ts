@@ -1,8 +1,8 @@
-import { z } from 'zod';
-import type { ToolDefinition } from './types.js';
+import { z } from "zod";
+import type { ToolDefinition } from "./types.js";
 
-const SUPABASE_URL = () => process.env.BUILDMYBOT_SUPABASE_URL ?? '';
-const SERVICE_KEY = () => process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY ?? '';
+const SUPABASE_URL = () => process.env.BUILDMYBOT_SUPABASE_URL ?? "";
+const SERVICE_KEY = () => process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY ?? "";
 
 interface RetentionOfferAudit {
   timestamp?: string;
@@ -39,32 +39,38 @@ interface StageSummary {
   averageTemporaryToListRatio: number | null;
 }
 
-function buildQuery(params: Record<string, string | number | undefined>): string {
+function buildQuery(
+  params: Record<string, string | number | undefined>,
+): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined) continue;
     search.append(key, String(value));
   }
   const query = search.toString();
-  return query ? `?${query}` : '';
+  return query ? `?${query}` : "";
 }
 
 async function sbFetch(table: string, query: string): Promise<unknown> {
   const baseUrl = SUPABASE_URL();
   const serviceKey = SERVICE_KEY();
-  if (!baseUrl.startsWith('https://') || !serviceKey) {
-    throw new Error('BuildMyBot Supabase service connection is not configured.');
+  if (!baseUrl.startsWith("https://") || !serviceKey) {
+    throw new Error(
+      "BuildMyBot Supabase service connection is not configured.",
+    );
   }
   const response = await fetch(`${baseUrl}/rest/v1/${table}${query}`, {
     headers: {
       apikey: serviceKey,
       Authorization: `Bearer ${serviceKey}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
   });
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`BuildMyBot Supabase ${response.status} on ${table}: ${body.slice(0, 300)}`);
+    throw new Error(
+      `BuildMyBot Supabase ${response.status} on ${table}: ${body.slice(0, 300)}`,
+    );
   }
   const text = await response.text();
   return text ? JSON.parse(text) : null;
@@ -77,7 +83,9 @@ function asCallRows(value: unknown): BuildMyBotCallRow[] {
 function auditEntries(row: BuildMyBotCallRow): RetentionOfferAudit[] {
   const value = row.metadata?.retentionAudit;
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is RetentionOfferAudit => Boolean(entry && typeof entry === 'object'));
+  return value.filter((entry): entry is RetentionOfferAudit =>
+    Boolean(entry && typeof entry === "object"),
+  );
 }
 
 function round(value: number): number {
@@ -85,7 +93,7 @@ function round(value: number): number {
 }
 
 function safeNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 export function summarizeRetentionRows(rows: BuildMyBotCallRow[]) {
@@ -99,28 +107,43 @@ export function summarizeRetentionRows(rows: BuildMyBotCallRow[]) {
   const stageMap = new Map<string, RetentionOfferAudit[]>();
   const objectionMap = new Map<string, RetentionOfferAudit[]>();
   for (const offer of offers) {
-    const stage = offer.offerStage || 'unknown';
+    const stage = offer.offerStage || "unknown";
     stageMap.set(stage, [...(stageMap.get(stage) ?? []), offer]);
-    const objection = offer.objection || 'unknown';
-    objectionMap.set(objection, [...(objectionMap.get(objection) ?? []), offer]);
+    const objection = offer.objection || "unknown";
+    objectionMap.set(objection, [
+      ...(objectionMap.get(objection) ?? []),
+      offer,
+    ]);
   }
 
   const summarizeGroup = (group: RetentionOfferAudit[]): StageSummary => {
-    const groupAccepted = group.filter((offer) => offer.accepted === true).length;
-    const groupRejected = group.filter((offer) => offer.accepted === false).length;
+    const groupAccepted = group.filter(
+      (offer) => offer.accepted === true,
+    ).length;
+    const groupRejected = group.filter(
+      (offer) => offer.accepted === false,
+    ).length;
     const groupPending = group.length - groupAccepted - groupRejected;
     const groupDecided = groupAccepted + groupRejected;
-    const listed = group.map((offer) => safeNumber(offer.listedMonthlyPrice)).filter((value): value is number => value !== null);
-    const temporary = group.map((offer) => safeNumber(offer.temporaryMonthlyPrice)).filter((value): value is number => value !== null);
+    const listed = group
+      .map((offer) => safeNumber(offer.listedMonthlyPrice))
+      .filter((value): value is number => value !== null);
+    const temporary = group
+      .map((offer) => safeNumber(offer.temporaryMonthlyPrice))
+      .filter((value): value is number => value !== null);
     const ratios = group
       .map((offer) => {
         const list = safeNumber(offer.listedMonthlyPrice);
         const temp = safeNumber(offer.temporaryMonthlyPrice);
         return list && temp !== null ? temp / list : null;
       })
-      .filter((value): value is number => value !== null && Number.isFinite(value));
+      .filter(
+        (value): value is number => value !== null && Number.isFinite(value),
+      );
     const average = (values: number[]) =>
-      values.length ? round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+      values.length
+        ? round(values.reduce((sum, value) => sum + value, 0) / values.length)
+        : null;
     return {
       offers: group.length,
       accepted: groupAccepted,
@@ -133,8 +156,12 @@ export function summarizeRetentionRows(rows: BuildMyBotCallRow[]) {
     };
   };
 
-  const ownerEscalations = rows.filter((row) => row.metadata?.ownerEscalationRequested === true).length;
-  const fallbackCalls = rows.filter((row) => typeof row.metadata?.fallbackReason === 'string').length;
+  const ownerEscalations = rows.filter(
+    (row) => row.metadata?.ownerEscalationRequested === true,
+  ).length;
+  const fallbackCalls = rows.filter(
+    (row) => typeof row.metadata?.fallbackReason === "string",
+  ).length;
 
   return {
     sampledCalls: rows.length,
@@ -147,17 +174,27 @@ export function summarizeRetentionRows(rows: BuildMyBotCallRow[]) {
     ownerEscalations,
     fallbackCalls,
     byStage: Object.fromEntries(
-      [...stageMap.entries()].map(([stage, group]) => [stage, summarizeGroup(group)]),
+      [...stageMap.entries()].map(([stage, group]) => [
+        stage,
+        summarizeGroup(group),
+      ]),
     ),
     byObjection: Object.fromEntries(
-      [...objectionMap.entries()].map(([objection, group]) => [objection, summarizeGroup(group)]),
+      [...objectionMap.entries()].map(([objection, group]) => [
+        objection,
+        summarizeGroup(group),
+      ]),
     ),
   };
 }
 
 function sanitizeRecentCases(rows: BuildMyBotCallRow[], limit: number) {
   return rows
-    .filter((row) => auditEntries(row).length > 0 || row.metadata?.ownerEscalationRequested === true)
+    .filter(
+      (row) =>
+        auditEntries(row).length > 0 ||
+        row.metadata?.ownerEscalationRequested === true,
+    )
     .slice(0, limit)
     .map((row) => ({
       callId: row.id,
@@ -167,23 +204,29 @@ function sanitizeRecentCases(rows: BuildMyBotCallRow[], limit: number) {
       offers: auditEntries(row),
       ownerEscalationRequested: row.metadata?.ownerEscalationRequested === true,
       ownerEscalationHandoff:
-        row.metadata?.ownerEscalationHandoff && typeof row.metadata.ownerEscalationHandoff === 'object'
+        row.metadata?.ownerEscalationHandoff &&
+        typeof row.metadata.ownerEscalationHandoff === "object"
           ? row.metadata.ownerEscalationHandoff
           : undefined,
       fallbackReason:
-        typeof row.metadata?.fallbackReason === 'string' ? row.metadata.fallbackReason : undefined,
+        typeof row.metadata?.fallbackReason === "string"
+          ? row.metadata.fallbackReason
+          : undefined,
     }));
 }
 
-async function loadCallWindow(days: number, limit: number): Promise<BuildMyBotCallRow[]> {
+async function loadCallWindow(
+  days: number,
+  limit: number,
+): Promise<BuildMyBotCallRow[]> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   const rows = await sbFetch(
-    'call_logs',
+    "call_logs",
     buildQuery({
       created_at: `gte.${since}`,
-      order: 'created_at.desc',
+      order: "created_at.desc",
       limit,
-      select: 'id,created_at,ended_at,status,metadata',
+      select: "id,created_at,ended_at,status,metadata",
     }),
   );
   return asCallRows(rows);
@@ -192,18 +235,24 @@ async function loadCallWindow(days: number, limit: number): Promise<BuildMyBotCa
 export function createBuildMyBotRetentionTools(): ToolDefinition[] {
   return [
     {
-      name: 'buildmybot_retention_performance',
+      name: "buildmybot_retention_performance",
       description:
-        'Analyze BuildMyBot live-call retention outcomes from server-side audit metadata. Shows which incentive stages and objection types actually close, plus owner escalations and voice fallbacks. Read-only: this tool never authorizes a discount and must not be used as a second pricing authority.',
+        "Analyze BuildMyBot live-call retention outcomes from server-side audit metadata. Shows which incentive stages and objection types actually close, plus owner escalations and voice fallbacks. Read-only: this tool never authorizes a discount and must not be used as a second pricing authority.",
       schema: z.object({
-        days: z.number().int().min(1).max(90).optional().describe('Lookback window in days; default 14'),
+        days: z
+          .number()
+          .int()
+          .min(1)
+          .max(90)
+          .optional()
+          .describe("Lookback window in days; default 14"),
         sampleLimit: z
           .number()
           .int()
           .min(25)
           .max(1000)
           .optional()
-          .describe('Maximum recent call rows to inspect; default 500'),
+          .describe("Maximum recent call rows to inspect; default 500"),
       }),
       requiresApproval: false,
       async execute({ days, sampleLimit }) {
@@ -212,18 +261,30 @@ export function createBuildMyBotRetentionTools(): ToolDefinition[] {
         return {
           lookbackDays,
           policyAuthority:
-            'BuildMyBot live runtime is the sole authority for offer amounts, sequencing, floor enforcement and duration. APEX observes outcomes only.',
+            "BuildMyBot live runtime is the sole authority for offer amounts, sequencing, floor enforcement and duration. APEX observes outcomes only.",
           ...summarizeRetentionRows(rows),
         };
       },
     },
     {
-      name: 'buildmybot_retention_cases',
+      name: "buildmybot_retention_cases",
       description:
-        'Inspect recent BuildMyBot retention or owner-escalation cases with their internal handoff summaries and offer audit trail. Confidential transfer destinations are intentionally absent because BuildMyBot never writes them into model-visible audit metadata.',
+        "Inspect recent BuildMyBot retention or owner-escalation cases with their internal handoff summaries and offer audit trail. Confidential transfer destinations are intentionally absent because BuildMyBot never writes them into model-visible audit metadata.",
       schema: z.object({
-        days: z.number().int().min(1).max(30).optional().describe('Lookback window in days; default 7'),
-        limit: z.number().int().min(1).max(100).optional().describe('Maximum cases returned; default 20'),
+        days: z
+          .number()
+          .int()
+          .min(1)
+          .max(30)
+          .optional()
+          .describe("Lookback window in days; default 7"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("Maximum cases returned; default 20"),
       }),
       requiresApproval: false,
       async execute({ days, limit }) {
@@ -232,12 +293,24 @@ export function createBuildMyBotRetentionTools(): ToolDefinition[] {
       },
     },
     {
-      name: 'buildmybot_voice_runtime_performance',
+      name: "buildmybot_voice_runtime_performance",
       description:
-        'Summarize recent BuildMyBot realtime voice runtime health from call metadata: provider/model distribution, fallbacks, interruptions and AI department handoffs. Use this before changing voice-provider strategy; it reports observed runtime telemetry rather than vendor marketing claims.',
+        "Summarize recent BuildMyBot realtime voice runtime health from call metadata: provider/model distribution, fallbacks, interruptions and AI department handoffs. Use this before changing voice-provider strategy; it reports observed runtime telemetry rather than vendor marketing claims.",
       schema: z.object({
-        days: z.number().int().min(1).max(30).optional().describe('Lookback window in days; default 7'),
-        sampleLimit: z.number().int().min(25).max(1000).optional().describe('Maximum calls to inspect; default 500'),
+        days: z
+          .number()
+          .int()
+          .min(1)
+          .max(30)
+          .optional()
+          .describe("Lookback window in days; default 7"),
+        sampleLimit: z
+          .number()
+          .int()
+          .min(25)
+          .max(1000)
+          .optional()
+          .describe("Maximum calls to inspect; default 500"),
       }),
       requiresApproval: false,
       async execute({ days, sampleLimit }) {
@@ -250,13 +323,19 @@ export function createBuildMyBotRetentionTools(): ToolDefinition[] {
         let totalHandoffs = 0;
         for (const row of rows) {
           const metadata = row.metadata ?? {};
-          const model = typeof metadata.model === 'string' ? metadata.model : 'unknown';
-          const provider = typeof metadata.provider === 'string' ? metadata.provider : 'unknown';
+          const model =
+            typeof metadata.model === "string" ? metadata.model : "unknown";
+          const provider =
+            typeof metadata.provider === "string"
+              ? metadata.provider
+              : "unknown";
           models[model] = (models[model] ?? 0) + 1;
           providers[provider] = (providers[provider] ?? 0) + 1;
-          if (typeof metadata.fallbackReason === 'string') fallbackCalls += 1;
-          if (typeof metadata.interruptions === 'number') totalInterruptions += metadata.interruptions;
-          if (Array.isArray(metadata.voiceHandoffs)) totalHandoffs += metadata.voiceHandoffs.length;
+          if (typeof metadata.fallbackReason === "string") fallbackCalls += 1;
+          if (typeof metadata.interruptions === "number")
+            totalInterruptions += metadata.interruptions;
+          if (Array.isArray(metadata.voiceHandoffs))
+            totalHandoffs += metadata.voiceHandoffs.length;
         }
         return {
           lookbackDays,
@@ -266,9 +345,13 @@ export function createBuildMyBotRetentionTools(): ToolDefinition[] {
           fallbackCalls,
           fallbackRate: rows.length ? round(fallbackCalls / rows.length) : null,
           totalInterruptions,
-          averageInterruptionsPerCall: rows.length ? round(totalInterruptions / rows.length) : null,
+          averageInterruptionsPerCall: rows.length
+            ? round(totalInterruptions / rows.length)
+            : null,
           totalDepartmentHandoffs: totalHandoffs,
-          averageDepartmentHandoffsPerCall: rows.length ? round(totalHandoffs / rows.length) : null,
+          averageDepartmentHandoffsPerCall: rows.length
+            ? round(totalHandoffs / rows.length)
+            : null,
         };
       },
     },

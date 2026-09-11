@@ -1,24 +1,24 @@
-import assert from 'node:assert/strict';
-import { summarizeRetentionRows } from '../packages/core/src/buildmybot-retention-tools.js';
+import assert from "node:assert/strict";
+import { summarizeRetentionRows } from "../packages/core/src/buildmybot-retention-tools.js";
 
 const rows = [
   {
-    id: 'call-1',
-    created_at: '2026-09-10T10:00:00.000Z',
-    status: 'completed',
+    id: "call-1",
+    created_at: "2026-09-10T10:00:00.000Z",
+    status: "completed",
     metadata: {
       retentionAudit: [
         {
-          offerStage: 'light',
-          objection: 'price',
+          offerStage: "light",
+          objection: "price",
           listedMonthlyPrice: 499,
           temporaryMonthlyPrice: 424.15,
           temporaryMonths: 2,
           accepted: false,
         },
         {
-          offerStage: 'moderate',
-          objection: 'price',
+          offerStage: "moderate",
+          objection: "price",
           listedMonthlyPrice: 499,
           temporaryMonthlyPrice: 349.3,
           temporaryMonths: 2,
@@ -26,18 +26,18 @@ const rows = [
         },
       ],
       interruptions: 3,
-      voiceHandoffs: [{ from: 'sales', to: 'manager' }],
+      voiceHandoffs: [{ from: "sales", to: "manager" }],
     },
   },
   {
-    id: 'call-2',
-    created_at: '2026-09-10T11:00:00.000Z',
-    status: 'completed',
+    id: "call-2",
+    created_at: "2026-09-10T11:00:00.000Z",
+    status: "completed",
     metadata: {
       retentionAudit: [
         {
-          offerStage: 'light',
-          objection: 'competitor',
+          offerStage: "light",
+          objection: "competitor",
           listedMonthlyPrice: 279,
           temporaryMonthlyPrice: 237.15,
           temporaryMonths: 1,
@@ -46,16 +46,16 @@ const rows = [
       ],
       ownerEscalationRequested: true,
       ownerEscalationHandoff: {
-        reason: 'Customer requested owner review',
-        stepsAlreadyTaken: 'Support issue resolved; value reviewed.',
+        reason: "Customer requested owner review",
+        stepsAlreadyTaken: "Support issue resolved; value reviewed.",
       },
     },
   },
   {
-    id: 'call-3',
-    created_at: '2026-09-10T12:00:00.000Z',
-    status: 'completed',
-    metadata: { fallbackReason: 'Voice engine connection closed' },
+    id: "call-3",
+    created_at: "2026-09-10T12:00:00.000Z",
+    status: "completed",
+    metadata: { fallbackReason: "Voice engine connection closed" },
   },
 ];
 
@@ -83,4 +83,4 @@ assert.equal(summary.byStage.moderate.acceptanceRate, 1);
 assert.equal(summary.byObjection.price.offers, 2);
 assert.equal(summary.byObjection.competitor.accepted, 1);
 
-console.log('BuildMyBot retention telemetry aggregation verified.');
+console.log("BuildMyBot retention telemetry aggregation verified.");
