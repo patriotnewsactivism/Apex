@@ -373,7 +373,7 @@ function cooldownMs(status: number | undefined, message: string): number {
   return COOLDOWN_429_MS;
 }
 
-function isCapacityFailure(
+export function isCapacityFailure(
   status: number | undefined,
   message: string,
 ): boolean {
@@ -382,6 +382,7 @@ function isCapacityFailure(
     status === 502 ||
     status === 503 ||
     status === 504 ||
+    (status === undefined && /request timed out|aborted/i.test(message)) ||
     ((status === 401 || status === 403) &&
       /free.?tier.?only|allocationquota|free quota|quota exhausted/i.test(
         message,

@@ -1,4 +1,8 @@
-import { getProviderRequestSpacingMs, parseRetryAfterMs } from '../packages/core/src/llm-client.js';
+import {
+  getProviderRequestSpacingMs,
+  isCapacityFailure,
+  parseRetryAfterMs,
+} from '../packages/core/src/llm-client.js';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -14,6 +18,18 @@ delete process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_MINIMAX_M3;
 check('Retry-After numeric seconds are honored', parseRetryAfterMs('2', 0) === 2000);
 check('Retry-After HTTP dates are honored', parseRetryAfterMs('Thu, 01 Jan 1970 00:00:05 GMT', 1000) === 4000);
 check('invalid Retry-After is ignored', parseRetryAfterMs('nonsense', 0) === undefined);
+check(
+  'request timeouts are temporary capacity failures',
+  isCapacityFailure(undefined, 'request timed out'),
+);
+check(
+  'aborted provider requests are temporary capacity failures',
+  isCapacityFailure(undefined, 'This operation was aborted'),
+);
+check(
+  'ordinary provider errors remain task failures',
+  !isCapacityFailure(undefined, 'Malformed response: no choices'),
+);
 
 if (failures > 0) {
   console.error(`❌ ${failures} CHECK(S) FAILED`);

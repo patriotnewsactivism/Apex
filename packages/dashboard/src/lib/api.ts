@@ -736,6 +736,12 @@ export interface ResearchedLead {
   website: string | null;
   industry: string | null;
   city: string | null;
+  decisionMakerName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  contactSourceUrl: string | null;
+  contactResearchStatus: 'pending' | 'partial' | 'complete' | 'unavailable';
+  contactResearchedAt: string | null;
   fitReason: string;
   outreachAngle: string | null;
   status: string;
@@ -788,4 +794,3 @@ export interface SuggestionsResponse {
     }>;
   };
 }
-

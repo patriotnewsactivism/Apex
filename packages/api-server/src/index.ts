@@ -36,6 +36,7 @@ import { createJobsRouter } from './routes/jobs.js';
 import { createLearningRouter } from './routes/learning.js';
 import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
+import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
@@ -44,6 +45,8 @@ import { createCampaignsRouter } from './routes/campaigns.js';
 import { createArtifactsRouter } from './routes/artifacts.js';
 import { startExecutorDispatchLoop, executorDispatchConfig } from '@workspace/executor';
 import { requireAdminAuth } from './middleware/auth.js';
+import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
+import { WebSocketServer } from 'ws';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
 const __filename = fileURLToPath(import.meta.url);
@@ -92,7 +95,19 @@ async function seedDefaultJobs(): Promise<void> {
         payload: {
           title: 'Lead generation sweep',
           description:
-            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered (rotate through the full target list in your system prompt). Use searchBusinessDirectory and webSearch to find 20-50 real qualifying businesses, then save them in one batch with saveResearchedLeadsBatch. Quality over quantity, but aim high.',
+            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered. Use searchBusinessDirectory and webSearch to find real qualifying businesses. For every lead, inspect public contact/about/team sources and attempt to find the decision maker, business email, and phone; never guess. Save the source and honest contact research status with saveResearchedLeadsBatch. Every saved lead must retain at least its verified company website as a contact path. Quality over quantity.',
+        },
+      },
+      {
+        id: 'system-lead-contact-enrichment',
+        name: 'Lead contact enrichment backlog',
+        jobType: 'task_delegation',
+        cronExpression: '30 * * * *',
+        targetAgentId: 'apex-lead-research-001' as string | null,
+        priority: 3,
+        payload: {
+          title: 'Enrich pending lead contacts',
+          description: 'Call listResearchedLeads with needsContactResearch=true. For up to 25 pending leads, inspect each verified website and targeted public web results for the relevant decision maker name, business email, and business phone. Never guess or synthesize contact data. Call updateLeadContactInfo for every attempted lead, include a supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
         },
       },
       {
@@ -647,6 +662,10 @@ await recoverStaleLeasedTasks();
   // no Bearer token available). Must be mounted BEFORE requireAdminAuth.
   app.use('/api/vapi', createVapiWebhookRouter());
 
+  // Telnyx webhook — receives inbound call events from Telnyx (server-to-server).
+  // Must be mounted BEFORE requireAdminAuth for the same reason as Vapi.
+  app.use('/api/telnyx', createTelnyxWebhookRouter());
+
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
 
@@ -715,6 +734,51 @@ await recoverStaleLeasedTasks();
   // overlapping upgrade listeners and can corrupt the first frame after a 101.
   setupWebSocket(server);
   setupLiveVoice(server, ceo);
+
+  // Telnyx media-stream WebSocket — unauthenticated upgrade path.
+  //
+  // Telnyx opens this WebSocket server-to-server immediately after
+  // streaming_start; it cannot carry an APEX ticket. Security is provided
+  // by the call_control_id query parameter (Telnyx-issued, server-to-server
+  // origin) rather than a dashboard ticket.
+  //
+  // This must be a SEPARATE listener from registerWebSocketRoute because
+  // that helper requires a ticket on every upgrade and there is deliberately
+  // only one 'upgrade' listener on the HTTP server (added by getRouter).
+  // We add a second listener here only for this specific path, after the
+  // shared router has already handled the other paths.
+  const telnyxVoiceWss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  server.on('upgrade', (request, socket, head) => {
+    try {
+      const host = request.headers.host ?? 'localhost';
+      const url = new URL(request.url ?? '/', `http://${host}`);
+
+      if (url.pathname !== '/api/voice/telnyx-media') {
+        // Not our path — the shared router will handle it (or reject it).
+        return;
+      }
+
+      const callControlId = url.searchParams.get('call_control_id');
+      if (!callControlId) {
+        socket.end(
+          'HTTP/1.1 400 Bad Request\r\n' +
+          'Connection: close\r\n\r\n' +
+          'Missing call_control_id',
+        );
+        return;
+      }
+
+      const callerNumber = url.searchParams.get('caller') ?? undefined;
+
+      telnyxVoiceWss.handleUpgrade(request, socket, head, (ws) => {
+        const session = new DeepgramVoiceSession(ws, callControlId, callerNumber);
+        void session.start();
+      });
+    } catch (error) {
+      console.error('[Telnyx Media WS] Upgrade error:', error);
+      socket.destroy();
+    }
+  });
 
   // Serve dashboard static files if built
   const primaryDist = resolve(__dirname, '../../dashboard/dist');
