@@ -33,19 +33,50 @@
  *   APEX_REQUEST_PACING_BURST=150
  */
 
+import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 
-/** Accounts are identified by the env var holding their key, because that is
- *  what an OpenRouter account maps to. Several provider specs share one key
- *  (the paid chain all reads OPENROUTER_API_KEY), and one provider can be
- *  tried against several keys, so neither provider name nor model is the unit
- *  the allowance is charged against. The env name is. */
+/**
+ * An account is identified by a fingerprint of its KEY, not by the env var
+ * holding it.
+ *
+ * This matters because the two are not one-to-one. APEX reads OpenRouter keys
+ * from five env names (OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY,
+ * OPENROUTER_API_KEY_2, OPENROUTER_API_KEY_3, OPENROUTER_BYOK_API_KEY) across
+ * three real accounts — and the BYOK rung is explicitly documented as needing
+ * to belong to an account that already appears elsewhere in that list. Keying
+ * on the env name would split one account's spend across several rows, so a
+ * per-account cap of 1,000 set on two names that hold the same key would
+ * authorize 2,000 requests against an account that allows 1,000. The cap would
+ * read as enforced and be wrong in the direction that costs you the day.
+ *
+ * The fingerprint is a truncated SHA-256 of the key. It is used only as a
+ * grouping identity and a database key; it is NEVER reported — `/health` and
+ * every log line show the env names, which are not secrets.
+ */
 export interface RequestAccountDay {
   /** Upstream attempts started, whatever their outcome. */
   requests: number;
   /** Attempts that returned a usable response. */
   succeeded: number;
+}
+
+/** Stable, non-reversible grouping identity for one provider credential. */
+export function accountFingerprint(apiKey: string): string {
+  return createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
+}
+
+/** Env names currently holding this key — the human-readable label for an
+ *  account, resolved from live process.env rather than stored, so a key moved
+ *  between variables relabels itself instead of going stale. */
+function envNamesForFingerprint(fingerprint: string): string[] {
+  const names: string[] = [];
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!value || !name.endsWith('_API_KEY') && !/_API_KEY_\d+$/.test(name)) continue;
+    if (accountFingerprint(value) === fingerprint) names.push(name);
+  }
+  return names.sort();
 }
 
 interface LedgerState {
@@ -345,12 +376,13 @@ export async function initializeRequestLedgerPersistence(): Promise<boolean> {
   }
 }
 
-/** Record one upstream attempt. Call this for every request that leaves the
- *  process, before its outcome is known, then again is NOT needed — the
- *  outcome is reported through `succeeded`. */
-export function recordProviderRequest(account: string, succeeded: boolean): void {
+/** Record one upstream attempt against the account that served it. Takes the
+ *  API key so the caller never handles the fingerprint; the key itself is
+ *  hashed immediately and never stored, logged or reported. */
+export function recordProviderRequest(apiKey: string, succeeded: boolean): void {
   try {
     rolloverIfNeeded();
+    const account = accountFingerprint(apiKey);
     const entry =
       state.accounts[account] ?? (state.accounts[account] = { requests: 0, succeeded: 0 });
     entry.requests += 1;
@@ -385,15 +417,35 @@ export function requestCapacityWindow(at: number = Date.now()): RequestCapacityW
   });
 }
 
-/** Per-account budget check, for accounts given an explicit cap. */
+/**
+ * Resolve the configured cap for an account.
+ *
+ * Operators write APEX_REQUEST_CAPS against env NAMES, because that is what
+ * they can see and reason about, while spend is tracked against the account
+ * fingerprint. When several names hold the same key they are one account, so
+ * the strictest cap among them wins — summing them would recreate exactly the
+ * over-authorization this fingerprinting exists to prevent.
+ */
+function capForFingerprint(fingerprint: string): number {
+  const caps = parseCaps();
+  const applicable = envNamesForFingerprint(fingerprint)
+    .map((name) => caps[name])
+    .filter((cap): cap is number => Number.isFinite(cap) && cap > 0);
+  if (applicable.length === 0) return caps[fingerprint] ?? 0;
+  return Math.min(...applicable);
+}
+
+/** Per-account budget check, for accounts given an explicit cap. Takes the
+ *  API key itself so callers never have to know about fingerprinting. */
 export function accountCapacityWindow(
-  account: string,
+  apiKey: string,
   at: number = Date.now(),
 ): RequestCapacityWindow {
   rolloverIfNeeded(at);
+  const fingerprint = accountFingerprint(apiKey);
   return calculateRequestCapacityWindow({
-    cap: parseCaps()[account] ?? 0,
-    usedRequests: accountRequestsToday(account),
+    cap: capForFingerprint(fingerprint),
+    usedRequests: accountRequestsToday(fingerprint),
     requestedRequests: 1,
     at,
   });
@@ -420,6 +472,9 @@ export interface RequestLedgerSnapshot {
     nextResumeAt: string | null;
   };
   accounts: Array<{
+    /** The env var name(s) currently holding this account's key. Never the
+     *  fingerprint — that is an internal grouping identity derived from the
+     *  key, and this payload is served without authentication. */
     account: string;
     requests: number;
     succeeded: number;
@@ -433,14 +488,17 @@ export interface RequestLedgerSnapshot {
 
 export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedgerSnapshot {
   rolloverIfNeeded(at);
-  const caps = parseCaps();
-  const names = new Set([...Object.keys(state.accounts), ...Object.keys(caps)]);
-  const accounts = [...names]
-    .map((account) => {
-      const entry = state.accounts[account] ?? { requests: 0, succeeded: 0 };
-      const cap = caps[account] ?? 0;
+  const fingerprints = new Set(Object.keys(state.accounts));
+  const accounts = [...fingerprints]
+    .map((fingerprint) => {
+      const entry = state.accounts[fingerprint] ?? { requests: 0, succeeded: 0 };
+      const cap = capForFingerprint(fingerprint);
+      const envNames = envNamesForFingerprint(fingerprint);
       return {
-        account,
+        // A fingerprint with no live env name is a key that was rotated or
+        // removed mid-day; its spend still counts toward the workspace total,
+        // so say so rather than dropping the row or leaking the hash.
+        account: envNames.length > 0 ? envNames.join(' + ') : '(retired key)',
         requests: entry.requests,
         succeeded: entry.succeeded,
         failed: Math.max(0, entry.requests - entry.succeeded),

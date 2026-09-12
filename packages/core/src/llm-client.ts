@@ -1226,7 +1226,7 @@ class MultiProviderClient {
               // lets one exhausted OpenRouter account step aside while the
               // other two keep serving, instead of the whole chain stalling
               // on the first key that ran out.
-              const accountWindow = accountCapacityWindow(credential.env);
+              const accountWindow = accountCapacityWindow(credential.key);
               if (!accountWindow.allowed) {
                 skipReasons.push(
                   `${credentialId}: account request budget ` +
@@ -1251,7 +1251,7 @@ class MultiProviderClient {
                   this.config,
                   execution,
                 );
-                recordProviderRequest(credential.env, true);
+                recordProviderRequest(credential.key, true);
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
                 await recordResponseTelemetry({
@@ -1271,7 +1271,7 @@ class MultiProviderClient {
                 // as far as the provider is concerned. Counting only successes
                 // would hide exactly the traffic worth seeing: the fallback
                 // cascade, which burns several requests to serve one call.
-                recordProviderRequest(credential.env, false);
+                recordProviderRequest(credential.key, false);
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =

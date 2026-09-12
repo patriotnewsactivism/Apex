@@ -171,7 +171,7 @@ can see is how that went unnoticed:
 | `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2600 |
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
-| `accounts[]` | Per-account split, keyed by the env var holding each key — the unit an OpenRouter allowance is charged against |
+| `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from five env names across three real accounts, and the BYOK rung must reuse an existing account's key. Names holding the same key appear as one row (`OPENROUTER_API_KEY + OPENROUTER_BYOK_API_KEY`) |
 | `persistence` | `memory-only` means a restart reset today's count; a deploy would then hand the workforce a fresh full allowance |
 
 Exceeding the cap shows as `llmCapacity.state: capped`; running ahead of the
@@ -179,6 +179,15 @@ pacing ramp shows as `workforce_paused`. Neither is an outage — the ramp
 releases more allowance continuously, so a paced workforce resumes on its own.
 
 To raise or remove the budget, set `APEX_REQUEST_CAP_TOTAL` (`0` disables it).
+
+Per-account caps (`APEX_REQUEST_CAPS`) are written against env var **names**,
+since that is what an operator can see, but they resolve to the account that
+key belongs to. When several names hold one key the strictest cap among them
+applies to the account as a whole — summing them would authorize more than the
+account actually allows, which is the failure the key-based grouping exists to
+prevent. Read the `accounts[]` labels on `/health` to see which names APEX has
+resolved to the same account before setting them.
+
 `scripts/verify-request-budget.ts` guards the accounting in CI.
 
 ### Reading `agentStatusCounts`

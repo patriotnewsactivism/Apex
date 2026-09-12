@@ -72,16 +72,36 @@ async function main(): Promise<void> {
   check(
     'every upstream attempt is counted — success AND failure paths',
     recordCalls.length >= 2 &&
-      /recordProviderRequest\(credential\.env, true\)/.test(client) &&
-      /recordProviderRequest\(credential\.env, false\)/.test(client),
+      /recordProviderRequest\(credential\.key, true\)/.test(client) &&
+      /recordProviderRequest\(credential\.key, false\)/.test(client),
     { callSites: recordCalls.length },
+  );
+
+  // Spend is grouped by a fingerprint of the KEY, not the env var name. APEX
+  // reads OpenRouter keys from five env names across three real accounts (the
+  // BYOK rung is documented as having to reuse an existing account's key), so
+  // env-name keying would split one account across rows and let two 1,000-caps
+  // authorize 2,000 requests against an account that allows 1,000.
+  check(
+    'accounts are grouped by credential, not by env var name',
+    /recordProviderRequest\(credential\.key/.test(client) &&
+      /accountCapacityWindow\(credential\.key\)/.test(client),
+  );
+  check(
+    'the key fingerprint is never reported — /health shows env names',
+    /account: envNames\.length > 0 \? envNames\.join/.test(ledger) &&
+      !/account: fingerprint/.test(ledger),
+  );
+  check(
+    'the strictest cap wins when several env names hold one key',
+    /Math\.min\(\.\.\.applicable\)/.test(ledger),
   );
 
   // The failure counter has to sit in the catch block that handles a provider
   // error, not somewhere that only runs on a clean path.
   const catchBlock = client.slice(
-    client.indexOf('recordProviderRequest(credential.env, false)'),
-    client.indexOf('recordProviderRequest(credential.env, false)') + 400,
+    client.indexOf('recordProviderRequest(credential.key, false)'),
+    client.indexOf('recordProviderRequest(credential.key, false)') + 400,
   );
   check(
     'the failure counter is inside the provider catch block',
