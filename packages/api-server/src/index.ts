@@ -13,7 +13,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters } from '@workspace/core';
+import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
@@ -181,14 +181,17 @@ async function main() {
         .map((provider) => provider.provider),
       ...providerBackpressure.pausedProviders,
     ])];
+    const requestLedger = getRequestLedgerSnapshot();
     const hardCapped =
       tokenLedger.totalCapReached ||
+      requestLedger.totalCapReached ||
       tokenLedger.providers.some((provider) => provider.capReached);
     // `aggregatePaused` is the SAME expression llmCapacityAvailableNow() uses
     // to return false (`!ledger.pacing.total.allowed`), and that function gates
     // task claiming for every agent in the process. So this condition does not
     // mean "throttled" -- it means the entire workforce has stopped.
-    const aggregatePaused = !tokenLedger.pacing.total.allowed;
+    const aggregatePaused =
+      !tokenLedger.pacing.total.allowed || !requestLedger.pacing.total.allowed;
     // These two conditions used to collapse into one "paced" string, and that
     // cost a full day of production ambiguity on 2026-09-08: at 15:19 /health
     // read `paced` while claiming ran at ~15 tasks/min (two Nemotron providers
@@ -211,6 +214,7 @@ async function main() {
           : "available";
     const resumeCandidates = [
       tokenLedger.pacing.nextResumeAt,
+      requestLedger.pacing.nextResumeAt,
       providerBackpressure.nextResumeAt,
     ].filter((value): value is string => Boolean(value));
     const nextResumeAt = resumeCandidates.length
@@ -254,6 +258,36 @@ async function main() {
         workforceParkedUntil: workforceParkedMs > 0
           ? new Date(Date.now() + workforceParkedMs).toISOString()
           : null,
+      },
+      // Burn rate, unauthenticated and on purpose.
+      //
+      // The provider allowance that actually constrains APEX is denominated in
+      // REQUESTS (OpenRouter free tier: a fixed number of calls per account per
+      // UTC day), but every cap and pause in the process was denominated in
+      // tokens, so nothing anywhere reported the number that was running out.
+      // That is how ~5,000 requests/day went unnoticed against a 3,000/day
+      // ceiling. Counts are not secrets; leaving this behind admin auth is what
+      // made the overrun invisible, so it sits next to llmCapacity where a
+      // plain curl finds it.
+      //
+      // `projected` is the figure to compare against the provider allowance;
+      // it is null for the first 15 minutes of each UTC day, when too little
+      // has elapsed for extrapolation to mean anything.
+      llmRequests: {
+        day: requestLedger.day,
+        used: requestLedger.totalRequests,
+        cap: requestLedger.totalCap,
+        projected: requestLedger.projectedDailyRequests,
+        releasedSoFar: requestLedger.pacing.total.pacingAllowance,
+        pacingEnabled: requestLedger.pacing.enabled,
+        persistence: requestLedger.persistence,
+        accounts: requestLedger.accounts.map((account) => ({
+          account: account.account,
+          requests: account.requests,
+          failed: account.failed,
+          cap: account.cap,
+          percentOfCap: account.percentOfCap,
+        })),
       },
       // Cloud Run kills and restarts a container that exceeds its memory
       // limit, which looks identical from outside to a crash: same revision,

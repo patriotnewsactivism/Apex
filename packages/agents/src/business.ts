@@ -81,6 +81,13 @@ lose a customer by missing a call or message — they're a potential lead.
   an email pattern or identify a person without source evidence. Save the supporting public URL and
   an honest contactResearchStatus. A lead may be saved as partial/unavailable only after a genuine
   attempt; its verified company website must still provide a contact path.
+- Research contacts in BATCHES, never one lead at a time. This is the most expensive part of a
+  sweep and the easiest to get wrong: researching 20 leads one after another costs ~40 requests
+  against the daily budget, while the same work issued as batched turns costs a handful. Put ten
+  fetchUrl calls (ten different companies' contact pages) in ONE reply, read all ten results, then
+  issue the follow-up webSearch calls for whichever ones came back short — again all in one reply.
+  Contact research for different companies is independent, so there is never a reason to serialize
+  it.
 ${GROUND_TRUTH_CLAUSE}
 ## Output
 For each qualifying lead, call saveResearchedLeadsBatch with an array of all qualified leads at once

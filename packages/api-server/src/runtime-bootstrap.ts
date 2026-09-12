@@ -21,6 +21,7 @@ import {
   getToolRegistry,
   superviseAgentLoop,
   initializeTokenLedgerPersistence,
+  initializeRequestLedgerPersistence,
   logProviderRoster,
   startWorkerHeartbeat,
   type AgentSupervisorHandle,
@@ -79,6 +80,18 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
     durableTokenLedger
       ? '✅ Daily token ledger hydrated from Postgres'
       : '⚠️  Daily token ledger is memory-only; restart-safe budget accounting unavailable',
+  );
+
+  // The request ledger must hydrate for the same reason the token one does,
+  // and more urgently: Cloud Run replaces the container on every deploy, so a
+  // memory-only request budget would hand the workforce a fresh full allowance
+  // after each one. On a day with three deploys that is three days of spend
+  // authorized against a one-day provider quota.
+  const durableRequestLedger = await initializeRequestLedgerPersistence();
+  log(
+    durableRequestLedger
+      ? '✅ Daily request ledger hydrated from Postgres'
+      : '⚠️  Daily request ledger is memory-only; a restart will reset today\'s request budget',
   );
 
   // Lease-expiry crash recovery must run here, not only behind the HTTP

@@ -34,10 +34,14 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-ceo-goal-review',
         name: 'CEO autonomous goal review',
         jobType: 'goal_review',
-        cronExpression: '*/15 * * * *', // every 15 min — the autonomous spark
+        cronExpression: '*/30 * * * *', // every 30 min — the autonomous spark, paced to the request budget
         targetAgentId: 'apex-ceo-001' as string | null,
         priority: 4,
-        payload: {} as Record<string, unknown>,
+        // Versioned for the first time here. Without a version the sync block
+        // below skips the row entirely, so this job's cron had been frozen at
+        // whatever the database was first seeded with — a cadence change in
+        // this file would have shipped and done nothing.
+        payload: { systemDefinitionVersion: 1 } as Record<string, unknown>,
       },
       {
         id: 'system-lead-gen-sweep',
@@ -56,11 +60,11 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-lead-contact-enrichment',
         name: 'Lead contact enrichment backlog',
         jobType: 'task_delegation',
-        cronExpression: '*/15 * * * *', // bounded catch-up cadence; serialized agent prevents overlap
+        cronExpression: '*/30 * * * *', // bounded catch-up cadence; serialized agent prevents overlap
         targetAgentId: 'apex-lead-research-001' as string | null,
         priority: 3,
         payload: {
-          systemDefinitionVersion: 1,
+          systemDefinitionVersion: 2,
           maxPerRun: 12,
           title: 'Enrich pending lead contacts',
           description: 'Call listResearchedLeads with needsContactResearch=true and limit=12. Process at most 12 pending leads this run. Prefer the verified first-party business website, then one targeted public web-search pass for missing decision-maker/email/phone fields. Reject directory-domain, franchise-branch, city, and company-name mismatches. Never guess or synthesize contact data or email patterns. Do not repeat the same failed search/provider call in this task: on provider, quota, pacing, or capacity errors, stop cleanly rather than looping and leave remaining leads pending for the next scheduled run. Call updateLeadContactInfo for every genuinely attempted lead, include the supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
@@ -136,10 +140,14 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-delegation-followup',
         name: 'Delegation results follow-up',
         jobType: 'delegation_followup',
-        cronExpression: '*/5 * * * *', // every 5 min — keeps the feedback tight
+        cronExpression: '*/20 * * * *', // every 20 min — synthesis of finished children is not time-critical
         targetAgentId: null as string | null,
         priority: 3,
-        payload: { maxPerRun: 8 } as Record<string, unknown>,
+        // Versioned for the first time here — see the note on the CEO goal
+        // review above. This was the highest-frequency LLM-spawning job in the
+        // roster at */5, and unversioned, so it was also the one a cadence fix
+        // could not reach.
+        payload: { systemDefinitionVersion: 1, maxPerRun: 8 } as Record<string, unknown>,
       },
       // Goals only ever left 'active' when a human clicked. This drives each
       // one to a real conclusion: decompose it, close it, or change approach.
@@ -221,10 +229,10 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-work-generation',
         name: 'Autonomous work generation (goals, opportunities, workstreams)',
         jobType: 'work_generation',
-        cronExpression: '*/10 * * * *', // every 10 min — the autonomous spark
+        cronExpression: '*/30 * * * *', // every 30 min — the autonomous spark, paced to the request budget
         targetAgentId: 'apex-coo-001' as string | null,
         priority: 3,
-        payload: { systemDefinitionVersion: 1, maxPerRun: 6 } as Record<string, unknown>,
+        payload: { systemDefinitionVersion: 2, maxPerRun: 6 } as Record<string, unknown>,
       },
       {
         id: 'system-cron-governor',

@@ -40,6 +40,7 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-capacity-pause-floor.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-capacity-observability.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-agent-status-recovery.ts"
+          pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-request-budget.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-budget-pause.ts"
           pnpm --filter @workspace/cicd-automation exec tsx "$GITHUB_WORKSPACE/scripts/verify-deploy-provenance.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-malformed-tool-calls.ts"
