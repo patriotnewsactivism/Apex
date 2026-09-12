@@ -190,6 +190,31 @@ resolved to the same account before setting them.
 
 `scripts/verify-request-budget.ts` guards the accounting in CI.
 
+### Reading `providerCredits`
+
+APEX's automatic routing chain is **free-only** as of 2026-09-12. Nothing on the
+default path can spend money, so an empty OpenRouter balance is no longer an
+outage — but it was one, and that is why this field exists.
+
+On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
+routing chain was paid-only, there was no free rung to fall through to, and
+**every LLM request returned HTTP 402** while `/health` reported `status: ok`,
+`taskQueue.verdict: ok`, 13 live agents and a healthy poll loop. Tasks were
+being claimed and every one of them failed.
+
+| `status` | Meaning |
+|---|---|
+| `ok` | Balance above $2 |
+| `low` | Under $2 — paid rungs will start failing soon |
+| `exhausted` | At or below zero. Free routing is unaffected; an explicit operator model policy that routes paid will 402 |
+| `unknown` | No key configured, or the lookup failed. `detail` says which |
+
+The balance is cached for 10 minutes and fetched in the background: `/health`
+never awaits it, because a health endpoint that hangs on a third party is a
+worse outage than the one it reports. The credits endpoint is an account
+lookup, not a generation, so it consumes none of the daily request allowance
+and is deliberately not counted in `llmRequests`.
+
 ### Reading `agentStatusCounts`
 
 `error` in `agentStatusCounts` means **an agent's last task failed**. It does
