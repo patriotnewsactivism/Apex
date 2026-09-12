@@ -47,7 +47,7 @@ import {
 // reads OpenRouter's live catalog because per-model prices may change.
 
 export type ApexProviderName =
-  | 'openrouter-minimax-m3'
+  | 'openrouter-ling-3-flash-vl'
   | 'openrouter-nemotron-ultra'
   | 'openrouter-nemotron-super'
   | 'openrouter-deepseek-v4-flash-paid'
@@ -55,9 +55,17 @@ export type ApexProviderName =
   | 'openrouter-deepseek-v3-paid'
   | 'openrouter-grok-4-6-bedrock';
 
-// Legacy free adapters are retained only for isolated diagnostics/experiments.
-// They are deliberately absent from PROVIDER_ORDER and cannot be admitted by a
-// persisted production model policy. Production continuity uses the paid chain.
+// Free adapters ARE the production chain as of 2026-09-12 (operator decision).
+// Before that they were experiment-only and PROVIDER_ORDER held four paid rungs.
+// That arrangement failed closed in the most expensive way possible: the
+// OpenRouter account ran out of credits ($20 deposited, $24.28 used) and, with
+// no free rung to fall through to, EVERY request returned HTTP 402. APEX kept
+// claiming tasks and failing all of them, and nothing reported it, because the
+// only thing being metered was tokens.
+//
+// The paid specs below are kept and still reachable through an explicit
+// operator model policy, but no automatic route uses them: a paid rung that
+// nobody watches is how the credits went to zero unnoticed.
 const OPENROUTER_FREE_KEY_ENVS = [
   // New-account free-tier key first.
   'OPENROUTER_FREE_API_KEY',
@@ -98,6 +106,18 @@ type ProviderSpec = {
   minIntervalMs: number;
   toolCallingReliable: true;
   /**
+   * Whether this model accepts `parallel_tool_calls` (several tool calls in one
+   * reply). Checked against OpenRouter's live catalog per model, not assumed:
+   * the paid DeepSeek/GPT-OSS models list it, and NO free model currently does.
+   *
+   * It matters because batching is the main lever on request count — one reply
+   * carrying five tool calls costs one request where five replies cost five —
+   * so which rung serves a task changes how expensive that task is. Sending the
+   * field to a model that does not support it risks a 400 on every call, and a
+   * free-only chain has no paid rung left to fall through to.
+   */
+  supportsParallelToolCalls?: boolean;
+  /**
    * OpenRouter reasoning-effort hint (reasoning models only). Low effort keeps
    * reasoning from eating the whole max_tokens budget before content is
    * emitted.
@@ -129,8 +149,20 @@ type ProviderSpec = {
 
 const PROVIDERS: readonly ProviderSpec[] = [
   {
-    name: 'openrouter-minimax-m3',
-    model: 'minimax/minimax-m3:free',
+    // Free tier slot 1. Was minimax/minimax-m3:free until 2026-09-12, when a
+    // direct call returned HTTP 404 "This model is unavailable for free. The
+    // paid version is available now" -- the same retirement that took
+    // z-ai/glm-5.2:free on 2026-09-06. Not replaced with the paid slug, for
+    // the same reason as slot 3: that would burn paid credits from inside the
+    // free-only rungs.
+    //
+    // Ling 3.0 Flash VL is the strongest free model that supports tools AND
+    // tool_choice, verified against the live catalog and by direct call on
+    // 2026-09-12: agentic index 30.0 and coding index 57, both higher than
+    // either Nemotron below, and it returns clean content instead of spending
+    // its whole budget on reasoning preamble.
+    name: 'openrouter-ling-3-flash-vl',
+    model: 'inclusionai/ling-3.0-flash-vl:free',
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
     minIntervalMs: 500,
@@ -170,6 +202,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // right after all four free models are exhausted.
     name: 'openrouter-deepseek-v4-flash-paid',
     model: 'deepseek/deepseek-v4-flash-0731',
+    supportsParallelToolCalls: true,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
@@ -200,6 +233,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // mode that made reasoningEffort:'low' load-bearing for those two.
     name: 'openrouter-gpt-oss-120b-paid',
     model: 'openai/gpt-oss-120b',
+    supportsParallelToolCalls: true,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
@@ -218,6 +252,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // all four free models AND deepseek-v4-flash are exhausted/erroring.
     name: 'openrouter-deepseek-v3-paid',
     model: 'deepseek/deepseek-v3.2',
+    supportsParallelToolCalls: true,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
@@ -264,6 +299,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // 74d2fc7 had to guard for deepseek-v4-flash.
     name: 'openrouter-grok-4-6-bedrock',
     model: 'x-ai/grok-4.6',
+    supportsParallelToolCalls: true,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_BYOK_KEY_ENVS,
     paid: true,
@@ -281,19 +317,40 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
   PROVIDERS.map((provider) => [provider.name, provider]),
 );
 
+/**
+ * The automatic routing chain. Free-only by operator decision (2026-09-12).
+ *
+ * Ordered by measured agentic capability, best first, since the first rung
+ * serves almost everything and the others exist for when it is rate-limited:
+ *
+ *   Ling 3.0 Flash VL   agentic 30.0, coding 57.0   (1M ctx)
+ *   Nemotron 3 Ultra    agentic 21.7, coding 49.3   (1M ctx)
+ *   Nemotron 3 Super    agentic  4.1, coding 37.7   (1M ctx)
+ *
+ * All three were confirmed live by direct call on 2026-09-12, and all three
+ * advertise both `tools` and `tool_choice` — which is not a given: the free
+ * endpoints for minimax-m3 and glm-5.2 were both retired out from under this
+ * list, returning 404 rather than degrading, so a rung here is only as good as
+ * its last verification.
+ *
+ * The honest trade, stated because it is the whole cost of going free-only:
+ * these models are roughly half as capable agentically as the paid chain they
+ * replace (DeepSeek V4 Flash is 41.7), and none of them support
+ * parallel_tool_calls — so tool batching, the single biggest lever on request
+ * count, does not apply to them. Expect more requests per task here, not
+ * fewer, which is exactly why the daily request budget matters more now.
+ */
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  'openrouter-deepseek-v4-flash-paid',
-  'openrouter-gpt-oss-120b-paid',
-  'openrouter-deepseek-v3-paid',
-  // Emergency continuity anchor. This remains last because it is materially
-  // more expensive and is intentionally pinned to Bedrock BYOK.
-  'openrouter-grok-4-6-bedrock',
+  'openrouter-ling-3-flash-vl',
+  'openrouter-nemotron-ultra',
+  'openrouter-nemotron-super',
 ];
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
-  // Operator policy 2026-09-10: validated production hotfix. DeepSeek V4 Flash
-  // is primary, GPT-OSS 120B is the fast/cheap fallback, then DeepSeek V3.2 and
-  // the pinned Bedrock BYOK emergency rung. Free endpoints are experiment-only.
+  // Operator policy 2026-09-12: free-only automatic routing. A persisted
+  // operator model policy is still honoured and still routes paid, because
+  // that path is an explicit, deliberate choice made in Settings rather than
+  // a silent default.
   if (hasCustomOpenRouterModelPolicy()) return ['openrouter-gpt-oss-120b-paid'];
   return [...PROVIDER_ORDER];
 }
@@ -946,9 +1003,12 @@ async function callCompatibleProvider(
       // Escape hatch because it is sent to every provider: if some model ever
       // rejects the field outright, APEX_PARALLEL_TOOL_CALLS=off restores the
       // previous behaviour without a deploy.
-      if (!['0', 'false', 'off', 'no'].includes(
-        (process.env.APEX_PARALLEL_TOOL_CALLS ?? 'on').trim().toLowerCase(),
-      )) {
+      if (
+        provider.supportsParallelToolCalls &&
+        !['0', 'false', 'off', 'no'].includes(
+          (process.env.APEX_PARALLEL_TOOL_CALLS ?? 'on').trim().toLowerCase(),
+        )
+      ) {
         body.parallel_tool_calls = true;
       }
     }
@@ -1447,10 +1507,19 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const maxTokens = Number.isFinite(configuredMaxTokens)
     ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
     : defaultMaxTokens;
-  const model = getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
+  // Derived from the live chain rather than restated as a literal. When these
+  // were independent, flipping PROVIDER_ORDER to free-only left every agent
+  // still advertising the paid model it no longer used — the same class of
+  // quiet lie as an agent stuck reporting `error` while working fine. An
+  // explicit operator model policy still wins, since that is a deliberate
+  // choice rather than a stale default.
+  const primary = PROVIDER_BY_NAME.get(PROVIDER_ORDER[0]);
+  const model = hasCustomOpenRouterModelPolicy()
+    ? (getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0])
+    : (primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0]);
 
   return {
-    provider: 'openrouter-deepseek-v4-flash-paid',
+    provider: primary?.name ?? 'openrouter-ling-3-flash-vl',
     model,
     temperature: 0.7,
     maxTokens,
@@ -1611,6 +1680,7 @@ export function getProviderCatalog(): Array<{
   tier: number;
   paid: boolean;
   toolCallingReliable: boolean;
+  supportsParallelToolCalls: boolean;
   providerRouting?: { only?: readonly string[]; allow_fallbacks?: boolean };
 }> {
   return PROVIDER_ORDER.map((name, index) => {
@@ -1620,6 +1690,7 @@ export function getProviderCatalog(): Array<{
       model: provider.model,
       tier: index,
       paid: provider.paid === true,
+      supportsParallelToolCalls: provider.supportsParallelToolCalls === true,
       toolCallingReliable: true,
       // Exposed so the routing guard can assert the BYOK pin. Which endpoint a
       // rung is pinned to decides whose account pays for it, so it belongs in

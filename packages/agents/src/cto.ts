@@ -66,7 +66,7 @@ export class CTOAgent extends BaseAgent {
       tier: 1,
       parentId: 'apex-ceo-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter-deepseek-v4-flash-paid', model: 'deepseek/deepseek-v4-flash-0731' },
+      llm: { provider: 'openrouter-ling-3-flash-vl', model: 'inclusionai/ling-3.0-flash-vl:free' },
       tools: [
         'sendMessage',
         'readFile',

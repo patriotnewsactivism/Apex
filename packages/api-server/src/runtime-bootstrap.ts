@@ -22,6 +22,7 @@ import {
   superviseAgentLoop,
   initializeTokenLedgerPersistence,
   initializeRequestLedgerPersistence,
+  initializeProviderCredits,
   logProviderRoster,
   startWorkerHeartbeat,
   type AgentSupervisorHandle,
@@ -87,6 +88,13 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // memory-only request budget would hand the workforce a fresh full allowance
   // after each one. On a day with three deploys that is three days of spend
   // authorized against a one-day provider quota.
+  const credits = await initializeProviderCredits();
+  if (credits && credits.status !== 'ok') {
+    warn(`⚠️  OpenRouter credits: ${credits.status} ($${credits.remaining} left) — ${credits.detail ?? ''}`);
+  } else if (credits) {
+    log(`✅ OpenRouter credits: $${credits.remaining} remaining`);
+  }
+
   const durableRequestLedger = await initializeRequestLedgerPersistence();
   log(
     durableRequestLedger

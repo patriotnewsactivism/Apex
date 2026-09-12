@@ -9,6 +9,7 @@ import {
 } from '../packages/core/src/model-routing.js';
 import {
   getDefaultLLMConfig,
+  getProviderCatalog,
   getProviderOrderForRole,
 } from '../packages/core/src/llm-client.js';
 
@@ -29,8 +30,8 @@ try {
     getOpenRouterModelChainForRole('CEO'),
   );
   check(
-    'no policy preserves all four automatic continuity routes',
-    getProviderOrderForRole('CEO').length === 4,
+    'no policy preserves the whole automatic continuity chain',
+    getProviderOrderForRole('CEO').length === getProviderCatalog().length,
     getProviderOrderForRole('CEO'),
   );
   check(

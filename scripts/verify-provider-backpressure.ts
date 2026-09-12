@@ -6,11 +6,11 @@ function check(label: string, condition: boolean, detail?: unknown): void {
   else { failures++; console.error(`  ❌ ${label}`, detail ?? ''); }
 }
 
-check('OpenRouter MiniMax default spacing is 500ms', getProviderRequestSpacingMs('openrouter-minimax-m3') === 500);
+check('OpenRouter Ling 3.0 Flash VL default spacing is 500ms', getProviderRequestSpacingMs('openrouter-ling-3-flash-vl') === 500);
 check('OpenRouter Nemotron default spacing is 500ms', getProviderRequestSpacingMs('openrouter-nemotron-ultra') === 500);
-process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_MINIMAX_M3 = '';
-check('empty spacing override falls back safely', getProviderRequestSpacingMs('openrouter-minimax-m3') === 500);
-delete process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_MINIMAX_M3;
+process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_LING_3_FLASH_VL = '';
+check('empty spacing override falls back safely', getProviderRequestSpacingMs('openrouter-ling-3-flash-vl') === 500);
+delete process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_LING_3_FLASH_VL;
 check('Retry-After numeric seconds are honored', parseRetryAfterMs('2', 0) === 2000);
 check('Retry-After HTTP dates are honored', parseRetryAfterMs('Thu, 01 Jan 1970 00:00:05 GMT', 1000) === 4000);
 check('invalid Retry-After is ignored', parseRetryAfterMs('nonsense', 0) === undefined);
