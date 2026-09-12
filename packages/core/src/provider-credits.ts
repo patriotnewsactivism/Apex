@@ -49,6 +49,7 @@ function creditKey(): string | undefined {
     'OPENROUTER_FREE_API_KEY',
     'OPENROUTER_API_KEY_2',
     'OPENROUTER_API_KEY_3',
+    'OPENROUTER_API_KEY_4',
     'OPENROUTER_BYOK_API_KEY',
   ]) {
     const value = process.env[env];

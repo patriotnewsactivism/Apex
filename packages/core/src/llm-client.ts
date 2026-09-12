@@ -68,6 +68,21 @@ export type ApexProviderName =
 // The paid specs below are kept and still reachable through an explicit
 // operator model policy, but no automatic route uses them: a paid rung that
 // nobody watches is how the credits went to zero unnoticed.
+/**
+ * Every OpenRouter credential that may serve a `:free` model.
+ *
+ * Order here is only a tie-break: configuredCredentials() sorts by
+ * requests-already-made-today, so the list is a roster, not a priority.
+ *
+ * MORE ACCOUNTS IS THE ONLY WAY TO BUY MORE FREE THROUGHPUT. OpenRouter's free
+ * allowance is a per-ACCOUNT daily request budget shared across every `:free`
+ * model at once (confirmed live 2026-09-12: HTTP 429
+ * `free-models-per-day-high-balance`, `X-RateLimit-Limit: 1000`,
+ * `limit_source: openrouter_free_tier_daily`). Adding more free MODELS buys
+ * nothing against it — all three rungs went into cooldown together because
+ * they draw on the same bucket. Adding a key for another account buys a whole
+ * extra 1,000/day.
+ */
 const OPENROUTER_FREE_KEY_ENVS = [
   // New-account free-tier key first.
   'OPENROUTER_FREE_API_KEY',
@@ -77,6 +92,13 @@ const OPENROUTER_FREE_KEY_ENVS = [
   // the paid tail when the free roster is exhausted.
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_3',
+  // Fourth account. Deliberately absent from OPENROUTER_PAID_KEY_ENVS below:
+  // the $10 deposit on one of these accounts exists to lift it from the
+  // ~200/day free tier to 1,000/day, and spending that balance on tokens is
+  // exactly how the paid chain reached HTTP 402 on 2026-09-12 while three
+  // accounts' worth of free allowance sat unused. Free-only keeps the deposit
+  // doing the job it was made for.
+  'OPENROUTER_API_KEY_4',
 ] as const;
 // The BYOK rung. BYOK is configured per OpenRouter ACCOUNT, so the key here
 // must belong to the account that holds the Amazon Bedrock provider key --
