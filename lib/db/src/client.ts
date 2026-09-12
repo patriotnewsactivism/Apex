@@ -349,6 +349,16 @@ export async function migrate() {
     )
   `;
   await client`
+    CREATE TABLE IF NOT EXISTS llm_request_usage_daily (
+      day text NOT NULL,
+      account text NOT NULL,
+      requests integer NOT NULL DEFAULT 0,
+      succeeded integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (day, account)
+    )
+  `;
+  await client`
     CREATE TABLE IF NOT EXISTS component_health (
       component text PRIMARY KEY,
       status text NOT NULL DEFAULT 'healthy',

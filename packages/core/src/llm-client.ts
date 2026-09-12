@@ -17,6 +17,13 @@ import {
   type TokenCapacityReservation,
 } from './token-ledger.js';
 import {
+  accountCapacityWindow,
+  isRequestBudgetExhausted,
+  recordProviderRequest,
+  requestCapacityWindow,
+  totalRequestCap,
+} from './request-ledger.js';
+import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
   getActiveOpenRouterModelPolicy,
   getOpenRouterModelChainForRole,
@@ -634,6 +641,14 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
   // A hard total cap is genuinely workspace-wide; nothing to re-probe.
   if (isTotalDailyCapReached()) return false;
 
+  // Same for the request budget, and this is the one that normally bites.
+  // Checking it here as well as inside complete() is what keeps a paced
+  // workspace from claiming tasks it cannot run: without it every agent would
+  // dequeue, rebuild history, assemble learning context and only then discover
+  // there was no allowance — paying the full cost of a task to do nothing, the
+  // capacity-spin failure the diagnostics endpoint already counts deferrals for.
+  if (!requestCapacityWindow(now).allowed) return false;
+
   const ledger = getTokenLedgerSnapshot();
   if (!ledger.pacing.total.allowed) return false;
 
@@ -917,6 +932,25 @@ async function callCompatibleProvider(
     if (wireTools?.length) {
       body.tools = wireTools;
       body.tool_choice = 'auto';
+      // Without this the request never asks for more than one tool call per
+      // reply, so telling the agent to batch its calls (standing rule 3) would
+      // be an instruction the wire format quietly refuses to carry. The loop
+      // below already executes every call in a response and returns all their
+      // results in one message, so batching is capability APEX had and was
+      // simply not requesting.
+      //
+      // This is the single biggest lever on request count: the agent loop
+      // spends one request per round trip, so N sequential tool calls cost N
+      // requests while the same N batched cost one.
+      //
+      // Escape hatch because it is sent to every provider: if some model ever
+      // rejects the field outright, APEX_PARALLEL_TOOL_CALLS=off restores the
+      // previous behaviour without a deploy.
+      if (!['0', 'false', 'off', 'no'].includes(
+        (process.env.APEX_PARALLEL_TOOL_CALLS ?? 'on').trim().toLowerCase(),
+      )) {
+        body.parallel_tool_calls = true;
+      }
     }
 
     const response = await fetch(`${baseURL}/chat/completions`, {
@@ -1063,6 +1097,40 @@ class MultiProviderClient {
         );
       }
 
+      // Request budget. Checked BEFORE the token budget's reservation because
+      // the two ration different things and the request one is what actually
+      // binds on a free-tier account: OpenRouter allows a fixed number of
+      // calls per account per UTC day whatever their size, so a workspace can
+      // be nowhere near any token cap and still be refused.
+      //
+      // The `paced` outcome is the one that does the work day to day. It is
+      // not an outage — it means the ramp has not released the next request
+      // yet, so the agent parks briefly and resumes. That is the mechanism
+      // that spreads the allowance across 24h instead of letting the workforce
+      // spend it all before lunch.
+      if (isRequestBudgetExhausted()) {
+        throw capacityPauseError([
+          {
+            source: 'workspace',
+            resumeAt: new Date(Date.now() + msUntilDailyReset()).toISOString(),
+            reason: `daily request cap reached (APEX_REQUEST_CAP_TOTAL=${totalRequestCap()})`,
+          },
+        ]);
+      }
+      const requestWindow = requestCapacityWindow();
+      if (!requestWindow.allowed) {
+        throw capacityPauseError([
+          {
+            source: 'workspace',
+            resumeAt: requestWindow.resumeAt,
+            reason:
+              requestWindow.reason === 'daily_cap'
+                ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
+                : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
+          },
+        ]);
+      }
+
       const trimmed = trimMessageHistory(messages);
       const estimatedTokens = estimateLLMRequestTokens(
         trimmed.messages,
@@ -1152,6 +1220,26 @@ class MultiProviderClient {
                 continue;
               }
 
+              // Per-account request budget. Only applies to accounts given an
+              // explicit cap in APEX_REQUEST_CAPS; uncapped accounts return
+              // `uncapped`/allowed and fall straight through. This is what
+              // lets one exhausted OpenRouter account step aside while the
+              // other two keep serving, instead of the whole chain stalling
+              // on the first key that ran out.
+              const accountWindow = accountCapacityWindow(credential.key);
+              if (!accountWindow.allowed) {
+                skipReasons.push(
+                  `${credentialId}: account request budget ` +
+                    `(${accountWindow.usedRequests}/${accountWindow.cap} today, ${accountWindow.reason})`,
+                );
+                capacityBlocks.push({
+                  source: credential.env,
+                  resumeAt: accountWindow.resumeAt,
+                  reason: `account request ${accountWindow.reason === 'daily_cap' ? 'cap reached' : 'pacing active'}`,
+                });
+                continue;
+              }
+
               providerAttempted = true;
 
               try {
@@ -1163,6 +1251,7 @@ class MultiProviderClient {
                   this.config,
                   execution,
                 );
+                recordProviderRequest(credential.key, true);
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
                 await recordResponseTelemetry({
@@ -1177,6 +1266,12 @@ class MultiProviderClient {
                 });
                 return result;
               } catch (error) {
+                // A failed attempt still spent the account's daily request
+                // allowance — a 429, a timeout and a 500 are each one request
+                // as far as the provider is concerned. Counting only successes
+                // would hide exactly the traffic worth seeing: the fallback
+                // cascade, which burns several requests to serve one call.
+                recordProviderRequest(credential.key, false);
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =

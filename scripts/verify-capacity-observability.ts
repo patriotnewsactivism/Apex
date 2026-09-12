@@ -108,22 +108,42 @@ function main(): void {
   check('a hard cap still reports "capped"', /hardCapped\s*\n?\s*\?\s*"capped"/.test(expr), expr);
   check('an unconstrained workspace still reports "available"', /"available"/.test(expr), expr);
 
-  // aggregatePaused must keep tracking the same expression llmCapacityAvailableNow
+  // aggregatePaused must keep tracking the SAME conditions llmCapacityAvailableNow
   // gates on. If one drifts, /health starts lying about the other.
+  //
+  // There are two of those conditions now, not one. The token ledger was joined
+  // by a request ledger in 2026-09, because the allowance APEX actually runs out
+  // of on a free-tier account is denominated in requests, not tokens — and a
+  // workspace parked by the request budget looked exactly as "available" on
+  // /health as an idle one, which is the precise failure this guard exists to
+  // prevent. Both must appear on both sides.
+  const aggregate = source.match(/const aggregatePaused =[\s\S]{0,200}?;/)?.[0] ?? '';
   check(
-    'aggregatePaused is derived from tokenLedger.pacing.total.allowed',
-    /const aggregatePaused = !tokenLedger\.pacing\.total\.allowed;/.test(source),
+    'aggregatePaused is derived from the token ledger pacing window',
+    /!tokenLedger\.pacing\.total\.allowed/.test(aggregate),
+    aggregate,
+  );
+  check(
+    'aggregatePaused is also derived from the request ledger pacing window',
+    /!requestLedger\.pacing\.total\.allowed/.test(aggregate),
+    aggregate,
   );
 
   const llmClient = fs.readFileSync(
     path.join(root, 'packages/core/src/llm-client.ts'),
     'utf8',
   );
+  const probe = llmClient.slice(
+    llmClient.indexOf('export function llmCapacityAvailableNow('),
+  );
+  const probeBody = probe.slice(0, probe.indexOf('\n}\n'));
   check(
-    'llmCapacityAvailableNow still gates on ledger.pacing.total.allowed',
-    /llmCapacityAvailableNow[\s\S]{0,600}if \(!ledger\.pacing\.total\.allowed\) return false;/.test(
-      llmClient,
-    ),
+    'llmCapacityAvailableNow still gates on the token pacing window',
+    /if \(!ledger\.pacing\.total\.allowed\) return false;/.test(probeBody),
+  );
+  check(
+    'llmCapacityAvailableNow also gates on the request pacing window',
+    /if \(!requestCapacityWindow\(now\)\.allowed\) return false;/.test(probeBody),
   );
 
   if (failures > 0) {
