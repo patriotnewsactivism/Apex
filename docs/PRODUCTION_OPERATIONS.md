@@ -152,6 +152,26 @@ guards the distinction in CI.
 `tasksClaimed` failing to advance over a 2-minute sample is the symptom;
 `llmCapacity.state` is the cause. Neither `status` nor `verdict` will tell you.
 
+### Reading `agentStatusCounts`
+
+`error` in `agentStatusCounts` means **an agent's last task failed**. It does
+not mean the agent is out of service, and it never did: the task queue does
+not filter agents by status, so an agent showing `error` dequeues and executes
+exactly like an idle one. The only other readers are a reporting count in
+`tool-registry.ts` and the manual `POST /recover-workforce` reset.
+
+Before 2026-09-12 that status was also sticky — `executeTask()` set it on
+failure and only the *next* task's `setStatus('thinking')` cleared it, so on a
+quiet queue an agent advertised `error` for hours after recovering. Three of
+thirteen agents sat that way on build `3793abc` while `tasksClaimed` kept
+climbing, which reads as a collapsing workforce and was not one. The polling
+loop now clears a stale `error` in its idle branch, so it self-heals within
+one poll cycle. `scripts/verify-agent-status-recovery.ts` guards this in CI.
+
+**Do not diagnose a workforce outage from `agentStatusCounts` alone.** Whether
+work is flowing is `taskQueue.tasksClaimed` advancing over a 2-minute sample —
+claims are bursty and a shorter window reads as frozen.
+
 When the change affects authentication, dashboard behavior, agent execution, provider routing, deployment, scheduler behavior, or a connector, smoke-test that specific path rather than relying only on `/health`.
 
 Record any part that could not be verified.
