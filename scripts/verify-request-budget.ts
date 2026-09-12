@@ -249,6 +249,49 @@ async function main(): Promise<void> {
     uncapped.allowed && uncapped.reason === 'uncapped',
   );
 
+  // ── Rate, not just total ─────────────────────────────────────────────────
+  //
+  // A day can be fully under budget and still spent, if it is spent in half an
+  // hour. On 2026-09-12 the daily ramp allowed 1,388 requests in 26 minutes —
+  // correct per the day's arithmetic, and it tripped OpenRouter's per-minute
+  // limiter and parked every provider until the UTC reset.
+  check(
+    'the workspace window enforces a short-window rate limit, not only a daily cap',
+    /rateLimitResumeAt/.test(ledger) &&
+      /export function requestsInLastMinute/.test(ledger),
+  );
+  // Reason and resume-at matter as much as the block: the agent loop sleeps
+  // until resumeAt, so mislabelling a 60-second limit as `daily_cap` would park
+  // the workforce for hours over something that clears almost immediately.
+  const rateBlock = ledger.slice(ledger.indexOf('const resumeAt = rateLimitResumeAt(at);'));
+  check(
+    'a rate block is reported as `paced` and resumes from the window, not the UTC rollover',
+    /reason: 'paced'/.test(rateBlock.slice(0, 500)) &&
+      /Math\.max\(at \+ 1_000, resumeAt\)/.test(rateBlock.slice(0, 500)),
+  );
+  check(
+    'the short-window count is visible on /health',
+    /lastMinute: requestLedger\.lastMinute/.test(health) &&
+      /ratePerMinute: requestLedger\.ratePerMinute/.test(health),
+  );
+
+  // ── Load balancing across accounts ───────────────────────────────────────
+  //
+  // The credential loop always starts at index 0, so a static order is
+  // failover, not balancing. Against a per-account daily quota that means the
+  // first key absorbs everything until it is exhausted: 1,299 of 1,388
+  // requests (94%) on one account on 2026-09-12, while the other two held 15
+  // and 52. Three accounts delivered barely one account's worth of quota.
+  check(
+    'credentials are ordered least-loaded-first, so accounts share the quota',
+    /accountRequestsToday\(accountFingerprint\(a\.key\)\)/.test(client) &&
+      /accountRequestsToday\(accountFingerprint\(b\.key\)\)/.test(client),
+  );
+  check(
+    'ties keep the declared order, so a fresh day is deterministic',
+    /load !== 0 \? load : a\.index - b\.index/.test(client),
+  );
+
   // ── Batching: the other half of the fix ──────────────────────────────────
   //
   // Telling agents to batch tool calls is inert unless the request carries

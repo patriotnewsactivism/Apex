@@ -18,6 +18,8 @@ import {
 } from './token-ledger.js';
 import {
   accountCapacityWindow,
+  accountFingerprint,
+  accountRequestsToday,
   isRequestBudgetExhausted,
   recordProviderRequest,
   requestCapacityWindow,
@@ -760,10 +762,34 @@ function providerRequirements(provider: ProviderSpec): string[] {
   return [...missing];
 }
 
+/**
+ * Credentials for a provider, LEAST-LOADED FIRST.
+ *
+ * The order used to be the static apiKeyEnvs order, and the loop below always
+ * starts at index 0 — so the first key served every request and the others were
+ * reached only when it failed. That is failover, and for a per-account daily
+ * quota it is close to the worst possible policy: on 2026-09-12
+ * OPENROUTER_FREE_API_KEY took 1,299 of 1,388 requests (94%), was driven past
+ * its 1,000/day free limit, and returned 411 rate-limit failures — each of
+ * which itself spent another request against that same exhausted account —
+ * while the other two accounts sat on 15 and 52. Three accounts worth 3,000
+ * requests/day delivered barely more than one account's worth.
+ *
+ * Sorting by requests-already-made-today turns the same list into load
+ * balancing: work spreads evenly, and an account approaching its quota sinks
+ * to the back on its own without anyone configuring a limit. Ties keep the
+ * declared order, so behaviour is deterministic when the day starts fresh.
+ */
 function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key: string }> {
   return provider.apiKeyEnvs
-    .map((env) => ({ env, key: process.env[env] ?? '' }))
-    .filter((entry) => Boolean(entry.key));
+    .map((env, index) => ({ env, key: process.env[env] ?? '', index }))
+    .filter((entry) => Boolean(entry.key))
+    .sort((a, b) => {
+      const load = accountRequestsToday(accountFingerprint(a.key)) -
+        accountRequestsToday(accountFingerprint(b.key));
+      return load !== 0 ? load : a.index - b.index;
+    })
+    .map(({ env, key }) => ({ env, key }));
 }
 
 // ─── Process-wide call smoothing ─────────────────────────────────────────────

@@ -284,6 +284,12 @@ async function main() {
         day: requestLedger.day,
         used: requestLedger.totalRequests,
         cap: requestLedger.totalCap,
+        // Rate, not just total. A day can be well under budget and still be
+        // spent, if it is spent in half an hour: 1,388 requests in 26 minutes
+        // on 2026-09-12 tripped OpenRouter's per-minute limiter and parked
+        // every provider until the UTC reset.
+        lastMinute: requestLedger.lastMinute,
+        ratePerMinute: requestLedger.ratePerMinute,
         projected: requestLedger.projectedDailyRequests,
         releasedSoFar: requestLedger.pacing.total.pacingAllowance,
         pacingEnabled: requestLedger.pacing.enabled,
