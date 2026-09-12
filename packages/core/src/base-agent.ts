@@ -496,6 +496,30 @@ export abstract class BaseAgent {
         }
 
         if (inFlight.size === 0) {
+          // Clear a stale terminal status before backing off.
+          //
+          // executeTask() leaves this agent at 'error' when a task fails, and
+          // nothing ever moved it off that: the next `setStatus('thinking')`
+          // only runs when the agent picks up ANOTHER task. On a quiet queue
+          // that can be hours, so an agent that failed one task in the morning
+          // still reported `error` in /health and on the dashboard all day
+          // while polling perfectly normally.
+          //
+          // That misreports availability rather than causing it. Nothing gates
+          // work on agent status -- the task queue does not filter by it, and
+          // the only other reader is a reporting count plus the manual
+          // /recover-workforce reset -- so these agents were never actually
+          // out of service. Observed 2026-09-12: 3 of 13 agents pinned at
+          // `error` for over an hour on build 3793abc while tasksClaimed kept
+          // climbing, which reads as a dying workforce and is not one.
+          //
+          // Reaching this line proves the opposite: the loop is cycling, the
+          // dequeue succeeded, and this agent is available. The failure is not
+          // lost by clearing the display state -- it is already on the task
+          // row, in the agent log, and in the metrics recorded at the failure
+          // site. Self-heals within one poll cycle instead of never.
+          if (this.getStatus() === 'error') this.setStatus('idle');
+
           // Idle backoff (2026-08-19). A flat 5s poll means 13 agents issue
           // ~225k dequeue() round-trips a day doing nothing, and — worse for
           // token spend — an idle-but-polling workforce picks up every
