@@ -171,8 +171,23 @@ can see is how that went unnoticed:
 | `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2600 |
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
+| `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
 | `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from five env names across three real accounts, and the BYOK rung must reuse an existing account's key. Names holding the same key appear as one row (`OPENROUTER_API_KEY + OPENROUTER_BYOK_API_KEY`) |
 | `persistence` | `memory-only` means a restart reset today's count; a deploy would then hand the workforce a fresh full allowance |
+
+There are two limits and they protect against different things. The daily cap
+bounds the day's total; the short-window limit (`APEX_REQUEST_RATE_PER_MIN`,
+default 15) bounds any single minute. On 2026-09-12 only the first existed, and
+APEX issued 1,388 requests in 26 minutes — comfortably under the day's budget,
+and enough to trip OpenRouter's own per-minute limiter and park every provider
+until the UTC reset.
+
+Credentials are tried **least-loaded first**, so several accounts share a quota
+instead of the first one absorbing everything. Before that change one key took
+1,299 of 1,388 requests (94%) and was driven past its daily limit while the
+other two sat on 15 and 52 — three accounts delivering barely one account's
+worth. If `accounts[]` ever shows one account far ahead of the others again,
+that ordering has regressed.
 
 Exceeding the cap shows as `llmCapacity.state: capped`; running ahead of the
 pacing ramp shows as `workforce_paused`. Neither is an outage — the ramp

@@ -383,6 +383,9 @@ export function recordProviderRequest(apiKey: string, succeeded: boolean): void 
   try {
     rolloverIfNeeded();
     const account = accountFingerprint(apiKey);
+    const now = Date.now();
+    pruneRateWindow(now);
+    recentRequests.push(now);
     const entry =
       state.accounts[account] ?? (state.accounts[account] = { requests: 0, succeeded: 0 });
     entry.requests += 1;
@@ -409,12 +412,26 @@ export function totalRequestsToday(): number {
 /** Workspace-wide budget check for one more request. */
 export function requestCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
   rolloverIfNeeded(at);
-  return calculateRequestCapacityWindow({
+  const daily = calculateRequestCapacityWindow({
     cap: totalRequestCap(),
     usedRequests: totalRequestsToday(),
     requestedRequests: 1,
     at,
   });
+  if (!daily.allowed) return daily;
+
+  // Short-window limit. Reported as `paced` rather than `daily_cap` because it
+  // clears in seconds, not at the UTC rollover — the agent loop's capacity
+  // latch sleeps until resumeAt, and a wrong one here would park the workforce
+  // for hours over a limit that lifts almost immediately.
+  const resumeAt = rateLimitResumeAt(at);
+  if (resumeAt === null) return daily;
+  return {
+    ...daily,
+    allowed: false,
+    reason: 'paced',
+    resumeAt: new Date(Math.max(at + 1_000, resumeAt)).toISOString(),
+  };
 }
 
 /**
@@ -451,6 +468,56 @@ export function accountCapacityWindow(
   });
 }
 
+// ─── Short-window rate limiting ──────────────────────────────────────────────
+//
+// The daily ramp above bounds the DAY's total. It does not bound the RATE, and
+// on 2026-09-12 that distinction cost the whole allowance in 26 minutes.
+//
+// The ramp releases `burst + cap x (elapsed / day)`, so a deploy at 17:20 UTC
+// starts with ~2,000 requests already accrued and unspent — no throttle at all.
+// APEX issued 1,388 requests in 26 minutes (~53/min), blew past OpenRouter's
+// per-minute free-tier limit, collected 459 rate-limit failures, and parked
+// every provider until the next UTC reset. Under budget for the day, and still
+// a total outage.
+//
+// So the daily cap and the rate limit protect against different things and
+// both are needed: the cap stops the day being overspent, this stops any
+// single minute triggering the provider's own limiter.
+const recentRequests: number[] = [];
+const RATE_WINDOW_MS = 60_000;
+/** Below OpenRouter's typical 20/min free-tier ceiling, with headroom for the
+ *  retry a failure triggers. Sustained throughput is still governed by the
+ *  daily ramp — this only clips instantaneous bursts. */
+const DEFAULT_RATE_PER_MIN = 15;
+
+function ratePerMinute(): number {
+  const raw = process.env.APEX_REQUEST_RATE_PER_MIN;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_RATE_PER_MIN;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_RATE_PER_MIN;
+  return Math.floor(value);
+}
+
+function pruneRateWindow(at: number): void {
+  const cutoff = at - RATE_WINDOW_MS;
+  while (recentRequests.length > 0 && recentRequests[0] < cutoff) recentRequests.shift();
+}
+
+/** Requests issued in the last 60 seconds. */
+export function requestsInLastMinute(at: number = Date.now()): number {
+  pruneRateWindow(at);
+  return recentRequests.length;
+}
+
+/** When the short window is full, the moment the oldest request ages out. */
+export function rateLimitResumeAt(at: number = Date.now()): number | null {
+  const limit = ratePerMinute();
+  if (limit <= 0) return null;
+  pruneRateWindow(at);
+  if (recentRequests.length < limit) return null;
+  return recentRequests[0] + RATE_WINDOW_MS;
+}
+
 export function isRequestBudgetExhausted(at: number = Date.now()): boolean {
   const cap = totalRequestCap();
   return cap > 0 && totalRequestsToday() >= cap;
@@ -462,6 +529,9 @@ export interface RequestLedgerSnapshot {
   totalRequests: number;
   totalCap: number;
   totalCapReached: boolean;
+  /** Requests issued in the last 60s, against the short-window limit. */
+  lastMinute: number;
+  ratePerMinute: number;
   /** Requests/day this workspace is on course for if the current rate holds.
    *  The number to compare against the provider allowance. */
   projectedDailyRequests: number | null;
@@ -547,6 +617,8 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
     totalRequests,
     totalCap: cap,
     totalCapReached: cap > 0 && totalRequests >= cap,
+    lastMinute: requestsInLastMinute(at),
+    ratePerMinute: ratePerMinute(),
     projectedDailyRequests,
     pacing: {
       enabled: requestPacingEnabled(),
