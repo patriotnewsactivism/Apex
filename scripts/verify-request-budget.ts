@@ -292,6 +292,38 @@ async function main(): Promise<void> {
     /load !== 0 \? load : a\.index - b\.index/.test(client),
   );
 
+  // ── Account roster ───────────────────────────────────────────────────────
+  //
+  // Free throughput scales with ACCOUNTS, not models. OpenRouter's free
+  // allowance is a per-account daily request budget shared across every `:free`
+  // model at once (429 `free-models-per-day-high-balance`, X-RateLimit-Limit
+  // 1000, limit_source `openrouter_free_tier_daily`), so adding models buys
+  // nothing and adding a key buys a whole extra 1,000/day.
+  const freeEnvs = client.slice(
+    client.indexOf('const OPENROUTER_FREE_KEY_ENVS'),
+  );
+  const freeList = freeEnvs.slice(0, freeEnvs.indexOf('] as const;'));
+  check(
+    'the fourth account key is in the free roster',
+    /'OPENROUTER_API_KEY_4'/.test(freeList),
+  );
+  // The $10 deposit on an account exists to lift it from ~200/day to 1,000/day
+  // free. Spending that balance on tokens is precisely how the paid chain hit
+  // HTTP 402 on 2026-09-12 while the free allowance went unused, so a key added
+  // for free throughput must not also be reachable as a paid credential.
+  const paidEnvs = client.slice(
+    client.indexOf('const OPENROUTER_PAID_KEY_ENVS'),
+  );
+  const paidList = paidEnvs.slice(0, paidEnvs.indexOf('] as const;'));
+  check(
+    'the fourth account key cannot be spent as a paid credential',
+    !/'OPENROUTER_API_KEY_4'/.test(paidList),
+  );
+  check(
+    'the credit probe knows about every configured account key',
+    /'OPENROUTER_API_KEY_4'/.test(read('packages/core/src/provider-credits.ts')),
+  );
+
   // ── Batching: the other half of the fix ──────────────────────────────────
   //
   // Telling agents to batch tool calls is inert unless the request carries

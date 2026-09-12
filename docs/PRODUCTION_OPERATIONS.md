@@ -182,6 +182,25 @@ APEX issued 1,388 requests in 26 minutes — comfortably under the day's budget,
 and enough to trip OpenRouter's own per-minute limiter and park every provider
 until the UTC reset.
 
+**Free throughput scales with ACCOUNTS, not models.** OpenRouter's free
+allowance is a per-account daily request budget shared across every `:free`
+model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
+`free-models-per-day-high-balance`, `X-RateLimit-Limit: 1000` and
+`limit_source: openrouter_free_tier_daily`. Adding more free *models* buys
+nothing against it (all three rungs went into cooldown together, because they
+draw on one bucket); adding a key for another account buys a whole extra
+1,000/day. `OPENROUTER_API_KEY_4` is wired for exactly that — set it and load
+balancing picks the account up with no other change.
+
+Keys added for free throughput are deliberately kept out of the paid credential
+list. The $10 deposit on an account exists to lift its free tier from ~200/day
+to 1,000/day; spending that balance on tokens is how the paid chain reached
+HTTP 402 on 2026-09-12 while three accounts' free allowance sat unused.
+
+Note also that some free models are gated: `thinkingmachines/inkling:free` and
+`inkling-small:free` return `403 — only available on agentic harnesses` for
+direct API use, and need the app registered at openrouter.ai/apps.
+
 Credentials are tried **least-loaded first**, so several accounts share a quota
 instead of the first one absorbing everything. Before that change one key took
 1,299 of 1,388 requests (94%) and was driven past its daily limit while the
