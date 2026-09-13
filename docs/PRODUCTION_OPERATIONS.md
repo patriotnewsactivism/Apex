@@ -172,7 +172,7 @@ can see is how that went unnoticed:
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
-| `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and `OPENROUTER_API_KEY_4` across three real qualifying accounts. Names holding the same key appear as one row and are not independent capacity. |
+| `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and `OPENROUTER_API_KEY_4` across three real qualifying accounts. `OPENROUTER_API_KEY_3` is burned and is not a roster member. Names holding the same key appear as one row and are not independent capacity. |
 | `persistence` | `memory-only` means a restart reset today's count; a deploy would then hand the workforce a fresh full allowance |
 
 There are two limits and they protect against different things. The daily cap

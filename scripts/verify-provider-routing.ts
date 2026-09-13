@@ -124,6 +124,7 @@ check(
 );
 const creditsSource = fs.readFileSync(path.join(root, "packages/core/src/provider-credits.ts"), "utf8");
 check("credit probe does not read the retired BYOK paid key", !/OPENROUTER_BYOK_API_KEY/.test(creditsSource));
+check("dead OPENROUTER_API_KEY_3 is not in the free credential roster", !/'OPENROUTER_API_KEY_3'/.test(clientSource.slice(clientSource.indexOf('const OPENROUTER_FREE_KEY_ENVS'), clientSource.indexOf('] as const;'))));
 const probeSource = fs.readFileSync(path.join(root, "scripts/llm-probe.mjs"), "utf8");
 check(
   "live probe only targets zero-cost OpenRouter models",

@@ -91,7 +91,6 @@ export const OPENROUTER_FREE_KEY_ENVS = [
   'OPENROUTER_FREE_API_KEY',
   'OPENROUTER_API_KEY_2',
   'OPENROUTER_API_KEY',
-  'OPENROUTER_API_KEY_3',
   'OPENROUTER_API_KEY_4',
 ] as const;
 
@@ -1648,7 +1647,6 @@ export function getKnownApiKeyEnvs(): string[] {
       ...OPENROUTER_FREE_KEY_ENVS,
       ...PROVIDERS.flatMap((provider) => provider.apiKeyEnvs),
     ]),
-    'OPENROUTER_API_KEY_3',
     'YELP_API_KEY',
     'GOOGLE_PLACES_API_KEY',
     'TAVILY_API_KEY',

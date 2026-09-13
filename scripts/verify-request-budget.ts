@@ -312,6 +312,10 @@ async function main(): Promise<void> {
     'the fourth account key is in the free roster',
     /'OPENROUTER_API_KEY_4'/.test(freeList),
   );
+  check(
+    'the dead OPENROUTER_API_KEY_3 credential is not in the free roster',
+    !/'OPENROUTER_API_KEY_3'/.test(freeList),
+  );
   // Zero-cost mode has no paid credential roster. A key added for free
   // throughput must not be reachable as a paid spend path.
   check(

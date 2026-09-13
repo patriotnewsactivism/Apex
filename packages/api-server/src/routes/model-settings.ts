@@ -168,7 +168,6 @@ async function fetchOpenRouterModels() {
       process.env.OPENROUTER_FREE_API_KEY ??
       process.env.OPENROUTER_API_KEY ??
       process.env.OPENROUTER_API_KEY_2 ??
-      process.env.OPENROUTER_API_KEY_3 ??
       process.env.OPENROUTER_API_KEY_4;
     if (key) headers.Authorization = `Bearer ${key}`;
 

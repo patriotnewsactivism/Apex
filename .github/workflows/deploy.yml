@@ -471,6 +471,13 @@ jobs:
           attach_optional DEEPGRAM_API_KEY "$DEEPGRAM_API_KEY_SOURCE" "$DEEPGRAM_API_KEY_SECRET_NAME" "$DEEPGRAM_API_KEY"
           attach_optional GEMINI_API_KEY "$GEMINI_API_KEY_SOURCE" "$GEMINI_API_KEY_SECRET_NAME" "$GEMINI_API_KEY"
 
+          # Burn OPENROUTER_API_KEY_3: live production showed 282/282 failures.
+          # Unbind both env and secret forms so a leftover Cloud Run binding
+          # cannot keep serving the dead key after this image update.
+          echo 'Burning OPENROUTER_API_KEY_3 from the existing Cloud Run service...'
+          drop_secret_binding_if_present OPENROUTER_API_KEY_3
+          args+=(--remove-env-vars=OPENROUTER_API_KEY_3)
+
           if [[ "$has_env" == true ]]; then
             args+=(--update-env-vars "$env_spec")
           fi

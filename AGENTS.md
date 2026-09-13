@@ -170,8 +170,9 @@ Credential environment variables:
 - `OPENROUTER_FREE_API_KEY`
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_API_KEY_2`
-- `OPENROUTER_API_KEY_3`
 - `OPENROUTER_API_KEY_4` — optional extra independent account
+
+`OPENROUTER_API_KEY_3` is burned (100% live failures) and is not a production roster member.
 
 Three independent qualifying OpenRouter accounts (each historically funded with at least $10, so each should receive the higher `:free` daily allowance) are load-balanced by key fingerprint. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Nominal ceiling is about **3,000 free requests/day** if all three accounts retain their qualifying allowance. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; total exhaustion is a capacity pause, never a paid fallback.
 

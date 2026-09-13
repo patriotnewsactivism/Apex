@@ -42,9 +42,10 @@ import { dirname } from 'path';
  * holding it.
  *
  * This matters because the two are not one-to-one. APEX reads OpenRouter keys
- * from five env names (OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY,
- * OPENROUTER_API_KEY_2, OPENROUTER_API_KEY_3, OPENROUTER_API_KEY_4) across
- * three real accounts. Extra env names for the same key are credential
+ * from OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY, OPENROUTER_API_KEY_2,
+ * and OPENROUTER_API_KEY_4 across three real qualifying accounts.
+ * OPENROUTER_API_KEY_3 is burned (100% live failures) and is not a roster
+ * member. Extra env names for the same key are credential
  * redundancy, not extra capacity. Keying on the env name would split one
  * account's spend across several rows, so a per-account cap of 1,000 set on
  * two names that hold the same key would authorize 2,000 requests against an
