@@ -1,9 +1,9 @@
-// Live-probe the approved APEX free-first inference stack using LOCAL .env
-// credentials. Prints status/model only — never key values.
+// Live-probe the ZERO-COST APEX OpenRouter chain using LOCAL .env credentials.
+// Prints status/model only — never key values.
 //
-// The script WILL NOT probe paid Mistral unless APEX_PAID_LLM_MODE is explicitly
-// enabled, because even a diagnostic request must not create surprise spend.
-// Groq is also fail-closed unless its Free-plan status is explicitly confirmed.
+// This script must not spend money. It only calls OpenRouter `:free` models
+// (plus exactly `openrouter/free`) with the free-account credential roster.
+// Paid DeepSeek/GPT-OSS/Grok/Bedrock/Mistral/direct-provider probes are gone.
 //
 // Usage: node scripts/llm-probe.mjs
 
@@ -12,129 +12,70 @@ import { existsSync, readFileSync } from "fs";
 const env = existsSync(".env") ? readFileSync(".env", "utf8") : "";
 const getValue = (name) =>
   env.match(new RegExp(`^${name}=(.+)$`, "m"))?.[1]?.trim() || process.env[name] || "";
-const enabled = (name) =>
-  ["1", "true", "on", "enabled", "yes", "confirmed", "fallback"].includes(
-    getValue(name).toLowerCase(),
-  );
 
-const openaiProbe = async (name, baseURL, key, model) => {
-  if (!key) {
-    console.log(`⚪ ${name} — skipped (credential not configured)`);
-    return;
-  }
-  if (!baseURL) {
-    console.log(`⚪ ${name} — skipped (base URL not configured)`);
-    return;
-  }
-
-  const response = await fetch(`${baseURL.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content: "Reply with the single word: ok" }],
-      max_tokens: 16,
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
-
-  console.log(`${response.ok ? "✅" : "❌"} ${name} [${model}] -> ${response.status}`);
-};
-
-const tests = [
-  async () => {
-    const primary = getValue("GEMINI_FREE_API_KEY");
-    const secondary = getValue("GEMINI_FREE_API_KEY_2");
-    if (!primary && !secondary) {
-      console.log("⚪ google-gemini — skipped (no FREE-tier Gemini project key configured)");
-      return;
-    }
-    if (primary) {
-      await openaiProbe(
-        "google-gemini/free-primary",
-        "https://generativelanguage.googleapis.com/v1beta/openai",
-        primary,
-        "gemini-3.7-flash",
-      );
-    }
-    if (secondary) {
-      await openaiProbe(
-        "google-gemini/free-secondary",
-        "https://generativelanguage.googleapis.com/v1beta/openai",
-        secondary,
-        "gemini-3.7-flash",
-      );
-    }
-  },
-  async () => {
-    if (!enabled("GROQ_FREE_TIER_CONFIRMED")) {
-      console.log("⚪ groq — skipped (Groq Free plan not explicitly confirmed)");
-      return;
-    }
-    await openaiProbe(
-      "groq/free",
-      "https://api.groq.com/openai/v1",
-      getValue("GROQ_FREE_API_KEY"),
-      "openai/gpt-oss-120b",
-    );
-  },
-  () => openaiProbe(
-    "cohere",
-    "https://api.cohere.ai/compatibility/v1",
-    getValue("COHERE_API_KEY"),
-    "command-a-plus-05-2026",
-  ),
-  async () => {
-    if (!enabled("POOLSIDE_FREE_ACCESS_CONFIRMED")) {
-      console.log("⚪ poolside — skipped (free access not explicitly confirmed)");
-      return;
-    }
-    await openaiProbe(
-      "poolside",
-      "https://inference.poolside.ai/v1",
-      getValue("POOLSIDE_API_KEY"),
-      "poolside/laguna-s-2.1",
-    );
-  },
-  async () => {
-    if (!enabled("QWEN_FREE_QUOTA_ONLY")) {
-      console.log("⚪ qwen — skipped (Alibaba Free quota only not confirmed)");
-      return;
-    }
-    await openaiProbe(
-      "qwen",
-      getValue("QWEN_BASE_URL") || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-      getValue("QWEN_API_KEY"),
-      "qwen3.7-max",
-    );
-  },
-  () => openaiProbe(
-    "kilo",
-    "https://api.kilo.ai/api/gateway",
-    getValue("KILO_API_KEY"),
-    "kilo-auto/free",
-  ),
-  async () => {
-    if (!enabled("APEX_PAID_LLM_MODE")) {
-      console.log("⚪ mistral — skipped (paid emergency fallback is OFF)");
-      return;
-    }
-    await openaiProbe(
-      "mistral/PAID",
-      "https://api.mistral.ai/v1",
-      getValue("MISTRAL_API_KEY"),
-      "mistral-medium-3-5",
-    );
-  },
+const MODELS = [
+  "nex-agi/nex-n2.5-mini:free",
+  "nex-agi/nex-n2.5-pro:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "nvidia/nemotron-3.5-lightning:free",
+  "openrouter/free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
 ];
 
-for (const test of tests) {
-  try {
-    await test();
-  } catch (error) {
-    console.log(`⚠️ ${error instanceof Error ? error.message : String(error)}`);
+const KEY_ENVS = [
+  "OPENROUTER_FREE_API_KEY",
+  "OPENROUTER_API_KEY_2",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_API_KEY_4",
+];
+
+const seenKeys = new Set();
+const credentials = KEY_ENVS
+  .map((envName) => ({ envName, key: getValue(envName) }))
+  .filter((entry) => Boolean(entry.key))
+  .filter((entry) => {
+    if (seenKeys.has(entry.key)) return false;
+    seenKeys.add(entry.key);
+    return true;
+  });
+
+if (credentials.length === 0) {
+  console.log("⚪ openrouter — skipped (no free-account credential configured)");
+  process.exit(0);
+}
+
+console.log(`Probing ${MODELS.length} zero-cost OpenRouter routes across ${credentials.length} independent account(s).`);
+
+for (const model of MODELS) {
+  for (const credential of credentials) {
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${credential.key}`,
+          "HTTP-Referer": "https://apex.donmatthews.live",
+          "X-Title": "APEX zero-cost probe",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: "Reply with the single word: ok" }],
+          max_tokens: 16,
+          ...(model === "openrouter/free"
+            ? { provider: { require_parameters: true } }
+            : {}),
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      console.log(
+        `${response.ok ? "✅" : "❌"} ${model} via ${credential.envName} -> ${response.status}`,
+      );
+      if (response.status === 429 || response.status === 402) continue;
+      break;
+    } catch (error) {
+      console.log(
+        `⚠️ ${model} via ${credential.envName}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 }

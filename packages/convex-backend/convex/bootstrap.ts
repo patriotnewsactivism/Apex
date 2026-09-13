@@ -31,7 +31,7 @@ export const bootstrapWorkforce = internalAction({
         systemPrompt: cfg.systemPrompt,
         // Cosmetic/legacy fields — the model actually used per LLM call is
         // resolved fresh each time via getDefaultLLMConfig(role) in llmConfig.ts.
-        model: 'gpt-oss-120b',
+        model: 'nex-agi/nex-n2.5-mini:free',
         provider: 'groq',
       });
     }

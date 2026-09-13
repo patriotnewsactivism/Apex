@@ -1,14 +1,13 @@
 export const OPENROUTER_MODEL_POLICY_ENV = 'APEX_OPENROUTER_MODEL_POLICY';
 
-/**
- * Reliability-first fallback chain used when no operator policy exists or a
- * stored policy is malformed. Free OpenRouter endpoints are intentionally not
- * included: their queue latency can stall the autonomous workforce.
- */
+/** Zero-cost production fallback chain. If free capacity is exhausted, APEX pauses instead of spending money. */
 export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
-  'deepseek/deepseek-v4-flash-0731',
-  'openai/gpt-oss-120b',
-  'deepseek/deepseek-v3.2',
+  'nex-agi/nex-n2.5-mini:free',
+  'nex-agi/nex-n2.5-pro:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'openrouter/free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
 ] as const;
 
 export type ModelRoutingMode = 'manual' | 'advisor' | 'adaptive';
@@ -16,40 +15,16 @@ export type ModelOptimizationObjective = 'quality' | 'balanced' | 'budget' | 'sp
 
 export type OpenRouterModelPolicy = {
   version: 1;
-  /** Ordered global model roster. Large enough to cover the live OpenRouter catalog. */
   selectedModelIds: string[];
-  /** Optional role-specific first choice. Global roster remains the fallback. */
   rolePrimary: Record<string, string>;
-  /**
-   * manual   = exact operator order;
-   * advisor  = exact operator order plus evidence-backed recommendations in UI;
-   * adaptive = evidence-qualified models may reorder automatically inside the
-   *            selected roster. Role-primary pins always remain first.
-   */
   routingMode: ModelRoutingMode;
-  /** What adaptive/advisor ranking optimizes for. */
   optimizationObjective: ModelOptimizationObjective;
-  /** Minimum completed-task outcomes required before a model may move automatically. */
   minimumSamples: number;
-  /**
-   * Optional fraction (0..0.25) of eligible low-complexity tasks used to gather
-   * evidence for under-sampled selected models in adaptive mode. Default 0.
-   */
   explorationRate: number;
-  /**
-   * When enabled in advisor/adaptive analysis, task complexity may change the
-   * effective ranking objective: routine balanced work can optimize for budget,
-   * while high-complexity work escalates to quality. Explicit role pins remain
-   * stronger than this policy. Omitted/false preserves prior behavior.
-   */
   complexityEscalation?: boolean;
 };
 
 const MODEL_ID_PATTERN = /^~?[a-zA-Z0-9._-]+\/[a-zA-Z0-9._~:/-]+$/;
-// OpenRouter currently exposes hundreds of text models. This is an abuse/size
-// ceiling, not a product limit: it is deliberately above the live catalog so an
-// operator can select every available model if desired without accepting an
-// unbounded authenticated JSON payload forever.
 const MAX_SELECTED_MODELS = 500;
 const VALID_ROUTING_MODES = new Set<ModelRoutingMode>(['manual', 'advisor', 'adaptive']);
 const VALID_OBJECTIVES = new Set<ModelOptimizationObjective>(['quality', 'balanced', 'budget', 'speed']);
@@ -62,10 +37,8 @@ export function validateOpenRouterModelId(modelId: string): boolean {
   return modelId.length <= 200 && MODEL_ID_PATTERN.test(modelId);
 }
 
-/** Production APEX policies must never route through OpenRouter :free endpoints.
- * Free models remain available for isolated experiments, not the autonomous fleet. */
 export function validateProductionOpenRouterModelId(modelId: string): boolean {
-  return validateOpenRouterModelId(modelId) && !/:free$/i.test(modelId);
+  return validateOpenRouterModelId(modelId) && (/:free$/i.test(modelId) || modelId.toLowerCase() === 'openrouter/free');
 }
 
 export function parseOpenRouterModelPolicy(raw: string | undefined | null): OpenRouterModelPolicy | null {
@@ -73,15 +46,8 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     if (parsed.version !== 1 || !Array.isArray(parsed.selectedModelIds)) return null;
-
     const selectedModelIds = uniqueStrings(parsed.selectedModelIds);
-    if (
-      selectedModelIds.length < 1 ||
-      selectedModelIds.length > MAX_SELECTED_MODELS ||
-      selectedModelIds.some((modelId) => !validateProductionOpenRouterModelId(modelId))
-    ) {
-      return null;
-    }
+    if (selectedModelIds.length < 1 || selectedModelIds.length > MAX_SELECTED_MODELS || selectedModelIds.some((modelId) => !validateProductionOpenRouterModelId(modelId))) return null;
 
     const selected = new Set(selectedModelIds);
     const rolePrimary: Record<string, string> = {};
@@ -90,39 +56,21 @@ export function parseOpenRouterModelPolicy(raw: string | undefined | null): Open
         const role = rawRole.trim().toUpperCase();
         if (!role || role.length > 80 || typeof rawModel !== 'string') continue;
         const modelId = rawModel.trim();
-        // A role may only elevate a model already admitted to the selected roster.
         if (selected.has(modelId)) rolePrimary[role] = modelId;
       }
     }
 
-    // Backward compatibility: policies saved before the intelligence layer had
-    // no routing-mode fields. They remain manual, preserving exact behavior.
     const routingMode = typeof parsed.routingMode === 'string' && VALID_ROUTING_MODES.has(parsed.routingMode as ModelRoutingMode)
-      ? parsed.routingMode as ModelRoutingMode
-      : 'manual';
+      ? parsed.routingMode as ModelRoutingMode : 'manual';
     const optimizationObjective = typeof parsed.optimizationObjective === 'string' && VALID_OBJECTIVES.has(parsed.optimizationObjective as ModelOptimizationObjective)
-      ? parsed.optimizationObjective as ModelOptimizationObjective
-      : 'balanced';
+      ? parsed.optimizationObjective as ModelOptimizationObjective : 'balanced';
     const rawMinimumSamples = Number(parsed.minimumSamples ?? 5);
-    const minimumSamples = Number.isFinite(rawMinimumSamples)
-      ? Math.max(2, Math.min(100, Math.round(rawMinimumSamples)))
-      : 5;
+    const minimumSamples = Number.isFinite(rawMinimumSamples) ? Math.max(2, Math.min(100, Math.round(rawMinimumSamples))) : 5;
     const rawExplorationRate = Number(parsed.explorationRate ?? 0);
-    const explorationRate = Number.isFinite(rawExplorationRate)
-      ? Math.max(0, Math.min(0.25, rawExplorationRate))
-      : 0;
+    const explorationRate = Number.isFinite(rawExplorationRate) ? Math.max(0, Math.min(0.25, rawExplorationRate)) : 0;
     const complexityEscalation = parsed.complexityEscalation === true;
 
-    return {
-      version: 1,
-      selectedModelIds,
-      rolePrimary,
-      routingMode,
-      optimizationObjective,
-      minimumSamples,
-      explorationRate,
-      complexityEscalation,
-    };
+    return { version: 1, selectedModelIds, rolePrimary, routingMode, optimizationObjective, minimumSamples, explorationRate, complexityEscalation };
   } catch {
     return null;
   }
@@ -139,11 +87,9 @@ export function hasCustomOpenRouterModelPolicy(): boolean {
 export function getOpenRouterModelChainForRole(role?: string): string[] {
   const policy = getActiveOpenRouterModelPolicy();
   if (!policy) return [...DEFAULT_OPENROUTER_MODEL_CHAIN];
-
   const roleKey = (role ?? '').trim().toUpperCase();
   const preferred = roleKey ? policy.rolePrimary[roleKey] : undefined;
   if (!preferred) return [...policy.selectedModelIds];
-
   return [preferred, ...policy.selectedModelIds.filter((modelId) => modelId !== preferred)];
 }
 
@@ -155,6 +101,6 @@ export function getPinnedOpenRouterModelForRole(role?: string): string | undefin
 
 export function serializeOpenRouterModelPolicy(policy: OpenRouterModelPolicy): string {
   const reparsed = parseOpenRouterModelPolicy(JSON.stringify(policy));
-  if (!reparsed) throw new Error('Invalid OpenRouter model policy');
+  if (!reparsed) throw new Error('Invalid zero-cost OpenRouter model policy');
   return JSON.stringify(reparsed);
 }

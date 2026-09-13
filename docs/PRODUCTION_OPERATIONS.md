@@ -6,7 +6,7 @@ APEX production is the **existing Google Cloud Run service** behind:
 
 `https://apex.donmatthews.live`
 
-The retired AWS Lightsail/CodeBuild and Railway hosting paths are not production fallbacks.
+The retired AWS Lightsail/CodeBuild and Railway hosting paths are not production fallbacks. Planned Railway portability (not a live cutover) is documented in `docs/HOSTING_MIGRATION.md`. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Operating principles
 
@@ -172,7 +172,7 @@ can see is how that went unnoticed:
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
-| `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from five env names across three real accounts, and the BYOK rung must reuse an existing account's key. Names holding the same key appear as one row (`OPENROUTER_API_KEY + OPENROUTER_BYOK_API_KEY`) |
+| `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and `OPENROUTER_API_KEY_4` across three real qualifying accounts. `OPENROUTER_API_KEY_3` is burned and is not a roster member. Names holding the same key appear as one row and are not independent capacity. |
 | `persistence` | `memory-only` means a restart reset today's count; a deploy would then hand the workforce a fresh full allowance |
 
 There are two limits and they protect against different things. The daily cap
@@ -192,10 +192,11 @@ draw on one bucket); adding a key for another account buys a whole extra
 1,000/day. `OPENROUTER_API_KEY_4` is wired for exactly that — set it and load
 balancing picks the account up with no other change.
 
-Keys added for free throughput are deliberately kept out of the paid credential
-list. The $10 deposit on an account exists to lift its free tier from ~200/day
-to 1,000/day; spending that balance on tokens is how the paid chain reached
-HTTP 402 on 2026-09-12 while three accounts' free allowance sat unused.
+There is no paid credential list. The $10 historical deposit on each qualifying
+account exists only to lift its `:free` tier from ~200/day to 1,000/day.
+Spending that balance on paid tokens is how the retired chain reached HTTP 402
+on 2026-09-12 while three accounts' free allowance sat unused. A 402 now cools
+that account and rotates; it cannot select a paid model.
 
 Note also that some free models are gated: `thinkingmachines/inkling:free` and
 `inkling-small:free` return `403 — only available on agentic harnesses` for
@@ -226,21 +227,33 @@ resolved to the same account before setting them.
 
 ### Reading `providerCredits`
 
-APEX's automatic routing chain is **free-only** as of 2026-09-12. Nothing on the
-default path can spend money, so an empty OpenRouter balance is no longer an
-outage — but it was one, and that is why this field exists.
+APEX's automatic routing chain is **zero-cost / free-only**. Nothing on the
+default path or a persisted production policy can spend money. An empty
+OpenRouter credit balance must never trigger paid inference; exhaustion is a
+capacity pause.
+
+Current automatic order:
+
+1. `nex-agi/nex-n2.5-mini:free`
+2. `nex-agi/nex-n2.5-pro:free`
+3. `nvidia/nemotron-3-super-120b-a12b:free`
+4. `nvidia/nemotron-3.5-lightning:free`
+5. `openrouter/free`
+6. `nvidia/nemotron-3-ultra-550b-a55b:free`
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and
 **every LLM request returned HTTP 402** while `/health` reported `status: ok`,
 `taskQueue.verdict: ok`, 13 live agents and a healthy poll loop. Tasks were
-being claimed and every one of them failed.
+being claimed and every one of them failed. That paid-only arrangement is
+retired. A 402 now cools the exhausted account, rotates to another qualifying
+free account, and eventually capacity-pauses. It cannot select a paid model.
 
 | `status` | Meaning |
 |---|---|
-| `ok` | Balance above $2 |
-| `low` | Under $2 — paid rungs will start failing soon |
-| `exhausted` | At or below zero. Free routing is unaffected; an explicit operator model policy that routes paid will 402 |
+| `ok` | Balance above $2. Informational only — production inference does not spend it. |
+| `low` | Under $2. Informational only. Free `:free` routing is unaffected. |
+| `exhausted` | At or below zero. Free routing is unaffected. Paid models cannot be selected; APEX capacity-pauses if free capacity is also gone. |
 | `unknown` | No key configured, or the lookup failed. `detail` says which |
 
 The balance is cached for 10 minutes and fetched in the background: `/health`

@@ -78,10 +78,10 @@ async function main(): Promise<void> {
   );
 
   // Spend is grouped by a fingerprint of the KEY, not the env var name. APEX
-  // reads OpenRouter keys from five env names across three real accounts (the
-  // BYOK rung is documented as having to reuse an existing account's key), so
+  // reads OpenRouter keys from five env names across three real accounts, so
   // env-name keying would split one account across rows and let two 1,000-caps
-  // authorize 2,000 requests against an account that allows 1,000.
+  // authorize 2,000 requests against an account that allows 1,000. Duplicate
+  // env names holding the same key must collapse to one retry bucket.
   check(
     'accounts are grouped by credential, not by env var name',
     /recordProviderRequest\(credential\.key/.test(client) &&
@@ -291,6 +291,11 @@ async function main(): Promise<void> {
     'ties keep the declared order, so a fresh day is deterministic',
     /load !== 0 \? load : a\.index - b\.index/.test(client),
   );
+  check(
+    'duplicate env names for the same account collapse to one retry bucket',
+    /seenAccounts\.has\(fingerprint\)/.test(client) &&
+      /seenAccounts\.add\(fingerprint\)/.test(client),
+  );
 
   // ── Account roster ───────────────────────────────────────────────────────
   //
@@ -307,17 +312,24 @@ async function main(): Promise<void> {
     'the fourth account key is in the free roster',
     /'OPENROUTER_API_KEY_4'/.test(freeList),
   );
-  // The $10 deposit on an account exists to lift it from ~200/day to 1,000/day
-  // free. Spending that balance on tokens is precisely how the paid chain hit
-  // HTTP 402 on 2026-09-12 while the free allowance went unused, so a key added
-  // for free throughput must not also be reachable as a paid credential.
-  const paidEnvs = client.slice(
-    client.indexOf('const OPENROUTER_PAID_KEY_ENVS'),
+  check(
+    'the dead OPENROUTER_API_KEY_3 credential is not in the free roster',
+    !/'OPENROUTER_API_KEY_3'/.test(freeList),
   );
-  const paidList = paidEnvs.slice(0, paidEnvs.indexOf('] as const;'));
+  // Zero-cost mode has no paid credential roster. A key added for free
+  // throughput must not be reachable as a paid spend path.
+  check(
+    'there is no paid OpenRouter credential roster in the runtime',
+    !/const OPENROUTER_PAID_KEY_ENVS/.test(client),
+  );
   check(
     'the fourth account key cannot be spent as a paid credential',
-    !/'OPENROUTER_API_KEY_4'/.test(paidList),
+    /'OPENROUTER_API_KEY_4'/.test(freeList) && !/OPENROUTER_PAID_KEY_ENVS/.test(client),
+  );
+  check(
+    'the retired BYOK paid key is not a credit-probe or runtime credential',
+    !/OPENROUTER_BYOK_API_KEY/.test(client) &&
+      !/OPENROUTER_BYOK_API_KEY/.test(read('packages/core/src/provider-credits.ts')),
   );
   check(
     'the credit probe knows about every configured account key',

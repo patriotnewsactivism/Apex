@@ -3,18 +3,19 @@
  *
  * Free-first routing lives in llm-client.ts. This module records usage but does
  * not assume that a large token allowance is free. APEX's default cost control
- * is provider-side free quotas plus fail-closed paid routing.
+ * is provider-side free quotas plus fail-closed routing: if free capacity is
+ * exhausted, the workforce pauses. Paid inference cannot be re-enabled here.
  *
  * By default there is NO workspace token cap. Providers with an explicit cap
  * are paced across the UTC day so a restart/startup swarm cannot spend the
  * entire allowance before the rest of the business day begins:
  *   APEX_TOKEN_CAP_TOTAL=0
- *   APEX_TOKEN_CAPS=groq:200000
+ *   APEX_TOKEN_CAPS=openrouter-nex-n2-5-mini-free:200000
  *   APEX_TOKEN_PACING_ENABLED=true
  *   APEX_TOKEN_PACING_BURST_TOKENS=12000
  *
- * Operators may add token caps as secondary operational controls, but paid
- * Mistral remains independently disabled unless APEX_PAID_LLM_MODE is enabled.
+ * Operators may add token caps as secondary operational controls. They cannot
+ * create a paid spend path.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';

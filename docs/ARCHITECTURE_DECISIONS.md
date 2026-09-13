@@ -71,10 +71,16 @@ Production is considered released only when the public health endpoint reports t
 
 Production APEX inference routes through OpenRouter. `packages/core/src/llm-client.ts` is the request-path implementation authority, `packages/core/src/model-routing.ts` owns the operator-selectable policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus the instrumented BaseAgent bind durable task identity into concurrent LLM calls.
 
-The reviewed no-configuration fallback is:
+The reviewed no-configuration fallback is the zero-cost OpenRouter chain:
 
-1. MiniMax M3 Free for high-capability long-horizon agent work, coding, tools, and multimodal input;
-2. NVIDIA Nemotron 3 Ultra Free for reasoning, planning, orchestration, and coding fallback.
+1. `nex-agi/nex-n2.5-mini:free` — primary agentic/coding model;
+2. `nex-agi/nex-n2.5-pro:free`;
+3. `nvidia/nemotron-3-super-120b-a12b:free`;
+4. `nvidia/nemotron-3.5-lightning:free`;
+5. `openrouter/free` with tool requirements preserved;
+6. `nvidia/nemotron-3-ultra-550b-a55b:free` last.
+
+Paid DeepSeek/GPT-OSS/Grok/Bedrock and MiniMax M3 Free are not automatic routes. Exhaustion pauses APEX; it does not spend money.
 
 An authenticated operator may instead persist an ordered OpenRouter roster in `APEX_OPENROUTER_MODEL_POLICY`. The roster may contain 1–500 valid OpenRouter model IDs—large enough for the current hundreds-model catalog—and optional role-specific first choices. A role-specific model must already belong to the selected global roster.
 
@@ -128,9 +134,10 @@ The API/UI must expose the effective objective when complexity escalation change
 
 ### Consequences
 
-- OpenRouter remains the production inference gateway even when the selected roster contains models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or another model family available through OpenRouter.
+- OpenRouter remains the production inference gateway, but production-persisted model IDs must be zero-cost (`:free` or exactly `openrouter/free`).
 - Do not silently restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain outside OpenRouter.
-- The reviewed MiniMax M3 Free → Nemotron 3 Ultra Free chain remains the fail-safe when no valid custom policy is present.
+- Do not restore paid DeepSeek/GPT-OSS/Grok/Bedrock as automatic fallbacks.
+- The reviewed Nex N2.5 Mini Free → … → Nemotron 3 Ultra Free chain remains the fail-safe when no valid custom policy is present.
 - OpenRouter gateway pacing, retry-after behavior, circuit breakers, token reservation, malformed-tool-call rejection, non-completion detection, and actual served-model diagnostics remain production controls.
 - Multiple keys from one OpenRouter account are credential redundancy, not separate account quotas.
 - Free model variants are permitted in an operator-selected roster, but free-tier availability/rate limits do not weaken failure handling or permit fabricated completion.

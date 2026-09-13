@@ -3,26 +3,19 @@ import { db, agents, memories } from '@workspace/db';
 import { eq, and } from 'drizzle-orm';
 import {
   getProviderCatalog,
-  paidLLMFallbackEnabled,
   type BaseAgent,
 } from '@workspace/core';
 
 function getRuntimeRouting() {
   const catalog = getProviderCatalog();
   const primary = catalog[0];
-  const paidEnabled = paidLLMFallbackEnabled(process.env.APEX_PAID_LLM_MODE);
-  const routeLabel = catalog
-    .map((provider) =>
-      provider.paid
-        ? `${provider.name} (${paidEnabled ? 'paid enabled' : 'paid off'})`
-        : provider.name,
-    )
-    .join(' → ');
+  const routeLabel = catalog.map((provider) => provider.name).join(' → ');
 
   return {
     model: primary?.model ?? 'unconfigured',
-    provider: 'free-first-router',
+    provider: primary?.name ?? 'unconfigured',
     routeLabel,
+    zeroCostMode: true,
   };
 }
 

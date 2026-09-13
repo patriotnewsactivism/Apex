@@ -9,6 +9,7 @@ import {
   parseOpenRouterModelPolicy,
   resolveComplexityObjective,
   serializeOpenRouterModelPolicy,
+  validateProductionOpenRouterModelId,
   type OpenRouterModelPolicy,
 } from '@workspace/core';
 
@@ -83,7 +84,7 @@ function normalizeModel(entry: OpenRouterCatalogEntry) {
   const blended = inputPerMillion !== null && outputPerMillion !== null
     ? inputPerMillion * 0.8 + outputPerMillion * 0.2
     : null;
-  if (isFree) recommendedFor.push('free/background work');
+  if (isFree) recommendedFor.push('zero-cost production');
   if (toolCalling && reasoning) recommendedFor.push('executive reasoning / autonomous agents');
   if (toolCalling && blended !== null && blended <= 0.75) recommendedFor.push('high-volume agent work');
   if (contextLength >= 524_288) recommendedFor.push('long-context research / repository analysis');
@@ -110,11 +111,49 @@ function normalizeModel(entry: OpenRouterCatalogEntry) {
       outputModalities,
     },
     isFree,
+    productionEligible: validateProductionOpenRouterModelId(id),
     agentReady: toolCalling,
     capabilityScore,
     efficiencyScore: valueEfficiencyScore(inputPerMillion, outputPerMillion, contextLength, capabilityScore),
     recommendedFor,
   };
+}
+
+const DEFAULT_CHAIN_LABELS: Record<string, string> = {
+  'nex-agi/nex-n2.5-mini:free': 'Nex N2.5 Mini Free',
+  'nex-agi/nex-n2.5-pro:free': 'Nex N2.5 Pro Free',
+  'nvidia/nemotron-3-super-120b-a12b:free': 'Nemotron 3 Super Free',
+  'nvidia/nemotron-3.5-lightning:free': 'Nemotron 3.5 Lightning Free',
+  'openrouter/free': 'OpenRouter Free Router',
+  'nvidia/nemotron-3-ultra-550b-a55b:free': 'Nemotron 3 Ultra Free',
+};
+
+function ensureDefaultChainInCatalog<T extends { id: string }>(models: T[]): T[] {
+  const known = new Set(models.map((model) => model.id));
+  const extras = DEFAULT_OPENROUTER_MODEL_CHAIN
+    .filter((id) => !known.has(id))
+    .map((id) => ({
+      id,
+      name: DEFAULT_CHAIN_LABELS[id] ?? id,
+      description: 'Zero-cost production default. Exhaustion pauses APEX rather than spending money.',
+      contextLength: 0,
+      pricing: { inputPerMillion: 0, outputPerMillion: 0, request: 0 },
+      capabilities: {
+        toolCalling: true,
+        structuredOutput: false,
+        reasoning: false,
+        vision: false,
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+      },
+      isFree: true,
+      productionEligible: true,
+      agentReady: true,
+      capabilityScore: 70,
+      efficiencyScore: 100,
+      recommendedFor: ['zero-cost production'],
+    })) as unknown as T[];
+  return [...extras, ...models];
 }
 
 async function fetchOpenRouterModels() {
@@ -125,7 +164,11 @@ async function fetchOpenRouterModels() {
       'HTTP-Referer': 'https://apex.donmatthews.live',
       'X-Title': 'APEX Model Control',
     };
-    const key = process.env.OPENROUTER_API_KEY ?? process.env.OPENROUTER_API_KEY_2;
+    const key =
+      process.env.OPENROUTER_FREE_API_KEY ??
+      process.env.OPENROUTER_API_KEY ??
+      process.env.OPENROUTER_API_KEY_2 ??
+      process.env.OPENROUTER_API_KEY_4;
     if (key) headers.Authorization = `Bearer ${key}`;
 
     const response = await fetch(OPENROUTER_MODELS_URL, { headers, signal: controller.signal });
@@ -133,7 +176,9 @@ async function fetchOpenRouterModels() {
       throw new Error(`OpenRouter model catalog returned HTTP ${response.status}`);
     }
     const body = await response.json() as OpenRouterCatalogResponse;
-    return (body.data ?? []).map(normalizeModel).filter((model): model is NonNullable<ReturnType<typeof normalizeModel>> => Boolean(model));
+    return ensureDefaultChainInCatalog(
+      (body.data ?? []).map(normalizeModel).filter((model): model is NonNullable<ReturnType<typeof normalizeModel>> => Boolean(model)),
+    );
   } finally {
     clearTimeout(timeout);
   }
@@ -165,11 +210,18 @@ export function createModelSettingsRouter(): Router {
         source: 'OpenRouter /api/v1/models',
         pricingUpdatedAt: new Date().toISOString(),
         efficiencyMethod: 'APEX value-efficiency heuristic: 55% price efficiency, 25% agent capabilities, 20% context. It is not an intelligence benchmark.',
+        zeroCostMode: true,
+        exhaustionBehavior: 'capacity-pause',
+        defaultChain: [...DEFAULT_OPENROUTER_MODEL_CHAIN],
       });
     } catch (err) {
       res.status(502).json({
         error: err instanceof Error ? err.message : String(err),
         policy: getActiveOpenRouterModelPolicy() ?? defaultPolicy(),
+        models: ensureDefaultChainInCatalog([]),
+        zeroCostMode: true,
+        exhaustionBehavior: 'capacity-pause',
+        defaultChain: [...DEFAULT_OPENROUTER_MODEL_CHAIN],
       });
     }
   });
@@ -233,7 +285,7 @@ export function createModelSettingsRouter(): Router {
       const candidate = parseOpenRouterModelPolicy(JSON.stringify(req.body));
       if (!candidate) {
         res.status(400).json({
-          error: 'Invalid production model policy. Select 1-500 valid non-free OpenRouter model IDs; :free endpoints are experiment-only and cannot be persisted for the autonomous fleet.',
+          error: 'Invalid production model policy. Select 1-500 zero-cost OpenRouter model IDs ending in :free, or exactly openrouter/free. Paid model IDs cannot be persisted while zero-cost mode is active; exhaustion pauses the workforce instead of spending money.',
         });
         return;
       }

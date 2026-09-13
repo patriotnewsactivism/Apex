@@ -24,9 +24,18 @@ import {
   type OpenRouterModelPolicy,
 } from '../lib/settingsApi.js';
 
+const ZERO_COST_DEFAULT_CHAIN = [
+  'nex-agi/nex-n2.5-mini:free',
+  'nex-agi/nex-n2.5-pro:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'openrouter/free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+] as const;
+
 const DEFAULT_POLICY: OpenRouterModelPolicy = {
   version: 1,
-  selectedModelIds: [],
+  selectedModelIds: [...ZERO_COST_DEFAULT_CHAIN],
   rolePrimary: {},
   routingMode: 'manual',
   optimizationObjective: 'balanced',
@@ -114,7 +123,7 @@ export function ModelRouterPanel() {
   const [policy, setPolicy] = useState<OpenRouterModelPolicy>(DEFAULT_POLICY);
   const [initializedFromServer, setInitializedFromServer] = useState(false);
   const [search, setSearch] = useState('');
-  const [freeOnly, setFreeOnly] = useState(false);
+  const [freeOnly, setFreeOnly] = useState(true);
   const [agentReadyOnly, setAgentReadyOnly] = useState(true);
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>('efficiency');
@@ -229,14 +238,20 @@ export function ModelRouterPanel() {
         explorationRate: result.policy.explorationRate ?? 0,
         complexityEscalation: result.policy.complexityEscalation ?? false,
       });
-      setSavedMessage('Restored the reviewed DeepSeek V4 Flash -> GPT-OSS 120B -> DeepSeek V3.2 production chain.');
+      setSavedMessage('Restored the zero-cost production chain: Nex N2.5 Mini Free → Nex N2.5 Pro Free → Nemotron 3 Super Free → Nemotron 3.5 Lightning Free → OpenRouter Free → Nemotron 3 Ultra Free. Exhaustion pauses APEX; it will not spend money.');
       queryClient.invalidateQueries({ queryKey: ['settings', 'models'] });
     },
   });
 
+  const isProductionEligible = (modelId: string) => {
+    const model = modelById.get(modelId);
+    if (model && typeof model.productionEligible === 'boolean') return model.productionEligible;
+    return modelId.endsWith(':free') || modelId.toLowerCase() === 'openrouter/free';
+  };
+
   const toggleModel = (modelId: string) => {
-    if (modelById.get(modelId)?.isFree) {
-      setSavedMessage('Free OpenRouter models are experiment-only and cannot be saved into the APEX production fleet policy.');
+    if (!isProductionEligible(modelId)) {
+      setSavedMessage('Paid OpenRouter models are visible for comparison only. Zero-cost production mode cannot persist a billable model; exhaustion pauses APEX instead of spending money.');
       return;
     }
     setPolicy((previous) => {
@@ -271,6 +286,7 @@ export function ModelRouterPanel() {
   };
 
   const selectedModels = policy.selectedModelIds.map((id) => modelById.get(id)).filter(Boolean) as OpenRouterModelCatalogItem[];
+  const ineligibleSelected = policy.selectedModelIds.some((id) => !isProductionEligible(id));
   const freeSelected = selectedModels.filter((model) => model.isFree).length;
   const agentReadySelected = selectedModels.filter((model) => model.agentReady).length;
   const explorationRate = policy.explorationRate ?? 0;
@@ -292,9 +308,10 @@ export function ModelRouterPanel() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <BrainCircuit size={20} color="#8b7ec8" />
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>OpenRouter Model Control</span>
+            <ModelBadge>ZERO-COST MODE</ModelBadge>
           </div>
           <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '6px 0 0', lineHeight: 1.45, maxWidth: 820 }}>
-            Select the model roster, compare live price/capabilities, and choose whether APEX should preserve your exact order, advise you from observed outcomes, or adapt inside your selected roster. Static efficiency is a heuristic; learned rankings use completed APEX tasks, observed latency, and OpenRouter-reported generation cost.
+            Production inference is $0-only. Nex N2.5 Mini Free is the primary model. Free models can be selected; paid models stay visible for comparison but cannot join the production roster. If every free account and route is exhausted, APEX pauses — it does not fall back to paid DeepSeek, GPT-OSS, Grok, or any other billable endpoint.
           </p>
         </div>
         <button
@@ -442,12 +459,20 @@ export function ModelRouterPanel() {
                 return (
                   <tr key={model.id} style={{ borderTop: '1px solid var(--color-apex-border)', background: selected ? 'rgba(139,126,200,0.06)' : 'transparent' }}>
                     <td style={{ padding: 9 }}>
-                      <input type="checkbox" checked={selected} disabled={model.isFree} onChange={() => toggleModel(model.id)} aria-label={`Select ${model.name}`} title={model.isFree ? 'Free models are experiment-only in production' : undefined} />
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={!isProductionEligible(model.id)}
+                        onChange={() => toggleModel(model.id)}
+                        aria-label={`Select ${model.name}`}
+                        title={!isProductionEligible(model.id) ? 'Paid models are ineligible for the production roster while zero-cost mode is active' : undefined}
+                      />
                     </td>
                     <td style={{ padding: 9, maxWidth: 300 }}>
                       <div style={{ fontWeight: 650, color: 'var(--color-apex-text)', display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
                         {model.name}
                         {model.isFree && <ModelBadge>FREE</ModelBadge>}
+                        {isProductionEligible(model.id) ? <ModelBadge>ELIGIBLE</ModelBadge> : <ModelBadge>PAID — INELIGIBLE</ModelBadge>}
                         {!model.agentReady && <ModelBadge>NO TOOLS</ModelBadge>}
                       </div>
                       <div style={{ fontSize: 9, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>{model.id}</div>
@@ -552,7 +577,9 @@ export function ModelRouterPanel() {
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px,1fr) minmax(300px,1fr)', gap: 14 }} className="model-routing-grid">
         <div style={{ border: '1px solid var(--color-apex-border)', borderRadius: 9, padding: 13, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>Global fallback priority</div>
-          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>Manual/advisor use this exact order. Adaptive may reorder evidence-qualified slots; complexity escalation may change the scoring objective for the current task; controlled learning trials may temporarily start an eligible low-complexity task with the least-sampled selected model.</div>
+          <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', margin: '3px 0 10px' }}>
+            Default production order: Nex N2.5 Mini Free first, Nemotron Ultra last. Manual/advisor use this exact order. Adaptive may reorder evidence-qualified slots inside this free roster only. When every free account/route is exhausted, APEX capacity-pauses — it does not spend money.
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {policy.selectedModelIds.map((id, index) => {
               const model = modelById.get(id);
@@ -601,6 +628,11 @@ export function ModelRouterPanel() {
         {catalogQuery.data?.pricingUpdatedAt && <> Live catalog refreshed {new Date(catalogQuery.data.pricingUpdatedAt).toLocaleString()}.</>}
       </div>
 
+      {ineligibleSelected && (
+        <div style={{ color: '#c45c66', fontSize: 11 }}>
+          Remove paid models from the roster before saving. Zero-cost mode rejects billable production policies.
+        </div>
+      )}
       {(saveMutation.error || resetMutation.error) && (
         <div style={{ color: '#c45c66', fontSize: 11 }}>{((saveMutation.error ?? resetMutation.error) as Error).message}</div>
       )}
@@ -610,7 +642,7 @@ export function ModelRouterPanel() {
         <button
           className="btn-primary"
           onClick={() => saveMutation.mutate()}
-          disabled={policy.selectedModelIds.length === 0 || saveMutation.isPending}
+          disabled={policy.selectedModelIds.length === 0 || ineligibleSelected || saveMutation.isPending}
           style={{ display: 'flex', alignItems: 'center', gap: 6 }}
         >
           <Save size={13} /> {saveMutation.isPending ? 'Saving…' : `Save routing (${policy.selectedModelIds.length} models)`}
@@ -621,7 +653,7 @@ export function ModelRouterPanel() {
           disabled={resetMutation.isPending}
           style={{ display: 'flex', alignItems: 'center', gap: 6 }}
         >
-          <RotateCcw size={13} /> Reset to reviewed defaults
+          <RotateCcw size={13} /> Reset to zero-cost defaults
         </button>
       </div>
 

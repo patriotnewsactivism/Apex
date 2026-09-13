@@ -42,14 +42,15 @@ import { dirname } from 'path';
  * holding it.
  *
  * This matters because the two are not one-to-one. APEX reads OpenRouter keys
- * from five env names (OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY,
- * OPENROUTER_API_KEY_2, OPENROUTER_API_KEY_3, OPENROUTER_BYOK_API_KEY) across
- * three real accounts — and the BYOK rung is explicitly documented as needing
- * to belong to an account that already appears elsewhere in that list. Keying
- * on the env name would split one account's spend across several rows, so a
- * per-account cap of 1,000 set on two names that hold the same key would
- * authorize 2,000 requests against an account that allows 1,000. The cap would
- * read as enforced and be wrong in the direction that costs you the day.
+ * from OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY, OPENROUTER_API_KEY_2,
+ * and OPENROUTER_API_KEY_4 across three real qualifying accounts.
+ * OPENROUTER_API_KEY_3 is burned (100% live failures) and is not a roster
+ * member. Extra env names for the same key are credential
+ * redundancy, not extra capacity. Keying on the env name would split one
+ * account's spend across several rows, so a per-account cap of 1,000 set on
+ * two names that hold the same key would authorize 2,000 requests against an
+ * account that allows 1,000. The cap would read as enforced and be wrong in
+ * the direction that costs you the day.
  *
  * The fingerprint is a truncated SHA-256 of the key. It is used only as a
  * grouping identity and a database key; it is NEVER reported — `/health` and
