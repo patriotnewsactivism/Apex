@@ -164,6 +164,9 @@ try {
   check('API rejects paid production policies', routeSource.includes('zero-cost') || routeSource.includes(':free'));
   check('dashboard reset restores the six-model free chain', panelSource.includes('nex-agi/nex-n2.5-mini:free') && !panelSource.includes('DeepSeek V4 Flash -> GPT-OSS'));
   check('dashboard no longer calls free models experiment-only', !/experiment-only/.test(panelSource));
+  check('dashboard defaults the catalog filter to free-only', panelSource.includes('const [freeOnly, setFreeOnly] = useState(true)'));
+  const probeSource = fs.readFileSync(path.join(root, 'scripts/llm-probe.mjs'), 'utf8');
+  check('diagnostic probe cannot spend money on paid providers', !/api\.mistral\.ai|api\.groq\.com|api\.cohere\.ai|api\.kilo\.ai/.test(probeSource));
 } finally {
   if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
   else process.env[OPENROUTER_MODEL_POLICY_ENV] = previousPolicy;

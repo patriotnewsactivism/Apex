@@ -5,26 +5,9 @@
 // Ports packages/core/src/llm-client.ts. Needs the Node runtime (not the
 // default V8-isolate action runtime) for the `openai` SDK.
 //
-// Deliberately does NOT port the old local-embedding fallback
-// (@xenova/transformers, real ONNX inference): that pulls in onnxruntime-node
-// (~92MB) + sharp (~50MB), blowing Convex's per-function bundle size limit —
-// a hard platform constraint, not a style choice. createEmbedding here is
-// OpenAI-API-only; when OPENAI_API_KEY isn't set it throws, which the caller
-// (agentLoop.ts's buildMemoryContext) already catches and falls back to
-// keyword search for — a graceful degrade, not a crash. If local embeddings
-// are ever needed again, that's exactly the kind of "needs a real Node
-// environment Convex can't provide" work that belongs on the M5 CI/CD worker,
-// not here.
-//
-// Reordered 2026-07-26 after a full live-key audit (direct curl against every
-// configured key, with proper User-Agent — api.cerebras.ai/api.groq.com were
-// throwing Cloudflare 403 error 1010 on bare urllib requests with no UA,
-// which looked like dead keys but were a false alarm once a real UA was
-// sent). Confirmed live: Cerebras, Groq, Cohere (COHERE_API_KEY). Confirmed
-// dead/blocked: Mistral (401), Qwen Cloud (401 on wrong endpoint), Cohere-trial
-// (429, monthly cap), GitHub Models (no_access), xAI (403, credits exhausted),
-// Kilo Code (402, negative balance). Dead/blocked entries kept in the chain —
-// harmless no-ops today, zero-code-change recovery once Don rotates a key.
+// Zero-cost only. Production Convex autonomy is disabled unless
+// APEX_CONVEX_AUTONOMY_ENABLED=true. Even then this client must not spend
+// money: only OpenRouter :free models and the free-account key roster.
 
 import { v } from 'convex/values';
 import { internalAction } from './_generated/server';
@@ -34,33 +17,33 @@ const LLM_REQUEST_TIMEOUT_MS = Number.isFinite(configuredRequestTimeoutMs)
   ? Math.min(60_000, Math.max(10_000, Math.floor(configuredRequestTimeoutMs)))
   : 30_000;
 
+const OPENROUTER_FREE_KEY_ENVS = [
+  'OPENROUTER_FREE_API_KEY',
+  'OPENROUTER_API_KEY_2',
+  'OPENROUTER_API_KEY',
+  'OPENROUTER_API_KEY_3',
+  'OPENROUTER_API_KEY_4',
+] as const;
+
+const OPENROUTER_HEADERS = {
+  'HTTP-Referer': 'https://apex.donmatthews.live',
+  'X-Title': 'APEX Agent Workforce',
+} as const;
+
 const PROVIDERS: Array<{
   name: string;
   baseURL: string;
-  apiKeyEnv: string;
-  fallbackModel?: string;
+  fallbackModel: string;
   extraHeaders?: Record<string, string>;
-  protocol?: 'openai' | 'anthropic';
 }> = [
   // Zero-cost OpenRouter chain. Paid endpoints are unreachable.
-  { name: 'openrouter-nex-n2-5-mini-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_FREE_API_KEY', fallbackModel: 'nex-agi/nex-n2.5-mini:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
-  { name: 'openrouter-nex-n2-5-pro-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'nex-agi/nex-n2.5-pro:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
-  { name: 'openrouter-nemotron-super', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  { name: 'openrouter-nex-n2-5-mini-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nex-agi/nex-n2.5-mini:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-nex-n2-5-pro-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nex-agi/nex-n2.5-pro:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-nemotron-super', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-nemotron-3-5-lightning-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nvidia/nemotron-3.5-lightning:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-free-router', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'openrouter/free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-nemotron-ultra', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nvidia/nemotron-3-ultra-550b-a55b:free', extraHeaders: OPENROUTER_HEADERS },
 ];
-
-// Role-aware Qwen Cloud model selection — mirrors packages/core/src/llm-client.ts
-// exactly (see that file for the full rationale). Both qwen-cloud entries
-// resolve their model here instead of a static fallbackModel string.
-const PREMIUM_ROLES = new Set([
-  'CEO', 'CTO', 'COO', 'LEAD_DEV', 'RESEARCH', 'LEAD_RESEARCH', 'SALES', 'QA_DIRECTOR',
-]);
-
-function resolveQwenModel(role: string | undefined): string {
-  const isPremium = role !== undefined && PREMIUM_ROLES.has(role);
-  const envOverride = isPremium ? process.env.APEX_QWEN_PREMIUM_MODEL : process.env.APEX_QWEN_STANDARD_MODEL;
-  if (envOverride) return envOverride;
-  return isPremium ? 'qwen3.7-max' : 'qwen3.7-plus';
-}
 
 export type LLMMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -77,108 +60,6 @@ export type LLMResponse = {
   usage: { promptTokens: number; completionTokens: number };
   model: string;
 };
-
-// ─── Anthropic Messages API conversion helpers ────────────────────────────────
-// Ported verbatim from packages/core/src/llm-client.ts's buildAnthropicMessages
-// — see that file's comment for why system/tool_result batching/input_schema
-// naming can't reuse the OpenAI-shaped request builder above.
-
-function buildAnthropicMessages(messages: LLMMessage[]): {
-  system: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }>;
-} {
-  const systemParts: string[] = [];
-  const result: Array<{ role: 'user' | 'assistant'; content: string | Array<Record<string, unknown>> }> = [];
-
-  let i = 0;
-  while (i < messages.length) {
-    const m = messages[i];
-
-    if (m.role === 'system') {
-      systemParts.push(m.content);
-      i++;
-      continue;
-    }
-
-    if (m.role === 'tool') {
-      const toolResultBlocks: Array<Record<string, unknown>> = [];
-      while (i < messages.length && messages[i].role === 'tool') {
-        const tm = messages[i];
-        toolResultBlocks.push({ type: 'tool_result', tool_use_id: tm.toolCallId ?? '', content: tm.content });
-        i++;
-      }
-      result.push({ role: 'user', content: toolResultBlocks });
-      continue;
-    }
-
-    if (m.role === 'assistant') {
-      const content: Array<Record<string, unknown>> = [];
-      if (m.content) content.push({ type: 'text', text: m.content });
-      for (const tc of m.toolCalls ?? []) {
-        content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
-      }
-      result.push({ role: 'assistant', content });
-      i++;
-      continue;
-    }
-
-    result.push({ role: 'user', content: m.content });
-    i++;
-  }
-
-  return { system: systemParts.join('\n\n'), messages: result };
-}
-
-async function completeViaAnthropic(
-  provider: { name: string; baseURL: string },
-  apiKey: string,
-  model: string,
-  messages: LLMMessage[],
-  tools: LLMTool[] | undefined,
-  llmConfig: { temperature?: number; maxTokens?: number },
-): Promise<LLMResponse> {
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-
-  const client = new Anthropic({ apiKey, baseURL: provider.baseURL, timeout: LLM_REQUEST_TIMEOUT_MS, maxRetries: 0 });
-
-  const { system, messages: anthropicMessages } = buildAnthropicMessages(messages);
-  const anthropicTools = tools?.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
-  let res;
-  try {
-    res = await client.messages.create(
-      {
-        model,
-        system: system || undefined,
-        messages: anthropicMessages as any,
-        tools: anthropicTools && anthropicTools.length > 0 ? (anthropicTools as any) : undefined,
-        max_tokens: llmConfig.maxTokens ?? 4096,
-        temperature: llmConfig.temperature ?? 0.7,
-      },
-      { signal: controller.signal },
-    );
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  let content = '';
-  const toolCalls: LLMResponse['toolCalls'] = [];
-  for (const block of res.content) {
-    if (block.type === 'text') content += block.text;
-    else if (block.type === 'tool_use') {
-      toolCalls.push({ id: block.id, name: block.name, args: block.input as Record<string, unknown> });
-    }
-  }
-
-  return {
-    content,
-    toolCalls,
-    usage: { promptTokens: res.usage?.input_tokens ?? 0, completionTokens: res.usage?.output_tokens ?? 0 },
-    model: `${provider.name}/${res.model}`,
-  };
-}
 
 async function completeImpl(
   messages: LLMMessage[],
@@ -213,88 +94,83 @@ async function completeImpl(
   }));
 
   const providerErrors: Array<{ provider: string; model: string; status?: number; message: string }> = [];
+  const seenAccounts = new Set<string>();
+  const credentials = OPENROUTER_FREE_KEY_ENVS
+    .map((env) => ({ env, key: process.env[env] ?? '' }))
+    .filter((entry) => Boolean(entry.key))
+    .filter((entry) => {
+      if (seenAccounts.has(entry.key)) return false;
+      seenAccounts.add(entry.key);
+      return true;
+    });
 
   for (const provider of PROVIDERS) {
-    const apiKey = process.env[provider.apiKeyEnv];
-    if (!apiKey) {
-      console.warn(`[LLM] Skipping ${provider.name}: no ${provider.apiKeyEnv} configured`);
+    if (credentials.length === 0) {
+      console.warn(`[LLM] Skipping ${provider.name}: no OpenRouter free credential configured`);
       continue;
     }
 
-    const model: string = provider.name.startsWith('qwen-cloud')
-      ? resolveQwenModel(llmConfig.role)
-      : (provider.fallbackModel ?? llmConfig.model);
+    const model = provider.fallbackModel;
 
-    if (provider.protocol === 'anthropic') {
+    for (const credential of credentials) {
       try {
-        const response = await completeViaAnthropic(provider, apiKey, model, messages, tools, llmConfig);
+        const defaultHeaders: Record<string, string> = {};
+        if (provider.extraHeaders) Object.assign(defaultHeaders, provider.extraHeaders);
+
+        const client = new OpenAI({
+          apiKey: credential.key,
+          baseURL: provider.baseURL,
+          defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
+          timeout: LLM_REQUEST_TIMEOUT_MS,
+          maxRetries: 0,
+        });
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
+        let res;
+        try {
+          res = await client.chat.completions.create(
+            {
+              model,
+              messages: openaiMessages,
+              tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
+              temperature: llmConfig.temperature ?? 0.7,
+              max_tokens: llmConfig.maxTokens ?? 4096,
+              ...(model === 'openrouter/free' && openaiTools && openaiTools.length > 0
+                ? { provider: { require_parameters: true } }
+                : {}),
+            } as Parameters<typeof client.chat.completions.create>[0],
+            { signal: controller.signal },
+          );
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        const choice = res.choices[0];
+        const toolCalls = (choice.message.tool_calls ?? []).flatMap((tc) => {
+          if (tc.type !== 'function') return [];
+          return [{ id: tc.id, name: tc.function.name, args: JSON.parse(tc.function.arguments) as Record<string, unknown> }];
+        });
+
         if (providerErrors.length > 0) {
           console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
         }
-        return response;
+
+        return {
+          content: choice.message.content ?? '',
+          toolCalls,
+          usage: { promptTokens: res.usage?.prompt_tokens ?? 0, completionTokens: res.usage?.completion_tokens ?? 0 },
+          model: `${provider.name}/${res.model}`,
+        };
       } catch (err) {
         const status = (err as any)?.status ?? (err as any)?.response?.status ?? (err as any)?.code;
         const errMessage = err instanceof Error ? err.message : String(err);
         const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
-        console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
-        providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
-        continue;
+        console.error(`[LLM] Provider ${provider.name} via ${credential.env} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
+        providerErrors.push({ provider: `${provider.name}/${credential.env}`, model, status, message: truncatedMsg });
+        // 429/402: try the next independent account. Other failures advance models.
+        if (status !== 429 && status !== 402) break;
       }
-    }
-
-    try {
-      const defaultHeaders: Record<string, string> = {};
-      if (provider.extraHeaders) Object.assign(defaultHeaders, provider.extraHeaders);
-
-      const client = new OpenAI({
-        apiKey,
-        baseURL: provider.baseURL,
-        defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined,
-        timeout: LLM_REQUEST_TIMEOUT_MS,
-        maxRetries: 0,
-      });
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
-      let res;
-      try {
-        res = await client.chat.completions.create(
-          {
-            model,
-            messages: openaiMessages,
-            tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined,
-            temperature: llmConfig.temperature ?? 0.7,
-            max_tokens: llmConfig.maxTokens ?? 4096,
-          },
-          { signal: controller.signal },
-        );
-      } finally {
-        clearTimeout(timeoutId);
-      }
-
-      const choice = res.choices[0];
-      const toolCalls = (choice.message.tool_calls ?? []).flatMap((tc) => {
-        if (tc.type !== 'function') return [];
-        return [{ id: tc.id, name: tc.function.name, args: JSON.parse(tc.function.arguments) as Record<string, unknown> }];
-      });
-
-      if (providerErrors.length > 0) {
-        console.warn(`[LLM] Succeeded with ${provider.name}/${model} after ${providerErrors.length} failed provider(s): ${providerErrors.map((e) => `${e.provider}(${e.status ?? '?'}: ${e.message})`).join(', ')}`);
-      }
-
-      return {
-        content: choice.message.content ?? '',
-        toolCalls,
-        usage: { promptTokens: res.usage?.prompt_tokens ?? 0, completionTokens: res.usage?.completion_tokens ?? 0 },
-        model: `${provider.name}/${res.model}`,
-      };
-    } catch (err) {
-      const status = (err as any)?.status ?? (err as any)?.response?.status ?? (err as any)?.code;
-      const errMessage = err instanceof Error ? err.message : String(err);
-      const truncatedMsg = errMessage.length > 200 ? errMessage.slice(0, 200) + '…' : errMessage;
-      console.error(`[LLM] Provider ${provider.name} failed — model: ${model}, status: ${status ?? 'N/A'}, error: ${truncatedMsg}`);
-      providerErrors.push({ provider: provider.name, model, status, message: truncatedMsg });
-      continue;
     }
   }
 
@@ -334,24 +210,10 @@ export { getDefaultLLMConfig, getConfiguredProviders, getKnownApiKeyEnvs } from 
 
 // ─── Embedding Generation ─────────────────────────────────────────────────────
 
-async function createEmbeddingImpl(text: string): Promise<number[]> {
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) {
-    throw new Error('OPENAI_API_KEY is not set — embeddings are unavailable (caller should fall back to keyword search)');
-  }
-
-  const OpenAI = (await import('openai')).default;
-  const client = new OpenAI({
-    apiKey: openaiKey,
-    defaultHeaders: { 'HTTP-Referer': 'https://github.com/apex-agent', 'X-Title': 'APEX Autonomous AI Workforce' },
-  });
-
-  const response = await client.embeddings.create({
-    model: 'text-embedding-3-small',
-    input: text.replace(/\n/g, ' '),
-  });
-
-  return response.data[0].embedding;
+async function createEmbeddingImpl(_text: string): Promise<number[]> {
+  throw new Error(
+    'Paid OpenAI embeddings are disabled while APEX is in zero-cost mode; caller should fall back to keyword search',
+  );
 }
 
 export const createEmbedding = internalAction({

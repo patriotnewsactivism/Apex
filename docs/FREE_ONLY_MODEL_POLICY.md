@@ -31,7 +31,7 @@ OpenRouter's native `models` fallback array is capped at 3 entries per request. 
 
 ## Account rotation and fail-closed pause
 
-Credentials are tried least-used-account first (fingerprint of the key, not the env var name). A 429/402 on one qualifying account cools that account and moves to another before abandoning the current free model. Failed attempts count against the daily allowance, so retries are bounded. When every free account/model is unavailable, APEX enters a capacity-pause state exposed on `/health` and the dashboard.
+Credentials are tried least-used-account first (fingerprint of the key, not the env var name). Multiple env names holding the same key collapse to one retry bucket. A 429/402 on one qualifying account cools that account and moves to another before abandoning the current free model. Failed attempts count against the daily allowance, so retries are bounded. When every free account/model is unavailable, APEX enters a capacity-pause state exposed on `/health` and the dashboard. Account cooldowns also gate `llmCapacityAvailableNow()`, so agents do not claim work they cannot serve.
 
 ## Hard invariants
 

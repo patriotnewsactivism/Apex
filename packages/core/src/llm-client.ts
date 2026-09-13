@@ -583,7 +583,12 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
-    if (configuredCredentials(provider).length === 0) continue;
+    const usableCredentials = configuredCredentials(provider).filter(
+      (credential) =>
+        !accountCooldown(credential.key) &&
+        accountCapacityWindow(credential.key).allowed,
+    );
+    if (usableCredentials.length === 0) continue;
 
     const readyAt = providerCooldowns.get(provider.name) ?? 0;
     if (readyAt > now) continue;
@@ -640,6 +645,7 @@ function providerRequirements(provider: ProviderSpec): string[] {
  * declared order, so behaviour is deterministic when the day starts fresh.
  */
 function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key: string }> {
+  const seenAccounts = new Set<string>();
   return provider.apiKeyEnvs
     .map((env, index) => ({ env, key: process.env[env] ?? '', index }))
     .filter((entry) => Boolean(entry.key))
@@ -647,6 +653,15 @@ function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key
       const load = accountRequestsToday(accountFingerprint(a.key)) -
         accountRequestsToday(accountFingerprint(b.key));
       return load !== 0 ? load : a.index - b.index;
+    })
+    .filter((entry) => {
+      // Multiple env names holding the same key are one account. Retrying the
+      // duplicate would burn another request against an already-exhausted
+      // bucket and look like independent capacity.
+      const fingerprint = accountFingerprint(entry.key);
+      if (seenAccounts.has(fingerprint)) return false;
+      seenAccounts.add(fingerprint);
+      return true;
     })
     .map(({ env, key }) => ({ env, key }));
 }
@@ -951,7 +966,7 @@ async function callCompatibleProvider(
     const rawCost = Number(parsed.usage?.cost);
     const toolCalls = parseToolCalls(choice.tool_calls);
     const content = choice.content ?? '';
-    // Reasoning models (e.g. deepseek-v4-flash) can spend the whole
+    // Reasoning models can spend the whole max_tokens budget thinking and
     // max_tokens budget thinking and return content: null. That must be
     // treated as a failure so the chain falls through to the next provider —
     // never as a silent empty success. Tool-call-only turns are exempt.

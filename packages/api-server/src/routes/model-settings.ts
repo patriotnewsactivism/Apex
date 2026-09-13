@@ -164,7 +164,12 @@ async function fetchOpenRouterModels() {
       'HTTP-Referer': 'https://apex.donmatthews.live',
       'X-Title': 'APEX Model Control',
     };
-    const key = process.env.OPENROUTER_API_KEY ?? process.env.OPENROUTER_API_KEY_2;
+    const key =
+      process.env.OPENROUTER_FREE_API_KEY ??
+      process.env.OPENROUTER_API_KEY ??
+      process.env.OPENROUTER_API_KEY_2 ??
+      process.env.OPENROUTER_API_KEY_3 ??
+      process.env.OPENROUTER_API_KEY_4;
     if (key) headers.Authorization = `Bearer ${key}`;
 
     const response = await fetch(OPENROUTER_MODELS_URL, { headers, signal: controller.signal });

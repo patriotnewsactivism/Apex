@@ -123,7 +123,7 @@ export function ModelRouterPanel() {
   const [policy, setPolicy] = useState<OpenRouterModelPolicy>(DEFAULT_POLICY);
   const [initializedFromServer, setInitializedFromServer] = useState(false);
   const [search, setSearch] = useState('');
-  const [freeOnly, setFreeOnly] = useState(false);
+  const [freeOnly, setFreeOnly] = useState(true);
   const [agentReadyOnly, setAgentReadyOnly] = useState(true);
   const [selectedOnly, setSelectedOnly] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>('efficiency');

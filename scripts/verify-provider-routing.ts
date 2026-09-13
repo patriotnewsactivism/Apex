@@ -112,6 +112,44 @@ check(
 check("MiniMax M3 Free is not restored into the automatic chain", catalog.every((provider) => !provider.model.includes("minimax")));
 check("paid credential lists are not used by automatic providers", !/apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS/.test(clientSource));
 check("paid GPT-OSS gateway is not referenced", !/openrouter-gpt-oss-120b-paid/.test(clientSource));
+check(
+  "duplicate keys for one account collapse to a single retry bucket",
+  /seenAccounts\.has\(fingerprint\)/.test(clientSource) &&
+    clientSource.includes("Multiple env names holding the same key are one account"),
+);
+check(
+  "capacity-now skips account-cooled credentials instead of claiming work APEX cannot serve",
+  /!accountCooldown\(credential\.key\)/.test(clientSource) &&
+    /accountCapacityWindow\(credential\.key\)\.allowed/.test(clientSource),
+);
+const creditsSource = fs.readFileSync(path.join(root, "packages/core/src/provider-credits.ts"), "utf8");
+check("credit probe does not read the retired BYOK paid key", !/OPENROUTER_BYOK_API_KEY/.test(creditsSource));
+const probeSource = fs.readFileSync(path.join(root, "scripts/llm-probe.mjs"), "utf8");
+check(
+  "live probe only targets zero-cost OpenRouter models",
+  expectedModels.every((model) => probeSource.includes(`"${model}"`)) &&
+    !/mistral-medium|openai\/gpt-oss-120b|gemini-3\.7-flash|command-a-plus|qwen3\.7-max/.test(probeSource),
+);
+const convexLlm = fs.readFileSync(path.join(root, "packages/convex-backend/convex/llm.ts"), "utf8");
+check(
+  "experimental Convex client uses the same six free models",
+  expectedModels.every((model) => convexLlm.includes(model)),
+);
+check(
+  "experimental Convex client has no Anthropic or Qwen spend path",
+  !/completeViaAnthropic|@anthropic-ai\/sdk|resolveQwenModel|qwen3\.7-max/.test(convexLlm),
+);
+check(
+  "experimental Convex embeddings cannot spend OpenAI money",
+  /Paid OpenAI embeddings are disabled/.test(convexLlm) &&
+    !/text-embedding-3-small/.test(convexLlm),
+);
+const convexConfig = fs.readFileSync(path.join(root, "packages/convex-backend/convex/llmConfig.ts"), "utf8");
+check(
+  "experimental Convex config rejects paid APEX_MODEL overrides",
+  /isZeroCostModel/.test(convexConfig) &&
+    /:free\$\/i\.test\(modelId\)/.test(convexConfig),
+);
 
 console.log("\n── Cost/continuity policy ──");
 check("paid OpenRouter inference cannot be re-enabled by env", paidLLMFallbackEnabled(undefined) === false);
