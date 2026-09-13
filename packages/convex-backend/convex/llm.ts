@@ -42,10 +42,10 @@ const PROVIDERS: Array<{
   extraHeaders?: Record<string, string>;
   protocol?: 'openai' | 'anthropic';
 }> = [
-  // Reliability-first OpenRouter chain. Free endpoints are excluded because
-  // their concurrency queues caused long TTFT stalls and fallback cascades.
-  { name: 'openrouter-gpt-oss-120b-paid', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'openai/gpt-oss-120b', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
-  { name: 'openrouter-deepseek-v3-paid', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'deepseek/deepseek-v3.2', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  // Zero-cost OpenRouter chain. Paid endpoints are unreachable.
+  { name: 'openrouter-nex-n2-5-mini-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_FREE_API_KEY', fallbackModel: 'nex-agi/nex-n2.5-mini:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  { name: 'openrouter-nex-n2-5-pro-free', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY_2', fallbackModel: 'nex-agi/nex-n2.5-pro:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
+  { name: 'openrouter-nemotron-super', baseURL: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: { 'HTTP-Referer': 'https://apex.donmatthews.live', 'X-Title': 'APEX Agent Workforce' } },
 ];
 
 // Role-aware Qwen Cloud model selection — mirrors packages/core/src/llm-client.ts

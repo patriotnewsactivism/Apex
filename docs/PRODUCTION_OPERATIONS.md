@@ -6,7 +6,7 @@ APEX production is the **existing Google Cloud Run service** behind:
 
 `https://apex.donmatthews.live`
 
-The retired AWS Lightsail/CodeBuild and Railway hosting paths are not production fallbacks.
+The retired AWS Lightsail/CodeBuild and Railway hosting paths are not production fallbacks. Planned Railway portability (not a live cutover) is documented in `docs/HOSTING_MIGRATION.md`. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Operating principles
 
@@ -226,21 +226,33 @@ resolved to the same account before setting them.
 
 ### Reading `providerCredits`
 
-APEX's automatic routing chain is **free-only** as of 2026-09-12. Nothing on the
-default path can spend money, so an empty OpenRouter balance is no longer an
-outage — but it was one, and that is why this field exists.
+APEX's automatic routing chain is **zero-cost / free-only**. Nothing on the
+default path or a persisted production policy can spend money. An empty
+OpenRouter credit balance must never trigger paid inference; exhaustion is a
+capacity pause.
+
+Current automatic order:
+
+1. `nex-agi/nex-n2.5-mini:free`
+2. `nex-agi/nex-n2.5-pro:free`
+3. `nvidia/nemotron-3-super-120b-a12b:free`
+4. `nvidia/nemotron-3.5-lightning:free`
+5. `openrouter/free`
+6. `nvidia/nemotron-3-ultra-550b-a55b:free`
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and
 **every LLM request returned HTTP 402** while `/health` reported `status: ok`,
 `taskQueue.verdict: ok`, 13 live agents and a healthy poll loop. Tasks were
-being claimed and every one of them failed.
+being claimed and every one of them failed. That paid-only arrangement is
+retired. A 402 now cools the exhausted account, rotates to another qualifying
+free account, and eventually capacity-pauses. It cannot select a paid model.
 
 | `status` | Meaning |
 |---|---|
 | `ok` | Balance above $2 |
 | `low` | Under $2 — paid rungs will start failing soon |
-| `exhausted` | At or below zero. Free routing is unaffected; an explicit operator model policy that routes paid will 402 |
+| `exhausted` | At or below zero. Free routing is unaffected. Paid models cannot be selected; APEX capacity-pauses if free capacity is also gone. |
 | `unknown` | No key configured, or the lookup failed. `detail` says which |
 
 The balance is cached for 10 minutes and fetched in the background: `/health`

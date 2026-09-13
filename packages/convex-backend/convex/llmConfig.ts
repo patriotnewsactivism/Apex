@@ -10,9 +10,12 @@
 // doesn't need baseURL/fallbackModel/extraHeaders since it never makes a
 // request itself).
 const PROVIDERS = [
-  { name: 'openrouter-deepseek-v4-flash-paid', apiKeyEnv: 'OPENROUTER_API_KEY' },
-  { name: 'openrouter-gpt-oss-120b-paid', apiKeyEnv: 'OPENROUTER_API_KEY' },
-  { name: 'openrouter-deepseek-v3-paid', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  { name: 'openrouter-nex-n2-5-mini-free', apiKeyEnv: 'OPENROUTER_FREE_API_KEY' },
+  { name: 'openrouter-nex-n2-5-pro-free', apiKeyEnv: 'OPENROUTER_API_KEY_2' },
+  { name: 'openrouter-nemotron-super', apiKeyEnv: 'OPENROUTER_API_KEY' },
+  { name: 'openrouter-nemotron-3-5-lightning-free', apiKeyEnv: 'OPENROUTER_API_KEY_3' },
+  { name: 'openrouter-free-router', apiKeyEnv: 'OPENROUTER_API_KEY_4' },
+  { name: 'openrouter-nemotron-ultra', apiKeyEnv: 'OPENROUTER_API_KEY' },
 ];
 
 const TOKEN_BUDGETS: Record<string, number> = {
@@ -28,11 +31,11 @@ const TOKEN_BUDGETS: Record<string, number> = {
 // their own role-aware model instead) — every other configured provider uses
 // its own fixed fallbackModel, never this value. Kept accurate anyway.
 const TIER_MAP: Record<string, string> = {
-  CEO: 'qwen3.7-max', CTO: 'qwen3.7-max', COO: 'qwen3.7-max',
-  LEAD_DEV: 'qwen3.7-max', RESEARCH: 'qwen3.7-max', LEAD_RESEARCH: 'qwen3.7-max',
-  SALES: 'qwen3.7-max', QA_DIRECTOR: 'qwen3.7-max',
-  FRONTEND: 'qwen3.7-plus', BACKEND: 'qwen3.7-plus', DEVOPS: 'qwen3.7-plus', QA: 'qwen3.7-plus',
-  MARKETING: 'qwen3.7-plus', CUSTOMER_SUCCESS: 'qwen3.7-plus', DOCS: 'qwen3.7-plus', OPS: 'qwen3.7-plus',
+  CEO: 'nex-agi/nex-n2.5-mini:free', CTO: 'nex-agi/nex-n2.5-mini:free', COO: 'nex-agi/nex-n2.5-mini:free',
+  LEAD_DEV: 'nex-agi/nex-n2.5-mini:free', RESEARCH: 'nex-agi/nex-n2.5-mini:free', LEAD_RESEARCH: 'nex-agi/nex-n2.5-mini:free',
+  SALES: 'nex-agi/nex-n2.5-mini:free', QA_DIRECTOR: 'nex-agi/nex-n2.5-mini:free',
+  FRONTEND: 'nex-agi/nex-n2.5-mini:free', BACKEND: 'nex-agi/nex-n2.5-mini:free', DEVOPS: 'nex-agi/nex-n2.5-mini:free', QA: 'nex-agi/nex-n2.5-mini:free',
+  MARKETING: 'nex-agi/nex-n2.5-mini:free', CUSTOMER_SUCCESS: 'nex-agi/nex-n2.5-mini:free', DOCS: 'nex-agi/nex-n2.5-mini:free', OPS: 'nex-agi/nex-n2.5-mini:free',
 };
 
 export function getDefaultLLMConfig(role: string): { model: string; temperature: number; maxTokens: number; role: string } {
@@ -44,7 +47,7 @@ export function getDefaultLLMConfig(role: string): { model: string; temperature:
   const globalModel = process.env.APEX_MODEL;
   if (globalModel) return { model: globalModel, temperature: 0.7, maxTokens, role };
 
-  const model = TIER_MAP[role] ?? 'qwen3.7-plus';
+  const model = TIER_MAP[role] ?? 'nex-agi/nex-n2.5-mini:free';
   return { model, temperature: 0.7, maxTokens, role };
 }
 

@@ -21,6 +21,18 @@ The operator has three independent OpenRouter accounts that have each previously
 
 Expected nominal ceiling: about **3,000 free requests/day**, subject to OpenRouter/provider availability. Failed requests count against the daily allowance, so retries must be bounded.
 
+## Custom persisted policies
+
+A valid production policy may contain only `:free` IDs or exactly `openrouter/free`. Custom policies use the `openrouter-free-policy` gateway with the **same free-account credential roster** as automatic routing. They never switch to `OPENROUTER_PAID_KEY_ENVS` and never reach a paid adapter because a custom policy exists.
+
+OpenRouter's native `models` fallback array is capped at 3 entries per request. Larger free rosters are truncated to that ceiling for a single gateway attempt; the automatic six-route chain remains available when no custom policy is set.
+
+`openrouter/free` is only used with `require_parameters` when APEX is sending tools, so the free router cannot pick a model that cannot execute required function calls.
+
+## Account rotation and fail-closed pause
+
+Credentials are tried least-used-account first (fingerprint of the key, not the env var name). A 429/402 on one qualifying account cools that account and moves to another before abandoning the current free model. Failed attempts count against the daily allowance, so retries are bounded. When every free account/model is unavailable, APEX enters a capacity-pause state exposed on `/health` and the dashboard.
+
 ## Hard invariants
 
 - No silent paid fallback.

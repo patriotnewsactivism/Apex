@@ -307,17 +307,15 @@ async function main(): Promise<void> {
     'the fourth account key is in the free roster',
     /'OPENROUTER_API_KEY_4'/.test(freeList),
   );
-  // The $10 deposit on an account exists to lift it from ~200/day to 1,000/day
-  // free. Spending that balance on tokens is precisely how the paid chain hit
-  // HTTP 402 on 2026-09-12 while the free allowance went unused, so a key added
-  // for free throughput must not also be reachable as a paid credential.
-  const paidEnvs = client.slice(
-    client.indexOf('const OPENROUTER_PAID_KEY_ENVS'),
+  // Zero-cost mode has no paid credential roster. A key added for free
+  // throughput must not be reachable as a paid spend path.
+  check(
+    'there is no paid OpenRouter credential roster in the runtime',
+    !/const OPENROUTER_PAID_KEY_ENVS/.test(client),
   );
-  const paidList = paidEnvs.slice(0, paidEnvs.indexOf('] as const;'));
   check(
     'the fourth account key cannot be spent as a paid credential',
-    !/'OPENROUTER_API_KEY_4'/.test(paidList),
+    /'OPENROUTER_API_KEY_4'/.test(freeList) && !/OPENROUTER_PAID_KEY_ENVS/.test(client),
   );
   check(
     'the credit probe knows about every configured account key',

@@ -10,9 +10,9 @@ This repository is the source for the APEX control plane and dashboard.
 
 Production URL: `https://apex.donmatthews.live`
 
-AWS Lightsail/CodeBuild and Railway are retired APEX hosting paths. Vercel, Railway, Render, and other platforms may still appear in connectors or client-project tooling because APEX can manage software deployed elsewhere; they are not the host for the APEX control plane.
+AWS Lightsail/CodeBuild is a retired APEX hosting path. Railway is not the current APEX production host; `docs/HOSTING_MIGRATION.md` documents the planned Cloud Run exit and must not be treated as a live cutover. Vercel, Railway, Render, and other platforms may still appear in connectors or client-project tooling because APEX can manage software deployed elsewhere; they are not the current host for the APEX control plane.
 
-Do not redirect APEX production to another platform to solve a deployment problem. Do not recreate the retired AWS deployment path.
+Do not redirect APEX production to another platform from this branch. Do not recreate the retired AWS deployment path. Do not deploy Railway, move DNS, or change Cloud Run until a separate explicit operator instruction.
 
 The production image is built by Google Cloud Build using `cloudbuild.apex.yaml`, then the **existing** Cloud Run service is updated to the immutable image. The deploy path intentionally uses `gcloud run services update` rather than creating a service, so existing Secret Manager references, environment variables, runtime service account, scaling, ingress, CPU/memory settings, and domain mapping are preserved.
 
@@ -30,16 +30,18 @@ See:
 
 `packages/core/src/llm-client.ts` is the production source of truth for LLM routing.
 
-APEX currently routes production inference through OpenRouter using the reviewed high-capability free-agent chain:
+APEX currently routes production inference through OpenRouter using the zero-cost free-agent chain:
 
-1. MiniMax M3 Free — primary long-horizon, coding, tool-use, and multimodal model
-2. NVIDIA Nemotron 3 Ultra Free — reasoning, planning, orchestration, and coding fallback
+1. Nex N2.5 Mini Free (`nex-agi/nex-n2.5-mini:free`) — primary
+2. Nex N2.5 Pro Free (`nex-agi/nex-n2.5-pro:free`)
+3. NVIDIA Nemotron 3 Super Free
+4. NVIDIA Nemotron 3.5 Lightning Free
+5. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
+6. NVIDIA Nemotron 3 Ultra Free (last resort)
 
-Required credential: `OPENROUTER_API_KEY`.
+If every free account/route is exhausted, APEX pauses. There is no automatic paid fallback.
 
-`OPENROUTER_API_KEY_2` is optional credential redundancy and `OPENROUTER_API_KEY_3` is an optional separately named paid-fallback credential. Two keys on the same OpenRouter account do not create separate account balances or independent account-wide quota; the paid fallback uses the canonical `OPENROUTER_API_KEY` when it is funded.
-
-The old Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral free-first production chain is retired unless an explicit architecture decision changes that policy.
+Qualifying credentials: `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and optional `OPENROUTER_API_KEY_4`. Three independent OpenRouter accounts are load-balanced by key fingerprint. Two keys on the same account do not create separate quota. See `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Workforce
 

@@ -1,5 +1,11 @@
 # APEX hosting migration plan
 
+## Current status
+
+A private empty Railway project named `APEX` already exists. **No Railway service has been deployed.** This branch is portability preparation only. Do not deploy Railway, modify Cloud Run, move DNS, create a replacement database, duplicate the production scheduler, copy secrets into source control, or incur a hosting charge without a separate explicit operator instruction after CI is green.
+
+The eventual staging service must reuse the existing external durable database and existing secret names. The existing Dockerfile, long-running Node API, WebSockets/background workers, Chromium tooling, runtime Git tooling, `/health`, and `PORT` support are the deployment artifact. Vercel is only an optional later destination for the React dashboard; do not redesign the APEX backend into Vercel serverless functions.
+
 ## Decision
 
 Prepare **Railway as the first replacement for Google Cloud Run**. Do not use Vercel as the primary APEX backend.

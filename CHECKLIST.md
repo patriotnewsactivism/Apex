@@ -9,9 +9,9 @@ Canonical production facts:
 - [x] APEX production target is **Google Cloud Run**.
 - [x] `https://apex.donmatthews.live` is the public production domain.
 - [x] AWS Lightsail/CodeBuild deployment code and docs are retired/removed.
-- [x] Railway and Replit are not APEX production deployment paths.
+- [x] Railway and Replit are not current APEX production deployment paths.
 - [x] OpenRouter is the production LLM gateway in current source.
-- [x] Current source routes MiniMax M3 Free → NVIDIA Nemotron 3 Ultra Free fallback.
+- [x] Current source routes the zero-cost Nex N2.5 Mini Free → Nex N2.5 Pro Free → Nemotron 3 Super Free → Nemotron 3.5 Lightning Free → OpenRouter Free → Nemotron 3 Ultra Free chain.
 - [x] Admin auth has no hardcoded password/token fallback.
 - [x] Cloud Run deployment tooling is existing-service-only and SHA-provenance aware.
 - [x] Production CI includes typecheck, deterministic guards, and dashboard build.

@@ -24,7 +24,7 @@ APEX itself runs on **Google Cloud Run** behind:
 
 `https://apex.donmatthews.live`
 
-The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Railway is also retired as an APEX host. Vercel, Railway, Render, and other platforms may still appear as deployment targets for client projects APEX manages; none of them is the APEX control-plane host.
+The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Railway is not the current APEX production host; a planned Cloud Run exit to Railway is documented in `docs/HOSTING_MIGRATION.md` and must not be deployed, DNS-cut, or charged from this branch. Vercel, Railway, Render, and other platforms may still appear as deployment targets for client projects APEX manages; none of them is the current APEX control-plane host.
 
 A production release is complete only after all of these are true:
 
@@ -96,16 +96,18 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 ## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted when selected **through OpenRouter**; do not restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
+`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted only as **zero-cost OpenRouter `:free` IDs** (or exactly `openrouter/free`); do not restore paid DeepSeek/GPT-OSS/Grok/Bedrock or the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
 
 With no valid operator policy, the reviewed production fallback is:
 
-1. `deepseek/deepseek-v4-flash-0731`
-2. `openai/gpt-oss-120b`
-3. `deepseek/deepseek-v3.2`
-4. `x-ai/grok-4.6` via the pinned Amazon Bedrock BYOK emergency route
+1. `nex-agi/nex-n2.5-mini:free`
+2. `nex-agi/nex-n2.5-pro:free`
+3. `nvidia/nemotron-3-super-120b-a12b:free`
+4. `nvidia/nemotron-3.5-lightning:free`
+5. `openrouter/free` (tool requirements preserved)
+6. `nvidia/nemotron-3-ultra-550b-a55b:free`
 
-OpenRouter `:free` endpoints are experiment-only. They must not be persisted into the autonomous production fleet policy.
+Nex N2.5 Mini Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. If every free account/route is exhausted, APEX capacity-pauses — it does not spend money.
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
@@ -117,7 +119,7 @@ The authenticated Settings → OpenRouter Model Control panel may persist `APEX_
 - an optional controlled-learning trial rate from 0 to 25%;
 - an optional smart complexity-escalation flag.
 
-Saved policies from before the intelligence layer remain backward-compatible only when every selected model is production-eligible. Any persisted policy containing an OpenRouter `:free` endpoint is rejected and the reviewed production chain is used instead.
+Saved policies from before the intelligence layer remain backward-compatible only when every selected model is production-eligible (`:free` or exactly `openrouter/free`). Any persisted policy containing a paid model ID is rejected and the reviewed zero-cost chain is used instead.
 
 ### Routing modes and operator authority
 
@@ -133,7 +135,7 @@ Smart complexity escalation is also opt-in. When enabled, a task at complexity `
 
 Neither learning trials nor complexity escalation can make an under-sampled model evidence-qualified. Normal sample thresholds still govern automatic learned promotion.
 
-When a valid custom policy exists, APEX sends the ordered roster to OpenRouter using its native `models` fallback parameter. APEX uses one paced OpenRouter gateway attempt for that roster and records the concrete model returned in OpenRouter's response rather than assuming the first requested model served the generation.
+When a valid custom FREE policy exists, APEX sends the ordered roster to OpenRouter using its native `models` fallback parameter through the `openrouter-free-policy` gateway. That gateway uses the same free-account credential roster as automatic routing and never switches to paid keys. APEX records the concrete model returned in OpenRouter's response rather than assuming the first requested model served the generation.
 
 ### Static catalog score versus learned evidence
 
@@ -165,18 +167,21 @@ See `docs/MODEL_INTELLIGENCE.md` and `docs/ADR-012_MODEL_INTELLIGENCE.md` for th
 
 Credential environment variables:
 
+- `OPENROUTER_FREE_API_KEY`
 - `OPENROUTER_API_KEY`
-- `OPENROUTER_API_KEY_2` — optional credential redundancy
-- `OPENROUTER_API_KEY_3` — optional separately named paid-fallback credential
+- `OPENROUTER_API_KEY_2`
+- `OPENROUTER_API_KEY_3`
+- `OPENROUTER_API_KEY_4` — optional extra independent account
 
-Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only.
+Three independent qualifying OpenRouter accounts (each historically funded with at least $10, so each should receive the higher `:free` daily allowance) are load-balanced by key fingerprint. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Nominal ceiling is about **3,000 free requests/day** if all three accounts retain their qualifying allowance. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; total exhaustion is a capacity pause, never a paid fallback.
 
 OpenRouter requests retain provider pacing, retry-after handling, transient cooldowns, circuit breakers, context trimming, token reservations, structured tool calls, and serving-provider diagnostics.
 
 ### Routing behavior
 
-- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact reviewed DeepSeek V4 Flash -> GPT-OSS 120B -> DeepSeek V3.2 -> Grok/Bedrock chain.
-- Persisted production policies containing `:free` model variants are invalid. Test free models only in isolated experiments; never let them enter the autonomous fleet fallback chain.
+- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact six-route free chain (Nex N2.5 Mini Free first, Nemotron Ultra last).
+- Persisted production policies may contain only `:free` model IDs or exactly `openrouter/free`. Paid model IDs are rejected.
+- `openrouter/free` must preserve APEX tool/function-call requirements (`require_parameters`).
 - Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.
 - Preserve structured tool calling. A response that merely narrates a tool call is not successful execution.
 - Record the model OpenRouter actually served, not merely the requested first choice, and keep it separate from the route candidate used for learning attribution.

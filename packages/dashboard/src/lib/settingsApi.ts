@@ -79,6 +79,7 @@ export interface OpenRouterModelCatalogItem {
     outputModalities: string[];
   };
   isFree: boolean;
+  productionEligible: boolean;
   agentReady: boolean;
   capabilityScore: number;
   efficiencyScore: number;
@@ -91,6 +92,9 @@ export interface OpenRouterModelCatalogResponse {
   source: string;
   pricingUpdatedAt: string;
   efficiencyMethod: string;
+  zeroCostMode?: boolean;
+  exhaustionBehavior?: 'capacity-pause' | string;
+  defaultChain?: string[];
 }
 
 export interface ModelPerformanceStats {
