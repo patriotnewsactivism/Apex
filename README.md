@@ -41,7 +41,7 @@ APEX currently routes production inference through OpenRouter using the zero-cos
 
 If every free account/route is exhausted, APEX pauses. There is no automatic paid fallback.
 
-Qualifying credentials: `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and optional `OPENROUTER_API_KEY_4`. `OPENROUTER_API_KEY_3` is burned and is not used. Three independent OpenRouter accounts are load-balanced by key fingerprint. Two keys on the same account do not create separate quota. See `docs/FREE_ONLY_MODEL_POLICY.md`.
+Qualifying credentials: `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and optional `OPENROUTER_API_KEY_4`. `OPENROUTER_API_KEY_3` is burned and is not used. Three independent OpenRouter accounts are load-balanced by key fingerprint. Two keys on the same account do not create separate quota — `/health` `providerCredits.uniqueAccounts` is the check. Optional `OPENROUTER_MGMT_KEY*` values inventory those accounts; they cannot infer. See `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Workforce
 

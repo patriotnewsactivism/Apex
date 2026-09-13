@@ -168,7 +168,7 @@ can see is how that went unnoticed:
 | Field | Meaning |
 |---|---|
 | `used` | Requests spent today (UTC), **including failed ones** — a 429 or a timeout spent the allowance too |
-| `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2600 |
+| `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2900 |
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
@@ -249,18 +249,42 @@ being claimed and every one of them failed. That paid-only arrangement is
 retired. A 402 now cools the exhausted account, rotates to another qualifying
 free account, and eventually capacity-pauses. It cannot select a paid model.
 
+The credits probe now asks **every live unique key**, not the first one it finds.
+`loadedKeys` is how many distinct key strings are bound. `uniqueAccounts` is how
+many distinct OpenRouter **users** those keys belong to (`oracct_<8 hex>` of
+`creator_user_id`; never the raw user id). `sharedQuota: true` means two env
+names are the same OpenRouter account and therefore share one 1,000/day `:free`
+bucket — extra keys are not extra capacity.
+
+| Field | Meaning |
+|---|---|
+| `loadedKeys` | Distinct inference keys currently bound |
+| `uniqueAccounts` | Distinct OpenRouter users those keys belong to |
+| `sharedQuota` | `true` when `loadedKeys > uniqueAccounts` |
+| `accounts[].env` | Env name(s) holding that key |
+| `accounts[].account` | Public account identity (`oracct_…` or `keyfp_…` if OpenRouter omitted the user id) |
+| `accounts[].dailyLimit` | OpenRouter-reported rate-limit `requests` for that key, when present |
+| `management[]` | Optional management-key inventory. `liveInferenceKeyMatched` is whether this OpenRouter account listed a key APEX is actually using |
+
+Optional management keys (`OPENROUTER_MGMT_KEY`, `_2`, `_3`, `_4`) are created at
+https://openrouter.ai/settings/management-keys — one per independent OpenRouter
+account. They cannot run completions. APEX uses them only to list that account's
+inference keys. They never auto-create, disable, or rotate a production key.
+Bind them as GitHub secrets of those names; the Cloud Run update will pick them
+up. Do not paste management keys into chat.
+
 | `status` | Meaning |
 |---|---|
-| `ok` | Balance above $2. Informational only — production inference does not spend it. |
+| `ok` | The most-alarming probed account is above $2. Informational only — production inference does not spend it. |
 | `low` | Under $2. Informational only. Free `:free` routing is unaffected. |
-| `exhausted` | At or below zero. Free routing is unaffected. Paid models cannot be selected; APEX capacity-pauses if free capacity is also gone. |
+| `exhausted` | At or below zero on at least one account. Free routing is unaffected. Paid models cannot be selected; APEX capacity-pauses if free capacity is also gone. |
 | `unknown` | No key configured, or the lookup failed. `detail` says which |
 
 The balance is cached for 10 minutes and fetched in the background: `/health`
 never awaits it, because a health endpoint that hangs on a third party is a
-worse outage than the one it reports. The credits endpoint is an account
-lookup, not a generation, so it consumes none of the daily request allowance
-and is deliberately not counted in `llmRequests`.
+worse outage than the one it reports. The credits and key-identity endpoints
+are account lookups, not generations, so they consume none of the daily request
+allowance and are deliberately not counted in `llmRequests`.
 
 ### Reading `agentStatusCounts`
 

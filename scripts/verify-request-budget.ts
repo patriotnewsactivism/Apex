@@ -327,13 +327,39 @@ async function main(): Promise<void> {
     /'OPENROUTER_API_KEY_4'/.test(freeList) && !/OPENROUTER_PAID_KEY_ENVS/.test(client),
   );
   check(
-    'the retired BYOK paid key is not a credit-probe or runtime credential',
-    !/OPENROUTER_BYOK_API_KEY/.test(client) &&
-      !/OPENROUTER_BYOK_API_KEY/.test(read('packages/core/src/provider-credits.ts')),
+    'the default workspace cap sits 100 under a 3x1000 free ceiling',
+    /const DEFAULT_TOTAL_CAP = 2_900/.test(ledger),
   );
+
+  const creditsSource = read('packages/core/src/provider-credits.ts');
   check(
     'the credit probe knows about every configured account key',
-    /'OPENROUTER_API_KEY_4'/.test(read('packages/core/src/provider-credits.ts')),
+    /'OPENROUTER_API_KEY_4'/.test(creditsSource) &&
+      /'OPENROUTER_FREE_API_KEY'/.test(creditsSource),
+  );
+  check(
+    'the credit probe asks OpenRouter which user each live key belongs to',
+    creditsSource.includes("https://openrouter.ai/api/v1/key") &&
+      /creator_user_id/.test(creditsSource) &&
+      /uniqueAccounts/.test(creditsSource) &&
+      /sharedQuota/.test(creditsSource),
+  );
+  check(
+    'management keys are inventory-only and cannot be used to infer',
+    /OPENROUTER_MGMT_KEY/.test(creditsSource) &&
+      /never auto-create/.test(creditsSource) &&
+      /or rotate credentials/.test(creditsSource) &&
+      /KEYS_URL/.test(creditsSource) &&
+      !/api\/v1\/chat\/completions/.test(creditsSource),
+  );
+  check(
+    'the retired BYOK paid key is not a credit-probe or runtime credential',
+    !/OPENROUTER_BYOK_API_KEY/.test(client) &&
+      !/OPENROUTER_BYOK_API_KEY/.test(creditsSource),
+  );
+  check(
+    'dead OPENROUTER_API_KEY_3 is not a credit-probe credential',
+    !/'OPENROUTER_API_KEY_3'/.test(creditsSource),
   );
 
   // ── Batching: the other half of the fix ──────────────────────────────────

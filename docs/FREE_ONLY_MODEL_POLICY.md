@@ -19,7 +19,9 @@ MiniMax M3 Free is not in the production chain until its current free endpoint/t
 
 The operator has three independent OpenRouter accounts that have each previously had at least $10 in credits added. OpenRouter documents that this raises the `:free` allowance to 1,000 requests/day per qualifying account, with 20 requests/minute per account. Treat the three credentials as three independent daily capacity buckets and balance requests across them.
 
-Expected nominal ceiling: about **3,000 free requests/day**, subject to OpenRouter/provider availability. Failed requests count against the daily allowance, so retries must be bounded.
+Expected nominal ceiling: about **3,000 free requests/day**, subject to OpenRouter/provider availability. The workspace request cap defaults to **2,900** so 100 requests of headroom remain for traffic this process cannot see. Failed requests count against the daily allowance, so retries must be bounded.
+
+Three live API keys are not automatically three accounts. `/health` `providerCredits.uniqueAccounts` is the number of distinct OpenRouter users those keys belong to; `sharedQuota: true` means two keys share one 1,000/day bucket. Optional management keys (`OPENROUTER_MGMT_KEY*`, created at https://openrouter.ai/settings/management-keys) list an account's inference keys so APEX can prove membership. They cannot infer and they never auto-create or rotate production credentials.
 
 ## Custom persisted policies
 

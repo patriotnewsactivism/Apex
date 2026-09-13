@@ -27,7 +27,7 @@
  * cascade — the requests most worth seeing.
  *
  * Configuration:
- *   APEX_REQUEST_CAP_TOTAL=2600     workspace requests/day (0 disables)
+ *   APEX_REQUEST_CAP_TOTAL=2900     workspace requests/day (0 disables)
  *   APEX_REQUEST_CAPS=OPENROUTER_API_KEY:1000,OPENROUTER_API_KEY_2:1000
  *   APEX_REQUEST_PACING_ENABLED=true
  *   APEX_REQUEST_PACING_BURST=150
@@ -90,12 +90,12 @@ const LEDGER_PATH =
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Free-tier reality as of 2026-09: three OpenRouter accounts, 1,000/day each
- *  once a $10 deposit lifts them off the ~200/day base tier. The default sits
- *  under that ceiling rather than on it, because this ledger cannot see
+ *  once a $10 deposit lifts them off the ~200/day base tier. 2,900 sits 100
+ *  under that 3,000 ceiling rather than on it, because this ledger cannot see
  *  requests made outside this process (a second revision mid-rollout, a local
  *  run, the chat route on another instance) and the penalty for guessing high
  *  is a hard 429 wall with no allowance left to recover on. */
-const DEFAULT_TOTAL_CAP = 2_600;
+const DEFAULT_TOTAL_CAP = 2_900;
 /** Enough to get real work done immediately after a restart without letting a
  *  startup swarm eat the morning. ~1.4h of the steady-state rate. */
 const DEFAULT_PACING_BURST = 150;
@@ -207,7 +207,7 @@ export interface RequestCapacityWindow {
  * Pacing is the part that does the actual slowing down. A hard cap alone lets
  * the workforce sprint through the whole allowance before noon and then sit
  * dead until the UTC rollover — technically under budget, useless in practice.
- * The ramp converts "2,600 per day" into "about 108 per hour", which is what
+ * The ramp converts "2,900 per day" into "about 121 per hour", which is what
  * makes agents wait between turns without any cadence being hand-tuned.
  */
 export function calculateRequestCapacityWindow(input: {

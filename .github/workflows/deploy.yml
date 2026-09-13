@@ -139,6 +139,12 @@ jobs:
         env:
           GITHUB_OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
           GITHUB_OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_OPENROUTER_FREE_API_KEY: ${{ secrets.OPENROUTER_FREE_API_KEY }}
+          GITHUB_OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+          GITHUB_OPENROUTER_MGMT_KEY: ${{ secrets.OPENROUTER_MGMT_KEY }}
+          GITHUB_OPENROUTER_MGMT_KEY_2: ${{ secrets.OPENROUTER_MGMT_KEY_2 }}
+          GITHUB_OPENROUTER_MGMT_KEY_3: ${{ secrets.OPENROUTER_MGMT_KEY_3 }}
+          GITHUB_OPENROUTER_MGMT_KEY_4: ${{ secrets.OPENROUTER_MGMT_KEY_4 }}
           GITHUB_TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           GITHUB_BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           GITHUB_GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
@@ -180,6 +186,18 @@ jobs:
             apex-openrouter-api-key-2 openrouter-api-key-2 OPENROUTER_API_KEY_2
           resolve_optional OPENROUTER_API_KEY GITHUB_OPENROUTER_API_KEY \
             apex-openrouter-api-key openrouter-api-key OPENROUTER_API_KEY
+          resolve_optional OPENROUTER_FREE_API_KEY GITHUB_OPENROUTER_FREE_API_KEY \
+            apex-openrouter-free-api-key openrouter-free-api-key OPENROUTER_FREE_API_KEY
+          resolve_optional OPENROUTER_API_KEY_4 GITHUB_OPENROUTER_API_KEY_4 \
+            apex-openrouter-api-key-4 openrouter-api-key-4 OPENROUTER_API_KEY_4
+          resolve_optional OPENROUTER_MGMT_KEY GITHUB_OPENROUTER_MGMT_KEY \
+            apex-openrouter-mgmt-key openrouter-mgmt-key OPENROUTER_MGMT_KEY
+          resolve_optional OPENROUTER_MGMT_KEY_2 GITHUB_OPENROUTER_MGMT_KEY_2 \
+            apex-openrouter-mgmt-key-2 openrouter-mgmt-key-2 OPENROUTER_MGMT_KEY_2
+          resolve_optional OPENROUTER_MGMT_KEY_3 GITHUB_OPENROUTER_MGMT_KEY_3 \
+            apex-openrouter-mgmt-key-3 openrouter-mgmt-key-3 OPENROUTER_MGMT_KEY_3
+          resolve_optional OPENROUTER_MGMT_KEY_4 GITHUB_OPENROUTER_MGMT_KEY_4 \
+            apex-openrouter-mgmt-key-4 openrouter-mgmt-key-4 OPENROUTER_MGMT_KEY_4
           resolve_optional TAVILY_API_KEY GITHUB_TAVILY_API_KEY \
             apex-tavily-api-key tavily-api-key TAVILY_API_KEY
           resolve_optional BRAVE_SEARCH_API_KEY GITHUB_BRAVE_SEARCH_API_KEY \
@@ -266,7 +284,10 @@ jobs:
 
           print('Lead-research runtime configuration currently on Cloud Run:')
           for name in (
-              'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY', 'TAVILY_API_KEY',
+              'OPENROUTER_FREE_API_KEY', 'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY',
+              'OPENROUTER_API_KEY_4', 'OPENROUTER_MGMT_KEY', 'OPENROUTER_MGMT_KEY_2',
+              'OPENROUTER_MGMT_KEY_3', 'OPENROUTER_MGMT_KEY_4',
+              'TAVILY_API_KEY',
               'BRAVE_SEARCH_API_KEY', 'GOOGLE_PLACES_API_KEY', 'YELP_API_KEY',
               'FIRECRAWL_API_KEY', 'DEEPGRAM_API_KEY', 'GEMINI_API_KEY',
           ):
@@ -313,6 +334,12 @@ jobs:
           DB_SECRET_NAME: ${{ steps.db.outputs.secret_name }}
           OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_FREE_API_KEY: ${{ secrets.OPENROUTER_FREE_API_KEY }}
+          OPENROUTER_API_KEY_4: ${{ secrets.OPENROUTER_API_KEY_4 }}
+          OPENROUTER_MGMT_KEY: ${{ secrets.OPENROUTER_MGMT_KEY }}
+          OPENROUTER_MGMT_KEY_2: ${{ secrets.OPENROUTER_MGMT_KEY_2 }}
+          OPENROUTER_MGMT_KEY_3: ${{ secrets.OPENROUTER_MGMT_KEY_3 }}
+          OPENROUTER_MGMT_KEY_4: ${{ secrets.OPENROUTER_MGMT_KEY_4 }}
           TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
@@ -324,6 +351,18 @@ jobs:
           OPENROUTER_API_KEY_2_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_2_SECRET_NAME }}
           OPENROUTER_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_SOURCE }}
           OPENROUTER_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_SECRET_NAME }}
+          OPENROUTER_FREE_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_FREE_API_KEY_SOURCE }}
+          OPENROUTER_FREE_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_FREE_API_KEY_SECRET_NAME }}
+          OPENROUTER_API_KEY_4_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_4_SOURCE }}
+          OPENROUTER_API_KEY_4_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_API_KEY_4_SECRET_NAME }}
+          OPENROUTER_MGMT_KEY_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_SOURCE }}
+          OPENROUTER_MGMT_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_SECRET_NAME }}
+          OPENROUTER_MGMT_KEY_2_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_2_SOURCE }}
+          OPENROUTER_MGMT_KEY_2_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_2_SECRET_NAME }}
+          OPENROUTER_MGMT_KEY_3_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_3_SOURCE }}
+          OPENROUTER_MGMT_KEY_3_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_3_SECRET_NAME }}
+          OPENROUTER_MGMT_KEY_4_SOURCE: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_4_SOURCE }}
+          OPENROUTER_MGMT_KEY_4_SECRET_NAME: ${{ steps.lead_secrets.outputs.OPENROUTER_MGMT_KEY_4_SECRET_NAME }}
           TAVILY_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.TAVILY_API_KEY_SOURCE }}
           TAVILY_API_KEY_SECRET_NAME: ${{ steps.lead_secrets.outputs.TAVILY_API_KEY_SECRET_NAME }}
           BRAVE_SEARCH_API_KEY_SOURCE: ${{ steps.lead_secrets.outputs.BRAVE_SEARCH_API_KEY_SOURCE }}
@@ -463,7 +502,18 @@ jobs:
 
           attach_optional OPENROUTER_API_KEY_2 "$OPENROUTER_API_KEY_2_SOURCE" "$OPENROUTER_API_KEY_2_SECRET_NAME" "$OPENROUTER_API_KEY_2"
           attach_optional OPENROUTER_API_KEY "$OPENROUTER_API_KEY_SOURCE" "$OPENROUTER_API_KEY_SECRET_NAME" "$OPENROUTER_API_KEY"
+          attach_optional OPENROUTER_FREE_API_KEY "$OPENROUTER_FREE_API_KEY_SOURCE" "$OPENROUTER_FREE_API_KEY_SECRET_NAME" "$OPENROUTER_FREE_API_KEY"
+          attach_optional OPENROUTER_API_KEY_4 "$OPENROUTER_API_KEY_4_SOURCE" "$OPENROUTER_API_KEY_4_SECRET_NAME" "$OPENROUTER_API_KEY_4"
+          attach_optional OPENROUTER_MGMT_KEY "$OPENROUTER_MGMT_KEY_SOURCE" "$OPENROUTER_MGMT_KEY_SECRET_NAME" "$OPENROUTER_MGMT_KEY"
+          attach_optional OPENROUTER_MGMT_KEY_2 "$OPENROUTER_MGMT_KEY_2_SOURCE" "$OPENROUTER_MGMT_KEY_2_SECRET_NAME" "$OPENROUTER_MGMT_KEY_2"
+          attach_optional OPENROUTER_MGMT_KEY_3 "$OPENROUTER_MGMT_KEY_3_SOURCE" "$OPENROUTER_MGMT_KEY_3_SECRET_NAME" "$OPENROUTER_MGMT_KEY_3"
+          attach_optional OPENROUTER_MGMT_KEY_4 "$OPENROUTER_MGMT_KEY_4_SOURCE" "$OPENROUTER_MGMT_KEY_4_SECRET_NAME" "$OPENROUTER_MGMT_KEY_4"
           attach_optional TAVILY_API_KEY "$TAVILY_API_KEY_SOURCE" "$TAVILY_API_KEY_SECRET_NAME" "$TAVILY_API_KEY"
+
+          # Workspace request budget. Code default is 2_900; set it as a
+          # literal on the existing service so a leftover 2600 env binding
+          # cannot keep the old ceiling after this image update.
+          add_env APEX_REQUEST_CAP_TOTAL 2900
           attach_optional BRAVE_SEARCH_API_KEY "$BRAVE_SEARCH_API_KEY_SOURCE" "$BRAVE_SEARCH_API_KEY_SECRET_NAME" "$BRAVE_SEARCH_API_KEY"
           attach_optional GOOGLE_PLACES_API_KEY "$GOOGLE_PLACES_API_KEY_SOURCE" "$GOOGLE_PLACES_API_KEY_SECRET_NAME" "$GOOGLE_PLACES_API_KEY"
           attach_optional YELP_API_KEY "$YELP_API_KEY_SOURCE" "$YELP_API_KEY_SECRET_NAME" "$YELP_API_KEY"

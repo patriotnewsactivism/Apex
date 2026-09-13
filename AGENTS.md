@@ -171,6 +171,7 @@ Credential environment variables:
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_API_KEY_2`
 - `OPENROUTER_API_KEY_4` — optional extra independent account
+- `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so `/health` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials.
 
 `OPENROUTER_API_KEY_3` is burned (100% live failures) and is not a production roster member.
 
