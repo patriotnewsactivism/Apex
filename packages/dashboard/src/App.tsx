@@ -19,6 +19,7 @@ import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { CampaignsPanel } from './components/CampaignsPanel.js';
+import { SalesOpsPanel } from './components/SalesOpsPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
 import { ArtifactsPanel } from './components/ArtifactsPanel.js';
@@ -47,6 +48,7 @@ import {
   Brain,
   Package,
   CalendarClock,
+  PhoneCall,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -240,6 +242,7 @@ function Sidebar({
     {
       label: 'Business',
       items: [
+        { id: 'salesops', label: 'Sales Ops', icon: <PhoneCall size={16} /> },
         { id: 'campaigns', label: 'Campaigns', icon: <Crosshair size={16} /> },
         { id: 'leads', label: 'Leads', icon: <Search size={16} /> },
         { id: 'suggestions', label: 'Suggestions', icon: <Lightbulb size={16} /> },
@@ -599,6 +602,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: <MissionControl />,
     agents: <AgentNetwork agents={agents} />,
     tasks: <TaskBoard />,
+    salesops: <SalesOpsPanel />,
     campaigns: <CampaignsPanel />,
     leads: <LeadsPanel />,
     control: <ControlRoom />,
@@ -630,6 +634,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: { title: 'Mission Control', kicker: 'Command' },
     agents: { title: 'Agent Network', kicker: 'Workforce' },
     tasks: { title: 'Task Board', kicker: 'Workforce' },
+    salesops: { title: 'Sales Operations', kicker: 'Business' },
     campaigns: { title: 'Lead Campaigns', kicker: 'Business' },
     leads: { title: 'Lead Pipeline', kicker: 'Business' },
     control: { title: 'Control Room', kicker: 'Systems' },
