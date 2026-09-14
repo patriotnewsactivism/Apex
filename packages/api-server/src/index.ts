@@ -303,6 +303,12 @@ async function main() {
         day: requestLedger.day,
         used: requestLedger.totalRequests,
         cap: requestLedger.totalCap,
+        // The enforced cap is min(configured, observedAccounts x 1,000), so a
+        // cap that disagrees with APEX_REQUEST_CAP_TOTAL is the clamp working,
+        // not a bug. Both halves are served, or the operator sees a number with
+        // no way to tell which it is.
+        configuredCap: requestLedger.configuredCap,
+        observedAccounts: requestLedger.observedAccounts,
         // Rate, not just total. A day can be well under budget and still be
         // spent, if it is spent in half an hour: 1,388 requests in 26 minutes
         // on 2026-09-12 tripped OpenRouter's per-minute limiter and parked
@@ -315,7 +321,13 @@ async function main() {
         persistence: requestLedger.persistence,
         accounts: requestLedger.accounts.map((account) => ({
           account: account.account,
+          // Env names cannot show that two keys share one OpenRouter user, and
+          // that is the number the free tier meters: two rows at 508 are not
+          // two healthy accounts, they are one bucket 16 past its 1,000/day
+          // limit. Serve the grouping and its combined load, not just the key's.
+          openRouterAccount: account.openRouterAccount,
           requests: account.requests,
+          accountRequests: account.accountRequests,
           failed: account.failed,
           cap: account.cap,
           percentOfCap: account.percentOfCap,

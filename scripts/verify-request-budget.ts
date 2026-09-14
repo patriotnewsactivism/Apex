@@ -405,10 +405,22 @@ async function main(): Promise<void> {
     rawCapGates === 0,
     { rawCapGates },
   );
+  // Built into the snapshot AND forwarded by the handler. /health does not
+  // serve the snapshot; it re-maps it field by field, so a value can exist on
+  // the object and still never reach the operator. #151 shipped exactly that:
+  // both fields were built, neither was served, and a check that only read
+  // request-ledger.ts passed anyway.
   check(
-    'the clamp is visible on /health, not silently applied',
+    'the clamp is visible on the served /health payload, not just built',
     /configuredCap: totalRequestCap\(\)/.test(ledger) &&
-      /observedAccounts: getObservedAccountCount\(\)/.test(ledger),
+      /observedAccounts: getObservedAccountCount\(\)/.test(ledger) &&
+      /configuredCap: requestLedger\.configuredCap/.test(health) &&
+      /observedAccounts: requestLedger\.observedAccounts/.test(health),
+  );
+  check(
+    'the account grouping and its combined load reach the served payload',
+    /openRouterAccount: account\.openRouterAccount/.test(health) &&
+      /accountRequests: account\.accountRequests/.test(health),
   );
 
   // ── Load is metered per ACCOUNT, not per key ─────────────────────────────

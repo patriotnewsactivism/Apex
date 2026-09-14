@@ -168,11 +168,16 @@ can see is how that went unnoticed:
 | Field | Meaning |
 |---|---|
 | `used` | Requests spent today (UTC), **including failed ones** — a 429 or a timeout spent the allowance too |
-| `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2800 |
+| `cap` | The cap actually ENFORCED: `min(configuredCap, observedAccounts x 1,000)`. A value below `configuredCap` is the clamp working, not a bug |
+| `configuredCap` | `APEX_REQUEST_CAP_TOTAL`, default 2000. What was asked for, before the clamp |
+| `observedAccounts` | Distinct OpenRouter accounts the credit probe resolved, or `null` while it has not reported — in which case `cap` equals `configuredCap` |
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
-| `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and `OPENROUTER_API_KEY_4` across three real qualifying accounts. `OPENROUTER_API_KEY_3` is burned and is not a roster member. Names holding the same key appear as one row and are not independent capacity. |
+| `accounts[]` | Per-KEY split. APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2` and `OPENROUTER_API_KEY_4`; `OPENROUTER_API_KEY_3` is burned and is not a roster member. Env names holding the same key collapse into one row. Two rows can still be one account — read `openRouterAccount` for that |
+| `accounts[].requests` | What this KEY served. Not a capacity figure on its own |
+| `accounts[].openRouterAccount` | Which OpenRouter user the key belongs to (`oracct_…`, or `null` before the credit probe resolves it). **Rows sharing this value share one 1,000/day bucket** |
+| `accounts[].accountRequests` | Requests today across every key on that account — what the free tier actually meters, and the number credentials are sorted on. Compare THIS between distinct `openRouterAccount` values to judge balance |
 | `persistence` | `memory-only` means a restart reset today's count; a deploy would then hand the workforce a fresh full allowance |
 
 **Cadence x maxPerRun is the demand knob.** A job's cost is its firings per day
@@ -342,8 +347,6 @@ bucket — extra keys are not extra capacity.
 | `sharedQuota` | `true` when `loadedKeys > uniqueAccounts` |
 | `accounts[].env` | Env name(s) holding that key |
 | `accounts[].account` | Public account identity (`oracct_…` or `keyfp_…` if OpenRouter omitted the user id) |
-| `llmRequests.accounts[].openRouterAccount` | The same identity on the request meter — rows sharing it share one free daily bucket |
-| `llmRequests.accounts[].accountRequests` | Requests today across every key on that account: what the free tier meters and the balancer levels |
 | `accounts[].dailyLimit` | OpenRouter-reported rate-limit `requests` for that key, when present |
 | `management[]` | Optional management-key inventory. `liveInferenceKeyMatched` is whether this OpenRouter account listed a key APEX is actually using |
 
