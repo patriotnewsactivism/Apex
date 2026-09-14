@@ -13,7 +13,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
+import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
@@ -278,6 +278,13 @@ async function main() {
       // Provider account balance. The paid continuity route makes remaining
       // credit operational again, so keep it visible beside the routing state.
       providerCredits: getProviderCreditSnapshot(),
+      // Paid spend against the daily dollar budget. Reported next to the
+      // request meter because the two are the whole cost picture and neither
+      // implies the other: free requests cost nothing, paid requests consume
+      // no free allowance. `state: daily_cap` means the paid rung has dropped
+      // out of routing and APEX is running on free models alone — the intended
+      // fallback, not an outage.
+      llmSpend: getSpendLedgerSnapshot(),
       // Burn rate, unauthenticated and on purpose.
       //
       // The provider allowance that actually constrains APEX is denominated in

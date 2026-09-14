@@ -26,6 +26,11 @@ import {
   totalRequestCap,
 } from './request-ledger.js';
 import {
+  dailySpendCapMicros,
+  paidSpendAvailable,
+  recordSpend,
+} from './spend-ledger.js';
+import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
   getActiveOpenRouterModelPolicy,
   getOpenRouterModelChainForRole,
@@ -118,6 +123,10 @@ type ProviderSpec = {
    * advertises it; sending the field blindly risks a 400 on every call.
    */
   supportsParallelToolCalls?: boolean;
+  /** List price, used only to price an unpriced response. Verified against
+   *  OpenRouter's live catalog; paid specs only. */
+  usdPerMillionPrompt?: number;
+  usdPerMillionCompletion?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
   providerRouting?: {
     only?: readonly string[];
@@ -170,6 +179,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     supportsParallelToolCalls: true,
     reasoningEffort: 'low',
     providerRouting: { sort: 'price' },
+    // deepseek/deepseek-v4-flash-0731, live catalog 2026-09-14.
+    usdPerMillionPrompt: 0.06,
+    usdPerMillionCompletion: 0.12,
   },
 ];
 
@@ -194,7 +206,13 @@ function activeProviderOrder(_role?: string): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
     ? [FREE_POLICY_GATEWAY_NAME]
     : [...PROVIDER_ORDER];
-  if (paidLLMFallbackEnabled()) freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
+  // The paid rung is appended only while it is BOTH enabled and in budget.
+  // Dropping it from the order (rather than letting it fail) is what makes an
+  // exhausted daily spend a graceful fall back to free models instead of an
+  // outage — the operator's "all free if absolutely necessary".
+  if (paidLLMFallbackEnabled() && paidSpendAvailable()) {
+    freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
+  }
   return freeOrder;
 }
 
@@ -623,6 +641,23 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Cost of one call at the provider's list price, used only when OpenRouter
+ * returns no `cost` for the generation. Recording zero in that case would let
+ * an unpriced response spend from the budget for free, which is the one way a
+ * dollar cap can be silently defeated.
+ */
+function estimatedCostUsd(
+  provider: ProviderSpec,
+  usage: { promptTokens?: number; completionTokens?: number } | undefined,
+): number {
+  const prompt = Math.max(0, Number(usage?.promptTokens ?? 0));
+  const completion = Math.max(0, Number(usage?.completionTokens ?? 0));
+  const inRate = provider.usdPerMillionPrompt ?? 0;
+  const outRate = provider.usdPerMillionCompletion ?? 0;
+  return (prompt * inRate + completion * outRate) / 1_000_000;
 }
 
 function providerBaseURL(provider: ProviderSpec): string | undefined {
@@ -1268,6 +1303,16 @@ class MultiProviderClient {
                   execution,
                 );
                 if (!provider.paid) recordProviderRequest(credential.key, true);
+                else {
+                  // Charge the settled cost. OpenRouter returns it because the
+                  // request sets `usage: { include: true }`; when it is absent
+                  // fall back to list price rather than recording zero, since a
+                  // missing figure must never read as free spend.
+                  recordSpend(
+                    provider.name,
+                    result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                  );
+                }
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
                 await recordResponseTelemetry({

@@ -349,6 +349,15 @@ export async function migrate() {
     )
   `;
   await client`
+    CREATE TABLE IF NOT EXISTS llm_spend_daily (
+      day text NOT NULL,
+      provider text NOT NULL,
+      spent_micros integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (day, provider)
+    )
+  `;
+  await client`
     CREATE TABLE IF NOT EXISTS llm_request_usage_daily (
       day text NOT NULL,
       account text NOT NULL,

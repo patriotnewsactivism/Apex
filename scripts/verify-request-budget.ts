@@ -363,6 +363,57 @@ async function main(): Promise<void> {
     !/'OPENROUTER_API_KEY_3'/.test(creditsSource),
   );
 
+  // ── Paid spend budget ────────────────────────────────────────────────────
+  //
+  // PR #149 restored a paid rung behind APEX_PAID_FALLBACK and costUsd was
+  // already captured per response, but nothing bounded either: enabling paid
+  // inference meant UNBOUNDED spend, which is how this account reached $24.28
+  // against $20 of credit and 402'd every request on 2026-09-12.
+  const spend = read('packages/core/src/spend-ledger.ts');
+  check(
+    'a daily USD spend budget exists and is paced across the day',
+    /export function paidSpendAvailable/.test(spend) &&
+      /export function calculateSpendCapacityWindow/.test(spend),
+  );
+  // The whole point of the operator's "fall back to all free if absolutely
+  // necessary": an exhausted budget must remove the rung, not fail the call.
+  check(
+    'an exhausted spend budget DROPS the paid rung rather than erroring',
+    /paidLLMFallbackEnabled\(\) && paidSpendAvailable\(\)/.test(client),
+  );
+  check(
+    'every paid response is charged against the budget',
+    /recordSpend\(/.test(client) && /provider\.paid/.test(client),
+  );
+  // A response OpenRouter did not price must not spend from the budget for
+  // free — that is the one way a dollar cap is silently defeated.
+  check(
+    'an unpriced response falls back to list price, never to zero',
+    /result\.costUsd \?\? estimatedCostUsd\(provider, result\.usage\)/.test(client) &&
+      /usdPerMillionPrompt/.test(client),
+  );
+  // Money must fail closed where quota fails open: cap 0 means spend nothing.
+  check(
+    'a zero spend cap disables paid spend rather than meaning unlimited',
+    /reason: 'disabled'/.test(spend) && /capMicros === 0/.test(spend),
+  );
+  check(
+    'spend survives a restart (Postgres-hydrated, micro-dollar integers)',
+    /initializeSpendLedgerPersistence/.test(spend) &&
+      /llm_spend_daily/.test(read('lib/db/src/client.ts')),
+  );
+  const guardedSpendCalls = (client.match(/if \(!provider\.paid\) recordProviderRequest/g) ?? []).length;
+  const allSpendCalls = (client.match(/recordProviderRequest\(/g) ?? []).length;
+  check(
+    'paid requests are NOT charged against the free request allowance',
+    guardedSpendCalls > 0 && guardedSpendCalls === allSpendCalls,
+    { guarded: guardedSpendCalls, total: allSpendCalls },
+  );
+  check(
+    'spend is visible on /health next to the request meter',
+    /llmSpend: getSpendLedgerSnapshot\(\)/.test(health),
+  );
+
   // ── Batching: the other half of the fix ──────────────────────────────────
   //
   // Telling agents to batch tool calls is inert unless the request carries

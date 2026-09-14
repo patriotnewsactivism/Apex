@@ -22,6 +22,7 @@ import {
   superviseAgentLoop,
   initializeTokenLedgerPersistence,
   initializeRequestLedgerPersistence,
+  initializeSpendLedgerPersistence,
   initializeProviderCredits,
   logProviderRoster,
   startWorkerHeartbeat,
@@ -94,6 +95,16 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   } else if (credits) {
     log(`✅ OpenRouter credits: $${credits.remaining} remaining`);
   }
+
+  // Money, and therefore the budget that most needs to survive a restart:
+  // Cloud Run replaces the container on every deploy, so a memory-only spend
+  // ledger would authorize a fresh full daily budget after each one.
+  const durableSpendLedger = await initializeSpendLedgerPersistence();
+  log(
+    durableSpendLedger
+      ? '✅ Daily spend ledger hydrated from Postgres'
+      : "⚠️  Daily spend ledger is memory-only; a restart will reset today's paid spend",
+  );
 
   const durableRequestLedger = await initializeRequestLedgerPersistence();
   log(
