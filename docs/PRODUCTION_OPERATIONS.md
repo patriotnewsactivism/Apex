@@ -168,12 +168,22 @@ can see is how that went unnoticed:
 | Field | Meaning |
 |---|---|
 | `used` | Requests spent today (UTC), **including failed ones** — a 429 or a timeout spent the allowance too |
-| `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2900 |
+| `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2800 |
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
 | `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and `OPENROUTER_API_KEY_4` across three real qualifying accounts. `OPENROUTER_API_KEY_3` is burned and is not a roster member. Names holding the same key appear as one row and are not independent capacity. |
 | `persistence` | `memory-only` means a restart reset today's count; a deploy would then hand the workforce a fresh full allowance |
+
+**Cadence x maxPerRun is the demand knob.** A job's cost is its firings per day
+multiplied by how many tasks each firing creates, and the second factor is the
+one that hides: `system-delegation-followup` at `*/20` with `maxPerRun: 8` was
+576 task-creations/day on its own. When the budget binds and the workforce sits
+in `workforce_paused`, cutting `maxPerRun` reduces demand without delaying
+anything, whereas stretching cadence alone leaves each firing as expensive as
+before. A change to either is inert unless `systemDefinitionVersion` on that job
+also goes up — the sync block skips rows whose version has not increased, and a
+job with no version at all is never synced.
 
 There are two limits and they protect against different things. The daily cap
 bounds the day's total; the short-window limit (`APEX_REQUEST_RATE_PER_MIN`,

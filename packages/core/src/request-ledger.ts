@@ -27,7 +27,7 @@
  * cascade — the requests most worth seeing.
  *
  * Configuration:
- *   APEX_REQUEST_CAP_TOTAL=2900     workspace requests/day (0 disables)
+ *   APEX_REQUEST_CAP_TOTAL=2800     workspace requests/day (0 disables)
  *   APEX_REQUEST_CAPS=OPENROUTER_API_KEY:1000,OPENROUTER_API_KEY_2:1000
  *   APEX_REQUEST_PACING_ENABLED=true
  *   APEX_REQUEST_PACING_BURST=150
@@ -95,7 +95,7 @@ const UTC_DAY_MS = 24 * 60 * 60 * 1000;
  *  requests made outside this process (a second revision mid-rollout, a local
  *  run, the chat route on another instance) and the penalty for guessing high
  *  is a hard 429 wall with no allowance left to recover on. */
-const DEFAULT_TOTAL_CAP = 2_900;
+const DEFAULT_TOTAL_CAP = 2_800;
 /** Enough to get real work done immediately after a restart without letting a
  *  startup swarm eat the morning. ~1.4h of the steady-state rate. */
 const DEFAULT_PACING_BURST = 150;

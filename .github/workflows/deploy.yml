@@ -510,10 +510,11 @@ jobs:
           attach_optional OPENROUTER_MGMT_KEY_4 "$OPENROUTER_MGMT_KEY_4_SOURCE" "$OPENROUTER_MGMT_KEY_4_SECRET_NAME" "$OPENROUTER_MGMT_KEY_4"
           attach_optional TAVILY_API_KEY "$TAVILY_API_KEY_SOURCE" "$TAVILY_API_KEY_SECRET_NAME" "$TAVILY_API_KEY"
 
-          # Workspace request budget. Code default is 2_900; set it as a
-          # literal on the existing service so a leftover 2600 env binding
-          # cannot keep the old ceiling after this image update.
-          add_env APEX_REQUEST_CAP_TOTAL 2900
+          # Workspace request budget. Code default is 2_800; set it as a
+          # literal on the existing service so a leftover binding cannot
+          # keep an older ceiling after this image update. This env var
+          # BEATS the code default, so both must move together.
+          add_env APEX_REQUEST_CAP_TOTAL 2800
           attach_optional BRAVE_SEARCH_API_KEY "$BRAVE_SEARCH_API_KEY_SOURCE" "$BRAVE_SEARCH_API_KEY_SECRET_NAME" "$BRAVE_SEARCH_API_KEY"
           attach_optional GOOGLE_PLACES_API_KEY "$GOOGLE_PLACES_API_KEY_SOURCE" "$GOOGLE_PLACES_API_KEY_SECRET_NAME" "$GOOGLE_PLACES_API_KEY"
           attach_optional YELP_API_KEY "$YELP_API_KEY_SOURCE" "$YELP_API_KEY_SECRET_NAME" "$YELP_API_KEY"

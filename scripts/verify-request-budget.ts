@@ -327,8 +327,8 @@ async function main(): Promise<void> {
     /'OPENROUTER_API_KEY_4'/.test(freeList) && !/OPENROUTER_PAID_KEY_ENVS/.test(client),
   );
   check(
-    'the default workspace cap sits 100 under a 3x1000 free ceiling',
-    /const DEFAULT_TOTAL_CAP = 2_900/.test(ledger),
+    'the default workspace cap sits 200 under a 3x1000 free ceiling',
+    /const DEFAULT_TOTAL_CAP = 2_800/.test(ledger),
   );
 
   const creditsSource = read('packages/core/src/provider-credits.ts');
