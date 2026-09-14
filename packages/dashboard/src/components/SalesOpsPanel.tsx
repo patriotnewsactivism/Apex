@@ -5,7 +5,7 @@ import {
   type SalesOpsOverview,
   type SalesOpsCallResult,
   type SalesOpsAutomateResult,
-  type Lead,
+  type ResearchedLead,
 } from '../lib/api.js';
 import { PhoneCall, Zap, DollarSign, Mail, Users, AlertTriangle, Rocket } from 'lucide-react';
 
@@ -58,7 +58,7 @@ function Metric({
 
 function SectionTitle({ icon, title, hint }: { icon: React.ReactNode; title: string; hint?: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, minWidth: 0 }}>
       <span style={{ color: 'var(--color-apex-brass)', display: 'flex' }}>{icon}</span>
       <div>
         <div className="apex-display" style={{ fontSize: 15, color: 'var(--color-apex-text)' }}>
@@ -74,6 +74,8 @@ function SectionTitle({ icon, title, hint }: { icon: React.ReactNode; title: str
 
 const inputStyle: React.CSSProperties = {
   width: '100%',
+  minWidth: 0,
+  maxWidth: '100%',
   padding: '9px 11px',
   borderRadius: 6,
   background: 'rgba(0,0,0,0.28)',
@@ -145,7 +147,7 @@ function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 150px), 1fr))',
             gap: 12,
           }}
         >
@@ -171,6 +173,8 @@ function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
             style={{
               display: 'flex',
               justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 4,
               fontFamily: 'var(--font-mono)',
               fontSize: 11,
               color: 'var(--color-apex-muted)',
@@ -228,7 +232,7 @@ function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
           gap: 16,
         }}
       >
@@ -356,7 +360,7 @@ function SingleCallLauncher() {
         </span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
         <div>
           <label style={labelStyle}>Destination number (E.164)</label>
           <input
@@ -474,7 +478,7 @@ function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
         hint="Sets workforce autonomy and hands the Sales org a goal to work the target end-to-end."
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
         <div>
           <label style={labelStyle}>Target</label>
           <select
@@ -507,7 +511,7 @@ function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
             <label style={labelStyle}>Lead</label>
             <select style={selectStyle} value={targetId} onChange={(e) => setTargetId(e.target.value)}>
               <option value="">Select a lead…</option>
-              {(leads ?? []).map((l: Lead) => (
+              {(leads ?? []).map((l: ResearchedLead) => (
                 <option key={l.id} value={l.id}>
                   {l.companyName}
                   {l.city ? ` — ${l.city}` : ''} ({l.status})
@@ -523,7 +527,7 @@ function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
             <select style={selectStyle} value={targetId} onChange={(e) => setTargetId(e.target.value)}>
               <option value="">Select a campaign…</option>
               {(campaigns ?? []).map((c) => (
-                <option key={c.id} value={c.id}>
+                <option key={c.campaignId} value={c.campaignId}>
                   {c.name} ({c.status})
                 </option>
               ))}
@@ -571,7 +575,7 @@ export function SalesOpsPanel() {
   });
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingBottom: 24 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingBottom: 24, minWidth: 0, overflowWrap: 'anywhere' }}>
       {isLoading && (
         <div className="glass-card" style={{ padding: 24, color: 'var(--color-apex-muted)', fontSize: 13 }}>
           Loading sales operations…
@@ -589,7 +593,7 @@ export function SalesOpsPanel() {
 
       {data && <CostAndMonitoring data={data} />}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16 }}>
         <SingleCallLauncher />
         {data && <AutomationLauncher overview={data} />}
       </div>

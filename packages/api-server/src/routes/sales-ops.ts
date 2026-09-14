@@ -31,7 +31,7 @@ import {
   logs,
   integrationSettings,
 } from '@workspace/db';
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { eq, gte, sql } from 'drizzle-orm';
 import { getSpendLedgerSnapshot } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
@@ -57,7 +57,7 @@ function startOfUtcDay(at = new Date()): Date {
 }
 
 async function applyAutonomyPreset(level: string): Promise<boolean> {
-  if (!AUTONOMY_PRESETS[level]) return false;
+  if (!Object.hasOwn(AUTONOMY_PRESETS, level)) return false;
   await db
     .insert(integrationSettings)
     .values({ key: 'system:autonomy_level', value: level, updatedAt: new Date() })
@@ -342,16 +342,21 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       const target = body.target ?? {};
       const type = target.type ?? 'pipeline';
 
-      let autonomyApplied: string | null = null;
-      if (body.autonomyLevel) {
-        const ok = await applyAutonomyPreset(body.autonomyLevel);
-        if (!ok) {
-          res.status(400).json({
-            error: `Unknown autonomy level '${body.autonomyLevel}'. Expected one of: ${Object.keys(AUTONOMY_PRESETS).join(', ')}.`,
-          });
-          return;
-        }
-        autonomyApplied = body.autonomyLevel;
+      // Validate the complete request before changing global workforce settings.
+      if (!['lead', 'campaign', 'pipeline'].includes(type)) {
+        res.status(400).json({ error: 'target.type must be lead, campaign, or pipeline.' });
+        return;
+      }
+      if (type !== 'pipeline' && (typeof target.id !== 'string' || !target.id.trim())) {
+        res.status(400).json({ error: 'target.id is required for a lead or campaign target.' });
+        return;
+      }
+      if (body.autonomyLevel !== undefined &&
+          (typeof body.autonomyLevel !== 'string' || !Object.hasOwn(AUTONOMY_PRESETS, body.autonomyLevel))) {
+        res.status(400).json({
+          error: `Unknown autonomy level. Expected one of: ${Object.keys(AUTONOMY_PRESETS).join(', ')}.`,
+        });
+        return;
       }
 
       // Build the goal that the Sales org will execute autonomously.
@@ -409,6 +414,14 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
           `Prioritize the highest-fit leads with complete contact info first, work them on the configured channels (call and/or email) in sensible batches, track each outcome, and continuously drive the pipeline toward booked appointments and closed deals until told to stop.`,
           `Respect all outreach hard rules and only contact leads that exist in the pipeline.`,
         ].join(' ');
+      }
+
+      // The target now exists and all input is valid; only now may the request
+      // change global autonomy or reschedule the CEO review job.
+      let autonomyApplied: string | null = null;
+      if (body.autonomyLevel) {
+        await applyAutonomyPreset(body.autonomyLevel);
+        autonomyApplied = body.autonomyLevel;
       }
 
       // priority 2 — just under a hand-typed emergency goal, above routine work.
