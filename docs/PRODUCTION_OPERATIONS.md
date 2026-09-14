@@ -207,6 +207,25 @@ difference collecting 429s while its own budget still showed headroom. Read
 `providerCredits.uniqueAccounts` and `sharedQuota` to see the real picture; a
 new key raises the ceiling only if it belongs to a NEW account.
 
+**The same mapping is what the load balancer levels.** The credit probe
+publishes each key’s account to the ledger, so `accountRequests` — the number
+credentials are sorted on — counts the whole bucket rather than the one key.
+Without it a user holding two keys is asked for twice the work of a user holding
+one, and the extra lands on the more exhausted of the two: measured the same day
+at 14:30 UTC, **508 + 508 = 1,016 requests through a 1,000/day account while the
+other sat at 737**, 263 short of its own ceiling. On `/health`, two
+`accounts[]` rows carrying the same `openRouterAccount` are one bucket, and both
+report that bucket’s combined `accountRequests`. A key the probe has not
+resolved stays its own account — guessing a grouping would halve the capacity of
+a workspace whose keys really are independent.
+
+Per-account daily ceilings are deliberately **not** enforced as a second gate.
+The total cap already bounds the day at `observedAccounts x 1,000`, and stacking
+a second paced window on top would park accounts that the ramp had simply not
+caught up with yet. Even distribution is what keeps each bucket under its own
+ceiling; if `accounts[]` shows one `openRouterAccount` far ahead of another,
+that is the ordering regressing, not a missing cap.
+
 **Free throughput scales with ACCOUNTS, not models.** OpenRouter's free
 allowance is a per-account daily request budget shared across every `:free`
 model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
@@ -215,7 +234,10 @@ model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
 nothing against it (all three rungs went into cooldown together, because they
 draw on one bucket); adding a key for another account buys a whole extra
 1,000/day. `OPENROUTER_API_KEY_4` is wired for exactly that — set it and load
-balancing picks the account up with no other change.
+balancing picks the account up with no other change. It has to be a key from an
+account APEX does not already hold: a second key on an existing account raises
+neither the ceiling nor the throughput, and `providerCredits.sharedQuota: true`
+is how that mistake announces itself.
 
 There is no paid credential list. The $10 historical deposit on each qualifying
 account exists only to lift its `:free` tier from ~200/day to 1,000/day.
@@ -231,8 +253,10 @@ Credentials are tried **least-loaded first**, so several accounts share a quota
 instead of the first one absorbing everything. Before that change one key took
 1,299 of 1,388 requests (94%) and was driven past its daily limit while the
 other two sat on 15 and 52 — three accounts delivering barely one account's
-worth. If `accounts[]` ever shows one account far ahead of the others again,
-that ordering has regressed.
+worth. "Least-loaded" is measured per ACCOUNT (see the clamp section above), so
+compare `accounts[].accountRequests` between distinct `openRouterAccount`
+values; comparing `requests` between rows that share one account will always
+look lopsided and mean nothing.
 
 Exceeding the cap shows as `llmCapacity.state: capped`; running ahead of the
 pacing ramp shows as `workforce_paused`. Neither is an outage — the ramp
@@ -318,6 +342,8 @@ bucket — extra keys are not extra capacity.
 | `sharedQuota` | `true` when `loadedKeys > uniqueAccounts` |
 | `accounts[].env` | Env name(s) holding that key |
 | `accounts[].account` | Public account identity (`oracct_…` or `keyfp_…` if OpenRouter omitted the user id) |
+| `llmRequests.accounts[].openRouterAccount` | The same identity on the request meter — rows sharing it share one free daily bucket |
+| `llmRequests.accounts[].accountRequests` | Requests today across every key on that account: what the free tier meters and the balancer levels |
 | `accounts[].dailyLimit` | OpenRouter-reported rate-limit `requests` for that key, when present |
 | `management[]` | Optional management-key inventory. `liveInferenceKeyMatched` is whether this OpenRouter account listed a key APEX is actually using |
 

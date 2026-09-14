@@ -35,7 +35,7 @@
  */
 
 import { createHash } from 'crypto';
-import { accountFingerprint, setObservedAccountCount } from './request-ledger.js';
+import { accountFingerprint, setObservedAccounts } from './request-ledger.js';
 
 const CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
 const KEY_URL = 'https://openrouter.ai/api/v1/key';
@@ -307,19 +307,29 @@ async function probeManagementKey(
   }
 }
 
-function summarize(accounts: ProviderAccountSnapshot[], management: ProviderManagementSnapshot[]): ProviderCreditSnapshot {
+function summarize(
+  accounts: ProviderAccountSnapshot[],
+  management: ProviderManagementSnapshot[],
+  identities: ReadonlyMap<string, string>,
+): ProviderCreditSnapshot {
   const loadedKeys = accounts.length;
   const knownIds = new Set(accounts.map((account) => account.account));
   const uniqueAccounts = knownIds.size;
   const sharedQuota = loadedKeys > uniqueAccounts && uniqueAccounts > 0;
 
-  // Tell the request budget how many DISTINCT accounts are really behind the
-  // keys. The budget fingerprints keys, so without this two keys issued by one
-  // account read as two accounts and the cap silently exceeds the real free
-  // ceiling — observed 2026-09-14: 3 keys, 2 accounts, cap set to 2,800 against
-  // a true ceiling of 2,000. Only a positive count is published; a failed probe
-  // leaves the configured cap alone rather than starving the workforce.
-  setObservedAccountCount(uniqueAccounts > 0 ? uniqueAccounts : null);
+  // Tell the request ledger which OpenRouter ACCOUNT each key belongs to. Only
+  // OpenRouter can answer that: the ledger fingerprints keys, and a fingerprint
+  // cannot show that two different keys were issued by one user. Without the
+  // mapping both halves of the budget misread the same way — observed
+  // 2026-09-14 with 3 keys across 2 accounts:
+  //
+  //   the cap      read 2,800 against a true ceiling of 2,000;
+  //   the balancer levelled keys, driving 1,016 requests through a 1,000/day
+  //                account while another finished the window 263 short.
+  //
+  // Only a resolved mapping is published. A failed probe leaves the configured
+  // cap and the existing grouping alone rather than starving the workforce.
+  setObservedAccounts(identities.size > 0 ? identities : null);
 
   const withBalance = accounts.filter((account) => account.remaining !== null);
   const mostAlarming = withBalance.length > 0
@@ -371,7 +381,7 @@ function summarize(accounts: ProviderAccountSnapshot[], management: ProviderMana
 async function fetchCredits(): Promise<void> {
   const inference = configuredInferenceCredentials();
   if (inference.length === 0) {
-    cached = summarize([], []);
+    cached = summarize([], [], new Map());
     return;
   }
 
@@ -391,12 +401,20 @@ async function fetchCredits(): Promise<void> {
     ),
   );
 
+  // Promise.all preserves order, so each probe result lines up with the
+  // credential it came from — which is the only place the key fingerprint and
+  // the OpenRouter account id are both in hand. The fingerprint stays here and
+  // never reaches the /health payload.
+  const identities = new Map<string, string>(
+    inference.map((entry, index) => [entry.fingerprint, accounts[index].account]),
+  );
+
   const liveHashes = new Set(inference.map((entry) => keySha256(entry.key)));
   const management = await Promise.all(
     configuredManagementCredentials().map((entry) => probeManagementKey(entry, liveHashes)),
   );
 
-  cached = summarize(accounts, management);
+  cached = summarize(accounts, management, identities);
 }
 
 /**
