@@ -142,8 +142,9 @@ function main(): void {
     /if \(!ledger\.pacing\.total\.allowed\) return false;/.test(probeBody),
   );
   check(
-    'llmCapacityAvailableNow also gates on the request pacing window',
-    /if \(!requestCapacityWindow\(now\)\.allowed\) return false;/.test(probeBody),
+    'request pacing skips free routes while allowing confirmed paid continuity',
+    /const freeRequestCapacityAvailable = requestCapacityWindow\(now\)\.allowed;/.test(probeBody) &&
+      /if \(!freeRequestCapacityAvailable && !provider\.paid\) continue;/.test(probeBody),
   );
 
   if (failures > 0) {

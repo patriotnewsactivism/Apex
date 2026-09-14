@@ -40,11 +40,12 @@ import {
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// ZERO-COST EMERGENCY POLICY. APEX has no money for inference. Automatic
-// routing uses only OpenRouter `:free` models (plus the special
-// `openrouter/free` router). If every free account/model is exhausted or
-// unavailable, APEX enters a capacity-pause state. It MUST NOT spend money to
-// keep running.
+// FREE-FIRST ROUTING POLICY. Automatic routing uses OpenRouter `:free` models
+// (plus the special `openrouter/free` router) while free capacity is available.
+// An operator may explicitly activate the reviewed paid continuity route with
+// APEX_PAID_FALLBACK=confirmed. It is last in the chain and may also run while
+// the free request budget is paced, so the workforce stays productive without
+// accidentally making paid inference the primary path.
 //
 // Authoritative automatic order:
 //   1. nex-agi/nex-n2.5-mini:free
@@ -55,9 +56,8 @@ import {
 //   6. nvidia/nemotron-3-ultra-550b-a55b:free
 //
 // MiniMax M3 Free is intentionally absent until a new direct API verification
-// proves the exact `:free` slug works. Paid DeepSeek/GPT-OSS/Grok/Bedrock and
-// every other billable endpoint are unreachable from both the automatic chain
-// and persisted production policies.
+// proves the exact `:free` slug works. Persisted model policies remain
+// zero-cost-only; paid continuity is a separate, reviewed runtime route.
 
 export type ApexProviderName =
   | 'openrouter-nex-n2-5-mini-free'
@@ -66,7 +66,8 @@ export type ApexProviderName =
   | 'openrouter-nemotron-3-5-lightning-free'
   | 'openrouter-free-router'
   | 'openrouter-nemotron-ultra'
-  | 'openrouter-free-policy';
+  | 'openrouter-free-policy'
+  | 'openrouter-deepseek-v4-flash-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
 export const FREE_POLICY_GATEWAY_NAME: ApexProviderName = 'openrouter-free-policy';
@@ -93,6 +94,12 @@ export const OPENROUTER_FREE_KEY_ENVS = [
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_4',
 ] as const;
+
+/** The funded inference key confirmed by its matching OpenRouter account usage. */
+export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY'] as const;
+export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName =
+  'openrouter-deepseek-v4-flash-paid';
+export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -150,6 +157,20 @@ const PROVIDERS: readonly ProviderSpec[] = [
   // Custom persisted FREE policies share this gateway. It is not an automatic
   // route and never uses paid credentials.
   freeOpenRouterSpec(FREE_POLICY_GATEWAY_NAME, DEFAULT_OPENROUTER_MODEL_CHAIN[0]),
+  {
+    name: PAID_FALLBACK_PROVIDER_NAME,
+    model: PAID_FALLBACK_MODEL,
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
+    paid: true,
+    activationEnv: 'APEX_PAID_FALLBACK',
+    activationDescription: 'APEX_PAID_FALLBACK=confirmed is required',
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+    supportsParallelToolCalls: true,
+    reasoningEffort: 'low',
+    providerRouting: { sort: 'price' },
+  },
 ];
 
 const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
@@ -170,8 +191,11 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
 ];
 
 function activeProviderOrder(_role?: string): readonly ApexProviderName[] {
-  if (hasCustomOpenRouterModelPolicy()) return [FREE_POLICY_GATEWAY_NAME];
-  return PROVIDER_ORDER;
+  const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
+    ? [FREE_POLICY_GATEWAY_NAME]
+    : [...PROVIDER_ORDER];
+  if (paidLLMFallbackEnabled()) freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
+  return freeOrder;
 }
 
 export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
@@ -187,9 +211,11 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
   );
 }
 
-/** Paid inference is unreachable while zero-cost mode is active. */
-export function paidLLMFallbackEnabled(_mode?: string): boolean {
-  return false;
+/** Paid inference requires an explicit operator confirmation. */
+export function paidLLMFallbackEnabled(
+  mode: string | undefined = process.env.APEX_PAID_FALLBACK,
+): boolean {
+  return enabled(mode);
 }
 
 function enabled(value: string | undefined): boolean {
@@ -560,13 +586,10 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
   // A hard total cap is genuinely workspace-wide; nothing to re-probe.
   if (isTotalDailyCapReached()) return false;
 
-  // Same for the request budget, and this is the one that normally bites.
-  // Checking it here as well as inside complete() is what keeps a paced
-  // workspace from claiming tasks it cannot run: without it every agent would
-  // dequeue, rebuild history, assemble learning context and only then discover
-  // there was no allowance — paying the full cost of a task to do nothing, the
-  // capacity-spin failure the diagnostics endpoint already counts deferrals for.
-  if (!requestCapacityWindow(now).allowed) return false;
+  // A paced/exhausted free request window can still be served by the explicitly
+  // enabled paid continuity route. Free providers remain ineligible until the
+  // ramp releases capacity; the paid route does not consume the free ledger.
+  const freeRequestCapacityAvailable = requestCapacityWindow(now).allowed;
 
   const ledger = getTokenLedgerSnapshot();
   if (!ledger.pacing.total.allowed) return false;
@@ -582,10 +605,12 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
+    if (!freeRequestCapacityAvailable && !provider.paid) continue;
     const usableCredentials = configuredCredentials(provider).filter(
       (credential) =>
-        !accountCooldown(credential.key) &&
-        accountCapacityWindow(credential.key).allowed,
+        provider.paid ||
+        (!accountCooldown(credential.key) &&
+          accountCapacityWindow(credential.key).allowed),
     );
     if (usableCredentials.length === 0) continue;
 
@@ -606,8 +631,8 @@ function providerBaseURL(provider: ProviderSpec): string | undefined {
 }
 
 function providerActivationIssue(provider: ProviderSpec): string | null {
-  if (provider.paid) {
-    return 'paid inference is unreachable while zero-cost mode is active';
+  if (provider.paid && !paidLLMFallbackEnabled()) {
+    return provider.activationDescription ?? 'paid inference requires explicit operator confirmation';
   }
   if (provider.activationEnv && !enabled(process.env[provider.activationEnv])) {
     return provider.activationDescription ?? `${provider.activationEnv}=true is required`;
@@ -846,7 +871,7 @@ async function callCompatibleProvider(
 
   try {
     const policy = getActiveOpenRouterModelPolicy();
-    const customPolicy = Boolean(policy);
+    const customPolicy = Boolean(policy) && provider.name === FREE_POLICY_GATEWAY_NAME;
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
       : [provider.model];
@@ -1078,27 +1103,34 @@ class MultiProviderClient {
       // yet, so the agent parks briefly and resumes. That is the mechanism
       // that spreads the allowance across 24h instead of letting the workforce
       // spend it all before lunch.
+      let paidOnly = false;
       if (isRequestBudgetExhausted()) {
-        throw capacityPauseError([
-          {
-            source: 'workspace',
-            resumeAt: new Date(Date.now() + msUntilDailyReset()).toISOString(),
-            reason: `daily request cap reached (APEX_REQUEST_CAP_TOTAL=${totalRequestCap()})`,
-          },
-        ]);
+        if (paidLLMFallbackEnabled()) paidOnly = true;
+        else {
+          throw capacityPauseError([
+            {
+              source: 'workspace',
+              resumeAt: new Date(Date.now() + msUntilDailyReset()).toISOString(),
+              reason: `daily request cap reached (APEX_REQUEST_CAP_TOTAL=${totalRequestCap()})`,
+            },
+          ]);
+        }
       }
       const requestWindow = requestCapacityWindow();
       if (!requestWindow.allowed) {
-        throw capacityPauseError([
-          {
-            source: 'workspace',
-            resumeAt: requestWindow.resumeAt,
-            reason:
-              requestWindow.reason === 'daily_cap'
-                ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
-                : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
-          },
-        ]);
+        if (paidLLMFallbackEnabled()) paidOnly = true;
+        else {
+          throw capacityPauseError([
+            {
+              source: 'workspace',
+              resumeAt: requestWindow.resumeAt,
+              reason:
+                requestWindow.reason === 'daily_cap'
+                  ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
+                  : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
+            },
+          ]);
+        }
       }
 
       const trimmed = trimMessageHistory(messages);
@@ -1123,6 +1155,7 @@ class MultiProviderClient {
         for (const providerName of getProviderOrderForRole(this.config.role)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
+          if (paidOnly && !provider.paid) continue;
 
           const activationIssue = providerActivationIssue(provider);
           if (activationIssue) {
@@ -1190,7 +1223,7 @@ class MultiProviderClient {
                 continue;
               }
 
-              const accountLock = accountCooldown(credential.key);
+              const accountLock = provider.paid ? null : accountCooldown(credential.key);
               if (accountLock) {
                 skipReasons.push(`${credentialId}: account in cooldown`);
                 if (accountLock.capacityPause) {
@@ -1209,8 +1242,8 @@ class MultiProviderClient {
               // lets one exhausted OpenRouter account step aside while the
               // other two keep serving, instead of the whole chain stalling
               // on the first key that ran out.
-              const accountWindow = accountCapacityWindow(credential.key);
-              if (!accountWindow.allowed) {
+              const accountWindow = provider.paid ? null : accountCapacityWindow(credential.key);
+              if (accountWindow && !accountWindow.allowed) {
                 skipReasons.push(
                   `${credentialId}: account request budget ` +
                     `(${accountWindow.usedRequests}/${accountWindow.cap} today, ${accountWindow.reason})`,
@@ -1234,7 +1267,7 @@ class MultiProviderClient {
                   this.config,
                   execution,
                 );
-                recordProviderRequest(credential.key, true);
+                if (!provider.paid) recordProviderRequest(credential.key, true);
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
                 await recordResponseTelemetry({
@@ -1254,7 +1287,7 @@ class MultiProviderClient {
                 // as far as the provider is concerned. Counting only successes
                 // would hide exactly the traffic worth seeing: the fallback
                 // cascade, which burns several requests to serve one call.
-                recordProviderRequest(credential.key, false);
+                if (!provider.paid) recordProviderRequest(credential.key, false);
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
@@ -1302,7 +1335,7 @@ class MultiProviderClient {
                 if (shouldCooldownCredential(status, message)) {
                   setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 }
-                if (isAccountQuotaFailure(status, message)) {
+                if (!provider.paid && isAccountQuotaFailure(status, message)) {
                   setAccountCooldown(credential.key, status, message, err.retryAfterMs);
                 }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);

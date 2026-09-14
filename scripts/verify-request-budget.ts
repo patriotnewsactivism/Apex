@@ -316,15 +316,16 @@ async function main(): Promise<void> {
     'the dead OPENROUTER_API_KEY_3 credential is not in the free roster',
     !/'OPENROUTER_API_KEY_3'/.test(freeList),
   );
-  // Zero-cost mode has no paid credential roster. A key added for free
-  // throughput must not be reachable as a paid spend path.
+  // Paid continuity is explicitly confirmed and isolated to the funded primary
+  // inference key. The optional fourth free account must never become spendable.
   check(
-    'there is no paid OpenRouter credential roster in the runtime',
-    !/const OPENROUTER_PAID_KEY_ENVS/.test(client),
+    'paid continuity uses only the funded primary inference key',
+    /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY'\]/.test(client),
   );
   check(
     'the fourth account key cannot be spent as a paid credential',
-    /'OPENROUTER_API_KEY_4'/.test(freeList) && !/OPENROUTER_PAID_KEY_ENVS/.test(client),
+    /'OPENROUTER_API_KEY_4'/.test(freeList) &&
+      !/OPENROUTER_PAID_KEY_ENVS = \[[^\]]*OPENROUTER_API_KEY_4/.test(client),
   );
   check(
     'the default workspace cap sits 200 under a 3x1000 free ceiling',

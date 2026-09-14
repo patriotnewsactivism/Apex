@@ -13,7 +13,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters } from '@workspace/core';
+import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
@@ -182,16 +182,24 @@ async function main() {
       ...providerBackpressure.pausedProviders,
     ])];
     const requestLedger = getRequestLedgerSnapshot();
+    const paidContinuityAvailable =
+      paidLLMFallbackEnabled() &&
+      getConfiguredProviders().some(
+        (provider) =>
+          provider.name === PAID_FALLBACK_PROVIDER_NAME && provider.configured,
+      );
     const hardCapped =
       tokenLedger.totalCapReached ||
-      requestLedger.totalCapReached ||
-      tokenLedger.providers.some((provider) => provider.capReached);
+      (!paidContinuityAvailable && requestLedger.totalCapReached);
     // `aggregatePaused` is the SAME expression llmCapacityAvailableNow() uses
     // to return false (`!ledger.pacing.total.allowed`), and that function gates
     // task claiming for every agent in the process. So this condition does not
     // mean "throttled" -- it means the entire workforce has stopped.
     const aggregatePaused =
-      !tokenLedger.pacing.total.allowed || !requestLedger.pacing.total.allowed;
+      !tokenLedger.pacing.total.allowed ||
+      (!paidContinuityAvailable && !requestLedger.pacing.total.allowed);
+    const paidContinuityActive =
+      paidContinuityAvailable && !requestLedger.pacing.total.allowed;
     // These two conditions used to collapse into one "paced" string, and that
     // cost a full day of production ambiguity on 2026-09-08: at 15:19 /health
     // read `paced` while claiming ran at ~15 tasks/min (two Nemotron providers
@@ -209,6 +217,8 @@ async function main() {
       ? "capped"
       : aggregatePaused
         ? "workforce_paused"
+        : paidContinuityActive
+          ? "paid_continuity"
         : pausedProviders.length > 0
           ? "paced"
           : "available";
@@ -258,13 +268,15 @@ async function main() {
         workforceParkedUntil: workforceParkedMs > 0
           ? new Date(Date.now() + workforceParkedMs).toISOString()
           : null,
+        paidFallback: {
+          enabled: paidLLMFallbackEnabled(),
+          available: paidContinuityAvailable,
+          active: paidContinuityActive,
+          model: PAID_FALLBACK_MODEL,
+        },
       },
-      // Provider account balance. Paid rungs are not in the automatic chain any
-      // more, so an exhausted balance is no longer an outage — but it was on
-      // 2026-09-12 ($20 credits against $24.28 usage, paid-only routing, HTTP
-      // 402 on every request, nothing reporting it), and a persisted operator
-      // model policy still routes paid. Reported so the number that ran out
-      // silently is now one a plain curl can see.
+      // Provider account balance. The paid continuity route makes remaining
+      // credit operational again, so keep it visible beside the routing state.
       providerCredits: getProviderCreditSnapshot(),
       // Burn rate, unauthenticated and on purpose.
       //
