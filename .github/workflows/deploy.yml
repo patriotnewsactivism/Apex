@@ -510,11 +510,15 @@ jobs:
           attach_optional OPENROUTER_MGMT_KEY_4 "$OPENROUTER_MGMT_KEY_4_SOURCE" "$OPENROUTER_MGMT_KEY_4_SECRET_NAME" "$OPENROUTER_MGMT_KEY_4"
           attach_optional TAVILY_API_KEY "$TAVILY_API_KEY_SOURCE" "$TAVILY_API_KEY_SECRET_NAME" "$TAVILY_API_KEY"
 
-          # Workspace request budget. Code default is 2_800; set it as a
-          # literal on the existing service so a leftover binding cannot
-          # keep an older ceiling after this image update. This env var
-          # BEATS the code default, so both must move together.
-          add_env APEX_REQUEST_CAP_TOTAL 2800
+          # Workspace request budget. Code default is 2_000 — two accounts
+          # x 1,000/day, which is what the credit probe actually found on
+          # 2026-09-14 (3 keys, 2 accounts: two keys share one bucket).
+          # Set as a literal on the existing service so a leftover binding
+          # cannot keep an older ceiling after this image update; this env
+          # var BEATS the code default, so both must move together.
+          # The runtime clamps this further if the probe sees fewer
+          # accounts, so raising it after adding a key is safe.
+          add_env APEX_REQUEST_CAP_TOTAL 2000
           # Operator-authorized continuity: free routes stay first and this is
           # used only when free request pacing/capacity blocks execution or all
           # free routes fail.

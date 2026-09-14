@@ -328,8 +328,8 @@ async function main(): Promise<void> {
       !/OPENROUTER_PAID_KEY_ENVS = \[[^\]]*OPENROUTER_API_KEY_4/.test(client),
   );
   check(
-    'the default workspace cap sits 200 under a 3x1000 free ceiling',
-    /const DEFAULT_TOTAL_CAP = 2_800/.test(ledger),
+    'the default workspace cap matches a two-account 2x1000 free ceiling',
+    /const DEFAULT_TOTAL_CAP = 2_000/.test(ledger),
   );
 
   const creditsSource = read('packages/core/src/provider-credits.ts');
@@ -361,6 +361,43 @@ async function main(): Promise<void> {
   check(
     'dead OPENROUTER_API_KEY_3 is not a credit-probe credential',
     !/'OPENROUTER_API_KEY_3'/.test(creditsSource),
+  );
+
+  // ── Accounts, not keys, decide the free ceiling ──────────────────────────
+  //
+  // This ledger fingerprints KEYS; OpenRouter meters ACCOUNTS. Two keys issued
+  // by one account therefore look like two accounts here, and any cap phrased
+  // as "accounts x 1,000" silently exceeds the real ceiling. Found live on
+  // 2026-09-14: 3 keys, 2 accounts, cap 2,800 against a true ceiling of 2,000.
+  check(
+    'the enforced cap is clamped to the accounts actually observed',
+    /export function effectiveRequestCap/.test(ledger) &&
+      /Math\.min\(configured, observedAccountCount \* freeRequestsPerAccount\(\)\)/.test(ledger),
+  );
+  // The clamp must only ever lower the ceiling, and only on real data — a
+  // failed probe reporting nothing must not starve the workforce.
+  check(
+    'a probe that has not reported leaves the configured cap untouched',
+    /if \(observedAccountCount === null\) return configured;/.test(ledger),
+  );
+  check(
+    'the credit probe publishes the distinct account count to the budget',
+    /setObservedAccountCount\(uniqueAccounts > 0 \? uniqueAccounts : null\)/.test(
+      read('packages/core/src/provider-credits.ts'),
+    ),
+  );
+  // Every gate must consult the clamped cap; one that reads the raw configured
+  // value re-opens the gap the clamp exists to close.
+  const rawCapGates = (ledger.match(/cap: totalRequestCap\(\)/g) ?? []).length;
+  check(
+    'no capacity gate reads the unclamped configured cap',
+    rawCapGates === 0,
+    { rawCapGates },
+  );
+  check(
+    'the clamp is visible on /health, not silently applied',
+    /configuredCap: totalRequestCap\(\)/.test(ledger) &&
+      /observedAccounts: getObservedAccountCount\(\)/.test(ledger),
   );
 
   // ── Paid spend budget ────────────────────────────────────────────────────

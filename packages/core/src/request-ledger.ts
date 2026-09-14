@@ -27,7 +27,7 @@
  * cascade — the requests most worth seeing.
  *
  * Configuration:
- *   APEX_REQUEST_CAP_TOTAL=2800     workspace requests/day (0 disables)
+ *   APEX_REQUEST_CAP_TOTAL=2000     workspace requests/day (0 disables)
  *   APEX_REQUEST_CAPS=OPENROUTER_API_KEY:1000,OPENROUTER_API_KEY_2:1000
  *   APEX_REQUEST_PACING_ENABLED=true
  *   APEX_REQUEST_PACING_BURST=150
@@ -95,7 +95,7 @@ const UTC_DAY_MS = 24 * 60 * 60 * 1000;
  *  requests made outside this process (a second revision mid-rollout, a local
  *  run, the chat route on another instance) and the penalty for guessing high
  *  is a hard 429 wall with no allowance left to recover on. */
-const DEFAULT_TOTAL_CAP = 2_800;
+const DEFAULT_TOTAL_CAP = 2_000;
 /** Enough to get real work done immediately after a restart without letting a
  *  startup swarm eat the morning. ~1.4h of the steady-state rate. */
 const DEFAULT_PACING_BURST = 150;
@@ -152,6 +152,68 @@ function parseCaps(): Record<string, number> {
     if (name && Number.isFinite(cap) && cap > 0) out[name] = Math.floor(cap);
   }
   return out;
+}
+
+/**
+ * Free requests/day a single OpenRouter account allows, once a $10 deposit
+ * lifts it off the ~200/day base tier.
+ */
+const DEFAULT_FREE_RPD_PER_ACCOUNT = 1_000;
+
+function freeRequestsPerAccount(): number {
+  const raw = process.env.APEX_FREE_RPD_PER_ACCOUNT;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_FREE_RPD_PER_ACCOUNT;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : DEFAULT_FREE_RPD_PER_ACCOUNT;
+}
+
+/**
+ * Distinct OpenRouter ACCOUNTS behind the configured keys, as reported by the
+ * credit probe. Pushed in rather than pulled, because provider-credits.ts
+ * already imports accountFingerprint from this module and reaching back would
+ * make the cycle.
+ *
+ * WHY THE CAP HAS TO KNOW THIS
+ * ------------------------------------------------------------------
+ * The free allowance is metered per ACCOUNT, but this ledger fingerprints
+ * KEYS — so two distinct keys issued by one account look like two accounts to
+ * the load balancer and to any cap expressed as "accounts x 1,000".
+ *
+ * That is not hypothetical. On 2026-09-14 the probe found 3 live keys across
+ * 2 accounts: OPENROUTER_FREE_API_KEY and OPENROUTER_API_KEY_2 belong to the
+ * same account and share one bucket. The configured cap of 2,800 therefore
+ * exceeded the real ceiling of 2,000, and APEX would have spent the difference
+ * collecting 429s while its own budget still showed headroom.
+ */
+let observedAccountCount: number | null = null;
+
+export function setObservedAccountCount(count: number | null): void {
+  observedAccountCount =
+    typeof count === 'number' && Number.isFinite(count) && count >= 1
+      ? Math.floor(count)
+      : null;
+}
+
+export function getObservedAccountCount(): number | null {
+  return observedAccountCount;
+}
+
+/**
+ * The cap actually enforced: the configured value, clamped to what the
+ * observed accounts can really serve.
+ *
+ * Clamping only ever LOWERS the ceiling, and only when the probe has real
+ * data. A failed or not-yet-run probe leaves the configured value untouched,
+ * so a network hiccup can never starve the workforce by pretending there are
+ * fewer accounts than there are.
+ */
+export function effectiveRequestCap(): number {
+  const configured = totalRequestCap();
+  if (configured === 0) return 0;
+  if (observedAccountCount === null) return configured;
+  return Math.min(configured, observedAccountCount * freeRequestsPerAccount());
 }
 
 export function totalRequestCap(): number {
@@ -414,7 +476,7 @@ export function totalRequestsToday(): number {
 export function requestCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
   rolloverIfNeeded(at);
   const daily = calculateRequestCapacityWindow({
-    cap: totalRequestCap(),
+    cap: effectiveRequestCap(),
     usedRequests: totalRequestsToday(),
     requestedRequests: 1,
     at,
@@ -520,7 +582,7 @@ export function rateLimitResumeAt(at: number = Date.now()): number | null {
 }
 
 export function isRequestBudgetExhausted(at: number = Date.now()): boolean {
-  const cap = totalRequestCap();
+  const cap = effectiveRequestCap();
   return cap > 0 && totalRequestsToday() >= cap;
 }
 
@@ -530,6 +592,11 @@ export interface RequestLedgerSnapshot {
   totalRequests: number;
   totalCap: number;
   totalCapReached: boolean;
+  /** Cap as configured, before the observed-account clamp. */
+  configuredCap: number;
+  /** Distinct OpenRouter accounts the credit probe found, or null if it has
+   *  not reported. `cap` is `min(configuredCap, accounts x per-account limit)`. */
+  observedAccounts: number | null;
   /** Requests issued in the last 60s, against the short-window limit. */
   lastMinute: number;
   ratePerMinute: number;
@@ -586,7 +653,7 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
     })
     .sort((a, b) => b.requests - a.requests);
 
-  const cap = totalRequestCap();
+  const cap = effectiveRequestCap();
   const totalRequests = accounts.reduce((sum, entry) => sum + entry.requests, 0);
   const totalPacing = calculateRequestCapacityWindow({
     cap,
@@ -618,6 +685,8 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
     totalRequests,
     totalCap: cap,
     totalCapReached: cap > 0 && totalRequests >= cap,
+    configuredCap: totalRequestCap(),
+    observedAccounts: getObservedAccountCount(),
     lastMinute: requestsInLastMinute(at),
     ratePerMinute: ratePerMinute(),
     projectedDailyRequests,
