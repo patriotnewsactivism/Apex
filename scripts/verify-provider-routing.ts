@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   FREE_POLICY_GATEWAY_NAME,
+  PAID_FALLBACK_MODEL,
+  PAID_FALLBACK_PROVIDER_NAME,
   getProviderCatalog,
   getProviderOrderForRole,
   getDefaultLLMConfig,
@@ -44,7 +46,7 @@ const agentSources = [
   "packages/convex-backend/convex/llmConfig.ts",
 ].map((rel) => fs.readFileSync(path.join(root, rel), "utf8")).join("\n");
 
-console.log("── Zero-cost OpenRouter provider allowlist ──");
+console.log("── Free-first OpenRouter provider allowlist ──");
 check("exactly six automatic routes exist", catalog.length === 6, catalog);
 check(
   "automatic provider order is exact",
@@ -110,7 +112,7 @@ check(
     clientSource.includes("openrouter/free"),
 );
 check("MiniMax M3 Free is not restored into the automatic chain", catalog.every((provider) => !provider.model.includes("minimax")));
-check("paid credential lists are not used by automatic providers", !/apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS/.test(clientSource));
+check("paid credential list is isolated to the funded inference key", /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY'\]/.test(clientSource));
 check("paid GPT-OSS gateway is not referenced", !/openrouter-gpt-oss-120b-paid/.test(clientSource));
 check(
   "duplicate keys for one account collapse to a single retry bucket",
@@ -155,8 +157,18 @@ check(
 );
 
 console.log("\n── Cost/continuity policy ──");
-check("paid OpenRouter inference cannot be re-enabled by env", paidLLMFallbackEnabled(undefined) === false);
-check("explicit on still cannot enable paid inference", paidLLMFallbackEnabled("on") === false);
+check("paid OpenRouter inference is off without confirmation", paidLLMFallbackEnabled(undefined) === false);
+check("explicit confirmation enables paid inference", paidLLMFallbackEnabled("confirmed") === true);
+const previousPaidMode = process.env.APEX_PAID_FALLBACK;
+process.env.APEX_PAID_FALLBACK = "confirmed";
+check(
+  "paid continuity route is last",
+  getProviderOrderForRole("CEO").at(-1) === PAID_FALLBACK_PROVIDER_NAME,
+  getProviderOrderForRole("CEO"),
+);
+check("paid continuity model is the reviewed DeepSeek route", PAID_FALLBACK_MODEL === "deepseek/deepseek-v4-flash-0731");
+if (previousPaidMode === undefined) delete process.env.APEX_PAID_FALLBACK;
+else process.env.APEX_PAID_FALLBACK = previousPaidMode;
 check("HTTP 402 is a capacity failure, not a paid-upgrade signal", isCapacityFailure(402, "Payment required") === true);
 check("HTTP 429 is an account-quota failure that rotates accounts", isAccountQuotaFailure(429, "rate limit") === true);
 check(
@@ -193,7 +205,7 @@ for (const role of [
   "CUSTOMER_SUCCESS", "RESEARCH", "OPS", "DOCS", "COMMUNITY_WATCH",
 ]) {
   const order = getProviderOrderForRole(role);
-  check(`${role} uses the free-only order`, JSON.stringify(order) === JSON.stringify(expectedProviders), order);
+  check(`${role} uses the free-first order while paid mode is off`, JSON.stringify(order) === JSON.stringify(expectedProviders), order);
   const config = getDefaultLLMConfig(role);
   check(
     `${role} defaults to Nex N2.5 Mini Free via OpenRouter`,

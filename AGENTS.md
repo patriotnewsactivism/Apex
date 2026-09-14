@@ -96,7 +96,7 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 ## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. Models from OpenAI, Anthropic, Google, DeepSeek, Qwen, or other families are permitted only as **zero-cost OpenRouter `:free` IDs** (or exactly `openrouter/free`); do not restore paid DeepSeek/GPT-OSS/Grok/Bedrock or the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain.
+`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. The normal chain is restricted to zero-cost OpenRouter `:free` IDs (or exactly `openrouter/free`). One reviewed paid continuity route, `deepseek/deepseek-v4-flash-0731`, may be activated only with `APEX_PAID_FALLBACK=confirmed`; do not add other paid providers or restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral provider chain without a new operator decision.
 
 With no valid operator policy, the reviewed production fallback is:
 
@@ -107,7 +107,7 @@ With no valid operator policy, the reviewed production fallback is:
 5. `openrouter/free` (tool requirements preserved)
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
 
-Nex N2.5 Mini Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. If every free account/route is exhausted, APEX capacity-pauses — it does not spend money.
+Nex N2.5 Mini Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. When `APEX_PAID_FALLBACK=confirmed`, the paid continuity route is last and becomes eligible only when free request pacing/capacity blocks execution or all free routes fail. Otherwise exhaustion capacity-pauses.
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
@@ -171,11 +171,11 @@ Credential environment variables:
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_API_KEY_2`
 - `OPENROUTER_API_KEY_4` — optional extra independent account
-- `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so `/health` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials.
+- `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so `/health` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials. The paid continuity route uses the funded `OPENROUTER_API_KEY` inference credential, never a management key.
 
 `OPENROUTER_API_KEY_3` is burned (100% live failures) and is not a production roster member.
 
-Three independent qualifying OpenRouter accounts (each historically funded with at least $10, so each should receive the higher `:free` daily allowance) are load-balanced by key fingerprint. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Nominal ceiling is about **3,000 free requests/day** if all three accounts retain their qualifying allowance. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; total exhaustion is a capacity pause, never a paid fallback.
+Three independent qualifying OpenRouter accounts (each historically funded with at least $10, so each should receive the higher `:free` daily allowance) are load-balanced by key fingerprint. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Nominal ceiling is about **3,000 free requests/day** if all three accounts retain their qualifying allowance. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; only the explicitly confirmed continuity route may spend paid credit after free execution becomes unavailable.
 
 OpenRouter requests retain provider pacing, retry-after handling, transient cooldowns, circuit breakers, context trimming, token reservations, structured tool calls, and serving-provider diagnostics.
 

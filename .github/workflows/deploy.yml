@@ -515,6 +515,10 @@ jobs:
           # keep an older ceiling after this image update. This env var
           # BEATS the code default, so both must move together.
           add_env APEX_REQUEST_CAP_TOTAL 2800
+          # Operator-authorized continuity: free routes stay first and this is
+          # used only when free request pacing/capacity blocks execution or all
+          # free routes fail.
+          add_env APEX_PAID_FALLBACK confirmed
           attach_optional BRAVE_SEARCH_API_KEY "$BRAVE_SEARCH_API_KEY_SOURCE" "$BRAVE_SEARCH_API_KEY_SECRET_NAME" "$BRAVE_SEARCH_API_KEY"
           attach_optional GOOGLE_PLACES_API_KEY "$GOOGLE_PLACES_API_KEY_SOURCE" "$GOOGLE_PLACES_API_KEY_SECRET_NAME" "$GOOGLE_PLACES_API_KEY"
           attach_optional YELP_API_KEY "$YELP_API_KEY_SOURCE" "$YELP_API_KEY_SECRET_NAME" "$YELP_API_KEY"
