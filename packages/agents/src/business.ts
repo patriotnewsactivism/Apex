@@ -98,7 +98,7 @@ Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory 
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,
       llm: { provider: 'openrouter-nex-n2-5-mini-free', model: 'nex-agi/nex-n2.5-mini:free' },
       tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'requestPeerReview'],
-      maxIterations: 50,
+      maxIterations: 30,
       approvalRequired: false,
       // Emergency reliability mode: lead sweeps are expensive and were the
       // source of the observed five-at-once provider pacing storm. Keep this

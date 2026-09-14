@@ -34,14 +34,14 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-ceo-goal-review',
         name: 'CEO autonomous goal review',
         jobType: 'goal_review',
-        cronExpression: '*/30 * * * *', // every 30 min — the autonomous spark, paced to the request budget
+        cronExpression: '13 * * * *', // hourly — the autonomous spark, paced to the request budget
         targetAgentId: 'apex-ceo-001' as string | null,
         priority: 4,
         // Versioned for the first time here. Without a version the sync block
         // below skips the row entirely, so this job's cron had been frozen at
         // whatever the database was first seeded with — a cadence change in
         // this file would have shipped and done nothing.
-        payload: { systemDefinitionVersion: 1 } as Record<string, unknown>,
+        payload: { systemDefinitionVersion: 2 } as Record<string, unknown>,
       },
       {
         id: 'system-lead-gen-sweep',
@@ -64,10 +64,10 @@ export async function seedDefaultJobs(): Promise<void> {
         targetAgentId: 'apex-lead-research-001' as string | null,
         priority: 3,
         payload: {
-          systemDefinitionVersion: 2,
-          maxPerRun: 12,
+          systemDefinitionVersion: 3,
+          maxPerRun: 5,
           title: 'Enrich pending lead contacts',
-          description: 'Call listResearchedLeads with needsContactResearch=true and limit=12. Process at most 12 pending leads this run. Prefer the verified first-party business website, then one targeted public web-search pass for missing decision-maker/email/phone fields. Reject directory-domain, franchise-branch, city, and company-name mismatches. Never guess or synthesize contact data or email patterns. Do not repeat the same failed search/provider call in this task: on provider, quota, pacing, or capacity errors, stop cleanly rather than looping and leave remaining leads pending for the next scheduled run. Call updateLeadContactInfo for every genuinely attempted lead, include the supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
+          description: 'Call listResearchedLeads with needsContactResearch=true and limit=5. Process at most 5 pending leads this run. Prefer the verified first-party business website, then one targeted public web-search pass for missing decision-maker/email/phone fields. Reject directory-domain, franchise-branch, city, and company-name mismatches. Never guess or synthesize contact data or email patterns. Do not repeat the same failed search/provider call in this task: on provider, quota, pacing, or capacity errors, stop cleanly rather than looping and leave remaining leads pending for the next scheduled run. Call updateLeadContactInfo for every genuinely attempted lead, include the supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
         },
       },
       {
@@ -114,10 +114,10 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-workforce-planner',
         name: 'Bounded autonomous workforce coverage planner',
         jobType: 'workforce_planner',
-        cronExpression: '7 * * * *',
+        cronExpression: '7 */2 * * *',
         targetAgentId: null as string | null,
         priority: 4,
-        payload: { systemDefinitionVersion: 1 } as Record<string, unknown>,
+        payload: { systemDefinitionVersion: 2 } as Record<string, unknown>,
       },
       {
         id: 'system-prompt-evolution',
@@ -140,14 +140,14 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-delegation-followup',
         name: 'Delegation results follow-up',
         jobType: 'delegation_followup',
-        cronExpression: '*/20 * * * *', // every 20 min — synthesis of finished children is not time-critical
+        cronExpression: '*/30 * * * *', // every 30 min — synthesis of finished children is not time-critical
         targetAgentId: null as string | null,
         priority: 3,
         // Versioned for the first time here — see the note on the CEO goal
         // review above. This was the highest-frequency LLM-spawning job in the
         // roster at */5, and unversioned, so it was also the one a cadence fix
         // could not reach.
-        payload: { systemDefinitionVersion: 1, maxPerRun: 8 } as Record<string, unknown>,
+        payload: { systemDefinitionVersion: 2, maxPerRun: 3 } as Record<string, unknown>,
       },
       // Goals only ever left 'active' when a human clicked. This drives each
       // one to a real conclusion: decompose it, close it, or change approach.
@@ -155,10 +155,10 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-goal-progress',
         name: 'Goal progress & close-out review',
         jobType: 'goal_progress',
-        cronExpression: '*/30 * * * *', // every 30 min
+        cronExpression: '41 * * * *', // hourly
         targetAgentId: 'apex-ceo-001' as string | null,
         priority: 4,
-        payload: { maxPerRun: 4, minAgeMinutes: 20 } as Record<string, unknown>,
+        payload: { systemDefinitionVersion: 1, maxPerRun: 3, minAgeMinutes: 20 } as Record<string, unknown>,
       },
       // Failed tasks used to be terminal and unseen. Cluster them and put the
       // recurring ones in front of the CEO.
@@ -189,11 +189,11 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-coo-branch-review',
         name: 'COO operations branch review',
         jobType: 'branch_review',
-        cronExpression: '5 * * * *', // hourly, after :00 provider-work recovery
+        cronExpression: '5 */3 * * *', // every 3 h, after :00 provider-work recovery
         targetAgentId: 'apex-coo-001' as string | null,
         priority: 4,
         payload: {
-          systemDefinitionVersion: 2,
+          systemDefinitionVersion: 3,
           subordinates: ['apex-lead-research-001', 'apex-sales-001', 'apex-marketing-001', 'apex-success-001'],
           includeBuildMyBot2: true,
           focus:
@@ -232,7 +232,7 @@ export async function seedDefaultJobs(): Promise<void> {
         cronExpression: '*/30 * * * *', // every 30 min — the autonomous spark, paced to the request budget
         targetAgentId: 'apex-coo-001' as string | null,
         priority: 3,
-        payload: { systemDefinitionVersion: 2, maxPerRun: 6 } as Record<string, unknown>,
+        payload: { systemDefinitionVersion: 3, maxPerRun: 3 } as Record<string, unknown>,
       },
       {
         id: 'system-cron-governor',
