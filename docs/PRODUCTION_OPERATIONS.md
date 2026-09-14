@@ -168,11 +168,16 @@ can see is how that went unnoticed:
 | Field | Meaning |
 |---|---|
 | `used` | Requests spent today (UTC), **including failed ones** — a 429 or a timeout spent the allowance too |
-| `cap` | `APEX_REQUEST_CAP_TOTAL`, default 2800 |
+| `cap` | The cap actually ENFORCED: `min(configuredCap, observedAccounts x 1,000)`. A value below `configuredCap` is the clamp working, not a bug |
+| `configuredCap` | `APEX_REQUEST_CAP_TOTAL`, default 2000. What was asked for, before the clamp |
+| `observedAccounts` | Distinct OpenRouter accounts the credit probe resolved, or `null` while it has not reported — in which case `cap` equals `configuredCap` |
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
-| `accounts[]` | Per-account split. Accounts are grouped by the **key itself**, not the env var name: APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and `OPENROUTER_API_KEY_4` across three real qualifying accounts. `OPENROUTER_API_KEY_3` is burned and is not a roster member. Names holding the same key appear as one row and are not independent capacity. |
+| `accounts[]` | Per-KEY split. APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2` and `OPENROUTER_API_KEY_4`; `OPENROUTER_API_KEY_3` is burned and is not a roster member. Env names holding the same key collapse into one row. Two rows can still be one account — read `openRouterAccount` for that |
+| `accounts[].requests` | What this KEY served. Not a capacity figure on its own |
+| `accounts[].openRouterAccount` | Which OpenRouter user the key belongs to (`oracct_…`, or `null` before the credit probe resolves it). **Rows sharing this value share one 1,000/day bucket** |
+| `accounts[].accountRequests` | Requests today across every key on that account — what the free tier actually meters, and the number credentials are sorted on. Compare THIS between distinct `openRouterAccount` values to judge balance |
 | `persistence` | `memory-only` means a restart reset today's count; a deploy would then hand the workforce a fresh full allowance |
 
 **Cadence x maxPerRun is the demand knob.** A job's cost is its firings per day
@@ -207,6 +212,25 @@ difference collecting 429s while its own budget still showed headroom. Read
 `providerCredits.uniqueAccounts` and `sharedQuota` to see the real picture; a
 new key raises the ceiling only if it belongs to a NEW account.
 
+**The same mapping is what the load balancer levels.** The credit probe
+publishes each key’s account to the ledger, so `accountRequests` — the number
+credentials are sorted on — counts the whole bucket rather than the one key.
+Without it a user holding two keys is asked for twice the work of a user holding
+one, and the extra lands on the more exhausted of the two: measured the same day
+at 14:30 UTC, **508 + 508 = 1,016 requests through a 1,000/day account while the
+other sat at 737**, 263 short of its own ceiling. On `/health`, two
+`accounts[]` rows carrying the same `openRouterAccount` are one bucket, and both
+report that bucket’s combined `accountRequests`. A key the probe has not
+resolved stays its own account — guessing a grouping would halve the capacity of
+a workspace whose keys really are independent.
+
+Per-account daily ceilings are deliberately **not** enforced as a second gate.
+The total cap already bounds the day at `observedAccounts x 1,000`, and stacking
+a second paced window on top would park accounts that the ramp had simply not
+caught up with yet. Even distribution is what keeps each bucket under its own
+ceiling; if `accounts[]` shows one `openRouterAccount` far ahead of another,
+that is the ordering regressing, not a missing cap.
+
 **Free throughput scales with ACCOUNTS, not models.** OpenRouter's free
 allowance is a per-account daily request budget shared across every `:free`
 model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
@@ -215,7 +239,10 @@ model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
 nothing against it (all three rungs went into cooldown together, because they
 draw on one bucket); adding a key for another account buys a whole extra
 1,000/day. `OPENROUTER_API_KEY_4` is wired for exactly that — set it and load
-balancing picks the account up with no other change.
+balancing picks the account up with no other change. It has to be a key from an
+account APEX does not already hold: a second key on an existing account raises
+neither the ceiling nor the throughput, and `providerCredits.sharedQuota: true`
+is how that mistake announces itself.
 
 There is no paid credential list. The $10 historical deposit on each qualifying
 account exists only to lift its `:free` tier from ~200/day to 1,000/day.
@@ -231,8 +258,10 @@ Credentials are tried **least-loaded first**, so several accounts share a quota
 instead of the first one absorbing everything. Before that change one key took
 1,299 of 1,388 requests (94%) and was driven past its daily limit while the
 other two sat on 15 and 52 — three accounts delivering barely one account's
-worth. If `accounts[]` ever shows one account far ahead of the others again,
-that ordering has regressed.
+worth. "Least-loaded" is measured per ACCOUNT (see the clamp section above), so
+compare `accounts[].accountRequests` between distinct `openRouterAccount`
+values; comparing `requests` between rows that share one account will always
+look lopsided and mean nothing.
 
 Exceeding the cap shows as `llmCapacity.state: capped`; running ahead of the
 pacing ramp shows as `workforce_paused`. Neither is an outage — the ramp

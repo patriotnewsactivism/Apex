@@ -30,6 +30,7 @@
  * source text, so a rewrite that preserves the behaviour keeps passing.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -172,9 +173,15 @@ async function main(): Promise<void> {
   );
 
   // ── The pacing maths actually paces ──────────────────────────────────────
-  const { calculateRequestCapacityWindow } = (await import(
+  // Recording below would otherwise land in the real ledger file.
+  process.env.APEX_REQUEST_LEDGER_PATH = path.join(
+    os.tmpdir(),
+    `apex-request-budget-guard-${process.pid}.json`,
+  );
+  const ledgerModule = (await import(
     path.join(root, 'packages/core/src/request-ledger.ts')
   )) as typeof import('../packages/core/src/request-ledger.js');
+  const { calculateRequestCapacityWindow } = ledgerModule;
 
   const dayStart = Date.UTC(2026, 8, 12);
   const noon = dayStart + 12 * 60 * 60 * 1000;
@@ -372,19 +379,23 @@ async function main(): Promise<void> {
   check(
     'the enforced cap is clamped to the accounts actually observed',
     /export function effectiveRequestCap/.test(ledger) &&
-      /Math\.min\(configured, observedAccountCount \* freeRequestsPerAccount\(\)\)/.test(ledger),
+      /Math\.min\(configured, observedAccounts \* freeRequestsPerAccount\(\)\)/.test(ledger),
   );
   // The clamp must only ever lower the ceiling, and only on real data — a
   // failed probe reporting nothing must not starve the workforce.
   check(
     'a probe that has not reported leaves the configured cap untouched',
-    /if \(observedAccountCount === null\) return configured;/.test(ledger),
+    /if \(observedAccounts === null\) return configured;/.test(ledger),
   );
+  // The probe must publish WHICH account each key belongs to, not merely how
+  // many there are. A count alone fixes the cap and leaves the load balancer
+  // still levelling keys.
+  const credits = read('packages/core/src/provider-credits.ts');
   check(
-    'the credit probe publishes the distinct account count to the budget',
-    /setObservedAccountCount\(uniqueAccounts > 0 \? uniqueAccounts : null\)/.test(
-      read('packages/core/src/provider-credits.ts'),
-    ),
+    'the credit probe publishes each key\u2019s OpenRouter account to the budget',
+    /setObservedAccounts\(identities\.size > 0 \? identities : null\)/.test(credits) &&
+      /new Map<string, string>\(\s*inference\.map\(\(entry, index\) => \[entry\.fingerprint, accounts\[index\]\.account\]\),/
+        .test(credits),
   );
   // Every gate must consult the clamped cap; one that reads the raw configured
   // value re-opens the gap the clamp exists to close.
@@ -394,11 +405,109 @@ async function main(): Promise<void> {
     rawCapGates === 0,
     { rawCapGates },
   );
+  // Built into the snapshot AND forwarded by the handler. /health does not
+  // serve the snapshot; it re-maps it field by field, so a value can exist on
+  // the object and still never reach the operator. #151 shipped exactly that:
+  // both fields were built, neither was served, and a check that only read
+  // request-ledger.ts passed anyway.
   check(
-    'the clamp is visible on /health, not silently applied',
+    'the clamp is visible on the served /health payload, not just built',
     /configuredCap: totalRequestCap\(\)/.test(ledger) &&
-      /observedAccounts: getObservedAccountCount\(\)/.test(ledger),
+      /observedAccounts: getObservedAccountCount\(\)/.test(ledger) &&
+      /configuredCap: requestLedger\.configuredCap/.test(health) &&
+      /observedAccounts: requestLedger\.observedAccounts/.test(health),
   );
+  check(
+    'the account grouping and its combined load reach the served payload',
+    /openRouterAccount: account\.openRouterAccount/.test(health) &&
+      /accountRequests: account\.accountRequests/.test(health),
+  );
+
+  // ── Load is metered per ACCOUNT, not per key ─────────────────────────────
+  //
+  // The free allowance is one bucket per OpenRouter USER. The balancer sorts
+  // on requests-already-made-today, so if that number is per key, an account
+  // holding two keys is asked for twice the work of an account holding one —
+  // and the extra lands on a bucket that is already the more exhausted of the
+  // two. Live on 2026-09-14: 508 + 508 = 1,016 through a 1,000/day account
+  // while the other finished the window at 737.
+  //
+  // Run against the real module, with the shape the probe actually found:
+  // keys A1 and A2 issued by one user, key B by another.
+  const {
+    setObservedAccounts,
+    accountFingerprint,
+    accountRequestsToday,
+    recordProviderRequest,
+    getObservedAccountCount,
+    getRequestLedgerSnapshot,
+  } = ledgerModule;
+
+  const fp = (key: string): string => accountFingerprint(key);
+  const [keyA1, keyA2, keyB] = ['guard-key-a1', 'guard-key-a2', 'guard-key-b'];
+  const resolved = new Map([
+    [fp(keyA1), 'oracct_shared'],
+    [fp(keyA2), 'oracct_shared'],
+    [fp(keyB), 'oracct_solo'],
+  ]);
+  setObservedAccounts(resolved);
+
+  check(
+    'three keys across two users count as two accounts, so the cap is theirs',
+    getObservedAccountCount() === 2,
+    { observedAccounts: getObservedAccountCount() },
+  );
+
+  for (let i = 0; i < 40; i += 1) recordProviderRequest(keyA1, true);
+  for (let i = 0; i < 35; i += 1) recordProviderRequest(keyA2, true);
+  for (let i = 0; i < 50; i += 1) recordProviderRequest(keyB, true);
+
+  check(
+    'a key reports the load of its whole account, not of itself',
+    accountRequestsToday(fp(keyA1)) === 75 && accountRequestsToday(fp(keyA2)) === 75,
+    { a1: accountRequestsToday(fp(keyA1)), a2: accountRequestsToday(fp(keyA2)) },
+  );
+
+  // The assertion that separates the fix from the bug. Per key, B has served
+  // more than either of A's keys (50 > 40) and the balancer would reach for it
+  // LAST. Per account it has served fewer than A's bucket (50 < 75), so it is
+  // reached FIRST — which is the whole point, since A is the one near its
+  // ceiling.
+  check(
+    'the emptier account outranks a busier one whose individual keys look lighter',
+    accountRequestsToday(fp(keyB)) === 50 &&
+      accountRequestsToday(fp(keyB)) > 40 &&
+      accountRequestsToday(fp(keyB)) < accountRequestsToday(fp(keyA1)),
+    { b: accountRequestsToday(fp(keyB)), a: accountRequestsToday(fp(keyA1)) },
+  );
+
+  // /health has to show the grouping, or two rows at 508 look like two healthy
+  // accounts instead of one bucket 16 requests past its limit.
+  const grouped = getRequestLedgerSnapshot().accounts.filter(
+    (row) => row.openRouterAccount === 'oracct_shared',
+  );
+  check(
+    'the shared bucket and its combined load are visible on /health',
+    grouped.length === 2 && grouped.every((row) => row.accountRequests === 75),
+    grouped.map((row) => ({
+      openRouterAccount: row.openRouterAccount,
+      requests: row.requests,
+      accountRequests: row.accountRequests,
+    })),
+  );
+
+  // Fail open, exactly as the cap does: an unresolved probe must leave each key
+  // as its own account. Merging on a guess would halve the apparent capacity of
+  // a workspace whose keys really are independent.
+  setObservedAccounts(null);
+  check(
+    'an unresolved probe meters each key alone rather than guessing a grouping',
+    accountRequestsToday(fp(keyA1)) === 40 &&
+      accountRequestsToday(fp(keyA2)) === 35 &&
+      getObservedAccountCount() === null,
+    { a1: accountRequestsToday(fp(keyA1)), a2: accountRequestsToday(fp(keyA2)) },
+  );
+  setObservedAccounts(resolved);
 
   // ── Paid spend budget ────────────────────────────────────────────────────
   //

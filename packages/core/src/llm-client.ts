@@ -702,6 +702,11 @@ function providerRequirements(provider: ProviderSpec): string[] {
  * balancing: work spreads evenly, and an account approaching its quota sinks
  * to the back on its own without anyone configuring a limit. Ties keep the
  * declared order, so behaviour is deterministic when the day starts fresh.
+ *
+ * "Already made today" counts the whole ACCOUNT, not the key — see
+ * accountRequestsToday. Levelling keys is a different and wrong policy whenever
+ * one account holds two of them: on 2026-09-14 it put 1,016 requests through a
+ * 1,000/day account while another finished 263 short of its own.
  */
 function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key: string }> {
   const seenAccounts = new Set<string>();
@@ -717,6 +722,13 @@ function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key
       // Multiple env names holding the same key are one account. Retrying the
       // duplicate would burn another request against an already-exhausted
       // bucket and look like independent capacity.
+      //
+      // Two DIFFERENT keys on one account are deliberately both kept, even
+      // though they also share a bucket. The sort above already sinks the pair
+      // together once their shared account is the loaded one, so the duplicate
+      // is only ever reached deep in a failure cascade — and dropping it would
+      // silently cost the account's whole capacity if the surviving key were
+      // the revoked one.
       const fingerprint = accountFingerprint(entry.key);
       if (seenAccounts.has(fingerprint)) return false;
       seenAccounts.add(fingerprint);

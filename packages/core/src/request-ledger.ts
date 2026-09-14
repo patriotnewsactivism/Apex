@@ -170,34 +170,75 @@ function freeRequestsPerAccount(): number {
 }
 
 /**
- * Distinct OpenRouter ACCOUNTS behind the configured keys, as reported by the
- * credit probe. Pushed in rather than pulled, because provider-credits.ts
- * already imports accountFingerprint from this module and reaching back would
- * make the cycle.
+ * Which OpenRouter ACCOUNT each configured key belongs to, keyed by the key's
+ * fingerprint, as resolved by the credit probe. Pushed in rather than pulled,
+ * because provider-credits.ts already imports accountFingerprint from this
+ * module and reaching back would make the cycle.
  *
- * WHY THE CAP HAS TO KNOW THIS
+ * WHY THE LEDGER HAS TO KNOW THIS
  * ------------------------------------------------------------------
  * The free allowance is metered per ACCOUNT, but this ledger fingerprints
  * KEYS — so two distinct keys issued by one account look like two accounts to
  * the load balancer and to any cap expressed as "accounts x 1,000".
  *
- * That is not hypothetical. On 2026-09-14 the probe found 3 live keys across
- * 2 accounts: OPENROUTER_FREE_API_KEY and OPENROUTER_API_KEY_2 belong to the
- * same account and share one bucket. The configured cap of 2,800 therefore
- * exceeded the real ceiling of 2,000, and APEX would have spent the difference
- * collecting 429s while its own budget still showed headroom.
+ * That is not hypothetical, and it cost both. On 2026-09-14 the probe found 3
+ * live keys across 2 accounts: OPENROUTER_FREE_API_KEY and OPENROUTER_API_KEY_2
+ * belong to one account and draw on one bucket.
+ *
+ *   - The CAP read 2,800 against a true ceiling of 2,000, so APEX would have
+ *     spent the difference collecting 429s while its budget still showed room.
+ *   - The BALANCER levelled the three keys, which loads a two-key account twice
+ *     as hard as a one-key account. Measured that day at 14:30 UTC: 508 + 508 =
+ *     1,016 requests through the shared account, already past its 1,000/day
+ *     ceiling, while the other sat at 737 with 263 of its own going unused.
  */
-let observedAccountCount: number | null = null;
+let observedAccountByFingerprint: ReadonlyMap<string, string> = new Map();
 
-export function setObservedAccountCount(count: number | null): void {
-  observedAccountCount =
-    typeof count === 'number' && Number.isFinite(count) && count >= 1
-      ? Math.floor(count)
-      : null;
+export function setObservedAccounts(
+  identities: ReadonlyMap<string, string> | null,
+): void {
+  observedAccountByFingerprint =
+    identities && identities.size > 0 ? new Map(identities) : new Map();
 }
 
 export function getObservedAccountCount(): number | null {
-  return observedAccountCount;
+  if (observedAccountByFingerprint.size === 0) return null;
+  return new Set(observedAccountByFingerprint.values()).size;
+}
+
+/**
+ * Every configured key sharing an OpenRouter account with this one, itself
+ * included — the set the free tier meters as a single bucket.
+ *
+ * A key the probe has not resolved stays its own account. Guessing a grouping
+ * would merge two independent accounts into one counter and halve the
+ * workspace's apparent capacity, which is the more expensive way to be wrong.
+ */
+function accountSiblings(fingerprint: string): string[] {
+  const account = observedAccountByFingerprint.get(fingerprint);
+  if (account === undefined) return [fingerprint];
+  const siblings: string[] = [];
+  for (const [candidate, id] of observedAccountByFingerprint) {
+    if (id === account) siblings.push(candidate);
+  }
+  return siblings;
+}
+
+/** Public identity of the OpenRouter account behind a key, once the probe has
+ *  resolved it. Two keys reporting the same value share one free bucket. */
+export function observedAccountFor(fingerprint: string): string | null {
+  return observedAccountByFingerprint.get(fingerprint) ?? null;
+}
+
+/** Requests today across the whole account a key draws on. Read-only: the
+ *  caller owns day rollover, so a snapshot built at a synthetic instant cannot
+ *  be rolled out from under itself mid-build. */
+function requestsAcrossAccount(fingerprint: string): number {
+  let sum = 0;
+  for (const sibling of accountSiblings(fingerprint)) {
+    sum += state.accounts[sibling]?.requests ?? 0;
+  }
+  return sum;
 }
 
 /**
@@ -212,8 +253,9 @@ export function getObservedAccountCount(): number | null {
 export function effectiveRequestCap(): number {
   const configured = totalRequestCap();
   if (configured === 0) return 0;
-  if (observedAccountCount === null) return configured;
-  return Math.min(configured, observedAccountCount * freeRequestsPerAccount());
+  const observedAccounts = getObservedAccountCount();
+  if (observedAccounts === null) return configured;
+  return Math.min(configured, observedAccounts * freeRequestsPerAccount());
 }
 
 export function totalRequestCap(): number {
@@ -460,9 +502,19 @@ export function recordProviderRequest(apiKey: string, succeeded: boolean): void 
   }
 }
 
-export function accountRequestsToday(account: string): number {
+/**
+ * Requests today against the ACCOUNT a key draws on — the sum over every key
+ * the probe says shares it, because that shared bucket is what the free tier
+ * actually meters. Equals the key's own count when it is alone on its account,
+ * or whenever the probe has not resolved the mapping.
+ *
+ * This is the number the load balancer sorts on, so metering it per key rather
+ * than per account is what drove one account past its ceiling while another
+ * went unused.
+ */
+export function accountRequestsToday(fingerprint: string): number {
   rolloverIfNeeded();
-  return state.accounts[account]?.requests ?? 0;
+  return requestsAcrossAccount(fingerprint);
 }
 
 export function totalRequestsToday(): number {
@@ -614,7 +666,15 @@ export interface RequestLedgerSnapshot {
      *  fingerprint — that is an internal grouping identity derived from the
      *  key, and this payload is served without authentication. */
     account: string;
+    /** Public identity of the OpenRouter account this key belongs to, once the
+     *  credit probe has resolved it. Rows sharing a value share one free daily
+     *  bucket — which is the thing two env names cannot tell you. */
+    openRouterAccount: string | null;
     requests: number;
+    /** Requests today across every key on that account: what the free tier
+     *  meters and what the balancer levels. Equals `requests` when this key is
+     *  alone on its account. */
+    accountRequests: number;
     succeeded: number;
     failed: number;
     cap: number;
@@ -637,7 +697,9 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
         // removed mid-day; its spend still counts toward the workspace total,
         // so say so rather than dropping the row or leaking the hash.
         account: envNames.length > 0 ? envNames.join(' + ') : '(retired key)',
+        openRouterAccount: observedAccountFor(fingerprint),
         requests: entry.requests,
+        accountRequests: requestsAcrossAccount(fingerprint),
         succeeded: entry.succeeded,
         failed: Math.max(0, entry.requests - entry.succeeded),
         cap,
