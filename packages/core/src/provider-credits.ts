@@ -35,7 +35,7 @@
  */
 
 import { createHash } from 'crypto';
-import { accountFingerprint } from './request-ledger.js';
+import { accountFingerprint, setObservedAccountCount } from './request-ledger.js';
 
 const CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
 const KEY_URL = 'https://openrouter.ai/api/v1/key';
@@ -312,6 +312,14 @@ function summarize(accounts: ProviderAccountSnapshot[], management: ProviderMana
   const knownIds = new Set(accounts.map((account) => account.account));
   const uniqueAccounts = knownIds.size;
   const sharedQuota = loadedKeys > uniqueAccounts && uniqueAccounts > 0;
+
+  // Tell the request budget how many DISTINCT accounts are really behind the
+  // keys. The budget fingerprints keys, so without this two keys issued by one
+  // account read as two accounts and the cap silently exceeds the real free
+  // ceiling — observed 2026-09-14: 3 keys, 2 accounts, cap set to 2,800 against
+  // a true ceiling of 2,000. Only a positive count is published; a failed probe
+  // leaves the configured cap alone rather than starving the workforce.
+  setObservedAccountCount(uniqueAccounts > 0 ? uniqueAccounts : null);
 
   const withBalance = accounts.filter((account) => account.remaining !== null);
   const mostAlarming = withBalance.length > 0

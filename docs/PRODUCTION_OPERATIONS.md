@@ -192,6 +192,21 @@ APEX issued 1,388 requests in 26 minutes — comfortably under the day's budget,
 and enough to trip OpenRouter's own per-minute limiter and park every provider
 until the UTC reset.
 
+**The cap is clamped to the accounts actually observed.** `llmRequests.cap` is
+`min(configuredCap, observedAccounts x 1,000)`; `/health` reports both halves so
+a number that disagrees with configuration explains itself. The clamp only ever
+lowers the ceiling, and only on real probe data — a probe that has not reported
+leaves the configured value alone, so a network hiccup cannot starve the
+workforce by pretending there are fewer accounts than there are.
+
+This exists because the request ledger fingerprints KEYS while OpenRouter meters
+ACCOUNTS. On 2026-09-14 the credit probe found **3 live keys across 2 accounts**
+(`OPENROUTER_FREE_API_KEY` and `OPENROUTER_API_KEY_2` share one), so a cap of
+2,800 exceeded the true ceiling of 2,000 and APEX would have spent the
+difference collecting 429s while its own budget still showed headroom. Read
+`providerCredits.uniqueAccounts` and `sharedQuota` to see the real picture; a
+new key raises the ceiling only if it belongs to a NEW account.
+
 **Free throughput scales with ACCOUNTS, not models.** OpenRouter's free
 allowance is a per-account daily request budget shared across every `:free`
 model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
