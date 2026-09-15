@@ -60,19 +60,45 @@ COPY packages/ ./packages/
 RUN pnpm --filter @workspace/dashboard run build
 
 # ─── Stage 2: Production Runtime ──────────────────────────────────────────────
-FROM mirror.gcr.io/library/node:22-alpine AS runtime
+# DEBIAN, NOT ALPINE, AND THE REASON IS LOAD-BEARING.
+#
+# The runtime stage was node:22-alpine while the builder above is node:22-slim.
+# That split silently broke semantic memory: @xenova/transformers pulls
+# onnxruntime-node, whose prebuilt binary is linked against glibc, and musl has
+# no ld-linux-x86-64.so.2 for it to load. Production logged this every 30s to
+# two minutes from 2026-08-28 until the base images were matched:
+#
+#   Local embedding pipeline unavailable: Error loading shared library
+#   ld-linux-x86-64.so.2 ... libonnxruntime.so.1.14.0
+#   Vector recall failed, falling back to keyword search
+#
+# The failure was graceful, which is why it survived so long: memory.ts caught
+# it and degraded to keyword search, so agents kept working with worse recall
+# and nothing ever went red. The invariant to keep is simple -- this stage runs
+# `pnpm install` for the same lockfile the builder resolved, so its libc has to
+# be the one those prebuilt native modules were built for.
+FROM mirror.gcr.io/library/node:22-slim AS runtime
 
 # git is needed at runtime by @workspace/cicd-automation's ci-workspace.ts,
 # which maintains a separate scratch checkout (with devDependencies) to run
 # real typecheck/build verification -- isolated from this --prod-only image.
 #
-# chromium + its runtime libs are for QA Director's new browserCheck tool
-# (real headless-browser QA, added 2026-07-22). This is Alpine, and
-# Playwright's own bundled Chromium build needs glibc (doesn't work here) --
-# and the existing `pnpm install --ignore-scripts` already skips Playwright's
-# postinstall browser download anyway. So we use Alpine's native musl-built
-# chromium package instead and point Playwright at it via executablePath.
-RUN apk add --no-cache git chromium nss freetype freetype-dev harfbuzz ca-certificates ttf-freefont
+# chromium is for QA Director's browserCheck tool (real headless-browser QA,
+# added 2026-07-22). `pnpm install --ignore-scripts` skips Playwright's
+# postinstall browser download, so we install the distro's chromium and point
+# Playwright at it via executablePath; both call sites already probe
+# /usr/bin/chromium alongside Alpine's /usr/bin/chromium-browser.
+#
+# Only direct needs are listed. Alpine required nss/freetype/harfbuzz to be
+# named by hand; apt resolves them as chromium's own Depends, so spelling them
+# out here would only be a second place to get a package name wrong.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        chromium \
+        fonts-freefont-ttf \
+        git \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 

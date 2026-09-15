@@ -134,6 +134,63 @@ check(
   runtimeHealth.indexOf('APEX_BUILD_SHA') < runtimeHealth.indexOf('RAILWAY_GIT_COMMIT_SHA'),
 );
 
+console.log('\n── Runtime image ABI ──');
+
+// railway.toml builds production from this Dockerfile, so its stages are part
+// of the production contract. The runtime stage runs `pnpm install` against the
+// SAME lockfile the builder resolved, which means any prebuilt native module it
+// pulls has to match the runtime's libc.
+//
+// It did not, from 2026-08-28 to 2026-09-15: builder node:22-slim (glibc),
+// runtime node:22-alpine (musl). @xenova/transformers pulls onnxruntime-node,
+// whose prebuilt .so is glibc-linked, so semantic memory recall failed on every
+// lookup and fell back to keyword search. It survived weeks because memory.ts
+// catches it — nothing ever went red. A silent ABI split needs a loud check.
+const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
+const stageBases = [...dockerfile.matchAll(/^FROM\s+(\S+)\s+AS\s+(\S+)/gm)].map((m) => ({
+  image: m[1],
+  stage: m[2],
+}));
+const builderBase = stageBases.find((entry) => entry.stage === 'builder')?.image;
+const runtimeBase = stageBases.find((entry) => entry.stage === 'runtime')?.image;
+check(
+  'the runtime stage shares the builder\u2019s base image, so native modules keep their libc',
+  Boolean(builderBase) && builderBase === runtimeBase,
+  { builderBase, runtimeBase },
+);
+
+// A half-finished base swap is its own failure mode: the FROM changes and an
+// apk line is left behind, so the build breaks instead of degrading. Catch it
+// on the side that is cheap to check.
+const usesAlpineBase = /alpine/i.test(runtimeBase ?? '');
+check(
+  'the Dockerfile\u2019s package manager matches its base distro',
+  usesAlpineBase ? !/\bapt-get\b/.test(dockerfile) : !/\bapk\s+add\b/.test(dockerfile),
+  { runtimeBase, usesApk: /\bapk\s+add\b/.test(dockerfile), usesApt: /\bapt-get\b/.test(dockerfile) },
+);
+
+// The checks above read the Dockerfile as text. Text cannot tell you whether it
+// BUILDS, and until 2026-09-15 nothing anywhere did: CI had no docker step, and
+// Railway deploys from main with checkSuites disabled, so a Dockerfile that
+// failed to build reached production before anyone found out. The job that
+// closes that gap is itself worth pinning.
+const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+// Anchored to a real YAML mapping entry, not merely the words appearing
+// somewhere. The first version of this check matched /target:\s*runtime/ against
+// the whole file and passed when the step was switched to `target: builder`,
+// because the comment above it explains why the target is runtime. A check that
+// its own surrounding prose satisfies is not a check.
+check(
+  'CI builds the production runtime image, so a broken Dockerfile fails on the PR',
+  /docker\/build-push-action/.test(ciWorkflow) && /^\s+target:\s*runtime\s*$/m.test(ciWorkflow),
+);
+check(
+  'the built image is smoke-tested for the libc and binaries it must carry',
+  /ld-linux-x86-64\.so\.2/.test(ciWorkflow) &&
+    /libonnxruntime\.so/.test(ciWorkflow) &&
+    /chromium/.test(ciWorkflow),
+);
+
 // Retired AWS Lightsail/CodeBuild/Railway instructions are a deploy-provenance
 // hazard: an agent that follows them verifies the wrong (nonexistent)
 // infrastructure. Folded in here so it runs on every CI pass.

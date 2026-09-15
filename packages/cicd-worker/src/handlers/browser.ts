@@ -5,17 +5,18 @@
 //
 // Behavior difference from the original (deliberate): the old code hard
 // REQUIRED a system Chromium binary at /usr/bin/chromium-browser or
-// /usr/bin/chromium and threw if neither existed -- that was specifically
-// working around the old prod image being Alpine/musl (Playwright's own
-// bundled Chromium download needs glibc, and the image installed
-// --ignore-scripts so it was never downloaded anyway). This worker isn't
-// pinned to that image: on Windows dev machines, or a non-Alpine Railway
-// image, neither path exists. Rather than hard-failing there, this falls
-// back to Playwright's own bundled Chromium (undefined executablePath) --
-// which requires `npx playwright install chromium` to have been run once in
-// this environment. If a system Chromium binary IS present at one of the
-// original two paths (e.g. still running on the old Alpine image), it's
-// preferred, matching the original behavior exactly in that environment.
+// /usr/bin/chromium and threw if neither existed -- because the prod image
+// installs with --ignore-scripts, so Playwright's own bundled Chromium is
+// never downloaded there. This worker isn't pinned to that image: on a dev
+// machine neither path exists. Rather than hard-failing, it falls back to
+// Playwright's bundled Chromium (undefined executablePath), which requires
+// `npx playwright install chromium` to have been run once in that
+// environment. A system binary at either path still wins, matching the
+// original behavior exactly where one is present.
+//
+// Both paths stay in the list: the prod runtime image was Alpine
+// (/usr/bin/chromium-browser) until 2026-09-15 and is Debian
+// (/usr/bin/chromium) after it.
 import { existsSync } from 'fs';
 
 export interface BrowserCheckPayload {
