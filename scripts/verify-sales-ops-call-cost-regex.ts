@@ -63,9 +63,9 @@ async function main(): Promise<void> {
     (route.match(/substring\(\$\{logs\.message\} from \$\{CALL_COST_PATTERN\}\)/g) ?? []).length === 2,
   );
   check(
-    'every /overview,/call,/automate catch block uses errorMessage(), not a bare err.message',
+    'every catch block in this file uses errorMessage(), not a bare err.message (at least the original /overview, /call, /automate)',
     !/res\.status\(500\)\.json\(\{ error: err instanceof Error/.test(route) &&
-      (route.match(/error: errorMessage\(err\)/g) ?? []).length === 3,
+      (route.match(/error: errorMessage\(err\)/g) ?? []).length >= 3,
   );
 
   // ── Pure exports: run them, don't just read them ──────────────────────────

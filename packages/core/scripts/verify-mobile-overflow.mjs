@@ -54,7 +54,7 @@ const NASTY = [
   'ERROR provider chain exhausted: openrouter/deepseek-v4-flash 400 models_array_too_long; openrouter2/qwen3-max cooldown 30s; cerebras no key configured',
 ];
 const BOTTOM = ['Chat','Mission','Tasks','Agents','Settings'];
-const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Automation','Email Campaigns','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
+const DRAWER = ['Approvals','Agent Network','Log Stream','Sales Operations','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
 
 // Every nav id in App.tsx mapped to the label this harness clicks to reach it.
 // The bottom bar uses shorthand ('Mission', 'Tasks', 'Agents') where the drawer
@@ -68,7 +68,7 @@ const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Automation
 const NAV_ID_TO_LABEL = {
   chat: 'Chat', mission: 'Mission', approvals: 'Approvals',
   agents: 'Agents', tasks: 'Tasks', logs: 'Log Stream',
-  campaigns: 'Campaigns', automation: 'Automation', 'email-campaigns': 'Email Campaigns', leads: 'Leads', suggestions: 'Suggestions',
+  'sales-ops': 'Sales Operations', leads: 'Leads', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', settings: 'Settings',
@@ -100,6 +100,7 @@ const NAV_ID_TO_LABEL = {
   console.log(`   view coverage: all ${navIds.length} nav views are checked`);
 }
 const WIDTHS = [360, 390, 430];
+const SALES_OPS_SUBTABS = ['Overview', 'Calls', 'SMS', 'Email', 'Automation', 'Lead Campaigns'];
 
 // PLAYWRIGHT_CHROMIUM lets a sandbox point at a pre-installed browser whose
 // build number does not match the pinned playwright package.
@@ -229,6 +230,19 @@ for (const width of WIDTHS) {
     await page.waitForTimeout(350);
     await page.getByText(label, { exact:true }).first().click({ timeout:4000 }).catch(()=>{});
     await page.waitForTimeout(600); await measure(label);
+
+    // Sales Operations consolidated three former top-level pages (Campaigns,
+    // Automation, Email Campaigns) into one page with in-page sub-tabs. A
+    // drawer click only ever renders the default sub-tab, so without this the
+    // other five sub-tabs would silently lose the overflow coverage they had
+    // as standalone pages — the same class of gap the view-coverage check
+    // above exists to catch, just one level deeper.
+    if (label === 'Sales Operations') {
+      for (const sub of SALES_OPS_SUBTABS) {
+        await page.getByText(sub, { exact:true }).first().click({ timeout:4000 }).catch(()=>{});
+        await page.waitForTimeout(500); await measure(`Sales Ops › ${sub}`);
+      }
+    }
   }
   await ctx.close();
 }

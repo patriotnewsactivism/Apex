@@ -441,8 +441,9 @@ export function SingleCallLauncher() {
 
 // ─── Full automation launcher ────────────────────────────────────────────────
 
-/** Render controls that assign a sales target to autonomous execution. */
-function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
+/** Render controls that assign a sales target to autonomous execution.
+ *  Exported for reuse on SalesOperationsPanel — see CostAndMonitoring above. */
+export function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
   const [targetType, setTargetType] = useState<'pipeline' | 'lead' | 'campaign'>('pipeline');
   const [targetId, setTargetId] = useState('');
   const [autonomy, setAutonomy] = useState(overview.autonomyLevel || 'aggressive');
@@ -576,42 +577,7 @@ function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
   );
 }
 
-// ─── Panel ────────────────────────────────────────────────────────────────────
-//
-// Monitoring (CostAndMonitoring) and manual calling (SingleCallLauncher) moved
-// to CampaignsPanel, which is now the "monitor everything, place a call
-// manually" home. What's left here is deliberately just the bigger, separate
-// lever: handing the whole workforce's autonomy level and a goal to the Sales
-// org. It still needs the same overview query (autonomy presets/current
-// level), so this page fetches it independently rather than depending on
-// CampaignsPanel having been visited first.
-
-/** Load and compose the standalone full-automation control page. */
-export function AutomationPanel() {
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['sales-ops-overview'],
-    queryFn: () => api.salesOps.overview(),
-    refetchInterval: 8000,
-  });
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingBottom: 24, minWidth: 0, overflowWrap: 'anywhere' }}>
-      {isLoading && (
-        <div className="glass-card" style={{ padding: 24, color: 'var(--color-apex-muted)', fontSize: 13 }}>
-          Loading automation controls…
-        </div>
-      )}
-
-      {isError && (
-        <div
-          className="glass-card"
-          style={{ padding: 24, color: 'var(--color-apex-red)', fontSize: 13, fontFamily: 'var(--font-mono)' }}
-        >
-          Failed to load: {error instanceof Error ? error.message : String(error)}
-        </div>
-      )}
-
-      {data && <AutomationLauncher overview={data} />}
-    </div>
-  );
-}
+// Monitoring (CostAndMonitoring), manual calling (SingleCallLauncher), and
+// full automation (AutomationLauncher) are all exported above for composition
+// into SalesOperationsPanel.tsx, which is the single "Sales Operations" nav
+// destination now — this file itself no longer renders a standalone page.

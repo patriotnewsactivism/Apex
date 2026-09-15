@@ -42,6 +42,7 @@ async function main(): Promise<void> {
   const tools = read('packages/core/src/tool-registry.ts');
   const dashboardApi = read('packages/dashboard/src/lib/api.ts');
   const appTsx = read('packages/dashboard/src/App.tsx');
+  const salesOpsPanel = read('packages/dashboard/src/components/SalesOperationsPanel.tsx');
 
   // ── The route exists and covers the full lifecycle ───────────────────────
   check('lists every campaign', /router\.get\('\/', async/.test(route));
@@ -113,15 +114,19 @@ async function main(): Promise<void> {
       /list: \(\) => apiFetch<\{ campaigns: EmailCampaignProgress\[\] \}>\('\/email-campaigns'\)/.test(dashboardApi) &&
       /control: \(id: string, action: 'pause' \| 'resume' \| 'cancel'\)/.test(dashboardApi),
   );
+  // Sales Operations consolidated Campaigns/Automation/Email Campaigns into
+  // one nav destination with in-page sub-tabs (2026-09-15) — EmailCampaignsPanel
+  // is reachable through SalesOperationsPanel's Email sub-tab now, not its own
+  // top-level App.tsx entry. The panel component itself is untouched.
   check(
-    'EmailCampaignsPanel is imported and rendered for its own nav entry',
-    /import \{ EmailCampaignsPanel \} from '\.\/components\/EmailCampaignsPanel\.js';/.test(appTsx) &&
-      /'email-campaigns': <EmailCampaignsPanel \/>/.test(appTsx),
+    'EmailCampaignsPanel is imported and rendered inside SalesOperationsPanel\'s Email sub-tab',
+    /import \{ EmailCampaignsPanel \} from '\.\/EmailCampaignsPanel\.js';/.test(salesOpsPanel) &&
+      /tab === 'email' && <EmailCampaignsPanel \/>/.test(salesOpsPanel),
   );
   check(
-    'the nav item and page title exist so the panel is actually reachable',
-    /\{ id: 'email-campaigns', label: 'Email Campaigns'/.test(appTsx) &&
-      /'email-campaigns': \{ title: 'Email Campaigns', kicker: 'Business' \}/.test(appTsx),
+    'Sales Operations has a real nav entry and page title, so the panel is actually reachable',
+    /\{ id: 'sales-ops', label: 'Sales Operations'/.test(appTsx) &&
+      /'sales-ops': \{ title: 'Sales Operations', kicker: 'Business' \}/.test(appTsx),
   );
 
   // ── The one piece of real logic: run it, don't just read it ──────────────

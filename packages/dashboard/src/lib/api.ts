@@ -361,6 +361,14 @@ export const api = {
     /** Launch autonomous sales work for a pipeline, campaign, or lead. */
     automate: (body: SalesOpsAutomateRequest) =>
       apiFetch<SalesOpsAutomateResult>('/sales-ops/automate', { method: 'POST', body: JSON.stringify(body) }),
+    /** One row per SMS conversation, most recent first. */
+    smsThreads: () => apiFetch<SmsThreadSummary[]>('/sales-ops/sms/threads'),
+    /** The full two-way thread with one contact number. */
+    smsThread: (number: string) =>
+      apiFetch<SmsMessage[]>(`/sales-ops/sms/threads/${encodeURIComponent(number)}`),
+    /** Send one operator-initiated outbound SMS immediately. */
+    sendSms: (body: { toNumber: string; body: string }) =>
+      apiFetch<SmsSendResult>('/sales-ops/sms/send', { method: 'POST', body: JSON.stringify(body) }),
   },
 };
 
@@ -442,6 +450,34 @@ export interface SalesOpsAutomateResult {
   autonomyLevel: string | null;
   target: { type: string; id: string | null };
   message: string;
+}
+
+export interface SmsThreadSummary {
+  counterpartyNumber: string;
+  body: string;
+  direction: 'inbound' | 'outbound';
+  status: string;
+  createdAt: string;
+}
+
+export interface SmsMessage {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  counterpartyNumber: string;
+  fromNumber: string;
+  toNumber: string;
+  body: string;
+  status: string;
+  providerId: string | null;
+  errorMessage: string | null;
+  createdByAgentId: string | null;
+  createdAt: string;
+}
+
+export interface SmsSendResult {
+  success: boolean;
+  id?: string;
+  error?: string;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────

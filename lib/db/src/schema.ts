@@ -407,6 +407,28 @@ export const emailSuppressions = pgTable('email_suppressions', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+// ─── SMS (Telnyx front-desk number) ───────────────────────────────────────────
+//
+// One row per message, either direction, keyed for thread lookup by
+// counterpartyNumber — always the OTHER party's E.164 number regardless of
+// whether this row is inbound or outbound, so `WHERE counterparty_number = X
+// ORDER BY created_at` returns the full two-way conversation with one contact.
+export const smsMessages = pgTable('sms_messages', {
+  id: text('id').primaryKey(),
+  direction: text('direction').notNull(), // 'inbound' | 'outbound'
+  counterpartyNumber: text('counterparty_number').notNull(), // thread key — the other party's number
+  fromNumber: text('from_number').notNull(),
+  toNumber: text('to_number').notNull(),
+  body: text('body').notNull(),
+  status: text('status').notNull().default('queued'), // queued | sent | failed | received
+  providerId: text('provider_id'), // Telnyx message id, when Telnyx accepted an outbound send
+  errorMessage: text('error_message'),
+  createdByAgentId: text('created_by_agent_id'), // 'operator' for a manual send, an agent id for AI-sent
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  threadIdx: index('sms_messages_thread_idx').on(table.counterpartyNumber, table.createdAt),
+}));
+
 // ─── Health Metrics (time-series) ─────────────────────────────────────────────
 
 export const healthMetrics = pgTable('health_metrics', {
