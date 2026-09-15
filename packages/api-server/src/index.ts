@@ -41,6 +41,7 @@ import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
 import { createLeadsRouter } from './routes/leads.js';
 import { createCampaignsRouter } from './routes/campaigns.js';
+import { createEmailCampaignsRouter } from './routes/email-campaigns.js';
 import { createArtifactsRouter } from './routes/artifacts.js';
 import { createAutonomyRouter } from './routes/autonomy.js';
 import { createSalesOpsRouter } from './routes/sales-ops.js';
@@ -442,6 +443,7 @@ async function main() {
   app.use('/api/settings', createSettingsRouter());
   app.use('/api/leads', createLeadsRouter());
   app.use('/api/campaigns', createCampaignsRouter());
+  app.use('/api/email-campaigns', createEmailCampaignsRouter());
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));

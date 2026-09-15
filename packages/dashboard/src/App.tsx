@@ -20,6 +20,7 @@ import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { CampaignsPanel } from './components/CampaignsPanel.js';
 import { SalesOpsPanel } from './components/SalesOpsPanel.js';
+import { EmailCampaignsPanel } from './components/EmailCampaignsPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
 import { ArtifactsPanel } from './components/ArtifactsPanel.js';
@@ -49,6 +50,7 @@ import {
   Package,
   CalendarClock,
   PhoneCall,
+  Mail,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -244,6 +246,7 @@ function Sidebar({
       items: [
         { id: 'salesops', label: 'Sales Ops', icon: <PhoneCall size={16} /> },
         { id: 'campaigns', label: 'Campaigns', icon: <Crosshair size={16} /> },
+        { id: 'email-campaigns', label: 'Email Campaigns', icon: <Mail size={16} /> },
         { id: 'leads', label: 'Leads', icon: <Search size={16} /> },
         { id: 'suggestions', label: 'Suggestions', icon: <Lightbulb size={16} /> },
         { id: 'multiapp', label: 'Portfolio', icon: <FolderGit2 size={16} /> },
@@ -604,6 +607,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     tasks: <TaskBoard />,
     salesops: <SalesOpsPanel />,
     campaigns: <CampaignsPanel />,
+    'email-campaigns': <EmailCampaignsPanel />,
     leads: <LeadsPanel />,
     control: <ControlRoom />,
     artifacts: <ArtifactsPanel />,
@@ -636,6 +640,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     tasks: { title: 'Task Board', kicker: 'Workforce' },
     salesops: { title: 'Sales Operations', kicker: 'Business' },
     campaigns: { title: 'Lead Campaigns', kicker: 'Business' },
+    'email-campaigns': { title: 'Email Campaigns', kicker: 'Business' },
     leads: { title: 'Lead Pipeline', kicker: 'Business' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },

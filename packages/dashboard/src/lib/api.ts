@@ -194,6 +194,16 @@ export const api = {
       apiFetch<{ status: string }>(`/campaigns/${id}/${action}`, { method: 'POST' }),
   },
 
+  emailCampaigns: {
+    list: () => apiFetch<{ campaigns: EmailCampaignProgress[] }>('/email-campaigns').then((r) => r.campaigns),
+    get: (id: string) =>
+      apiFetch<{ campaign: EmailCampaignProgress & { subjectTemplate: string; bodyTemplate: string; result: string | null }; sends: EmailSendRow[] }>(
+        `/email-campaigns/${id}`,
+      ),
+    control: (id: string, action: 'pause' | 'resume' | 'cancel') =>
+      apiFetch<{ status: string }>(`/email-campaigns/${id}/${action}`, { method: 'POST' }),
+  },
+
   tools: {
     list: () => apiFetch<{ tools: ToolInfo[] }>('/tools').then((r) => r.tools),
     invoke: (name: string, args: Record<string, unknown>) =>
@@ -546,6 +556,49 @@ export interface CampaignSegment {
   duplicates: number;
   attempts: number;
   lastError: string | null;
+}
+
+export interface EmailCampaignProgress {
+  campaignId: string;
+  name: string;
+  status: string;
+  leadCampaignId: string | null;
+  goalId: string | null;
+  totalTargets: number;
+  sentCount: number;
+  failedCount: number;
+  percentComplete: number;
+  queued: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  bounced: number;
+  complained: number;
+  failed: number;
+  suppressed: number;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  lastProgressAt: string | null;
+}
+
+export interface EmailSendRow {
+  id: string;
+  campaignId: string | null;
+  leadId: string | null;
+  toEmail: string;
+  toName: string | null;
+  subject: string;
+  status: string;
+  errorMessage: string | null;
+  sentAt: string | null;
+  deliveredAt: string | null;
+  openedAt: string | null;
+  clickedAt: string | null;
+  bouncedAt: string | null;
+  complainedAt: string | null;
+  createdAt: string;
 }
 
 export interface ToolInfo {
