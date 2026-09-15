@@ -35,6 +35,7 @@ import { createLearningRouter } from './routes/learning.js';
 import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
+import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
@@ -417,6 +418,12 @@ async function main() {
   // outbound sales email (server-to-server, verified via Svix signature
   // instead of a Bearer token). Must be mounted BEFORE requireAdminAuth.
   app.use('/api/resend', createResendWebhookRouter());
+
+  // Apex Front Desk — Telnyx AI Assistant tool-calling surface (dynamic
+  // variables, take-message, send-confirmation, inbound SMS). Server-to-server
+  // from Telnyx, verified by a query-string key instead of a Bearer token.
+  // Must be mounted BEFORE requireAdminAuth for the same reason as the above.
+  app.use('/api/telnyx-assistant', createTelnyxAssistantRouter(ceo));
 
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
