@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   );
   check(
     'the SMS text is also a fixed template, not args-derived free text',
-    /text: `Apex: thanks for calling/.test(sendConfirmBody),
+    /const text = `Apex: thanks for calling/.test(sendConfirmBody),
   );
   check(
     'send_email is invoked with requestApproval auto-true (operator/system-initiated, matches sales-ops.ts precedent), not left ungated silently',

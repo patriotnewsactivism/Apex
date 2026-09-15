@@ -3,8 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CampaignProgress, type CampaignSegment } from '../lib/api.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
-import { CostAndMonitoring, SingleCallLauncher } from './SalesOpsPanel.js';
-import { Play, Pause, X, Plus, AlertTriangle, Target, ChevronDown, ChevronRight, PhoneCall } from 'lucide-react';
+import { Play, Pause, X, Plus, AlertTriangle, Target, ChevronDown, ChevronRight } from 'lucide-react';
 
 // A lead hunt runs for hours across dozens of territory cells. The job of this
 // screen is to answer three questions at a glance: how far along is it, what is
@@ -372,21 +371,18 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-export function CampaignsPanel() {
+// Monitoring (CostAndMonitoring) and manual calling (SingleCallLauncher) live
+// in SalesOpsPanel.tsx and are composed into SalesOperationsPanel.tsx's
+// Overview/Calls sub-tabs, alongside this lead-territory-hunt view. This
+// component is deliberately just the territory hunt now.
+
+/** Load and compose the lead-territory-hunt section of Sales Operations. */
+export function LeadCampaignsSection() {
   const [showForm, setShowForm] = useState(false);
-  const [showCallForm, setShowCallForm] = useState(false);
   const { data: campaigns = [], refetch } = useQuery({
     queryKey: ['campaigns'],
     queryFn: () => api.campaigns.list(),
     refetchInterval: 5000,
-  });
-
-  // Same query key SalesOpsPanel's AutomationPanel uses — one shared cache
-  // whichever page was opened first.
-  const { data: overview } = useQuery({
-    queryKey: ['sales-ops-overview'],
-    queryFn: () => api.salesOps.overview(),
-    refetchInterval: 8000,
   });
 
   // Polling alone makes an hours-long hunt look static between refreshes.
@@ -400,32 +396,7 @@ export function CampaignsPanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Monitor everything — always visible, this is the point of the page. */}
-      {overview && <CostAndMonitoring data={overview} />}
-
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        {!showCallForm && (
-          <button
-            className="btn-secondary"
-            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
-            onClick={() => setShowCallForm(true)}
-          >
-            <PhoneCall size={14} /> Place a call
-          </button>
-        )}
-      </div>
-      <AnimatePresence>
-        {showCallForm && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
-            <SingleCallLauncher />
-            <button className="btn-secondary" style={{ marginTop: 10, fontSize: 12 }} onClick={() => setShowCallForm(false)}>
-              Hide
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 6 }}>
         <div style={{ fontSize: 13, color: 'var(--color-apex-muted)' }}>
           {live.length} active · {finished.length} finished
         </div>

@@ -18,9 +18,7 @@ import { LearningPanel } from './components/LearningPanel.js';
 import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
-import { CampaignsPanel } from './components/CampaignsPanel.js';
-import { AutomationPanel } from './components/SalesOpsPanel.js';
-import { EmailCampaignsPanel } from './components/EmailCampaignsPanel.js';
+import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
 import { ArtifactsPanel } from './components/ArtifactsPanel.js';
@@ -28,7 +26,7 @@ import { ScheduledJobsPanel } from './components/ScheduledJobsPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
-  Crosshair,
+  Rocket,
   Network,
   Kanban,
   Terminal,
@@ -49,8 +47,6 @@ import {
   Brain,
   Package,
   CalendarClock,
-  Zap,
-  Mail,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -244,9 +240,7 @@ function Sidebar({
     {
       label: 'Business',
       items: [
-        { id: 'campaigns', label: 'Campaigns', icon: <Crosshair size={16} /> },
-        { id: 'automation', label: 'Automation', icon: <Zap size={16} /> },
-        { id: 'email-campaigns', label: 'Email Campaigns', icon: <Mail size={16} /> },
+        { id: 'sales-ops', label: 'Sales Operations', icon: <Rocket size={16} /> },
         { id: 'leads', label: 'Leads', icon: <Search size={16} /> },
         { id: 'suggestions', label: 'Suggestions', icon: <Lightbulb size={16} /> },
         { id: 'multiapp', label: 'Portfolio', icon: <FolderGit2 size={16} /> },
@@ -606,9 +600,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: <MissionControl />,
     agents: <AgentNetwork agents={agents} />,
     tasks: <TaskBoard />,
-    automation: <AutomationPanel />,
-    campaigns: <CampaignsPanel />,
-    'email-campaigns': <EmailCampaignsPanel />,
+    'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
     control: <ControlRoom />,
     artifacts: <ArtifactsPanel />,
@@ -639,9 +631,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: { title: 'Mission Control', kicker: 'Command' },
     agents: { title: 'Agent Network', kicker: 'Workforce' },
     tasks: { title: 'Task Board', kicker: 'Workforce' },
-    automation: { title: 'Full Automation', kicker: 'Business' },
-    campaigns: { title: 'Lead Campaigns', kicker: 'Business' },
-    'email-campaigns': { title: 'Email Campaigns', kicker: 'Business' },
+    'sales-ops': { title: 'Sales Operations', kicker: 'Business' },
     leads: { title: 'Lead Pipeline', kicker: 'Business' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },

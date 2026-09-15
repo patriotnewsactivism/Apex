@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { db, researchedLeads, logs } from '@workspace/db';
+import { db, researchedLeads, logs, smsMessages } from '@workspace/db';
 import { eq, or } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
 
@@ -249,21 +249,30 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
         if (!apiKey || !from) {
           errors.push('sms: TELNYX_API_KEY or APEX_FRONT_DESK_NUMBER not configured');
         } else {
+          const text = `Apex: thanks for calling — we received your message about "${reason}" and will follow up soon.`;
           try {
             const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
               method: 'POST',
               headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                from,
-                to: toPhone,
-                text: `Apex: thanks for calling — we received your message about "${reason}" and will follow up soon.`,
-              }),
+              body: JSON.stringify({ from, to: toPhone, text }),
             });
             if (!smsRes.ok) {
               errors.push(`sms: Telnyx returned ${smsRes.status}`);
             } else {
               sentVia.push('sms');
             }
+            await db.insert(smsMessages).values({
+              id: crypto.randomUUID(),
+              direction: 'outbound',
+              counterpartyNumber: toPhone,
+              fromNumber: from,
+              toNumber: toPhone,
+              body: text,
+              status: smsRes.ok ? 'sent' : 'failed',
+              errorMessage: smsRes.ok ? null : `Telnyx returned ${smsRes.status}`,
+              createdByAgentId: 'apex-front-desk',
+              createdAt: new Date(),
+            });
           } catch (err) {
             errors.push(`sms: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -311,12 +320,31 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
         ? fromPhone
         : (extractCallerNumber(body) || 'unknown');
       const text = typeof payload?.text === 'string' ? payload.text : '(no text)';
+      const toField = payload?.to;
+      const toEntry = Array.isArray(toField) ? (toField[0] as Record<string, unknown> | undefined) : undefined;
+      const to = typeof toEntry?.phone_number === 'string'
+        ? toEntry.phone_number
+        : (process.env.APEX_FRONT_DESK_NUMBER ?? 'unknown');
 
       const goalId = await ceo.submitGoal(
         `Front desk SMS: ${from}`,
         `An inbound text arrived at the Apex front desk number from ${from}: "${text}". Follow up directly.`,
         CALLER_NAME_GOAL_PRIORITY_NORMAL,
       );
+
+      // Persisted separately from the goal/log line above so the Sales
+      // Operations SMS thread view has real conversation history to render,
+      // not just a one-line summary buried in the agent log stream.
+      await db.insert(smsMessages).values({
+        id: crypto.randomUUID(),
+        direction: 'inbound',
+        counterpartyNumber: from,
+        fromNumber: from,
+        toNumber: to,
+        body: text,
+        status: 'received',
+        createdAt: new Date(),
+      });
 
       await db.insert(logs).values({
         agentId: 'apex-front-desk',

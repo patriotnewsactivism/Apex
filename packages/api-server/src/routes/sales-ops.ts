@@ -16,12 +16,19 @@
 //                     qualified pipeline) for full automation: set the workforce
 //                     autonomy level and hand the Sales org a goal to work it
 //                     end-to-end. The autonomous loops carry it from there.
+//   GET  /sms/threads       — one row per SMS conversation (most recent first).
+//   GET  /sms/threads/:number — the full two-way thread with one contact.
+//   POST /sms/send          — send ONE outbound SMS immediately, operator-
+//                     initiated from this console, same trust model as POST
+//                     /call. Inbound replies land via telnyx-assistant.ts's
+//                     /sms-inbound webhook into the same sms_messages table.
 //
 // Everything read here is a live query against durable state or the in-process
 // spend ledger — never fabricated. Mounted behind requireAdminAuth like every
 // other /api route.
 
 import { Router } from 'express';
+import crypto from 'crypto';
 import {
   db,
   researchedLeads,
@@ -30,6 +37,7 @@ import {
   emailSends,
   logs,
   integrationSettings,
+  smsMessages,
 } from '@workspace/db';
 import { eq, gte, sql } from 'drizzle-orm';
 import { getSpendLedgerSnapshot } from '@workspace/core';
@@ -47,8 +55,47 @@ const AUTONOMY_PRESETS: Record<string, { cron: string; label: string }> = {
 
 /** The paid-cost portion of an outbound call is only ever reported inside the
  *  Vapi end-of-call log line ("Cost: $0.1234"). Pull it out with a bound regex
- *  parameter rather than string-building the pattern into the SQL. */
-const CALL_COST_PATTERN = 'Cost: \\$([0-9.]+)';
+ *  parameter rather than string-building the pattern into the SQL.
+ *
+ *  The capture group allows AT MOST one decimal point on purpose. The pattern
+ *  is unanchored, and vapi.ts appends the LLM-generated call summary to the
+ *  same log line right after the cost — if that free-form text ever contains
+ *  its own "Cost: $<digits/dots>"-shaped substring (a price or version number
+ *  the model happened to mention), the old `[0-9.]+` would happily swallow a
+ *  second '.' (e.g. "4.12.34") and hand Postgres a value ::float8 rejects.
+ *  Postgres has no per-row fallback for a failed cast, so one such row 500'd
+ *  this entire endpoint — not just the cost figure, but leads/emails/
+ *  campaigns/autonomy too, since they all ride in the same Promise.all. This
+ *  shape can only ever match a well-formed number or fail to match at all. */
+export const CALL_COST_PATTERN = 'Cost: \\$([0-9]+(?:\\.[0-9]+)?)';
+
+/** Drizzle's postgres-js dialect wraps every driver error in a generic
+ *  "Failed query: <sql>\nparams: <params>" message and puts the actual
+ *  database error on `.cause` — a bare `err.message` in an API response
+ *  shows the query dump but hides the one line that says what went wrong
+ *  (exactly what happened when the substring/cast bug above first surfaced:
+ *  the operator saw the query text, never the "invalid input syntax for type
+ *  double precision" that actually explained it). Prefer the cause. */
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause instanceof Error && cause.message) return cause.message;
+    return err.message;
+  }
+  return String(err);
+}
+
+/** Validate and normalize an operator-entered destination number to E.164
+ *  shape (a leading '+', digits only). Returns null for anything that isn't a
+ *  plausible phone number. Shared by /call and /sms/send so both operator-
+ *  initiated-immediately actions agree on what a valid destination looks
+ *  like. Exported for direct guard testing. */
+export function normalizeE164(raw: unknown): string | null {
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  const normalized = trimmed.replace(/[\s()-]/g, '');
+  if (!/^\+?[0-9]{7,15}$/.test(normalized)) return null;
+  return normalized.startsWith('+') ? normalized : `+${normalized}`;
+}
 
 /** Return the start of the UTC day containing the supplied timestamp. */
 function startOfUtcDay(at = new Date()): Date {
@@ -252,7 +299,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         },
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: errorMessage(err) });
     }
   });
 
@@ -267,15 +314,13 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         leadId?: string;
       };
 
-      const rawNumber = typeof body.customerNumber === 'string' ? body.customerNumber.trim() : '';
-      const normalized = rawNumber.replace(/[\s()-]/g, '');
-      if (!/^\+?[0-9]{7,15}$/.test(normalized)) {
+      const customerNumber = normalizeE164(body.customerNumber);
+      if (!customerNumber) {
         res
           .status(400)
           .json({ error: 'A valid destination phone number in E.164 format (e.g. +18328804970) is required.' });
         return;
       }
-      const customerNumber = normalized.startsWith('+') ? normalized : `+${normalized}`;
 
       // Hydrate personalization from the lead pipeline when a leadId is given —
       // never from an arbitrary contact list.
@@ -334,7 +379,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
 
       res.status(success ? 200 : 502).json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: errorMessage(err) });
     }
   });
 
@@ -449,7 +494,108 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         message: `Automation launched. The Sales org will work this target autonomously${autonomyApplied ? ` at ${autonomyApplied} autonomy` : ''}.`,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── GET /sms/threads — one row per conversation, most recent first ──────────
+  router.get('/sms/threads', async (_req, res) => {
+    try {
+      const threads = (await db.execute(sql`
+        select distinct on (counterparty_number)
+          counterparty_number as "counterpartyNumber",
+          body,
+          direction,
+          status,
+          created_at as "createdAt"
+        from sms_messages
+        order by counterparty_number, created_at desc
+      `)) as unknown as Array<{ createdAt: string }>;
+      threads.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      res.json(threads);
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── GET /sms/threads/:number — full two-way thread with one contact ─────────
+  router.get('/sms/threads/:number', async (req, res) => {
+    try {
+      const number = req.params.number;
+      const messages = await db
+        .select()
+        .from(smsMessages)
+        .where(eq(smsMessages.counterpartyNumber, number))
+        .orderBy(smsMessages.createdAt);
+      res.json(messages);
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /sms/send — one outbound SMS, immediately ───────────────────────────
+  router.post('/sms/send', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { toNumber?: string; body?: string };
+
+      const toNumber = normalizeE164(body.toNumber);
+      if (!toNumber) {
+        res.status(400).json({ error: 'A valid destination phone number in E.164 format (e.g. +18328804970) is required.' });
+        return;
+      }
+
+      const text = typeof body.body === 'string' ? body.body.trim() : '';
+      if (!text) {
+        res.status(400).json({ error: 'Message text is required.' });
+        return;
+      }
+
+      const apiKey = process.env.TELNYX_API_KEY;
+      const fromNumber = process.env.APEX_FRONT_DESK_NUMBER;
+      if (!apiKey || !fromNumber) {
+        res.status(500).json({ error: 'TELNYX_API_KEY or APEX_FRONT_DESK_NUMBER is not configured.' });
+        return;
+      }
+
+      let providerId: string | undefined;
+      let status = 'sent';
+      let errorMsg: string | null = null;
+      try {
+        const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: fromNumber, to: toNumber, text }),
+        });
+        const json = (await smsRes.json().catch(() => null)) as { data?: { id?: string } } | null;
+        if (!smsRes.ok) {
+          status = 'failed';
+          errorMsg = `Telnyx returned ${smsRes.status}`;
+        } else {
+          providerId = json?.data?.id;
+        }
+      } catch (err) {
+        status = 'failed';
+        errorMsg = err instanceof Error ? err.message : String(err);
+      }
+
+      const id = crypto.randomUUID();
+      await db.insert(smsMessages).values({
+        id,
+        direction: 'outbound',
+        counterpartyNumber: toNumber,
+        fromNumber,
+        toNumber,
+        body: text,
+        status,
+        providerId,
+        errorMessage: errorMsg,
+        createdByAgentId: 'operator',
+        createdAt: new Date(),
+      });
+
+      res.status(status === 'sent' ? 200 : 502).json({ success: status === 'sent', id, error: errorMsg ?? undefined });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
     }
   });
 
