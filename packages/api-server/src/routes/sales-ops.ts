@@ -50,12 +50,14 @@ const AUTONOMY_PRESETS: Record<string, { cron: string; label: string }> = {
  *  parameter rather than string-building the pattern into the SQL. */
 const CALL_COST_PATTERN = 'Cost: \\$([0-9.]+)';
 
+/** Return the start of the UTC day containing the supplied timestamp. */
 function startOfUtcDay(at = new Date()): Date {
   const d = new Date(at);
   d.setUTCHours(0, 0, 0, 0);
   return d;
 }
 
+/** Persist an autonomy preset and reschedule the CEO goal-review cadence. */
 async function applyAutonomyPreset(level: string): Promise<boolean> {
   if (!Object.hasOwn(AUTONOMY_PRESETS, level)) return false;
   await db
@@ -93,6 +95,7 @@ async function applyAutonomyPreset(level: string): Promise<boolean> {
   return true;
 }
 
+/** Build the default outbound-call instructions for a prospective customer. */
 function defaultAssistantPrompt(name: string | undefined, angle: string | undefined): string {
   return [
     `You are Alex, a friendly and concise sales rep for BuildMyBot.app, an AI chatbot platform for small and mid-sized businesses.`,
@@ -105,12 +108,14 @@ function defaultAssistantPrompt(name: string | undefined, angle: string | undefi
     .join(' ');
 }
 
+/** Build the default opening line for an outbound sales call. */
 function defaultFirstMessage(name: string | undefined): string {
   return name
     ? `Hi, is this ${name}? I'm Alex from BuildMyBot.app — do you have a quick minute?`
     : `Hi there, I'm Alex from BuildMyBot.app — do you have a quick minute?`;
 }
 
+/** Create the authenticated router for sales monitoring and operator actions. */
 export function createSalesOpsRouter(ceo: ApexCEO): Router {
   const router = Router();
 
@@ -192,9 +197,11 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       };
 
       const spend = getSpendLedgerSnapshot();
+      /** Round currency ledger values to four decimal places for API output. */
       const round4 = (n: number) => Math.round(n * 10_000) / 10_000;
       const runningCostTodayUsd = round4(spend.spentUsd + (call.callSpendTodayUsd ?? 0));
 
+      /** Sum rows whose status represents an active campaign. */
       const countRunning = (rows: { status: string; n: number }[]) =>
         rows
           .filter((r) => r.status === 'running' || r.status === 'active')

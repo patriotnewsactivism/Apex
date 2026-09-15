@@ -11,11 +11,13 @@ import { PhoneCall, Zap, DollarSign, Mail, Users, AlertTriangle, Rocket } from '
 
 // ─── Small presentational helpers ──────────────────────────────────────────
 
+/** Format a nullable dollar amount for operator-facing metrics. */
 function usd(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** Render a compact labeled value in the sales monitoring grid. */
 function Metric({
   label,
   value,
@@ -56,6 +58,7 @@ function Metric({
   );
 }
 
+/** Render a consistent icon, title, and optional hint for a panel section. */
 function SectionTitle({ icon, title, hint }: { icon: React.ReactNode; title: string; hint?: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, minWidth: 0 }}>
@@ -95,6 +98,7 @@ const labelStyle: React.CSSProperties = {
   display: 'block',
 };
 
+/** Return the shared primary-action style for the requested disabled state. */
 function primaryButtonStyle(disabled: boolean): React.CSSProperties {
   return {
     padding: '10px 16px',
@@ -116,6 +120,7 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
 
 // ─── Running cost + monitoring ──────────────────────────────────────────────
 
+/** Render live spend, outreach, campaign, and lead-pipeline metrics. */
 function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
   const { spend, runningCost, calls, emails, leads, campaigns } = data;
   const capPct = spend.capUsd > 0 ? Math.min(100, (spend.spentUsd / spend.capUsd) * 100) : 0;
@@ -301,6 +306,7 @@ function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
 
 // ─── Single call launcher ────────────────────────────────────────────────────
 
+/** Render and submit the form for an immediate operator-initiated call. */
 function SingleCallLauncher() {
   const [number, setNumber] = useState('');
   const [name, setName] = useState('');
@@ -431,6 +437,7 @@ function SingleCallLauncher() {
 
 // ─── Full automation launcher ────────────────────────────────────────────────
 
+/** Render controls that assign a sales target to autonomous execution. */
 function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
   const [targetType, setTargetType] = useState<'pipeline' | 'lead' | 'campaign'>('pipeline');
   const [targetId, setTargetId] = useState('');
@@ -567,6 +574,7 @@ function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
 
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
+/** Load and compose the complete Sales Operations dashboard panel. */
 export function SalesOpsPanel() {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['sales-ops-overview'],

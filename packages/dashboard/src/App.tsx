@@ -590,6 +590,7 @@ function MobileBottomBar({
 
 // ─── Main app ─────────────────────────────────────────────────────────────────
 
+/** Compose the authenticated dashboard shell and its navigable panels. */
 function AppContent({ onLogout }: { onLogout: () => void }) {
   const [activePage, setActivePage] = useState('chat');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);

@@ -353,9 +353,12 @@ export const api = {
   },
 
   salesOps: {
+    /** Fetch the current spend, outreach, campaign, and pipeline summary. */
     overview: () => apiFetch<SalesOpsOverview>('/sales-ops/overview'),
+    /** Place one operator-initiated outbound call. */
     placeCall: (body: SalesOpsCallRequest) =>
       apiFetch<SalesOpsCallResult>('/sales-ops/call', { method: 'POST', body: JSON.stringify(body) }),
+    /** Launch autonomous sales work for a pipeline, campaign, or lead. */
     automate: (body: SalesOpsAutomateRequest) =>
       apiFetch<SalesOpsAutomateResult>('/sales-ops/automate', { method: 'POST', body: JSON.stringify(body) }),
   },

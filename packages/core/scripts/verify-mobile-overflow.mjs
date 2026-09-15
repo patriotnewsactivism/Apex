@@ -156,6 +156,7 @@ for (const width of WIDTHS) {
   await page.goto(`http://127.0.0.1:${PORT}/`,{waitUntil:'domcontentloaded'}).catch(()=>{});
   await page.waitForTimeout(1200);
 
+  /** Measure uncontained horizontal overflow and render failures for one view. */
   const measure = async (viewName) => {
     const r = await page.evaluate((vw)=>{
       const de=document.documentElement, out=[];
