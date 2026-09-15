@@ -17,7 +17,7 @@ Verified against the live service on 2026-09-15 (`https://apex.donmatthews.live/
 | Phase 1 acceptance check | Result |
 |---|---|
 | `/health` returns healthy | ✅ `status: ok` on both the Railway domain and `apex.donmatthews.live` |
-| `/health` reports the expected build SHA | ❌ still `unknown` — see "Build provenance on Railway" below. The first attempt at this did not work |
+| `/health` reports the expected build SHA | ✅ since 2026-09-15 16:40 UTC — see "Build provenance on Railway". The first attempt failed; the second is verified in production |
 | API authentication remains enforced | ✅ `/api/health` returns 401 |
 | Background scheduler/worker loops stay alive | ✅ 13 agents supervised, 13 alive, 0 stalled, 0 restarts; task queue 116/116 with 0 failures |
 | Free routing rotates across account buckets | ✅ and this is the proof the per-account balancer works: `oracct_15c46a8a` 358 requests against `oracct_d5f750b6` 352 + 6 = **358**. Two keys on one account, counted as one bucket, dead even with the other |
@@ -49,10 +49,25 @@ setting `APEX_BUILD_SHA` on the service reaches both the build and the runtime.
 It is set to the reference `${{RAILWAY_GIT_COMMIT_SHA}}` — Railway resolves
 built-in references even where the variable is not listed in the environment.
 
-It was set with deploys skipped, so it takes effect on the next deploy rather
-than restarting the workforce to prove a point. **Until a deploy carries it,
-this is unverified**: if `/health` still reports `unknown` afterwards, the
-reference does not resolve either and the SHA has to be passed some other way.
+It was set with deploys skipped, so it took effect on the next deploy rather
+than restarting the workforce to prove a point. **That deploy has happened and
+it works.** Merging #158 as `47c7d2f` triggered a Railway build, and `/health`
+answered 72 seconds after the restart:
+
+```
+main HEAD   47c7d2f
+/health     build.sha 47c7d2f09afd28dd0a6c83649ae57e247bc209c9
+```
+
+So the `${{...}}` reference resolves even though `RAILWAY_GIT_COMMIT_SHA` does
+not appear in the service's environment listing — Railway resolves built-in
+references at build time regardless. Release verification step one, "confirm
+the exact Git SHA that is live", now works on Railway.
+
+`build.builtAt` is still `null`: the matching fallback reads
+`RAILWAY_DEPLOYMENT_CREATED_AT`, which does not resolve the same way. The SHA
+is what release verification needs, so this is left as a known gap rather than
+chased with another guess.
 
 The `RAILWAY_GIT_COMMIT_SHA` fallback in `getBuildInfo()` is kept. It is inert
 here, correct where a host does provide that variable, and the explicit
