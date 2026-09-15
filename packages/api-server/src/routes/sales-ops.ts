@@ -47,8 +47,35 @@ const AUTONOMY_PRESETS: Record<string, { cron: string; label: string }> = {
 
 /** The paid-cost portion of an outbound call is only ever reported inside the
  *  Vapi end-of-call log line ("Cost: $0.1234"). Pull it out with a bound regex
- *  parameter rather than string-building the pattern into the SQL. */
-const CALL_COST_PATTERN = 'Cost: \\$([0-9.]+)';
+ *  parameter rather than string-building the pattern into the SQL.
+ *
+ *  The capture group allows AT MOST one decimal point on purpose. The pattern
+ *  is unanchored, and vapi.ts appends the LLM-generated call summary to the
+ *  same log line right after the cost — if that free-form text ever contains
+ *  its own "Cost: $<digits/dots>"-shaped substring (a price or version number
+ *  the model happened to mention), the old `[0-9.]+` would happily swallow a
+ *  second '.' (e.g. "4.12.34") and hand Postgres a value ::float8 rejects.
+ *  Postgres has no per-row fallback for a failed cast, so one such row 500'd
+ *  this entire endpoint — not just the cost figure, but leads/emails/
+ *  campaigns/autonomy too, since they all ride in the same Promise.all. This
+ *  shape can only ever match a well-formed number or fail to match at all. */
+export const CALL_COST_PATTERN = 'Cost: \\$([0-9]+(?:\\.[0-9]+)?)';
+
+/** Drizzle's postgres-js dialect wraps every driver error in a generic
+ *  "Failed query: <sql>\nparams: <params>" message and puts the actual
+ *  database error on `.cause` — a bare `err.message` in an API response
+ *  shows the query dump but hides the one line that says what went wrong
+ *  (exactly what happened when the substring/cast bug above first surfaced:
+ *  the operator saw the query text, never the "invalid input syntax for type
+ *  double precision" that actually explained it). Prefer the cause. */
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause instanceof Error && cause.message) return cause.message;
+    return err.message;
+  }
+  return String(err);
+}
 
 /** Return the start of the UTC day containing the supplied timestamp. */
 function startOfUtcDay(at = new Date()): Date {
@@ -252,7 +279,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         },
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: errorMessage(err) });
     }
   });
 
@@ -334,7 +361,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
 
       res.status(success ? 200 : 502).json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: errorMessage(err) });
     }
   });
 
@@ -449,7 +476,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         message: `Automation launched. The Sales org will work this target autonomously${autonomyApplied ? ` at ${autonomyApplied} autonomy` : ''}.`,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: errorMessage(err) });
     }
   });
 
