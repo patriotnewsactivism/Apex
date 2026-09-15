@@ -120,8 +120,11 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
 
 // ─── Running cost + monitoring ──────────────────────────────────────────────
 
-/** Render live spend, outreach, campaign, and lead-pipeline metrics. */
-function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
+/** Render live spend, outreach, campaign, and lead-pipeline metrics. Exported
+ *  for reuse on CampaignsPanel, which is now the "monitor everything" home —
+ *  this component's own definition stays here since AutomationLauncher below
+ *  still needs the same overview query this file already fetches. */
+export function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
   const { spend, runningCost, calls, emails, leads, campaigns } = data;
   const capPct = spend.capUsd > 0 ? Math.min(100, (spend.spentUsd / spend.capUsd) * 100) : 0;
   const capColor =
@@ -306,8 +309,9 @@ function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
 
 // ─── Single call launcher ────────────────────────────────────────────────────
 
-/** Render and submit the form for an immediate operator-initiated call. */
-function SingleCallLauncher() {
+/** Render and submit the form for an immediate operator-initiated call.
+ *  Exported for reuse on CampaignsPanel — see CostAndMonitoring above. */
+export function SingleCallLauncher() {
   const [number, setNumber] = useState('');
   const [name, setName] = useState('');
   const [firstMessage, setFirstMessage] = useState('');
@@ -573,9 +577,17 @@ function AutomationLauncher({ overview }: { overview: SalesOpsOverview }) {
 }
 
 // ─── Panel ────────────────────────────────────────────────────────────────────
+//
+// Monitoring (CostAndMonitoring) and manual calling (SingleCallLauncher) moved
+// to CampaignsPanel, which is now the "monitor everything, place a call
+// manually" home. What's left here is deliberately just the bigger, separate
+// lever: handing the whole workforce's autonomy level and a goal to the Sales
+// org. It still needs the same overview query (autonomy presets/current
+// level), so this page fetches it independently rather than depending on
+// CampaignsPanel having been visited first.
 
-/** Load and compose the complete Sales Operations dashboard panel. */
-export function SalesOpsPanel() {
+/** Load and compose the standalone full-automation control page. */
+export function AutomationPanel() {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['sales-ops-overview'],
     queryFn: () => api.salesOps.overview(),
@@ -586,7 +598,7 @@ export function SalesOpsPanel() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingBottom: 24, minWidth: 0, overflowWrap: 'anywhere' }}>
       {isLoading && (
         <div className="glass-card" style={{ padding: 24, color: 'var(--color-apex-muted)', fontSize: 13 }}>
-          Loading sales operations…
+          Loading automation controls…
         </div>
       )}
 
@@ -599,12 +611,7 @@ export function SalesOpsPanel() {
         </div>
       )}
 
-      {data && <CostAndMonitoring data={data} />}
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16 }}>
-        <SingleCallLauncher />
-        {data && <AutomationLauncher overview={data} />}
-      </div>
+      {data && <AutomationLauncher overview={data} />}
     </div>
   );
 }

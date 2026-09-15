@@ -424,15 +424,22 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       }
 
       // The target now exists and all input is valid; only now may the request
-      // change global autonomy or reschedule the CEO review job.
+      // touch anything. Goal submission runs FIRST: it's the thing "automation
+      // launched" actually means, so only a request that gets that far may go
+      // on to change global autonomy or reschedule the CEO review job. The
+      // reverse order let submitGoal throw AFTER the autonomy preset already
+      // committed — an operator seeing "failed" on screen while the workforce's
+      // autonomy level and goal-review cadence had already changed underneath
+      // them.
+      //
+      // priority 2 — just under a hand-typed emergency goal, above routine work.
+      const goalId = await ceo.submitGoal(title, description, 2);
+
       let autonomyApplied: string | null = null;
       if (body.autonomyLevel) {
         await applyAutonomyPreset(body.autonomyLevel);
         autonomyApplied = body.autonomyLevel;
       }
-
-      // priority 2 — just under a hand-typed emergency goal, above routine work.
-      const goalId = await ceo.submitGoal(title, description, 2);
 
       res.status(201).json({
         ok: true,
