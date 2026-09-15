@@ -9,6 +9,7 @@ _Describes the sales/lead-campaign engine as it actually exists in Apex (`packag
 - **Lead sourcing**: tool-registry connectors to Yelp, Google Places, Tavily, Brave Search, and Firecrawl (see `.env.example` for the exact credential names — no values reproduced here).
 - **API surface**: `/api/campaigns` (CRUD + action endpoints), `/api/leads` (list/export/stats/patch).
 - **Agent responsibility**: `LeadResearchAgent` (real outbound research against the configured ICP) and `SalesAgent` (pipeline review/prioritization — explicitly instructed to report when outreach isn't actually automated rather than fabricate activity, per its system prompt) own this domain, both under `COO`.
+- **Email campaigns** (`emailCampaigns`/`emailSends`/`emailSuppressions` tables, added 2026-09-06): agent tools `start_email_campaign` (enqueue only), `send_email_campaign_batch` (paced, approval-gated sending), `get_email_campaign_status`. Delivery status (`sent`/`delivered`/`opened`/`clicked`/`bounced`/`complained`/`failed`) updates live via the Resend webhook (`routes/resend-webhook.ts`), with automatic bounce/complaint suppression. Until 2026-09-15 this had no human-facing surface at all — no route, no dashboard — despite `send_email_campaign_batch` already checking for and refusing to send a `paused` campaign. `/api/email-campaigns` (`routes/email-campaigns.ts`) and the **Email Campaigns** dashboard panel now expose list/detail with a full delivery funnel, and pause/resume/cancel, mirroring the `/api/campaigns` pattern above. The route only ever reads `emailSends` and flips `emailCampaigns.status`; it never sends anything itself.
 
 ## Lifecycle mapping
 
@@ -23,6 +24,12 @@ The originating brief's suggested lifecycle (`DRAFT → RESEARCH → TARGETING �
 ## Guardrails **not** verified as in place
 
 This audit did not find, and did not add, explicit machinery for: provider-specific rate limits, spend caps scoped to a campaign, consent/suppression-list enforcement, or anti-spam-law-specific checks (e.g., CAN-SPAM/TCPA-style rules) at the campaign-execution layer. If real outbound campaigns are running today, confirm these exist somewhere in the actual outreach-provider integration (not found in `packages/background-jobs` or `packages/core/src/tool-registry.ts`'s campaign-adjacent tools during this audit) before scaling volume. This is exactly the kind of "unknown business policy" this audit's own instructions say to flag rather than guess at.
+
+Still true as of the 2026-09-15 email-campaigns surface work above: `emailSuppressions` covers bounce/complaint/manual opt-out, which is necessary but not sufficient for CAN-SPAM/TCPA-style compliance (no upfront consent tracking, no physical-address/unsubscribe-link enforcement in `bodyTemplate`). There is still no equivalent suppression concept for calling at all — see the call-campaign gap below. Do not read the new dashboard/API as a compliance control; it is observability and operator control over sends that were already happening, not a new guardrail on whether a send should happen.
+
+## Call campaigns: not built
+
+Unlike email, there is no bulk-calling campaign concept anywhere in the codebase — no `call_campaigns`/`call_sends` tables, no campaign-level dialer. `routes/vapi.ts` and `routes/telnyx-webhook.ts` are both single-call webhook receivers wired to one specific product flow (BuildMyBot inbound/outbound sales calls — Stripe checkout links, Deepgram-streamed inbound conversation), not a general outreach-campaign runner. Building one is a materially bigger and more sensitive step than the email surface above: real automated outbound calling carries TCPA/DNC/recording-consent exposure that has no code-level equivalent today. Treat this as a business-policy decision first, engineering second.
 
 ## Recommended next step
 

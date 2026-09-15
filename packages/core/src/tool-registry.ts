@@ -2541,7 +2541,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           return { campaignId, status: campaign.status, sent: 0, message: `Campaign is already ${campaign.status} — nothing to send.` };
         }
         if (campaign.status === 'paused') {
-          return { campaignId, status: campaign.status, sent: 0, message: 'Campaign is paused. Resume it (set its status back to running) before sending.' };
+          return { campaignId, status: campaign.status, sent: 0, message: 'Campaign is paused. An operator can resume it from the Email Campaigns dashboard, or POST /api/email-campaigns/:id/resume.' };
         }
 
         const limit = batchSize ?? 25;
