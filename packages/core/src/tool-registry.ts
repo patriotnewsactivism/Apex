@@ -552,16 +552,18 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ url, maxConsoleMessages }) {
         const { chromium } = await import('playwright');
         const { existsSync } = await import('fs');
-        // This image is Alpine (musl) -- Playwright's own bundled Chromium
-        // needs glibc and was never downloaded anyway (repo installs with
-        // --ignore-scripts). Use Alpine's native chromium apk package
-        // instead via executablePath. Check both common install paths.
+        // Playwright's own bundled Chromium is never downloaded here (the
+        // image installs with --ignore-scripts), so point it at the distro's
+        // chromium via executablePath. Both paths are checked because the
+        // runtime image moved from Alpine (/usr/bin/chromium-browser) to
+        // Debian (/usr/bin/chromium) on 2026-09-15, and this same code runs on
+        // dev machines that may have either.
         const candidatePaths = ['/usr/bin/chromium-browser', '/usr/bin/chromium'];
         const executablePath = candidatePaths.find((p) => existsSync(p));
         if (!executablePath) {
           throw new Error(
             `No system Chromium binary found at ${candidatePaths.join(' or ')}. ` +
-            `browserCheck requires the 'chromium' apk package to be installed in this image.`
+            `browserCheck requires the distro 'chromium' package to be installed in this image.`
           );
         }
         const browser = await chromium.launch({

@@ -73,7 +73,7 @@ The `RAILWAY_GIT_COMMIT_SHA` fallback in `getBuildInfo()` is kept. It is inert
 here, correct where a host does provide that variable, and the explicit
 `APEX_BUILD_SHA` outranks it in either case.
 
-### Vector recall is broken, and was before the cutover
+### Vector recall: fixed by matching the runtime libc (2026-09-15)
 
 Deploy logs show this every 30 seconds to two minutes:
 
@@ -84,19 +84,38 @@ ld-linux-x86-64.so.2: No such file or directory
 Vector recall failed, falling back to keyword search
 ```
 
-The runtime stage is `node:22-alpine` (musl), while `@xenova/transformers`
-pulls `onnxruntime-node`, whose prebuilt binary is linked against glibc and
-needs a loader Alpine does not ship. Both the Alpine runtime and that
-dependency arrived in the same commit (`71b8633`, 2026-08-28), so semantic
-memory recall has never worked in this image — Cloud Run included. This is not
-a cutover regression; Railway's logs are simply the first place it was read.
+The runtime stage was `node:22-alpine` (musl) while the builder was
+`node:22-slim` (glibc). `@xenova/transformers` pulls `onnxruntime-node`, whose
+prebuilt binary is glibc-linked and needs a loader Alpine does not ship. Both
+the Alpine runtime and that dependency arrived in the same commit (`71b8633`,
+2026-08-28), so semantic memory recall never worked in this image — Cloud Run
+included. It was not a cutover regression; Railway's logs were simply the first
+place anyone read it.
 
-It degrades rather than fails: `memory.ts` catches it and falls back to keyword
-search, so agents keep working with worse recall. Fixing it is a deliberate
-choice between adding glibc compatibility to the Alpine runtime, moving the
-runtime stage to `node:22-slim` to match the builder, or dropping the local
-embedding pipeline in favour of a hosted one — each changes the production
-image, so none should be done incidentally.
+It degraded rather than failed, which is why it lasted: `memory.ts` catches the
+error and falls back to keyword search, so agents kept working with worse recall
+and nothing ever went red.
+
+**The runtime stage is now `node:22-slim`, matching the builder.** That is the
+invariant the split violated: the runtime stage runs `pnpm install` against the
+same lockfile the builder resolved, so its libc has to be the one those prebuilt
+native modules were built for. `apk` becomes `apt-get`, and the hand-listed
+`nss`/`freetype`/`harfbuzz` packages go away because apt resolves them as
+chromium's own `Depends`.
+
+Chromium needed no code change: `tool-registry.ts` and `cicd-worker`'s
+`browser.ts` already probed `/usr/bin/chromium` alongside Alpine's
+`/usr/bin/chromium-browser`, so Debian's path was covered before the move.
+
+`scripts/verify-deploy-provenance.ts` now fails if the two stages diverge again,
+or if a base swap leaves the wrong package manager behind. A defect that
+degrades silently needs a check that does not.
+
+**Confirm it in production** after the deploy: the
+`Local embedding pipeline unavailable` and `Vector recall failed` lines should
+stop appearing in the Railway deploy logs. A first-run model download from
+Hugging Face is the next thing that could fail here, and only production will
+say whether it does.
 
 ### Outstanding after the forced cutover
 

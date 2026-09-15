@@ -134,6 +134,41 @@ check(
   runtimeHealth.indexOf('APEX_BUILD_SHA') < runtimeHealth.indexOf('RAILWAY_GIT_COMMIT_SHA'),
 );
 
+console.log('\n── Runtime image ABI ──');
+
+// railway.toml builds production from this Dockerfile, so its stages are part
+// of the production contract. The runtime stage runs `pnpm install` against the
+// SAME lockfile the builder resolved, which means any prebuilt native module it
+// pulls has to match the runtime's libc.
+//
+// It did not, from 2026-08-28 to 2026-09-15: builder node:22-slim (glibc),
+// runtime node:22-alpine (musl). @xenova/transformers pulls onnxruntime-node,
+// whose prebuilt .so is glibc-linked, so semantic memory recall failed on every
+// lookup and fell back to keyword search. It survived weeks because memory.ts
+// catches it — nothing ever went red. A silent ABI split needs a loud check.
+const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
+const stageBases = [...dockerfile.matchAll(/^FROM\s+(\S+)\s+AS\s+(\S+)/gm)].map((m) => ({
+  image: m[1],
+  stage: m[2],
+}));
+const builderBase = stageBases.find((entry) => entry.stage === 'builder')?.image;
+const runtimeBase = stageBases.find((entry) => entry.stage === 'runtime')?.image;
+check(
+  'the runtime stage shares the builder\u2019s base image, so native modules keep their libc',
+  Boolean(builderBase) && builderBase === runtimeBase,
+  { builderBase, runtimeBase },
+);
+
+// A half-finished base swap is its own failure mode: the FROM changes and an
+// apk line is left behind, so the build breaks instead of degrading. Catch it
+// on the side that is cheap to check.
+const usesAlpineBase = /alpine/i.test(runtimeBase ?? '');
+check(
+  'the Dockerfile\u2019s package manager matches its base distro',
+  usesAlpineBase ? !/\bapt-get\b/.test(dockerfile) : !/\bapk\s+add\b/.test(dockerfile),
+  { runtimeBase, usesApk: /\bapk\s+add\b/.test(dockerfile), usesApt: /\bapt-get\b/.test(dockerfile) },
+);
+
 // Retired AWS Lightsail/CodeBuild/Railway instructions are a deploy-provenance
 // hazard: an agent that follows them verifies the wrong (nonexistent)
 // infrastructure. Folded in here so it runs on every CI pass.
