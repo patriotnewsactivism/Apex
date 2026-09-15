@@ -19,7 +19,7 @@ import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { CampaignsPanel } from './components/CampaignsPanel.js';
-import { SalesOpsPanel } from './components/SalesOpsPanel.js';
+import { AutomationPanel } from './components/SalesOpsPanel.js';
 import { EmailCampaignsPanel } from './components/EmailCampaignsPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
@@ -49,7 +49,7 @@ import {
   Brain,
   Package,
   CalendarClock,
-  PhoneCall,
+  Zap,
   Mail,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
@@ -244,8 +244,8 @@ function Sidebar({
     {
       label: 'Business',
       items: [
-        { id: 'salesops', label: 'Sales Ops', icon: <PhoneCall size={16} /> },
         { id: 'campaigns', label: 'Campaigns', icon: <Crosshair size={16} /> },
+        { id: 'automation', label: 'Automation', icon: <Zap size={16} /> },
         { id: 'email-campaigns', label: 'Email Campaigns', icon: <Mail size={16} /> },
         { id: 'leads', label: 'Leads', icon: <Search size={16} /> },
         { id: 'suggestions', label: 'Suggestions', icon: <Lightbulb size={16} /> },
@@ -606,7 +606,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: <MissionControl />,
     agents: <AgentNetwork agents={agents} />,
     tasks: <TaskBoard />,
-    salesops: <SalesOpsPanel />,
+    automation: <AutomationPanel />,
     campaigns: <CampaignsPanel />,
     'email-campaigns': <EmailCampaignsPanel />,
     leads: <LeadsPanel />,
@@ -639,7 +639,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: { title: 'Mission Control', kicker: 'Command' },
     agents: { title: 'Agent Network', kicker: 'Workforce' },
     tasks: { title: 'Task Board', kicker: 'Workforce' },
-    salesops: { title: 'Sales Operations', kicker: 'Business' },
+    automation: { title: 'Full Automation', kicker: 'Business' },
     campaigns: { title: 'Lead Campaigns', kicker: 'Business' },
     'email-campaigns': { title: 'Email Campaigns', kicker: 'Business' },
     leads: { title: 'Lead Pipeline', kicker: 'Business' },
