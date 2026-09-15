@@ -98,6 +98,42 @@ check('production deployment requires explicit APEX_DEPLOY_ENABLED consent',
 check('health verification compares production to DEPLOY_SHA, not workflow metadata SHA',
   deployWorkflow.includes("expected=os.environ.get('DEPLOY_SHA')"));
 
+console.log('\n── Railway production provenance ──');
+
+// Railway is the production runtime as of the 2026-09-15 cutover. The Cloud Run
+// assertions above still hold because that workflow is kept intact as the
+// rollback route — but they no longer describe what serves traffic, so the
+// production contract has to be asserted in its own right.
+const railwayToml = fs.readFileSync(path.join(root, 'railway.toml'), 'utf8');
+check(
+  'Railway builds the repository Dockerfile rather than a detected buildpack',
+  /builder\s*=\s*"DOCKERFILE"/.test(railwayToml) &&
+    /dockerfilePath\s*=\s*"Dockerfile"/.test(railwayToml),
+);
+check(
+  'Railway gates a release on the same /health endpoint the deploy check reads',
+  /healthcheckPath\s*=\s*"\/health"/.test(railwayToml),
+);
+
+// The first step of release verification is "confirm the exact Git SHA that is
+// live". Railway never sets APEX_BUILD_SHA, so without this fallback /health
+// answered `sha: "unknown"` for every Railway deploy — observed 2026-09-15 on
+// the running production service.
+const runtimeHealth = fs.readFileSync(
+  path.join(root, 'packages/core/src/runtime-health.ts'),
+  'utf8',
+);
+check(
+  'the running commit is recoverable from /health on Railway, not just Cloud Run',
+  /process\.env\.APEX_BUILD_SHA \|\| process\.env\.RAILWAY_GIT_COMMIT_SHA \|\| 'unknown'/.test(
+    runtimeHealth,
+  ),
+);
+check(
+  'an explicit build SHA still outranks the inferred one',
+  runtimeHealth.indexOf('APEX_BUILD_SHA') < runtimeHealth.indexOf('RAILWAY_GIT_COMMIT_SHA'),
+);
+
 // Retired AWS Lightsail/CodeBuild/Railway instructions are a deploy-provenance
 // hazard: an agent that follows them verifies the wrong (nonexistent)
 // infrastructure. Folded in here so it runs on every CI pass.

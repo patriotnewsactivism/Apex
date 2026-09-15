@@ -4,17 +4,17 @@ APEX is a persistent, hierarchical multi-agent operating system for running engi
 
 This repository is the source for the APEX control plane and dashboard.
 
-## Production: Google Cloud Run
+## Production: Railway
 
-**APEX itself runs on Google Cloud Run.**
+**APEX itself runs on Railway** — project `APEX`, service `apex-backend`.
 
 Production URL: `https://apex.donmatthews.live`
 
-AWS Lightsail/CodeBuild is a retired APEX hosting path. Railway is not the current APEX production host; `docs/HOSTING_MIGRATION.md` documents the planned Cloud Run exit and must not be treated as a live cutover. Vercel, Railway, Render, and other platforms may still appear in connectors or client-project tooling because APEX can manage software deployed elsewhere; they are not the current host for the APEX control plane.
+Railway builds the repository `Dockerfile` (see `railway.toml`), health-checks `/health`, restarts on failure, and deploys itself from `main`. There is no deploy workflow in front of it, so **a push to `main` reaches production directly**.
 
-Do not redirect APEX production to another platform from this branch. Do not recreate the retired AWS deployment path. Do not deploy Railway, move DNS, or change Cloud Run until a separate explicit operator instruction.
+Google Cloud Run is a retired APEX hosting path: billing is disabled on project `apex-503709`, so it serves nothing. AWS Lightsail/CodeBuild is retired and must not be restored. The React dashboard also has a Vercel project; Vercel, Render, and other platforms may appear in connectors or client-project tooling because APEX can manage software deployed elsewhere. None of them hosts the APEX control plane.
 
-The production image is built by Google Cloud Build using `cloudbuild.apex.yaml`, then the **existing** Cloud Run service is updated to the immutable image. The deploy path intentionally uses `gcloud run services update` rather than creating a service, so existing Secret Manager references, environment variables, runtime service account, scaling, ingress, CPU/memory settings, and domain mapping are preserved.
+Do not redirect APEX production to another platform without an explicit operator instruction. `.github/workflows/deploy.yml` and `cloudbuild.apex.yaml` still describe the Cloud Run path — kept deliberately as the rollback route — and are gated behind the `APEX_DEPLOY_ENABLED` repository variable. Re-enabling them while GCP billing is disabled produces a failed deploy on every merge, not a deployment.
 
 A release is not complete until `https://apex.donmatthews.live/health` reports the exact expected `build.sha` and a healthy task queue.
 

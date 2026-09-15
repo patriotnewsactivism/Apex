@@ -91,18 +91,31 @@ export function isTaskQueueBroken(): boolean {
 const startedAt = new Date();
 
 export interface BuildInfo {
-  /** Commit the image was built from. 'unknown' when the build did not pass
-   *  APEX_BUILD_SHA — see docs/deploy-provenance.md for the buildspec line. */
+  /** Commit the image was built from, or 'unknown' when no builder supplied
+   *  one — see docs/deploy-provenance.md. */
   sha: string;
   builtAt: string | null;
   startedAt: string;
   uptimeSeconds: number;
 }
 
+/**
+ * Where the running commit comes from, in order of trust.
+ *
+ * APEX_BUILD_SHA is explicit and wins: a builder that states which commit it
+ * built is more trustworthy than one inferred from the environment.
+ *
+ * RAILWAY_GIT_COMMIT_SHA is the fallback because Railway injects it itself,
+ * from the commit it actually checked out, and nothing in this repo sets it.
+ * Without it /health reported `sha: "unknown"` for every Railway deploy, which
+ * defeats the first step of release verification — confirm the exact Git SHA
+ * that is live. Observed 2026-09-15: the backend was serving on Railway and
+ * could not say what it was serving.
+ */
 export function getBuildInfo(): BuildInfo {
   return {
-    sha: process.env.APEX_BUILD_SHA || 'unknown',
-    builtAt: process.env.APEX_BUILD_TIME || null,
+    sha: process.env.APEX_BUILD_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
+    builtAt: process.env.APEX_BUILD_TIME || process.env.RAILWAY_DEPLOYMENT_CREATED_AT || null,
     startedAt: startedAt.toISOString(),
     uptimeSeconds: Math.round((Date.now() - startedAt.getTime()) / 1000),
   };

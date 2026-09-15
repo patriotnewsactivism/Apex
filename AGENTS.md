@@ -20,11 +20,13 @@ If stale documentation is discovered while doing real work, fix it in the same w
 
 ## Current production runtime
 
-APEX itself runs on **Google Cloud Run** behind:
+APEX itself runs on **Railway** — project `APEX`, service `apex-backend` — behind:
 
 `https://apex.donmatthews.live`
 
-The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Railway is not the current APEX production host; a planned Cloud Run exit to Railway is documented in `docs/HOSTING_MIGRATION.md` and must not be deployed, DNS-cut, or charged from this branch. Vercel, Railway, Render, and other platforms may still appear as deployment targets for client projects APEX manages; none of them is the current APEX control-plane host.
+The cutover from Google Cloud Run happened on 2026-09-14/15 and is described in `docs/HOSTING_MIGRATION.md`. Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/health`, and deploys itself from `main`; there is no deployment workflow in front of it.
+
+Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. `.github/workflows/deploy.yml` still describes that path and is kept as the tested way back, but it is gated behind the `APEX_DEPLOY_ENABLED` repository variable and must not be re-enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own; none of them is the APEX control-plane host.
 
 A production release is complete only after all of these are true:
 
