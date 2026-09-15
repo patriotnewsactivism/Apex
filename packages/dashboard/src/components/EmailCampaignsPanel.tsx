@@ -172,7 +172,7 @@ function EmailCampaignCard({ campaign }: { campaign: EmailCampaignProgress }) {
                       color: 'var(--color-apex-muted)',
                     }}
                   >
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {send.toName ? `${send.toName} <${send.toEmail}>` : send.toEmail}
                     </span>
                     <span style={{ flex: 'none', color: STATUS_COLOR[send.status] ?? 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>

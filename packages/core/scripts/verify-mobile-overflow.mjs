@@ -54,7 +54,7 @@ const NASTY = [
   'ERROR provider chain exhausted: openrouter/deepseek-v4-flash 400 models_array_too_long; openrouter2/qwen3-max cooldown 30s; cerebras no key configured',
 ];
 const BOTTOM = ['Chat','Mission','Tasks','Agents','Settings'];
-const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
+const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Email Campaigns','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
 
 // Every nav id in App.tsx mapped to the label this harness clicks to reach it.
 // The bottom bar uses shorthand ('Mission', 'Tasks', 'Agents') where the drawer
@@ -68,7 +68,7 @@ const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Leads','Su
 const NAV_ID_TO_LABEL = {
   chat: 'Chat', mission: 'Mission', approvals: 'Approvals',
   agents: 'Agents', tasks: 'Tasks', logs: 'Log Stream',
-  campaigns: 'Campaigns', leads: 'Leads', suggestions: 'Suggestions',
+  campaigns: 'Campaigns', 'email-campaigns': 'Email Campaigns', leads: 'Leads', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', settings: 'Settings',
