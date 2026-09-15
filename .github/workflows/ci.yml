@@ -117,6 +117,82 @@ jobs:
       - name: Verify mobile layout
         run: node packages/core/scripts/verify-mobile-overflow.mjs
 
+  # Production is built from this Dockerfile by Railway (railway.toml), and
+  # Railway deploys from main with checkSuites disabled -- it does not wait for
+  # CI. Until this job existed, nothing anywhere built the image, so a Dockerfile
+  # that did not build reached production before anyone found out. The base-image
+  # swap on 2026-09-15 (node:22-alpine -> node:22-slim, apk -> apt-get) shipped
+  # on typecheck and text-matching guards alone.
+  #
+  # Runs on every PR rather than behind a path filter: native modules break on
+  # dependency changes, not just Dockerfile edits, and pnpm-lock.yaml churn is
+  # exactly the case worth catching. The GHA layer cache keeps repeat builds
+  # cheap; the first one after a base change is the expensive one, by design.
+  container-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # target: runtime, not the default final stage by accident -- the runtime
+      # stage is where apt-get runs and where `pnpm install --prod` resolves
+      # production dependencies. A builder-only build would miss precisely the
+      # class of failure this job exists to catch.
+      - name: Build the production runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: false
+          load: true
+          tags: apex-runtime:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Building is necessary but not sufficient. onnxruntime-node's prebuilt
+      # binary is glibc-linked, and on the musl base it built fine and then
+      # failed to load at runtime -- degrading to keyword search rather than
+      # crashing, which is why it went unnoticed from 2026-08-28 to 2026-09-15.
+      # These assertions are about what the image can actually LOAD.
+      - name: Smoke-test the runtime image
+        run: |
+          docker run --rm --entrypoint sh apex-runtime:ci -e -c '
+            set -eu
+
+            # 1. The glibc loader musl lacked. This is the exact missing file
+            #    from the production error: ld-linux-x86-64.so.2.
+            if [ ! -e /lib64/ld-linux-x86-64.so.2 ] \
+               && [ ! -e /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 ]; then
+              echo "FAIL: no glibc dynamic loader in the runtime image"
+              exit 1
+            fi
+
+            # 2. onnxruntime ships the .so that could not be loaded. Resolve its
+            #    dependencies the way the loader will at runtime.
+            so=$(find /app/node_modules/.pnpm -name "libonnxruntime.so*" 2>/dev/null | head -1)
+            if [ -z "$so" ]; then
+              echo "FAIL: libonnxruntime.so not found; @xenova/transformers should pull it"
+              exit 1
+            fi
+            if ldd "$so" | grep -q "not found"; then
+              echo "FAIL: unresolved shared libraries for $so"
+              ldd "$so" | grep "not found"
+              exit 1
+            fi
+
+            # 3. browserCheck probes these two paths and throws when neither
+            #    exists. The Alpine package installed /usr/bin/chromium-browser;
+            #    Debian installs /usr/bin/chromium.
+            if [ ! -x /usr/bin/chromium ] && [ ! -x /usr/bin/chromium-browser ]; then
+              echo "FAIL: no system chromium for browserCheck"
+              exit 1
+            fi
+
+            echo "OK: glibc loader, onnxruntime deps and chromium all present"
+          '
+
   convex-experimental:
     runs-on: ubuntu-latest
     timeout-minutes: 15

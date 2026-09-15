@@ -169,6 +169,28 @@ check(
   { runtimeBase, usesApk: /\bapk\s+add\b/.test(dockerfile), usesApt: /\bapt-get\b/.test(dockerfile) },
 );
 
+// The checks above read the Dockerfile as text. Text cannot tell you whether it
+// BUILDS, and until 2026-09-15 nothing anywhere did: CI had no docker step, and
+// Railway deploys from main with checkSuites disabled, so a Dockerfile that
+// failed to build reached production before anyone found out. The job that
+// closes that gap is itself worth pinning.
+const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+// Anchored to a real YAML mapping entry, not merely the words appearing
+// somewhere. The first version of this check matched /target:\s*runtime/ against
+// the whole file and passed when the step was switched to `target: builder`,
+// because the comment above it explains why the target is runtime. A check that
+// its own surrounding prose satisfies is not a check.
+check(
+  'CI builds the production runtime image, so a broken Dockerfile fails on the PR',
+  /docker\/build-push-action/.test(ciWorkflow) && /^\s+target:\s*runtime\s*$/m.test(ciWorkflow),
+);
+check(
+  'the built image is smoke-tested for the libc and binaries it must carry',
+  /ld-linux-x86-64\.so\.2/.test(ciWorkflow) &&
+    /libonnxruntime\.so/.test(ciWorkflow) &&
+    /chromium/.test(ciWorkflow),
+);
+
 // Retired AWS Lightsail/CodeBuild/Railway instructions are a deploy-provenance
 // hazard: an agent that follows them verifies the wrong (nonexistent)
 // infrastructure. Folded in here so it runs on every CI pass.
