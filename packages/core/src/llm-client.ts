@@ -1597,7 +1597,13 @@ export function describePipelineFailure(err: unknown): string {
     break;
   }
 
-  return parts.length > 0 ? parts.join(' <- caused by: ') : 'no error detail available';
+  // Collapsed to ONE line on purpose. sharp's failure message opens with a
+  // newline and runs to fifteen lines; Railway splits log entries on newlines,
+  // so it arrived as "Local embedding pipeline unavailable:" followed by
+  // fourteen separate entries. The cause was there the whole time and still
+  // took a raw unfiltered log read to find. One line cannot fragment.
+  const joined = parts.length > 0 ? parts.join(' <- caused by: ') : 'no error detail available';
+  return joined.replace(/\s+/g, ' ').trim();
 }
 
 async function getLocalPipeline() {

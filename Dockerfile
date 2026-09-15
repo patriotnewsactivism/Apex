@@ -129,7 +129,19 @@ COPY packages/executor/package.json ./packages/executor/
 COPY packages/executor/tsconfig.json ./packages/executor/
 
 # Production deps only, still pinned to the reviewed lockfile.
+#
+# --ignore-scripts is deliberate: no dependency gets to run arbitrary code at
+# build time. sharp is the one exception it cannot survive. @xenova/transformers
+# requires sharp, sharp ships no binary in its tarball, and its install script is
+# what fetches the prebuilt sharp-linux-x64.node. Skipped, the module throws on
+# import and semantic memory silently degrades to keyword search -- which is
+# exactly what production did until 2026-09-15.
+#
+# `pnpm rebuild -r sharp` runs that one package's install script and nothing
+# else, so the posture holds for every other dependency. It is a separate RUN so
+# a failure here is legible instead of being buried in the install layer.
 RUN pnpm install --frozen-lockfile --ignore-scripts --prod
+RUN pnpm rebuild -r sharp
 
 # Copy built source
 COPY --from=builder /app/lib ./lib

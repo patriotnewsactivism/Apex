@@ -8,14 +8,21 @@
  * nothing went red. The first cause was a musl/glibc mismatch in the runtime
  * image, fixed by matching the base images.
  *
- * Fixing it exposed the second problem. The very next deploy logged:
+ * Fixing it exposed the second cause: sharp. @xenova/transformers requires it,
+ * sharp ships no binary in its tarball, and the image installs with
+ * --ignore-scripts, so the install script that fetches sharp-linux-x64.node
+ * never ran.
+ *
+ * That cause was in the logs the whole time and still took a raw unfiltered
+ * read to find, because sharp's message opens with a newline and runs to
+ * fifteen lines. Railway splits entries on newlines, so it arrived as
  *
  *   [LLM] Local embedding pipeline unavailable:
  *
- * Nothing after the colon. `err.message` was the empty string, and the handler
- * interpolated it directly, so the replacement failure was undiagnosable from
- * the logs it produced. An error reporter that can render as no error at all
- * is the bug this guard exists to prevent.
+ * followed by fourteen separate entries, and any keyword filter over the logs
+ * matched the first line while hiding the diagnosis. Hence the rule this guard
+ * enforces: one line, cause chain included, whatever shape the error arrives
+ * in.
  *
  * The second half is the latch: `pipelineError` was sticky for the lifetime of
  * the process, so a single transient failure on first load -- and first load
@@ -40,6 +47,16 @@ function check(label: string, ok: boolean, detail?: unknown): void {
 console.log('Verifying embedding-pipeline diagnostics...\n');
 
 // ── The exact production symptom, by execution ──────────────────────────────
+// The real production shape: a multi-line message with a leading newline.
+const multiline = describePipelineFailure(
+  new Error('\nSomething went wrong installing the "sharp" module\n\nCannot find module\n- a\n- b'),
+);
+check(
+  'a multi-line error is collapsed to one line, so logs cannot fragment it',
+  !/\n/.test(multiline) && /sharp/.test(multiline) && /Cannot find module/.test(multiline),
+  multiline,
+);
+
 const empty = describePipelineFailure(new Error(''));
 check(
   'an Error with an empty message still produces a diagnosis',
@@ -105,6 +122,21 @@ const health = fs.readFileSync(
 check(
   'embedding state is served on /health, not only logged',
   /embeddings: getEmbeddingPipelineState\(\)/.test(health),
+);
+
+// ── The cause itself ────────────────────────────────────────────────────────
+const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
+// Anchored to a real RUN instruction. Matching the string anywhere in the file
+// passes on the comment above the line that explains it -- the third guard in
+// this session to be satisfied by its own prose. Prose is not an instruction.
+check(
+  'the image rebuilds sharp, whose install script --ignore-scripts skips',
+  /^RUN pnpm rebuild -r sharp\s*$/m.test(dockerfile),
+);
+const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+check(
+  'CI fails the build if the sharp native binary is missing from the image',
+  /sharp-\*\.node/.test(ciWorkflow),
 );
 
 console.log(

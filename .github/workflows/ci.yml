@@ -183,7 +183,16 @@ jobs:
               exit 1
             fi
 
-            # 3. browserCheck probes these two paths and throws when neither
+            # 3. @xenova/transformers requires sharp, sharp ships no binary in
+            #    its tarball, and --ignore-scripts skips the install script that
+            #    fetches one. Missing, the embedding pipeline throws on import and
+            #    semantic memory degrades to keyword search without going red.
+            if ! find /app/node_modules/.pnpm -name "sharp-*.node" 2>/dev/null | grep -q .; then
+              echo "FAIL: sharp native binary missing; pnpm rebuild -r sharp did not run"
+              exit 1
+            fi
+
+            # 4. browserCheck probes these two paths and throws when neither
             #    exists. The Alpine package installed /usr/bin/chromium-browser;
             #    Debian installs /usr/bin/chromium.
             if [ ! -x /usr/bin/chromium ] && [ ! -x /usr/bin/chromium-browser ]; then
@@ -191,7 +200,7 @@ jobs:
               exit 1
             fi
 
-            echo "OK: glibc loader, onnxruntime deps and chromium all present"
+            echo "OK: glibc loader, onnxruntime deps, sharp binary and chromium all present"
           '
 
   convex-experimental:
