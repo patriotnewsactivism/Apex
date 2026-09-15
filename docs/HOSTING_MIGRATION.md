@@ -1,10 +1,38 @@
 # APEX hosting migration plan
 
-## Current status
+## Current status — CUTOVER COMPLETE (2026-09-15)
 
-A private empty Railway project named `APEX` already exists. **No Railway service has been deployed.** This branch is portability preparation only. Do not deploy Railway, modify Cloud Run, move DNS, create a replacement database, duplicate the production scheduler, copy secrets into source control, or incur a hosting charge without a separate explicit operator instruction after CI is green.
+**Railway is production.** Project `APEX`, service `apex-backend`, region `ams`, one replica, built from the repository `Dockerfile` per `railway.toml`, health-checked on `/health`, deploying itself from `main`. The custom domain `apex.donmatthews.live` resolves to it.
 
-The eventual staging service must reuse the existing external durable database and existing secret names. The existing Dockerfile, long-running Node API, WebSockets/background workers, Chromium tooling, runtime Git tooling, `/health`, and `PORT` support are the deployment artifact. Vercel is only an optional later destination for the React dashboard; do not redesign the APEX backend into Vercel serverless functions.
+The plan below was written as preparation and was executed under pressure rather than in phases: Google Cloud Run stopped serving on 2026-09-14 when billing was disabled on project `apex-503709` — every route returned 503, and the image push was denied with "This API method requires billing to be enabled", so redeploying it was not an option either. Phases 2 and 3 (parallel rehearsal, then a planned freeze-and-switch) did not happen; the cutover was forced.
+
+What that leaves open, and what is verified, is tracked in "Post-cutover state" below. The phase descriptions are retained as the record of intent, not as instructions.
+
+The service reuses the existing external durable database and existing secret names. The existing Dockerfile, long-running Node API, WebSockets/background workers, Chromium tooling, runtime Git tooling, `/health`, and `PORT` support are the deployment artifact. Vercel is only an optional later destination for the React dashboard; do not redesign the APEX backend into Vercel serverless functions.
+
+## Post-cutover state
+
+Verified against the live service on 2026-09-15 (`https://apex.donmatthews.live/health`):
+
+| Phase 1 acceptance check | Result |
+|---|---|
+| `/health` returns healthy | ✅ `status: ok` on both the Railway domain and `apex.donmatthews.live` |
+| `/health` reports the expected build SHA | ❌ reported `unknown` — Railway sets `RAILWAY_GIT_COMMIT_SHA`, not `APEX_BUILD_SHA`. Fixed: `getBuildInfo()` now falls back to it |
+| API authentication remains enforced | ✅ `/api/health` returns 401 |
+| Background scheduler/worker loops stay alive | ✅ 13 agents supervised, 13 alive, 0 stalled, 0 restarts; task queue 116/116 with 0 failures |
+| Free routing rotates across account buckets | ✅ and this is the proof the per-account balancer works: `oracct_15c46a8a` 358 requests against `oracct_d5f750b6` 352 + 6 = **358**. Two keys on one account, counted as one bucket, dead even with the other |
+| Chromium/browser QA can launch in the container | ⚠️ not yet exercised on Railway |
+| Runtime Git workspace operations still work | ⚠️ not yet exercised on Railway |
+
+Request budget and spend carried over intact: `cap 2000`, `configuredCap 2000`, `observedAccounts 2`, spend $0.66 against the $2/day ceiling.
+
+### Outstanding after the forced cutover
+
+1. **Lead-research credentials were not carried over.** Cloud Run supplied `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY` and `TAVILY_API_KEY`; the Railway service has none of them. Lead contact enrichment and lead research degrade accordingly. These are the categories Phase 1 called "search/research integrations", and they matter most for outbound sales work.
+2. **`OPENROUTER_API_KEY_4` bought no capacity.** It is wired, but it is a second key on `oracct_d5f750b6`, an account APEX already holds through `OPENROUTER_FREE_API_KEY` — so `uniqueAccounts` is still 2, `sharedQuota` is still true, and the cap stays clamped at 2,000/day. A third *account* is what raises it to 3,000.
+3. **The Cloud Run deploy still fires on every green CI run.** It cannot succeed while billing is off, so each merge produces a failed deploy. Setting the `APEX_DEPLOY_ENABLED` repository variable to anything other than `production`/`all` makes the gate skip cleanly and exit 0 — no workflow edit required, and the rollback path stays intact.
+4. **Railway deploys without waiting for CI.** The service has `checkSuites: false`, so a push to `main` reaches production whether or not CI passes. The Cloud Run pipeline gated on `workflow_run.conclusion == 'success'`; that gate no longer exists anywhere.
+5. **One replica, no redundancy** (`ams`, `numReplicas: 1`). Cloud Run ran `minScale=1, maxScale=1` too, so this is not a regression — but it remains a single point of failure.
 
 ## Decision
 
