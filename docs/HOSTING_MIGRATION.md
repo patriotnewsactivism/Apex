@@ -17,7 +17,7 @@ Verified against the live service on 2026-09-15 (`https://apex.donmatthews.live/
 | Phase 1 acceptance check | Result |
 |---|---|
 | `/health` returns healthy | ✅ `status: ok` on both the Railway domain and `apex.donmatthews.live` |
-| `/health` reports the expected build SHA | ❌ reported `unknown` — Railway sets `RAILWAY_GIT_COMMIT_SHA`, not `APEX_BUILD_SHA`. Fixed: `getBuildInfo()` now falls back to it |
+| `/health` reports the expected build SHA | ❌ still `unknown` — see "Build provenance on Railway" below. The first attempt at this did not work |
 | API authentication remains enforced | ✅ `/api/health` returns 401 |
 | Background scheduler/worker loops stay alive | ✅ 13 agents supervised, 13 alive, 0 stalled, 0 restarts; task queue 116/116 with 0 failures |
 | Free routing rotates across account buckets | ✅ and this is the proof the per-account balancer works: `oracct_15c46a8a` 358 requests against `oracct_d5f750b6` 352 + 6 = **358**. Two keys on one account, counted as one bucket, dead even with the other |
@@ -25,6 +25,63 @@ Verified against the live service on 2026-09-15 (`https://apex.donmatthews.live/
 | Runtime Git workspace operations still work | ⚠️ not yet exercised on Railway |
 
 Request budget and spend carried over intact: `cap 2000`, `configuredCap 2000`, `observedAccounts 2`, spend $0.66 against the $2/day ceiling.
+
+### Build provenance on Railway
+
+`/health` reported `sha: "unknown"`, which defeats the first step of release
+verification. The first fix assumed Railway injects `RAILWAY_GIT_COMMIT_SHA`
+into the container and made `getBuildInfo()` fall back to it. **That assumption
+was wrong**, and the fix deployed on 7a023d2 without changing anything: the
+service environment carries eleven `RAILWAY_*` variables — `RAILWAY_ENVIRONMENT`,
+`RAILWAY_PROJECT_ID`, `RAILWAY_SERVICE_NAME`, `RAILWAY_PUBLIC_DOMAIN` and the
+rest — and none of them is a git SHA. Railway does not expose the git variables
+to this service, so the fallback reads a name that is not there.
+
+The mechanism that does work was already in the Dockerfile:
+
+```dockerfile
+ARG APEX_BUILD_SHA=unknown
+ENV APEX_BUILD_SHA=$APEX_BUILD_SHA
+```
+
+Railway passes a service variable into a Dockerfile build as a build arg, so
+setting `APEX_BUILD_SHA` on the service reaches both the build and the runtime.
+It is set to the reference `${{RAILWAY_GIT_COMMIT_SHA}}` — Railway resolves
+built-in references even where the variable is not listed in the environment.
+
+It was set with deploys skipped, so it takes effect on the next deploy rather
+than restarting the workforce to prove a point. **Until a deploy carries it,
+this is unverified**: if `/health` still reports `unknown` afterwards, the
+reference does not resolve either and the SHA has to be passed some other way.
+
+The `RAILWAY_GIT_COMMIT_SHA` fallback in `getBuildInfo()` is kept. It is inert
+here, correct where a host does provide that variable, and the explicit
+`APEX_BUILD_SHA` outranks it in either case.
+
+### Vector recall is broken, and was before the cutover
+
+Deploy logs show this every 30 seconds to two minutes:
+
+```
+Local embedding pipeline unavailable: Error loading shared library
+ld-linux-x86-64.so.2: No such file or directory
+(needed by .../onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime.so.1.14.0)
+Vector recall failed, falling back to keyword search
+```
+
+The runtime stage is `node:22-alpine` (musl), while `@xenova/transformers`
+pulls `onnxruntime-node`, whose prebuilt binary is linked against glibc and
+needs a loader Alpine does not ship. Both the Alpine runtime and that
+dependency arrived in the same commit (`71b8633`, 2026-08-28), so semantic
+memory recall has never worked in this image — Cloud Run included. This is not
+a cutover regression; Railway's logs are simply the first place it was read.
+
+It degrades rather than fails: `memory.ts` catches it and falls back to keyword
+search, so agents keep working with worse recall. Fixing it is a deliberate
+choice between adding glibc compatibility to the Alpine runtime, moving the
+runtime stage to `node:22-slim` to match the builder, or dropping the local
+embedding pipeline in favour of a hosted one — each changes the production
+image, so none should be done incidentally.
 
 ### Outstanding after the forced cutover
 
