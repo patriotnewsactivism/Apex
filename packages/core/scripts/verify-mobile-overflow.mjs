@@ -54,7 +54,7 @@ const NASTY = [
   'ERROR provider chain exhausted: openrouter/deepseek-v4-flash 400 models_array_too_long; openrouter2/qwen3-max cooldown 30s; cerebras no key configured',
 ];
 const BOTTOM = ['Chat','Mission','Tasks','Agents','Settings'];
-const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Email Campaigns','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
+const DRAWER = ['Sales Ops','Approvals','Agent Network','Log Stream','Campaigns','Email Campaigns','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
 
 // Every nav id in App.tsx mapped to the label this harness clicks to reach it.
 // The bottom bar uses shorthand ('Mission', 'Tasks', 'Agents') where the drawer
@@ -68,7 +68,7 @@ const DRAWER = ['Approvals','Agent Network','Log Stream','Campaigns','Email Camp
 const NAV_ID_TO_LABEL = {
   chat: 'Chat', mission: 'Mission', approvals: 'Approvals',
   agents: 'Agents', tasks: 'Tasks', logs: 'Log Stream',
-  campaigns: 'Campaigns', 'email-campaigns': 'Email Campaigns', leads: 'Leads', suggestions: 'Suggestions',
+  campaigns: 'Campaigns', salesops: 'Sales Ops', 'email-campaigns': 'Email Campaigns', leads: 'Leads', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', settings: 'Settings',
@@ -130,6 +130,19 @@ for (const width of WIDTHS) {
   page.on('pageerror', (e) => pageErrors.push(e.message));
   await page.route('**/api/**', (route)=>{ const u=route.request().url();
     const j=(b)=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(b)});
+    if(u.includes('/sales-ops/overview')) return j({
+      generatedAt: new Date().toISOString(), autonomyLevel: 'balanced',
+      autonomyPresets: [
+        {id:'balanced',label:'Balanced — goal review every 15 min (default)'},
+        {id:'aggressive',label:'Aggressive — goal review every 10 min, max throughput'},
+      ],
+      spend: {spentUsd:1.25,projectedUsd:2.5,capUsd:10,remainingUsd:8.75,state:'ok',pacingEnabled:true,persistence:'durable',providers:[{provider:'openrouter',spentUsd:1.25}]},
+      runningCost: {todayUsd:1.75,llmSpendTodayUsd:1.25,callSpendTodayUsd:0.5,projectedLlmUsd:2.5,dailyCapUsd:10},
+      calls: {placedToday:2,placedTotal:10,completedToday:1,completedTotal:9,checkoutLinksTotal:3,spendTodayUsd:0.5,spendTotalUsd:4.5},
+      emails: {sentToday:12,total:200,byStatus:{delivered:180,opened:90,bounced:2}},
+      leads: {total:1284,byStatus:{new:200,contacted:600,qualified:400,converted:84}},
+      campaigns: {leadRunning:2,emailRunning:1},
+    });
     if(u.includes('/auth/websocket-ticket')) return j({ticket:'tkt'});
     if(u.includes('/health/components')) return j([{id:'db',name:'Primary Database (supabase pooler, us-east-2)',status:'healthy',latencyMs:12}]);
     if(u.includes('/health/alerts')) return j([]);
@@ -143,6 +156,7 @@ for (const width of WIDTHS) {
   await page.goto(`http://127.0.0.1:${PORT}/`,{waitUntil:'domcontentloaded'}).catch(()=>{});
   await page.waitForTimeout(1200);
 
+  /** Measure uncontained horizontal overflow and render failures for one view. */
   const measure = async (viewName) => {
     const r = await page.evaluate((vw)=>{
       const de=document.documentElement, out=[];

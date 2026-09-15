@@ -44,6 +44,7 @@ import { createCampaignsRouter } from './routes/campaigns.js';
 import { createEmailCampaignsRouter } from './routes/email-campaigns.js';
 import { createArtifactsRouter } from './routes/artifacts.js';
 import { createAutonomyRouter } from './routes/autonomy.js';
+import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
@@ -445,6 +446,7 @@ async function main() {
   app.use('/api/email-campaigns', createEmailCampaignsRouter());
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
+  app.use('/api/sales-ops', createSalesOpsRouter(ceo));
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs

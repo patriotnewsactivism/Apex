@@ -351,7 +351,98 @@ export const api = {
     update: (data: { autonomy_level?: string }) =>
       apiFetch<{ ok: boolean }>('/settings/system', { method: 'PUT', body: JSON.stringify(data) }),
   },
+
+  salesOps: {
+    /** Fetch the current spend, outreach, campaign, and pipeline summary. */
+    overview: () => apiFetch<SalesOpsOverview>('/sales-ops/overview'),
+    /** Place one operator-initiated outbound call. */
+    placeCall: (body: SalesOpsCallRequest) =>
+      apiFetch<SalesOpsCallResult>('/sales-ops/call', { method: 'POST', body: JSON.stringify(body) }),
+    /** Launch autonomous sales work for a pipeline, campaign, or lead. */
+    automate: (body: SalesOpsAutomateRequest) =>
+      apiFetch<SalesOpsAutomateResult>('/sales-ops/automate', { method: 'POST', body: JSON.stringify(body) }),
+  },
 };
+
+// ─── Sales Ops Types ───────────────────────────────────────────────────────
+
+export interface SalesOpsSpend {
+  day: string;
+  persistence: string;
+  spentUsd: number;
+  capUsd: number;
+  releasedUsd: number;
+  remainingUsd: number;
+  pacingEnabled: boolean;
+  state: string;
+  resumeAt: string | null;
+  projectedUsd: number | null;
+  providers: Array<{ provider: string; spentUsd: number }>;
+}
+
+export interface SalesOpsOverview {
+  generatedAt: string;
+  autonomyLevel: string;
+  autonomyPresets: Array<{ id: string; label: string }>;
+  spend: SalesOpsSpend;
+  calls: {
+    placedToday: number;
+    placedTotal: number;
+    completedToday: number;
+    completedTotal: number;
+    checkoutLinksTotal: number;
+    spendTodayUsd: number;
+    spendTotalUsd: number;
+  };
+  emails: {
+    sentToday: number;
+    total: number;
+    byStatus: Record<string, number>;
+  };
+  leads: {
+    total: number;
+    byStatus: Record<string, number>;
+  };
+  campaigns: {
+    leadRunning: number;
+    emailRunning: number;
+  };
+  runningCost: {
+    todayUsd: number;
+    llmSpendTodayUsd: number;
+    callSpendTodayUsd: number;
+    projectedLlmUsd: number | null;
+    dailyCapUsd: number;
+  };
+}
+
+export interface SalesOpsCallRequest {
+  customerNumber: string;
+  customerName?: string;
+  assistantPrompt?: string;
+  firstMessage?: string;
+  leadId?: string;
+}
+
+export interface SalesOpsCallResult {
+  success?: boolean;
+  error?: string;
+  callId?: string;
+  [key: string]: unknown;
+}
+
+export interface SalesOpsAutomateRequest {
+  autonomyLevel?: string;
+  target: { type: 'lead' | 'campaign' | 'pipeline'; id?: string };
+}
+
+export interface SalesOpsAutomateResult {
+  ok: boolean;
+  goalId: string;
+  autonomyLevel: string | null;
+  target: { type: string; id: string | null };
+  message: string;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
