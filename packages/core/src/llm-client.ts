@@ -1556,23 +1556,101 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
 
 let localPipeline: any = null;
 let pipelineError: string | null = null;
+let pipelineAttempts = 0;
+let pipelineRetryAt = 0;
+
+/** First load fetches Xenova/all-MiniLM-L6-v2 from Hugging Face, so it depends
+ *  on the network. Retry it a few times rather than never again, but cap the
+ *  attempts so a genuinely unreachable model cannot become a boot-loop. */
+const PIPELINE_MAX_ATTEMPTS = 4;
+const PIPELINE_RETRY_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * Everything the thrower knew, because `err.message` alone did not survive
+ * contact with production.
+ *
+ * On 2026-09-15 the musl/glibc mismatch was fixed and this path kept failing
+ * with `Local embedding pipeline unavailable:` and nothing after the colon:
+ * an Error whose message is the empty string renders as no diagnosis at all.
+ * name, code and the cause chain are read separately for that reason, and the
+ * constructor name is the last resort when every field is empty.
+ */
+export function describePipelineFailure(err: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const entry: string[] = [];
+    if (current instanceof Error) {
+      if (current.name && current.name !== 'Error') entry.push(current.name);
+      if (current.message) entry.push(current.message);
+      const code = (current as { code?: unknown }).code;
+      if (code !== undefined) entry.push(`code=${String(code)}`);
+      if (entry.length === 0) entry.push(`empty ${current.constructor?.name ?? 'Error'}`);
+      parts.push(entry.join(' '));
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+    parts.push(typeof current === 'string' ? current : JSON.stringify(current));
+    break;
+  }
+
+  return parts.length > 0 ? parts.join(' <- caused by: ') : 'no error detail available';
+}
 
 async function getLocalPipeline() {
   if (localPipeline) return localPipeline;
-  if (pipelineError) throw new Error(pipelineError);
+  // A latched failure used to be permanent: one bad first load and this process
+  // served keyword search until it restarted, replaying the same cached string
+  // on every lookup. Hold the failure only until the cooldown expires.
+  if (pipelineError && (pipelineAttempts >= PIPELINE_MAX_ATTEMPTS || Date.now() < pipelineRetryAt)) {
+    throw new Error(pipelineError);
+  }
+  pipelineAttempts += 1;
   try {
     const { pipeline } = await import('@xenova/transformers');
     localPipeline = await pipeline(
       'feature-extraction',
       'Xenova/all-MiniLM-L6-v2',
     );
+    pipelineError = null;
     return localPipeline;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    pipelineError = `Local embedding pipeline unavailable: ${msg}`;
-    console.warn(`[LLM] ${pipelineError}`);
+    pipelineError = `Local embedding pipeline unavailable: ${describePipelineFailure(err)}`;
+    pipelineRetryAt = Date.now() + PIPELINE_RETRY_COOLDOWN_MS;
+    const exhausted = pipelineAttempts >= PIPELINE_MAX_ATTEMPTS;
+    console.warn(
+      `[LLM] ${pipelineError} (attempt ${pipelineAttempts}/${PIPELINE_MAX_ATTEMPTS}` +
+        `${exhausted ? '; giving up until restart' : `; retrying after ${PIPELINE_RETRY_COOLDOWN_MS / 60_000}m`})`,
+    );
+    if (err instanceof Error && err.stack) {
+      console.warn(`[LLM] embedding pipeline stack: ${err.stack.split('\n').slice(0, 4).join(' | ')}`);
+    }
     throw new Error(pipelineError);
   }
+}
+
+/** Embedding-pipeline state for /health, so "is semantic recall actually
+ *  working" stops being a question only the logs can answer. */
+export function getEmbeddingPipelineState(): {
+  ready: boolean;
+  attempts: number;
+  maxAttempts: number;
+  lastError: string | null;
+  retryAt: string | null;
+} {
+  return {
+    ready: localPipeline !== null,
+    attempts: pipelineAttempts,
+    maxAttempts: PIPELINE_MAX_ATTEMPTS,
+    lastError: pipelineError,
+    retryAt:
+      pipelineError && pipelineAttempts < PIPELINE_MAX_ATTEMPTS
+        ? new Date(pipelineRetryAt).toISOString()
+        : null,
+  };
 }
 
 export async function createEmbedding(text: string): Promise<number[]> {
