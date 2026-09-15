@@ -1,7 +1,17 @@
-# Portability baseline only. Do not deploy from this file until the operator
-# explicitly authorizes Railway staging. Reuse the existing Dockerfile, /health,
-# PORT contract, durable database, and existing secret names. Do not copy
-# secrets into source control.
+# PRODUCTION BUILD CONTRACT. This is not a portability draft any more: Railway
+# builds APEX from this file, and the service it produces is what serves
+# https://apex.donmatthews.live. The Cloud Run cutover completed 2026-09-15 —
+# see docs/HOSTING_MIGRATION.md.
+#
+# Two consequences worth stating where they will be read:
+#   - a push to main reaches production directly; there is no deploy workflow
+#     in front of Railway, and it does not wait for CI;
+#   - changing builder, dockerfilePath or healthcheckPath changes how
+#     production is built and gated, so scripts/verify-deploy-provenance.ts
+#     asserts all three.
+#
+# Reuse the existing Dockerfile, /health, PORT contract, durable database, and
+# existing secret names. Never copy secrets into source control.
 
 [build]
 builder = "DOCKERFILE"
