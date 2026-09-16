@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../Apex-Agent"
+		},
+		{
+			"path": "../APEX-Stream"
+		}
+	],
+	"settings": {}
+}

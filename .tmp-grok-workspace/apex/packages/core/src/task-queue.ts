@@ -1,0 +1,611 @@
+import { randomUUID } from 'crypto';
+import { db, tasks } from '@workspace/db';
+import { eq, and, or, isNull, lte, sql } from 'drizzle-orm';
+import type { Task } from '@workspace/db';
+import type { TaskInput } from './types.js';
+import { recordDequeueAttempt, recordDequeueSuccess, recordDequeueFailure, recordHardTimeoutQuarantine } from './runtime-health.js';
+import { logTaskOutcome } from './execution-outcome.js';
+import {
+  getLLMPauseRetryAt,
+  getTransientLLMRetryDelayMs,
+  isTransientLLMChainFailure,
+  shouldSuppressImmediateLLMRetry,
+} from './provider-failure.js';
+
+// ─── Task Queue ───────────────────────────────────────────────────────────────
+
+const EPHEMERAL_FALLBACK_VALUES = new Set(['1', 'true', 'on', 'yes']);
+const HARD_TIMEOUT_MARKER = 'wall-clock timeout';
+const TIMEOUT_QUARANTINE_PREFIX = 'Quarantined after hard task timeout:';
+const TERMINAL_TASK_STATUSES = new Set(['done', 'failed', 'cancelled']);
+
+function ephemeralFallbackEnabled(): boolean {
+  // Process-local work is intentionally opt-in for local development only.
+  // Production autonomy must never report success for work that disappears on
+  // restart or exists on only one Cloud Run instance.
+  if (process.env.NODE_ENV === 'production') return false;
+  return EPHEMERAL_FALLBACK_VALUES.has(
+    (process.env.APEX_ALLOW_EPHEMERAL_QUEUE_FALLBACK ?? '').trim().toLowerCase(),
+  );
+}
+
+function requireDurabilityOrAllowLocalFallback(operation: string, err: unknown): void {
+  if (ephemeralFallbackEnabled()) return;
+  const detail = err instanceof Error ? err.message : String(err);
+  throw new Error(
+    `[TaskQueue.${operation}] durable Postgres operation failed; refusing process-local fallback: ${detail}`,
+  );
+}
+
+function isHardTaskTimeout(error: string): boolean {
+  return error.includes('Task exceeded hard') && error.includes(HARD_TIMEOUT_MARKER);
+}
+
+function isTimeoutQuarantine(task: Pick<Task, 'status' | 'errorMessage'>): boolean {
+  return task.status === 'blocked' && task.errorMessage?.startsWith(TIMEOUT_QUARANTINE_PREFIX) === true;
+}
+
+/**
+ * Lifecycle transitions (block/unblock/resume/awaitApproval/markInProgress)
+ * used to write unconditionally by task id. That silently undid the ownership
+ * guarantees complete()/fail() work hard to keep:
+ *
+ *   - an operator cancellation could be overwritten and the task resurrected;
+ *   - a task terminalized as done/failed could be dragged back into the queue
+ *     and executed a second time;
+ *   - a hard-timeout quarantine (status 'blocked' with the quarantine prefix,
+ *     whose original execution may still be alive and capable of side effects)
+ *     could be flipped back to pending/in_progress, recreating exactly the
+ *     duplicate-execution race the quarantine exists to prevent.
+ *
+ * Every non-terminal transition now requires the row to still be live and
+ * un-quarantined. The predicate is expressed once, in SQL and in memory, so
+ * the durable and local-fallback paths cannot drift.
+ */
+function liveOwnershipPredicate() {
+  return and(
+    sql`${tasks.status} NOT IN ('done', 'failed', 'cancelled')`,
+    // COALESCE is load-bearing: a blocked row with a NULL error_message would
+    // make the inner AND evaluate to NULL, so `NOT (...)` is NULL and the row
+    // is excluded from EVERY guarded update -- unblock()/resume() would
+    // silently do nothing. That state is reachable via PATCH /api/tasks/:id,
+    // which allows status: 'blocked' without an error message. It would also
+    // disagree with the in-memory isLiveOwnership(), which correctly treats
+    // such a row as live.
+    sql`NOT (${tasks.status} = 'blocked' AND COALESCE(${tasks.errorMessage}, '') LIKE ${`${TIMEOUT_QUARANTINE_PREFIX}%`})`,
+  );
+}
+
+function isLiveOwnership(task: Pick<Task, 'status' | 'errorMessage'>): boolean {
+  if (TERMINAL_TASK_STATUSES.has(task.status)) return false;
+  if (isTimeoutQuarantine(task)) return false;
+  return true;
+}
+
+export class TaskQueue {
+  private agentId: string;
+  private memoryQueue: Task[] = [];
+
+  constructor(agentId: string) {
+    this.agentId = agentId;
+  }
+
+  /** Create and durably enqueue a task. */
+  async enqueue(input: TaskInput & { createdByAgentId?: string }): Promise<Task> {
+    const now = new Date();
+    const taskId = randomUUID();
+    const taskRecord: Task = {
+      id: taskId,
+      goalId: input.goalId ?? null,
+      parentTaskId: input.parentTaskId ?? null,
+      title: input.title,
+      description: input.description,
+      status: 'pending',
+      priority: input.priority ?? 5,
+      assignedAgentId: this.agentId,
+      createdByAgentId: input.createdByAgentId ?? this.agentId,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: null,
+      completedAt: null,
+      dueAt: null,
+      nextRetryAt: null,
+      leasedAt: null,
+      retryCount: 0,
+      maxRetries: 3,
+      result: null,
+      errorMessage: null,
+      context: (input.context as Record<string, unknown>) ?? null,
+      resultArtifacts: null,
+    };
+
+    try {
+      const [created] = await db.insert(tasks).values(taskRecord).returning();
+      if (!created) throw new Error('insert returned no task row');
+      return created;
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('enqueue', err);
+    }
+
+    this.memoryQueue.push(taskRecord);
+    return taskRecord;
+  }
+
+  /**
+   * Claim one specific task by id (sandbox-executor path, Phase 4). Uses the
+   * same atomic status transition as dequeue() so two racing dispatchers (or a
+   * dispatcher racing the in-process workers) cannot both win. The task must
+   * be pending with its retry window elapsed; anything else returns null.
+   */
+  async claimById(taskId: string): Promise<Task | null> {
+    try {
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const [task] = await db
+        .update(tasks)
+        .set({ status: 'in_progress', leasedAt: now, startedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(tasks.id, taskId),
+            eq(tasks.status, 'pending'),
+            or(isNull(tasks.nextRetryAt), lte(tasks.nextRetryAt, now)),
+            sql`${tasks.id} = (
+              SELECT id FROM tasks
+              WHERE id = ${taskId}
+                AND status = 'pending'
+                AND (next_retry_at IS NULL OR next_retry_at <= ${nowIso})
+              LIMIT 1
+            )`,
+          ),
+        )
+        .returning();
+      return task ?? null;
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('claimById', err);
+    }
+
+    const memTask = this.memoryQueue.find(
+      (task) =>
+        task.id === taskId &&
+        task.status === 'pending' &&
+        (!task.nextRetryAt || task.nextRetryAt.getTime() <= Date.now()),
+    );
+    if (memTask) {
+      const now = new Date();
+      memTask.status = 'in_progress';
+      memTask.startedAt = now;
+      memTask.leasedAt = now;
+      return memTask;
+    }
+    return null;
+  }
+
+  /**
+   * Claim the next highest-priority pending task whose retry window elapsed.
+   *
+   * The outer UPDATE repeats the pending/agent/retry predicates. That matters:
+   * two workers can evaluate the scalar subquery at nearly the same time, but
+   * after one changes the row to in_progress the other worker's UPDATE no
+   * longer matches and therefore cannot return/execute the same task.
+   *
+   * Tasks with context.runtime === 'job' are owned by the sandbox executor
+   * (Phase 4) and are never claimed by in-process worker loops.
+   */
+  async dequeue(): Promise<Task | null> {
+    recordDequeueAttempt();
+    try {
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const [task] = await db
+        .update(tasks)
+        .set({ status: 'in_progress', leasedAt: now, startedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(tasks.assignedAgentId, this.agentId),
+            eq(tasks.status, 'pending'),
+            or(isNull(tasks.nextRetryAt), lte(tasks.nextRetryAt, now)),
+            sql`${tasks.context}->>'runtime' IS DISTINCT FROM 'job'`,
+            sql`${tasks.id} = (
+              SELECT id FROM tasks
+              WHERE assigned_agent_id = ${this.agentId}
+                AND status = 'pending'
+                AND (next_retry_at IS NULL OR next_retry_at <= ${nowIso})
+                AND context->>'runtime' IS DISTINCT FROM 'job'
+              ORDER BY priority ASC, created_at ASC
+              LIMIT 1
+            )`,
+          ),
+        )
+        .returning();
+
+      recordDequeueSuccess(Boolean(task));
+      if (task) return task;
+      return null;
+    } catch (err) {
+      recordDequeueFailure(this.agentId, err);
+      const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
+      console.error(
+        `[TaskQueue.dequeue] agent=${this.agentId} query failed:`,
+        err instanceof Error ? err.message : err,
+      );
+      if (cause) {
+        console.error(
+          `[TaskQueue.dequeue] agent=${this.agentId} ROOT CAUSE:`,
+          cause instanceof Error ? (cause.stack ?? cause.message) : cause,
+        );
+        if (typeof cause === 'object') {
+          const pgFields = ['code', 'detail', 'hint', 'position', 'severity', 'where', 'schema', 'table', 'column', 'constraint'];
+          const extracted: Record<string, unknown> = {};
+          for (const field of pgFields) {
+            const value = (cause as Record<string, unknown>)[field];
+            if (value !== undefined) extracted[field] = value;
+          }
+          if (Object.keys(extracted).length > 0) {
+            console.error(`[TaskQueue.dequeue] agent=${this.agentId} PG FIELDS:`, JSON.stringify(extracted));
+          }
+        }
+      }
+      requireDurabilityOrAllowLocalFallback('dequeue', err);
+    }
+
+    const nowMs = Date.now();
+    const nextMemIdx = this.memoryQueue.findIndex(
+      (task) =>
+        task.status === 'pending' &&
+        (task.context?.runtime as string | undefined) !== 'job' &&
+        (!task.nextRetryAt || task.nextRetryAt.getTime() <= nowMs),
+    );
+    if (nextMemIdx !== -1) {
+      const task = this.memoryQueue[nextMemIdx];
+      const now = new Date();
+      task.status = 'in_progress';
+      task.startedAt = now;
+      task.leasedAt = now;
+      return task;
+    }
+
+    return null;
+  }
+
+  /**
+   * Complete only work still owned by the live execution. A task cancelled or
+   * otherwise terminalized by another actor must never be resurrected as done
+   * by a late promise. The one exception is a timeout-quarantined task: if the
+   * original execution eventually returns real completion evidence, that same
+   * execution may close its quarantine successfully.
+   */
+  async complete(taskId: string, result: string): Promise<void> {
+    try {
+      const [completed] = await db
+        .update(tasks)
+        .set({
+          status: 'done',
+          result,
+          errorMessage: null,
+          nextRetryAt: null,
+          leasedAt: null,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(tasks.id, taskId),
+            or(
+              eq(tasks.status, 'in_progress'),
+              and(
+                eq(tasks.status, 'blocked'),
+                sql`${tasks.errorMessage} LIKE ${`${TIMEOUT_QUARANTINE_PREFIX}%`}`,
+              ),
+            ),
+          ),
+        )
+        .returning({ id: tasks.id });
+
+      if (!completed) {
+        throw new Error(
+          `Task ${taskId} completion rejected because it is no longer owned by this execution state`,
+        );
+      }
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('complete', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask) {
+      if (memTask.status !== 'in_progress' && !isTimeoutQuarantine(memTask)) {
+        throw new Error(
+          `Task ${taskId} completion rejected because it is no longer owned by this execution state`,
+        );
+      }
+      memTask.status = 'done';
+      memTask.result = result;
+      memTask.errorMessage = null;
+      memTask.nextRetryAt = null;
+      memTask.leasedAt = null;
+      memTask.completedAt = new Date();
+    }
+  }
+
+  /** Fail a task, optionally retry with durable exponential backoff. */
+  async fail(taskId: string, error: string): Promise<void> {
+    const capacityRetryAt = getLLMPauseRetryAt(error, taskId);
+
+    try {
+      const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+      if (task) {
+        // A hard timeout in BaseAgent is a race against an execution that may
+        // still be alive: Promise.race cannot cancel arbitrary tool/DB work.
+        // Automatic retry here would permit a second worker to execute the same
+        // task while the first execution is still capable of side effects.
+        // Quarantine instead. Operators/recovery logic can inspect the explicit
+        // blocked state; if the original execution later finishes successfully,
+        // complete() is allowed to close this specific quarantine.
+        if (isHardTaskTimeout(error)) {
+          if (TERMINAL_TASK_STATUSES.has(task.status)) return;
+          if (isTimeoutQuarantine(task)) return;
+
+          const quarantineReason = `${TIMEOUT_QUARANTINE_PREFIX} ${error}`;
+          await db.update(tasks).set({
+            status: 'blocked',
+            errorMessage: quarantineReason,
+            nextRetryAt: null,
+            leasedAt: null,
+            updatedAt: new Date(),
+          }).where(and(eq(tasks.id, taskId), eq(tasks.status, 'in_progress')));
+          recordHardTimeoutQuarantine();
+          logTaskOutcome({
+            taskId,
+            agentId: task.assignedAgentId ?? 'unknown',
+            goalId: task.goalId,
+            reason: 'task_hard_timeout',
+            elapsedMs: task.startedAt ? Date.now() - task.startedAt.getTime() : 0,
+            detail: 'quarantined — the original execution may still be alive; operator unblock required',
+          });
+          return;
+        }
+
+        // Once a timeout has quarantined a still-live execution, a late error
+        // from that detached promise must not turn the row back into retryable
+        // work. That would recreate the duplicate-side-effect race.
+        if (isTimeoutQuarantine(task)) return;
+
+        // Never overwrite an independently terminalized task (for example an
+        // operator cancellation) with a late failure from an old execution.
+        if (TERMINAL_TASK_STATUSES.has(task.status)) return;
+
+        if (capacityRetryAt) {
+          await db
+            .update(tasks)
+            .set({
+              status: 'pending',
+              errorMessage: error,
+              nextRetryAt: capacityRetryAt,
+              leasedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(tasks.id, taskId));
+          return;
+        }
+
+        const canRetry = task.retryCount < task.maxRetries && !shouldSuppressImmediateLLMRetry(error);
+        if (canRetry) {
+          const baseDelayMs = Math.min(Math.pow(2, task.retryCount) * 1000, 300_000);
+          const retryDelayMs = isTransientLLMChainFailure(error)
+            ? getTransientLLMRetryDelayMs(baseDelayMs, taskId)
+            : baseDelayMs;
+          const nextRetryAt = new Date(Date.now() + retryDelayMs);
+          await db.update(tasks).set({
+            status: 'pending',
+            retryCount: task.retryCount + 1,
+            errorMessage: error,
+            nextRetryAt,
+            leasedAt: null,
+            updatedAt: new Date(),
+          }).where(eq(tasks.id, taskId));
+        } else {
+          await db.update(tasks).set({
+            status: 'failed',
+            errorMessage: error,
+            nextRetryAt: null,
+            leasedAt: null,
+            updatedAt: new Date(),
+          }).where(eq(tasks.id, taskId));
+        }
+        return;
+      }
+
+      throw new Error(`task ${taskId} not found while recording failure`);
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('fail', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask) {
+      if (isHardTaskTimeout(error)) {
+        if (TERMINAL_TASK_STATUSES.has(memTask.status) || isTimeoutQuarantine(memTask)) return;
+        memTask.status = 'blocked';
+        memTask.errorMessage = `${TIMEOUT_QUARANTINE_PREFIX} ${error}`;
+        memTask.nextRetryAt = null;
+        memTask.leasedAt = null;
+        return;
+      }
+      if (isTimeoutQuarantine(memTask) || TERMINAL_TASK_STATUSES.has(memTask.status)) return;
+      if (capacityRetryAt) {
+        memTask.status = 'pending';
+        memTask.errorMessage = error;
+        memTask.nextRetryAt = capacityRetryAt;
+        memTask.leasedAt = null;
+        return;
+      }
+      memTask.status = 'failed';
+      memTask.errorMessage = error;
+      memTask.leasedAt = null;
+    }
+  }
+
+  /** Block a task while waiting on an external dependency. */
+  async block(taskId: string, reason: string): Promise<void> {
+    try {
+      await db
+        .update(tasks)
+        .set({
+          status: 'blocked',
+          errorMessage: reason,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('block', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask && isLiveOwnership(memTask)) {
+      memTask.status = 'blocked';
+      memTask.errorMessage = reason;
+    }
+  }
+
+  /** Unblock a task and return it to the durable queue. */
+  async unblock(taskId: string): Promise<void> {
+    try {
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          errorMessage: null,
+          leasedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('unblock', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask && isLiveOwnership(memTask)) {
+      memTask.status = 'pending';
+      memTask.errorMessage = null;
+      memTask.leasedAt = null;
+    }
+  }
+
+  /**
+   * Atomically persist a checkpoint into the task's context AND return it to
+   * the durable queue, in one guarded write (Phase 2 — soft-deadline yield).
+   * Combining both into a single UPDATE closes the race a separate
+   * "write context, then resume" pair would leave open: there is no window
+   * where the checkpoint is saved but ownership has not yet been confirmed
+   * live, and no window where the task is back in 'pending' but still
+   * missing the checkpoint another worker would need to resume it.
+   *
+   * Guarded by the same liveOwnershipPredicate() as every other non-terminal
+   * transition: a task independently cancelled, terminalized, or
+   * hard-timeout quarantined while this execution was running must not be
+   * resurrected by a stale checkpoint write. Returns false when that
+   * happened — the caller must not report the yield as having taken effect.
+   */
+  async checkpointAndResume(taskId: string, context: Record<string, unknown>): Promise<boolean> {
+    try {
+      const [updated] = await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          leasedAt: null,
+          context,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()))
+        .returning({ id: tasks.id });
+      return Boolean(updated);
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('checkpointAndResume', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask && isLiveOwnership(memTask)) {
+      memTask.status = 'pending';
+      memTask.leasedAt = null;
+      memTask.context = context;
+      return true;
+    }
+    return false;
+  }
+
+  /** Mark a task awaiting human approval for a gated tool call. */
+  async awaitApproval(taskId: string): Promise<void> {
+    try {
+      await db
+        .update(tasks)
+        .set({
+          status: 'awaiting_approval',
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('awaitApproval', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask && isLiveOwnership(memTask)) memTask.status = 'awaiting_approval';
+  }
+
+  /** Return a task to the queue for a future worker to claim. */
+  async resume(taskId: string): Promise<void> {
+    try {
+      await db
+        .update(tasks)
+        .set({
+          status: 'pending',
+          leasedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()));
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('resume', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask && isLiveOwnership(memTask)) {
+      memTask.status = 'pending';
+      memTask.leasedAt = null;
+    }
+  }
+
+  /**
+   * Restore a live worker's status after an approval decision.
+   *
+   * Returns false when this execution no longer owns the task — an operator
+   * cancelled it, it was terminalized, or a hard-timeout quarantine took it
+   * away while the approval was pending. Callers MUST abort instead of running
+   * the approved tool: an approval decision is not authority to execute work
+   * whose task was withdrawn, and un-quarantining a task whose original
+   * execution is still detached and alive is the duplicate-side-effect race
+   * fail()'s quarantine exists to prevent.
+   */
+  async markInProgress(taskId: string): Promise<boolean> {
+    const now = new Date();
+    try {
+      const [restored] = await db
+        .update(tasks)
+        .set({
+          status: 'in_progress',
+          leasedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(tasks.id, taskId), liveOwnershipPredicate()))
+        .returning({ id: tasks.id });
+      return Boolean(restored);
+    } catch (err) {
+      requireDurabilityOrAllowLocalFallback('markInProgress', err);
+    }
+
+    const memTask = this.memoryQueue.find((task) => task.id === taskId);
+    if (memTask) {
+      if (!isLiveOwnership(memTask)) return false;
+      memTask.status = 'in_progress';
+      memTask.leasedAt = now;
+      return true;
+    }
+    return false;
+  }
+}

@@ -1,0 +1,30 @@
+# APEX production image build for Google Cloud Build.
+#
+# This file intentionally only builds/pushes the container. Deployment is a
+# separate `gcloud run services update` step so the existing Cloud Run service
+# configuration (env vars, Secret Manager refs, service account, scaling,
+# domain mapping, ingress, CPU/memory) is preserved rather than reconstructed.
+#
+# Required substitutions are supplied by packages/cicd-automation:
+#   _IMAGE            immutable image ref ending in :<commit-sha>
+#   _APEX_BUILD_SHA   exact clean Git commit being built
+#   _APEX_BUILD_TIME  UTC ISO-8601 build timestamp
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - APEX_BUILD_SHA=${_APEX_BUILD_SHA}
+      - --build-arg
+      - APEX_BUILD_TIME=${_APEX_BUILD_TIME}
+      - --tag
+      - ${_IMAGE}
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_IMAGE}
+
+images:
+  - ${_IMAGE}

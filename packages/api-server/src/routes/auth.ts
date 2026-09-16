@@ -64,7 +64,15 @@ export function createAuthRouter() {
     res.status(401).json({ error: 'Invalid token' });
   });
 
+<<<<<<< ours
+<<<<<<< ours
   /** Exchange the normal Authorization header for a single-use WS ticket. */
+=======
+  /** Exchange the normal Authorization header for a short-lived signed WS ticket. */
+>>>>>>> theirs
+=======
+  /** Exchange the normal Authorization header for a short-lived signed WS ticket. */
+>>>>>>> theirs
   router.post('/websocket-ticket', (req, res): void => {
     if (!validateAdminToken(req.headers.authorization)) {
       res.status(401).json({ error: 'Invalid token' });
