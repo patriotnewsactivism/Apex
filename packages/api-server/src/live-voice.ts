@@ -1,27 +1,5 @@
-<<<<<<< ours
 import { WebSocket } from 'ws';
 import { registerWebSocketRoute } from './websocket-upgrade.js';
-=======
-import { WebSocketServer, WebSocket } from 'ws';
-<<<<<<< ours
-<<<<<<< ours
-import { consumeWebSocketTicket } from './websocket-auth.js';
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
-import { validateWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
-=======
-import { validateWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import type { ApexCEO } from '@workspace/agents';
@@ -89,7 +67,6 @@ function toGeminiTools(tools: LLMTool[]) {
 const GEMINI_TOOLS = toGeminiTools(CHAT_TOOLS);
 
 export function setupLiveVoice(server: Server, ceo: ApexCEO) {
-<<<<<<< ours
   const wss = registerWebSocketRoute(server, '/ws/voice-live', async (client: WebSocket, _req: IncomingMessage) => {
     // The Apex page Don was viewing when he started the call — the client
     // sends ?page=<Title (pageId)>. Mid-call navigation updates arrive as
@@ -101,25 +78,6 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         return undefined;
       }
     })();
-=======
-  const wss = new WebSocketServer({ server, path: '/ws/voice-live' });
-
-  wss.on('connection', async (client: WebSocket, req: IncomingMessage) => {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-<<<<<<< ours
-<<<<<<< ours
-    if (!consumeWebSocketTicket(url.searchParams.get('ticket'))) {
-=======
-    if (!validateWebSocketTicket(url.searchParams.get('ticket'))) {
->>>>>>> theirs
-=======
-    if (!validateWebSocketTicket(url.searchParams.get('ticket'))) {
->>>>>>> theirs
-      client.close(1008, 'Invalid or expired ticket');
-      return;
-    }
-
->>>>>>> theirs
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       client.send(JSON.stringify({ type: 'error', message: 'GEMINI_API_KEY is not configured on this deployment.' }));

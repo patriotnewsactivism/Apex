@@ -5,6 +5,7 @@ import { CostAndMonitoring, SingleCallLauncher, AutomationLauncher } from './Sal
 import { LeadCampaignsSection } from './CampaignsPanel.js';
 import { EmailCampaignsPanel } from './EmailCampaignsPanel.js';
 import { SmsPanel } from './SmsPanel.js';
+import { CallBridgePanel } from './CallBridgePanel.js';
 import { Activity, PhoneCall, MessageSquare, Mail, Zap, Crosshair } from 'lucide-react';
 
 // ─── Sales Operations — the one-stop shop ──────────────────────────────────
@@ -114,7 +115,16 @@ export function SalesOperationsPanel() {
       )}
 
       {tab === 'overview' && overview && <CostAndMonitoring data={overview} />}
-      {tab === 'calls' && <SingleCallLauncher />}
+      {tab === 'calls' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* The newer, more capable option first: you talk to the customer
+              directly and can bring the AI in live. SingleCallLauncher below
+              is the older, entirely-AI-run call — still useful for pure
+              outreach where you never intend to be on the line yourself. */}
+          <CallBridgePanel />
+          <SingleCallLauncher />
+        </div>
+      )}
       {tab === 'sms' && <SmsPanel />}
       {tab === 'email' && <EmailCampaignsPanel />}
       {tab === 'automation' && overview && <AutomationLauncher overview={overview} />}

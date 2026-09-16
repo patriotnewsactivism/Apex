@@ -56,7 +56,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelay = useRef(INITIAL_RECONNECT_DELAY);
-  const mounted = useRef(false);
+  const intentionalClose = useRef(false);
 
   const cleanupHeartbeat = () => {
     if (heartbeatTimeout.current) clearTimeout(heartbeatTimeout.current);
@@ -85,19 +85,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   };
 
   const connect = async () => {
-<<<<<<< ours
-<<<<<<< ours
     if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
-=======
-    const currentState = wsRef.current?.readyState;
-    if (currentState === WebSocket.OPEN || currentState === WebSocket.CONNECTING || currentState === WebSocket.CLOSING) return;
-    wsRef.current = null;
->>>>>>> theirs
-=======
-    const currentState = wsRef.current?.readyState;
-    if (currentState === WebSocket.OPEN || currentState === WebSocket.CONNECTING || currentState === WebSocket.CLOSING) return;
-    wsRef.current = null;
->>>>>>> theirs
+
+    // Close any stale socket before replacing it so we don't leak handlers.
+    if (wsRef.current) {
+      intentionalClose.current = true;
+      wsRef.current.close();
+    }
 
     let ticket: string;
     try {
@@ -106,22 +100,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       scheduleReconnect();
       return;
     }
-    if (!mounted.current) return;
 
-<<<<<<< ours
-<<<<<<< ours
-    let ticket: string;
-    try {
-      ({ ticket } = await api.auth.websocketTicket());
-    } catch {
-      scheduleReconnect();
-      return;
-    }
-
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
     const ws = new WebSocket(getWsUrl(ticket));
     wsRef.current = ws;
 
@@ -148,10 +127,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       resetHeartbeatWatchdog(ws);
       try {
         const event = JSON.parse(e.data) as ApexEvent;
-        // Heartbeats are transport health, not application activity. Keeping
-        // them out of state avoids a full provider-tree render every 30s and
-        // prevents them from evicting useful log/task events from the buffer.
-        if (event.type === 'heartbeat') return;
         setLastEvent(event);
 
         // Update agent statuses
@@ -174,19 +149,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     };
 
     ws.onclose = () => {
-      if (wsRef.current === ws) wsRef.current = null;
       setConnected(false);
       cleanupHeartbeat();
-<<<<<<< ours
-<<<<<<< ours
       if (intentionalClose.current) {
         intentionalClose.current = false;
         return;
       }
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
       scheduleReconnect();
     };
   };
@@ -200,15 +168,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   };
 
   const scheduleReconnect = () => {
-<<<<<<< ours
-<<<<<<< ours
     if (reconnectTimer.current) return;
-=======
-    if (!mounted.current || reconnectTimer.current) return;
->>>>>>> theirs
-=======
-    if (!mounted.current || reconnectTimer.current) return;
->>>>>>> theirs
     reconnectTimer.current = setTimeout(() => {
       reconnectTimer.current = null;
       reconnectDelay.current = Math.min(reconnectDelay.current * 1.5, MAX_RECONNECT_DELAY);
@@ -217,19 +177,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-<<<<<<< ours
-<<<<<<< ours
-=======
-    mounted.current = true;
->>>>>>> theirs
-=======
-    mounted.current = true;
->>>>>>> theirs
     void connect();
     return () => {
-      mounted.current = false;
+      intentionalClose.current = true;
       wsRef.current?.close();
-      wsRef.current = null;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       cleanupHeartbeat();
     };

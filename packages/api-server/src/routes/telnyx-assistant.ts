@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { db, researchedLeads, logs, smsMessages } from '@workspace/db';
-import { eq, or } from 'drizzle-orm';
+import { eq, or, desc } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
 
 // ─── Apex Front Desk — Telnyx AI Assistant tool-calling surface ─────────────
@@ -28,6 +28,14 @@ import type { ApexCEO } from '@workspace/agents';
 //                                   content is a template Apex generates from
 //                                   structured fields (name/reason), never
 //                                   text the assistant composed itself.
+//   POST /tools/lookup-caller-history — on-demand version of the
+//                                   dynamic-variables lookup below. Unlike
+//                                   dynamic-variables (which fires once, keyed
+//                                   to the number the call connected from),
+//                                   the assistant can call this mid-conversation
+//                                   when a caller gives a DIFFERENT callback
+//                                   number, and it also surfaces recent SMS
+//                                   history dynamic-variables never carries.
 //
 //   POST /sms-inbound             — Telnyx messaging-profile webhook for the
 //                                   same number: logs an inbound text and
@@ -299,6 +307,56 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
     } catch (err) {
       console.error('[Telnyx Assistant] send-confirmation error:', err instanceof Error ? err.message : String(err));
       return res.status(500).json({ result: { success: false, message: `I wasn't able to send that confirmation right now.` } });
+    }
+  });
+
+  // ── POST /tools/lookup-caller-history ───────────────────────────────────
+  // See file header for why this exists alongside dynamic-variables rather
+  // than replacing it.
+  router.post('/tools/lookup-caller-history', async (req, res) => {
+    if (!verifyAssistantKey(req.query as Record<string, unknown>)) {
+      return res.status(403).json({ error: 'Invalid or missing key' });
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const args = extractToolArgs(body);
+      const phone = typeof args.phoneNumber === 'string' && args.phoneNumber.trim()
+        ? args.phoneNumber.trim()
+        : extractCallerNumber(body);
+
+      const norm = normalizePhone(phone);
+      if (norm.length < 7) {
+        return res.json({ result: { found: false, message: 'No usable phone number to look up.' } });
+      }
+      const e164 = norm.length === 10 ? `+1${norm}` : phone;
+
+      const [lead, recentMessages] = await Promise.all([
+        findKnownCaller(phone),
+        db
+          .select({ direction: smsMessages.direction, body: smsMessages.body, createdAt: smsMessages.createdAt })
+          .from(smsMessages)
+          .where(or(eq(smsMessages.counterpartyNumber, phone), eq(smsMessages.counterpartyNumber, e164)))
+          .orderBy(desc(smsMessages.createdAt))
+          .limit(5),
+      ]);
+
+      return res.json({
+        result: {
+          found: Boolean(lead) || recentMessages.length > 0,
+          isKnownLead: Boolean(lead),
+          leadCompany: lead?.companyName ?? null,
+          leadContext: lead?.outreachAngle ?? null,
+          leadStatus: lead?.status ?? null,
+          recentMessages: recentMessages.map((m) => ({
+            direction: m.direction,
+            body: m.body.slice(0, 300),
+            when: m.createdAt.toISOString(),
+          })),
+        },
+      });
+    } catch (err) {
+      console.error('[Telnyx Assistant] lookup-caller-history error:', err instanceof Error ? err.message : String(err));
+      return res.json({ result: { found: false, message: 'Lookup failed — proceed without history.' } });
     }
   });
 

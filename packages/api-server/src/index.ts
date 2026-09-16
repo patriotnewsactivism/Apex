@@ -36,6 +36,7 @@ import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
+import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
@@ -429,6 +430,13 @@ async function main() {
   // Must be mounted BEFORE requireAdminAuth for the same reason as the above.
   app.use('/api/telnyx-assistant', createTelnyxAssistantRouter(ceo));
 
+  // Call Bridge webhook — Telnyx Call Control events for operator-bridged
+  // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
+  // mounted at the same /api/telnyx-assistant prefix (a different router,
+  // registered separately for the feature's own file) since it is equally
+  // Telnyx-originated. Must be mounted BEFORE requireAdminAuth.
+  app.use('/api/telnyx-assistant', createCallBridgeWebhookRouter());
+
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
 
@@ -458,6 +466,7 @@ async function main() {
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));
+  app.use('/api/call-bridge', createCallBridgeRouter());
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs

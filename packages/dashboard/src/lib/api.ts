@@ -370,6 +370,22 @@ export const api = {
     sendSms: (body: { toNumber: string; body: string }) =>
       apiFetch<SmsSendResult>('/sales-ops/sms/send', { method: 'POST', body: JSON.stringify(body) }),
   },
+
+  callBridge: {
+    /** Dial the operator; the customer is dialed once they answer. */
+    start: (body: { operatorNumber: string; customerNumber: string }) =>
+      apiFetch<{ id: string; status: string; error?: string }>('/call-bridge/start', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    /** Poll the live status of a call bridge session. */
+    status: (id: string) => apiFetch<CallBridgeSession>(`/call-bridge/${encodeURIComponent(id)}`),
+    /** Dial the Apex Front Desk AI assistant into an already-active call. */
+    bringInAi: (id: string) =>
+      apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/bring-in-ai`, { method: 'POST' }),
+    /** Hang up every leg of the session. */
+    end: (id: string) => apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/end`, { method: 'POST' }),
+  },
 };
 
 // ─── Sales Ops Types ───────────────────────────────────────────────────────
@@ -478,6 +494,29 @@ export interface SmsSendResult {
   success: boolean;
   id?: string;
   error?: string;
+}
+
+export type CallBridgeStatus =
+  | 'dialing_operator'
+  | 'dialing_customer'
+  | 'active'
+  | 'ai_dialing'
+  | 'ai_joined'
+  | 'ended'
+  | 'failed';
+
+export interface CallBridgeSession {
+  id: string;
+  status: CallBridgeStatus;
+  operatorNumber: string;
+  customerNumber: string;
+  conferenceName: string;
+  operatorCallControlId: string | null;
+  customerCallControlId: string | null;
+  aiCallControlId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -974,25 +1013,3 @@ export interface SuggestionsResponse {
     }>;
   };
 }
-<<<<<<< ours
-<<<<<<< ours
-=======
-
-
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
-
-
->>>>>>> theirs

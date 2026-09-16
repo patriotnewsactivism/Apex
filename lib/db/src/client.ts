@@ -863,6 +863,24 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS sms_messages_thread_idx
     ON sms_messages (counterparty_number, created_at)
   `;
+
+  // ── Call bridge sessions (operator call + live AI takeover) (2026-09-16) ──
+  await client`
+    CREATE TABLE IF NOT EXISTS call_bridge_sessions (
+      id text PRIMARY KEY,
+      status text NOT NULL DEFAULT 'dialing_operator',
+      operator_number text NOT NULL,
+      customer_number text NOT NULL,
+      conference_name text NOT NULL,
+      operator_call_control_id text,
+      customer_call_control_id text,
+      ai_call_control_id text,
+      last_error text,
+      created_by_agent_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
 }
 
 export { schema };
