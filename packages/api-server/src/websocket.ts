@@ -3,38 +3,12 @@ import { apexEventBus } from '@workspace/core';
 import type { ApexEvent } from '@workspace/core';
 import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
 import { registerWebSocketRoute } from './websocket-upgrade.js';
-=======
-import { consumeWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
-=======
-import { consumeWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
-=======
-import { consumeWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
-=======
-import { consumeWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
-=======
-import { validateWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
-=======
-import { validateWebSocketTicket } from './websocket-auth.js';
->>>>>>> theirs
 
 // ─── WebSocket Broadcast Service ──────────────────────────────────────────────
 
 const clients = new Set<WebSocket>();
-const responsiveClients = new WeakSet<WebSocket>();
 
-<<<<<<< ours
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
 // A client that has stopped reading — laptop asleep, phone off the network, a
@@ -50,33 +24,6 @@ const MAX_BUFFERED_BYTES = 1_000_000;
 // socket so that a forgotten entry cannot itself become the leak: when the
 // socket is collected the entry disappears with it.
 const alive = new WeakSet<WebSocket>();
-=======
-export function setupWebSocket(server: Server) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
-
-  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    // Browser WebSockets cannot set Authorization headers. Accept only the
-<<<<<<< ours
-<<<<<<< ours
-    // short-lived, single-use ticket minted by the authenticated HTTP route;
-    // never put the long-lived admin token in a URL.
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    if (!consumeWebSocketTicket(url.searchParams.get('ticket'))) {
-=======
-=======
->>>>>>> theirs
-    // short-lived signed ticket minted by the authenticated HTTP route;
-    // never put the long-lived admin token in a URL.
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    if (!validateWebSocketTicket(url.searchParams.get('ticket'))) {
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
-      ws.close(1008, 'Invalid or expired ticket');
-      return;
-    }
->>>>>>> theirs
 
 /** Write to one client, dropping it if it has stopped draining. */
 function sendTo(client: WebSocket, payload: string): void {
@@ -102,69 +49,21 @@ export function setupWebSocket(
 ) {
   const wss = registerWebSocketRoute(server, '/ws', (ws: WebSocket, _req: IncomingMessage) => {
     clients.add(ws);
-<<<<<<< ours
-<<<<<<< ours
     alive.add(ws);
     console.log(`[websocket] Connection opened: /ws (total: ${clients.size})`);
-=======
-=======
->>>>>>> theirs
-    responsiveClients.add(ws);
-    console.log(`📡 WebSocket client connected (total: ${clients.size})`);
->>>>>>> theirs
 
     // Send current system status on connect
-<<<<<<< ours
     const firstMessage = JSON.stringify({ type: 'connected', timestamp: Date.now() });
     ws.send(firstMessage, (error) => {
       if (error) {
         console.error(`[websocket] First outbound message failed: ${error.message}`);
         return;
-=======
-    ws.send(JSON.stringify({ type: 'connected', timestamp: Date.now() }));
-
-    // Send an application-level heartbeat as well as a protocol ping. Browser
-    // JavaScript cannot observe ping frames, so the dashboard needs this small
-    // message to distinguish a quiet healthy connection from a dead proxy.
-    const heartbeatInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        if (!responsiveClients.has(ws)) {
-          ws.terminate();
-          return;
-        }
-        responsiveClients.delete(ws);
-        ws.ping();
-        ws.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
       }
       console.log(`[websocket] First outbound message sent: text (${Buffer.byteLength(firstMessage)} bytes)`);
     });
 
     ws.on('pong', () => {
-<<<<<<< ours
-<<<<<<< ours
       alive.add(ws);
-=======
-      responsiveClients.add(ws);
->>>>>>> theirs
-=======
-      responsiveClients.add(ws);
->>>>>>> theirs
     });
 
     ws.on('close', (code, reason) => {

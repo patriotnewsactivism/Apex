@@ -1,9 +1,0 @@
-{
-  "extends": "../../tsconfig.base.json",
-  "compilerOptions": {
-    "outDir": "./dist",
-    "rootDir": "./convex",
-    "types": ["node"]
-  },
-  "include": ["convex"]
-}
