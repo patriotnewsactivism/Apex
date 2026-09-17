@@ -129,6 +129,11 @@ async function enrichedContext(
  * the queue. This cleans the historical backlog without a one-off destructive
  * database migration: for each (parent task, reviewer agent) pair, the oldest
  * still-open review wins and the rest are explicitly cancelled as superseded.
+ *
+ * It also drains historical review-of-review rows. New review chaining is
+ * blocked at creation time below, but rows created before that guard already
+ * exist in production. Letting those execute would keep the old storm alive
+ * until the backlog naturally exhausted, so they are cancelled on claim.
  */
 async function collapseClaimedPeerReview(task: Task | null): Promise<Task | null> {
   if (
@@ -138,6 +143,26 @@ async function collapseClaimedPeerReview(task: Task | null): Promise<Task | null
     !task.assignedAgentId
   ) {
     return task;
+  }
+
+  const [parent] = await db
+    .select({ id: tasks.id, title: tasks.title })
+    .from(tasks)
+    .where(eq(tasks.id, task.parentTaskId))
+    .limit(1);
+
+  if (parent && isPeerReviewTitle(parent.title)) {
+    await db
+      .update(tasks)
+      .set({
+        status: 'cancelled',
+        errorMessage: `Cancelled historical recursive peer review; parent ${parent.id} is itself a peer review`,
+        nextRetryAt: null,
+        leasedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, task.id));
+    return null;
   }
 
   const peers = await db
