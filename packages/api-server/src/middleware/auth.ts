@@ -9,9 +9,16 @@ import crypto from 'crypto';
  * accepted for exactly one append-only route: POST /api/learning/outcome-ledger/events.
  * It cannot read the ledger, approve actions, create goals, invoke tools, or
  * otherwise inherit APEX admin authority.
+ *
+ * APEX_VAPI_SMS_TOKEN is the same idea for a third-party voice platform (Vapi)
+ * that needs to trigger an outbound SMS from its own tool-calling — handing a
+ * SaaS vendor's stored config the full admin token would give it goal
+ * creation, approvals, and every other operator power for the sake of one
+ * text message. Accepted for exactly one route: POST /api/sales-ops/sms/send.
  */
 const configuredToken = requireEnv('APEX_ADMIN_TOKEN');
 const configuredOutcomeIngestToken = process.env.APEX_OUTCOME_INGEST_TOKEN?.trim() || null;
+const configuredVapiSmsToken = process.env.APEX_VAPI_SMS_TOKEN?.trim() || null;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -43,9 +50,18 @@ export function validateOutcomeIngestToken(authHeader: string | undefined): bool
   return constantTimeTokenMatch(bearerToken(authHeader), configuredOutcomeIngestToken);
 }
 
+export function validateVapiSmsToken(authHeader: string | undefined): boolean {
+  return constantTimeTokenMatch(bearerToken(authHeader), configuredVapiSmsToken);
+}
+
 function isOutcomeIngestRoute(req: Request): boolean {
   const path = req.originalUrl.split('?')[0];
   return req.method === 'POST' && path === '/api/learning/outcome-ledger/events';
+}
+
+function isVapiSmsRoute(req: Request): boolean {
+  const path = req.originalUrl.split('?')[0];
+  return req.method === 'POST' && path === '/api/sales-ops/sms/send';
 }
 
 export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
@@ -54,6 +70,10 @@ export function requireAdminAuth(req: Request, res: Response, next: NextFunction
     return;
   }
   if (isOutcomeIngestRoute(req) && validateOutcomeIngestToken(req.headers.authorization)) {
+    next();
+    return;
+  }
+  if (isVapiSmsRoute(req) && validateVapiSmsToken(req.headers.authorization)) {
     next();
     return;
   }
