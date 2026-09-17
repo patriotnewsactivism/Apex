@@ -52,7 +52,13 @@ import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from '
 
 const DEEPGRAM_AGENT_URL = 'wss://agent.deepgram.com/v1/agent/converse';
 const GROQ_ENDPOINT_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_THINK_MODEL = 'llama-3.3-70b-versatile';
+// llama-3.3-70b-versatile (the original choice) turned out to be deprecated on
+// Groq — confirmed live: Deepgram reached this exact endpoint with valid auth
+// and got back a clean 404 model_not_found, closing the session with
+// FAILED_TO_THINK. openai/gpt-oss-120b is Groq's current production model
+// with confirmed native tool-calling via the standard OpenAI `tools` format,
+// which is what this file's function-call relay depends on.
+const GROQ_THINK_MODEL = 'openai/gpt-oss-120b';
 /** Deepgram closes an idle agent session without a periodic nudge. */
 const KEEPALIVE_INTERVAL_MS = 5_000;
 
