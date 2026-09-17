@@ -249,10 +249,21 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
           console.warn('[live-voice] Deepgram warning:', event);
           break;
 
-        case 'Error':
+        case 'Error': {
           console.error('[live-voice] Deepgram error:', event);
-          safeSendClient({ type: 'error', message: 'Voice provider error.' });
+          // FAILED_TO_THINK means Deepgram's request to Groq (the think
+          // provider) failed — most often a 429 on Groq's per-minute token
+          // budget for this account, which is shared across every service
+          // using GROQ_API_KEY, not something a code fix here can raise.
+          // Deepgram closes the whole agent session on this error regardless,
+          // so the honest answer is "try again shortly," not a generic error.
+          const message =
+            event.code === 'FAILED_TO_THINK'
+              ? "The assistant's AI provider is temporarily rate-limited — please try again in a few seconds."
+              : 'Voice provider error.';
+          safeSendClient({ type: 'error', message });
           break;
+        }
 
         default:
           break;
