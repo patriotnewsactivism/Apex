@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { db, goals, approvals, logs, agents as agentsTable } from '@workspace/db';
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { createLLMClient, getDefaultLLMConfig } from '@workspace/core';
+import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMIntentionalPause } from '@workspace/core';
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
@@ -297,7 +297,12 @@ export function createChatRouter(ceo: ApexCEO) {
       const MAX_TURNS = 5;
 
       for (let turn = 0; turn < MAX_TURNS; turn++) {
-        const response = await llm.complete(llmHistory, CHAT_TOOLS);
+        // interactive: true — Don is synchronously waiting on this reply, so
+        // it skips the 24h smoothing ramp that exists to stop an unattended
+        // background agent from front-loading a day's budget. It still can't
+        // spend past the hard daily caps or the per-minute provider rate
+        // limit; see LLMExecutionContext.interactive.
+        const response = await llm.complete(llmHistory, CHAT_TOOLS, { role: 'CEO', interactive: true });
         llmHistory.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
 
         if (response.toolCalls.length === 0) {
@@ -331,8 +336,25 @@ export function createChatRouter(ceo: ApexCEO) {
         goalCreated,
       });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A genuine capacity pause here means the interactive bypass above still
+      // wasn't enough — the HARD daily cap (not just pacing) is actually
+      // reached, or every provider is otherwise unavailable. That is a normal,
+      // expected state, not a server bug, so it gets a conversational reply
+      // instead of the raw internal message string reaching Don's chat window.
+      if (isLLMIntentionalPause(message)) {
+        const resumeAt = getLLMCapacityResumeAt(message);
+        const resumeClock = resumeAt
+          ? resumeAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short' })
+          : null;
+        return res.json({
+          reply: resumeClock
+            ? `I'm out of today's LLM budget for the moment — it resumes around ${resumeClock}. Try me again after that, or ask something smaller I can still answer from what I already know.`
+            : `I'm out of today's LLM budget for the moment. Try me again shortly.`,
+        });
+      }
       console.error('[chat] POST /message error:', err);
-      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      return res.status(500).json({ error: message });
     }
   });
 

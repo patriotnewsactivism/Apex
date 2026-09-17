@@ -129,7 +129,7 @@ async function main(): Promise<void> {
   );
   check(
     'complete() also honours the pacing ramp, not just the hard cap',
-    /const requestWindow = requestCapacityWindow\(\);[\s\S]{0,80}if \(!requestWindow\.allowed\) \{[\s\S]{0,400}?throw capacityPauseError\(/.test(
+    /const requestWindow = requestCapacityWindow\(Date\.now\(\), pacingOverride\);[\s\S]{0,80}if \(!requestWindow\.allowed\) \{[\s\S]{0,400}?throw capacityPauseError\(/.test(
       completeBody,
     ),
   );
@@ -525,7 +525,7 @@ async function main(): Promise<void> {
   // necessary": an exhausted budget must remove the rung, not fail the call.
   check(
     'an exhausted spend budget DROPS the paid rung rather than erroring',
-    /paidLLMFallbackEnabled\(\) && paidSpendAvailable\(\)/.test(client),
+    /paidLLMFallbackEnabled\(\) && paidSpendAvailable\(Date\.now\(\), pacingEnabled\)/.test(client),
   );
   check(
     'every paid response is charged against the budget',

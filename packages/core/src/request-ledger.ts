@@ -524,14 +524,21 @@ export function totalRequestsToday(): number {
   return sum;
 }
 
-/** Workspace-wide budget check for one more request. */
-export function requestCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
+/** Workspace-wide budget check for one more request. `pacingEnabled: false`
+ *  (e.g. an interactive human request) skips the smoothing ramp and checks
+ *  only the hard daily cap — the per-minute rate limit below still applies
+ *  either way. Omit to use the configured default. */
+export function requestCapacityWindow(
+  at: number = Date.now(),
+  pacingEnabled?: boolean,
+): RequestCapacityWindow {
   rolloverIfNeeded(at);
   const daily = calculateRequestCapacityWindow({
     cap: effectiveRequestCap(),
     usedRequests: totalRequestsToday(),
     requestedRequests: 1,
     at,
+    pacingEnabled,
   });
   if (!daily.allowed) return daily;
 

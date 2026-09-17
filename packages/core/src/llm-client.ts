@@ -213,22 +213,28 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-nemotron-ultra',
 ];
 
-function activeProviderOrder(_role?: string): readonly ApexProviderName[] {
+function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
     ? [FREE_POLICY_GATEWAY_NAME]
     : [...PROVIDER_ORDER];
   // The paid rung is appended only while it is BOTH enabled and in budget.
   // Dropping it from the order (rather than letting it fail) is what makes an
   // exhausted daily spend a graceful fall back to free models instead of an
-  // outage — the operator's "all free if absolutely necessary".
-  if (paidLLMFallbackEnabled() && paidSpendAvailable()) {
+  // outage — the operator's "all free if absolutely necessary". `pacingEnabled:
+  // false` (an interactive call — see LLMExecutionContext.interactive) checks
+  // only the hard daily $ cap here too: this order-building check and the
+  // in-loop paidOnly check in complete() must agree on affordability, or an
+  // interactive call that skips pacing in one and not the other ends up with
+  // an empty provider order and the exact misleading fallthrough this whole
+  // capacity-pause mechanism exists to prevent.
+  if (paidLLMFallbackEnabled() && paidSpendAvailable(Date.now(), pacingEnabled)) {
     freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
   }
   return freeOrder;
 }
 
-export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
-  return [...activeProviderOrder(_role)];
+export function getProviderOrderForRole(_role?: string, pacingEnabled?: boolean): ApexProviderName[] {
+  return [...activeProviderOrder(_role, pacingEnabled)];
 }
 
 export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
@@ -1174,7 +1180,12 @@ class MultiProviderClient {
           ]);
         }
       }
-      const requestWindow = requestCapacityWindow();
+      // Interactive (human-typed, synchronous) calls skip the smoothing ramp
+      // on both budgets below — see LLMExecutionContext.interactive — but
+      // never the hard caps or the per-minute rate limit inside
+      // requestCapacityWindow() itself, which stay in force unconditionally.
+      const pacingOverride = execution?.interactive ? false : undefined;
+      const requestWindow = requestCapacityWindow(Date.now(), pacingOverride);
       if (!requestWindow.allowed) {
         if (paidLLMFallbackEnabled()) paidOnly = true;
         else {
@@ -1207,7 +1218,7 @@ class MultiProviderClient {
       // of backing off until money was actually available again, burning
       // the rest of both budgets faster and reinforcing the same pause.
       if (paidOnly) {
-        const paidWindow = paidSpendCapacityWindow();
+        const paidWindow = paidSpendCapacityWindow(Date.now(), pacingOverride);
         if (!paidWindow.allowed) {
           throw capacityPauseError([
             {
@@ -1241,7 +1252,7 @@ class MultiProviderClient {
         const capacityBlocks: CapacityBlock[] = [];
         let nonCapacityFailureSeen = false;
 
-        for (const providerName of getProviderOrderForRole(this.config.role)) {
+        for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
           if (paidOnly && !provider.paid) continue;
