@@ -18,7 +18,6 @@ import {
   MaintenanceJob,
   GoalReviewJob,
   LearningAnalysisJob,
-  DelegationFollowupJob,
   GoalProgressJob,
   FailureReviewJob,
   BranchReviewJob,
@@ -26,6 +25,7 @@ import {
   PromptSelfImproveJob,
   BuildMyBotSmsOverageJob,
 } from './handlers/index.js';
+import { CrashSafeDelegationFollowupJob } from './delegation-followup-job.js';
 import { OpportunityDiscoveryJob, WorkforcePlannerJob } from './opportunity-jobs.js';
 import { WorkGenerationJob } from './work-generation-job.js';
 import { CronGovernorJob } from './cron-governor-job.js';
@@ -58,7 +58,7 @@ export class JobScheduler {
     this.executor.registerHandler('maintenance', new MaintenanceJob());
     this.executor.registerHandler('goal_review', new GoalReviewJob());
     this.executor.registerHandler('learning_analysis', new LearningAnalysisJob());
-    this.executor.registerHandler('delegation_followup', new DelegationFollowupJob());
+    this.executor.registerHandler('delegation_followup', new CrashSafeDelegationFollowupJob());
     this.executor.registerHandler('goal_progress', new GoalProgressJob());
     this.executor.registerHandler('failure_review', new FailureReviewJob());
     this.executor.registerHandler('branch_review', new BranchReviewJob());
