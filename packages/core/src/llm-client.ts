@@ -1568,6 +1568,7 @@ let localPipeline: any = null;
 let pipelineError: string | null = null;
 let pipelineAttempts = 0;
 let pipelineRetryAt = 0;
+let pipelineLoadPromise: Promise<unknown> | null = null;
 
 /** First load fetches Xenova/all-MiniLM-L6-v2 from Hugging Face, so it depends
  *  on the network. Retry it a few times rather than never again, but cap the
@@ -1624,28 +1625,42 @@ async function getLocalPipeline() {
   if (pipelineError && (pipelineAttempts >= PIPELINE_MAX_ATTEMPTS || Date.now() < pipelineRetryAt)) {
     throw new Error(pipelineError);
   }
+  // Boot starts every agent's loop within ~2s of each other, and a first task
+  // often needs a memory recall — so several callers can reach this function
+  // before any of them has finished loading the model. Without sharing the
+  // in-flight attempt, each ran its own full native-then-WASM-fallback load
+  // concurrently: observed in production as two independent "protobuf parsing
+  // failed" failures 62ms apart, immediately followed by the process going
+  // unresponsive long enough to fail a deploy healthcheck.
+  if (pipelineLoadPromise) return pipelineLoadPromise;
+
   pipelineAttempts += 1;
-  try {
-    const { pipeline } = await import('@xenova/transformers');
-    localPipeline = await pipeline(
-      'feature-extraction',
-      'Xenova/all-MiniLM-L6-v2',
-    );
-    pipelineError = null;
-    return localPipeline;
-  } catch (err) {
-    pipelineError = `Local embedding pipeline unavailable: ${describePipelineFailure(err)}`;
-    pipelineRetryAt = Date.now() + PIPELINE_RETRY_COOLDOWN_MS;
-    const exhausted = pipelineAttempts >= PIPELINE_MAX_ATTEMPTS;
-    console.warn(
-      `[LLM] ${pipelineError} (attempt ${pipelineAttempts}/${PIPELINE_MAX_ATTEMPTS}` +
-        `${exhausted ? '; giving up until restart' : `; retrying after ${PIPELINE_RETRY_COOLDOWN_MS / 60_000}m`})`,
-    );
-    if (err instanceof Error && err.stack) {
-      console.warn(`[LLM] embedding pipeline stack: ${err.stack.split('\n').slice(0, 4).join(' | ')}`);
+  pipelineLoadPromise = (async () => {
+    try {
+      const { pipeline } = await import('@xenova/transformers');
+      localPipeline = await pipeline(
+        'feature-extraction',
+        'Xenova/all-MiniLM-L6-v2',
+      );
+      pipelineError = null;
+      return localPipeline;
+    } catch (err) {
+      pipelineError = `Local embedding pipeline unavailable: ${describePipelineFailure(err)}`;
+      pipelineRetryAt = Date.now() + PIPELINE_RETRY_COOLDOWN_MS;
+      const exhausted = pipelineAttempts >= PIPELINE_MAX_ATTEMPTS;
+      console.warn(
+        `[LLM] ${pipelineError} (attempt ${pipelineAttempts}/${PIPELINE_MAX_ATTEMPTS}` +
+          `${exhausted ? '; giving up until restart' : `; retrying after ${PIPELINE_RETRY_COOLDOWN_MS / 60_000}m`})`,
+      );
+      if (err instanceof Error && err.stack) {
+        console.warn(`[LLM] embedding pipeline stack: ${err.stack.split('\n').slice(0, 4).join(' | ')}`);
+      }
+      throw new Error(pipelineError);
+    } finally {
+      pipelineLoadPromise = null;
     }
-    throw new Error(pipelineError);
-  }
+  })();
+  return pipelineLoadPromise;
 }
 
 /** Embedding-pipeline state for /health, so "is semantic recall actually
