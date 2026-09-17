@@ -102,6 +102,12 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     let agentReady = false;
     let goalCreatedThisSession: { id: string; title: string } | undefined;
     let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+    // Deepgram's ConversationText event is a single unified "here's what was
+    // said" channel — unlike Gemini's inputTranscription/outputTranscription
+    // fields, it does not distinguish real speech from an echo of a text-only
+    // InjectUserMessage we sent ourselves. Track exactly what we injected so
+    // its echo can be dropped instead of relayed to the client as a caption.
+    const pendingContextEchoes = new Set<string>();
 
     const deepgram = new WebSocket(DEEPGRAM_AGENT_URL, {
       headers: { Authorization: `Token ${deepgramKey}` },
@@ -204,6 +210,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         case 'ConversationText': {
           const role = event.role === 'assistant' ? 'assistant' : 'user';
           const text = typeof event.content === 'string' ? event.content : '';
+          if (text && pendingContextEchoes.has(text)) {
+            pendingContextEchoes.delete(text);
+            break;
+          }
           if (text) safeSendClient({ type: 'transcript', role, text });
           break;
         }
@@ -276,11 +286,16 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         }
       } else if (msg.type === 'context' && typeof msg.text === 'string' && msg.text.length <= 300) {
         // Don navigated to a different Apex page mid-call. Injected as a
-        // silent context note — behavior (never read aloud) is pinned by
-        // the system prompt above, same as the Gemini version.
+        // silent context note — the system prompt above tells the model
+        // never to read it aloud, but Deepgram still echoes the injected
+        // text back over the same ConversationText event used for real
+        // speech, so pendingContextEchoes (above) is what actually keeps
+        // it off the client's visible transcript.
+        const contextContent = `[screen context — do not read aloud or comment] ${msg.text}`;
+        pendingContextEchoes.add(contextContent);
         safeSendDeepgram({
           type: 'InjectUserMessage',
-          content: `[screen context — do not read aloud or comment] ${msg.text}`,
+          content: contextContent,
         });
       } else if (msg.type === 'end') {
         client.close();
