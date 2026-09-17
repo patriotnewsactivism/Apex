@@ -1,4 +1,5 @@
 import './peer-review-context-guard.js';
+import './capacity-claim-guard.js';
 
 export * from './types.js';
 export * from './llm-client.js';
