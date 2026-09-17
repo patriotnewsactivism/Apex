@@ -89,9 +89,14 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     })();
 
     const deepgramKey = process.env.DEEPGRAM_API_KEY;
-    const groqKey = process.env.GROQ_API_KEY;
+    // GROQ_API_KEY is an account-level credential reused by other services on
+    // this Groq account, so its shared per-minute token budget could starve a
+    // live call regardless of what Apex itself sends. GROQ_API_KEY_2 is a
+    // dedicated key provisioned for live-voice specifically — prefer it, and
+    // only fall back to the shared key where the dedicated one isn't set.
+    const groqKey = process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY;
     if (!deepgramKey || !groqKey) {
-      const missing = [!deepgramKey && 'DEEPGRAM_API_KEY', !groqKey && 'GROQ_API_KEY'].filter(Boolean).join(' and ');
+      const missing = [!deepgramKey && 'DEEPGRAM_API_KEY', !groqKey && 'GROQ_API_KEY_2 or GROQ_API_KEY'].filter(Boolean).join(' and ');
       client.send(JSON.stringify({ type: 'error', message: `${missing} not configured on this deployment.` }));
       client.close(1011, 'Not configured');
       return;
@@ -253,10 +258,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
           console.error('[live-voice] Deepgram error:', event);
           // FAILED_TO_THINK means Deepgram's request to Groq (the think
           // provider) failed — most often a 429 on Groq's per-minute token
-          // budget for this account, which is shared across every service
-          // using GROQ_API_KEY, not something a code fix here can raise.
-          // Deepgram closes the whole agent session on this error regardless,
-          // so the honest answer is "try again shortly," not a generic error.
+          // budget for whichever account groqKey belongs to, not something a
+          // code fix here can raise. Deepgram closes the whole agent session
+          // on this error regardless, so the honest answer is "try again
+          // shortly," not a generic error.
           const message =
             event.code === 'FAILED_TO_THINK'
               ? "The assistant's AI provider is temporarily rate-limited — please try again in a few seconds."
