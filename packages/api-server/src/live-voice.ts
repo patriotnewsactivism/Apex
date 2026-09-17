@@ -35,12 +35,20 @@ import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from '
 // (executeTool) as text chat, so a spoken "approve that" does the same real
 // action as typing it.
 //
+// Reconnects: a dropped Deepgram session (network blip, or a transient 429
+// from Groq — FAILED_TO_THINK below) is retried with exponential backoff +
+// jitter (reconnectDelayMs) instead of ending the call. This is silent to
+// the client by design — the existing 'ready' message already means "you
+// can talk now" whether this is the first connection or a reconnect, so no
+// new wire-protocol message was needed. The client only ever hears about it
+// if every retry in the budget fails, via the existing 'error' message.
+//
 // Client <-> server wire protocol is UNCHANGED from the Gemini version —
 // this is a backend-only swap; useLiveVoiceCall.ts needs no changes at all:
 //   client -> server: { type: 'audio', data: base64 }           16kHz PCM16
 //   client -> server: { type: 'context', text }                  screen nav
 //   client -> server: { type: 'end' }                            hang up
-//   server -> client: { type: 'ready' }                          agent session live
+//   server -> client: { type: 'ready' }                          agent session live (first connect OR reconnect)
 //   server -> client: { type: 'audio', data: base64 }            24kHz PCM16
 //   server -> client: { type: 'transcript', role, text }         live captions
 //   server -> client: { type: 'goalCreated', id, title }         action taken
@@ -48,7 +56,7 @@ import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from '
 //   server -> client: { type: 'toolActivity', name }             brief "doing X" ping
 //   server -> client: { type: 'interrupted' }                    barge-in
 //   server -> client: { type: 'turnComplete' }                   close caption bubble
-//   server -> client: { type: 'error', message }
+//   server -> client: { type: 'error', message }                 unrecoverable — retries exhausted
 
 const DEEPGRAM_AGENT_URL = 'wss://agent.deepgram.com/v1/agent/converse';
 const GROQ_ENDPOINT_URL = 'https://api.groq.com/openai/v1/chat/completions';
@@ -61,6 +69,32 @@ const GROQ_ENDPOINT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_THINK_MODEL = 'openai/gpt-oss-120b';
 /** Deepgram closes an idle agent session without a periodic nudge. */
 const KEEPALIVE_INTERVAL_MS = 5_000;
+
+// ─── Reconnect tuning ───────────────────────────────────────────────────────
+//
+// Deepgram does not distinguish "recoverable" from "fatal" at the WebSocket
+// close level — a network blip and a Groq 429 (FAILED_TO_THINK) both just
+// close the whole agent session with a non-1000 code. So every abnormal
+// close gets retried up to this budget rather than assuming it is fatal;
+// see the 'close' handler in connectToDeepgram() below.
+export const RECONNECT_BASE_DELAY_MS = 500;
+export const RECONNECT_MAX_DELAY_MS = 15_000;
+export const RECONNECT_MAX_ATTEMPTS = 5;
+
+/**
+ * Exponential backoff with full jitter (AWS's recommended formula: uniform
+ * over [0, cap], not a fixed fraction of it). A fixed delay retried in
+ * lockstep with whatever just caused a 429 tends to land on another 429;
+ * jitter spreads retries across the window instead of synchronizing them.
+ *
+ * `attempt` is 0-indexed (0 = first retry). `random` defaults to Math.random
+ * but is injectable so a guard script can assert an exact value instead of
+ * only a range.
+ */
+export function reconnectDelayMs(attempt: number, random: () => number = Math.random): number {
+  const cap = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** Math.max(0, attempt));
+  return Math.round(random() * cap);
+}
 
 interface DeepgramFunctionCall {
   id: string;
@@ -79,7 +113,9 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
   const wss = registerWebSocketRoute(server, '/ws/voice-live', async (client: WebSocket, _req: IncomingMessage) => {
     // The Apex page Don was viewing when he started the call — the client
     // sends ?page=<Title (pageId)>. Mid-call navigation updates arrive as
-    // { type: 'context' } messages.
+    // { type: 'context' } messages and update currentPageNote below, so a
+    // reconnect's fresh Settings prompt reflects where he actually is, not
+    // just where he started.
     const startPage = (() => {
       try {
         return new URL(_req.url ?? '', 'http://apex.local').searchParams.get('page') ?? undefined;
@@ -87,6 +123,9 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         return undefined;
       }
     })();
+    let currentPageNote = startPage
+      ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
+      : '';
 
     const deepgramKey = process.env.DEEPGRAM_API_KEY;
     // GROQ_API_KEY is an account-level credential reused by other services on
@@ -114,9 +153,19 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     // its echo can be dropped instead of relayed to the client as a caption.
     const pendingContextEchoes = new Set<string>();
 
-    const deepgram = new WebSocket(DEEPGRAM_AGENT_URL, {
-      headers: { Authorization: `Token ${deepgramKey}` },
-    });
+    // Reconnect state, shared across every connectToDeepgram() attempt for
+    // this one client session.
+    let deepgram: WebSocket;
+    let reconnectAttempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    // Set on an explicit hang-up (client closed, or sent {type:'end'}) so a
+    // Deepgram close firing around the same time is never mistaken for a
+    // drop worth reconnecting.
+    let intentionallyClosed = false;
+    // The most specific reason the last attempt failed, so a final "gave up"
+    // message can be more useful than a generic one if every retry in the
+    // budget hits the same wall (e.g. still rate-limited after 15s of retries).
+    let lastFailureReason: string | undefined;
 
     const safeSendClient = (payload: Record<string, unknown>) => {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(payload));
@@ -130,163 +179,217 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         keepAliveTimer = null;
       }
     };
-
-    deepgram.on('open', () => {
-      console.log('[live-voice] Deepgram agent connected');
-    });
-
-    deepgram.on('message', async (raw: WebSocket.RawData, isBinary: boolean) => {
-      // Audio and JSON control messages share the same stream — isBinary is
-      // the only reliable way to tell them apart (Node's ws can deliver text
-      // frames as Buffer objects too, so Buffer.isBuffer() alone would
-      // misclassify a JSON event as audio and corrupt the stream — same
-      // lesson already applied in telnyx-deepgram-agent.ts).
-      if (isBinary) {
-        safeSendClient({ type: 'audio', data: rawDataToBuffer(raw).toString('base64') });
-        return;
+    const clearReconnectTimer = () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
+    };
 
-      let event: Record<string, unknown>;
-      try {
-        event = JSON.parse(rawDataToBuffer(raw).toString('utf8'));
-      } catch {
-        return;
-      }
+    const connectToDeepgram = () => {
+      agentReady = false;
+      const dg = new WebSocket(DEEPGRAM_AGENT_URL, {
+        headers: { Authorization: `Token ${deepgramKey}` },
+      });
+      deepgram = dg;
 
-      switch (event.type) {
-        case 'Welcome': {
-          let snapshot = '';
-          try {
-            snapshot = await buildLiveSnapshot();
-          } catch (err) {
-            console.error('[live-voice] buildLiveSnapshot failed:', err);
-          }
-          const screenNote = startPage
-            ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
-            : '';
-          safeSendDeepgram({
-            type: 'Settings',
-            audio: {
-              input: { encoding: 'linear16', sample_rate: 16000 },
-              output: { encoding: 'linear16', sample_rate: 24000, container: 'none' },
-            },
-            agent: {
-              language: 'en',
-              listen: { provider: { type: 'deepgram', model: 'nova-3-general' } },
-              think: {
-                provider: { type: 'groq', model: GROQ_THINK_MODEL },
-                endpoint: { url: GROQ_ENDPOINT_URL, headers: { Authorization: `Bearer ${groqKey}` } },
-                prompt:
-                  `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
-                  `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
-                  `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
-                  `tool — don't just say you will.${screenNote}` +
-                  `You will receive "[screen context]" updates whenever Don moves to a different Apex page. ` +
-                  `Use them to understand what "this" or "that" refers to — NEVER read a screen update aloud, ` +
-                  `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
-                functions: CHAT_TOOLS,
-              },
-              speak: { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
-            },
-          });
-          break;
+      dg.on('open', () => {
+        console.log('[live-voice] Deepgram agent connected');
+      });
+
+      dg.on('message', async (raw: WebSocket.RawData, isBinary: boolean) => {
+        // Audio and JSON control messages share the same stream — isBinary is
+        // the only reliable way to tell them apart (Node's ws can deliver text
+        // frames as Buffer objects too, so Buffer.isBuffer() alone would
+        // misclassify a JSON event as audio and corrupt the stream — same
+        // lesson already applied in telnyx-deepgram-agent.ts).
+        if (isBinary) {
+          safeSendClient({ type: 'audio', data: rawDataToBuffer(raw).toString('base64') });
+          return;
         }
 
-        case 'SettingsApplied':
-          agentReady = true;
-          safeSendClient({ type: 'ready' });
-          stopKeepAlive();
-          keepAliveTimer = setInterval(() => safeSendDeepgram({ type: 'KeepAlive' }), KEEPALIVE_INTERVAL_MS);
-          console.log('[live-voice] Settings applied');
-          break;
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(rawDataToBuffer(raw).toString('utf8'));
+        } catch {
+          return;
+        }
 
-        // Barge-in: the caller started talking over the agent's own speech.
-        case 'UserStartedSpeaking':
-          safeSendClient({ type: 'interrupted' });
-          break;
-
-        // All audio for the agent's current turn has been sent — the client
-        // uses this to close the current caption bubble (streaming transcript
-        // fragments otherwise have no reliable turn boundary).
-        case 'AgentAudioDone':
-          safeSendClient({ type: 'turnComplete' });
-          break;
-
-        case 'ConversationText': {
-          const role = event.role === 'assistant' ? 'assistant' : 'user';
-          const text = typeof event.content === 'string' ? event.content : '';
-          if (text && pendingContextEchoes.has(text)) {
-            pendingContextEchoes.delete(text);
+        switch (event.type) {
+          case 'Welcome': {
+            let snapshot = '';
+            try {
+              snapshot = await buildLiveSnapshot();
+            } catch (err) {
+              console.error('[live-voice] buildLiveSnapshot failed:', err);
+            }
+            safeSendDeepgram({
+              type: 'Settings',
+              audio: {
+                input: { encoding: 'linear16', sample_rate: 16000 },
+                output: { encoding: 'linear16', sample_rate: 24000, container: 'none' },
+              },
+              agent: {
+                language: 'en',
+                listen: { provider: { type: 'deepgram', model: 'nova-3-general' } },
+                think: {
+                  provider: { type: 'groq', model: GROQ_THINK_MODEL },
+                  endpoint: { url: GROQ_ENDPOINT_URL, headers: { Authorization: `Bearer ${groqKey}` } },
+                  prompt:
+                    `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
+                    `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
+                    `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
+                    `tool — don't just say you will.${currentPageNote}` +
+                    `You will receive "[screen context]" updates whenever Don moves to a different Apex page. ` +
+                    `Use them to understand what "this" or "that" refers to — NEVER read a screen update aloud, ` +
+                    `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
+                  functions: CHAT_TOOLS,
+                },
+                speak: { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
+              },
+            });
             break;
           }
-          if (text) safeSendClient({ type: 'transcript', role, text });
-          break;
-        }
 
-        case 'FunctionCallRequest': {
-          const functions = Array.isArray(event.functions) ? (event.functions as DeepgramFunctionCall[]) : [];
-          for (const fc of functions) {
-            safeSendClient({ type: 'toolActivity', name: fc.name });
-            let args: Record<string, unknown> = {};
-            let result: Record<string, unknown>;
-            try {
-              args = fc.arguments ? JSON.parse(fc.arguments) : {};
-              result = await executeTool({ name: fc.name, args }, ceo);
-            } catch (err) {
-              result = { error: err instanceof Error ? err.message : String(err) };
+          case 'SettingsApplied':
+            agentReady = true;
+            // A fresh session (first connect or a successful reconnect) means
+            // whatever caused the previous drop, if any, is over — a LATER
+            // drop should get the full retry budget again, not be penalized
+            // by one that already recovered.
+            reconnectAttempt = 0;
+            lastFailureReason = undefined;
+            safeSendClient({ type: 'ready' });
+            stopKeepAlive();
+            keepAliveTimer = setInterval(() => safeSendDeepgram({ type: 'KeepAlive' }), KEEPALIVE_INTERVAL_MS);
+            console.log('[live-voice] Settings applied');
+            break;
+
+          // Barge-in: the caller started talking over the agent's own speech.
+          case 'UserStartedSpeaking':
+            safeSendClient({ type: 'interrupted' });
+            break;
+
+          // All audio for the agent's current turn has been sent — the client
+          // uses this to close the current caption bubble (streaming transcript
+          // fragments otherwise have no reliable turn boundary).
+          case 'AgentAudioDone':
+            safeSendClient({ type: 'turnComplete' });
+            break;
+
+          case 'ConversationText': {
+            const role = event.role === 'assistant' ? 'assistant' : 'user';
+            const text = typeof event.content === 'string' ? event.content : '';
+            if (text && pendingContextEchoes.has(text)) {
+              pendingContextEchoes.delete(text);
+              break;
             }
-            if (fc.name === 'create_goal' && result.goalId) {
-              goalCreatedThisSession = { id: String(result.goalId), title: String(result.title ?? args.title ?? '') };
-              safeSendClient({ type: 'goalCreated', ...goalCreatedThisSession });
-            }
-            if (
-              (fc.name === 'approve_pending_approval' || fc.name === 'reject_pending_approval' || fc.name === 'acknowledge_escalation') &&
-              !result.error
-            ) {
-              safeSendClient({ type: 'approvalResolved', id: args.id, action: fc.name });
-            }
-            safeSendDeepgram({ type: 'FunctionCallResponse', id: fc.id, name: fc.name, content: JSON.stringify(result) });
+            if (text) safeSendClient({ type: 'transcript', role, text });
+            break;
           }
-          break;
+
+          case 'FunctionCallRequest': {
+            const functions = Array.isArray(event.functions) ? (event.functions as DeepgramFunctionCall[]) : [];
+            for (const fc of functions) {
+              safeSendClient({ type: 'toolActivity', name: fc.name });
+              let args: Record<string, unknown> = {};
+              let result: Record<string, unknown>;
+              try {
+                args = fc.arguments ? JSON.parse(fc.arguments) : {};
+                result = await executeTool({ name: fc.name, args }, ceo);
+              } catch (err) {
+                result = { error: err instanceof Error ? err.message : String(err) };
+              }
+              if (fc.name === 'create_goal' && result.goalId) {
+                goalCreatedThisSession = { id: String(result.goalId), title: String(result.title ?? args.title ?? '') };
+                safeSendClient({ type: 'goalCreated', ...goalCreatedThisSession });
+              }
+              if (
+                (fc.name === 'approve_pending_approval' || fc.name === 'reject_pending_approval' || fc.name === 'acknowledge_escalation') &&
+                !result.error
+              ) {
+                safeSendClient({ type: 'approvalResolved', id: args.id, action: fc.name });
+              }
+              safeSendDeepgram({ type: 'FunctionCallResponse', id: fc.id, name: fc.name, content: JSON.stringify(result) });
+            }
+            break;
+          }
+
+          case 'Warning':
+            console.warn('[live-voice] Deepgram warning:', event);
+            break;
+
+          case 'Error': {
+            console.error('[live-voice] Deepgram error:', event);
+            // FAILED_TO_THINK means Deepgram's request to Groq (the think
+            // provider) failed — most often a 429 on Groq's per-minute token
+            // budget for whichever account groqKey belongs to. Deepgram closes
+            // the whole agent session on this error regardless, so the 'close'
+            // handler below is what decides whether to retry — this only
+            // records the reason. It deliberately does NOT tell the client
+            // yet: doing so here would flip the call to an error state before
+            // a same-second reconnect even gets a chance to succeed.
+            lastFailureReason =
+              event.code === 'FAILED_TO_THINK'
+                ? "the assistant's AI provider is temporarily rate-limited"
+                : 'a voice provider error';
+            break;
+          }
+
+          default:
+            break;
+        }
+      });
+
+      dg.on('error', (err) => {
+        console.error('[live-voice] Deepgram WS error:', err.message);
+        lastFailureReason = lastFailureReason ?? 'a voice provider connection error';
+        // No safeSendClient here either, for the same reason as the 'Error'
+        // case above — 'error' is always followed by 'close', which is the
+        // single place that decides retry vs. give up.
+      });
+
+      dg.on('close', (code, reason) => {
+        stopKeepAlive();
+        if (code !== 1000) {
+          console.warn(`[live-voice] Deepgram WS closed: ${code} ${reason.toString().slice(0, 200)}`);
+        }
+        // A newer attempt already replaced this one (defensive — the design
+        // only ever has one attempt in flight at a time, but a stale handler
+        // firing late should still no-op rather than double-schedule).
+        if (dg !== deepgram) return;
+
+        if (intentionallyClosed || code === 1000) {
+          if (client.readyState === WebSocket.OPEN) client.close();
+          return;
+        }
+        if (client.readyState !== WebSocket.OPEN) return;
+
+        if (reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) {
+          safeSendClient({
+            type: 'error',
+            message: lastFailureReason
+              ? `Still unable to reach the voice provider (${lastFailureReason}) after several attempts. Please try starting the call again.`
+              : 'Voice provider connection error. Please try starting the call again.',
+          });
+          client.close();
+          return;
         }
 
-        case 'Warning':
-          console.warn('[live-voice] Deepgram warning:', event);
-          break;
+        const delay = reconnectDelayMs(reconnectAttempt);
+        reconnectAttempt += 1;
+        console.warn(
+          `[live-voice] Deepgram connection dropped (code ${code}); reconnecting in ${delay}ms ` +
+            `(attempt ${reconnectAttempt}/${RECONNECT_MAX_ATTEMPTS})`,
+        );
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          if (client.readyState === WebSocket.OPEN && !intentionallyClosed) connectToDeepgram();
+        }, delay);
+      });
+    };
 
-        case 'Error': {
-          console.error('[live-voice] Deepgram error:', event);
-          // FAILED_TO_THINK means Deepgram's request to Groq (the think
-          // provider) failed — most often a 429 on Groq's per-minute token
-          // budget for whichever account groqKey belongs to, not something a
-          // code fix here can raise. Deepgram closes the whole agent session
-          // on this error regardless, so the honest answer is "try again
-          // shortly," not a generic error.
-          const message =
-            event.code === 'FAILED_TO_THINK'
-              ? "The assistant's AI provider is temporarily rate-limited — please try again in a few seconds."
-              : 'Voice provider error.';
-          safeSendClient({ type: 'error', message });
-          break;
-        }
-
-        default:
-          break;
-      }
-    });
-
-    deepgram.on('error', (err) => {
-      console.error('[live-voice] Deepgram WS error:', err.message);
-      safeSendClient({ type: 'error', message: 'Voice provider connection error.' });
-    });
-
-    deepgram.on('close', (code, reason) => {
-      stopKeepAlive();
-      if (code !== 1000) {
-        console.warn(`[live-voice] Deepgram WS closed: ${code} ${reason.toString().slice(0, 200)}`);
-      }
-      if (client.readyState === WebSocket.OPEN) client.close();
-    });
+    connectToDeepgram();
 
     client.on('message', (raw, isBinary) => {
       if (!agentReady || isBinary) return;
@@ -306,7 +409,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         // never to read it aloud, but Deepgram still echoes the injected
         // text back over the same ConversationText event used for real
         // speech, so pendingContextEchoes (above) is what actually keeps
-        // it off the client's visible transcript.
+        // it off the client's visible transcript. Also remembered in
+        // currentPageNote so a reconnect's fresh Settings prompt starts
+        // from where Don actually is, not just where the call began.
+        currentPageNote = `\n\nDon's current screen: ${msg.text}`;
         const contextContent = `[screen context — do not read aloud or comment] ${msg.text}`;
         pendingContextEchoes.add(contextContent);
         safeSendDeepgram({
@@ -320,6 +426,8 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
 
     client.on('close', () => {
       console.log('🎙️  Live voice client disconnected');
+      intentionallyClosed = true;
+      clearReconnectTimer();
       stopKeepAlive();
       if (deepgram.readyState === WebSocket.OPEN || deepgram.readyState === WebSocket.CONNECTING) {
         deepgram.close();
