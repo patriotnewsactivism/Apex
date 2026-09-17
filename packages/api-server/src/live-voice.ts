@@ -4,67 +4,70 @@ import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import type { ApexCEO } from '@workspace/agents';
 import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from './routes/chat.js';
-import type { LLMTool } from '@workspace/core';
 
-// ─── Live voice: real-time conversation with Apex via Gemini Live ────────────
+// ─── Live voice: real-time conversation with Apex via Deepgram Voice Agent ───
 //
-// Don asked for the same kind of live voice agent BuildMyBot2 uses, but built
-// on Gemini Live (gemini-3.1-flash-live-preview) — confirmed live and
-// protocol-verified against the real Gemini Live API this session (real
-// WebSocket round-trip: setup → tool call → tool response → transcript, all
-// observed working end-to-end before writing this relay).
+// Switched from Gemini Live after Google denied the configured project
+// access to the Live/bidiGenerateContent websocket specifically — a
+// documented free-tier restriction on that real-time endpoint, confirmed
+// live via production logs ("Gemini WS closed: 1008 Your project has been
+// denied access. Please contact support."). Deepgram's Voice Agent API
+// (agent.deepgram.com/v1/agent/converse) bundles STT + LLM + TTS over one
+// websocket, matching the shape this file already needs — and this exact
+// provider/protocol is already proven elsewhere in this codebase
+// (telnyx-deepgram-agent.ts, for phone calls), so the wire format here
+// follows that same confirmed pattern rather than guessing at Deepgram's
+// schema from scratch.
 //
-// Architecture: server-to-server. The browser never sees GEMINI_API_KEY —
-// it opens a WebSocket to US (this route), we open our OWN WebSocket to
-// Gemini and relay audio + tool calls both ways. This reuses the exact same
-// tool executor (executeTool) as the text chat, so "approve that" or
-// "deploy a goal to fix X" spoken out loud does the SAME real action as
-// typing it — including approve_pending_approval / reject_pending_approval,
-// which is the "implement the decisions I make" part of the ask.
+// The "think" (LLM) step runs on Groq rather than Deepgram's own OpenAI
+// integration: Groq is one of Deepgram's explicitly documented "bring your
+// own" 3rd-party think providers (custom endpoint + Bearer key, OpenAI-
+// compatible request shape) — unlike OpenRouter, which isn't a documented
+// option at all. Apex holds no OpenAI/Anthropic key of its own, Matthew
+// already runs a working GROQ_API_KEY on other services, and Groq's low
+// latency is a genuine fit for a live spoken conversation specifically,
+// not just the safe fallback.
 //
-// Client <-> server wire protocol (JSON messages over the /ws/voice-live
-// socket, separate from Gemini's own wire format):
+// Architecture unchanged from the Gemini version: server-to-server relay.
+// The browser never sees DEEPGRAM_API_KEY or GROQ_API_KEY — it opens a
+// WebSocket to US (this route), we open our OWN WebSocket to Deepgram and
+// relay audio + tool calls both ways. Reuses the exact same tool executor
+// (executeTool) as text chat, so a spoken "approve that" does the same real
+// action as typing it.
+//
+// Client <-> server wire protocol is UNCHANGED from the Gemini version —
+// this is a backend-only swap; useLiveVoiceCall.ts needs no changes at all:
 //   client -> server: { type: 'audio', data: base64 }           16kHz PCM16
+//   client -> server: { type: 'context', text }                  screen nav
 //   client -> server: { type: 'end' }                            hang up
-//   server -> client: { type: 'ready' }                          Gemini session live
+//   server -> client: { type: 'ready' }                          agent session live
 //   server -> client: { type: 'audio', data: base64 }            24kHz PCM16
 //   server -> client: { type: 'transcript', role, text }         live captions
 //   server -> client: { type: 'goalCreated', id, title }         action taken
+//   server -> client: { type: 'approvalResolved', id, action }   action taken
 //   server -> client: { type: 'toolActivity', name }             brief "doing X" ping
+//   server -> client: { type: 'interrupted' }                    barge-in
+//   server -> client: { type: 'turnComplete' }                   close caption bubble
 //   server -> client: { type: 'error', message }
 
-const GEMINI_LIVE_MODEL = 'models/gemini-3.1-flash-live-preview';
+const DEEPGRAM_AGENT_URL = 'wss://agent.deepgram.com/v1/agent/converse';
+const GROQ_ENDPOINT_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_THINK_MODEL = 'llama-3.3-70b-versatile';
+/** Deepgram closes an idle agent session without a periodic nudge. */
+const KEEPALIVE_INTERVAL_MS = 5_000;
 
-function toGeminiType(t: unknown): string {
-  return String(t).toUpperCase();
+interface DeepgramFunctionCall {
+  id: string;
+  name: string;
+  arguments?: string;
 }
 
-function toGeminiSchema(schema: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...schema };
-  if (typeof out.type === 'string') out.type = toGeminiType(out.type);
-  if (out.properties && typeof out.properties === 'object') {
-    const props: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(out.properties as Record<string, unknown>)) {
-      props[k] = toGeminiSchema(v as Record<string, unknown>);
-    }
-    out.properties = props;
-  }
-  return out;
+function rawDataToBuffer(data: WebSocket.RawData): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data as Uint8Array);
 }
-
-function toGeminiTools(tools: LLMTool[]) {
-  return [
-    {
-      functionDeclarations: tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        parameters: toGeminiSchema(t.parameters),
-      })),
-    },
-  ];
-}
-
-const GEMINI_TOOLS = toGeminiTools(CHAT_TOOLS);
 
 export function setupLiveVoice(server: Server, ceo: ApexCEO) {
   const wss = registerWebSocketRoute(server, '/ws/voice-live', async (client: WebSocket, _req: IncomingMessage) => {
@@ -78,48 +81,85 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         return undefined;
       }
     })();
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      client.send(JSON.stringify({ type: 'error', message: 'GEMINI_API_KEY is not configured on this deployment.' }));
+
+    const deepgramKey = process.env.DEEPGRAM_API_KEY;
+    const groqKey = process.env.GROQ_API_KEY;
+    if (!deepgramKey || !groqKey) {
+      const missing = [!deepgramKey && 'DEEPGRAM_API_KEY', !groqKey && 'GROQ_API_KEY'].filter(Boolean).join(' and ');
+      client.send(JSON.stringify({ type: 'error', message: `${missing} not configured on this deployment.` }));
       client.close(1011, 'Not configured');
       return;
     }
 
     console.log('🎙️  Live voice client connected');
 
-    let geminiOpen = false;
+    let agentReady = false;
     let goalCreatedThisSession: { id: string; title: string } | undefined;
-    const geminiUrl =
-      `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
-    const gemini = new WebSocket(geminiUrl);
+    let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+
+    const deepgram = new WebSocket(DEEPGRAM_AGENT_URL, {
+      headers: { Authorization: `Token ${deepgramKey}` },
+    });
 
     const safeSendClient = (payload: Record<string, unknown>) => {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(payload));
     };
-    const safeSendGemini = (payload: Record<string, unknown>) => {
-      if (gemini.readyState === WebSocket.OPEN) gemini.send(JSON.stringify(payload));
+    const safeSendDeepgram = (payload: Record<string, unknown>) => {
+      if (deepgram.readyState === WebSocket.OPEN) deepgram.send(JSON.stringify(payload));
+    };
+    const stopKeepAlive = () => {
+      if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+      }
     };
 
-    gemini.on('open', async () => {
-      let snapshot = '';
-      try {
-        snapshot = await buildLiveSnapshot();
-      } catch (err) {
-        console.error('[live-voice] buildLiveSnapshot failed:', err);
+    deepgram.on('open', () => {
+      console.log('[live-voice] Deepgram agent connected');
+    });
+
+    deepgram.on('message', async (raw: WebSocket.RawData, isBinary: boolean) => {
+      // Audio and JSON control messages share the same stream — isBinary is
+      // the only reliable way to tell them apart (Node's ws can deliver text
+      // frames as Buffer objects too, so Buffer.isBuffer() alone would
+      // misclassify a JSON event as audio and corrupt the stream — same
+      // lesson already applied in telnyx-deepgram-agent.ts).
+      if (isBinary) {
+        safeSendClient({ type: 'audio', data: rawDataToBuffer(raw).toString('base64') });
+        return;
       }
-      const screenNote = startPage
-        ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
-        : '';
-      safeSendGemini({
-        setup: {
-          model: GEMINI_LIVE_MODEL,
-          generationConfig: { responseModalities: ['AUDIO'] },
-          outputAudioTranscription: {},
-          inputAudioTranscription: {},
-          systemInstruction: {
-            parts: [
-              {
-                text:
+
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(rawDataToBuffer(raw).toString('utf8'));
+      } catch {
+        return;
+      }
+
+      switch (event.type) {
+        case 'Welcome': {
+          let snapshot = '';
+          try {
+            snapshot = await buildLiveSnapshot();
+          } catch (err) {
+            console.error('[live-voice] buildLiveSnapshot failed:', err);
+          }
+          const screenNote = startPage
+            ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
+            : '';
+          safeSendDeepgram({
+            type: 'Settings',
+            audio: {
+              input: { encoding: 'linear16', sample_rate: 16000 },
+              output: { encoding: 'linear16', sample_rate: 24000, container: 'none' },
+            },
+            agent: {
+              language: 'en',
+              listen: { provider: { type: 'deepgram', model: 'nova-3-general' } },
+              think: {
+                provider: { type: 'groq', model: GROQ_THINK_MODEL },
+                endpoint: { url: GROQ_ENDPOINT_URL, headers: { Authorization: `Bearer ${groqKey}` } },
+                prompt:
                   `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
                   `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
                   `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
@@ -127,127 +167,125 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
                   `You will receive "[screen context]" updates whenever Don moves to a different Apex page. ` +
                   `Use them to understand what "this" or "that" refers to — NEVER read a screen update aloud, ` +
                   `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
+                functions: CHAT_TOOLS,
               },
-            ],
-          },
-          tools: GEMINI_TOOLS,
-        },
-      });
-    });
-
-    gemini.on('message', async (raw) => {
-      let data: any;
-      try {
-        data = JSON.parse(raw.toString());
-      } catch {
-        return;
-      }
-
-      if (data.setupComplete) {
-        geminiOpen = true;
-        safeSendClient({ type: 'ready' });
-        return;
-      }
-
-      if (data.toolCall?.functionCalls) {
-        const responses: Array<{ id: string; name: string; response: Record<string, unknown> }> = [];
-        for (const fc of data.toolCall.functionCalls) {
-          safeSendClient({ type: 'toolActivity', name: fc.name });
-          let result: Record<string, unknown>;
-          try {
-            result = await executeTool({ name: fc.name, args: fc.args ?? {} }, ceo);
-          } catch (err) {
-            result = { error: err instanceof Error ? err.message : String(err) };
-          }
-          if (fc.name === 'create_goal' && result.goalId) {
-            goalCreatedThisSession = { id: String(result.goalId), title: String(result.title ?? fc.args?.title ?? '') };
-            safeSendClient({ type: 'goalCreated', ...goalCreatedThisSession });
-          }
-          if (
-            (fc.name === 'approve_pending_approval' || fc.name === 'reject_pending_approval' || fc.name === 'acknowledge_escalation') &&
-            !result.error
-          ) {
-            safeSendClient({ type: 'approvalResolved', id: fc.args?.id, action: fc.name });
-          }
-          responses.push({ id: fc.id, name: fc.name, response: result });
+              speak: { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
+            },
+          });
+          break;
         }
-        safeSendGemini({ toolResponse: { functionResponses: responses } });
-        return;
-      }
 
-      const sc = data.serverContent;
-      if (sc) {
-        if (sc.inputTranscription?.text) {
-          safeSendClient({ type: 'transcript', role: 'user', text: sc.inputTranscription.text });
-        }
-        if (sc.outputTranscription?.text) {
-          safeSendClient({ type: 'transcript', role: 'assistant', text: sc.outputTranscription.text });
-        }
-        if (sc.modelTurn?.parts) {
-          for (const part of sc.modelTurn.parts) {
-            if (part.inlineData?.data) {
-              safeSendClient({ type: 'audio', data: part.inlineData.data });
-            }
-          }
-        }
-        if (sc.interrupted) {
+        case 'SettingsApplied':
+          agentReady = true;
+          safeSendClient({ type: 'ready' });
+          stopKeepAlive();
+          keepAliveTimer = setInterval(() => safeSendDeepgram({ type: 'KeepAlive' }), KEEPALIVE_INTERVAL_MS);
+          console.log('[live-voice] Settings applied');
+          break;
+
+        // Barge-in: the caller started talking over the agent's own speech.
+        case 'UserStartedSpeaking':
           safeSendClient({ type: 'interrupted' });
-        }
-        // Turn boundary: the client uses this to close the current caption
-        // bubble. Without it, streaming transcript fragments (which arrive
-        // in small chunks — sometimes word-by-word) have no reliable way to
-        // know when one spoken turn ends and the next begins.
-        if (sc.turnComplete) {
+          break;
+
+        // All audio for the agent's current turn has been sent — the client
+        // uses this to close the current caption bubble (streaming transcript
+        // fragments otherwise have no reliable turn boundary).
+        case 'AgentAudioDone':
           safeSendClient({ type: 'turnComplete' });
+          break;
+
+        case 'ConversationText': {
+          const role = event.role === 'assistant' ? 'assistant' : 'user';
+          const text = typeof event.content === 'string' ? event.content : '';
+          if (text) safeSendClient({ type: 'transcript', role, text });
+          break;
         }
+
+        case 'FunctionCallRequest': {
+          const functions = Array.isArray(event.functions) ? (event.functions as DeepgramFunctionCall[]) : [];
+          for (const fc of functions) {
+            safeSendClient({ type: 'toolActivity', name: fc.name });
+            let args: Record<string, unknown> = {};
+            let result: Record<string, unknown>;
+            try {
+              args = fc.arguments ? JSON.parse(fc.arguments) : {};
+              result = await executeTool({ name: fc.name, args }, ceo);
+            } catch (err) {
+              result = { error: err instanceof Error ? err.message : String(err) };
+            }
+            if (fc.name === 'create_goal' && result.goalId) {
+              goalCreatedThisSession = { id: String(result.goalId), title: String(result.title ?? args.title ?? '') };
+              safeSendClient({ type: 'goalCreated', ...goalCreatedThisSession });
+            }
+            if (
+              (fc.name === 'approve_pending_approval' || fc.name === 'reject_pending_approval' || fc.name === 'acknowledge_escalation') &&
+              !result.error
+            ) {
+              safeSendClient({ type: 'approvalResolved', id: args.id, action: fc.name });
+            }
+            safeSendDeepgram({ type: 'FunctionCallResponse', id: fc.id, name: fc.name, content: JSON.stringify(result) });
+          }
+          break;
+        }
+
+        case 'Warning':
+          console.warn('[live-voice] Deepgram warning:', event);
+          break;
+
+        case 'Error':
+          console.error('[live-voice] Deepgram error:', event);
+          safeSendClient({ type: 'error', message: 'Voice provider error.' });
+          break;
+
+        default:
+          break;
       }
     });
 
-    gemini.on('error', (err) => {
-      console.error('[live-voice] Gemini WS error:', err.message);
+    deepgram.on('error', (err) => {
+      console.error('[live-voice] Deepgram WS error:', err.message);
       safeSendClient({ type: 'error', message: 'Voice provider connection error.' });
     });
 
-    gemini.on('close', (code, reason) => {
+    deepgram.on('close', (code, reason) => {
+      stopKeepAlive();
       if (code !== 1000) {
-        console.warn(`[live-voice] Gemini WS closed: ${code} ${reason.toString().slice(0, 200)}`);
+        console.warn(`[live-voice] Deepgram WS closed: ${code} ${reason.toString().slice(0, 200)}`);
       }
       if (client.readyState === WebSocket.OPEN) client.close();
     });
 
-    client.on('message', (raw) => {
-      if (!geminiOpen) return;
+    client.on('message', (raw, isBinary) => {
+      if (!agentReady || isBinary) return;
       let msg: any;
       try {
-        msg = JSON.parse(raw.toString());
+        msg = JSON.parse(rawDataToBuffer(raw).toString('utf8'));
       } catch {
         return;
       }
       if (msg.type === 'audio' && msg.data) {
-        safeSendGemini({ realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: msg.data } } });
+        if (deepgram.readyState === WebSocket.OPEN) {
+          deepgram.send(Buffer.from(msg.data, 'base64'));
+        }
       } else if (msg.type === 'context' && typeof msg.text === 'string' && msg.text.length <= 300) {
-        // Don navigated to a different Apex page mid-call. Inject it as a
-        // text turn the model treats as silent context, not something to
-        // respond to out loud (behavior is pinned by the system prompt).
-        safeSendGemini({
-          clientContent: {
-            turns: [
-              {
-                role: 'user',
-                parts: [{ text: `[screen context — do not read aloud or comment] ${msg.text}` }],
-              },
-            ],
-          },
+        // Don navigated to a different Apex page mid-call. Injected as a
+        // silent context note — behavior (never read aloud) is pinned by
+        // the system prompt above, same as the Gemini version.
+        safeSendDeepgram({
+          type: 'InjectUserMessage',
+          content: `[screen context — do not read aloud or comment] ${msg.text}`,
         });
       } else if (msg.type === 'end') {
-        safeSendGemini({ realtimeInput: { audioStreamEnd: true } });
+        client.close();
       }
     });
 
     client.on('close', () => {
       console.log('🎙️  Live voice client disconnected');
-      if (gemini.readyState === WebSocket.OPEN || gemini.readyState === WebSocket.CONNECTING) {
-        gemini.close();
+      stopKeepAlive();
+      if (deepgram.readyState === WebSocket.OPEN || deepgram.readyState === WebSocket.CONNECTING) {
+        deepgram.close();
       }
     });
 
