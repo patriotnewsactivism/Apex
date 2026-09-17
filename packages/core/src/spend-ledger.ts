@@ -335,6 +335,7 @@ export function spentMicrosToday(): number {
 export function spendCapacityWindow(
   requestedUsd = 0,
   at: number = Date.now(),
+  pacingEnabled?: boolean,
 ): SpendCapacityWindow {
   rolloverIfNeeded(at);
   return calculateSpendCapacityWindow({
@@ -342,6 +343,7 @@ export function spendCapacityWindow(
     spentMicros: spentMicrosToday(),
     requestedMicros: Math.max(0, Math.round(requestedUsd * MICROS_PER_USD)),
     at,
+    pacingEnabled,
   });
 }
 
@@ -369,15 +371,23 @@ function callReserveUsd(): number {
 /** The same window paidSpendAvailable() checks, but with resumeAt/reason
  *  intact for a caller that needs to explain — not just gate on — a paid
  *  route currently being unaffordable (e.g. a workspace-wide capacity pause
- *  when the free tier is also exhausted at the same moment). */
-export function paidSpendCapacityWindow(at: number = Date.now()): SpendCapacityWindow {
-  return spendCapacityWindow(callReserveUsd(), at);
+ *  when the free tier is also exhausted at the same moment). `pacingEnabled:
+ *  false` skips the smoothing ramp and checks only the hard daily $ cap —
+ *  for an interactive human request, which cannot cause the runaway burn the
+ *  ramp exists to prevent. */
+export function paidSpendCapacityWindow(
+  at: number = Date.now(),
+  pacingEnabled?: boolean,
+): SpendCapacityWindow {
+  return spendCapacityWindow(callReserveUsd(), at, pacingEnabled);
 }
 
 /** True when paid inference has budget right now. False drops the paid rung
- *  from the routing order, leaving APEX on free models alone. */
-export function paidSpendAvailable(at: number = Date.now()): boolean {
-  return paidSpendCapacityWindow(at).allowed;
+ *  from the routing order, leaving APEX on free models alone.
+ *  `pacingEnabled: false` checks only the hard daily $ cap, skipping the
+ *  smoothing ramp — see paidSpendCapacityWindow(). */
+export function paidSpendAvailable(at: number = Date.now(), pacingEnabled?: boolean): boolean {
+  return paidSpendCapacityWindow(at, pacingEnabled).allowed;
 }
 
 export interface SpendLedgerSnapshot {

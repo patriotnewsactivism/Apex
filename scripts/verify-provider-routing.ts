@@ -179,11 +179,18 @@ check(
 check(
   "a simultaneously-exhausted paid rung throws a real capacity pause instead of a misleading generic error",
   clientSource.includes("if (paidOnly) {") &&
-    clientSource.includes("const paidWindow = paidSpendCapacityWindow();") &&
+    clientSource.includes("const paidWindow = paidSpendCapacityWindow(Date.now(), pacingOverride);") &&
     clientSource.includes("if (!paidWindow.allowed) {") &&
     clientSource.includes("throw capacityPauseError([") &&
     clientSource.includes("source: PAID_FALLBACK_PROVIDER_NAME,") &&
     clientSource.includes("resumeAt: paidWindow.resumeAt,"),
+);
+check(
+  "an interactive (human chat) call skips pacing on the request budget, paid spend cap, and provider order alike — never the hard caps",
+  clientSource.includes("const pacingOverride = execution?.interactive ? false : undefined;") &&
+    clientSource.includes("const requestWindow = requestCapacityWindow(Date.now(), pacingOverride);") &&
+    clientSource.includes("getProviderOrderForRole(this.config.role, pacingOverride)") &&
+    clientSource.includes("paidSpendAvailable(Date.now(), pacingEnabled)"),
 );
 
 console.log("\n── Custom FREE policy gateway ──");
