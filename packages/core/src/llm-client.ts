@@ -28,6 +28,7 @@ import {
 import {
   dailySpendCapMicros,
   paidSpendAvailable,
+  paidSpendCapacityWindow,
   recordSpend,
 } from './spend-ledger.js';
 import {
@@ -1185,6 +1186,37 @@ class MultiProviderClient {
                 requestWindow.reason === 'daily_cap'
                   ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
                   : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
+            },
+          ]);
+        }
+      }
+
+      // paidOnly means free-tier capacity is exhausted for now, and getting
+      // here already confirmed paidLLMFallbackEnabled() — but an operator
+      // turning paid continuity on doesn't mean it can afford a request at
+      // this exact moment. The $/day cap is paced the same way the request
+      // budget above is, so it can be transiently unaffordable even while
+      // genuinely enabled. Without this check, every provider below is free
+      // (paidOnly skips it) or paid-but-absent-from-the-order (spend denied
+      // it), so the loop exits with nothing in providerErrors or skipReasons
+      // — "No usable provider credential was configured", which is false
+      // (every credential IS configured) and, worse, doesn't match the
+      // capacity-pause message shape base-agent.ts's isLLMIntentionalPause()
+      // looks for. That mismatch is what let a workspace-wide capacity pause
+      // read as an ordinary task failure: agents retried immediately instead
+      // of backing off until money was actually available again, burning
+      // the rest of both budgets faster and reinforcing the same pause.
+      if (paidOnly) {
+        const paidWindow = paidSpendCapacityWindow();
+        if (!paidWindow.allowed) {
+          throw capacityPauseError([
+            {
+              source: PAID_FALLBACK_PROVIDER_NAME,
+              resumeAt: paidWindow.resumeAt,
+              reason:
+                paidWindow.reason === 'daily_cap'
+                  ? 'daily paid spend cap reached'
+                  : 'daily paid spend pacing active',
             },
           ]);
         }

@@ -176,6 +176,15 @@ check(
   clientSource.includes("if (capacityFailure && !isAccountQuotaFailure(status, message)) break") &&
     clientSource.includes("setAccountCooldown(credential.key"),
 );
+check(
+  "a simultaneously-exhausted paid rung throws a real capacity pause instead of a misleading generic error",
+  clientSource.includes("if (paidOnly) {") &&
+    clientSource.includes("const paidWindow = paidSpendCapacityWindow();") &&
+    clientSource.includes("if (!paidWindow.allowed) {") &&
+    clientSource.includes("throw capacityPauseError([") &&
+    clientSource.includes("source: PAID_FALLBACK_PROVIDER_NAME,") &&
+    clientSource.includes("resumeAt: paidWindow.resumeAt,"),
+);
 
 console.log("\n── Custom FREE policy gateway ──");
 const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
