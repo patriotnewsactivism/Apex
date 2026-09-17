@@ -178,10 +178,20 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
     reasoningEffort: 'low',
-    providerRouting: { sort: 'price' },
-    // deepseek/deepseek-v4-flash-0731, live catalog 2026-09-14.
-    usdPerMillionPrompt: 0.06,
-    usdPerMillionCompletion: 0.12,
+    // `sort: 'price'` pinned every request to whichever upstream host was
+    // cheapest for this model — confirmed live 2026-09-17 to be a host with a
+    // 60s p99 (Inceptron) or 31s p99 (Relace), both past LLM_REQUEST_TIMEOUT_MS.
+    // That produced a sustained 100% "request timed out" failure across the
+    // whole workforce even though the model itself, and this account's paid
+    // balance, were both fine. `sort: 'latency'` optimizes for the thing this
+    // route actually needs — answering inside the timeout — not raw price.
+    providerRouting: { sort: 'latency' },
+    // deepseek/deepseek-v4-flash-0731; representative low-latency-tier price
+    // (BaseTen/CoreWeave/DigitalOcean). Only a fallback estimate — actual
+    // settled cost from OpenRouter's response is used whenever present, and
+    // the served host (and its real price) now varies request to request.
+    usdPerMillionPrompt: 0.15,
+    usdPerMillionCompletion: 0.3,
   },
 ];
 
