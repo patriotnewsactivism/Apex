@@ -224,6 +224,15 @@ export function resolveSoftDeadlineMs(hardTimeoutMs: number): number {
   return Math.floor(hardTimeoutMs * ratio);
 }
 
+/** Bound a tool call's logged arguments so the "Calling tool:" line stays a
+ *  single readable log entry instead of a multi-KB JSON dump — while still
+ *  keeping a full sentence-length argument (e.g. requestPeerReview's
+ *  reviewObjective) intact, and marking with an ellipsis the rare case that
+ *  still gets cut, rather than silently looking complete. */
+export function truncateToolCallArgsForLog(argsJson: string, maxChars = 300): string {
+  return argsJson.length > maxChars ? `${argsJson.slice(0, maxChars)}…` : argsJson;
+}
+
 export const apexEventBus = new EventEmitter();
 apexEventBus.setMaxListeners(100);
 
@@ -1059,7 +1068,16 @@ export abstract class BaseAgent {
             default:
               break;
           }
-          await this.logger.acting(`Calling tool: ${tc.name}(${JSON.stringify(tc.args).slice(0, 100)})`, taskId);
+          // Was slice(0, 100), no ellipsis — cut real arguments off mid-
+          // sentence (an agent's own escalation reasoning, e.g.
+          // requestPeerReview's reviewObjective, routinely ran past that),
+          // and both the console line and the persisted logs.message row
+          // were truncated identically, so the real reason was unrecoverable
+          // after the fact. See truncateToolCallArgsForLog().
+          await this.logger.acting(
+            `Calling tool: ${tc.name}(${truncateToolCallArgsForLog(JSON.stringify(tc.args))})`,
+            taskId,
+          );
 
           const toolContext: ToolContext = {
             agentId: this.config.id,
