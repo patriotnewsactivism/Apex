@@ -366,10 +366,18 @@ function callReserveUsd(): number {
   return Number.isFinite(usd) && usd >= 0 ? usd : DEFAULT_CALL_RESERVE_USD;
 }
 
+/** The same window paidSpendAvailable() checks, but with resumeAt/reason
+ *  intact for a caller that needs to explain — not just gate on — a paid
+ *  route currently being unaffordable (e.g. a workspace-wide capacity pause
+ *  when the free tier is also exhausted at the same moment). */
+export function paidSpendCapacityWindow(at: number = Date.now()): SpendCapacityWindow {
+  return spendCapacityWindow(callReserveUsd(), at);
+}
+
 /** True when paid inference has budget right now. False drops the paid rung
  *  from the routing order, leaving APEX on free models alone. */
 export function paidSpendAvailable(at: number = Date.now()): boolean {
-  return spendCapacityWindow(callReserveUsd(), at).allowed;
+  return paidSpendCapacityWindow(at).allowed;
 }
 
 export interface SpendLedgerSnapshot {

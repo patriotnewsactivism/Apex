@@ -34,6 +34,15 @@ const providerChain =
 const capacityPause =
   "APEX LLM capacity paused. resume-at=2026-08-25T00:00:00.000Z | groq: daily cap reached";
 const taskDefect = "TypeError: Cannot read properties of undefined";
+// The shape llm-client.ts now throws when free-tier capacity is exhausted
+// (paidOnly) AND the paid rung is separately unaffordable at that same
+// moment (spend pacing, not merely "disabled") — previously fell through to
+// a generic "no usable provider credential" message that this recognizer
+// rejects, so the workforce read a capacity pause as an ordinary task
+// failure and retried immediately instead of backing off.
+const paidRungAlsoPaused =
+  "APEX LLM capacity paused. resume-at=2026-08-25T00:00:00.000Z | " +
+  "openrouter-deepseek-v4-flash-paid: daily paid spend pacing active";
 
 check(
   "live daily-cap error is recognized",
@@ -83,6 +92,25 @@ check(
 check(
   "task-specific defects retain their bounded retry budget",
   !shouldSuppressImmediateLLMRetry(taskDefect),
+);
+
+check(
+  "dual free+paid capacity exhaustion is recognized as a capacity pause",
+  isLLMCapacityPause(paidRungAlsoPaused),
+);
+check(
+  "dual capacity exhaustion is an intentional non-error state, not a defect",
+  isLLMIntentionalPause(paidRungAlsoPaused),
+);
+check(
+  "dual capacity exhaustion suppresses immediate retries instead of burn-looping",
+  shouldSuppressImmediateLLMRetry(paidRungAlsoPaused),
+);
+check(
+  "paid-rung pause resume time is machine-readable",
+  getLLMCapacityResumeAt(paidRungAlsoPaused)?.toISOString() ===
+    "2026-08-25T00:00:00.000Z",
+  getLLMCapacityResumeAt(paidRungAlsoPaused),
 );
 
 const oneMinuteBeforeReset = Date.UTC(2026, 7, 22, 23, 59, 0, 0);
