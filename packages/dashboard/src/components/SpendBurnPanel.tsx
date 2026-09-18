@@ -129,6 +129,8 @@ export function SpendBurnPanel() {
   }
 
   const capPct = Math.min(100, Math.max(0, data.utilizationPct));
+  const requestPct = Math.min(100, Math.max(0, data.requests.utilizationPct));
+  const requestProjectedOver = data.requests.projectedDaily != null && data.requests.projectedDaily > data.requests.cap;
   const providerMax = Math.max(0.0001, ...data.providers.map((p) => p.spentUsd));
 
   return (
@@ -182,6 +184,85 @@ export function SpendBurnPanel() {
         </div>
       </div>
 
+      <div className="apex-eyebrow" style={{ margin: '0 0 8px 2px' }}>
+        Request burn
+      </div>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))',
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <MetricCard
+          label="Requests today"
+          value={data.requests.used.toLocaleString()}
+          detail={`${pct(data.requests.utilizationPct)} of ${data.requests.cap.toLocaleString()} hard ceiling`}
+          icon={<Activity size={16} />}
+        />
+        <MetricCard
+          label="Projected RPD"
+          value={data.requests.projectedDaily == null ? 'Warming up' : data.requests.projectedDaily.toLocaleString()}
+          detail={requestProjectedOver ? 'OVER CAP — pacing will block this trajectory' : 'Projected requests for the UTC day'}
+          icon={<TrendingUp size={16} />}
+        />
+        <MetricCard
+          label="Request headroom"
+          value={data.requests.remaining == null ? 'Uncapped' : data.requests.remaining.toLocaleString()}
+          detail={`${data.requests.releasedSoFar.toLocaleString()} released so far by pacing`}
+          icon={<Gauge size={16} />}
+        />
+        <MetricCard
+          label="Last 60 seconds"
+          value={data.requests.lastMinute.toLocaleString()}
+          detail={`Short-window guard: ${data.requests.ratePerMinute.toLocaleString()}/min max`}
+          icon={<Flame size={16} />}
+        />
+      </div>
+
+      <div className="glass-card" style={{ padding: 14, marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+          <div>
+            <div className="apex-eyebrow">Request ceiling utilization</div>
+            <div style={{ marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--color-apex-muted)' }}>
+              {data.requests.used.toLocaleString()} / {data.requests.cap.toLocaleString()} requests
+            </div>
+          </div>
+          <div
+            className="apex-display"
+            style={{
+              fontSize: 15,
+              color: requestProjectedOver || requestPct >= 90 ? 'var(--color-apex-red)' : 'var(--color-apex-text)',
+            }}
+          >
+            {pct(data.requests.utilizationPct)}
+          </div>
+        </div>
+        <div
+          style={{
+            height: 8,
+            borderRadius: 999,
+            background: 'rgba(255,255,255,0.06)',
+            overflow: 'hidden',
+            marginTop: 11,
+          }}
+        >
+          <div
+            style={{
+              width: `${requestPct}%`,
+              height: '100%',
+              borderRadius: 999,
+              background: requestProjectedOver || requestPct >= 90 ? 'var(--color-apex-red)' : 'var(--color-apex-brass)',
+              transition: 'width 0.3s ease',
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="apex-eyebrow" style={{ margin: '0 0 8px 2px' }}>
+        Dollar burn
+      </div>
       <div
         style={{
           display: 'grid',
