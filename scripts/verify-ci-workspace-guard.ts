@@ -14,6 +14,8 @@ import { isCiWorkspaceBlocked, ensureCiWorkspace } from '../packages/cicd-automa
 
 const saved = {
   K_SERVICE: process.env.K_SERVICE,
+  RAILWAY_SERVICE_ID: process.env.RAILWAY_SERVICE_ID,
+  RAILWAY_ENVIRONMENT_ID: process.env.RAILWAY_ENVIRONMENT_ID,
   APEX_ALLOW_IN_CONTAINER_CI: process.env.APEX_ALLOW_IN_CONTAINER_CI,
 };
 
@@ -26,28 +28,66 @@ function withEnv(env: Record<string, string | undefined>, fn: () => void) {
 }
 
 async function main() {
-  withEnv({ K_SERVICE: undefined, APEX_ALLOW_IN_CONTAINER_CI: undefined }, () => {
-    assert.equal(isCiWorkspaceBlocked(), false, 'a normal host with a real disk must not be blocked');
-  });
+  withEnv(
+    {
+      K_SERVICE: undefined,
+      RAILWAY_SERVICE_ID: undefined,
+      RAILWAY_ENVIRONMENT_ID: undefined,
+      APEX_ALLOW_IN_CONTAINER_CI: undefined,
+    },
+    () => {
+      assert.equal(isCiWorkspaceBlocked(), false, 'a normal host with a real disk must not be blocked');
+    },
+  );
 
-  withEnv({ K_SERVICE: 'apex', APEX_ALLOW_IN_CONTAINER_CI: undefined }, () => {
-    assert.equal(isCiWorkspaceBlocked(), true, 'Cloud Run sets K_SERVICE and must be blocked');
-  });
+  withEnv(
+    {
+      K_SERVICE: 'apex',
+      RAILWAY_SERVICE_ID: undefined,
+      RAILWAY_ENVIRONMENT_ID: undefined,
+      APEX_ALLOW_IN_CONTAINER_CI: undefined,
+    },
+    () => {
+      assert.equal(isCiWorkspaceBlocked(), true, 'Cloud Run sets K_SERVICE and must be blocked');
+    },
+  );
+
+  withEnv(
+    {
+      K_SERVICE: undefined,
+      RAILWAY_SERVICE_ID: 'apex-backend',
+      RAILWAY_ENVIRONMENT_ID: 'production',
+      APEX_ALLOW_IN_CONTAINER_CI: undefined,
+    },
+    () => {
+      assert.equal(isCiWorkspaceBlocked(), true, 'Railway production must also block in-container CI');
+    },
+  );
 
   // The capability is refused, not amputated: an operator with a real
   // filesystem can still opt in deliberately.
-  withEnv({ K_SERVICE: 'apex', APEX_ALLOW_IN_CONTAINER_CI: '1' }, () => {
-    assert.equal(isCiWorkspaceBlocked(), false, 'explicit opt-in must override the guard');
-  });
+  withEnv(
+    {
+      K_SERVICE: undefined,
+      RAILWAY_SERVICE_ID: 'apex-backend',
+      RAILWAY_ENVIRONMENT_ID: 'production',
+      APEX_ALLOW_IN_CONTAINER_CI: '1',
+    },
+    () => {
+      assert.equal(isCiWorkspaceBlocked(), false, 'explicit opt-in must override the guard');
+    },
+  );
 
   // And the refusal must reach the caller as a useful error rather than a
   // container death. This must reject BEFORE any git/pnpm process is spawned.
-  process.env.K_SERVICE = 'apex';
+  delete process.env.K_SERVICE;
+  process.env.RAILWAY_SERVICE_ID = 'apex-backend';
+  process.env.RAILWAY_ENVIRONMENT_ID = 'production';
   delete process.env.APEX_ALLOW_IN_CONTAINER_CI;
   await assert.rejects(
     ensureCiWorkspace(),
-    /Refusing to build a CI workspace on apex/,
-    'ensureCiWorkspace must reject on Cloud Run instead of cloning',
+    /Refusing to build a CI workspace inside the production runtime \(Railway\)/,
+    'ensureCiWorkspace must reject on Railway instead of cloning',
   );
 
   for (const [k, v] of Object.entries(saved)) {
