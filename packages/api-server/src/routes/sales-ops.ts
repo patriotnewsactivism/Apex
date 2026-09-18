@@ -170,6 +170,11 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
   router.get('/overview', async (_req, res) => {
     try {
       const dayStart = startOfUtcDay();
+      // Typed Drizzle predicates (gte(column, Date)) know how to encode a Date.
+      // Raw sql`` parameters do not carry that column encoder, and postgres-js
+      // can therefore receive the Date object where it expects a string/Buffer.
+      // Use one explicit ISO timestamptz parameter for the aggregate FILTERs.
+      const dayStartIso = dayStart.toISOString();
 
       const [
         leadStatusRows,
@@ -195,12 +200,12 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         db
           .select({
             completedTotal: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ended%')::int`,
-            completedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= ${dayStart})::int`,
+            completedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= CAST(${dayStartIso} AS timestamptz))::int`,
             placedTotal: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ringing%')::int`,
-            placedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ringing%' and ${logs.timestamp} >= ${dayStart})::int`,
+            placedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ringing%' and ${logs.timestamp} >= CAST(${dayStartIso} AS timestamptz))::int`,
             checkoutLinksTotal: sql<number>`count(*) filter (where ${logs.message} like '%Checkout link created%')::int`,
             callSpendTotalUsd: sql<number>`coalesce(sum((substring(${logs.message} from ${CALL_COST_PATTERN}))::float8) filter (where ${logs.message} like '%Outbound call ended%'), 0)::float8`,
-            callSpendTodayUsd: sql<number>`coalesce(sum((substring(${logs.message} from ${CALL_COST_PATTERN}))::float8) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= ${dayStart}), 0)::float8`,
+            callSpendTodayUsd: sql<number>`coalesce(sum((substring(${logs.message} from ${CALL_COST_PATTERN}))::float8) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= CAST(${dayStartIso} AS timestamptz)), 0)::float8`,
           })
           .from(logs)
           .where(eq(logs.agentId, SALES_AGENT_ID)),
