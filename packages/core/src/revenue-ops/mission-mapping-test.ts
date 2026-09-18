@@ -305,9 +305,8 @@ async function main() {
     priority: 3,
     assignedAgentId: 'apex-sales-001',
     createdByAgentId: 'apex-sales-001',
-    context: JSON.stringify({ missionStatus: 'waiting_approval', reason: 'budget_increase' }),
+    context: {} as any,
     createdAt: new Date(),
-    updatedAt: new Date(),
   });
 
   await db.insert(goals).values({
@@ -330,7 +329,7 @@ async function main() {
     waApproval?.result?.includes('"kind":"approval"');
 
   assert('waiting_approval_transition',
-    waitingApprovalValid,
+    Boolean(waitingApprovalValid),
     waitingApprovalValid
       ? `running → waiting_approval: goal stays active, task→awaiting_approval, approval row created. Mission missionStatus updates to 'waiting_approval' in goal.result.`
       : `waGoal.status=${waGoal?.status}, waTask.status=${waTask?.status}, approval=${waApproval?.result?.substring(0, 50)}`
@@ -343,13 +342,11 @@ async function main() {
 
   await db.update(tasks).set({
     status: 'in_progress',
-    context: JSON.stringify({ missionStatus: 'running', reason: 'budget_approved' }),
-    updatedAt: new Date(),
+    context: { missionStatus: 'running', reason: 'budget_approved' } as any,
   }).where(eq(tasks.id, waTaskId));
 
   await db.update(goals).set({
     result: JSON.stringify({ ...missionPayload, missionStatus: 'running' }),
-    updatedAt: new Date(),
   }).where(eq(goals.id, waGoalId));
 
   await db.update(goals).set({
@@ -365,7 +362,7 @@ async function main() {
     afterWaTask?.status === 'in_progress';
 
   assert('approval_granted_transition',
-    approvedValid,
+    Boolean(approvedValid),
     approvedValid
       ? `waiting_approval → running: task→in_progress, missionStatus→running, approval row completed.`
       : `afterWaGoal.missionStatus=${JSON.parse(afterWaGoal?.result || '{}').missionStatus}, task.status=${afterWaTask?.status}`
@@ -391,7 +388,6 @@ async function main() {
   await db.update(goals).set({
     status: 'paused',
     result: JSON.stringify({ ...missionPayload, missionStatus: 'paused' }),
-    updatedAt: new Date(),
   }).where(eq(goals.id, pauseGoalId));
 
   const [pausedGoal] = await db.select().from(goals).where(eq(goals.id, pauseGoalId)).limit(1);
@@ -404,7 +400,6 @@ async function main() {
   await db.update(goals).set({
     status: 'active',
     result: JSON.stringify({ ...missionPayload, missionStatus: 'running' }),
-    updatedAt: new Date(),
   }).where(eq(goals.id, pauseGoalId));
 
   const [resumedGoal] = await db.select().from(goals).where(eq(goals.id, pauseGoalId)).limit(1);
@@ -441,46 +436,41 @@ async function main() {
     assignedAgentId: 'apex-sales-001',
     createdByAgentId: 'apex-sales-001',
     createdAt: new Date(),
-    updatedAt: new Date(),
   });
 
   // Block
   await db.update(tasks).set({
     status: 'blocked',
-    context: JSON.stringify({ missionStatus: 'blocked', reason: 'telnyx_connection_down' }),
-    updatedAt: new Date(),
+    context: { missionStatus: 'blocked', reason: 'telnyx_connection_down' } as any,
   }).where(eq(tasks.id, blockTaskId));
 
   await db.update(goals).set({
     result: JSON.stringify({ ...missionPayload, missionStatus: 'blocked' }),
-    updatedAt: new Date(),
   }).where(eq(goals.id, blockGoalId));
 
   const [blockedGoal] = await db.select().from(goals).where(eq(goals.id, blockGoalId)).limit(1);
   const [blockedTask] = await db.select().from(tasks).where(eq(tasks.id, blockTaskId)).limit(1);
 
   assert('block_transition',
-    blockedGoal?.result?.includes('"missionStatus":"blocked"') && blockedTask?.status === 'blocked',
+    Boolean(blockedGoal?.result?.includes('"missionStatus":"blocked"') && blockedTask?.status === 'blocked'),
     `running → blocked: task.status→blocked, missionStatus→blocked. APEX already has task.status=blocked.`
   );
 
   // Unblock
   await db.update(tasks).set({
     status: 'in_progress',
-    context: JSON.stringify({ missionStatus: 'running' }),
-    updatedAt: new Date(),
+    context: { missionStatus: 'running' } as any,
   }).where(eq(tasks.id, blockTaskId));
 
   await db.update(goals).set({
     result: JSON.stringify({ ...missionPayload, missionStatus: 'running' }),
-    updatedAt: new Date(),
   }).where(eq(goals.id, blockGoalId));
 
   const [unblockedGoal] = await db.select().from(goals).where(eq(goals.id, blockGoalId)).limit(1);
   const [unblockedTask] = await db.select().from(tasks).where(eq(tasks.id, blockTaskId)).limit(1);
 
   assert('unblock_transition',
-    unblockedGoal?.result?.includes('"missionStatus":"running"') && unblockedTask?.status === 'in_progress',
+    Boolean(unblockedGoal?.result?.includes('"missionStatus":"running"') && unblockedTask?.status === 'in_progress'),
     `blocked → running: task.status→in_progress, missionStatus→running.`
   );
 
@@ -534,7 +524,6 @@ async function main() {
     status: 'completed',
     result: JSON.stringify({ ...missionPayload, missionStatus: 'completed', spentCents: 35000 }),
     completedAt: new Date(),
-    updatedAt: new Date(),
   }).where(eq(goals.id, completedGoalId));
 
   const [completedGoal] = await db.select().from(goals).where(eq(goals.id, completedGoalId)).limit(1);
@@ -563,7 +552,6 @@ async function main() {
     status: 'cancelled',
     result: JSON.stringify({ ...missionPayload, missionStatus: 'cancelled', cancelledReason: 'operator_request' }),
     completedAt: new Date(),
-    updatedAt: new Date(),
   }).where(eq(goals.id, cancelledGoalId));
 
   const [cancelledGoal] = await db.select().from(goals).where(eq(goals.id, cancelledGoalId)).limit(1);
@@ -600,9 +588,8 @@ async function main() {
     assignedAgentId: 'apex-sales-001',
     createdByAgentId: 'apex-sales-001',
     errorMessage: 'Voice provider permanently unavailable',
-    context: JSON.stringify({ missionStatus: 'failed', reason: 'provider_unavailable' }),
+    context: {} as any,
     createdAt: new Date(),
-    updatedAt: new Date(),
   });
 
   await db.update(goals).set({
@@ -614,7 +601,6 @@ async function main() {
       failedTaskId,
     }),
     completedAt: new Date(),
-    updatedAt: new Date(),
   }).where(eq(goals.id, failedGoalId));
 
   const [failedGoal] = await db.select().from(goals).where(eq(goals.id, failedGoalId)).limit(1);
@@ -626,7 +612,7 @@ async function main() {
     failedTask?.status === 'failed';
 
   assert('failed_transition',
-    failedValid,
+    Boolean(failedValid),
     failedValid
       ? `running → failed: task.status→failed, goal.status→cancelled, goal.result.missionStatus→failed + error. The "failed" semantics are preserved through the combination of task failure + missionStatus payload.`
       : `failedGoal.status=${failedGoal?.status}, failedGoal.missionStatus=${JSON.parse(failedGoal?.result || '{}').missionStatus}, failedTask.status=${failedTask?.status}`
@@ -662,7 +648,7 @@ async function main() {
     { targetStatus: 'budget_exhausted', goalStatus: 'active', missionResultUpdate: { missionStatus: 'budget_exhausted', spentCents: 40000 } },
     { targetStatus: 'completed', goalStatus: 'completed', missionResultUpdate: { missionStatus: 'completed' } },
     { targetStatus: 'cancelled', goalStatus: 'cancelled', missionResultUpdate: { missionStatus: 'cancelled' } },
-    { targetStatus: 'failed', goalStatus: 'cancelled', missionResultUpdate: { missionStatus: 'failed', error: 'simulated' } },
+    { targetStatus: 'failed', goalStatus: 'cancelled', missionResultUpdate: { missionStatus: 'failed' } },
   ];
 
   for (const step of lifecycleSteps) {
@@ -673,7 +659,6 @@ async function main() {
         ...step.missionResultUpdate,
       }),
       completedAt: step.goalStatus === 'completed' || step.goalStatus === 'cancelled' ? new Date() : null,
-      updatedAt: new Date(),
     }).where(eq(goals.id, lifecycleGoalId));
 
     const [lg] = await db.select().from(goals).where(eq(goals.id, lifecycleGoalId)).limit(1);
@@ -700,7 +685,7 @@ async function main() {
 
   console.log('');
   console.log('═══ Phase 1.1 Summary ═══');
-  console.log(`');
+  console.log('');
 
   const passed = tests.filter(t => t.pass).length;
   const failed = tests.filter(t => !t.pass).length;

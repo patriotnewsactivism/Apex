@@ -1,4 +1,4 @@
-// ─── Phase 1.1: Mission Mapping Decision Logic (Static Analysis) ──────────────
+﻿// ─── Phase 1.1: Mission Mapping Decision Logic (Static Analysis) ──────────────
 //
 // This is the Phase 1.1 gate — the exact same decision logic as the full test,
 // but running without a database connection. It validates whether APEX goals + tasks
@@ -96,7 +96,7 @@ try {
 
 const payloadRoundTrips = parsed !== null &&
   parsed.objective === missionPayload.objective &&
-  parsed.targetDefinition.industries.join(',') === missionPayload.targetDefinition.industries.join(',') &&
+  (parsed.targetDefinition as any).industries.join(',') === (missionPayload.targetDefinition as any).industries.join(',') &&
   parsed.budgetCents === missionPayload.budgetCents &&
   parsed.allowedChannels.join(',') === missionPayload.allowedChannels.join(',');
 
@@ -369,7 +369,7 @@ const EXECUTION_CRITICAL_STATUSES = [
   'completed', 'cancelled', 'failed',
 ] as const;
 
-const executionCriticalFeasible = lifecycle.filter(ls => EXECUTION_CRITICAL_STATUSES.includes(ls.specStatus)).every(ls => ls.feasibleForExecution);
+const executionCriticalFeasible = lifecycle.filter(ls => (EXECUTION_CRITICAL_STATUSES as readonly string[]).includes(ls.specStatus)).every(ls => ls.feasibleForExecution);
 
 // draft is unrepresentable but it's a pre-goal state (pending intent before goal creation),
 // not an execution state. The only status that matters for execution is whether all

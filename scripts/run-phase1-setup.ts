@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+﻿import { execSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -47,7 +47,7 @@ async function main() {
   runStep('Run Production Typecheck', 'pnpm run typecheck');
 
   // 5. Dashboard Build
-  runStep('Build Packages & Dashboard', 'pnpm run build');
+  runStep('Build Packages & Dashboard', 'pnpm -w run build');
 
   console.log('\n✓ Phase 1 setup and verification completed successfully.');
 }

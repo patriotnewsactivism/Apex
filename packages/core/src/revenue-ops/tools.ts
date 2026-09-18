@@ -10,8 +10,8 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { db, goals, tasks, approvals } from '@workspace/db';
-import { eq, sql } from 'drizzle-orm';
-import type { ToolDefinition, ToolContext } from './types.js';
+import { eq, and, inArray, sql } from 'drizzle-orm';
+import type { ToolDefinition, ToolContext } from '../types.js';
 
 // ─── Mission Creation ──────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ The mission payload includes:
 - spentCents: starting at 0
 - deadlineAt: when the mission must complete by
 - approveBeforePivot: whether channel pivots require human approval
-  - firstTouchOptIn: how to handle first-touch opt-in ('manual' | 'auto_with_warn'),
+  - firstTouchOptIn: how to handle first-touch opt-in ('manual' | 'auto_with_warn')`,
   schema: z.object({
     objective: z.string().min(10).max(500).describe('What the mission is trying to achieve (e.g., "Generate 12 qualified demos with commercial roofing companies in Texas").'),
     targetDefinition: z.record(z.unknown()).describe('Who/what the mission targets (e.g., { industries: ["roofing"], cities: ["Austin", "Houston", "Dallas"], employeeRange: [10, 100], naicsCodes: [238220] }).'),
@@ -56,7 +56,7 @@ The mission payload includes:
     assignedAgentId: z.string().optional().describe('Agent ID to assign the mission to. Defaults to the requesting agent.'),
   }),
   requiresApproval: false,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const missionId = randomUUID();
     const now = new Date().toISOString();
 
@@ -125,7 +125,7 @@ Use this tool when a mission has been created in draft and is ready for review.`
     reason: z.string().optional().describe('Reason for submission (e.g., "Ready for review after target definition finalized").'),
   }),
   requiresApproval: false,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const [mission] = await db
       .select()
       .from(goals)
@@ -148,21 +148,20 @@ Use this tool when a mission has been created in draft and is ready for review.`
     const updatedPayload = { ...result, missionStatus: 'validating' };
     await db.update(goals).set({
       result: JSON.stringify(updatedPayload),
-      updatedAt: new Date(),
     }).where(eq(goals.id, args.missionId));
 
     // Create an approval request for validation
     const approvalId = randomUUID();
     await db.insert(approvals).values({
       id: approvalId,
-      task_id: undefined as any,
-      agent_id: context.agentId,
-      tool_name: 'submit_mission_for_validation',
-      tool_args: JSON.stringify({ missionId: args.missionId }),
+      taskId: undefined as any,
+      agentId: context.agentId,
+      toolName: 'submit_mission_for_validation',
+      toolArgs: { missionId: args.missionId } as any,
       reason: args.reason || `Mission validation request: ${mission.title}`,
       status: 'pending',
       kind: 'approval',
-      created_at: new Date(),
+      createdAt: new Date(),
     });
 
     return {
@@ -191,7 +190,7 @@ e.g., for review, budget reassessment, or external dependency wait.`,
     reason: z.string().optional().describe('Reason for pausing (e.g., "Waiting for budget reassessment").'),
   }),
   requiresApproval: true,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const [mission] = await db
       .select()
       .from(goals)
@@ -215,17 +214,13 @@ e.g., for review, budget reassessment, or external dependency wait.`,
     await db.update(goals).set({
       status: 'paused',
       result: JSON.stringify(updatedPayload),
-      updatedAt: new Date(),
     }).where(eq(goals.id, args.missionId));
 
     // Pause all active mission tasks
     await db.update(tasks).set({
       status: 'blocked',
-      updatedAt: new Date(),
     }).where(
-      eq(tasks.goalId, args.missionId),
-      // Only pause tasks that are currently active
-      inArray(tasks.status, ['in_progress', 'pending'] as const)
+      and(eq(tasks.goalId, args.missionId), inArray(tasks.status, ['in_progress', 'pending'] as const))
     );
 
     return {
@@ -252,7 +247,7 @@ e.g., after review, budget approval, or external dependency resolution.`,
     reason: z.string().optional().describe('Reason for resuming (e.g., "Budget approved, resuming execution").'),
   }),
   requiresApproval: false,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const [mission] = await db
       .select()
       .from(goals)
@@ -276,16 +271,12 @@ e.g., after review, budget approval, or external dependency resolution.`,
     await db.update(goals).set({
       status: 'active',
       result: JSON.stringify(updatedPayload),
-      updatedAt: new Date(),
     }).where(eq(goals.id, args.missionId));
 
     // Resume paused mission tasks
     await db.update(tasks).set({
       status: 'pending', // Tasks go back to pending for re-assignment
-      updatedAt: new Date(),
-    }).where(
-      eq(tasks.goalId, args.missionId),
-      eq(tasks.status, 'blocked')
+    }).where(and(eq(tasks.goalId, args.missionId), eq(tasks.status, 'blocked'))
     );
 
     return {
@@ -314,7 +305,7 @@ budget exhausted with no path forward, or operator decision to stop.`,
     reason: z.string().min(10).describe('Reason for cancellation (e.g., "Strategy changed — no longer pursuing roofing vertical").'),
   }),
   requiresApproval: true,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const [mission] = await db
       .select()
       .from(goals)
@@ -337,7 +328,6 @@ budget exhausted with no path forward, or operator decision to stop.`,
       status: 'cancelled',
       result: JSON.stringify(updatedPayload),
       completedAt: new Date(),
-      updatedAt: new Date(),
     }).where(eq(goals.id, args.missionId));
 
     // Cancel all active mission tasks
@@ -345,10 +335,7 @@ budget exhausted with no path forward, or operator decision to stop.`,
       status: 'cancelled',
       result: `Mission cancelled: ${args.reason}`,
       completedAt: new Date(),
-      updatedAt: new Date(),
-    }).where(
-      eq(tasks.goalId, args.missionId),
-      inArray(tasks.status, ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const)
+    }).where(and(eq(tasks.goalId, args.missionId), inArray(tasks.status, ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const))
     );
 
     return {
@@ -378,7 +365,7 @@ This is typically called by the budget tracking system, not directly by agents.`
     spentCents: z.number().int().nonnegative().describe('Current spent cents (must be >= budgetCents for the mission).'),
   }),
   requiresApproval: false,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const [mission] = await db
       .select()
       .from(goals)
@@ -410,17 +397,13 @@ This is typically called by the budget tracking system, not directly by agents.`
     const updatedPayload = { ...result, missionStatus: 'budget_exhausted' };
     await db.update(goals).set({
       result: JSON.stringify(updatedPayload),
-      updatedAt: new Date(),
     }).where(eq(goals.id, args.missionId));
 
     // Block all pending mission tasks
     await db.update(tasks).set({
       status: 'blocked',
       errorMessage: 'Mission budget exhausted',
-      updatedAt: new Date(),
-    }).where(
-      eq(tasks.goalId, args.missionId),
-      inArray(tasks.status, ['pending'] as const)
+    }).where(and(eq(tasks.goalId, args.missionId), inArray(tasks.status, ['pending'] as const))
     );
 
     return {
@@ -451,7 +434,7 @@ Use this tool when an operator approves a budget increase for a stalled mission.
     approvedBy: z.string().optional().describe('Human approver identifier (defaults to "manual").'),
   }),
   requiresApproval: false,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const [mission] = await db
       .select()
       .from(goals)
@@ -491,18 +474,13 @@ Use this tool when an operator approves a budget increase for a stalled mission.
     };
     await db.update(goals).set({
       result: JSON.stringify(updatedPayload),
-      updatedAt: new Date(),
     }).where(eq(goals.id, args.missionId));
 
     // Unblock mission tasks
     await db.update(tasks).set({
       status: 'pending',
       errorMessage: null,
-      updatedAt: new Date(),
-    }).where(
-      eq(tasks.goalId, args.missionId),
-      eq(tasks.status, 'blocked'),
-      eq(tasks.errorMessage, 'Mission budget exhausted')
+    }).where(and(eq(tasks.goalId, args.missionId), eq(tasks.status, 'blocked'), eq(tasks.errorMessage, 'Mission budget exhausted'))
     );
 
     return {
@@ -529,7 +507,7 @@ in goal.result + task states), budget info, current step, and recent outcomes.`,
     missionId: z.string().uuid().describe('The mission goal ID to query.'),
   }),
   requiresApproval: false,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const [mission] = await db
       .select()
       .from(goals)
@@ -616,7 +594,7 @@ e.g., "research 10 roofing companies", "call 5 decision makers", "send follow-up
     assignedAgentId: z.string().optional().describe('Agent to assign the step to. Defaults to mission-assigned agent.'),
   }),
   requiresApproval: false,
-  execute: async (args, context) => {
+  execute: async (args: any, context: any) => {
     const missionId = args.missionId;
 
     // Verify mission exists and is in a state that allows steps
@@ -653,7 +631,7 @@ e.g., "research 10 roofing companies", "call 5 decision makers", "send follow-up
       priority: args.priority,
       assignedAgentId: args.assignedAgentId || mission.assignedAgentId,
       createdByAgentId: context.agentId,
-      context: args.context ? JSON.stringify(args.context) : null,
+      context: (args.context as any) || {},
       createdAt: now,
       updatedAt: now,
     });
