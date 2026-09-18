@@ -5,6 +5,7 @@ import { api } from './lib/api.js';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket.js';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MissionControl } from './components/MissionControl.js';
+import { MissionsDashboard } from './components/MissionsDashboard.js';
 import { AgentNetwork } from './components/AgentNetwork.js';
 import { TaskBoard } from './components/TaskBoard.js';
 import { LogStream } from './components/LogStream.js';
@@ -600,7 +601,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 
   const pages: Record<string, ReactNode> = {
     chat: <QuickChat />,
-    mission: <MissionControl />,
+    mission: <MissionsDashboard />,
     agents: <AgentNetwork agents={agents} />,
     tasks: <TaskBoard />,
     'sales-ops': <SalesOperationsPanel />,

@@ -18,6 +18,7 @@ import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
 import { createGoalsRouter } from './routes/goals.js';
+import { createMissionsRouter } from './routes/missions.js';
 import { createChatRouter } from './routes/chat.js';
 import { createTranscribeRouter } from './routes/transcribe.js';
 import { createProjectsRouter } from './routes/projects.js';
@@ -445,6 +446,7 @@ async function main() {
 
   // API Routes
   app.use('/api/goals', createGoalsRouter(ceo));
+  app.use('/api/missions', createMissionsRouter());
   app.use('/api/chat', createChatRouter(ceo));
   app.use('/api/transcribe', createTranscribeRouter());
   app.use('/api/projects', createProjectsRouter());

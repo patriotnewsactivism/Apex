@@ -1,0 +1,38 @@
+{
+  "parser": "typescript",
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "quoteStyle": "single",
+    "semicolons": "always",
+    "insert/finalNewline": true,
+    "organizeImports": true,
+    "keepImportsAnimated": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "performance": { "noReExportAll": "off" },
+      "style": {
+        "noDefaultExport": "off",
+        "useShorthandUndefined": "off",
+        "useImportType": "off"
+      }
+    }
+  },
+  "javascript": { "globals": ["globalThis", "module", "process", "Buffer", "AggregateError"] },
+  "formatter": {
+    "templateSyntax": "basic",
+    "squareBrackets": "never",
+    "emptyLines": {
+      "keepSingleEmptyLineBetweenConsecutiveBlockStatements": "always",
+      "removeTrailingNewlines": "always"
+    }
+  },
+  "organizeImports": {
+    "underscore": "allow"
+  }
+}
