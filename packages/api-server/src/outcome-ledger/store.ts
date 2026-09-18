@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { db } from '@workspace/db';
 import { sql } from 'drizzle-orm';
-import { ensureOutcomeLedgerSchema } from './migrate.js';
 import {
   experimentAssignmentSchema,
   experimentCreateSchema,
@@ -25,7 +24,6 @@ export interface IngestResult {
 
 export async function ingestOutcomeEvent(raw: unknown): Promise<IngestResult> {
   const input = outcomeEventSchema.parse(raw);
-  await ensureOutcomeLedgerSchema();
   return persistEvent(input);
 }
 
@@ -182,7 +180,6 @@ async function persistEvent(input: OutcomeEventInput): Promise<IngestResult> {
 
 export async function createExperiment(raw: unknown): Promise<ExperimentCreateInput> {
   const input = experimentCreateSchema.parse(raw);
-  await ensureOutcomeLedgerSchema();
   await db.execute(sql`
     INSERT INTO experiments (
       id, organization_id, tenant_id, name, hypothesis, metric_name, control_cohort, treatment_cohorts,
@@ -202,7 +199,6 @@ export async function createExperiment(raw: unknown): Promise<ExperimentCreateIn
 
 export async function assignExperiment(experimentId: string, raw: unknown): Promise<ExperimentAssignmentInput> {
   const input = experimentAssignmentSchema.parse(raw);
-  await ensureOutcomeLedgerSchema();
   const assignmentId = stableId('asg', `${experimentId}:${input.tenantId}:${input.entityType}:${input.entityExternalId}`);
   await db.execute(sql`
     INSERT INTO experiment_assignments (id, experiment_id, tenant_id, entity_external_id, entity_type, cohort, metadata, assigned_at)
