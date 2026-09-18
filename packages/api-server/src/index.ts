@@ -478,6 +478,33 @@ async function main() {
     res.json({ ...getTokenLedgerSnapshot(), roster: getProviderRoster() });
   });
 
+  // Live dollar spend / burn-rate observability. The source of truth is the
+  // Postgres-backed spend ledger in core, so a dashboard refresh or process
+  // restart cannot manufacture a fresh budget.
+  app.get('/api/spend', (_req, res) => {
+    const snapshot = getSpendLedgerSnapshot();
+    const hourlyBurnUsd =
+      snapshot.projectedUsd == null
+        ? null
+        : Math.round((snapshot.projectedUsd / 24) * 10_000) / 10_000;
+    const projected30DayUsd =
+      snapshot.projectedUsd == null
+        ? null
+        : Math.round(snapshot.projectedUsd * 30 * 100) / 100;
+    const utilizationPct =
+      snapshot.capUsd > 0
+        ? Math.round((snapshot.spentUsd / snapshot.capUsd) * 10_000) / 100
+        : 0;
+
+    res.json({
+      ...snapshot,
+      hourlyBurnUsd,
+      projected30DayUsd,
+      utilizationPct,
+      updatedAt: new Date().toISOString(),
+    });
+  });
+
   /**
    * POST /api/tokens/reset — clear today's spend and start the day over.
    *
