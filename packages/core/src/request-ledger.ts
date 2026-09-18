@@ -481,13 +481,11 @@ export async function initializeRequestLedgerPersistence(): Promise<boolean> {
   }
 }
 
-/** Record one upstream attempt against the account that served it. Takes the
- *  API key so the caller never handles the fingerprint; the key itself is
- *  hashed immediately and never stored, logged or reported. */
-export function recordProviderRequest(apiKey: string, succeeded: boolean): void {
+const PAID_REQUEST_ACCOUNT_PREFIX = 'paid-provider:';
+
+function recordRequestAccount(account: string, succeeded: boolean): void {
   try {
     rolloverIfNeeded();
-    const account = accountFingerprint(apiKey);
     const now = Date.now();
     pruneRateWindow(now);
     recentRequests.push(now);
@@ -500,6 +498,25 @@ export function recordProviderRequest(apiKey: string, succeeded: boolean): void 
   } catch {
     // Request accounting must never take inference down.
   }
+}
+
+/** Record one FREE upstream attempt against the account that served it. Takes
+ *  the API key so the caller never handles the fingerprint; the key itself is
+ *  hashed immediately and never stored, logged or reported. */
+export function recordProviderRequest(apiKey: string, succeeded: boolean): void {
+  recordRequestAccount(accountFingerprint(apiKey), succeeded);
+}
+
+/** Record a PAID upstream attempt in the SAME workspace-wide request budget.
+ *
+ * Paid inference used to bypass request accounting completely: when the free
+ * request window paced or capped out, APEX switched to paid fallback and those
+ * calls disappeared from totalRequestsToday(). The configured 2-3k/day ceiling
+ * could therefore coexist with ~10k real upstream calls. Keep paid traffic in
+ * a synthetic provider bucket so it contributes to the global ceiling without
+ * corrupting the separate per-OpenRouter-account FREE allowance counters. */
+export function recordPaidProviderRequest(provider: string, succeeded: boolean): void {
+  recordRequestAccount(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`, succeeded);
 }
 
 /**
@@ -697,16 +714,23 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
   const accounts = [...fingerprints]
     .map((fingerprint) => {
       const entry = state.accounts[fingerprint] ?? { requests: 0, succeeded: 0 };
-      const cap = capForFingerprint(fingerprint);
-      const envNames = envNamesForFingerprint(fingerprint);
+      const paidProvider = fingerprint.startsWith(PAID_REQUEST_ACCOUNT_PREFIX)
+        ? fingerprint.slice(PAID_REQUEST_ACCOUNT_PREFIX.length)
+        : null;
+      const cap = paidProvider ? 0 : capForFingerprint(fingerprint);
+      const envNames = paidProvider ? [] : envNamesForFingerprint(fingerprint);
       return {
-        // A fingerprint with no live env name is a key that was rotated or
-        // removed mid-day; its spend still counts toward the workspace total,
-        // so say so rather than dropping the row or leaking the hash.
-        account: envNames.length > 0 ? envNames.join(' + ') : '(retired key)',
-        openRouterAccount: observedAccountFor(fingerprint),
+        // Paid provider buckets intentionally have no key identity: they count
+        // toward the workspace ceiling but do not consume a free-account cap.
+        // A free fingerprint with no live env name is a rotated/removed key.
+        account: paidProvider
+          ? `${paidProvider} (paid)`
+          : envNames.length > 0
+            ? envNames.join(' + ')
+            : '(retired key)',
+        openRouterAccount: paidProvider ? null : observedAccountFor(fingerprint),
         requests: entry.requests,
-        accountRequests: requestsAcrossAccount(fingerprint),
+        accountRequests: paidProvider ? entry.requests : requestsAcrossAccount(fingerprint),
         succeeded: entry.succeeded,
         failed: Math.max(0, entry.requests - entry.succeeded),
         cap,
