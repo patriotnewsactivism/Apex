@@ -2877,6 +2877,12 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     for (const tool of createDurableWorkTools()) {
       _registry.register(tool);
     }
+    // Revenue-ops mission lifecycle tools (Phase 1): create/update/pause/resume/
+    // cancel/expire missions, request approvals, execute mission steps.
+    // Always registered — operates on goals/tasks/approvals, no external creds.
+    for (const tool of createRevenueOpsTools()) {
+      _registry.register(tool);
+    }
     // Portfolio connectors register only when their env is configured, so a
     // bare APEX install never exposes half-working tools to the agents.
     if (buildMyBotConfigured()) {
