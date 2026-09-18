@@ -55,10 +55,25 @@ function getRouter(httpServer: Server): UpgradeRouter {
       return;
     }
 
-    if (!consumeWebSocketTicket(url.searchParams.get('ticket'))) {
-      rejectUpgrade(socket, 401, 'Unauthorized', `invalid ticket for ${url.pathname}`);
-      return;
-    }
+    void consumeWebSocketTicket(url.searchParams.get('ticket')).then((ok) => {
+      if (!ok) {
+        rejectUpgrade(socket, 401, 'Unauthorized', `invalid ticket for ${url.pathname}`);
+        return;
+      }
+
+      console.log(`[websocket] Upgrade accepted: ${url.pathname}`);
+      route.server.handleUpgrade(request, socket, head, (webSocket) => {
+        route.onConnection(webSocket, request);
+      });
+    }).catch((err) => {
+      rejectUpgrade(
+        socket,
+        500,
+        'Internal Server Error',
+        `ticket lookup failed for ${url.pathname}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    return;
 
     console.log(`[websocket] Upgrade accepted: ${url.pathname}`);
     route.server.handleUpgrade(request, socket, head, (webSocket) => {
