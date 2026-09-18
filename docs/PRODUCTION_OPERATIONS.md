@@ -2,20 +2,22 @@
 
 This runbook governs ordinary APEX production releases, verification, rollback, and first-response incident handling.
 
-APEX production is the **existing Google Cloud Run service** behind:
+APEX production is **Railway** — project `APEX`, service `apex-backend` — behind:
 
 `https://apex.donmatthews.live`
 
-The retired AWS Lightsail/CodeBuild and Railway hosting paths are not production fallbacks. Planned Railway portability (not a live cutover) is documented in `docs/HOSTING_MIGRATION.md`. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
+Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled) and kept only as the gated rollback path in `.github/workflows/deploy.yml`. See `docs/HOSTING_MIGRATION.md` and ADR-015. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Operating principles
 
-1. Never guess the Google Cloud project, region, service name, secret values, live SHA, or database target.
-2. Never create a replacement Cloud Run service because the intended service cannot be found or accessed.
-3. Build from a clean, reviewed Git commit and use an immutable image tag derived from that commit.
-4. Preserve existing Cloud Run configuration unless the change is specifically intended to modify it.
-5. A build is not a deployment, a Ready revision is not proof of production traffic, and an agent statement is not operational evidence.
-6. Production is considered released only when the public health endpoint reports the intended `build.sha` and the changed behavior has been smoke-tested.
+1. Never guess the Railway project/service, secret values, live SHA, or database target.
+2. Never invent a substitute host because the Railway service cannot be found or accessed.
+3. A push to `main` is a production deploy. Confirm GitHub status `APEX - apex-backend` is Success.
+4. A build is not a deployment, a Railway Success status is not enough without public `/health.build.sha`, and an agent statement is not operational evidence.
+5. Production is considered released only when the public health endpoint reports the intended `build.sha` and the changed behavior has been smoke-tested.
+6. Enable Railway "Wait for CI" so a red `production-checks` run cannot ship.
+
+The Cloud Run configuration block below is **rollback-only**. Do not use it while GCP billing is off.
 
 ## Required release configuration
 

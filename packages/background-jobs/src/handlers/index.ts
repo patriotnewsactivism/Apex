@@ -211,7 +211,7 @@ export class HealthCheckJob implements JobHandler {
 
 export class ReportGenerationJob implements JobHandler {
   async execute(_job: ScheduledJob): Promise<unknown> {
-    const { db, tasks, goals, logs } = await import('@workspace/db');
+    const { db, tasks, goals, logs, approvals } = await import('@workspace/db');
     const { sql, gte, eq } = await import('drizzle-orm');
 
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -297,7 +297,6 @@ export class ReportGenerationJob implements JobHandler {
       .from(goals)
       .where(gte(goals.createdAt, yesterday));
 
-    const { approvals } = await import('@workspace/db');
     const { HARD_GATED_TOOLS, buildApprovalPacket } = await import('@workspace/core');
     const pendingApprovals = await db.select().from(approvals).where(eq(approvals.status, 'pending')).limit(200);
     const hardGatedPending = pendingApprovals.filter((row) => HARD_GATED_TOOLS.has(row.toolName) && row.kind !== 'escalation');

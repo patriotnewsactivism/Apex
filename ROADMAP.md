@@ -1,101 +1,51 @@
 # APEX Production Roadmap
 
-_Last reset to current source/operations: 2026-08-28._
-
-This is the living roadmap. It intentionally replaces the accumulated July/August historical build-plan narrative that previously lived here.
+_Last reset to current source/operations: 2026-09-18._
 
 Canonical production facts:
 
-- APEX production runs on the **existing Google Cloud Run service** behind `https://apex.donmatthews.live`.
-- AWS Lightsail/CodeBuild and Railway are retired APEX hosting paths.
+- APEX production runs on **Railway** — project `APEX`, service `apex-backend` — behind `https://apex.donmatthews.live`.
+- Google Cloud Run is a retired host and the tested rollback path only (`APEX_DEPLOY_ENABLED` remains off while billing is disabled).
+- AWS Lightsail/CodeBuild is retired and must not be restored.
 - Production inference routes through OpenRouter; `packages/core/src/llm-client.ts` is the model-routing source of truth.
-- Production releases are existing-service-only and require exact build-SHA verification.
-- Production database/Supabase management changes require separate target-specific verification and authorization; runtime DB access is not blanket management authority.
+- Production is released only when `/health.build.sha` matches the intended commit and the task queue is healthy.
 
-For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md`, `docs/PRODUCTION_OPERATIONS.md`, and `SECURITY.md`.
+For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md` (ADR-015), `docs/PRODUCTION_OPERATIONS.md`, `docs/HOSTING_MIGRATION.md`, and `SECURITY.md`.
 
-## P0 — Put the current productionized code live on Cloud Run
+## Done — live on Railway (2026-09-18)
 
-The repository has moved to the production OpenRouter/Cloud Run architecture, but source code being on `main` is not proof that Cloud Run is serving it.
+- Control plane, 13-agent workforce, dashboard, WebSocket LIVE keepalive, admin auth.
+- Missions HTTP API and dashboard (live SHA `8cf1418`).
+- Approval yield (ADR-014) observed in production (`approvalYields > 0`).
+- Autonomy policy + Settings allowlist + decision-packet approvals (this change set).
 
-Remaining release gate:
+## P0 — Finish the autonomy loop
 
-1. Obtain authenticated access to the **existing** APEX Google Cloud project/service configuration.
-2. Resolve the exact existing project ID, region, and Cloud Run service name from trusted Google configuration; do not guess.
-3. Confirm required Cloud Run secrets/config are present, including admin auth and OpenRouter credential names, without exposing values.
-4. Run the full production CI gate on the release state.
-5. Build the exact clean release commit through `cloudbuild.apex.yaml` with an immutable SHA tag.
-6. Update only the existing Cloud Run service image.
-7. Verify public `/health.build.sha` equals the release SHA and `taskQueue.verdict` is healthy.
-8. Smoke-test login, dashboard, agent execution, OpenRouter inference/tool calls, scheduling, and the changed production paths.
+- Enable Railway "Wait for CI" / checkSuites so red CI cannot ship `main`.
+- Set `APEX_ARTIFACT_DIR` (or `APEX_ARTIFACT_BUCKET`) so finished files survive recycle.
+- Deploy the commit that registers mission agent tools and the outbound compliance evaluator; confirm `/health.build.sha`.
+- Exercise checkpoint/resume on a real long task (`checkpointsCreated` is still 0).
+- Copy lead-research keys onto Railway (`BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`, `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY`) — names only, values stay in the host.
 
-Do not mark this milestone complete until the public service proves the release is live.
+## P1 — Reliability on this host
 
-## P1 — Production reliability hardening
+- Add a second replica only after websocket tickets in Postgres have been live-verified.
+- Preview environments for APEX itself (Railway PR deploys).
+- Verify in-process executor demotion of `runtime=job` tasks under load.
+- Keep Cloud Run rollback path documented and gated.
 
-After the current release is proven live:
+## P2 — Observability and cost
 
-- verify scheduled task deduplication under real recurring load;
-- harden multi-instance scheduler claiming so two Cloud Run instances cannot claim the same scheduled job;
-- verify provider-capacity pauses do not consume normal task retry budgets;
-- test manager/delegation follow-through so delegation itself cannot be mistaken for completion;
-- validate graceful shutdown/restart behavior under Cloud Run instance replacement;
-- exercise rollback to a known prior Cloud Run revision and verify health afterward.
+- Daily operator digest already lands in CEO memory (`daily-report:YYYY-MM-DD`) with pending hard-gated approvals.
+- Confirm OpenRouter unique-account count; a fourth key on the same account does not add quota.
+- Alert on abnormal queue growth, WS disconnect storms, and SHA drift.
 
-Success means repeated work, provider exhaustion, and instance concurrency do not manufacture duplicate tasks or false failures.
+## P3 — Business operations
 
-## P2 — Observability and cost control
-
-- expose useful non-secret OpenRouter/provider diagnostics to authenticated operators;
-- confirm actual serving provider/model is recorded for production calls;
-- measure per-role token usage, latency, retries, and failure classes;
-- define operator-approved OpenRouter account spending limits and optional APEX token caps;
-- alert on abnormal queue growth, repeated LLM capacity failures, authentication failure spikes, and unhealthy revisions;
-- keep `/health` small, public, and non-secret while richer diagnostics stay authenticated.
-
-Success means an operator can distinguish application failure, provider capacity, spend limits, and deployment staleness quickly.
-
-## P3 — Autonomous engineering maturity
-
-- strengthen self-healing CI around reproducible failures;
-- preserve feature-branch/PR review for normal engineering changes;
-- ensure production deploy/rollback remains approval-gated and provenance-verified;
-- improve root-cause analysis and skeptical review loops using measurable outcomes rather than agent narration;
-- validate repository-completion and multi-application orchestration against real projects without broadening production permissions unnecessarily.
-
-Success means APEX can carry approved engineering work from diagnosis through tested implementation and verified release without losing auditability.
-
-## P4 — Business-operations maturity
-
-BuildMyBot and other portfolio operations must use their current live systems as source of truth, not dated repo snapshots.
-
-Priorities:
-
-- validate current BuildMyBot connector contracts against `patriotnewsactivism/buildmybot2` and live endpoints;
-- verify lead research → CRM/outreach handoff end to end before scaling campaigns;
-- measure campaign progress, conversion, failures, and follow-up state rather than counting generated leads as business results;
-- keep external sends, calls, financial effects, and materially risky customer actions within explicit approval/standing-policy boundaries;
-- update `BUSINESS_PROFILE.md` only after current commercial facts are independently verified.
-
-## P5 — Controlled autonomy expansion
-
-Increase autonomy by tightening policies, not deleting controls.
-
-Prefer:
-
-- narrow standing authorizations with numeric limits;
-- idempotent/reversible actions;
-- automatic preflight tests;
-- clear dry-run modes;
-- exact rollback targets;
-- bounded concurrency;
-- automatic verification of external side effects;
-- concise approval packets for genuinely irreversible work.
-
-Do not weaken authentication, approval, audit, provenance, provider backpressure, task deduplication, or secret-handling controls to make APEX look more autonomous.
+- Revenue-ops sales pipeline uses `sales_opportunities`, not the APEX ideas `opportunities` table.
+- Do not auto-approve `send_email`, `make_outbound_call`, or connector sends.
+- Re-verify BuildMyBot live pricing/features before customer-facing claims.
 
 ## Completion standard
 
-A roadmap item is complete only when the intended behavior exists and the relevant layer has been verified.
-
-For production changes, that means live production evidence—not merely code, a commit, a green build, or a Ready-but-unverified revision.
+A roadmap item is complete only when the intended behavior exists and the relevant layer has been verified. For production changes that means live `/health` evidence — not merely a commit or a green build.

@@ -22,3 +22,6 @@ healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+# Operator setting on the GitHub integration (not a railway.toml key):
+# enable "Wait for CI" / checkSuites so a red production-checks run cannot
+# ship. Railway currently deploys from main as soon as the push lands.

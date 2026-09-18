@@ -1,5 +1,5 @@
 # Repository Guidelines — APEX
-_Last verified against current source, production health, and CI: 2026-08-30._
+_Last verified against current source, production health, and CI: 2026-09-18._
 
 This is the canonical instruction file for AI coding tools and contributors working in this repository. Keep it synchronized with current source and live production evidence. Do not create per-tool instruction copies that can drift.
 
@@ -31,28 +31,16 @@ Google Cloud Run is a **retired** production host. Billing is disabled on projec
 A production release is complete only after all of these are true:
 
 1. the intended reviewed commit is on `main`;
-2. CI is green for that code state;
-3. Google Cloud Build builds the exact clean commit with an immutable SHA tag;
-4. the **existing** configured Cloud Run service is updated to that image;
-5. the new revision becomes Ready;
-6. `https://apex.donmatthews.live/health` reports the expected `build.sha` and a healthy `taskQueue.verdict`;
-7. the changed feature is smoke-tested through its real production path.
+2. CI `production-checks` is green for that code state;
+3. Railway service `apex-backend` reports Success for that commit (GitHub status `APEX - apex-backend`);
+4. `https://apex.donmatthews.live/health` reports the expected `build.sha` and a healthy `taskQueue.verdict`;
+5. the changed feature is smoke-tested through its real production path.
 
-The deployment implementation is `packages/cicd-automation/src/cloud-run-deployer.ts`.
+Railway currently deploys from `main` without waiting for CI. Treat a red CI run after a live SHA as an incident, and enable Railway "Wait for CI" / checkSuites on the GitHub integration when the operator can change that setting.
 
-`deploy_to_environment` and rollback remain approval-gated. Deployment requires explicit `APEX_DEPLOY_ENABLED` consent plus the exact existing Google project, region, and service identifiers. The deployer uses `gcloud run services update`, not `gcloud run deploy`, so it cannot silently create a duplicate service and so existing environment variables, Secret Manager refs, runtime service account, scaling, ingress, domain mapping, CPU/memory, and related service configuration remain intact.
+The retired Cloud Run path (`packages/cicd-automation/src/cloud-run-deployer.ts`, `cloudbuild.apex.yaml`, `.github/workflows/deploy.yml`) remains the tested rollback route. It is gated behind `APEX_DEPLOY_ENABLED` and must not be re-enabled while billing is off on project `apex-503709`.
 
-Required deploy configuration:
-
-- `APEX_DEPLOY_ENABLED=production` (or `all`)
-- `APEX_GCP_PROJECT_ID`
-- `APEX_CLOUD_RUN_REGION`
-- `APEX_CLOUD_RUN_SERVICE`
-- authenticated `gcloud` identity, using a human login or Google Workload Identity rather than committed service-account JSON keys
-
-The exact project/region/service values are intentionally not guessed or invented in repository documentation. Use the existing production configuration.
-
-See `docs/PRODUCTION_OPERATIONS.md`, `docs/deploy-provenance.md`, and `cloudbuild.apex.yaml`.
+`deploy_to_environment` and rollback remain hard-gated. See `docs/PRODUCTION_OPERATIONS.md`, `docs/HOSTING_MIGRATION.md`, and `docs/deploy-provenance.md`.
 
 ## What APEX is
 
@@ -74,7 +62,7 @@ Tasks are expected to progress through real delegation, tools, verification, lea
 - Package manager: **pnpm 11.19.0** workspace. Do not introduce npm/yarn/bun lockfiles.
 - Runtime/tooling target: Node.js 22.
 - TypeScript strict mode; ESM via `tsx`. Use `import`, not CommonJS `require()` in production TypeScript.
-- Container runtime: Docker on Google Cloud Run.
+- Container runtime: Docker on Railway (`railway.toml` + repository `Dockerfile`). Google Cloud Run is the retired rollback host.
 - Database access: Postgres through Drizzle ORM and `DATABASE_URL`; deployments may use Supabase-hosted Postgres, but runtime database access is not blanket management-plane authorization.
 - Schema bootstrap/migration logic must remain idempotent and reviewable.
 - The old SQLite runtime and retired Railway Postgres are not production stores and must not be revived.
@@ -259,11 +247,11 @@ See `SECURITY.md` for the repository-wide security contract.
 
 ## Durable work, sandbox executor, and cron governance (ADR-013)
 
-- **Durable artifacts**: the container filesystem is ephemeral. Finished deliverables belong in the GCS bucket named by `APEX_ARTIFACT_BUCKET` (`store_artifact` / `read_artifact` / `list_artifacts` / `publish_artifact`), with object names `projects/<projectId>/<taskId>/<file>` and audit rows in the `artifacts` table. Bucket tools fail closed when `APEX_ARTIFACT_BUCKET` is unset. `tasks.result_artifacts` carries result links (drained from `store_artifact` calls on task completion, best-effort).
+- **Durable artifacts**: the container filesystem is ephemeral. Finished deliverables belong in the store named by `APEX_ARTIFACT_BUCKET` (GCS) or `APEX_ARTIFACT_DIR` (Railway volume / local directory). Tools fail closed when both are unset.
 - **Durable workspace**: `init_workspace` / `sync_workspace` / `push_workspace` sync project trees to `projects/<projectId>/workspace/<worktree>/` with a checksum manifest; the sandbox executor pulls before and pushes after every run so instance recycle never loses work.
-- **Sandbox executor**: heavy tasks (`context.runtime='job'`, created via `run_executor_job`) never run in the control-plane loop — the 30s dispatch loop fires `gcloud run jobs execute` for the configured `APEX_EXECUTOR_JOB` (a new Cloud Run Jobs resource, NOT the control-plane service). Executor tasks are exempt from the in-process 10-minute lease sweep and get a 55-minute hard timeout. Dispatch is a no-op until `APEX_EXECUTOR_JOB` is set (fail closed, never invented values).
+- **Sandbox executor**: heavy tasks (`context.runtime='job'`) dispatch to Cloud Run Jobs when `APEX_EXECUTOR_JOB` is set. On Railway the default is `APEX_EXECUTOR_MODE=inprocess`, which demotes those tasks to the ordinary worker loop instead of waiting forever for gcloud. Set `APEX_EXECUTOR_MODE=off` to keep the fail-closed no-op.
 - **Cron governance**: agent-created crons (`schedule_task`) are marked `dynamic:true`, capped at `APEX_MAX_DYNAMIC_JOBS` (default 25), per-workstream 3, floor 15 min — enforced at insert and hourly by `cron_governor` (pauses only, never creates). `work_generation` (every 10 min) plans deduplicated tasks from open goals, accepted opportunities, and due workstreams; `create_workstream` registers durable deliverable units.
-- **Autonomy mode**: `projects.autoapproveTools` (non-empty) + `autonomyLevel` in the autonomy modes lets a bounded eligible set skip human approval (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated forever: `deploy_to_environment`, `rollback_deployment`, `make_outbound_call`, `runShell`, `register_deploy_hook`, `register_application`, `delegate_to_application`, and BuildMyBot/CaseBuddy connector sends — never auto-approvable (`scripts/verify-approval-policy.ts`).
+- **Autonomy mode**: `projects.autoapproveTools` (non-empty) + `autonomyLevel` of `full_autonomous` or `autonomous` lets a bounded eligible set skip human approval. The control-plane project `apex` is seeded `full_autonomous` with `create_github_repo`, `push_to_remote`, `create_pull_request`, `create_workstream`, `publish_artifact`. Hard-gated forever: `deploy_to_environment`, `rollback_deployment`, `make_outbound_call`, `send_email`, `send_email_campaign_batch`, `runShell`, `register_deploy_hook`, `register_application`, `delegate_to_application`, inbound-number tools, and BuildMyBot/CaseBuddy connector sends — never auto-approvable (`scripts/verify-approval-policy.ts`). Settings → Project autonomy allowlist is the operator UI. Unscoped tasks fall back to the `apex` project policy.
 - **Deploy hooks**: third-party hosting deploys for client deliverables go through registrable webhooks only (`register_deploy_hook` / `deploy_via_hook`); hook URLs are stored as `env:VAR_NAME` secret references, never logged. They do not change APEX's own hosting (ADR-001 — Cloud Run only).
 
 ## Checkpoint/resume, approval yield, and shared worker bootstrap (ADR-014)

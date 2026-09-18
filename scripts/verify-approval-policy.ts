@@ -95,6 +95,18 @@ async function main(): Promise<void> {
     check(`${tool} stays gated when not in allowlist`, decision.autoApprove === false);
   }
 
+  console.log('\n── sanitizeAutoapproveTools strips hard-gated names ──');
+  const { sanitizeAutoapproveTools, DEFAULT_APEX_AUTOAPPROVE_TOOLS } = approvalPolicy;
+  check('default APEX allowlist is non-empty', DEFAULT_APEX_AUTOAPPROVE_TOOLS.length >= 5);
+  check(
+    'hard-gated names are stripped',
+    !sanitizeAutoapproveTools(['runShell', 'create_pull_request', 'deploy_to_environment']).includes('runShell'),
+  );
+  check(
+    'eligible names are kept',
+    sanitizeAutoapproveTools(['create_pull_request']).includes('create_pull_request'),
+  );
+
   console.log('\n── fail-closed on ambiguous inputs ──');
   const eligible = [...AUTONOMY_ELIGIBLE_TOOLS][0];
   check('no autonomy level → gated', evaluatePolicy({

@@ -5,5 +5,6 @@ export {
   getExecutorJobStatus,
   executorJobName,
   executorDispatchConfig,
+  executorMode,
 } from './dispatch.js';
 export type { DispatchResult } from './dispatch.js';

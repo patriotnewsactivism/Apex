@@ -60,7 +60,7 @@ Production behavior deliberately keeps several fail-closed controls:
 - malformed-tool-call and non-completion guards;
 - exact build-SHA verification after deployment;
 - admin authentication with no hardcoded credential fallback;
-- existing-service-only Cloud Run releases;
+- existing-service-only Cloud Run rollback path (not the live host);
 - cron governance (dynamic-job ceiling, frequency floor, governor pauses — never creates);
 - a hard-gated approval set that no autonomy mode can ever auto-approve;
 - fail-closed artifact/workspace tools when the bucket is unconfigured.
@@ -71,9 +71,9 @@ Do not remove safety controls merely to increase throughput.
 
 APEX can execute and ship deliverables durably even though the container filesystem is ephemeral:
 
-- finished work (documents, builds, renders) goes to the GCS bucket named by `APEX_ARTIFACT_BUCKET` via `store_artifact`, with audit rows in the `artifacts` table and result links on tasks;
+- finished work goes to `APEX_ARTIFACT_BUCKET` (GCS) or `APEX_ARTIFACT_DIR` (Railway volume); tools fail closed if both are unset;
 - durable project workspaces (`init_workspace` / `sync_workspace` / `push_workspace`) sync trees to `projects/<projectId>/workspace/<worktree>/` with checksum manifests;
-- heavy tasks run in a separate Cloud Run Jobs sandbox (`run_executor_job`, dispatched when `APEX_EXECUTOR_JOB` is configured), and a deterministic classifier nudges agents toward it for test-suite/build/render/static-analysis/browser-automation/data-processing work instead of blocking a normal execution slot;
+- heavy tasks dispatch to Cloud Run Jobs when `APEX_EXECUTOR_JOB` is set; on Railway they default to `APEX_EXECUTOR_MODE=inprocess` so the worker loop runs them;
 - code deliverables ship to new GitHub repos per workstream; hosted deliverables deploy through registered deploy hooks (`deploy_via_hook`);
 - a managed `work_generation` cron plans deduplicated batches of work from goals, accepted opportunities, and workstreams; `cron_governor` keeps dynamic crons within ceilings and the 15-minute floor;
 - a long task checkpoints and resumes across execution slices instead of losing progress at the 10-minute hard timeout, and a gated approval yields the execution cleanly (no live in-process wait) rather than blocking a concurrency slot while a human decides — see `docs/ARCHITECTURE_DECISIONS.md` (ADR-014);
@@ -90,7 +90,7 @@ packages/agents/           production workforce definitions
 packages/api-server/       REST/WebSocket control plane and health endpoint
 packages/dashboard/        operator dashboard
 packages/background-jobs/  scheduling and recurring work
-packages/executor/         Cloud Run Jobs sandbox executor (heavy builds/renders)
+packages/executor/         heavy-task executor (Cloud Run Jobs or in-process on Railway)
 packages/health-monitor/   component health and alerting
 packages/learning-system/  outcomes, insights, and strategy optimization
 packages/cicd-automation/  build/release/rollback automation

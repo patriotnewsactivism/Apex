@@ -69,7 +69,7 @@ At the beginning of any substantial APEX task, resolve truth in this order:
 
 When sources conflict, state the conflict and prefer the most direct, current evidence.
 
-Never revive Railway or AWS Lightsail as APEX hosting merely because old docs or history mention them. Current APEX production is the existing Google Cloud Run service behind `https://apex.donmatthews.live` unless direct live evidence and an explicit architecture change establish a newer migration.
+Never revive AWS Lightsail as APEX hosting. Current APEX production is Railway (`apex-backend`) behind `https://apex.donmatthews.live` (ADR-015). Google Cloud Run is the gated rollback path only.
 
 ## 3. Autonomy Policy
 
@@ -309,7 +309,7 @@ Bad "self-healing" includes bypassing approvals, suppressing errors, retrying fo
 
 Do not conflate client-project deployment tooling with APEX's own host.
 
-APEX production runs on the **existing Google Cloud Run service** behind `https://apex.donmatthews.live`. Re-check `AGENTS.md`, `docs/PRODUCTION_OPERATIONS.md`, and direct live evidence before acting because infrastructure can change only through an explicit architecture decision.
+APEX production runs on **Railway** (`apex-backend`) behind `https://apex.donmatthews.live`. Re-check `AGENTS.md`, `docs/HOSTING_MIGRATION.md`, and live `/health` before acting. Google Cloud Run is rollback-only.
 
 Current expected sequence is conceptually:
 

@@ -119,11 +119,12 @@ say whether it does.
 
 ### Outstanding after the forced cutover
 
-1. **Lead-research credentials were not carried over.** Cloud Run supplied `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY` and `TAVILY_API_KEY`; the Railway service has none of them. Lead contact enrichment and lead research degrade accordingly. These are the categories Phase 1 called "search/research integrations", and they matter most for outbound sales work.
-2. **`OPENROUTER_API_KEY_4` bought no capacity.** It is wired, but it is a second key on `oracct_d5f750b6`, an account APEX already holds through `OPENROUTER_FREE_API_KEY` — so `uniqueAccounts` is still 2, `sharedQuota` is still true, and the cap stays clamped at 2,000/day. A third *account* is what raises it to 3,000.
-3. **The Cloud Run deploy still fires on every green CI run.** It cannot succeed while billing is off, so each merge produces a failed deploy. Setting the `APEX_DEPLOY_ENABLED` repository variable to anything other than `production`/`all` makes the gate skip cleanly and exit 0 — no workflow edit required, and the rollback path stays intact.
-4. **Railway deploys without waiting for CI.** The service has `checkSuites: false`, so a push to `main` reaches production whether or not CI passes. The Cloud Run pipeline gated on `workflow_run.conclusion == 'success'`; that gate no longer exists anywhere.
-5. **One replica, no redundancy** (`ams`, `numReplicas: 1`). Cloud Run ran `minScale=1, maxScale=1` too, so this is not a regression — but it remains a single point of failure.
+1. **Lead-research credentials were not carried over.** Cloud Run supplied `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY` and `TAVILY_API_KEY`; copy those **names** onto the Railway service (values stay in the host).
+2. **`OPENROUTER_API_KEY_4` bought no capacity.** It is a second key on an account APEX already holds. A third *account* is what raises the free cap.
+3. **The Cloud Run deploy still fires on every green CI run** unless `APEX_DEPLOY_ENABLED` is not `production`/`all`. Keep it off while billing is disabled.
+4. **Railway deploys without waiting for CI.** Enable "Wait for CI" / checkSuites on the GitHub integration. Documented in `railway.toml` comments and ADR-015.
+5. **One replica** (`ams`). Websocket tickets now persist in Postgres so a second replica is no longer blocked on in-memory tickets. Scale only after a live two-process ticket round-trip is proven.
+6. **Artifacts / executor.** Set `APEX_ARTIFACT_DIR` (volume) or `APEX_ARTIFACT_BUCKET`. Leave `APEX_EXECUTOR_JOB` unset on Railway; `APEX_EXECUTOR_MODE=inprocess` is the default.
 
 ## Decision
 

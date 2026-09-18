@@ -6,14 +6,12 @@ A decision may be superseded, but it must be superseded explicitly: update the i
 
 ## ADR-001 — APEX production host is Google Cloud Run
 
-**Status:** Accepted  
-**Last confirmed:** 2026-08-28
+**Status:** Superseded 2026-09-15 by ADR-015  
+**Last confirmed:** 2026-08-28 (historical)
 
-APEX itself runs on the existing Google Cloud Run service behind:
+APEX production moved to Railway on 2026-09-14/15 when Cloud Run billing on project `apex-503709` was disabled. This ADR remains as the record of the Cloud Run-only era. Do not treat it as current hosting instructions.
 
-`https://apex.donmatthews.live`
-
-AWS Lightsail/CodeBuild and Railway are retired APEX hosting paths. Vercel, Railway, Render, and other platforms may still be valid deployment targets for client projects that APEX manages, but they are not the APEX control-plane host.
+AWS Lightsail/CodeBuild remains a retired APEX hosting path. Vercel, Render, and other platforms may still be valid deployment targets for client projects APEX manages, but they are not the APEX control-plane host.
 
 ### Consequences
 
@@ -472,15 +470,31 @@ useful work while the operator is offline for hours, not minutes.
   updates to `verify-approval-state-integrity.ts`,
   `verify-agent-loop-supervision.ts`, `verify-durable-worker-runtime.ts`, and
   `verify-executor-dispatch.ts` for the refactored bootstrap locations.
-- **Not yet production-verified.** This decision's implementation has passed
-  full production typecheck and every deterministic guard in a sandboxed
-  environment with no live database or Cloud Run access. It has NOT been
-  deployed, and the checkpoint/resume and approval-yield mechanisms have not
-  yet been exercised against real production traffic or a real multi-instance
-  Cloud Run topology. Treat this ADR as describing reviewed, tested source —
-  not a completed release — until a deploy following
-  `docs/PRODUCTION_OPERATIONS.md` records the verification evidence that
-  standard requires.
+- Production evidence as of 2026-09-18 on Railway SHA `8cf1418`:
+  `/health.autonomy.approvalYields` was non-zero, while `checkpointsCreated`
+  remained 0. Approval-yield is live; checkpoint/resume is in the image but
+  still unused. Treat checkpoint/resume as deployed-but-unexercised until a
+  production task actually soft-yields.
+
+## ADR-015 — APEX production host is Railway
+
+**Status:** Accepted  
+**Last confirmed:** 2026-09-18
+
+APEX itself runs on Railway — project `APEX`, service `apex-backend`, region `ams`, one replica — behind:
+
+`https://apex.donmatthews.live`
+
+Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/health`, and deploys from `main`. Google Cloud Run is a retired production host (billing disabled on `apex-503709`) and is kept only as the tested rollback path behind `APEX_DEPLOY_ENABLED`.
+
+### Consequences
+
+- A push to `main` is a production deploy. Enable Railway "Wait for CI" so a red `production-checks` run cannot ship.
+- WebSocket tickets are stored in Postgres so a second replica can be added later without breaking LIVE chat.
+- Heavy executor work defaults to `APEX_EXECUTOR_MODE=inprocess` on this host. Do not wait for Cloud Run Jobs.
+- Artifacts may use `APEX_ARTIFACT_DIR` (volume) or `APEX_ARTIFACT_BUCKET` (GCS). Both unset still fails closed.
+- Do not restore Lightsail/CodeBuild. Do not treat Vercel as the APEX control plane (it may still host the dashboard project).
+- ADR-001 is historical. Current hosting instructions live here, in `AGENTS.md`, and in `docs/HOSTING_MIGRATION.md`.
 
 ## How to change an architecture decision
 
