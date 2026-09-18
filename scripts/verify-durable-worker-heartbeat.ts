@@ -85,8 +85,13 @@ check('/health documents that a healthy web server must not imply healthy autono
     return normalized.includes('web server being healthy must not imply that') &&
       normalized.includes('autonomous workers are healthy');
   })());
+const heartbeatSource = fs.readFileSync(path.join(root, 'packages/core/src/worker-heartbeat.ts'), 'utf8');
 check('a durable-read failure degrades this section to unknown rather than throwing (never crashes /health)',
-  fs.readFileSync(path.join(root, 'packages/core/src/worker-heartbeat.ts'), 'utf8').includes('Never throws: a failed read here must not take down /health'));
+  heartbeatSource.includes('Never throws: a failed read here must not take down /health'));
+check('stale worker_heartbeats rows are pruned so recycled Railway instances leave /health',
+  heartbeatSource.includes('HEARTBEAT_PRUNE_AFTER_MS') &&
+    heartbeatSource.includes('pruneStaleHeartbeats') &&
+    heartbeatSource.includes('db.delete(workerHeartbeats)'));
 
 console.log(failures === 0 ? '\n✅ ALL DURABLE WORKER HEARTBEAT GUARDS PASSED' : `\n❌ ${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

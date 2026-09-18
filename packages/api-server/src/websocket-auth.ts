@@ -3,6 +3,18 @@ import crypto from 'crypto';
 const TICKET_TTL_MS = 30_000;
 const tickets = new Map<string, number>();
 
+const stats = {
+  issued: 0,
+  persistOk: 0,
+  persistFailed: 0,
+  consumedMemory: 0,
+  consumedPostgres: 0,
+};
+
+function ticketStoreMode(): 'memory' | 'postgres' {
+  return process.env.APEX_WEBSOCKET_TICKETS === 'memory' ? 'memory' : 'postgres';
+}
+
 /**
  * Create a short-lived, single-use credential for a browser WebSocket upgrade.
  * The long-lived admin token must never be placed in a URL.
@@ -16,15 +28,17 @@ export async function issueWebSocketTicket(now = Date.now()): Promise<string> {
   const ticket = crypto.randomBytes(32).toString('base64url');
   const expiresAt = now + TICKET_TTL_MS;
   tickets.set(ticket, expiresAt);
-  if (process.env.APEX_WEBSOCKET_TICKETS !== 'memory') {
+  stats.issued += 1;
+  if (ticketStoreMode() === 'postgres') {
     try {
       const { db, websocketTickets } = await import('@workspace/db');
       await db.insert(websocketTickets).values({
         ticket,
         expiresAt: new Date(expiresAt),
       });
+      stats.persistOk += 1;
     } catch {
-      // First boot before migrate(), or a unit test with no DB. Memory still works.
+      stats.persistFailed += 1;
     }
   }
   return ticket;
@@ -36,7 +50,7 @@ export async function consumeWebSocketTicket(ticket: string | null, now = Date.n
   const memoryExpires = tickets.get(ticket);
   tickets.delete(ticket);
   let persisted: { expiresAt: Date } | undefined;
-  if (process.env.APEX_WEBSOCKET_TICKETS !== 'memory') {
+  if (ticketStoreMode() === 'postgres') {
     try {
       const { db, websocketTickets } = await import('@workspace/db');
       const { eq } = await import('drizzle-orm');
@@ -49,8 +63,44 @@ export async function consumeWebSocketTicket(ticket: string | null, now = Date.n
       persisted = undefined;
     }
   }
-  if (memoryExpires !== undefined) return memoryExpires >= now;
-  return Boolean(persisted && persisted.expiresAt.getTime() >= now);
+  if (memoryExpires !== undefined) {
+    stats.consumedMemory += 1;
+    return memoryExpires >= now;
+  }
+  if (persisted && persisted.expiresAt.getTime() >= now) {
+    stats.consumedPostgres += 1;
+    return true;
+  }
+  return false;
+}
+
+/** Drop the process-local copy so consume() must use Postgres. Used to prove replica-safety on one instance. */
+export function forgetLocalWebSocketTicket(ticket: string): void {
+  tickets.delete(ticket);
+}
+
+export function getWebSocketTicketStats(): {
+  mode: 'memory' | 'postgres';
+  issued: number;
+  persistOk: number;
+  persistFailed: number;
+  consumedMemory: number;
+  consumedPostgres: number;
+} {
+  return { mode: ticketStoreMode(), ...stats };
+}
+
+export async function provePersistedTicketRoundTrip(now = Date.now()): Promise<{
+  mode: 'memory' | 'postgres';
+  consumedAfterLocalDrop: boolean;
+  replayRejected: boolean;
+}> {
+  const mode = ticketStoreMode();
+  const ticket = await issueWebSocketTicket(now);
+  forgetLocalWebSocketTicket(ticket);
+  const consumedAfterLocalDrop = await consumeWebSocketTicket(ticket, now + 1);
+  const replayRejected = !(await consumeWebSocketTicket(ticket, now + 2));
+  return { mode, consumedAfterLocalDrop, replayRejected };
 }
 
 function pruneExpiredTickets(now: number): void {

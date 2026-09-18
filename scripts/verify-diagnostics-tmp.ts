@@ -11,8 +11,16 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.GITHUB_WORKSPACE ?? path.resolve(here, '..');
-const source = fs.readFileSync(
+const diagnosticsSource = fs.readFileSync(
   path.join(root, 'packages/api-server/src/routes/diagnostics.ts'),
+  'utf8',
+);
+const healthSource = fs.readFileSync(
+  path.join(root, 'packages/api-server/src/index.ts'),
+  'utf8',
+);
+const tmpUsageSource = fs.readFileSync(
+  path.join(root, 'packages/api-server/src/tmp-usage.ts'),
   'utf8',
 );
 
@@ -29,26 +37,35 @@ console.log('Verifying diagnostics /tmp measurement...');
 
 check(
   'diagnostics no longer imports or uses statfsSync for /tmp size',
-  !/statfsSync/.test(source),
+  !/statfsSync/.test(diagnosticsSource),
 );
 check(
-  'diagnostics measures actual directory contents',
-  /function directoryUsageBytes\(/.test(source) &&
-    /readdirSync\(dir, \{ withFileTypes: true \}\)/.test(source),
+  'public /health no longer uses statfsSync for /tmp size',
+  !/statfsSync/.test(healthSource),
+);
+check(
+  'shared tmp walker measures actual directory contents',
+  /export function directoryUsageBytes\(/.test(tmpUsageSource) &&
+    /readdirSync\(dir, \{ withFileTypes: true \}\)/.test(tmpUsageSource),
 );
 check(
   'directory walk does not follow symlinks',
-  /child\.isSymbolicLink\(\)/.test(source),
+  /child\.isSymbolicLink\(\)/.test(tmpUsageSource),
 );
 check(
   'directory walk is bounded',
-  /maxEntries = 25_000/.test(source) &&
-    /stopAfterBytes = 2 \* 1024 \* 1024 \* 1024/.test(source),
+  /maxEntries = 25_000/.test(tmpUsageSource) &&
+    /stopAfterBytes = 2 \* 1024 \* 1024 \* 1024/.test(tmpUsageSource),
+);
+check(
+  'diagnostics and /health both use the shared walker',
+  /directoryUsageBytes\('\/tmp'\)/.test(diagnosticsSource) &&
+    /directoryUsageBytes\('\/tmp'\)/.test(healthSource),
 );
 check(
   'Railway-specific wording no longer claims /tmp is Cloud Run RAM',
-  /runtimePlatform\(\)/.test(source) &&
-    /platform === 'cloud-run'/.test(source),
+  /runtimePlatform\(\)/.test(diagnosticsSource) &&
+    /platform === 'cloud-run'/.test(diagnosticsSource),
 );
 
 if (failures > 0) {

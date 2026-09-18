@@ -21,7 +21,7 @@
 
 import { randomUUID } from 'crypto';
 import { db, workerHeartbeats } from '@workspace/db';
-import { desc } from 'drizzle-orm';
+import { desc, lt } from 'drizzle-orm';
 import { getBuildInfo, getWorkforceLiveness } from './runtime-health.js';
 
 export type WorkerKind = 'http' | 'worker';
@@ -126,6 +126,7 @@ export function startWorkerHeartbeat(
         .insert(workerHeartbeats)
         .values(row)
         .onConflictDoUpdate({ target: workerHeartbeats.workerId, set: row });
+      await pruneStaleHeartbeats();
     } catch (err) {
       // A missed heartbeat write must never crash the runtime it is
       // reporting on. /health treats a stale/absent row as "unknown", which
@@ -160,6 +161,16 @@ export function startWorkerHeartbeat(
  *  enough that one missed tick under load is not a false alarm. */
 const HEARTBEAT_STALE_AFTER_MS = 90_000;
 
+/** Recycled Railway instances leave rows behind. Delete them so public
+ *  /health does not list every historical process. 5 minutes is well past
+ *  the 90s unhealthy threshold and shorter than a typical deploy cycle. */
+const HEARTBEAT_PRUNE_AFTER_MS = 5 * 60 * 1000;
+
+async function pruneStaleHeartbeats(): Promise<void> {
+  const cutoff = new Date(Date.now() - HEARTBEAT_PRUNE_AFTER_MS);
+  await db.delete(workerHeartbeats).where(lt(workerHeartbeats.lastHeartbeatAt, cutoff));
+}
+
 export interface WorkerHeartbeatView {
   workerId: string;
   kind: string;
@@ -192,6 +203,11 @@ export interface WorkerHeartbeatSummary {
 /** Never throws: a failed read here must not take down /health. */
 export async function getWorkerHeartbeatSummary(): Promise<WorkerHeartbeatSummary> {
   try {
+    try {
+      await pruneStaleHeartbeats();
+    } catch {
+      // A failed prune must not hide live workers.
+    }
     const rows = await db.select().from(workerHeartbeats).orderBy(desc(workerHeartbeats.lastHeartbeatAt)).limit(50);
     const now = Date.now();
     const workers: WorkerHeartbeatView[] = rows.map((row) => {

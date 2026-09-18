@@ -30,7 +30,9 @@ For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md` (ADR-015
 
 ## P1 — Reliability on this host
 
-- Add a second replica only after websocket tickets in Postgres have been live-verified.
+- Live-prove Postgres websocket tickets (diagnostics replica-hop) before adding a second replica.
+- Prune stale `worker_heartbeats` so `/health` does not list recycled instances.
+- Report `/health.tmpUsedMb` from `/tmp` contents, not the whole filesystem.
 - Preview environments for APEX itself (Railway PR deploys).
 - Verify in-process executor demotion of `runtime=job` tasks under load.
 - Keep Cloud Run rollback path documented and gated.

@@ -490,7 +490,7 @@ Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/h
 ### Consequences
 
 - A push to `main` is a production deploy. Railway Wait for CI (`checkSuites=true`) skips a red `production-checks` run. The GitHub `Vercel` status is the dashboard Vite build, not this gate.
-- WebSocket tickets are stored in Postgres so a second replica can be added later without breaking LIVE chat.
+- WebSocket tickets are stored in Postgres so a second replica can be added later without breaking LIVE chat. Prove the replica hop via `GET /api/diagnostics` before scaling. `/health` reports ticket-store stats; stale `worker_heartbeats` prune after 5 minutes; `tmpUsedMb` is `/tmp` contents, not `statfs`.
 - Heavy executor work defaults to `APEX_EXECUTOR_MODE=inprocess` on this host. Do not wait for Cloud Run Jobs.
 - Artifacts may use `APEX_ARTIFACT_DIR` (volume) or `APEX_ARTIFACT_BUCKET` (GCS). Both unset still fails closed.
 - Do not restore Lightsail/CodeBuild. Do not treat Vercel as the APEX control plane. The existing Vercel project `don-matthews/apex` builds `@workspace/dashboard` only (`vercel.json`) and posts the GitHub `Vercel` status.

@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import {
   consumeWebSocketTicket,
+  forgetLocalWebSocketTicket,
   issueWebSocketTicket,
+  provePersistedTicketRoundTrip,
 } from '../packages/api-server/src/websocket-auth.js';
 
 process.env.APEX_WEBSOCKET_TICKETS = 'memory';
@@ -17,6 +19,18 @@ assert.equal(await consumeWebSocketTicket(valid, 1_002), false, 'ticket replay m
 const expired = await issueWebSocketTicket(2_000);
 assert.equal(await consumeWebSocketTicket(expired, 32_001), false, 'expired ticket must fail');
 assert.equal(await consumeWebSocketTicket(null), false, 'missing ticket must fail');
+
+const dropped = await issueWebSocketTicket(5_000);
+forgetLocalWebSocketTicket(dropped);
+assert.equal(
+  await consumeWebSocketTicket(dropped, 5_001),
+  false,
+  'memory-mode consume after local drop must fail (no Postgres fallback)',
+);
+const proof = await provePersistedTicketRoundTrip(8_000);
+assert.equal(proof.mode, 'memory');
+assert.equal(proof.consumedAfterLocalDrop, false, 'memory mode cannot prove a replica hop');
+assert.equal(proof.replayRejected, true);
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const dashboardSources = [

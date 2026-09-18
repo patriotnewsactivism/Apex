@@ -31,7 +31,9 @@ Canonical production facts:
 - [x] Scheduled delegation deduplicates.
 - [x] Provider-capacity pauses are separated from ordinary task failure.
 - [ ] Live-verify checkpoint/resume (`checkpointsCreated` still 0 as of 2026-09-18).
-- [ ] Second replica only after Postgres websocket tickets are proven live.
+- [ ] Second replica only after Postgres websocket tickets are proven live (`GET /api/diagnostics` replica-hop).
+- [ ] `/health.tmpUsedMb` measures `/tmp` contents (not `statfs` of the whole mount) — in this change set, not yet live.
+- [ ] Stale `worker_heartbeats` rows prune after 5 minutes — in this change set, not yet live.
 - [ ] Exercise Cloud Run rollback path only if billing is restored.
 
 ## Business / portfolio

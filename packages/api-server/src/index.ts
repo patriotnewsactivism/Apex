@@ -2,7 +2,7 @@
 import { config } from 'dotenv';
 import { resolve, join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, statfsSync } from 'fs';
+import { existsSync } from 'fs';
 
 config({ path: resolve(process.cwd(), '.env') });
 
@@ -16,6 +16,8 @@ import { HealthMonitor } from '@workspace/health-monitor';
 import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
+import { getWebSocketTicketStats } from './websocket-auth.js';
+import { directoryUsageBytes } from './tmp-usage.js';
 import { setupLiveVoice } from './live-voice.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createMissionsRouter } from './routes/missions.js';
@@ -407,6 +409,7 @@ async function main() {
               : 'healthy',
       },
       autonomy: getAutonomyCounters(),
+      websocketTickets: getWebSocketTicketStats(),
       memory: (() => {
         const usage = process.memoryUsage();
         const mb = (bytes: number) => Math.round((bytes / 1048576) * 10) / 10;
@@ -416,16 +419,11 @@ async function main() {
           heapTotalMb: mb(usage.heapTotal),
           externalMb: mb(usage.external),
           wsClients: getConnectedClientCount(),
-          // On Cloud Run /tmp is a tmpfs: bytes written there are charged
-          // against the container's memory limit but appear nowhere in
-          // process.memoryUsage(). A container can therefore be OOM-killed
-          // while rss sits flat at 150MB, which is exactly what happened on
-          // 2026-09-04 and exactly what the heap numbers alone could not
-          // explain. Report it so the next occurrence is one curl away.
+          // Directory contents of /tmp, not the filesystem that contains it.
+          // statfs('/tmp') reported ~900GB on Railway while /tmp held a few MB.
           tmpUsedMb: (() => {
             try {
-              const stat = statfsSync('/tmp');
-              return mb((stat.blocks - stat.bfree) * stat.bsize);
+              return mb(directoryUsageBytes('/tmp').bytes);
             } catch {
               return null;
             }

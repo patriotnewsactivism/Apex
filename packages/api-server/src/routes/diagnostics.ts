@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { lstatSync, readdirSync } from 'fs';
 import {
   getCapacityDeferralStats,
   getDequeueHealth,
@@ -10,6 +9,8 @@ import {
   getConfiguredProviders,
 } from '@workspace/core';
 import type { BaseAgent } from '@workspace/core';
+import { directoryUsageBytes } from '../tmp-usage.js';
+import { provePersistedTicketRoundTrip } from '../websocket-auth.js';
 
 /**
  * One endpoint that answers "what is wrong with APEX right now".
@@ -37,55 +38,6 @@ interface Finding {
 const RANK: Record<Severity, number> = { critical: 0, warning: 1, ok: 2 };
 
 
-/** Measure the actual contents of a directory, not the filesystem that contains
- * it. statfs('/tmp') reports whole-filesystem usage and produced a false
- * ~900GB critical alert on Railway even though /tmp itself held ~5MB.
- *
- * The walk is bounded so the diagnostics endpoint cannot become the outage it
- * is trying to diagnose. Symlinks are not followed. */
-function directoryUsageBytes(
-  root: string,
-  maxEntries = 25_000,
-  stopAfterBytes = 2 * 1024 * 1024 * 1024,
-): { bytes: number; truncated: boolean } {
-  const stack = [root];
-  let bytes = 0;
-  let entries = 0;
-
-  while (stack.length > 0) {
-    const dir = stack.pop();
-    if (!dir) break;
-
-    let children;
-    try {
-      children = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    for (const child of children) {
-      entries += 1;
-      if (entries > maxEntries || bytes >= stopAfterBytes) {
-        return { bytes, truncated: true };
-      }
-
-      const fullPath = `${dir}/${child.name}`;
-      try {
-        if (child.isSymbolicLink()) continue;
-        if (child.isDirectory()) {
-          stack.push(fullPath);
-          continue;
-        }
-        if (child.isFile()) bytes += lstatSync(fullPath).size;
-      } catch {
-        // Files can disappear while caches rotate; diagnostics is best effort.
-      }
-    }
-  }
-
-  return { bytes, truncated: false };
-}
-
 function runtimePlatform(): 'cloud-run' | 'railway' | 'container' | 'unknown' {
   if (process.env.K_SERVICE) return 'cloud-run';
   if (process.env.RAILWAY_SERVICE_ID || process.env.RAILWAY_ENVIRONMENT_ID) return 'railway';
@@ -96,7 +48,7 @@ function runtimePlatform(): 'cloud-run' | 'railway' | 'container' | 'unknown' {
 export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
   const router = Router();
 
-  router.get('/', (req, res) => {
+  router.get('/', async (req, res) => {
     const now = Date.now();
     const findings: Finding[] = [];
     const build = getBuildInfo();
@@ -212,6 +164,31 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
       tmpUsedMb = mb(measured.bytes);
       tmpScanTruncated = measured.truncated;
     } catch { /* not fatal */ }
+
+    const ticketProof = await provePersistedTicketRoundTrip();
+    if (ticketProof.mode === 'postgres' && ticketProof.consumedAfterLocalDrop && ticketProof.replayRejected) {
+      findings.push({
+        severity: 'ok',
+        code: 'websocket_tickets_replica_safe',
+        title: 'WebSocket tickets survive a replica hop',
+        detail: 'A ticket dropped from this process memory was consumed from Postgres and rejected on replay.',
+      });
+    } else if (ticketProof.mode === 'postgres') {
+      findings.push({
+        severity: 'critical',
+        code: 'websocket_tickets_not_persisted',
+        title: 'WebSocket tickets are not replica-safe',
+        detail: `Postgres consume=${ticketProof.consumedAfterLocalDrop} replayRejected=${ticketProof.replayRejected}. A second replica would drop LIVE chat.`,
+        action: 'Confirm the websocket_tickets table migrated and APEX_WEBSOCKET_TICKETS is not set to memory.',
+      });
+    } else {
+      findings.push({
+        severity: 'warning',
+        code: 'websocket_tickets_memory',
+        title: 'WebSocket tickets are process-local',
+        detail: 'APEX_WEBSOCKET_TICKETS=memory. A second replica would drop LIVE chat.',
+      });
+    }
 
     if (tmpUsedMb !== null && tmpUsedMb > 300) {
       const platform = runtimePlatform();
