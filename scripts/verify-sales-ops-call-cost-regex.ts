@@ -68,6 +68,16 @@ async function main(): Promise<void> {
       (route.match(/error: errorMessage\(err\)/g) ?? []).length >= 3,
   );
 
+  check(
+    'raw SQL FILTERs never interpolate a Date object directly',
+    !/\$\{logs\.timestamp\}\s*>=\s*\$\{dayStart\}/.test(route),
+  );
+  check(
+    'the shared UTC day boundary is encoded once as ISO text and cast explicitly to timestamptz',
+    /const dayStartIso = dayStart\.toISOString\(\)/.test(route) &&
+      (route.match(/CAST\(\$\{dayStartIso\} AS timestamptz\)/g) ?? []).length === 3,
+  );
+
   // ── Pure exports: run them, don't just read them ──────────────────────────
   const mod = (await import(
     path.join(root, 'packages/api-server/src/routes/sales-ops.ts')
