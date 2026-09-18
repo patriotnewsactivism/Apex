@@ -12,6 +12,7 @@ import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector
 import { createOrchestrationTools } from './orchestration-tools.js';
 import { createDurableWorkTools } from './durable-work-tools.js';
 import { createRevenueOpsTools } from './revenue-ops/tools.js';
+import { createCampaignTools } from './revenue-ops/campaign-engine.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
 import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-client.js';
 import { getNextRunTimes } from './cron-utils.js';

@@ -241,7 +241,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('What was done about it — stored in the error context for the audit trail'),
       }),
       requiresApproval: true,
-      async execute({ errorId, resolutionNote = '' }) {
+      async execute({ errorId: errorId = '', resolutionNote: resolutionNote = '' }) {
         const existing = await sbFetch(
           'error_logs',
           buildQuery({ id: `eq.${errorId}`, select: 'id,context' }),
@@ -286,7 +286,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('1 (highest) – 10 (lowest); default 4'),
       }),
       requiresApproval: true, // Hard-gated in approval-policy.ts (HARD_GATED_TOOLS) -- fixed 2026-09-07, was incorrectly false. ToolRegistry.execute() now enforces the hard gate centrally regardless of this flag, but keeping it accurate here too so the registry-consistency guard actually means something.
-      async execute({ title, spec, priority }) {
+      async execute({ title: title = '', spec: spec = '', priority: priority = 4 }) {
         const { randomUUID } = await import('crypto');
         const { db, tasks } = await import('@workspace/db');
         const now = new Date();
@@ -440,7 +440,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('Preview what WOULD be pushed without writing anything. Use this first on the backlog.'),
       }),
       requiresApproval: true,
-      async execute({ source, campaignId, limit, dryRun }) {
+      async execute({ source: source = 'backlog', campaignId: campaignId = '', limit: limit = 50, dryRun: dryRun = false }) {
         const { db, researchedLeads } = await import('@workspace/db');
         const { and, eq, isNull, isNotNull, desc } = await import('drizzle-orm');
 
@@ -556,7 +556,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
         dryRun: z.boolean().optional().describe('Report what would change without writing.'),
       }),
       requiresApproval: false,
-      async execute({ dryRun }) {
+      async execute({ dryRun: dryRun = false }) {
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
 
@@ -608,7 +608,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('Only leads that have not replied yet'),
       }),
       requiresApproval: false,
-      async execute({ limit, onlyUnreplied }) {
+      async execute({ limit: limit = 20, onlyUnreplied: onlyUnreplied = false }) {
         const rows = await sbFetch(
           'leads',
           buildQuery({

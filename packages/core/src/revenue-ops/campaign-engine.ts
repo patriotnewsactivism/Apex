@@ -22,6 +22,8 @@ import {
   interactions,
   calls,
   goals,
+  suppressions,
+  consentRecords,
 } from '@workspace/db';
 import {
   eq,
@@ -446,7 +448,7 @@ async function contactHasConsentForChannels(
   const grantedChannels = new Set<string>();
   for (const row of rows) {
     if (row.status === 'granted') {
-      grantedChannels.add(row.channel);
+      grantedChannels.add(row as { channel: string }).channel;
     }
   }
 
@@ -504,7 +506,7 @@ async function getExecutedStepPositions(
     .where(
       and(
         eq(interactions.organizationId, organizationId),
-        eq(interactions.campaignId, enrollment.id), // interactions store enrollmentId as campaignId
+        eq(interactions.campaignId, enrollmentId), // interactions store enrollmentId as campaignId
       ),
     )
     .limit(100);
@@ -591,9 +593,10 @@ async function pauseOtherEnrollments(
     );
 }
 
-// ─── Tool definition ────────────────────────────────────────────────────────────
+// ─── Tool factory ───────────────────────────────────────────────────────────────
 
-export const campaignTools: ToolDefinition[] = [
+export function createCampaignTools(): ToolDefinition[] {
+  return [
   {
     name: 'create_revenue_ops_campaign',
     description:
