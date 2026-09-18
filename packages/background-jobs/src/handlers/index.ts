@@ -34,62 +34,46 @@ export function partitionRecoveredProviderFailures<
   };
 }
 
-/** BuildMyBot2 operational telemetry, read straight from its Supabase.
+/** BuildMyBot2 operational telemetry.
  *
- * Best-effort by design and shared by every handler that needs it (daily
- * report, goal review, COO branch review): a missing env var or an unreachable
- * Supabase produces an honest `note`, never a thrown error that would fail the
- * whole job. Extracted here so the three callers cannot drift apart. */
+ * BuildMyBot is Neon/Postgres-backed and owns its database boundary. APEX uses
+ * the application's public health contract instead of coupling autonomous jobs
+ * to database-vendor credentials. Detailed product telemetry belongs behind a
+ * BuildMyBot management API, not a direct cross-database connection.
+ */
 async function fetchBuildMyBot2Telemetry(): Promise<Record<string, unknown>> {
-  const url = process.env.BUILDMYBOT_SUPABASE_URL;
-  const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY;
-  if (!url || !key) {
-    return { note: 'BUILDMYBOT_SUPABASE_URL / _SERVICE_KEY not configured' };
-  }
+  const appUrl = (process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app').replace(/\/$/, '');
+  const started = Date.now();
   try {
-    const headers = { apikey: key, Authorization: `Bearer ${key}` };
-    const today = new Date().toISOString().slice(0, 10);
-    const [errorsRes, leadsRes, shiftsRes] = await Promise.all([
-      fetch(
-        `${url}/rest/v1/error_logs?status=eq.open&order=level.asc,created_at.desc&limit=10&select=id,source,level,message`,
-        { headers, signal: AbortSignal.timeout(6_000) },
-      ),
-      fetch(`${url}/rest/v1/leads?replied_at=is.null&select=id,status,follow_up_sent_at&limit=500`, {
-        headers,
-        signal: AbortSignal.timeout(6_000),
-      }),
-      fetch(`${url}/rest/v1/ai_team_log?shift_date=eq.${today}&select=role_name,flags,escalated_to&limit=100`, {
-        headers,
-        signal: AbortSignal.timeout(6_000),
-      }),
-    ]);
-    const openErrors = (errorsRes.ok ? await errorsRes.json() : []) as Array<{
-      id: string;
-      source: string;
-      level: string;
-      message: string;
-    }>;
-    const leadsAwaiting = (leadsRes.ok ? await leadsRes.json() : []) as Array<{
-      id: string;
-      status: string;
-      follow_up_sent_at: string | null;
-    }>;
-    const shifts = (shiftsRes.ok ? await shiftsRes.json() : []) as Array<{
-      role_name: string;
-      flags?: unknown;
-      escalated_to?: unknown;
-    }>;
+    const response = await fetch(`${appUrl}/api/health`, {
+      signal: AbortSignal.timeout(6_000),
+      headers: { Accept: 'application/json' },
+    });
+    const text = await response.text();
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+    } catch {
+      payload = null;
+    }
     return {
-      openErrors: openErrors.length,
-      criticalErrors: openErrors.filter((e) => e.level === 'critical').length,
-      worstErrors: openErrors.slice(0, 3),
-      leadsAwaitingReply: leadsAwaiting.length,
-      leadsNeverFollowedUp: leadsAwaiting.filter((l) => !l.follow_up_sent_at).length,
-      shiftsToday: shifts.length,
-      flaggedShifts: shifts.filter((s) => s.flags || s.escalated_to).length,
+      healthy: response.ok && payload?.status === 'ok',
+      httpStatus: response.status,
+      latencyMs: Date.now() - started,
+      service: payload?.service ?? 'buildmybot2',
+      build: payload?.build ?? null,
+      voice: payload?.voice ?? null,
+      backend: 'neon-postgres',
+      note:
+        'Detailed AI-team/lead/error telemetry is intentionally not read directly from BuildMyBot database. Use the Neon-backed BuildMyBot management API once exposed.',
     };
   } catch (err) {
-    return { note: `unreachable: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      healthy: false,
+      latencyMs: Date.now() - started,
+      backend: 'neon-postgres',
+      note: `unreachable: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 }
 
@@ -244,49 +228,9 @@ export class ReportGenerationJob implements JobHandler {
 
     // ── Portfolio legs: BuildMyBot2 AI Team shift outcomes + ARIA dispatch
     // volume, so the daily summary is ONE view of the whole business instead
-    // of three dashboards. Both are best-effort: a missing env or an
-    // unreachable Supabase yields an honest note, never a crashed report.
-    let buildMyBotAITeam: unknown;
-    {
-      const url = process.env.BUILDMYBOT_SUPABASE_URL;
-      const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY;
-      if (!url || !key) {
-        buildMyBotAITeam = { note: 'BUILDMYBOT_SUPABASE_URL / _SERVICE_KEY not configured' };
-      } else {
-        try {
-          const headers = { apikey: key, Authorization: `Bearer ${key}` };
-          const today = new Date().toISOString().slice(0, 10);
-          const [shiftsRes, criticalsRes] = await Promise.all([
-            fetch(
-              `${url}/rest/v1/ai_team_log?shift_date=eq.${today}&select=role_name,summary,flags,escalated_to&limit=100`,
-              { headers, signal: AbortSignal.timeout(8_000) },
-            ),
-            fetch(
-              `${url}/rest/v1/error_logs?status=eq.open&level=eq.critical&select=source,message&limit=25`,
-              { headers, signal: AbortSignal.timeout(8_000) },
-            ),
-          ]);
-          const shifts = (shiftsRes.ok ? await shiftsRes.json() : []) as Array<{
-            role_name: string;
-            flags?: unknown;
-            escalated_to?: unknown;
-          }>;
-          const criticals = (criticalsRes.ok ? await criticalsRes.json() : []) as Array<{
-            source: string;
-            message: string;
-          }>;
-          buildMyBotAITeam = {
-            shiftsToday: shifts.length,
-            rolesReported: [...new Set(shifts.map((s) => s.role_name))],
-            flaggedOrEscalated: shifts.filter((s) => s.flags || s.escalated_to).length,
-            openCriticals: criticals.length,
-            providerChainExhaustions: criticals.filter((c) => c.source === 'llm-provider-chain').length,
-          };
-        } catch (err) {
-          buildMyBotAITeam = { note: `unreachable: ${err instanceof Error ? err.message : String(err)}` };
-        }
-      }
-    }
+    // of three dashboards. BuildMyBot is probed through its service health
+    // contract; an unreachable product yields an honest note, never a crash.
+    const buildMyBotAITeam = await fetchBuildMyBot2Telemetry();
 
     // ARIA dispatches work into the swarm as goals (POST /api/goals via the
     // control room), so 24h goal-creation volume is the dispatch volume.
