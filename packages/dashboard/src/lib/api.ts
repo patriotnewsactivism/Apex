@@ -85,6 +85,24 @@ export interface DiagnosticFinding {
   action?: string;
 }
 
+export interface SpendSnapshot {
+  day: string;
+  persistence: 'postgres+memory' | 'memory-only';
+  spentUsd: number;
+  capUsd: number;
+  releasedUsd: number;
+  remainingUsd: number;
+  pacingEnabled: boolean;
+  state: 'disabled' | 'available' | 'paced' | 'daily_cap';
+  resumeAt: string | null;
+  projectedUsd: number | null;
+  hourlyBurnUsd: number | null;
+  projected30DayUsd: number | null;
+  utilizationPct: number;
+  providers: Array<{ provider: string; spentUsd: number }>;
+  updatedAt: string;
+}
+
 export interface DiagnosticsReport {
   status: DiagnosticSeverity;
   generatedAt: string;
@@ -228,6 +246,10 @@ export const api = {
   diagnostics: {
     get: () => apiFetch<DiagnosticsReport>('/diagnostics'),
     text: () => apiFetchText('/diagnostics?format=text'),
+  },
+
+  spend: {
+    live: () => apiFetch<SpendSnapshot>('/spend'),
   },
 
   health: {
