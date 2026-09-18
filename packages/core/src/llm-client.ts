@@ -1962,10 +1962,14 @@ function providerConfigured(provider: ProviderSpec): boolean {
 export function getConfiguredProviders(): Array<{
   name: string;
   configured: boolean;
+  /** Whether this route is intentionally enabled by operator policy. Disabled
+   * routes are informational, not a health defect. */
+  enabled: boolean;
 }> {
   return PROVIDERS.map((provider) => ({
     name: provider.name,
     configured: providerConfigured(provider),
+    enabled: providerActivationIssue(provider) === null,
   }));
 }
 

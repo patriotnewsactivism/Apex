@@ -13,7 +13,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
@@ -163,6 +163,18 @@ async function main() {
 
   const app = express();
   const server = createServer(app);
+
+  // The agent-facing health_check tool lives in @workspace/core and cannot
+  // import api-server without creating a dependency cycle. Inject the real
+  // WebSocket liveness source here so CTO/CEO health checks observe the same
+  // runtime truth as /api/health instead of permanently reporting
+  // "no WebSocket checker injected".
+  configureHealthMonitorRuntimeDeps({
+    wsChecker: () => ({
+      serverRunning: server.listening,
+      connectedClients: getConnectedClientCount(),
+    }),
+  });
 
   app.use(cors({ origin: '*' }));
   // `verify` stashes the exact request bytes on req.rawBody for every request.

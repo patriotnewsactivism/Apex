@@ -43,7 +43,7 @@ export type WebSocketLivenessChecker = () => { serverRunning: boolean; connected
  * to avoid a cyclic workspace dependency with @workspace/core (core owns the
  * real llm-client.ts provider list and tool-registry.ts registry). */
 export interface HealthMonitorDeps {
-  getConfiguredProviders?: () => Array<{ name: string; configured: boolean }>;
+  getConfiguredProviders?: () => Array<{ name: string; configured: boolean; enabled?: boolean }>;
   // Reports whether the LLM chain has recently served tool-bearing requests
   // from a provider that cannot reliably emit structured tool calls. Injected
   // (rather than imported) to keep this package free of a @workspace/core
@@ -84,8 +84,15 @@ export class HealthMonitor {
         return { status: 'degraded', detail: 'no provider source injected (caller must pass getConfiguredProviders)' };
       }
       const providers = this.deps.getConfiguredProviders();
-      const configuredCount = providers.filter((p) => p.configured).length;
-      const detail = providers.map((p) => `${p.name}:${p.configured ? 'ok' : 'missing'}`).join(', ');
+      const enabledProviders = providers.filter((p) => p.enabled !== false);
+      const configuredCount = enabledProviders.filter((p) => p.configured).length;
+      const detail = providers
+        .map((p) =>
+          p.enabled === false
+            ? `${p.name}:disabled`
+            : `${p.name}:${p.configured ? 'ok' : 'missing'}`,
+        )
+        .join(', ');
 
       // Key-presence alone says nothing about whether the workforce can
       // actually WORK. On 2026-07-29 every key was present and healthy-looking
@@ -107,7 +114,12 @@ export class HealthMonitor {
       }
 
       return {
-        status: configuredCount === 0 ? 'critical' : configuredCount < providers.length ? 'degraded' : 'healthy',
+        status:
+          configuredCount === 0
+            ? 'critical'
+            : configuredCount < enabledProviders.length
+              ? 'degraded'
+              : 'healthy',
         detail,
       };
     });
@@ -162,12 +174,13 @@ export class HealthMonitor {
   async checkWebSocket(): Promise<ComponentCheckResult> {
     return safeCheck(async () => {
       if (!this.deps.wsChecker) {
-        // Honest degraded state rather than a fabricated 'healthy' -- this
-        // check literally cannot answer for itself unless the api-server
-        // process wires in a checker (see WebSocketLivenessChecker above).
+        // A worker-only runtime does not own the browser WebSocket server, so
+        // absence of this API-process dependency is "not applicable", not a
+        // degradation. The HTTP control plane injects a real checker and will
+        // still report critical if its WebSocket server is actually down.
         return {
-          status: 'degraded',
-          detail: 'no WebSocket checker injected (only wireable from the api-server process)',
+          status: 'healthy',
+          detail: 'not applicable in this runtime (WebSocket liveness is checked by the API control plane)',
         };
       }
       const { serverRunning, connectedClients } = this.deps.wsChecker();
@@ -178,85 +191,55 @@ export class HealthMonitor {
     });
   }
 
-  /** BuildMyBot2 AI Team shift outcomes — the portfolio leg of the health
-   * view. Reads the buildmybot2 Supabase directly via env (NOT via
-   * @workspace/core's connector, which would create the cyclic dependency
-   * this package deliberately avoids). Read-only, fast, never throws
-   * (safeCheck). Not configured → honest 'degraded', same convention as the
-   * injected-dependency checks above. */
+  /** BuildMyBot2 portfolio health.
+   *
+   * BuildMyBot is Neon/Postgres-backed. APEX must not depend on BuildMyBot's
+   * database credentials or backend vendor to decide whether the product is
+   * alive; the product owns that concern. Probe its public health contract
+   * instead. This keeps APEX decoupled from database migrations and prevents
+   * retired backend configuration from generating false degradation.
+   */
   async checkBuildMyBotAITeam(): Promise<ComponentCheckResult> {
     return safeCheck(async () => {
       const start = Date.now();
-      const url = process.env.BUILDMYBOT_SUPABASE_URL;
-      const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY;
-      if (!url || !key) {
-        return {
-          status: 'degraded',
-          detail: 'BUILDMYBOT_SUPABASE_URL / BUILDMYBOT_SUPABASE_SERVICE_KEY not configured',
-        };
-      }
-      // Guard a Railway misconfiguration: if the "URL" isn't a valid https://
-      // URL it's usually a secret/JWT pasted into BUILDMYBOT_SUPABASE_URL (vars
-      // swapped, or an encrypted value copied verbatim). Fail with a redacted
-      // message so fetch can't throw "Failed to parse URL from eyJ…" and echo
-      // the secret back out through this health response. Mirrors sbFetch in
-      // buildmybot-connector.ts; duplicated here because this package must not
-      // import @workspace/core (cyclic dependency).
-      let protocol = '';
-      try {
-        protocol = new URL(url).protocol;
-      } catch {
-        protocol = '';
-      }
-      if (protocol !== 'https:') {
+      const appUrl = (process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app').replace(/\/$/, '');
+      const response = await fetch(`${appUrl}/api/health`, {
+        signal: AbortSignal.timeout(4_500),
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!response.ok) {
         return {
           status: 'critical',
-          detail:
-            `BUILDMYBOT_SUPABASE_URL is not a valid https:// project URL ` +
-            `(got "${url.slice(0, 30)}…"). It may hold a secret/JWT — check that ` +
-            `BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY are not ` +
-            `swapped, and that the value is a plaintext URL (e.g. https://xyz.supabase.co).`,
-        };
-      }
-      const headers = { apikey: key, Authorization: `Bearer ${key}` };
-      const today = new Date().toISOString().slice(0, 10);
-      const [shiftsRes, criticalsRes] = await Promise.all([
-        fetch(
-          `${url}/rest/v1/ai_team_log?shift_date=eq.${today}&select=role_name,flags,escalated_to&limit=100`,
-          { headers, signal: AbortSignal.timeout(4_500) },
-        ),
-        fetch(
-          `${url}/rest/v1/error_logs?status=eq.open&level=eq.critical&select=source&limit=50`,
-          { headers, signal: AbortSignal.timeout(4_500) },
-        ),
-      ]);
-      if (!shiftsRes.ok || !criticalsRes.ok) {
-        return {
-          status: 'critical',
-          detail: `buildmybot2 Supabase unreachable (ai_team_log ${shiftsRes.status}, error_logs ${criticalsRes.status})`,
+          detail: `BuildMyBot health endpoint returned HTTP ${response.status}`,
           ms: Date.now() - start,
         };
       }
-      const shifts = (await shiftsRes.json()) as Array<{
-        role_name: string;
-        flags?: unknown;
-        escalated_to?: unknown;
-      }>;
-      const criticals = (await criticalsRes.json()) as Array<{ source: string }>;
-      const flagged = shifts.filter((s) => s.flags || s.escalated_to).length;
-      const chainExhaustions = criticals.filter((c) => c.source === 'llm-provider-chain').length;
-      const status: ComponentStatus =
-        criticals.length > 0
-          ? 'critical'
-          : flagged > 0
-            ? 'degraded'
-            : 'healthy';
+
+      let payload: {
+        status?: string;
+        service?: string;
+        build?: { sha?: string | null };
+        voice?: { engine?: string | null };
+      } = {};
+      try {
+        payload = (await response.json()) as typeof payload;
+      } catch {
+        return {
+          status: 'degraded',
+          detail: 'BuildMyBot health endpoint returned non-JSON content',
+          ms: Date.now() - start,
+        };
+      }
+
+      const healthy = payload.status === 'ok' && payload.service === 'buildmybot2';
+      const build = payload.build?.sha ? ` build=${payload.build.sha}` : '';
+      const voice = payload.voice?.engine ? ` voice=${payload.voice.engine}` : '';
       return {
-        status,
-        detail:
-          `${shifts.length} AI Team shift(s) today, ${flagged} flagged/escalated, ` +
-          `${criticals.length} open critical(s)` +
-          (chainExhaustions ? ` (${chainExhaustions} provider-chain exhaustion!)` : ''),
+        status: healthy ? 'healthy' : 'degraded',
+        detail: healthy
+          ? `BuildMyBot API healthy (Neon-backed).${build}${voice}`
+          : `BuildMyBot health payload unexpected: status=${payload.status ?? 'unknown'} service=${payload.service ?? 'unknown'}`,
         ms: Date.now() - start,
       };
     });
