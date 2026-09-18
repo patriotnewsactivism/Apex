@@ -327,6 +327,9 @@ async function main() {
         releasedSoFar: requestLedger.pacing.total.pacingAllowance,
         pacingEnabled: requestLedger.pacing.enabled,
         persistence: requestLedger.persistence,
+        allProviderUsed: requestLedger.allProviderRequests,
+        emergencyCap: requestLedger.emergencyCap,
+        directProviders: requestLedger.directProviders,
         accounts: requestLedger.accounts.map((account) => ({
           account: account.account,
           // Env names cannot show that two keys share one OpenRouter user, and
@@ -510,6 +513,8 @@ async function main() {
       projected30DayUsd,
       utilizationPct,
       requests: {
+        // This is the OpenRouter pool. BYOK pools are intentionally separate
+        // so they add capacity rather than consuming the 2,775 allowance.
         used: requests.totalRequests,
         cap: requests.totalCap,
         configuredCap: requests.configuredCap,
@@ -521,6 +526,9 @@ async function main() {
         pacingEnabled: requests.pacing.enabled,
         releasedSoFar: requests.pacing.total.pacingAllowance,
         persistence: requests.persistence,
+        allProviderUsed: requests.allProviderRequests,
+        emergencyCap: requests.emergencyCap,
+        directProviders: requests.directProviders,
       },
       updatedAt: new Date().toISOString(),
     });
