@@ -404,7 +404,7 @@ export function calculateRequestCapacityWindow(input: {
   };
 }
 
-async function persistDatabaseDelta(day: string, account: string, succeeded: boolean): Promise<void> {
+async function persistDatabaseRequestDelta(day: string, account: string): Promise<void> {
   try {
     const [{ db, llmRequestUsageDaily }, { sql }] = await Promise.all([
       import('@workspace/db'),
@@ -412,12 +412,36 @@ async function persistDatabaseDelta(day: string, account: string, succeeded: boo
     ]);
     await db
       .insert(llmRequestUsageDaily)
-      .values({ day, account, requests: 1, succeeded: succeeded ? 1 : 0, updatedAt: new Date() })
+      .values({ day, account, requests: 1, succeeded: 0, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: [llmRequestUsageDaily.day, llmRequestUsageDaily.account],
         set: {
           requests: sql`${llmRequestUsageDaily.requests} + 1`,
-          succeeded: sql`${llmRequestUsageDaily.succeeded} + ${succeeded ? 1 : 0}`,
+          updatedAt: new Date(),
+        },
+      });
+    databasePersistenceReady = true;
+  } catch {
+    databasePersistenceReady = false;
+  }
+}
+
+async function persistDatabaseSuccessDelta(day: string, account: string): Promise<void> {
+  try {
+    const [{ db, llmRequestUsageDaily }, { sql }] = await Promise.all([
+      import('@workspace/db'),
+      import('drizzle-orm'),
+    ]);
+    // This UPSERT is safe even if the asynchronous request-reservation write
+    // has not reached Postgres yet; the later request delta brings requests
+    // back to 1 while this row preserves the successful outcome.
+    await db
+      .insert(llmRequestUsageDaily)
+      .values({ day, account, requests: 0, succeeded: 1, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [llmRequestUsageDaily.day, llmRequestUsageDaily.account],
+        set: {
+          succeeded: sql`${llmRequestUsageDaily.succeeded} + 1`,
           updatedAt: new Date(),
         },
       });
@@ -514,9 +538,8 @@ function directPoolForAccount(account: string): DirectRequestPool | null {
   return pool === 'groq' || pool === 'gemini' ? pool : null;
 }
 
-function recordRequestAccount(
+function reserveRequestAccount(
   account: string,
-  succeeded: boolean,
   countInOpenRouterRateWindow = true,
 ): void {
   try {
@@ -528,48 +551,83 @@ function recordRequestAccount(
     }
     const entry =
       state.accounts[account] ?? (state.accounts[account] = { requests: 0, succeeded: 0 });
+    // Reservation happens synchronously before fetch(). With no await between
+    // the capacity check and this increment, concurrent agent turns cannot all
+    // observe the same final slot and overshoot the daily cap.
     entry.requests += 1;
-    if (succeeded) entry.succeeded += 1;
     persist();
-    void persistDatabaseDelta(state.day, account, succeeded);
+    void persistDatabaseRequestDelta(state.day, account);
   } catch {
     // Request accounting must never take inference down.
   }
 }
 
-/** Record one FREE upstream attempt against the account that served it. Takes
- *  the API key so the caller never handles the fingerprint; the key itself is
- *  hashed immediately and never stored, logged or reported. */
-export function recordProviderRequest(apiKey: string, succeeded: boolean): void {
-  recordRequestAccount(accountFingerprint(apiKey), succeeded);
+function markRequestAccountSucceeded(account: string): void {
+  try {
+    rolloverIfNeeded();
+    const entry = state.accounts[account];
+    if (!entry) return;
+    entry.succeeded = Math.min(entry.requests, entry.succeeded + 1);
+    persist();
+    void persistDatabaseSuccessDelta(state.day, account);
+  } catch {
+    // Outcome accounting must never take inference down.
+  }
 }
 
-/** Record a PAID upstream attempt in the SAME workspace-wide request budget.
- *
- * Paid inference used to bypass request accounting completely: when the free
- * request window paced or capped out, APEX switched to paid fallback and those
- * calls disappeared from totalRequestsToday(). The configured 2-3k/day ceiling
- * could therefore coexist with ~10k real upstream calls. Keep paid traffic in
- * a synthetic provider bucket so it contributes to the global ceiling without
- * corrupting the separate per-OpenRouter-account FREE allowance counters. */
-export function recordPaidProviderRequest(provider: string, succeeded: boolean): void {
-  recordRequestAccount(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`, succeeded);
+export function reserveProviderRequest(apiKey: string): void {
+  reserveRequestAccount(accountFingerprint(apiKey));
 }
 
-/** Record a direct BYOK attempt in its own quota pool. Direct provider traffic
- * must not consume the 2,775-request OpenRouter budget; otherwise adding Groq
- * or Gemini would add models but no capacity. It still persists in the same
- * durable table and is visible in the aggregate burn telemetry. */
-export function recordDirectProviderRequest(
+export function markProviderRequestSucceeded(apiKey: string): void {
+  markRequestAccountSucceeded(accountFingerprint(apiKey));
+}
+
+export function reservePaidProviderRequest(provider: string): void {
+  reserveRequestAccount(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`);
+}
+
+export function markPaidProviderRequestSucceeded(provider: string): void {
+  markRequestAccountSucceeded(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`);
+}
+
+export function reserveDirectProviderRequest(
   pool: DirectRequestPool,
   provider: string,
-  succeeded: boolean,
 ): void {
   const now = Date.now();
   const recent = directRecentRequests[pool];
   pruneSpecificRateWindow(recent, now);
   recent.push(now);
-  recordRequestAccount(directAccountId(pool, provider), succeeded, false);
+  reserveRequestAccount(directAccountId(pool, provider), false);
+}
+
+export function markDirectProviderRequestSucceeded(
+  pool: DirectRequestPool,
+  provider: string,
+): void {
+  markRequestAccountSucceeded(directAccountId(pool, provider));
+}
+
+/** Backward-compatible one-shot accounting helpers used by verification code.
+ * Runtime inference uses reserve*() BEFORE fetch and mark*Succeeded() after. */
+export function recordProviderRequest(apiKey: string, succeeded: boolean): void {
+  reserveProviderRequest(apiKey);
+  if (succeeded) markProviderRequestSucceeded(apiKey);
+}
+
+export function recordPaidProviderRequest(provider: string, succeeded: boolean): void {
+  reservePaidProviderRequest(provider);
+  if (succeeded) markPaidProviderRequestSucceeded(provider);
+}
+
+export function recordDirectProviderRequest(
+  pool: DirectRequestPool,
+  provider: string,
+  succeeded: boolean,
+): void {
+  reserveDirectProviderRequest(pool, provider);
+  if (succeeded) markDirectProviderRequestSucceeded(pool, provider);
 }
 
 /**
