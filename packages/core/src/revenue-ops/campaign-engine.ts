@@ -434,7 +434,10 @@ async function contactHasConsentForChannels(
   if (channels.length === 0) return true;
 
   const rows = await db
-    .select({ status: consentRecords.status })
+    .select({
+      status: consentRecords.status,
+      channel: consentRecords.channel,
+    })
     .from(consentRecords)
     .where(
       and(
@@ -449,7 +452,7 @@ async function contactHasConsentForChannels(
   const grantedChannels = new Set<string>();
   for (const row of rows) {
     if (row.status === 'granted') {
-      grantedChannels.add(row as { channel: string }).channel;
+      grantedChannels.add(row.channel);
     }
   }
 
