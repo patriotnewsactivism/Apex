@@ -667,6 +667,35 @@ export function getProviderBackpressureSnapshot(): {
  *  cycle from all 13 agents. A true answer means "worth attempting", not a
  *  guarantee -- the real reservation still happens inside complete().
  */
+function isOpenRouterProvider(provider: ProviderSpec): boolean {
+  return (provider.requestPool ?? 'openrouter') === 'openrouter';
+}
+
+function requestWindowForProvider(
+  provider: ProviderSpec,
+  at: number,
+  pacingEnabled?: boolean,
+) {
+  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+    return directProviderCapacityWindow(provider.requestPool, at, pacingEnabled);
+  }
+  return requestCapacityWindow(at, pacingEnabled);
+}
+
+function recordProviderAttempt(
+  provider: ProviderSpec,
+  credentialKey: string,
+  succeeded: boolean,
+): void {
+  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+    recordDirectProviderRequest(provider.requestPool, provider.name, succeeded);
+  } else if (provider.paid) {
+    recordPaidProviderRequest(provider.name, succeeded);
+  } else {
+    recordProviderRequest(credentialKey, succeeded);
+  }
+}
+
 export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
   if (isTotalDailyCapReached()) return false;
   if (!emergencyRequestCapacityWindow(now).allowed) return false;
