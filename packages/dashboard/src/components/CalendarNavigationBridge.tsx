@@ -59,7 +59,7 @@ export function CalendarNavigationBridge() {
       title="Calendar / Scheduler"
       style={{
         position: 'fixed',
-        right: 12,
+        left: 12,
         bottom: 'calc(74px + env(safe-area-inset-bottom))',
         zIndex: 29,
         display: 'flex',
