@@ -16,14 +16,16 @@ export async function issueWebSocketTicket(now = Date.now()): Promise<string> {
   const ticket = crypto.randomBytes(32).toString('base64url');
   const expiresAt = now + TICKET_TTL_MS;
   tickets.set(ticket, expiresAt);
-  try {
-    const { db, websocketTickets } = await import('@workspace/db');
-    await db.insert(websocketTickets).values({
-      ticket,
-      expiresAt: new Date(expiresAt),
-    });
-  } catch {
-    // First boot before migrate(), or a unit test with no DB. Memory still works.
+  if (process.env.APEX_WEBSOCKET_TICKETS !== 'memory') {
+    try {
+      const { db, websocketTickets } = await import('@workspace/db');
+      await db.insert(websocketTickets).values({
+        ticket,
+        expiresAt: new Date(expiresAt),
+      });
+    } catch {
+      // First boot before migrate(), or a unit test with no DB. Memory still works.
+    }
   }
   return ticket;
 }
@@ -33,18 +35,22 @@ export async function consumeWebSocketTicket(ticket: string | null, now = Date.n
   pruneExpiredTickets(now);
   const memoryExpires = tickets.get(ticket);
   tickets.delete(ticket);
-  if (memoryExpires !== undefined) return memoryExpires >= now;
-  try {
-    const { db, websocketTickets } = await import('@workspace/db');
-    const { eq } = await import('drizzle-orm');
-    const [row] = await db
-      .delete(websocketTickets)
-      .where(eq(websocketTickets.ticket, ticket))
-      .returning({ expiresAt: websocketTickets.expiresAt });
-    return Boolean(row && row.expiresAt.getTime() >= now);
-  } catch {
-    return false;
+  let persisted: { expiresAt: Date } | undefined;
+  if (process.env.APEX_WEBSOCKET_TICKETS !== 'memory') {
+    try {
+      const { db, websocketTickets } = await import('@workspace/db');
+      const { eq } = await import('drizzle-orm');
+      const [row] = await db
+        .delete(websocketTickets)
+        .where(eq(websocketTickets.ticket, ticket))
+        .returning({ expiresAt: websocketTickets.expiresAt });
+      persisted = row;
+    } catch {
+      persisted = undefined;
+    }
   }
+  if (memoryExpires !== undefined) return memoryExpires >= now;
+  return Boolean(persisted && persisted.expiresAt.getTime() >= now);
 }
 
 function pruneExpiredTickets(now: number): void {

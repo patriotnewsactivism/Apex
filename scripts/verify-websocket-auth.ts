@@ -7,6 +7,8 @@ import {
   issueWebSocketTicket,
 } from '../packages/api-server/src/websocket-auth.js';
 
+process.env.APEX_WEBSOCKET_TICKETS = 'memory';
+
 async function main() {
 const valid = await issueWebSocketTicket(1_000);
 assert.equal(await consumeWebSocketTicket(valid, 1_001), true, 'fresh ticket must authenticate');

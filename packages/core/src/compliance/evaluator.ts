@@ -8,8 +8,15 @@ import {
 
 function rowsOf<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
+  // Drizzle db.execute with postgres driver returns RowList (array-like),
+  // which is already an array of rows — no .rows wrapper.
   const rows = (result as { rows?: T[] } | null)?.rows;
-  return Array.isArray(rows) ? rows : [];
+  if (Array.isArray(rows)) return rows;
+  // Fallback: if it's an array-like object (RowList), convert to array
+  if (result && typeof result === 'object' && 'length' in result) {
+    return Array.from(result as unknown[]) as T[];
+  }
+  return [];
 }
 
 export async function evaluateOutboundAction(

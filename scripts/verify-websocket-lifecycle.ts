@@ -18,6 +18,8 @@ import { setupWebSocket, broadcast, getConnectedClientCount } from '../packages/
 import { issueWebSocketTicket } from '../packages/api-server/src/websocket-auth.js';
 import { registerWebSocketRoute } from '../packages/api-server/src/websocket-upgrade.js';
 
+process.env.APEX_WEBSOCKET_TICKETS = 'memory';
+
 async function main() {
   const SWEEP_MS = 25;
 
