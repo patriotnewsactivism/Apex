@@ -27,7 +27,6 @@ import {
 import {
   dailySpendCapMicros,
   paidSpendAvailable,
-  paidSpendCapacityWindow,
   recordSpend,
 } from './spend-ledger.js';
 import {
