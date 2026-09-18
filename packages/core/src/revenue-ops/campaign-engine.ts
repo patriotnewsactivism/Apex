@@ -36,6 +36,7 @@ import {
 } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import type { ToolDefinition } from '../types.js';
+import { z } from 'zod';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -601,10 +602,7 @@ export function createCampaignTools(): ToolDefinition[] {
     name: 'create_revenue_ops_campaign',
     description:
       'Create a new revenue operations campaign linked to a mission. A campaign contains one or more sequences, each with ordered steps (email/phone/sms/task). This creates the campaign and sequences but does NOT enroll contacts or send anything.',
-    schema: (() => {
-      const z = await import('zod').then((m) => m.default);
-      // Dynamic import needed because zod is a peer dependency
-      return z.object({
+    schema: z.object({
         organizationId: z.string().describe('Organization/project UUID'),
         missionId: z.string().describe('Mission UUID (goals.id) this campaign serves'),
         name: z.string().min(1).max(200).describe('Campaign name'),
@@ -624,8 +622,7 @@ export function createCampaignTools(): ToolDefinition[] {
         ),
         audienceFilter: z.record(z.unknown()).optional(),
         dailyLimits: z.record(z.number()).optional(),
-      });
-    })(),
+      }),
     requiresApproval: false,
     async execute(input: CreateCampaignInput) {
       const campaignId = await createCampaign(input);
@@ -639,14 +636,11 @@ export function createCampaignTools(): ToolDefinition[] {
     name: 'enroll_contacts_in_campaign',
     description:
       'Enroll contacts into a revenue-ops campaign. Performs suppression check, consent check, and dedup before enrolling. Returns which contacts were enrolled, skipped, or already enrolled.',
-    schema: (() => {
-      const z = await import('zod').then((m) => m.default);
-      return z.object({
+    schema: z.object({
         organizationId: z.string(),
         campaignId: z.string(),
         contactIds: z.array(z.string()),
-      });
-    })(),
+      }),
     requiresApproval: false,
     async execute(input: EnrollContactsInput) {
       const result = await enrollContacts(input);
@@ -662,13 +656,10 @@ export function createCampaignTools(): ToolDefinition[] {
     name: 'queue_campaign_step',
     description:
       'Queue the next step for a campaign enrollment. Finds the next unexecuted step in the enrollment\'s sequence and schedules it based on the step\'s delay. If all steps are done, marks the enrollment completed.',
-    schema: (() => {
-      const z = await import('zod').then((m) => m.default);
-      return z.object({
+    schema: z.object({
         organizationId: z.string(),
         enrollmentId: z.string(),
-      });
-    })(),
+      }),
     requiresApproval: false,
     async execute(input: QueueNextStepInput) {
       await queueNextStep(input);
@@ -679,16 +670,13 @@ export function createCampaignTools(): ToolDefinition[] {
     name: 'advance_campaign_enrollment',
     description:
       'Record an outcome for a campaign enrollment (e.g. interested, not_interested, booked, no_answer). Records the interaction outcome, advances the enrollment status, and triggers pause-on-reply for other enrollments if the outcome is meaningful.',
-    schema: (() => {
-      const z = await import('zod').then((m) => m.default);
-      return z.object({
+    schema: z.object({
         organizationId: z.string(),
         enrollmentId: z.string(),
         outcome: z.enum(['interested', 'not_interested', 'no_answer', 'busy', 'voicemail', 'booked', 'callback', 'disqualified', 'responded']),
         interactionId: z.string().optional(),
         callId: z.string().optional(),
-      });
-    })(),
+      }),
     requiresApproval: false,
     async execute(input: AdvanceEnrollmentInput) {
       await advanceEnrollment(input);
@@ -699,13 +687,10 @@ export function createCampaignTools(): ToolDefinition[] {
     name: 'get_campaign_enrollment_status',
     description:
       'Get the current status and details of a campaign enrollment.',
-    schema: (() => {
-      const z = await import('zod').then((m) => m.default);
-      return z.object({
+    schema: z.object({
         organizationId: z.string(),
         enrollmentId: z.string(),
-      });
-    })(),
+      }),
     requiresApproval: false,
     async execute({ organizationId, enrollmentId }) {
       const rows = await db
