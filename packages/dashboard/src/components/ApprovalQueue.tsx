@@ -107,6 +107,27 @@ function ApprovalCard({
         {approval.reason}
       </div>
 
+      {approval.packet && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: '8px 10px',
+            borderRadius: 6,
+            background: approval.packet.hardGated ? 'rgba(196,92,102,0.08)' : 'rgba(90,158,174,0.08)',
+            border: `1px solid ${approval.packet.hardGated ? 'rgba(196,92,102,0.25)' : 'rgba(90,158,174,0.25)'}`,
+            fontSize: 11,
+            lineHeight: 1.45,
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            {approval.packet.recommendation.toUpperCase()} — {approval.packet.action}
+          </div>
+          <div style={{ color: 'var(--color-apex-muted)' }}>{approval.packet.why}</div>
+          <div style={{ marginTop: 6 }}>Blast radius: {approval.packet.blastRadius}</div>
+          <div>Rollback: {approval.packet.rollback}</div>
+        </div>
+      )}
+
       <pre
         style={{
           fontSize: 11,
@@ -252,6 +273,27 @@ export function ApprovalQueue() {
   useApexEvent('approval:resolved', refreshAll);
 
   const isEscalation = kind === 'escalation';
+  const qc = useQueryClient();
+  const batches = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = row.packet?.batchKey || row.toolName;
+    const list = batches.get(key) ?? [];
+    list.push(row);
+    batches.set(key, list);
+  }
+  const similar = [...batches.values()].filter(
+    (group) => group.length > 1 && !group.some((row) => row.packet?.hardGated),
+  );
+
+  const batchMut = useMutation({
+    mutationFn: (input: { ids: string[]; action: 'approve' | 'reject' | 'acknowledge' }) =>
+      api.approvals.batch(input.ids, input.action),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['approvals'] });
+      qc.invalidateQueries({ queryKey: ['approvalCounts'] });
+      refreshAll();
+    },
+  });
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -294,6 +336,43 @@ export function ApprovalQueue() {
               ? 'Nothing is waiting on a decision from you'
               : 'Agents are operating autonomously'}
           </div>
+        </div>
+      )}
+
+      {similar.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {similar.map((group) => (
+            <div
+              key={group[0].packet?.batchKey || group[0].id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                padding: '8px 10px',
+                border: '1px solid var(--color-apex-line)',
+                borderRadius: 6,
+                fontSize: 12,
+              }}
+            >
+              <span>
+                {group.length} similar {isEscalation ? 'escalations' : 'approvals'} for {group[0].toolName}
+              </span>
+              <button
+                className="btn-secondary"
+                style={{ fontSize: 11, padding: '4px 10px' }}
+                disabled={batchMut.isPending}
+                onClick={() =>
+                  batchMut.mutate({
+                    ids: group.map((g) => g.id),
+                    action: isEscalation ? 'acknowledge' : 'approve',
+                  })
+                }
+              >
+                {isEscalation ? `Acknowledge all ${group.length}` : `Approve all ${group.length}`}
+              </button>
+            </div>
+          ))}
         </div>
       )}
 

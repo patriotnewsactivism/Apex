@@ -353,6 +353,132 @@ function IntegrationCard({
   );
 }
 
+function ProjectAutonomyPanel() {
+  const queryClient = useQueryClient();
+  const { data: projects = [] } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.projects.list(),
+  });
+  const { data: policy } = useQuery({
+    queryKey: ['projects', 'autonomy-policy'],
+    queryFn: () => api.projects.policy(),
+  });
+  const updateMut = useMutation({
+    mutationFn: (input: { id: string; autonomyLevel?: string; autoapproveTools?: string[] }) =>
+      api.projects.update(input.id, { autonomyLevel: input.autonomyLevel, autoapproveTools: input.autoapproveTools }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+  });
+
+  const eligible = policy?.eligibleTools ?? [];
+  const hardGated = policy?.hardGatedTools ?? [];
+
+  return (
+    <div
+      style={{
+        background: 'var(--color-apex-card)',
+        border: '1px solid rgba(90,158,174,0.15)',
+        borderRadius: 12,
+        padding: 20,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <Shield size={20} color="#c9a84a" />
+        <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>Project autonomy allowlist</span>
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '0 0 14px', lineHeight: 1.45 }}>
+        Full autonomous / autonomous mode plus a checked tool lets that project skip human approval for that tool.
+        Hard-gated tools (deploy, shell, call, email, connectors) cannot be enabled here.
+      </p>
+      {projects.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>No projects registered yet.</div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {projects.map((project) => {
+          const allow = new Set(project.autoapproveTools ?? []);
+          const canAuto = project.autonomyLevel === 'full_autonomous' || project.autonomyLevel === 'autonomous';
+          return (
+            <div
+              key={project.id}
+              style={{
+                border: '1px solid var(--color-apex-line)',
+                borderRadius: 8,
+                padding: 12,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{project.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>{project.id}</div>
+                </div>
+                <select
+                  value={project.autonomyLevel}
+                  onChange={(e) => updateMut.mutate({ id: project.id, autonomyLevel: e.target.value, autoapproveTools: project.autoapproveTools })}
+                  style={{
+                    background: 'var(--color-apex-surface)',
+                    color: 'var(--color-apex-text)',
+                    border: '1px solid var(--color-apex-line)',
+                    borderRadius: 6,
+                    padding: '6px 8px',
+                    fontSize: 12,
+                  }}
+                >
+                  {['manual', 'assisted', 'supervisor', 'full_autonomous', 'experimental'].map((level) => (
+                    <option key={level} value={level}>{level}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {eligible.map((tool) => {
+                  const checked = allow.has(tool);
+                  return (
+                    <label
+                      key={tool}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontSize: 11,
+                        padding: '4px 8px',
+                        borderRadius: 4,
+                        border: '1px solid var(--color-apex-line)',
+                        opacity: canAuto ? 1 : 0.55,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={!canAuto || updateMut.isPending}
+                        onChange={() => {
+                          const next = checked
+                            ? (project.autoapproveTools ?? []).filter((t) => t !== tool)
+                            : [...(project.autoapproveTools ?? []), tool];
+                          updateMut.mutate({ id: project.id, autoapproveTools: next, autonomyLevel: project.autonomyLevel });
+                        }}
+                      />
+                      {tool}
+                    </label>
+                  );
+                })}
+              </div>
+              {hardGated.length > 0 && (
+                <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', marginTop: 8 }}>
+                  Locked: {hardGated.slice(0, 6).join(', ')}{hardGated.length > 6 ? '…' : ''}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {updateMut.isError && (
+        <div style={{ fontSize: 11, color: 'var(--color-apex-red)', marginTop: 8 }}>
+          {updateMut.error.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Settings() {
   const queryClient = useQueryClient();
 
@@ -460,6 +586,8 @@ export function Settings() {
           })}
         </div>
       </div>
+
+      <ProjectAutonomyPanel />
 
       {/* Live model selection and role routing */}
       <ModelRouterPanel />

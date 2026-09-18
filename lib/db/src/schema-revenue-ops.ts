@@ -525,9 +525,6 @@ export const salesOpportunities = pgTable('sales_opportunities', {
   statusIdx: index('sales_opportunities_status_idx').on(table.status),
 }));
 
-/** @deprecated Use salesOpportunities — the APEX ideas table in schema.ts keeps the `opportunities` name. */
-export const opportunities = salesOpportunities;
-
 export const salesOpportunityRelations = relations(salesOpportunities, ({ one }) => ({
   organization: one(projects, { fields: [salesOpportunities.organizationId], references: [projects.id] }),
   contact: one(contacts, { fields: [salesOpportunities.contactId], references: [contacts.id] }),
@@ -819,8 +816,6 @@ export type AvailabilityRule = typeof availabilityRules.$inferSelect;
 export type NewAvailabilityRule = typeof availabilityRules.$inferInsert;
 export type PipelineStage = typeof pipelineStages.$inferSelect;
 export type NewPipelineStage = typeof pipelineStages.$inferInsert;
-export type Opportunity = typeof opportunities.$inferSelect;
-export type NewOpportunity = typeof opportunities.$inferInsert;
 export type KnowledgeSource = typeof knowledgeSources.$inferSelect;
 export type NewKnowledgeSource = typeof knowledgeSources.$inferInsert;
 export type KnowledgeDocument = typeof knowledgeDocuments.$inferSelect;

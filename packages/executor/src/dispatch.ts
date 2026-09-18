@@ -27,13 +27,23 @@ export function executorJobName(): string | null {
   return name.length > 0 ? name : null;
 }
 
+export function executorMode(): 'cloudrun' | 'inprocess' | 'off' {
+  if (executorJobName()) return 'cloudrun';
+  const mode = (process.env.APEX_EXECUTOR_MODE ?? 'inprocess').trim().toLowerCase();
+  if (mode === 'off' || mode === 'disabled') return 'off';
+  return 'inprocess';
+}
+
 export function executorDispatchConfig(): { configured: boolean; reason?: string } {
-  const name = executorJobName();
-  if (!name) {
+  const mode = executorMode();
+  if (mode === 'off') {
     return {
       configured: false,
-      reason: 'APEX_EXECUTOR_JOB is not set — executor dispatch is disabled (no-op loop)',
+      reason: 'APEX_EXECUTOR_JOB is unset and APEX_EXECUTOR_MODE=off — executor dispatch is disabled (no-op loop)',
     };
+  }
+  if (mode === 'inprocess') {
+    return { configured: true, reason: 'in-process Railway worker will claim runtime=job tasks' };
   }
   return { configured: true };
 }
@@ -91,6 +101,27 @@ export async function dispatchDueExecutorTasks(
   const config = executorDispatchConfig();
   if (!config.configured) {
     return { dispatched: 0, skippedUnclaimable: 0, failures: [], config };
+  }
+
+  if (executorMode() === 'inprocess') {
+    const demoted = await db
+      .update(tasks)
+      .set({
+        context: sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), '{runtime}', '"process"'::jsonb)`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(tasks.status, 'pending'),
+          sql`${tasks.context}->>'runtime' = 'job'`,
+          sql`(${tasks.context}->>'dispatchedAt') IS NULL`,
+        ),
+      )
+      .returning({ id: tasks.id });
+    if (demoted.length > 0) {
+      console.log(`[executor-dispatch] in-process mode: demoted ${demoted.length} job task(s) to the worker loop`);
+    }
+    return { dispatched: demoted.length, skippedUnclaimable: 0, failures: [], config };
   }
 
   const maxPerCycle = Math.max(1, Math.min(10, options?.maxPerCycle ?? 3));

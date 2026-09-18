@@ -31,9 +31,10 @@ async function main() {
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const { port } = server.address() as { port: number };
 
-  const connectWithFirstFrame = () =>
-    new Promise<{ socket: WebSocket; firstMessage: string }>((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${issueWebSocketTicket()}`);
+  const connectWithFirstFrame = async () => {
+    const ticket = await issueWebSocketTicket();
+    return new Promise<{ socket: WebSocket; firstMessage: string }>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${ticket}`);
       let opened = false;
       let firstMessage: string | undefined;
       const finish = () => {
@@ -50,6 +51,7 @@ async function main() {
       });
       ws.once('error', reject);
     });
+  };
   const connect = async () => (await connectWithFirstFrame()).socket;
 
   // A real ws client must receive a valid text frame as the first bytes after
@@ -99,7 +101,7 @@ async function main() {
   // ─── 2b. A browser-like client that cannot answer RFC ping must survive ──────
   // Railway/Cloudflare can strip ping/pong frames. The dashboard replies to
   // JSON heartbeats instead. autoPong:false simulates that proxy.
-  const browserLike = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${issueWebSocketTicket()}`, {
+  const browserLike = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${await issueWebSocketTicket()}`, {
     autoPong: false,
   });
   await new Promise<void>((resolve, reject) => {

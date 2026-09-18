@@ -19,28 +19,35 @@
 // (`gcloud auth application-default login`).
 
 import { createHash, randomUUID } from 'crypto';
-import { readFile, stat, readdir } from 'fs/promises';
-import { join, relative, sep } from 'path';
+import { readFile, stat, readdir, writeFile, mkdir } from 'fs/promises';
+import { join, relative, sep, dirname } from 'path';
 
 export const ARTIFACT_BUCKET_ENV = 'APEX_ARTIFACT_BUCKET';
+export const ARTIFACT_DIR_ENV = 'APEX_ARTIFACT_DIR';
 
 export function artifactBucketName(): string | null {
   const name = (process.env[ARTIFACT_BUCKET_ENV] ?? '').trim();
   return name.length > 0 ? name : null;
 }
 
-export function isArtifactStoreConfigured(): boolean {
-  return artifactBucketName() !== null;
+export function artifactDirName(): string | null {
+  const name = (process.env[ARTIFACT_DIR_ENV] ?? '').trim();
+  return name.length > 0 ? name : null;
 }
 
-/** Fail-closed guard every store operation calls before touching GCS. */
+export function isArtifactStoreConfigured(): boolean {
+  return artifactBucketName() !== null || artifactDirName() !== null;
+}
+
+/** Fail-closed guard every store operation calls before touching storage. */
 function requireBucket(operation: string): string {
+  const dir = artifactDirName();
+  if (dir) return dir;
   const bucket = artifactBucketName();
   if (!bucket) {
     throw new Error(
-      `[ArtifactStore.${operation}] ${ARTIFACT_BUCKET_ENV} is not set. ` +
-        'Create the bucket in the existing GCP project/region and configure the env var ' +
-        '(see docs/PRODUCTION_OPERATIONS.md). Nothing was written.',
+      `[ArtifactStore.${operation}] neither ${ARTIFACT_BUCKET_ENV} nor ${ARTIFACT_DIR_ENV} is set. ` +
+        'On Railway set APEX_ARTIFACT_DIR to a mounted volume path, or set APEX_ARTIFACT_BUCKET to a GCS bucket. Nothing was written.',
     );
   }
   return bucket;
@@ -119,6 +126,16 @@ export class ArtifactStore {
     this.bucketName = bucketName ?? requireBucket('constructor');
   }
 
+  private fsRoot(): string | null {
+    return artifactDirName();
+  }
+
+  private fsPath(objectName: string): string {
+    const root = this.fsRoot();
+    if (!root) throw new Error('filesystem artifact root is not configured');
+    return join(root, objectName.replace(/\\/g, '/'));
+  }
+
   private async client(): Promise<import('@google-cloud/storage').Storage> {
     if (!this.clientPromise) {
       this.clientPromise = import('@google-cloud/storage').then((mod) => new mod.Storage());
@@ -135,6 +152,17 @@ export class ArtifactStore {
     const { objectName, content, mimeType } = options;
     if (!objectName || objectName.startsWith('/')) {
       throw new Error(`[ArtifactStore.upload] invalid object name: ${objectName}`);
+    }
+    if (this.fsRoot()) {
+      const dest = this.fsPath(objectName);
+      await mkdir(dirname(dest), { recursive: true });
+      await writeFile(dest, content);
+      return {
+        objectName,
+        sizeBytes: content.length,
+        sha256: sha256Hex(content),
+        gsUri: `file://${dest}`,
+      };
     }
     const storage = await this.client();
     const file = storage.bucket(this.bucketName).file(objectName);
@@ -173,6 +201,9 @@ export class ArtifactStore {
 
   async download(objectName: string): Promise<Buffer> {
     if (!objectName) throw new Error('[ArtifactStore.download] objectName required');
+    if (this.fsRoot()) {
+      return readFile(this.fsPath(objectName));
+    }
     const storage = await this.client();
     const file = storage.bucket(this.bucketName).file(objectName);
     const [content] = await file.download();
@@ -180,6 +211,14 @@ export class ArtifactStore {
   }
 
   async list(prefix: string, maxResults = 500): Promise<ListEntry[]> {
+    if (this.fsRoot()) {
+      const root = this.fsRoot()!;
+      const checksums = await computeDirectoryChecksums(root);
+      return Object.keys(checksums)
+        .filter((name) => name.startsWith(prefix))
+        .slice(0, maxResults)
+        .map((objectName) => ({ objectName, sizeBytes: 0 }));
+    }
     const storage = await this.client();
     const [files] = await storage.bucket(this.bucketName).getFiles({
       prefix,

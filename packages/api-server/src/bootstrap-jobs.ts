@@ -77,7 +77,7 @@ export async function seedDefaultJobs(): Promise<void> {
         cronExpression: '0 9 * * *', // daily at 09:00
         targetAgentId: null as string | null,
         priority: 7,
-        payload: {} as Record<string, unknown>,
+        payload: { systemDefinitionVersion: 2, includeOperatorDigest: true } as Record<string, unknown>,
       },
       {
         id: 'system-daily-maintenance',

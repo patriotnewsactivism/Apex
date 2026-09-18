@@ -77,7 +77,18 @@ export function createApprovalsRouter() {
       .orderBy(desc(approvals.occurrences), desc(approvals.createdAt))
       .limit(500);
 
-    res.json({ approvals: rows, kind, status });
+    const { buildApprovalPacket } = await import('@workspace/core');
+    const approvalsWithPackets = rows.map((row) => {
+      const packet = buildApprovalPacket({
+        toolName: row.toolName,
+        reason: row.reason,
+        toolArgs: row.toolArgs,
+        kind: row.kind,
+      });
+      return { ...row, packet };
+    });
+
+    res.json({ approvals: approvalsWithPackets, kind, status });
   });
 
   // GET /api/approvals/counts — badge numbers without pulling 500 rows
@@ -94,6 +105,42 @@ export function createApprovalsRouter() {
       else counts.approval += r.count;
     }
     res.json(counts);
+  });
+
+  // POST /api/approvals/batch — must be registered before /:id/*
+  router.post('/batch', async (req, res) => {
+    const parsed = z.object({
+      ids: z.array(z.string().min(1)).min(1).max(100),
+      action: z.enum(['approve', 'reject', 'acknowledge']),
+      note: z.string().optional(),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'ids[] and action are required' });
+      return;
+    }
+    const { ids, action, note } = parsed.data;
+    const kind = action === 'acknowledge' ? 'escalation' : 'approval';
+    const status = action === 'acknowledge' ? 'acknowledged' : action === 'approve' ? 'approved' : 'rejected';
+    let resolved = 0;
+    const failed: string[] = [];
+    for (const id of ids) {
+      const [row] = await db.update(approvals)
+        .set({ status, reviewedAt: new Date(), reviewerNote: note })
+        .where(and(
+          eq(approvals.id, id),
+          eq(approvals.kind, kind),
+          eq(approvals.status, 'pending'),
+        ))
+        .returning({ id: approvals.id, taskId: approvals.taskId });
+      if (!row) {
+        failed.push(id);
+        continue;
+      }
+      resolved++;
+      if (row.taskId && action !== 'acknowledge') await requeueAwaitingApprovalTask(row.taskId);
+      broadcast({ type: 'approval:resolved', approvalId: id, status });
+    }
+    res.json({ resolved, failed, action });
   });
 
   // POST /api/approvals/:id/approve

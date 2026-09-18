@@ -99,6 +99,7 @@ async function main() {
   // @workspace/core/buildmybot-connector.
   try {
     const { db, projects, applications } = await import('@workspace/db');
+    const { eq } = await import('drizzle-orm');
     const now = new Date();
     await db
       .insert(projects)
@@ -116,6 +117,29 @@ async function main() {
         target: projects.id,
         set: { repository: 'patriotnewsactivism/buildmybot2', priority: 'critical', status: 'active' },
       });
+    const { DEFAULT_APEX_AUTOAPPROVE_TOOLS } = await import('@workspace/core');
+    const [apexProject] = await db.select().from(projects).where(eq(projects.id, 'apex')).limit(1);
+    if (!apexProject) {
+      await db.insert(projects).values({
+        id: 'apex',
+        name: 'APEX',
+        repository: 'patriotnewsactivism/Apex',
+        purpose: 'APEX control plane — autonomous workforce operating system.',
+        priority: 'critical',
+        status: 'active',
+        autonomyLevel: 'full_autonomous',
+        autoapproveTools: [...DEFAULT_APEX_AUTOAPPROVE_TOOLS],
+      });
+    } else if (
+      (!apexProject.autoapproveTools || apexProject.autoapproveTools.length === 0)
+      && (apexProject.autonomyLevel === 'supervisor' || apexProject.autonomyLevel === 'assisted')
+    ) {
+      await db.update(projects).set({
+        autonomyLevel: 'full_autonomous',
+        autoapproveTools: [...DEFAULT_APEX_AUTOAPPROVE_TOOLS],
+        updatedAt: now,
+      }).where(eq(projects.id, 'apex'));
+    }
     await db
       .insert(applications)
       .values({

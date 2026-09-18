@@ -234,6 +234,21 @@ export const api = {
       apiFetch(`/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
     acknowledge: (id: string, note?: string) =>
       apiFetch(`/approvals/${id}/acknowledge`, { method: 'POST', body: JSON.stringify({ note }) }),
+    batch: (ids: string[], action: 'approve' | 'reject' | 'acknowledge', note?: string) =>
+      apiFetch<{ resolved: number; failed: string[]; action: string }>('/approvals/batch', {
+        method: 'POST',
+        body: JSON.stringify({ ids, action, note }),
+      }),
+  },
+
+  projects: {
+    list: () => apiFetch<{ projects: ProjectRow[] }>('/projects').then((r) => r.projects),
+    policy: () => apiFetch<AutonomyPolicyCatalog>('/projects/autonomy-policy'),
+    update: (id: string, data: { autonomyLevel?: string; autoapproveTools?: string[] }) =>
+      apiFetch<{ updated: boolean; project: ProjectRow }>(`/projects/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
   },
 
   campaigns: {
@@ -694,6 +709,18 @@ export interface LogEntry {
 
 export type ApprovalKind = 'approval' | 'escalation' | 'all';
 
+export interface ApprovalDecisionPacket {
+  action: string;
+  why: string;
+  evidence: string[];
+  blastRadius: string;
+  rollback: string;
+  recommendation: 'approve' | 'reject' | 'review';
+  hardGated: boolean;
+  eligibleForAutonomy: boolean;
+  batchKey: string;
+}
+
 export interface Approval {
   id: string;
   taskId: string;
@@ -709,6 +736,27 @@ export interface Approval {
   /** How many times this same escalation has been re-raised. */
   occurrences?: number;
   lastOccurredAt?: string | null;
+  packet?: ApprovalDecisionPacket;
+}
+
+export interface ProjectRow {
+  id: string;
+  name: string;
+  repository: string | null;
+  purpose: string;
+  priority: string;
+  status: string;
+  autonomyLevel: string;
+  autoapproveTools: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutonomyPolicyCatalog {
+  autonomyModes: string[];
+  eligibleTools: string[];
+  hardGatedTools: string[];
+  defaultApexAllowlist: string[];
 }
 
 export interface CampaignIcp {

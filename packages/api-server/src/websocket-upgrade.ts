@@ -73,12 +73,6 @@ function getRouter(httpServer: Server): UpgradeRouter {
         `ticket lookup failed for ${url.pathname}: ${err instanceof Error ? err.message : String(err)}`,
       );
     });
-    return;
-
-    console.log(`[websocket] Upgrade accepted: ${url.pathname}`);
-    route.server.handleUpgrade(request, socket, head, (webSocket) => {
-      route.onConnection(webSocket, request);
-    });
   });
 
   return router;

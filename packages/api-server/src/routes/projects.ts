@@ -38,6 +38,7 @@ const updateProjectSchema = z.object({
   priority: z.enum(['critical', 'high', 'normal', 'low']).optional(),
   status: z.enum(['active', 'paused', 'archived']).optional(),
   autonomyLevel: z.enum(['manual', 'assisted', 'supervisor', 'full_autonomous', 'experimental']).optional(),
+  autoapproveTools: z.array(z.string()).optional(),
 });
 
 const GOAL_STATUSES = ['active', 'paused', 'completed', 'cancelled'] as const;
@@ -91,6 +92,23 @@ function buildStatus(
 
 export function createProjectsRouter() {
   const router = Router();
+
+  // GET /api/projects/autonomy-policy — operator UI catalog (eligible vs hard-gated)
+  router.get('/autonomy-policy', async (_req, res) => {
+    const { HARD_GATED_TOOLS, AUTONOMY_ELIGIBLE_TOOLS, DEFAULT_APEX_AUTOAPPROVE_TOOLS, AUTONOMY_MODES } =
+      await import('@workspace/core');
+    res.json({
+      autonomyModes: [...AUTONOMY_MODES],
+      eligibleTools: [...AUTONOMY_ELIGIBLE_TOOLS],
+      hardGatedTools: [...HARD_GATED_TOOLS],
+      defaultApexAllowlist: [...DEFAULT_APEX_AUTOAPPROVE_TOOLS],
+      notes: {
+        eligible: 'May be listed in autoapproveTools when the project is full_autonomous or autonomous.',
+        hardGated: 'Never auto-approvable. The API strips these from any saved allowlist.',
+        omittedUntilConfigured: ['deploy_via_hook', 'run_executor_job'],
+      },
+    });
+  });
 
   // GET /api/projects — the registry
   router.get('/', async (_req, res) => {
@@ -178,8 +196,15 @@ export function createProjectsRouter() {
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     if (Object.keys(parsed.data).length === 0) return res.status(400).json({ error: 'No fields to update' });
 
-    await db.update(projects).set({ ...parsed.data, updatedAt: new Date() }).where(eq(projects.id, req.params.id));
-    return res.json({ updated: true });
+    const { sanitizeAutoapproveTools } = await import('@workspace/core');
+    const patch = { ...parsed.data, updatedAt: new Date() } as typeof parsed.data & { autoapproveTools?: string[]; updatedAt: Date };
+    if (parsed.data.autoapproveTools) {
+      patch.autoapproveTools = sanitizeAutoapproveTools(parsed.data.autoapproveTools);
+    }
+
+    await db.update(projects).set(patch).where(eq(projects.id, req.params.id));
+    const [updated] = await db.select().from(projects).where(eq(projects.id, req.params.id)).limit(1);
+    return res.json({ updated: true, project: updated });
   });
 
   return router;

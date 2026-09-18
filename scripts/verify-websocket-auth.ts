@@ -7,13 +7,14 @@ import {
   issueWebSocketTicket,
 } from '../packages/api-server/src/websocket-auth.js';
 
-const valid = issueWebSocketTicket(1_000);
-assert.equal(consumeWebSocketTicket(valid, 1_001), true, 'fresh ticket must authenticate');
-assert.equal(consumeWebSocketTicket(valid, 1_002), false, 'ticket replay must fail');
+async function main() {
+const valid = await issueWebSocketTicket(1_000);
+assert.equal(await consumeWebSocketTicket(valid, 1_001), true, 'fresh ticket must authenticate');
+assert.equal(await consumeWebSocketTicket(valid, 1_002), false, 'ticket replay must fail');
 
-const expired = issueWebSocketTicket(2_000);
-assert.equal(consumeWebSocketTicket(expired, 32_001), false, 'expired ticket must fail');
-assert.equal(consumeWebSocketTicket(null), false, 'missing ticket must fail');
+const expired = await issueWebSocketTicket(2_000);
+assert.equal(await consumeWebSocketTicket(expired, 32_001), false, 'expired ticket must fail');
+assert.equal(await consumeWebSocketTicket(null), false, 'missing ticket must fail');
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
 const dashboardSources = [
@@ -37,3 +38,9 @@ assert.match(serverSource, /type: 'heartbeat'/, 'server must send an observable 
 assert.match(serverSource, /ws\.on\('message'/, 'server must treat inbound application messages as liveness');
 
 console.log('✅ WEBSOCKET AUTH AND HEARTBEAT GUARDS PASSED');
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

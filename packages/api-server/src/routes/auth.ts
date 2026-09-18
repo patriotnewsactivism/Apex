@@ -65,13 +65,19 @@ export function createAuthRouter() {
   });
 
   /** Exchange the normal Authorization header for a single-use WS ticket. */
-  router.post('/websocket-ticket', (req, res): void => {
+  router.post('/websocket-ticket', async (req, res): Promise<void> => {
     if (!validateAdminToken(req.headers.authorization)) {
       res.status(401).json({ error: 'Invalid token' });
       return;
     }
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ ticket: issueWebSocketTicket() });
+    try {
+      const ticket = await issueWebSocketTicket();
+      res.json({ ticket });
+    } catch (err) {
+      console.error('[auth] websocket ticket issue failed:', err);
+      res.status(500).json({ error: 'Could not issue websocket ticket' });
+    }
   });
 
   return router;
