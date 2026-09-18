@@ -38,24 +38,24 @@ import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-tax
 // Direct pushes to main remain off the table — code still lands through
 // branch-protected PRs; the deploy hook only rebuilds what's merged.
 
-const SUPABASE_URL = () => process.env.BUILDMYBOT_SUPABASE_URL ?? '';
-const SERVICE_KEY = () => process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY ?? '';
 const APP_URL = () => process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app';
+const BUILDMYBOT_DATABASE_URL = () => process.env.BUILDMYBOT_DATABASE_URL ?? '';
 
+/** Service-level BuildMyBot integration is available independently of direct
+ * database access. BuildMyBot is Neon/Postgres-backed; APEX health/cron/deploy
+ * controls communicate with the application and platform APIs, not Supabase.
+ */
 export function buildMyBotConfigured(): boolean {
-  const url = SUPABASE_URL();
-  const key = SERVICE_KEY();
-  if (!url || !key) return false;
-  // Guard against a common Railway misconfiguration: if the "URL" starts with
-  // eyJ it's a base64-encoded JWT (i.e. the env vars are swapped — the service
-  // key ended up in BUILDMYBOT_SUPABASE_URL). Fail-safe here so the broken
-  // tools are never registered rather than surfacing a cryptic fetch error.
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'https:';
+    return new URL(APP_URL()).protocol === 'https:';
   } catch {
     return false;
   }
+}
+
+function buildMyBotNeonDataPlaneConfigured(): boolean {
+  const url = BUILDMYBOT_DATABASE_URL();
+  return /^postgres(?:ql)?:\/\//i.test(url);
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {
@@ -74,7 +74,10 @@ async function sbFetch(
   query: string,
   init?: RequestInit,
 ): Promise<any> {
-  const baseUrl = SUPABASE_URL();
+  throw new Error(
+    'BuildMyBot direct data-plane access has moved to Neon. This legacy Supabase path is disabled; migrate the caller to the Neon-backed management API/database adapter.',
+  );
+  const baseUrl = '';
   // Fail early with a clear message instead of "Failed to parse URL from eyJ…"
   // which happens when BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY
   // are swapped in the environment — the service-role JWT token ends up as the
@@ -90,8 +93,8 @@ async function sbFetch(
   const res = await fetch(url, {
     ...init,
     headers: {
-      apikey: SERVICE_KEY(),
-      Authorization: `Bearer ${SERVICE_KEY()}`,
+      apikey: '',
+      Authorization: 'Bearer ',
       'Content-Type': 'application/json',
       ...(init?.headers ?? {}),
     },
@@ -638,5 +641,23 @@ export function createBuildMyBotTools(): ToolDefinition[] {
         return rows ?? [];
       },
     },
-  ];
+  ].filter((tool) => {
+    const retiredDirectDataTools = new Set([
+      'buildmybot_status',
+      'buildmybot_send_briefing',
+      'buildmybot_open_errors',
+      'buildmybot_resolve_error',
+      'buildmybot_push_leads',
+      'buildmybot_recent_leads',
+    ]);
+    // The Neon URL is surfaced in Settings now, but these six tools are not
+    // re-enabled until their query layer is genuinely Neon-backed. Failing
+    // closed is safer than silently routing a production action through stale
+    // Supabase/PostgREST code.
+    if (retiredDirectDataTools.has(tool.name)) {
+      void buildMyBotNeonDataPlaneConfigured();
+      return false;
+    }
+    return true;
+  });
 }
