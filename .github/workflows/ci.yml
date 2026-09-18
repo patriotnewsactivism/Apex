@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
         with:
@@ -29,6 +31,9 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Verify schema changes include migrations
+        run: node scripts/verify-schema-migration-drift.mjs
 
       - name: Typecheck production runtime
         run: pnpm run typecheck:production
@@ -127,8 +132,8 @@ jobs:
         run: node packages/core/scripts/verify-mobile-overflow.mjs
 
   # Production is built from this Dockerfile by Railway (railway.toml), and
-  # Railway deploys from main with checkSuites disabled -- it does not wait for
-  # CI. Until this job existed, nothing anywhere built the image, so a Dockerfile
+  # Railway deploys from main with Wait for CI enabled, so this workflow is the
+  # production deployment gate. Until this job existed, nothing anywhere built the image, so a Dockerfile
   # that did not build reached production before anyone found out. The base-image
   # swap on 2026-09-15 (node:22-alpine -> node:22-slim, apk -> apt-get) shipped
   # on typecheck and text-matching guards alone.
