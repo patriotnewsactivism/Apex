@@ -2241,6 +2241,21 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ customerNumber, customerName, assistantPrompt, firstMessage }) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
         await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, purpose: 'make_outbound_call' });
+        // Phase 2.3: budget guard — check mission budget before placing call
+        try {
+          const { checkMissionBudget } = await import('./revenue-ops/budget.js');
+          // Derive missionId from context if available; skip budget check if no mission context
+          const missionId = (globalThis as any).__apexMissionId;
+          if (missionId) {
+            const budget = await checkMissionBudget(missionId, 300); // ~$3 estimated call cost
+            if (!budget.allowed) {
+              return { success: false, error: `Budget exhausted: ${budget.reason}` };
+            }
+          }
+        } catch (e) {
+          // Budget module may not be available in all runtimes; fail open
+          console.warn('[budget] check skipped:', e);
+        }
         const apiKey = process.env.VAPI_API_KEY;
         const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
 
@@ -2421,6 +2436,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ toEmail, toName, subject, html, leadId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
         await assertOutboundAllowed({ channel: 'email', destination: toEmail, purpose: 'send_email' });
+        // Phase 2.3: budget guard — skip for now (email cost is negligible, ~$0.001/email)
+        // Budget check would go here if email had a meaningful per-unit cost
         const { randomUUID } = await import('crypto');
         const id = randomUUID();
         await createQueuedEmailSend({
@@ -2898,6 +2915,12 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
     // cancel/expire missions, request approvals, execute mission steps.
     // Always registered — operates on goals/tasks/approvals, no external creds.
     for (const tool of createRevenueOpsTools()) {
+      _registry.register(tool);
+    }
+    // Revenue-ops campaign engine tools (Phase 3): create campaign, enroll contacts,
+    // queue steps, advance enrollments, get enrollment status.
+    // Always registered — operates on campaigns/sequences/enrollments/interactions.
+    for (const tool of createCampaignTools()) {
       _registry.register(tool);
     }
     // Portfolio connectors register only when their env is configured, so a

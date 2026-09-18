@@ -104,7 +104,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('Also include the prior day of shift logs for trend context'),
       }),
       requiresApproval: false,
-      async execute({ includeYesterday }) {
+      async execute({ includeYesterday: includeYesterday = false }) {
         const today = todayISO();
         const fromDate = includeYesterday
           ? new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
@@ -160,7 +160,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('The directive text. Concrete and actionable; the whole team sees it verbatim.'),
       }),
       requiresApproval: true,
-      async execute({ content }) {
+      async execute({ content: content = '' }) {
         const rows = await sbFetch('manager_briefings', '', {
           method: 'POST',
           headers: { Prefer: 'return=representation' },
@@ -185,7 +185,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('Which worker to run'),
       }),
       requiresApproval: true,
-      async execute({ worker }) {
+      async execute({ worker: worker = 'shifts' }) {
         const secret = process.env.BUILDMYBOT_CRON_SECRET;
         if (!secret) throw new Error('BUILDMYBOT_CRON_SECRET is not configured');
         // These resolve through buildmybot2's dynamic cron routes mounted by the
@@ -220,7 +220,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
         limit: z.number().optional().describe('Max rows (default 25)'),
       }),
       requiresApproval: false,
-      async execute({ limit }) {
+      async execute({ limit: limit = 25 }) {
         const rows = await sbFetch(
           'error_logs',
           buildQuery({ status: 'eq.open', order: 'level.asc,created_at.desc', limit: limit ?? 25 }),
@@ -241,7 +241,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('What was done about it — stored in the error context for the audit trail'),
       }),
       requiresApproval: true,
-      async execute({ errorId, resolutionNote }) {
+      async execute({ errorId, resolutionNote = '' }) {
         const existing = await sbFetch(
           'error_logs',
           buildQuery({ id: `eq.${errorId}`, select: 'id,context' }),
@@ -335,7 +335,7 @@ export function createBuildMyBotTools(): ToolDefinition[] {
           .describe('Why this Railway redeploy is being triggered (audit trail)'),
       }),
       requiresApproval: true,
-      async execute({ reason }) {
+      async execute({ reason: reason = '' }) {
         const token = process.env.BUILDMYBOT_RAILWAY_TOKEN;
         if (!token) throw new Error('BUILDMYBOT_RAILWAY_TOKEN is not configured');
         const serviceId = process.env.BUILDMYBOT_RAILWAY_SERVICE_ID ?? '60b6d260-f5d8-463d-87be-58339545eaaf';
