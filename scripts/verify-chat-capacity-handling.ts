@@ -41,7 +41,7 @@ check(
 );
 check(
   "chat.ts's LLM call is marked interactive, not routed like a background agent",
-  /llm\.complete\(llmHistory, CHAT_TOOLS, \{ role: 'CEO', interactive: true \}\)/.test(chat),
+  /llm\.complete\(llmHistory, CHAT_TOOLS, \{[\s\S]{0,180}?role: 'CEO',[\s\S]{0,120}?interactive: true,[\s\S]{0,120}?conversationId/.test(chat),
 );
 check(
   'the interactive flag actually reaches the capacity checks in complete(), not just the type',
@@ -53,10 +53,13 @@ check(
 //    to any other, or "give chat priority" quietly becomes "let chat ignore
 //    the budget entirely". ─────────────────────────────────────────────────
 check(
-  'isRequestBudgetExhausted() (the hard cap) is checked unconditionally, before the interactive override exists',
-  /if \(isRequestBudgetExhausted\(\)\) \{/.test(clientSource) &&
-    clientSource.indexOf('if (isRequestBudgetExhausted())') <
-      clientSource.indexOf('const pacingOverride'),
+  'the all-provider emergency hard cap is checked independently of the interactive pacing override',
+  /const emergencyWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\);/.test(clientSource) &&
+    /if \(!emergencyWindow\.allowed\) \{/.test(clientSource),
+);
+check(
+  'each provider still receives a hard-cap/rate-window check even for interactive chat',
+  /requestWindowForProvider\([\s\S]{0,100}?provider,[\s\S]{0,100}?pacingOverride/.test(clientSource),
 );
 check(
   'requestCapacityWindow() itself still runs its per-minute rate-limit check regardless of the pacing override (request-ledger.ts, unconditional after the daily/pacing branch)',
