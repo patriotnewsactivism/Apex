@@ -43,7 +43,8 @@ const BUILDMYBOT_DATABASE_URL = () => process.env.BUILDMYBOT_DATABASE_URL ?? '';
 
 /** Service-level BuildMyBot integration is available independently of direct
  * database access. BuildMyBot is Neon/Postgres-backed; APEX health/cron/deploy
- * controls communicate with the application and platform APIs, not Supabase.
+ * controls communicate with the application and platform APIs, not a legacy
+ * database-vendor REST layer.
  */
 export function buildMyBotConfigured(): boolean {
   try {
@@ -631,8 +632,8 @@ export function createBuildMyBotTools(): ToolDefinition[] {
     ]);
     // The Neon URL is surfaced in Settings now, but these six tools are not
     // re-enabled until their query layer is genuinely Neon-backed. Failing
-    // closed is safer than silently routing a production action through stale
-    // Supabase/PostgREST code.
+    // closed is safer than silently routing a production action through a
+    // retired data-plane implementation.
     if (retiredDirectDataTools.has(tool.name)) {
       void buildMyBotNeonDataPlaneConfigured();
       return false;
