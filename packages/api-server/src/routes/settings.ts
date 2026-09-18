@@ -136,11 +136,10 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     envVars: [{ key: 'GITHUB_TOKEN', label: 'Personal Access Token', placeholder: 'github_pat_... or ghp_...', secret: true }],
   },
   {
-    id: 'buildmybot', name: 'BuildMyBot Connector', description: 'Credentials and endpoints APEX uses to operate BuildMyBot.App as a managed project.', category: 'data',
+    id: 'buildmybot', name: 'BuildMyBot Connector', description: 'Neon-backed BuildMyBot managed-project controls and service endpoints.', category: 'data',
     envVars: [
-      { key: 'BUILDMYBOT_SUPABASE_URL', label: 'Supabase URL', placeholder: 'https://xxx.supabase.co' },
-      { key: 'BUILDMYBOT_SUPABASE_SERVICE_KEY', label: 'Supabase Service Key', placeholder: 'service_role key', secret: true },
       { key: 'BUILDMYBOT_APP_URL', label: 'Application URL', placeholder: 'https://www.buildmybot.app' },
+      { key: 'BUILDMYBOT_DATABASE_URL', label: 'Neon Database URL', placeholder: 'postgresql://...neon.tech/...', secret: true },
       { key: 'BUILDMYBOT_CRON_SECRET', label: 'Cron Secret', placeholder: 'cron secret', secret: true },
       { key: 'BUILDMYBOT_RAILWAY_TOKEN', label: 'Railway API Token', placeholder: 'Railway token', secret: true },
       { key: 'BUILDMYBOT_RAILWAY_SERVICE_ID', label: 'Railway Service ID', placeholder: '60b6d260-f5d8-463d-87be-58339545eaaf' },
