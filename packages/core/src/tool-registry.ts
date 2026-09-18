@@ -13,13 +13,36 @@ import { createOrchestrationTools } from './orchestration-tools.js';
 import { createDurableWorkTools } from './durable-work-tools.js';
 import { createRevenueOpsTools } from './revenue-ops/tools.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
-import { getConfiguredProviders } from './llm-client.js';
+import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-client.js';
 import { getNextRunTimes } from './cron-utils.js';
-import { HealthMonitor, AlertManager } from '@workspace/health-monitor';
+import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
 import { db, messages } from '@workspace/db';
 import { eq, isNull } from 'drizzle-orm';
 
 const execAsync = promisify(exec);
+
+// Runtime-only dependencies owned by the API process. The tool registry lives
+// in @workspace/core and cannot import api-server without creating a cycle, so
+// the HTTP entrypoint injects its live WebSocket checker once the server exists.
+// Agent health_check/get_system_status calls then observe the same liveness
+// source as the dashboard health routes instead of reporting a false degraded
+// state merely because they execute inside an agent tool call.
+let healthWebSocketChecker: WebSocketLivenessChecker | undefined;
+
+export function configureHealthMonitorRuntimeDeps(deps: {
+  wsChecker?: WebSocketLivenessChecker;
+}): void {
+  healthWebSocketChecker = deps.wsChecker;
+}
+
+function createAgentHealthMonitor(): HealthMonitor {
+  return new HealthMonitor({
+    getConfiguredProviders,
+    getDegradedToolCalling: () => getDegradedToolCallingReport(),
+    getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
+    wsChecker: healthWebSocketChecker,
+  });
+}
 
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 
@@ -1338,18 +1361,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
-        // Thin wrapper: all real check logic lives in @workspace/health-monitor
-        // (packages/health-monitor/src/index.ts) so this tool, a future
-        // scheduled HealthCheckJob, and a future AlertManager all share one
-        // implementation instead of drifting apart. No WebSocket checker is
-        // injected here (this runs inside an agent's tool call, not the
-        // api-server request/response cycle) -- that check honestly reports
-        // 'degraded: no checker injected'; the api-server's own health
-        // routes (not yet built) will inject the real one.
-        const monitor = new HealthMonitor({
-          getConfiguredProviders,
-          getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
-        });
+        // Thin wrapper: all real check logic lives in @workspace/health-monitor.
+        // Runtime-owned dependencies (currently WebSocket liveness) are
+        // injected by api-server via configureHealthMonitorRuntimeDeps().
+        const monitor = createAgentHealthMonitor();
         const report = await monitor.runAll();
         return { success: true, data: report };
       },
@@ -1362,10 +1377,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
-        const monitor = new HealthMonitor({
-          getConfiguredProviders,
-          getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
-        });
+        const monitor = createAgentHealthMonitor();
         const report = await monitor.runAll();
 
         // Read component_health table for historical context
