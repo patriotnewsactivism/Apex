@@ -1,7 +1,38 @@
 import { db } from '@workspace/db';
 import { sql } from 'drizzle-orm';
 
-let migrationPromise: Promise<void> | null = null;
+const MIGRATION_ID = '20260918_outcome_ledger_v1';
+const MIGRATION_CHECKSUM = 'apex-outcome-ledger-v1';
+
+async function ensureMigrationLedger(): Promise<void> {
+  await db.execute(sql.raw(`
+    CREATE TABLE IF NOT EXISTS _apex_schema_migrations (
+      migration_id text PRIMARY KEY,
+      checksum text NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT now(),
+      release_sha text,
+      notes text
+    )
+  `));
+}
+
+async function isMigrationApplied(migrationId: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    SELECT migration_id FROM _apex_schema_migrations
+    WHERE migration_id = ${migrationId}
+    LIMIT 1
+  `);
+  return Array.from(result as unknown as Iterable<unknown>).length > 0;
+}
+
+async function recordMigration(migrationId: string, checksum: string, notes: string): Promise<void> {
+  const releaseSha = process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GITHUB_SHA ?? null;
+  await db.execute(sql`
+    INSERT INTO _apex_schema_migrations (migration_id, checksum, release_sha, notes)
+    VALUES (${migrationId}, ${checksum}, ${releaseSha}, ${notes})
+    ON CONFLICT (migration_id) DO NOTHING
+  `);
+}
 
 const ENTITY_TYPES = [
   'Organization','Customer','Lead','Opportunity','Campaign','Conversation','Call','Appointment','Task',
@@ -322,12 +353,18 @@ async function migrateOutcomeLedger(): Promise<void> {
   await execute(`CREATE TRIGGER deployments_to_outcome_ledger AFTER INSERT OR UPDATE OF status, rolled_back ON deployments FOR EACH ROW EXECUTE FUNCTION mirror_deployment_to_ledger()`);
 }
 
-export function ensureOutcomeLedgerSchema(): Promise<void> {
-  if (!migrationPromise) {
-    migrationPromise = migrateOutcomeLedger().catch((error) => {
-      migrationPromise = null;
-      throw error;
-    });
+export async function runOutcomeLedgerMigration(): Promise<void> {
+  await ensureMigrationLedger();
+  if (await isMigrationApplied(MIGRATION_ID)) {
+    console.log(`[db:migrate] ${MIGRATION_ID} already applied; skipping`);
+    return;
   }
-  return migrationPromise;
+
+  await migrateOutcomeLedger();
+  await recordMigration(
+    MIGRATION_ID,
+    MIGRATION_CHECKSUM,
+    'Outcome Ledger tables, append-only guards, and APEX source mirroring triggers',
+  );
+  console.log(`[db:migrate] applied ${MIGRATION_ID}`);
 }
