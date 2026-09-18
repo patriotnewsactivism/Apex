@@ -77,6 +77,35 @@ export const AUTONOMY_ELIGIBLE_TOOLS = new Set<string>([
   'publish_artifact',
 ]);
 
+/** Default allowlist for the APEX control-plane project. Intentionally omits
+ *  deploy_via_hook and run_executor_job until those backends are configured. */
+export const DEFAULT_APEX_AUTOAPPROVE_TOOLS = [
+  'create_github_repo',
+  'push_to_remote',
+  'create_pull_request',
+  'create_workstream',
+  'publish_artifact',
+] as const;
+
+export const CONTROL_PLANE_PROJECT_ID = 'apex';
+
+/** Strip hard-gated and unknown tools. Fail closed: empty if nothing eligible remains. */
+export function sanitizeAutoapproveTools(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== 'string') continue;
+    const name = raw.trim();
+    if (!name || seen.has(name)) continue;
+    if (HARD_GATED_TOOLS.has(name)) continue;
+    if (!AUTONOMY_ELIGIBLE_TOOLS.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 export interface ApprovalDecision {
   autoApprove: boolean;
   reason: string;
@@ -146,21 +175,22 @@ export async function evaluateForTask(input: {
     }
 
     if (!resolvedGoalId) {
-      return { autoApprove: false, reason: 'task has no goal (unscoped task); failing closed' };
+      return evaluateControlPlaneFallback(toolName);
     }
 
     const [goal] = await db.select({ projectId: goals.projectId }).from(goals).where(eq(goals.id, resolvedGoalId)).limit(1);
-    if (!goal?.projectId) {
-      return { autoApprove: false, reason: `goal ${resolvedGoalId} has no project; failing closed` };
-    }
+    const projectId = goal?.projectId || CONTROL_PLANE_PROJECT_ID;
 
     const [project] = await db
       .select({ autonomyLevel: projects.autonomyLevel, autoapproveTools: projects.autoapproveTools })
       .from(projects)
-      .where(eq(projects.id, goal.projectId))
+      .where(eq(projects.id, projectId))
       .limit(1);
     if (!project) {
-      return { autoApprove: false, reason: `project ${goal.projectId} not found; failing closed` };
+      if (projectId === CONTROL_PLANE_PROJECT_ID) {
+        return { autoApprove: false, reason: 'control-plane project apex is not registered; failing closed' };
+      }
+      return evaluateControlPlaneFallback(toolName);
     }
 
     return evaluatePolicy({
@@ -173,6 +203,32 @@ export async function evaluateForTask(input: {
     return {
       autoApprove: false,
       reason: `policy lookup failed and closed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+async function evaluateControlPlaneFallback(toolName: string): Promise<ApprovalDecision> {
+  try {
+    const { db, projects } = await import('@workspace/db');
+    const { eq } = await import('drizzle-orm');
+    const [project] = await db
+      .select({ autonomyLevel: projects.autonomyLevel, autoapproveTools: projects.autoapproveTools })
+      .from(projects)
+      .where(eq(projects.id, CONTROL_PLANE_PROJECT_ID))
+      .limit(1);
+    if (!project) {
+      return { autoApprove: false, reason: 'unscoped work and control-plane project apex is missing; failing closed' };
+    }
+    return evaluatePolicy({
+      toolName,
+      projectAutonomyLevel: project.autonomyLevel,
+      projectAutoapproveTools: project.autoapproveTools,
+      taskBelongsToProject: true,
+    });
+  } catch (err) {
+    return {
+      autoApprove: false,
+      reason: `control-plane fallback failed closed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }

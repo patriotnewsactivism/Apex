@@ -661,6 +661,10 @@ export const revenueOpsTools = [
   createMissionStep,
 ];
 
+export function createRevenueOpsTools(): ToolDefinition[] {
+  return revenueOpsTools;
+}
+
 export function registerRevenueOpsTools(registry: { register: (tool: ToolDefinition) => void }) {
   for (const tool of revenueOpsTools) {
     registry.register(tool);

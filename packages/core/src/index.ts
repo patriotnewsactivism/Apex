@@ -34,6 +34,8 @@ export * from './industry-taxonomy.js';
 export * from './artifact-store.js';
 export * from './workspace-sync.js';
 export * from './approval-policy.js';
+export * from './approval-packet.js';
+export * from './outbound-compliance-guard.js';
 export * from './durable-work-tools.js';
 export * from './task-checkpoint.js';
 export * from './execution-budget.js';

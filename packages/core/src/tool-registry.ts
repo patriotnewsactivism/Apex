@@ -11,6 +11,7 @@ import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connec
 import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector.js';
 import { createOrchestrationTools } from './orchestration-tools.js';
 import { createDurableWorkTools } from './durable-work-tools.js';
+import { createRevenueOpsTools } from './revenue-ops/tools.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
 import { getConfiguredProviders } from './llm-client.js';
 import { getNextRunTimes } from './cron-utils.js';
@@ -2226,6 +2227,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       }),
       requiresApproval: true, // Makes a real phone call to a real person — externally visible, costs money, irreversible.
       async execute({ customerNumber, customerName, assistantPrompt, firstMessage }) {
+        const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
+        await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, purpose: 'make_outbound_call' });
         const apiKey = process.env.VAPI_API_KEY;
         const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
 
@@ -2404,6 +2407,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       }),
       requiresApproval: true, // Sends real email to a real inbox — externally visible, irreversible.
       async execute({ toEmail, toName, subject, html, leadId }, ctx) {
+        const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
+        await assertOutboundAllowed({ channel: 'email', destination: toEmail, purpose: 'send_email' });
         const { randomUUID } = await import('crypto');
         const id = randomUUID();
         await createQueuedEmailSend({

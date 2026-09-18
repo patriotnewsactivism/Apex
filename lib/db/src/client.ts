@@ -727,6 +727,38 @@ export async function migrate() {
       ADD COLUMN IF NOT EXISTS autoapprove_tools jsonb NOT NULL DEFAULT '[]'::jsonb
   `;
   await client`
+    CREATE TABLE IF NOT EXISTS websocket_tickets (
+      ticket text PRIMARY KEY,
+      expires_at timestamptz NOT NULL
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS websocket_tickets_expires_at_idx
+    ON websocket_tickets (expires_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS sales_opportunities (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      organization_id text NOT NULL,
+      contact_id uuid,
+      company_id uuid,
+      mission_id text,
+      stage_id uuid,
+      name varchar(500) NOT NULL,
+      amount_cents numeric(12, 2),
+      probability real,
+      probability_source text,
+      source text,
+      owner_user_id text,
+      status text NOT NULL DEFAULT 'open',
+      next_action_at timestamptz,
+      notes text,
+      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
     ALTER TABLE scheduled_jobs
       ADD COLUMN IF NOT EXISTS missed_runs integer NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS catch_up_mode text NOT NULL DEFAULT 'collapsed'

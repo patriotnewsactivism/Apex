@@ -256,7 +256,7 @@ export async function migrateRevenueOpsTables() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
-      CREATE TABLE IF NOT EXISTS opportunities (
+      CREATE TABLE IF NOT EXISTS sales_opportunities (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         organization_id UUID NOT NULL,
         contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL,

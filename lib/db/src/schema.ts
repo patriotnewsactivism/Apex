@@ -869,6 +869,11 @@ export const riskAssessments = pgTable('risk_assessments', {
 // picks them up with no further code changes. Values are write-only from the
 // API's perspective — GET endpoints only ever return configured:boolean,
 // never the plaintext value.
+export const websocketTickets = pgTable('websocket_tickets', {
+  ticket: text('ticket').primaryKey(),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+});
+
 export const integrationSettings = pgTable('integration_settings', {
   key: text('key').primaryKey(), // env var name, e.g. 'GROQ_API_KEY'
   value: text('value').notNull(),

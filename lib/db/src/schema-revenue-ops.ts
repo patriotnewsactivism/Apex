@@ -497,7 +497,7 @@ export const pipelineStages = pgTable('pipeline_stages', {
     .on(table.organizationId, table.position),
 }));
 
-export const opportunities = pgTable('opportunities', {
+export const salesOpportunities = pgTable('sales_opportunities', {
   id: uuid('id').primaryKey().defaultRandom(),
   organizationId: text('organization_id').notNull(), // projects.id
   contactId: uuid('contact_id'), // contacts.id
@@ -517,20 +517,23 @@ export const opportunities = pgTable('opportunities', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
-  orgIdIdx: index('opportunities_organization_id_idx').on(table.organizationId),
-  contactIdIdx: index('opportunities_contact_id_idx').on(table.contactId),
-  companyIdIdx: index('opportunities_company_id_idx').on(table.companyId),
-  stageIdIdx: index('opportunities_stage_id_idx').on(table.stageId),
-  missionIdIdx: index('opportunities_mission_id_idx').on(table.missionId),
-  statusIdx: index('opportunities_status_idx').on(table.status),
+  orgIdIdx: index('sales_opportunities_organization_id_idx').on(table.organizationId),
+  contactIdIdx: index('sales_opportunities_contact_id_idx').on(table.contactId),
+  companyIdIdx: index('sales_opportunities_company_id_idx').on(table.companyId),
+  stageIdIdx: index('sales_opportunities_stage_id_idx').on(table.stageId),
+  missionIdIdx: index('sales_opportunities_mission_id_idx').on(table.missionId),
+  statusIdx: index('sales_opportunities_status_idx').on(table.status),
 }));
 
-export const opportunityRelations = relations(opportunities, ({ one }) => ({
-  organization: one(projects, { fields: [opportunities.organizationId], references: [projects.id] }),
-  contact: one(contacts, { fields: [opportunities.contactId], references: [contacts.id] }),
-  company: one(companies, { fields: [opportunities.companyId], references: [companies.id] }),
-  mission: one(goals, { fields: [opportunities.missionId], references: [goals.id] }),
-  stage: one(pipelineStages, { fields: [opportunities.stageId], references: [pipelineStages.id] }),
+/** @deprecated Use salesOpportunities — the APEX ideas table in schema.ts keeps the `opportunities` name. */
+export const opportunities = salesOpportunities;
+
+export const salesOpportunityRelations = relations(salesOpportunities, ({ one }) => ({
+  organization: one(projects, { fields: [salesOpportunities.organizationId], references: [projects.id] }),
+  contact: one(contacts, { fields: [salesOpportunities.contactId], references: [contacts.id] }),
+  company: one(companies, { fields: [salesOpportunities.companyId], references: [companies.id] }),
+  mission: one(goals, { fields: [salesOpportunities.missionId], references: [goals.id] }),
+  stage: one(pipelineStages, { fields: [salesOpportunities.stageId], references: [pipelineStages.id] }),
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -836,5 +839,3 @@ export type ConsentAuditSnapshot = typeof consentAuditSnapshots.$inferSelect;
 export type NewConsentAuditSnapshot = typeof consentAuditSnapshots.$inferInsert;
 export type MissionStep = typeof missionSteps.$inferSelect;
 export type NewMissionStep = typeof missionSteps.$inferInsert;
-export type MissionPayload = MissionPayload;
-export type MissionDisplayStatus = MissionDisplayStatus;
