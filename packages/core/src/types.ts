@@ -85,6 +85,9 @@ export interface LLMExecutionContext {
    *  still apply unchanged — this only claims already-authorized budget
    *  sooner, it never spends past what the operator configured. */
   interactive?: boolean;
+  /** Optional stable key for stateful provider conversations that are not tied
+   * to a durable task (for example the human chat route). */
+  conversationId?: string;
 }
 
 export interface LLMClientConfig {
