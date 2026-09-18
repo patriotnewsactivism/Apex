@@ -13,7 +13,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
+import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
@@ -192,16 +192,16 @@ async function main() {
         (provider) =>
           provider.name === PAID_FALLBACK_PROVIDER_NAME && provider.configured,
       );
-    const hardCapped =
-      tokenLedger.totalCapReached ||
-      (!paidContinuityAvailable && requestLedger.totalCapReached);
-    // `aggregatePaused` is the SAME expression llmCapacityAvailableNow() uses
-    // to return false (`!ledger.pacing.total.allowed`), and that function gates
-    // task claiming for every agent in the process. So this condition does not
-    // mean "throttled" -- it means the entire workforce has stopped.
-    const aggregatePaused =
-      !tokenLedger.pacing.total.allowed ||
-      (!paidContinuityAvailable && !requestLedger.pacing.total.allowed);
+    // OpenRouter, Groq and Gemini now have independent request pools. The only
+    // request-count state that is truly workspace-wide is the emergency
+    // all-provider ceiling; an exhausted 2,775 OpenRouter pool is NOT a hard
+    // cap while an enabled BYOK pool still has room.
+    const emergencyRequestCapReached =
+      requestLedger.emergencyCap > 0 &&
+      requestLedger.allProviderRequests >= requestLedger.emergencyCap;
+    const hardCapped = tokenLedger.totalCapReached || emergencyRequestCapReached;
+    const anyLLMCapacityAvailable = llmCapacityAvailableNow();
+    const aggregatePaused = !hardCapped && !anyLLMCapacityAvailable;
     const paidContinuityActive =
       paidContinuityAvailable && !requestLedger.pacing.total.allowed;
     // These two conditions used to collapse into one "paced" string, and that
