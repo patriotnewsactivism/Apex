@@ -112,6 +112,27 @@ export interface SpendSnapshot {
     pacingEnabled: boolean;
     releasedSoFar: number;
     persistence: 'postgres+memory' | 'memory-only';
+    allProviderUsed: number;
+    emergencyCap: number;
+    directProviders: Array<{
+      pool: 'groq' | 'gemini';
+      requests: number;
+      cap: number;
+      remaining: number | null;
+      lastMinute: number;
+      ratePerMinute: number;
+      projectedDailyRequests: number | null;
+      pacing: {
+        cap: number;
+        usedRequests: number;
+        requestedRequests: number;
+        pacingAllowance: number;
+        availableRequests: number | null;
+        allowed: boolean;
+        reason: 'uncapped' | 'available' | 'paced' | 'daily_cap';
+        resumeAt: string | null;
+      };
+    }>;
   };
   updatedAt: string;
 }
