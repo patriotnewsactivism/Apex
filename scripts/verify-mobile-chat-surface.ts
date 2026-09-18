@@ -58,6 +58,9 @@ const floatingChat = readFileSync(
   new URL('../packages/dashboard/src/components/FloatingChat.tsx', import.meta.url),
   'utf8',
 );
+const calendarBridge = read(
+  'packages/dashboard/src/components/CalendarNavigationBridge.tsx',
+);
 check(
   'the floating chat shell is capped inside the viewport',
   /min\(58vh,\s*500px\)/.test(floatingChat) && /min\(72vh,\s*640px\)/.test(floatingChat),
@@ -65,6 +68,12 @@ check(
 check(
   'the floating shell is mounted outside the page swap (survives navigation)',
   /<FloatingChat pageId=\{activePage\} pageTitle=\{meta\.title\}\s*\/>/.test(app),
+);
+check(
+  'the mobile Calendar/Scheduler shortcut is docked left so it cannot overlap the right-side Chat FAB',
+  /position:\s*'fixed',[\s\S]{0,120}?left:\s*12,[\s\S]{0,160}?bottom:/.test(calendarBridge) &&
+    !/position:\s*'fixed',[\s\S]{0,120}?right:\s*12,[\s\S]{0,160}?bottom:/.test(calendarBridge) &&
+    /position:\s*'fixed',[\s\S]{0,120}?right:\s*16,[\s\S]{0,120}?bottom:\s*isMobile\s*\?\s*84/.test(floatingChat),
 );
 check(
   'chat bubbles break unbroken strings instead of widening the page',
