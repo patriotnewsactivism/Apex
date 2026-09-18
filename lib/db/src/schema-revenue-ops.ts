@@ -628,6 +628,157 @@ export const auditEvents = pgTable('audit_events', {
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COMPLIANCE & CAPTURE (Section 9 of spec)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Consent-gated outreach and cross-channel suppression are covered by the
+// consent_records + suppressions tables above. This section adds the
+// operational safety layer: contact-level outreach gates, suppression
+// propagation, and batch consent audit for TCPA/TCPR/GDPR evidence.
+
+// ── Contact outreach gate (per-contact, per-channel allow/deny/no-decision) ─────
+// Computed from consent_records on read; persisted for fast routing decisions.
+// A contact is "outreach-safe" on a channel only when the gate is 'allowed'.
+// 'denied' and 'pending' block outbound on that channel.
+
+export const contactOutreachGates = pgTable('contact_outreach_gates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(), // projects.id
+  contactId: uuid('contact_id').notNull(), // contacts.id
+  channel: text('channel').notNull(), // phone | sms | email
+  gate: text('gate').notNull().default('pending'), // allowed | denied | pending
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  nextReviewAt: timestamp('next_review_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orgContactChannelUnique: uniqueIndex('contact_outreach_gates_org_contact_channel_unique')
+    .on(table.organizationId, table.contactId, table.channel),
+  gateIdx: index('contact_outreach_gates_gate_idx').on(table.gate),
+}));
+
+export const contactOutreachGateRelations = relations(contactOutreachGates, ({ one }) => ({
+  organization: one(projects, { fields: [contactOutreachGates.organizationId], references: [projects.id] }),
+  contact: one(contacts, { fields: [contactOutreachGates.contactId], references: [contacts.id] }),
+}));
+
+// ── Suppression propagation audit ────────────────────────────────────────────────
+// When a contact opts out on one channel, this records the propagation decision
+// to other channels (e.g. phone opt-out → suppress sms on same number).
+
+export const suppressionPropagation = pgTable('suppression_propagation', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(), // projects.id
+  sourceSuppressionId: uuid('source_suppression_id').notNull(), // suppressions.id
+  targetChannel: text('target_channel').notNull(), // channel being suppressed
+  targetIdentifier: text('target_identifier'), // email/phone affected
+  action: text('action').notNull(), // suppress | lift | skip
+  reason: text('reason'), // derived from source reason
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  sourceIdx: index('suppression_propagation_source_suppression_id_idx').on(table.sourceSuppressionId),
+}));
+
+// ── Batch consent audit (TCPA/TCPR evidence) ─────────────────────────────────────
+// Immutable records of consent-audit snapshots for regulatory evidence.
+// One row per audit run; details in metadata.
+
+export const consentAuditSnapshots = pgTable('consent_audit_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(), // projects.id
+  scope: text('scope').notNull(), // all | campaign | contact_list | manual
+  scopeRef: text('scope_ref'), // campaign id or contact list id being audited
+  status: text('status').notNull().default('running'), // running | completed | failed
+  contactsReviewed: integer('contacts_reviewed').notNull().default(0),
+  contactsCompliant: integer('contacts_compliant').notNull().default(0),
+  contactsNonCompliant: integer('contacts_non_compliant').notNull().default(0),
+  findings: jsonb('findings').$type<Record<string, unknown>>(), // per-channel counts, violations
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orgIdIdx: index('consent_audit_snapshots_organization_id_idx').on(table.organizationId),
+  scopeIdx: index('consent_audit_snapshots_scope_idx').on(table.scope),
+  statusIdx: index('consent_audit_snapshots_status_idx').on(table.status),
+}));
+
+export const complianceTypeExports = {
+  ContactOutreachGate: typeof contactOutreachGates.$inferSelect,
+  NewContactOutreachGate: typeof contactOutreachGates.$inferInsert,
+  SuppressionPropagation: typeof suppressionPropagation.$inferSelect,
+  NewSuppressionPropagation: typeof suppressionPropagation.$inferInsert,
+  ConsentAuditSnapshot: typeof consentAuditSnapshots.$inferSelect,
+  NewConsentAuditSnapshot: typeof consentAuditSnapshots.$inferInsert,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MISSION LIFECYCLE STATE (Section 7 of spec)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Per D1: missions are a new KIND of APEX goal. The spec's mission lifecycle
+// statuses are represented via goal.status + task states + the mission_payload
+// in goal.result. This section defines the mission payload carrier and the
+// computed mission display status. NO dedicated missions table.
+
+// ── Mission payload carrier (lives in goal.result) ───────────────────────────────
+// The spec Section 7 mission fields, typed for the goal.result JSON carrier.
+// goal.result stores a MissionPayload when the goal is a revenue-ops mission.
+
+export interface MissionPayload {
+  objective: string;
+  targetDefinition: Record<string, unknown>;
+  qualificationRules: Record<string, unknown>;
+  allowedChannels: string[];
+  policy: Record<string, unknown>;
+  budgetCents: number;
+  spentCents: number;
+  startsAt?: string;
+  deadlineAt?: string;
+  displayStatus?: MissionDisplayStatus;
+}
+
+export type MissionDisplayStatus =
+  | 'draft'
+  | 'validating'
+  | 'ready'
+  | 'running'
+  | 'waiting_approval'
+  | 'paused'
+  | 'blocked'
+  | 'budget_exhausted'
+  | 'completed'
+  | 'cancelled'
+  | 'failed';
+
+// ── Mission step / task-run (Section 7.4) ─────────────────────────────────────────
+// Each mission step is backed by an APEX task with mission_step_id in task.result.
+// This table is the metadata layer — the execution is an APEX task.
+
+export const missionSteps = pgTable('mission_steps', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(), // projects.id
+  missionId: text('mission_id').notNull(), // goals.id
+  position: integer('position').notNull(),
+  name: varchar('name', { length: 200 }).notNull(),
+  description: text('description'),
+  channel: text('channel'), // call | sms | email | task | webhook
+  status: text('status').notNull().default('pending'), // pending | ready | in_progress | done | failed | skipped | blocked
+  taskId: text('task_id'), // tasks.id when the step is backed by an APEX task
+  outcome: jsonb('outcome').$type<Record<string, unknown>>(), // result of the step execution
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orgMissionIdx: index('mission_steps_organization_id_idx').on(table.organizationId),
+  missionIdIdx: index('mission_steps_mission_id_idx').on(table.missionId),
+  positionIdx: index('mission_steps_position_idx').on(table.position),
+  statusIdx: index('mission_steps_status_idx').on(table.status),
+}));
+
+export const missionStepRelations = relations(missionSteps, ({ one }) => ({
+  organization: one(projects, { fields: [missionSteps.organizationId], references: [projects.id] }),
+  mission: one(goals, { fields: [missionSteps.missionId], references: [goals.id] }),
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TYPE EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -677,3 +828,13 @@ export type UsageLedgerEntry = typeof usageLedger.$inferSelect;
 export type NewUsageLedgerEntry = typeof usageLedger.$inferInsert;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 export type NewAuditEvent = typeof auditEvents.$inferInsert;
+export type ContactOutreachGate = typeof contactOutreachGates.$inferSelect;
+export type NewContactOutreachGate = typeof contactOutreachGates.$inferInsert;
+export type SuppressionPropagation = typeof suppressionPropagation.$inferSelect;
+export type NewSuppressionPropagation = typeof suppressionPropagation.$inferInsert;
+export type ConsentAuditSnapshot = typeof consentAuditSnapshots.$inferSelect;
+export type NewConsentAuditSnapshot = typeof consentAuditSnapshots.$inferInsert;
+export type MissionStep = typeof missionSteps.$inferSelect;
+export type NewMissionStep = typeof missionSteps.$inferInsert;
+export type MissionPayload = MissionPayload;
+export type MissionDisplayStatus = MissionDisplayStatus;
