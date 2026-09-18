@@ -1,6 +1,5 @@
 import { db } from '@workspace/db';
 import { sql } from 'drizzle-orm';
-import { ensureOutcomeLedgerSchema } from './migrate.js';
 
 const WINDOW_DAYS: Record<string, number> = { '1d': 1, '7d': 7, '30d': 30, '90d': 90 };
 
@@ -12,7 +11,6 @@ export function normalizeWindow(value: unknown): { label: string; days: number }
 const rows = <T>(result: unknown): T[] => result as T[];
 
 export async function getOutcomeDashboard(tenantId: string | null, windowValue: unknown) {
-  await ensureOutcomeLedgerSchema();
   const window = normalizeWindow(windowValue);
   const tenant = tenantId || null;
 
@@ -173,7 +171,6 @@ export async function getOutcomeDashboard(tenantId: string | null, windowValue: 
 }
 
 export async function listCanonicalOutcomes(tenantId: string | null, limitValue: unknown) {
-  await ensureOutcomeLedgerSchema();
   const limit = Math.min(250, Math.max(1, Number.parseInt(String(limitValue ?? '50'), 10) || 50));
   const tenant = tenantId || null;
   return rows(await db.execute(sql`
@@ -188,7 +185,6 @@ export async function listCanonicalOutcomes(tenantId: string | null, limitValue:
 }
 
 export async function getAttributionFunnel(tenantId: string | null, windowValue: unknown) {
-  await ensureOutcomeLedgerSchema();
   const window = normalizeWindow(windowValue);
   const tenant = tenantId || null;
   const funnelEvents = [
@@ -209,7 +205,6 @@ export async function getAttributionFunnel(tenantId: string | null, windowValue:
 }
 
 export async function listExperiments(tenantId: string | null) {
-  await ensureOutcomeLedgerSchema();
   const tenant = tenantId || null;
   const definitions = rows(await db.execute(sql`
     SELECT * FROM experiments WHERE (${tenant}::text IS NULL OR tenant_id=${tenant}) ORDER BY created_at DESC
@@ -226,7 +221,6 @@ export async function listExperiments(tenantId: string | null) {
 }
 
 export async function getBusinessEvaluationEvidence(tenantId: string | null, windowValue: unknown) {
-  await ensureOutcomeLedgerSchema();
   const window = normalizeWindow(windowValue);
   const tenant = tenantId || null;
   const result = await db.execute(sql`
