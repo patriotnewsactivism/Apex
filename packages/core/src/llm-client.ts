@@ -23,10 +23,13 @@ import {
   accountRequestsToday,
   directProviderCapacityWindow,
   emergencyRequestCapacityWindow,
-  recordDirectProviderRequest,
-  recordPaidProviderRequest,
-  recordProviderRequest,
+  markDirectProviderRequestSucceeded,
+  markPaidProviderRequestSucceeded,
+  markProviderRequestSucceeded,
   requestCapacityWindow,
+  reserveDirectProviderRequest,
+  reservePaidProviderRequest,
+  reserveProviderRequest,
   type DirectRequestPool,
 } from './request-ledger.js';
 import {
@@ -686,17 +689,29 @@ function requestWindowForProvider(
   return requestCapacityWindow(at, pacingEnabled);
 }
 
-function recordProviderAttempt(
+function reserveProviderAttempt(
   provider: ProviderSpec,
   credentialKey: string,
-  succeeded: boolean,
 ): void {
   if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
-    recordDirectProviderRequest(provider.requestPool, provider.name, succeeded);
+    reserveDirectProviderRequest(provider.requestPool, provider.name);
   } else if (provider.paid) {
-    recordPaidProviderRequest(provider.name, succeeded);
+    reservePaidProviderRequest(provider.name);
   } else {
-    recordProviderRequest(credentialKey, succeeded);
+    reserveProviderRequest(credentialKey);
+  }
+}
+
+function markProviderAttemptSucceeded(
+  provider: ProviderSpec,
+  credentialKey: string,
+): void {
+  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+    markDirectProviderRequestSucceeded(provider.requestPool, provider.name);
+  } else if (provider.paid) {
+    markPaidProviderRequestSucceeded(provider.name);
+  } else {
+    markProviderRequestSucceeded(credentialKey);
   }
 }
 
@@ -1438,6 +1453,48 @@ class MultiProviderClient {
                 continue;
               }
 
+              // Re-check immediately before reservation. There is deliberately
+              // no await between these checks and reserveProviderAttempt(), so
+              // concurrent agent turns cannot all consume the same final slot.
+              const emergencyAttemptWindow = emergencyRequestCapacityWindow(Date.now());
+              if (!emergencyAttemptWindow.allowed) {
+                capacityBlocks.push({
+                  source: 'all-providers',
+                  resumeAt: emergencyAttemptWindow.resumeAt,
+                  reason: `emergency request cap reached (${emergencyAttemptWindow.usedRequests}/${emergencyAttemptWindow.cap})`,
+                });
+                break;
+              }
+              const freshProviderWindow = requestWindowForProvider(
+                provider,
+                Date.now(),
+                pacingOverride,
+              );
+              if (!freshProviderWindow.allowed) {
+                capacityBlocks.push({
+                  source: provider.requestPool ?? 'openrouter',
+                  resumeAt: freshProviderWindow.resumeAt,
+                  reason:
+                    freshProviderWindow.reason === 'daily_cap'
+                      ? `request cap reached (${freshProviderWindow.usedRequests}/${freshProviderWindow.cap})`
+                      : 'request pacing active',
+                });
+                break;
+              }
+              const freshAccountWindow =
+                isOpenRouterProvider(provider) && !provider.paid
+                  ? accountCapacityWindow(credential.key)
+                  : null;
+              if (freshAccountWindow && !freshAccountWindow.allowed) {
+                capacityBlocks.push({
+                  source: credential.env,
+                  resumeAt: freshAccountWindow.resumeAt,
+                  reason: 'account request budget exhausted',
+                });
+                continue;
+              }
+
+              reserveProviderAttempt(provider, credential.key);
               providerAttempted = true;
 
               try {
@@ -1449,12 +1506,8 @@ class MultiProviderClient {
                   this.config,
                   execution,
                 );
-                recordProviderAttempt(provider, credential.key, true);
+                markProviderAttemptSucceeded(provider, credential.key);
                 if (provider.paid) {
-                  // Paid attempts still consume the workspace request budget.
-                  // Keep them in a synthetic provider bucket so they do not
-                  // corrupt the free-account quota accounting.
-                  recordPaidProviderRequest(provider.name, true);
                   // Charge the settled cost. OpenRouter returns it because the
                   // request sets `usage: { include: true }`; when it is absent
                   // fall back to list price rather than recording zero, since a
@@ -1478,12 +1531,9 @@ class MultiProviderClient {
                 });
                 return result;
               } catch (error) {
-                // A failed attempt still spent the account's daily request
-                // allowance — a 429, a timeout and a 500 are each one request
-                // as far as the provider is concerned. Counting only successes
-                // would hide exactly the traffic worth seeing: the fallback
-                // cascade, which burns several requests to serve one call.
-                recordProviderAttempt(provider, credential.key, false);
+                // The request was reserved before dispatch, so failures already
+                // count against the correct provider pool. Only successful
+                // outcomes need a post-response ledger update.
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
@@ -1568,10 +1618,29 @@ class MultiProviderClient {
 
                 if (isRequestTooLargeError(status, message)) {
                   try {
+                    const allWindow = emergencyRequestCapacityWindow(Date.now());
+                    const poolWindow = requestWindowForProvider(
+                      provider,
+                      Date.now(),
+                      pacingOverride,
+                    );
+                    const retryAccountWindow =
+                      isOpenRouterProvider(provider) && !provider.paid
+                        ? accountCapacityWindow(credential.key)
+                        : null;
+                    if (
+                      !allWindow.allowed ||
+                      !poolWindow.allowed ||
+                      (retryAccountWindow && !retryAccountWindow.allowed)
+                    ) {
+                      continue;
+                    }
+
                     const emergency = trimMessageHistory(
                       messages,
                       EMERGENCY_HISTORY_CHAR_BUDGET,
                     );
+                    reserveProviderAttempt(provider, credential.key);
                     const result = await callProvider(
                       provider,
                       credential.key,
@@ -1580,7 +1649,13 @@ class MultiProviderClient {
                       this.config,
                       execution,
                     );
-                    recordProviderAttempt(provider, credential.key, true);
+                    markProviderAttemptSucceeded(provider, credential.key);
+                    if (provider.paid) {
+                      recordSpend(
+                        provider.name,
+                        result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                      );
+                    }
                     clearCredentialCooldown(credentialId);
                     recordTokenUsage(provider.name, result.usage);
                     await recordResponseTelemetry({
@@ -1595,7 +1670,8 @@ class MultiProviderClient {
                     });
                     return result;
                   } catch {
-                    // Continue to the next credential/provider.
+                    // The retry was already reserved and therefore correctly
+                    // counted even when it fails. Continue to the next route.
                   }
                 }
               }
