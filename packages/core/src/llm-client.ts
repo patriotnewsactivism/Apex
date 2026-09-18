@@ -20,9 +20,13 @@ import {
   accountCapacityWindow,
   accountFingerprint,
   accountRequestsToday,
+  directProviderCapacityWindow,
+  emergencyRequestCapacityWindow,
+  recordDirectProviderRequest,
   recordPaidProviderRequest,
   recordProviderRequest,
   requestCapacityWindow,
+  type DirectRequestPool,
 } from './request-ledger.js';
 import {
   dailySpendCapMicros,
@@ -71,6 +75,8 @@ export type ApexProviderName =
   | 'openrouter-free-router'
   | 'openrouter-nemotron-ultra'
   | 'openrouter-free-policy'
+  | 'groq-gpt-oss-120b-byok'
+  | 'gemini-3-8-flash-byok'
   | 'openrouter-deepseek-v4-flash-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
@@ -111,6 +117,10 @@ type ProviderSpec = {
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
+  /** Independent request quota pool. OpenRouter uses the 2,775/day pool;
+   * direct BYOK providers have their own counters. */
+  requestPool?: 'openrouter' | DirectRequestPool;
+  protocol?: 'openai-compatible' | 'gemini-interactions';
   activationEnv?: string;
   activationDescription?: string;
   /** Minimum spacing between request starts for this logical provider. */
@@ -145,6 +155,8 @@ function freeOpenRouterSpec(
     model,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
+    requestPool: 'openrouter',
+    protocol: 'openai-compatible',
     minIntervalMs: 500,
     toolCallingReliable: true,
     ...extras,
@@ -166,11 +178,37 @@ const PROVIDERS: readonly ProviderSpec[] = [
   // route and never uses paid credentials.
   freeOpenRouterSpec(FREE_POLICY_GATEWAY_NAME, DEFAULT_OPENROUTER_MODEL_CHAIN[0]),
   {
+    name: 'groq-gpt-oss-120b-byok',
+    model: 'openai/gpt-oss-120b',
+    baseURL: 'https://api.groq.com/openai/v1',
+    // Keep GROQ_API_KEY_2 reserved for live voice; two keys in one Groq org
+    // share limits and do not create a second request pool.
+    apiKeyEnvs: ['GROQ_API_KEY'],
+    requestPool: 'groq',
+    protocol: 'openai-compatible',
+    minIntervalMs: 1_000,
+    toolCallingReliable: true,
+    supportsParallelToolCalls: true,
+  },
+  {
+    name: 'gemini-3-8-flash-byok',
+    model: 'gemini-3.8-flash',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+    apiKeyEnvs: ['GEMINI_API_KEY'],
+    requestPool: 'gemini',
+    protocol: 'gemini-interactions',
+    minIntervalMs: 1_000,
+    toolCallingReliable: true,
+    supportsParallelToolCalls: true,
+  },
+  {
     name: PAID_FALLBACK_PROVIDER_NAME,
     model: PAID_FALLBACK_MODEL,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
+    requestPool: 'openrouter',
+    protocol: 'openai-compatible',
     activationEnv: 'APEX_PAID_FALLBACK',
     activationDescription: 'APEX_PAID_FALLBACK=confirmed is required',
     minIntervalMs: 500,
@@ -209,11 +247,19 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-nemotron-3-5-lightning-free',
   'openrouter-free-router',
   'openrouter-nemotron-ultra',
+  // Independent BYOK pools extend daily throughput after OpenRouter pacing or
+  // quota exhaustion. They are intentionally before the paid fallback.
+  'groq-gpt-oss-120b-byok',
+  'gemini-3-8-flash-byok',
 ];
 
 function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
-    ? [FREE_POLICY_GATEWAY_NAME]
+    ? [
+        FREE_POLICY_GATEWAY_NAME,
+        'groq-gpt-oss-120b-byok',
+        'gemini-3-8-flash-byok',
+      ]
     : [...PROVIDER_ORDER];
   // The paid rung is appended only while it is BOTH enabled and in budget.
   // Dropping it from the order (rather than letting it fail) is what makes an
