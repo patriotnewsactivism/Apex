@@ -1,12 +1,7 @@
-/** Pure regression checks for the Cloud Run health/provenance gate.
- * No Google Cloud or network calls: safe on every CI run. */
+/** Pure regression checks for the Railway production provenance gate.
+ * No Railway or network calls: safe on every CI run. */
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  MAX_HEALTH_BODY_CHARS,
-  immutableImageRef,
-  retainHealthResponseBody,
-} from '../packages/cicd-automation/src/cloud-run-deployer.js';
 import { checkRetiredHostingInstructions } from './verify-retired-hosting-instructions.js';
 
 let failures = 0;
@@ -19,91 +14,19 @@ function check(label: string, condition: boolean, detail?: unknown): void {
   console.error(`  ❌ ${label}`, detail ?? '');
 }
 
-const expectedSha = '289c8ce52d2d3dd17fa3e46373a825cb92938b62';
-const expandedHealth = JSON.stringify({
-  status: 'ok',
-  agents: 13,
-  agentStatusCounts: { idle: 13 },
-  build: { sha: expectedSha },
-  taskQueue: { verdict: 'ok', padding: 'x'.repeat(1_000) },
-  llmCapacity: { state: 'available', pacingEnabled: true },
-});
-
-check('fixture exceeds the historical 500-character truncation boundary', expandedHealth.length > 500);
-const retained = retainHealthResponseBody(expandedHealth);
-check('complete health JSON is retained for provenance parsing', retained === expandedHealth);
-let runningSha: unknown;
-try {
-  runningSha = (JSON.parse(retained) as { build?: { sha?: unknown } }).build?.sha;
-} catch (error) {
-  console.error(error);
-}
-check('expanded health response preserves the expected live commit', runningSha === expectedSha);
-
-const artifactImage = 'us-central1-docker.pkg.dev/apex-project/apex/apex:latest';
-const immutableArtifactImage = 'us-central1-docker.pkg.dev/apex-project/apex/apex:289c8ce52d2d';
-check(
-  'mutable Artifact Registry tag is rewritten to immutable short SHA',
-  immutableImageRef(artifactImage, expectedSha) === immutableArtifactImage,
-);
-check(
-  'Artifact Registry digest is rewritten to immutable short SHA',
-  immutableImageRef(
-    'us-central1-docker.pkg.dev/apex-project/apex/apex@sha256:' + 'a'.repeat(64),
-    expectedSha,
-  ) === immutableArtifactImage,
-);
-check(
-  'untagged registry image receives immutable short SHA',
-  immutableImageRef('us-central1-docker.pkg.dev/apex-project/apex/apex', expectedSha) === immutableArtifactImage,
-);
-
-let invalidShaRejected = false;
-try {
-  immutableImageRef(artifactImage, 'not-a-sha');
-} catch {
-  invalidShaRejected = true;
-}
-check('invalid immutable image SHA is rejected', invalidShaRejected);
-
-let oversizedRejected = false;
-try {
-  retainHealthResponseBody('x'.repeat(MAX_HEALTH_BODY_CHARS + 1));
-} catch {
-  oversizedRejected = true;
-}
-check('unexpectedly large health bodies remain bounded', oversizedRejected);
-
-console.log('\n── GitHub production release ordering ──');
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
-const deployWorkflow = fs.readFileSync(path.join(root, '.github/workflows/deploy.yml'), 'utf8');
-check('Cloud Run deploy is triggered from completed CI rather than direct main push',
-  deployWorkflow.includes('workflow_run:') &&
-  deployWorkflow.includes('workflows: ["CI"]') &&
-  deployWorkflow.includes('types: [completed]') &&
-  !/\n\s*push:\s*\n\s*branches:\s*\[main\]/.test(deployWorkflow));
-check('only successful CI is eligible to enter the deploy gate',
-  deployWorkflow.includes("github.event.workflow_run.conclusion == 'success'"));
-check('deployment uses the exact CI head SHA as its immutable candidate',
-  deployWorkflow.includes('DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}') &&
-  deployWorkflow.includes('APEX_BUILD_SHA="$DEPLOY_SHA"'));
-check('stale CI completions cannot overwrite newer main',
-  deployWorkflow.includes('git rev-parse origin/main') &&
-  deployWorkflow.includes('Skipping stale deploy candidate') &&
-  deployWorkflow.includes('Deployment candidate became stale before Cloud Run update'));
-check('superseded deployment runs are cancelled rather than queued',
-  deployWorkflow.includes('group: deploy-main') && deployWorkflow.includes('cancel-in-progress: true'));
-check('production deployment requires explicit APEX_DEPLOY_ENABLED consent',
-  deployWorkflow.includes('APEX_DEPLOY_ENABLED') && deployWorkflow.includes('production|all'));
-check('health verification compares production to DEPLOY_SHA, not workflow metadata SHA',
-  deployWorkflow.includes("expected=os.environ.get('DEPLOY_SHA')"));
 
 console.log('\n── Railway production provenance ──');
 
-// Railway is the production runtime as of the 2026-09-15 cutover. The Cloud Run
-// assertions above still hold because that workflow is kept intact as the
-// rollback route — but they no longer describe what serves traffic, so the
-// production contract has to be asserted in its own right.
+check(
+  'obsolete Cloud Run deployment workflow is absent',
+  !fs.existsSync(path.join(root, '.github/workflows/deploy.yml')),
+);
+check(
+  'obsolete Cloud Run scaling workflow is absent',
+  !fs.existsSync(path.join(root, '.github/workflows/scale-cloud-run.yml')),
+);
+
 const railwayToml = fs.readFileSync(path.join(root, 'railway.toml'), 'utf8');
 check(
   'Railway builds the repository Dockerfile rather than a detected buildpack',
@@ -111,41 +34,27 @@ check(
     /dockerfilePath\s*=\s*"Dockerfile"/.test(railwayToml),
 );
 check(
-  'Railway gates a release on the same /health endpoint the deploy check reads',
+  'Railway gates releases on the production /health endpoint',
   /healthcheckPath\s*=\s*"\/health"/.test(railwayToml),
 );
 
-// The first step of release verification is "confirm the exact Git SHA that is
-// live". Railway never sets APEX_BUILD_SHA, so without this fallback /health
-// answered `sha: "unknown"` for every Railway deploy — observed 2026-09-15 on
-// the running production service.
 const runtimeHealth = fs.readFileSync(
   path.join(root, 'packages/core/src/runtime-health.ts'),
   'utf8',
 );
 check(
-  'the running commit is recoverable from /health on Railway, not just Cloud Run',
+  'the running commit is recoverable from /health on Railway',
   /process\.env\.APEX_BUILD_SHA \|\| process\.env\.RAILWAY_GIT_COMMIT_SHA \|\| 'unknown'/.test(
     runtimeHealth,
   ),
 );
 check(
-  'an explicit build SHA still outranks the inferred one',
+  'an explicit build SHA still outranks the Railway inferred SHA',
   runtimeHealth.indexOf('APEX_BUILD_SHA') < runtimeHealth.indexOf('RAILWAY_GIT_COMMIT_SHA'),
 );
 
 console.log('\n── Runtime image ABI ──');
 
-// railway.toml builds production from this Dockerfile, so its stages are part
-// of the production contract. The runtime stage runs `pnpm install` against the
-// SAME lockfile the builder resolved, which means any prebuilt native module it
-// pulls has to match the runtime's libc.
-//
-// It did not, from 2026-08-28 to 2026-09-15: builder node:22-slim (glibc),
-// runtime node:22-alpine (musl). @xenova/transformers pulls onnxruntime-node,
-// whose prebuilt .so is glibc-linked, so semantic memory recall failed on every
-// lookup and fell back to keyword search. It survived weeks because memory.ts
-// catches it — nothing ever went red. A silent ABI split needs a loud check.
 const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
 const stageBases = [...dockerfile.matchAll(/^FROM\s+(\S+)\s+AS\s+(\S+)/gm)].map((m) => ({
   image: m[1],
@@ -154,30 +63,44 @@ const stageBases = [...dockerfile.matchAll(/^FROM\s+(\S+)\s+AS\s+(\S+)/gm)].map(
 const builderBase = stageBases.find((entry) => entry.stage === 'builder')?.image;
 const runtimeBase = stageBases.find((entry) => entry.stage === 'runtime')?.image;
 check(
-  'the runtime stage shares the builder\u2019s base image, so native modules keep their libc',
+  'the runtime stage shares the builder base image so native modules keep their libc',
   Boolean(builderBase) && builderBase === runtimeBase,
   { builderBase, runtimeBase },
 );
-
-// A half-finished base swap is its own failure mode: the FROM changes and an
-// apk line is left behind, so the build breaks instead of degrading. Catch it
-// on the side that is cheap to check.
 const usesAlpineBase = /alpine/i.test(runtimeBase ?? '');
 check(
-  'the Dockerfile\u2019s package manager matches its base distro',
+  'the Dockerfile package manager matches its base distro',
   usesAlpineBase ? !/\bapt-get\b/.test(dockerfile) : !/\bapk\s+add\b/.test(dockerfile),
   { runtimeBase, usesApk: /\bapk\s+add\b/.test(dockerfile), usesApt: /\bapt-get\b/.test(dockerfile) },
 );
 
-console.log('\n── Vercel dashboard GitHub status ──');
+console.log('\n── GitHub CI release gate ──');
 
-// The GitHub "Vercel" commit status is project don-matthews/apex. It is a
-// static Vite dashboard build, not the APEX control plane. Root package.json
-// `build` runs typecheck:production, so a vercel.json that only set
-// outputDirectory made Vercel execute the whole monorepo typecheck. Backend TS
-// errors then failed the GitHub status even though Railway Wait for CI gates
-// on Actions production-checks, not that status. Observed 2026-09-18 on
-// dpl_EQKGZyrY2S5QtJTznqnjuiKTU3rv / SHA bc8fa2f.
+const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
+check(
+  'production-checks exists as the Railway Wait-for-CI release gate',
+  /^\s*production-checks:\s*$/m.test(ciWorkflow),
+);
+check(
+  'schema drift guard runs before production typecheck',
+  ciWorkflow.includes('Verify schema changes include migrations') &&
+    ciWorkflow.indexOf('Verify schema changes include migrations') <
+      ciWorkflow.indexOf('Typecheck production runtime'),
+);
+check(
+  'CI builds the production runtime image',
+  /docker\/build-push-action/.test(ciWorkflow) && /^\s+target:\s*runtime\s*$/m.test(ciWorkflow),
+);
+check(
+  'the built image is smoke-tested for libc, onnxruntime, sharp and chromium',
+  /ld-linux-x86-64\.so\.2/.test(ciWorkflow) &&
+    /libonnxruntime\.so/.test(ciWorkflow) &&
+    /sharp-.*\.node/.test(ciWorkflow) &&
+    /chromium/.test(ciWorkflow),
+);
+
+console.log('\n── Vercel dashboard provenance ──');
+
 const vercelConfig = JSON.parse(
   fs.readFileSync(path.join(root, 'vercel.json'), 'utf8'),
 ) as {
@@ -189,7 +112,7 @@ const vercelConfig = JSON.parse(
 const vercelBuild =
   typeof vercelConfig.buildCommand === 'string' ? vercelConfig.buildCommand : '';
 check(
-  'Vercel builds @workspace/dashboard rather than root pnpm run build',
+  'Vercel builds only @workspace/dashboard, not the backend',
   vercelBuild.includes('@workspace/dashboard') &&
     vercelBuild.includes('run build') &&
     !vercelBuild.includes('typecheck:production') &&
@@ -197,52 +120,26 @@ check(
   { buildCommand: vercelConfig.buildCommand },
 );
 check(
-  'Vercel output is the Vite dashboard dist',
+  'Vercel output is the dashboard dist',
   vercelConfig.outputDirectory === 'packages/dashboard/dist',
   { outputDirectory: vercelConfig.outputDirectory },
 );
 check(
-  'Vercel install stays frozen to the committed lockfile',
+  'Vercel install is frozen to the committed lockfile',
   typeof vercelConfig.installCommand === 'string' &&
     vercelConfig.installCommand.includes('pnpm install') &&
     vercelConfig.installCommand.includes('--frozen-lockfile'),
   { installCommand: vercelConfig.installCommand },
 );
-check('Vercel framework is Vite, not a serverless backend', vercelConfig.framework === 'vite', {
+check('Vercel framework is Vite', vercelConfig.framework === 'vite', {
   framework: vercelConfig.framework,
 });
 
-// The Dockerfile checks above read text. Text cannot tell you whether it
-// BUILDS. Until 2026-09-15 CI had no docker step, and Railway deployed from
-// main with checkSuites disabled, so a Dockerfile that failed to build reached
-// production before anyone found out. The job that closes that gap is itself
-// worth pinning. Wait for CI is now a host GitHub-trigger setting; this image
-// build still has to fail the PR even if that host setting is later flipped.
-const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
-// Anchored to a real YAML mapping entry, not merely the words appearing
-// somewhere. The first version of this check matched /target:\s*runtime/ against
-// the whole file and passed when the step was switched to `target: builder`,
-// because the comment above it explains why the target is runtime. A check that
-// its own surrounding prose satisfies is not a check.
-check(
-  'CI builds the production runtime image, so a broken Dockerfile fails on the PR',
-  /docker\/build-push-action/.test(ciWorkflow) && /^\s+target:\s*runtime\s*$/m.test(ciWorkflow),
-);
-check(
-  'the built image is smoke-tested for the libc and binaries it must carry',
-  /ld-linux-x86-64\.so\.2/.test(ciWorkflow) &&
-    /libonnxruntime\.so/.test(ciWorkflow) &&
-    /chromium/.test(ciWorkflow),
-);
-
-// Retired AWS Lightsail/CodeBuild/Railway instructions are a deploy-provenance
-// hazard: an agent that follows them verifies the wrong (nonexistent)
-// infrastructure. Folded in here so it runs on every CI pass.
 failures += checkRetiredHostingInstructions();
 
 console.log(
   failures === 0
-    ? '✅ ALL CLOUD RUN DEPLOY PROVENANCE GUARDS PASSED'
+    ? '✅ ALL RAILWAY DEPLOY PROVENANCE GUARDS PASSED'
     : `❌ ${failures} CHECK(S) FAILED`,
 );
 process.exit(failures === 0 ? 0 : 1);
