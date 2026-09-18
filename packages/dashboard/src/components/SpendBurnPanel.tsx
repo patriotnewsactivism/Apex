@@ -131,6 +131,9 @@ export function SpendBurnPanel() {
   const capPct = Math.min(100, Math.max(0, data.utilizationPct));
   const requestPct = Math.min(100, Math.max(0, data.requests.utilizationPct));
   const requestProjectedOver = data.requests.projectedDaily != null && data.requests.projectedDaily > data.requests.cap;
+  const emergencyPct = data.requests.emergencyCap > 0
+    ? Math.min(100, (data.requests.allProviderUsed / data.requests.emergencyCap) * 100)
+    : 0;
   const providerMax = Math.max(0.0001, ...data.providers.map((p) => p.spentUsd));
 
   return (
@@ -196,9 +199,9 @@ export function SpendBurnPanel() {
         }}
       >
         <MetricCard
-          label="Requests today"
+          label="OpenRouter requests"
           value={data.requests.used.toLocaleString()}
-          detail={`${pct(data.requests.utilizationPct)} of ${data.requests.cap.toLocaleString()} hard ceiling`}
+          detail={`${pct(data.requests.utilizationPct)} of ${data.requests.cap.toLocaleString()} OpenRouter ceiling`}
           icon={<Activity size={16} />}
         />
         <MetricCard
@@ -221,10 +224,39 @@ export function SpendBurnPanel() {
         />
       </div>
 
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <MetricCard
+          label="All providers"
+          value={data.requests.allProviderUsed.toLocaleString()}
+          detail={`${pct(emergencyPct)} of ${data.requests.emergencyCap.toLocaleString()} emergency ceiling`}
+          icon={<Gauge size={16} />}
+        />
+        {data.requests.directProviders.map((pool) => (
+          <MetricCard
+            key={pool.pool}
+            label={`${pool.pool.toUpperCase()} BYOK`}
+            value={pool.requests.toLocaleString()}
+            detail={
+              pool.cap > 0
+                ? `${pool.remaining?.toLocaleString() ?? '0'} left · ${pool.ratePerMinute}/min max`
+                : `Uncapped · ${pool.ratePerMinute}/min max`
+            }
+            icon={<Activity size={16} />}
+          />
+        ))}
+      </div>
+
       <div className="glass-card" style={{ padding: 14, marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
           <div>
-            <div className="apex-eyebrow">Request ceiling utilization</div>
+            <div className="apex-eyebrow">OpenRouter ceiling utilization</div>
             <div style={{ marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--color-apex-muted)' }}>
               {data.requests.used.toLocaleString()} / {data.requests.cap.toLocaleString()} requests
             </div>
