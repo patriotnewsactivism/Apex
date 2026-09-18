@@ -1,38 +1,11 @@
 /**
- * Guard: /health must distinguish a stopped workforce from a throttled one.
+ * Guard: /health must distinguish a stopped workforce from ordinary provider
+ * throttling in the multi-pool architecture.
  *
- * Production evidence (2026-09-08, prod SHA 53132c4). Two /health payloads,
- * both reading `llmCapacity.state: "paced"`:
- *
- *   15:19 UTC  state=paced  tasksClaimed climbing ~15/min   <- benign, two
- *                                                              Nemotron
- *                                                              providers
- *                                                              resting
- *   21:46 UTC  state=paced  tasksClaimed frozen at 2083 for <- total stall,
- *                           64 minutes                         workspace
- *                                                              allowance
- *                                                              exhausted
- *
- * Nothing else separated them: status ok, verdict ok, failures 0, poll loop
- * healthy at ~13 polls/min, one stable instance, uptime climbing.
- * `workforceParkedUntil` was null in both -- it reports the base-agent shared
- * latch, not the workspace allowance. The stall self-cleared at the 00:00 UTC
- * reset (state -> available, 12 idle agents -> 11 thinking within seconds),
- * which is the only reason it was ever attributable.
- *
- * The cause was one collapsed ternary branch:
- *
- *   aggregatePaused || pausedProviders.length > 0 ? "paced" : "available"
- *
- * `aggregatePaused` is `!tokenLedger.pacing.total.allowed` -- the exact
- * expression llmCapacityAvailableNow() uses to return false and stop every
- * agent from claiming. `pausedProviders.length > 0` means some providers rest
- * while claiming continues. Reporting both as "paced" made a total production
- * stall indistinguishable from normal throttling.
- *
- * verify-capacity-latch-release.ts named this exact gap on 2026-09-04
- * ("nothing outside the process could tell a parked workforce from an idle
- * one"). It fixed the latch; this guards the reporting.
+ * OpenRouter, Groq and Gemini have independent request pools. Therefore an
+ * exhausted OpenRouter pool is not a workspace stop while a configured BYOK
+ * pool is still usable. llmCapacityAvailableNow() is the single runtime answer
+ * to "can any route accept work?", and /health must report from that answer.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -52,99 +25,81 @@ function check(label: string, ok: boolean, detail?: unknown): void {
   if (detail !== undefined) console.error(`     ${JSON.stringify(detail)}`);
 }
 
-/**
- * Reproduces the /health ternary from api-server/src/index.ts against the
- * source text, so the guard fails if the real branch is ever recollapsed.
- * Reading the source rather than re-implementing the logic is deliberate:
- * a hand-copied ternary would keep passing after the shipped one regressed.
- */
 function extractCapacityState(source: string): string | null {
-  const match = source.match(
-    /const capacityState =([\s\S]{0,600}?);\n/,
-  );
+  const match = source.match(/const capacityState =([\s\S]{0,700}?);\n/);
   return match ? match[1] : null;
 }
 
 function main(): void {
-  console.log('── Capacity observability (/health) ──');
+  console.log('── Multi-pool capacity observability (/health) ──');
 
-  const indexPath = path.join(root, 'packages/api-server/src/index.ts');
-  const source = fs.readFileSync(indexPath, 'utf8');
-  const expr = extractCapacityState(source);
-
-  check('capacityState assignment is present in api-server/src/index.ts', Boolean(expr));
-  if (!expr) {
-    process.exit(1);
-  }
-
-  // The workspace-wide gate must produce its own state, evaluated BEFORE the
-  // per-provider case, so a stall is never reported as ordinary throttling.
-  check(
-    'the workspace-wide allowance gate has its own state, not "paced"',
-    /aggregatePaused\s*\n?\s*\?\s*"workforce_paused"/.test(expr),
-    expr,
+  const source = fs.readFileSync(
+    path.join(root, 'packages/api-server/src/index.ts'),
+    'utf8',
   );
-
-  check(
-    'aggregatePaused is tested before pausedProviders.length',
-    expr.indexOf('aggregatePaused') < expr.indexOf('pausedProviders'),
-    expr,
-  );
-
-  // The regression this exists to prevent: the two conditions sharing a branch.
-  check(
-    'aggregatePaused and pausedProviders do not share a ternary branch',
-    !/aggregatePaused\s*\|\|\s*pausedProviders/.test(expr) &&
-      !/pausedProviders[^?]*\|\|\s*aggregatePaused/.test(expr),
-    expr,
-  );
-
-  check(
-    'per-provider pacing still reports "paced"',
-    /pausedProviders\.length > 0\s*\n?\s*\?\s*"paced"/.test(expr),
-    expr,
-  );
-
-  check('a hard cap still reports "capped"', /hardCapped\s*\n?\s*\?\s*"capped"/.test(expr), expr);
-  check('an unconstrained workspace still reports "available"', /"available"/.test(expr), expr);
-
-  // aggregatePaused must keep tracking the SAME conditions llmCapacityAvailableNow
-  // gates on. If one drifts, /health starts lying about the other.
-  //
-  // There are two of those conditions now, not one. The token ledger was joined
-  // by a request ledger in 2026-09, because the allowance APEX actually runs out
-  // of on a free-tier account is denominated in requests, not tokens — and a
-  // workspace parked by the request budget looked exactly as "available" on
-  // /health as an idle one, which is the precise failure this guard exists to
-  // prevent. Both must appear on both sides.
-  const aggregate = source.match(/const aggregatePaused =[\s\S]{0,200}?;/)?.[0] ?? '';
-  check(
-    'aggregatePaused is derived from the token ledger pacing window',
-    /!tokenLedger\.pacing\.total\.allowed/.test(aggregate),
-    aggregate,
-  );
-  check(
-    'aggregatePaused is also derived from the request ledger pacing window',
-    /!requestLedger\.pacing\.total\.allowed/.test(aggregate),
-    aggregate,
-  );
-
-  const llmClient = fs.readFileSync(
+  const client = fs.readFileSync(
     path.join(root, 'packages/core/src/llm-client.ts'),
     'utf8',
   );
-  const probe = llmClient.slice(
-    llmClient.indexOf('export function llmCapacityAvailableNow('),
-  );
-  const probeBody = probe.slice(0, probe.indexOf('\n}\n'));
+  const expr = extractCapacityState(source);
+
+  check('capacityState assignment exists', Boolean(expr));
+  if (!expr) process.exit(1);
+
   check(
-    'llmCapacityAvailableNow still gates on the token pacing window',
-    /if \(!ledger\.pacing\.total\.allowed\) return false;/.test(probeBody),
+    'hard all-provider cap reports capped first',
+    /hardCapped\s*\n?\s*\?\s*"capped"/.test(expr),
+    expr,
   );
   check(
-    'request pacing skips free routes while allowing confirmed paid continuity',
-    /const freeRequestCapacityAvailable = requestCapacityWindow\(now\)\.allowed;/.test(probeBody) &&
-      /if \(!freeRequestCapacityAvailable && !provider\.paid\) continue;/.test(probeBody),
+    'no-usable-route state reports workforce_paused before per-provider pacing',
+    /aggregatePaused\s*\n?\s*\?\s*"workforce_paused"/.test(expr) &&
+      expr.indexOf('aggregatePaused') < expr.indexOf('pausedProviders'),
+    expr,
+  );
+  check(
+    'ordinary provider pacing remains distinct',
+    /pausedProviders\.length > 0\s*\n?\s*\?\s*"paced"/.test(expr),
+    expr,
+  );
+  check('healthy capacity reports available', /"available"/.test(expr), expr);
+
+  check(
+    'request hard-cap reporting uses the emergency all-provider ceiling, not the OpenRouter pool alone',
+    /const emergencyRequestCapReached =\s*[\s\S]{0,180}?requestLedger\.allProviderRequests >= requestLedger\.emergencyCap/.test(source) &&
+      /const hardCapped = tokenLedger\.totalCapReached \|\| emergencyRequestCapReached/.test(source),
+  );
+
+  check(
+    'aggregatePaused delegates to the same runtime capacity probe agents use',
+    /const anyLLMCapacityAvailable = llmCapacityAvailableNow\(\);/.test(source) &&
+      /const aggregatePaused = !hardCapped && !anyLLMCapacityAvailable;/.test(source),
+  );
+
+  const probeStart = client.indexOf('export function llmCapacityAvailableNow(');
+  const probeEnd = client.indexOf('\n}\n', probeStart);
+  const probe = client.slice(probeStart, probeEnd + 3);
+  check(
+    'capacity probe refuses the emergency all-provider cap',
+    /if \(!emergencyRequestCapacityWindow\(now\)\.allowed\) return false;/.test(probe),
+    probe,
+  );
+  check(
+    'capacity probe still honors token pacing',
+    /if \(!ledger\.pacing\.total\.allowed\) return false;/.test(probe),
+    probe,
+  );
+  check(
+    'capacity probe checks each configured provider request pool independently',
+    /if \(!requestWindowForProvider\(provider, now\)\.allowed\) continue;/.test(probe),
+    probe,
+  );
+
+  check(
+    '/health exposes all-provider usage and each direct pool for diagnosis',
+    /allProviderUsed: requestLedger\.allProviderRequests/.test(source) &&
+      /emergencyCap: requestLedger\.emergencyCap/.test(source) &&
+      /directProviders: requestLedger\.directProviders/.test(source),
   );
 
   if (failures > 0) {
