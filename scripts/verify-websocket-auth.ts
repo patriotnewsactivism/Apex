@@ -26,8 +26,14 @@ assert.doesNotMatch(
   'the long-lived admin token must not be embedded in WebSocket URLs',
 );
 assert.match(dashboardSources, /websocketTicket\(\)/, 'browser must request a short-lived ticket');
+assert.match(
+  dashboardSources,
+  /type === 'heartbeat'/,
+  'browser must answer application heartbeats; RFC ping is invisible to JS and may be stripped by the proxy',
+);
 
 const serverSource = readFileSync(join(repositoryRoot, 'packages/api-server/src/websocket.ts'), 'utf8');
 assert.match(serverSource, /type: 'heartbeat'/, 'server must send an observable browser heartbeat');
+assert.match(serverSource, /ws\.on\('message'/, 'server must treat inbound application messages as liveness');
 
 console.log('✅ WEBSOCKET AUTH AND HEARTBEAT GUARDS PASSED');

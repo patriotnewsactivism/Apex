@@ -39,6 +39,7 @@ const WSContext = createContext<WSContextValue>({
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30_000;
 const HEARTBEAT_TIMEOUT = 75_000;
+const CLIENT_KEEPALIVE_MS = 25_000;
 
 function getWsUrl(ticket: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -55,12 +56,18 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clientKeepalive = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectDelay = useRef(INITIAL_RECONNECT_DELAY);
   const intentionalClose = useRef(false);
 
   const cleanupHeartbeat = () => {
     if (heartbeatTimeout.current) clearTimeout(heartbeatTimeout.current);
     heartbeatTimeout.current = null;
+  };
+
+  const stopClientKeepalive = () => {
+    if (clientKeepalive.current) clearInterval(clientKeepalive.current);
+    clientKeepalive.current = null;
   };
 
   // The event stream only contains status CHANGES. A browser that connects
@@ -120,6 +127,12 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       // The server sends an observable application heartbeat every 30 seconds.
       cleanupHeartbeat();
       resetHeartbeatWatchdog(ws);
+      stopClientKeepalive();
+      clientKeepalive.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+        }
+      }, CLIENT_KEEPALIVE_MS);
     };
 
     ws.onmessage = (e) => {
@@ -127,6 +140,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       resetHeartbeatWatchdog(ws);
       try {
         const event = JSON.parse(e.data) as ApexEvent;
+        if (event.type === 'heartbeat') {
+          // Application-level keepalive. RFC ping/pong is invisible to
+          // browser JS and is stripped by some proxies in front of Railway.
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+          }
+          return;
+        }
         setLastEvent(event);
 
         // Update agent statuses
@@ -145,12 +166,14 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     };
 
     ws.onerror = () => {
-      ws.close();
+      // onclose handles reconnect. Forcing close here races the handshake
+      // and can drop a socket that was about to open.
     };
 
     ws.onclose = () => {
       setConnected(false);
       cleanupHeartbeat();
+      stopClientKeepalive();
       if (intentionalClose.current) {
         intentionalClose.current = false;
         return;
@@ -183,6 +206,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       wsRef.current?.close();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       cleanupHeartbeat();
+      stopClientKeepalive();
     };
   }, []);
 

@@ -96,6 +96,37 @@ async function main() {
     'clients answering pings were reaped; the liveness check is too aggressive',
   );
 
+  // ─── 2b. A browser-like client that cannot answer RFC ping must survive ──────
+  // Railway/Cloudflare can strip ping/pong frames. The dashboard replies to
+  // JSON heartbeats instead. autoPong:false simulates that proxy.
+  const browserLike = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${issueWebSocketTicket()}`, {
+    autoPong: false,
+  });
+  await new Promise<void>((resolve, reject) => {
+    browserLike.once('open', () => resolve());
+    browserLike.once('error', reject);
+  });
+  browserLike.on('message', (data) => {
+    try {
+      const event = JSON.parse(data.toString()) as { type?: string };
+      if (event.type === 'heartbeat' && browserLike.readyState === WebSocket.OPEN) {
+        browserLike.send(JSON.stringify({ type: 'pong' }));
+      }
+    } catch {
+      // ignore
+    }
+  });
+  await settle(SWEEP_MS * 8);
+  assert.equal(
+    getConnectedClientCount(),
+    6,
+    'clients that answer application heartbeats but not RFC ping were reaped',
+  );
+  assert.equal(browserLike.readyState, WebSocket.OPEN, 'browser-like client must stay OPEN');
+  browserLike.terminate();
+  await settle(80);
+  assert.equal(getConnectedClientCount(), 5, 'terminated browser-like client must deregister');
+
   // ─── 3. Ending via 'error' must not leak ─────────────────────────────────────
   // Destroying the transport under the socket is the abrupt path that used to
   // leave the per-connection interval running.

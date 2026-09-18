@@ -56,7 +56,7 @@ function directoryUsageBytes(
     const dir = stack.pop();
     if (!dir) break;
 
-    let children: ReturnType<typeof readdirSync>;
+    let children;
     try {
       children = readdirSync(dir, { withFileTypes: true });
     } catch {

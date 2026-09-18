@@ -24,6 +24,8 @@ const MAX_BUFFERED_BYTES = 1_000_000;
 // socket so that a forgotten entry cannot itself become the leak: when the
 // socket is collected the entry disappears with it.
 const alive = new WeakSet<WebSocket>();
+const missedHeartbeats = new WeakMap<WebSocket, number>();
+const MAX_MISSED_HEARTBEATS = 2;
 
 /** Write to one client, dropping it if it has stopped draining. */
 function sendTo(client: WebSocket, payload: string): void {
@@ -66,6 +68,14 @@ export function setupWebSocket(
       alive.add(ws);
     });
 
+    // Browser clients cannot send RFC ping frames, and some reverse proxies
+    // (Railway edge, Cloudflare) strip ping/pong entirely. Any inbound
+    // application message — the dashboard replies to `heartbeat` with `pong`
+    // — is therefore also proof the peer is still reading.
+    ws.on('message', () => {
+      alive.add(ws);
+    });
+
     ws.on('close', (code, reason) => {
       clients.delete(ws);
       console.log(
@@ -93,19 +103,32 @@ export function setupWebSocket(
 
     for (const ws of clients) {
       if (!alive.has(ws)) {
-        // Missed the previous round trip. terminate() rather than close():
-        // there is no peer left to complete a closing handshake with.
-        ws.terminate();
-        clients.delete(ws);
-        continue;
+        const missed = (missedHeartbeats.get(ws) ?? 0) + 1;
+        missedHeartbeats.set(ws, missed);
+        if (missed >= MAX_MISSED_HEARTBEATS) {
+          // Missed consecutive application/RFC round trips. terminate() rather
+          // than close(): there is no peer left to complete a handshake with.
+          console.warn(`[websocket] Reaping client after ${missed} missed heartbeats`);
+          ws.terminate();
+          clients.delete(ws);
+          continue;
+        }
+      } else {
+        missedHeartbeats.delete(ws);
+        alive.delete(ws);
       }
 
-      alive.delete(ws);
-      ws.ping();
+      try {
+        ws.ping();
+      } catch {
+        // ping() throws if the socket is already closing; the close/error
+        // handlers remove it. Keep sending the JSON heartbeat below for
+        // browsers whose proxy ate the ping frame.
+      }
 
       // Browser JavaScript cannot observe ping frames, so the dashboard needs
       // this application-level message to tell a quiet healthy connection from
-      // a dead proxy.
+      // a dead proxy. The client replies with `{ type: 'pong' }`.
       sendTo(ws, payload);
     }
   }, heartbeatIntervalMs);

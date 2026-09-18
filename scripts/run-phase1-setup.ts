@@ -1,22 +1,25 @@
-﻿import { execSync } from 'child_process';
+import { execSync } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function runStep(label: string, cmd: string) {
   console.log(`\n========================================`);
   console.log(`[STEP] ${label}`);
   console.log(`Command: ${cmd}`);
   console.log(`========================================`);
-  execSync(cmd, { stdio: 'inherit' });
+  execSync(cmd, { stdio: 'inherit', cwd: repoRoot });
 }
 
 async function main() {
   console.log('Starting Phase 1 & 2 automated setup...');
+  console.log(`[Config] Repo root: ${repoRoot}`);
 
-  // 1. Ensure APEX_ENCRYPTION_KEY exists in .env
-  const envPath = path.resolve(process.cwd(), '.env');
-  let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+  const envPath = path.join(repoRoot, '.env');
+  const envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
 
   if (!envContent.includes('APEX_ENCRYPTION_KEY')) {
     const newKey = crypto.randomBytes(32).toString('hex');
@@ -26,7 +29,6 @@ async function main() {
     console.log(`[Config] APEX_ENCRYPTION_KEY already present in .env`);
   }
 
-  // 2. Database Migrations
   runStep(
     'Migrate Provider Connections',
     'pnpm --filter @workspace/db exec tsx src/migrate-provider-connections.ts'
@@ -37,16 +39,13 @@ async function main() {
     'pnpm --filter @workspace/db exec tsx src/migrate-revenue-ops-tables.ts'
   );
 
-  // 3. Static & Lifecycle Verification
   runStep(
     'Verify Mission Lifecycle',
     'pnpm --filter @workspace/core exec tsx ../../scripts/verify-mission-lifecycle.ts'
   );
 
-  // 4. Typecheck
   runStep('Run Production Typecheck', 'pnpm run typecheck');
 
-  // 5. Dashboard Build
   runStep('Build Packages & Dashboard', 'pnpm -w run build');
 
   console.log('\n✓ Phase 1 setup and verification completed successfully.');
