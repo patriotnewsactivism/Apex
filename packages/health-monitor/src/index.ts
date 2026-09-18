@@ -43,7 +43,7 @@ export type WebSocketLivenessChecker = () => { serverRunning: boolean; connected
  * to avoid a cyclic workspace dependency with @workspace/core (core owns the
  * real llm-client.ts provider list and tool-registry.ts registry). */
 export interface HealthMonitorDeps {
-  getConfiguredProviders?: () => Array<{ name: string; configured: boolean }>;
+  getConfiguredProviders?: () => Array<{ name: string; configured: boolean; enabled?: boolean }>;
   // Reports whether the LLM chain has recently served tool-bearing requests
   // from a provider that cannot reliably emit structured tool calls. Injected
   // (rather than imported) to keep this package free of a @workspace/core
@@ -84,8 +84,15 @@ export class HealthMonitor {
         return { status: 'degraded', detail: 'no provider source injected (caller must pass getConfiguredProviders)' };
       }
       const providers = this.deps.getConfiguredProviders();
-      const configuredCount = providers.filter((p) => p.configured).length;
-      const detail = providers.map((p) => `${p.name}:${p.configured ? 'ok' : 'missing'}`).join(', ');
+      const enabledProviders = providers.filter((p) => p.enabled !== false);
+      const configuredCount = enabledProviders.filter((p) => p.configured).length;
+      const detail = providers
+        .map((p) =>
+          p.enabled === false
+            ? `${p.name}:disabled`
+            : `${p.name}:${p.configured ? 'ok' : 'missing'}`,
+        )
+        .join(', ');
 
       // Key-presence alone says nothing about whether the workforce can
       // actually WORK. On 2026-07-29 every key was present and healthy-looking
@@ -107,7 +114,12 @@ export class HealthMonitor {
       }
 
       return {
-        status: configuredCount === 0 ? 'critical' : configuredCount < providers.length ? 'degraded' : 'healthy',
+        status:
+          configuredCount === 0
+            ? 'critical'
+            : configuredCount < enabledProviders.length
+              ? 'degraded'
+              : 'healthy',
         detail,
       };
     });
@@ -191,8 +203,12 @@ export class HealthMonitor {
       const key = process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY;
       if (!url || !key) {
         return {
-          status: 'degraded',
-          detail: 'BUILDMYBOT_SUPABASE_URL / BUILDMYBOT_SUPABASE_SERVICE_KEY not configured',
+          // BuildMyBot is a managed portfolio integration, not a dependency
+          // required for APEX itself to operate. Missing bridge credentials
+          // should be visible without degrading the APEX health rollup and
+          // triggering autonomous repair work.
+          status: 'healthy',
+          detail: 'not configured (optional BuildMyBot health bridge disabled)',
         };
       }
       // Guard a Railway misconfiguration: if the "URL" isn't a valid https://
