@@ -174,12 +174,13 @@ export class HealthMonitor {
   async checkWebSocket(): Promise<ComponentCheckResult> {
     return safeCheck(async () => {
       if (!this.deps.wsChecker) {
-        // Honest degraded state rather than a fabricated 'healthy' -- this
-        // check literally cannot answer for itself unless the api-server
-        // process wires in a checker (see WebSocketLivenessChecker above).
+        // A worker-only runtime does not own the browser WebSocket server, so
+        // absence of this API-process dependency is "not applicable", not a
+        // degradation. The HTTP control plane injects a real checker and will
+        // still report critical if its WebSocket server is actually down.
         return {
-          status: 'degraded',
-          detail: 'no WebSocket checker injected (only wireable from the api-server process)',
+          status: 'healthy',
+          detail: 'not applicable in this runtime (WebSocket liveness is checked by the API control plane)',
         };
       }
       const { serverRunning, connectedClients } = this.deps.wsChecker();
