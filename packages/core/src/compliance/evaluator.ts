@@ -6,6 +6,12 @@ import {
   ComplianceReason,
 } from './types';
 
+function rowsOf<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  const rows = (result as { rows?: T[] } | null)?.rows;
+  return Array.isArray(rows) ? rows : [];
+}
+
 export async function evaluateOutboundAction(
   req: OutboundActionRequest
 ): Promise<ComplianceDecision> {
@@ -42,8 +48,9 @@ export async function evaluateOutboundAction(
       `;
 
   const suppressionResult = await db.execute(suppressionQuery);
-  if (suppressionResult.rows && suppressionResult.rows.length > 0) {
-    const row = suppressionResult.rows[0] as { id: string; reason: string };
+  const suppressionRows = rowsOf<{ id: string; reason: string }>(suppressionResult);
+  if (suppressionRows.length > 0) {
+    const row = suppressionRows[0];
     const decision: ComplianceDecision = {
       decision: 'deny',
       reasons: [
@@ -68,8 +75,9 @@ export async function evaluateOutboundAction(
   `);
 
   let recipientTimezone = req.timezone || 'America/Chicago';
-  if (contactQuery.rows && contactQuery.rows.length > 0) {
-    const contact = contactQuery.rows[0] as { status: string; timezone: string | null };
+  const contactRows = rowsOf<{ status: string; timezone: string | null }>(contactQuery);
+  if (contactRows.length > 0) {
+    const contact = contactRows[0];
     if (contact.status !== 'active') {
       reasons.push({ code: 'CONTACT_NOT_ACTIVE', message: `Contact is not active (Status: ${contact.status}).` });
     }
@@ -112,8 +120,9 @@ export async function evaluateOutboundAction(
     LIMIT 1;
   `);
 
-  if (consentQuery.rows && consentQuery.rows.length > 0) {
-    const consent = consentQuery.rows[0] as { status: string };
+  const consentRows = rowsOf<{ status: string }>(consentQuery);
+  if (consentRows.length > 0) {
+    const consent = consentRows[0];
     if (consent.status === 'denied') {
       reasons.push({ code: 'CONSENT_DENIED', message: `Explicit consent was denied for channel '${req.channel}'.` });
     } else if (consent.status === 'revoked') {
@@ -131,7 +140,7 @@ export async function evaluateOutboundAction(
       AND occurred_at >= ${windowStart};
   `);
 
-  const recentTouches = (touchHistory.rows?.[0] as { count: number })?.count ?? 0;
+  const recentTouches = rowsOf<{ count: number }>(touchHistory)[0]?.count ?? 0;
   if (recentTouches >= 3) {
     reasons.push({
       code: 'CADENCE_EXCEEDED',
