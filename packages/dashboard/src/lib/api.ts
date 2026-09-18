@@ -100,6 +100,19 @@ export interface SpendSnapshot {
   projected30DayUsd: number | null;
   utilizationPct: number;
   providers: Array<{ provider: string; spentUsd: number }>;
+  requests: {
+    used: number;
+    cap: number;
+    configuredCap: number;
+    remaining: number | null;
+    utilizationPct: number;
+    projectedDaily: number | null;
+    lastMinute: number;
+    ratePerMinute: number;
+    pacingEnabled: boolean;
+    releasedSoFar: number;
+    persistence: 'postgres+memory' | 'memory-only';
+  };
   updatedAt: string;
 }
 
