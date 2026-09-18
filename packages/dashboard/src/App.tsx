@@ -23,6 +23,7 @@ import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
 import { ArtifactsPanel } from './components/ArtifactsPanel.js';
 import { ScheduledJobsPanel } from './components/ScheduledJobsPanel.js';
+import { SpendBurnPanel } from './components/SpendBurnPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import {
   Target,
@@ -47,6 +48,7 @@ import {
   Brain,
   Package,
   CalendarClock,
+  CircleDollarSign,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -252,6 +254,7 @@ function Sidebar({
         { id: 'control', label: 'Control Room', icon: <SlidersHorizontal size={16} /> },
         { id: 'artifacts', label: 'Artifacts', icon: <Package size={16} /> },
         { id: 'scheduled', label: 'Cron Registry', icon: <CalendarClock size={16} /> },
+        { id: 'spend', label: 'Spend / Burn', icon: <CircleDollarSign size={16} /> },
         { id: 'health', label: 'Health', icon: <Activity size={16} /> },
         { id: 'learning', label: 'Intelligence', icon: <Brain size={16} /> },
         { id: 'pipeline', label: 'CI/CD', icon: <GitBranch size={16} /> },
@@ -605,6 +608,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     control: <ControlRoom />,
     artifacts: <ArtifactsPanel />,
     scheduled: <ScheduledJobsPanel />,
+    spend: <SpendBurnPanel />,
     suggestions: <SuggestionsPanel />,
     logs: (
       <div
@@ -636,6 +640,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
     scheduled: { title: 'Cron Registry', kicker: 'Systems' },
+    spend: { title: 'Spend / Burn Rate', kicker: 'Systems' },
     suggestions: { title: 'Suggestions', kicker: 'Business' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },
     approvals: { title: 'Approval Queue', kicker: 'Command' },
