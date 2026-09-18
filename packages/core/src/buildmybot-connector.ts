@@ -6,7 +6,7 @@ import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-tax
 //
 // Gives APEX command-and-supervision authority over the BuildMyBot.app AI
 // workforce (the persistent, role-specific agents served by the Railway-hosted
-// Node/Express application, with durable state in Supabase). APEX is the portfolio-level commander; the
+// Node/Express application, with durable state in Neon/Postgres). APEX is the portfolio-level commander; the
 // BuildMyBot agents are its hands for that product.
 //
 // Command channel:  manager_briefings — every BuildMyBot role reads the
@@ -19,11 +19,11 @@ import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-tax
 //                   authenticated with the shared CRON_SECRET.
 //
 // Env (all in .env — see .env.example):
-//   BUILDMYBOT_SUPABASE_URL          e.g. https://evkjlnbpntimbxklnhoz.supabase.co
-//   BUILDMYBOT_SUPABASE_SERVICE_KEY  service-role key (server-side only, never
-//                                    committed; APEX runs on the owner's machine)
 //   BUILDMYBOT_APP_URL               default https://www.buildmybot.app
-//   BUILDMYBOT_CRON_SECRET           shared secret protecting BuildMyBot cron routes
+//   BUILDMYBOT_DATABASE_URL          Neon/Postgres URL for future direct
+//                                    data-plane tooling only; service health
+//                                    does not require database credentials.
+////   BUILDMYBOT_CRON_SECRET           shared secret protecting BuildMyBot cron routes
 //   BUILDMYBOT_RAILWAY_TOKEN         Railway API token (approval-gated redeploy tool)
 //   BUILDMYBOT_RAILWAY_SERVICE_ID    defaults to 60b6d260-f5d8-463d-87be-58339545eaaf
 //   BUILDMYBOT_RAILWAY_ENVIRONMENT_ID defaults to 6ce38db0-789b-4fe9-ad02-f068fe6866ae
@@ -68,43 +68,21 @@ function buildQuery(params: Record<string, string | number | undefined>): string
   return qs ? `?${qs}` : '';
 }
 
-/** Thin Supabase REST helper (PostgREST). Throws on non-2xx. */
+/** Retired direct-data helper.
+ *
+ * BuildMyBot's data plane is Neon/Postgres-backed. These legacy tool bodies are
+ * filtered out below until they are migrated to a Neon-backed management API
+ * or database adapter. Keeping this fail-closed stub prevents accidental
+ * execution during that transition.
+ */
 async function sbFetch(
-  table: string,
-  query: string,
-  init?: RequestInit,
+  _table: string,
+  _query: string,
+  _init?: RequestInit,
 ): Promise<any> {
   throw new Error(
-    'BuildMyBot direct data-plane access has moved to Neon. This legacy Supabase path is disabled; migrate the caller to the Neon-backed management API/database adapter.',
+    'BuildMyBot direct data-plane tool is retired pending Neon-backed implementation.',
   );
-  const baseUrl = '';
-  // Fail early with a clear message instead of "Failed to parse URL from eyJ…"
-  // which happens when BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY
-  // are swapped in the environment — the service-role JWT token ends up as the
-  // URL, and Node's fetch can't parse it.
-  if (!baseUrl.startsWith('https://')) {
-    throw new Error(
-      `BUILDMYBOT_SUPABASE_URL must be an https:// project URL ` +
-      `(e.g. https://xyz.supabase.co). Got: "${baseUrl.slice(0, 30)}…". ` +
-      `BUILDMYBOT_SUPABASE_URL and BUILDMYBOT_SUPABASE_SERVICE_KEY may be swapped in your env.`,
-    );
-  }
-  const url = `${baseUrl}/rest/v1/${table}${query}`;
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      apikey: '',
-      Authorization: 'Bearer ',
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`BuildMyBot Supabase ${res.status} on ${table}: ${body.slice(0, 300)}`);
-  }
-  const text = await res.text();
-  return text ? JSON.parse(text) : null;
 }
 
 function todayISO(): string {
@@ -419,10 +397,11 @@ export function createBuildMyBotTools(): ToolDefinition[] {
 
     // ── Bridge: push Apex-researched leads into BuildMyBot's pipeline ──────
     //
-    // THE gap this closes. Apex and BuildMyBot each have a researched_leads
-    // table in a DIFFERENT Supabase project, with different column names:
+    // Historical bridge: Apex and BuildMyBot each have a researched_leads
+    // table with different column names. The old cross-database implementation
+    // is retired until this tool is migrated to BuildMyBot's Neon-backed data plane.
     //
-    //   Apex (zvbypuo…)          BuildMyBot (evkjlnb…)
+    //   Apex                     BuildMyBot
     //   fit_reason               why_good_fit
     //   outreach_angle           suggested_angle
     //   researched_by_agent_id   researched_by
