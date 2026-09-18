@@ -7,6 +7,7 @@ import type {
   LLMTool,
   LLMToolCall,
 } from './types.js';
+import { callGeminiInteractions } from './gemini-interactions.js';
 import {
   getTokenLedgerSnapshot,
   isTotalDailyCapReached,
@@ -667,13 +668,8 @@ export function getProviderBackpressureSnapshot(): {
  *  guarantee -- the real reservation still happens inside complete().
  */
 export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
-  // A hard total cap is genuinely workspace-wide; nothing to re-probe.
   if (isTotalDailyCapReached()) return false;
-
-  // A paced/exhausted free request window can still be served by the explicitly
-  // enabled paid continuity route. Free providers remain ineligible until the
-  // ramp releases capacity; the paid route does not consume the free ledger.
-  const freeRequestCapacityAvailable = requestCapacityWindow(now).allowed;
+  if (!emergencyRequestCapacityWindow(now).allowed) return false;
 
   const ledger = getTokenLedgerSnapshot();
   if (!ledger.pacing.total.allowed) return false;
@@ -689,13 +685,20 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
-    if (!freeRequestCapacityAvailable && !provider.paid) continue;
-    const usableCredentials = configuredCredentials(provider).filter(
-      (credential) =>
-        provider.paid ||
-        (!accountCooldown(credential.key) &&
-          accountCapacityWindow(credential.key).allowed),
-    );
+
+    // Each provider family owns its own request pool. An exhausted OpenRouter
+    // allowance must not park Groq/Gemini, and vice versa.
+    if (!requestWindowForProvider(provider, now).allowed) continue;
+
+    const usableCredentials = configuredCredentials(provider).filter((credential) => {
+      const credentialId = `${provider.name}:${credential.env}`;
+      if (credentialCooldown(credentialId)) return false;
+      if (!isOpenRouterProvider(provider) || provider.paid) return true;
+      return (
+        !accountCooldown(credential.key) &&
+        accountCapacityWindow(credential.key).allowed
+      );
+    });
     if (usableCredentials.length === 0) continue;
 
     const readyAt = providerCooldowns.get(provider.name) ?? 0;
@@ -983,13 +986,15 @@ async function callCompatibleProvider(
   let routedModels = [provider.model];
 
   try {
-    const policy = getActiveOpenRouterModelPolicy();
+    const policy = isOpenRouterProvider(provider)
+      ? getActiveOpenRouterModelPolicy()
+      : null;
     const customPolicy = Boolean(policy) && provider.name === FREE_POLICY_GATEWAY_NAME;
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
       : [provider.model];
 
-    if (policy?.routingMode === 'adaptive') {
+    if (isOpenRouterProvider(provider) && policy?.routingMode === 'adaptive') {
       routedModels = await getAdaptiveModelOrder({
         role: config.role,
         candidates: routedModels,
@@ -1016,13 +1021,15 @@ async function callCompatibleProvider(
       messages: toWireMessages(messages),
       temperature: config.temperature ?? 0.7,
       max_tokens: config.maxTokens ?? 2048,
-      // Explicitly request usage data so OpenRouter returns billed generation
-      // cost alongside token counts when available.
-      usage: { include: true },
+      // OpenRouter-specific usage/provider fields are intentionally omitted
+      // for direct OpenAI-compatible BYOK APIs such as Groq.
+      ...(isOpenRouterProvider(provider) ? { usage: { include: true } } : {}),
       ...(provider.reasoningEffort
         ? { reasoning: { effort: provider.reasoningEffort } }
         : {}),
-      ...(Object.keys(providerRouting).length > 0 ? { provider: providerRouting } : {}),
+      ...(isOpenRouterProvider(provider) && Object.keys(providerRouting).length > 0
+        ? { provider: providerRouting }
+        : {}),
     };
     if (customPolicy) {
       // OpenRouter rejects the whole request with HTTP 400 when `models` holds
@@ -1066,11 +1073,14 @@ async function callCompatibleProvider(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
-        'HTTP-Referer': 'https://apex.donmatthews.live',
-        'X-Title': 'APEX Agent Workforce',
-        // OpenRouter documents this as the stable opt-in for route audit data.
-        // Only a privacy-minimized subset is retained by APEX.
-        'X-OpenRouter-Metadata': 'enabled',
+        ...(isOpenRouterProvider(provider)
+          ? {
+              'HTTP-Referer': 'https://apex.donmatthews.live',
+              'X-Title': 'APEX Agent Workforce',
+              // Stable opt-in for OpenRouter route audit data.
+              'X-OpenRouter-Metadata': 'enabled',
+            }
+          : {}),
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -1141,6 +1151,33 @@ async function callCompatibleProvider(
   }
 }
 
+async function callProvider(
+  provider: ProviderSpec,
+  key: string,
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+  config: LLMClientConfig,
+  execution?: LLMExecutionContext,
+): Promise<LLMResponse> {
+  const baseURL = providerBaseURL(provider);
+  if (!baseURL) {
+    throw Object.assign(new Error('provider base URL is not configured'), { status: 0 });
+  }
+  if (provider.protocol === 'gemini-interactions') {
+    return callGeminiInteractions({
+      baseURL,
+      apiKey: key,
+      model: provider.model,
+      messages,
+      tools,
+      config,
+      execution,
+      timeoutMs: LLM_REQUEST_TIMEOUT_MS,
+    });
+  }
+  return callCompatibleProvider(provider, key, messages, tools, config, execution);
+}
+
 // ─── Client ──────────────────────────────────────────────────────────────────
 
 type CapacityBlock = {
@@ -1205,38 +1242,17 @@ class MultiProviderClient {
         );
       }
 
-      // Request budget. Checked BEFORE the token budget's reservation because
-      // the two ration different things and the request one is what actually
-      // binds on a free-tier account: OpenRouter allows a fixed number of
-      // calls per account per UTC day whatever their size, so a workspace can
-      // be nowhere near any token cap and still be refused.
-      //
-      // The `paced` outcome is the one that does the work day to day. It is
-      // not an outage — it means the ramp has not released the next request
-      // yet, so the agent parks briefly and resumes. That is the mechanism
-      // that spreads the allowance across 24h instead of letting the workforce
-      // spend it all before lunch.
-      // Interactive (human-typed, synchronous) calls may skip the smooth
-      // day-long pacing ramp, but the hard workspace request ceiling and the
-      // short-window rate limiter remain mandatory for EVERY provider.
-      //
-      // Paid fallback used to turn a denied free request window into
-      // `paidOnly=true`, which made the request ledger a free-tier meter
-      // instead of a workspace ceiling. Paid attempts were not recorded there,
-      // so a nominal 2-3k/day cap could still generate ~10k real upstream
-      // requests. The request window is now authoritative: no paid lane can
-      // tunnel around it.
+      // Cross-provider emergency ceiling. Provider-specific request budgets are
+      // enforced inside the routing loop so an exhausted OpenRouter pool can
+      // fall through to independent Groq/Gemini BYOK capacity.
       const pacingOverride = execution?.interactive ? false : undefined;
-      const requestWindow = requestCapacityWindow(Date.now(), pacingOverride);
-      if (!requestWindow.allowed) {
+      const emergencyWindow = emergencyRequestCapacityWindow(Date.now());
+      if (!emergencyWindow.allowed) {
         throw capacityPauseError([
           {
-            source: 'workspace',
-            resumeAt: requestWindow.resumeAt,
-            reason:
-              requestWindow.reason === 'daily_cap'
-                ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
-                : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
+            source: 'all-providers',
+            resumeAt: emergencyWindow.resumeAt,
+            reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
           },
         ]);
       }
@@ -1263,6 +1279,26 @@ class MultiProviderClient {
         for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
+
+          const providerRequestWindow = requestWindowForProvider(
+            provider,
+            Date.now(),
+            pacingOverride,
+          );
+          if (!providerRequestWindow.allowed) {
+            capacityBlocks.push({
+              source: provider.requestPool ?? 'openrouter',
+              resumeAt: providerRequestWindow.resumeAt,
+              reason:
+                providerRequestWindow.reason === 'daily_cap'
+                  ? `request cap reached (${providerRequestWindow.usedRequests}/${providerRequestWindow.cap})`
+                  : `request pacing active (${providerRequestWindow.usedRequests}/${providerRequestWindow.pacingAllowance} released of ${providerRequestWindow.cap}/day)`,
+            });
+            skipReasons.push(
+              `${provider.name}: ${providerRequestWindow.reason} request budget`,
+            );
+            continue;
+          }
 
           const activationIssue = providerActivationIssue(provider);
           if (activationIssue) {
@@ -1330,7 +1366,10 @@ class MultiProviderClient {
                 continue;
               }
 
-              const accountLock = provider.paid ? null : accountCooldown(credential.key);
+              const accountLock =
+                isOpenRouterProvider(provider) && !provider.paid
+                  ? accountCooldown(credential.key)
+                  : null;
               if (accountLock) {
                 skipReasons.push(`${credentialId}: account in cooldown`);
                 if (accountLock.capacityPause) {
@@ -1349,7 +1388,10 @@ class MultiProviderClient {
               // lets one exhausted OpenRouter account step aside while the
               // other two keep serving, instead of the whole chain stalling
               // on the first key that ran out.
-              const accountWindow = provider.paid ? null : accountCapacityWindow(credential.key);
+              const accountWindow =
+                isOpenRouterProvider(provider) && !provider.paid
+                  ? accountCapacityWindow(credential.key)
+                  : null;
               if (accountWindow && !accountWindow.allowed) {
                 skipReasons.push(
                   `${credentialId}: account request budget ` +
@@ -1366,7 +1408,7 @@ class MultiProviderClient {
               providerAttempted = true;
 
               try {
-                const result = await callCompatibleProvider(
+                const result = await callProvider(
                   provider,
                   credential.key,
                   trimmed.messages,
@@ -1374,9 +1416,8 @@ class MultiProviderClient {
                   this.config,
                   execution,
                 );
-                if (!provider.paid) {
-                  recordProviderRequest(credential.key, true);
-                } else {
+                recordProviderAttempt(provider, credential.key, true);
+                if (provider.paid) {
                   // Paid attempts still consume the workspace request budget.
                   // Keep them in a synthetic provider bucket so they do not
                   // corrupt the free-account quota accounting.
@@ -1409,8 +1450,7 @@ class MultiProviderClient {
                 // as far as the provider is concerned. Counting only successes
                 // would hide exactly the traffic worth seeing: the fallback
                 // cascade, which burns several requests to serve one call.
-                if (!provider.paid) recordProviderRequest(credential.key, false);
-                else recordPaidProviderRequest(provider.name, false);
+                recordProviderAttempt(provider, credential.key, false);
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
@@ -1458,13 +1498,19 @@ class MultiProviderClient {
                 if (shouldCooldownCredential(status, message)) {
                   setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 }
-                if (!provider.paid && isAccountQuotaFailure(status, message)) {
+                if (
+                  isOpenRouterProvider(provider) &&
+                  !provider.paid &&
+                  isAccountQuotaFailure(status, message)
+                ) {
                   setAccountCooldown(credential.key, status, message, err.retryAfterMs);
                 }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
                 if (!capacityFailure) nonCapacityFailureSeen = true;
-                const newCooldown = credentialCooldown(credentialId) ?? accountCooldown(credential.key);
+                const newCooldown =
+                  credentialCooldown(credentialId) ??
+                  (isOpenRouterProvider(provider) ? accountCooldown(credential.key) : null);
                 if (newCooldown?.capacityPause) {
                   capacityBlocks.push({
                     source: credentialId,
@@ -1493,7 +1539,7 @@ class MultiProviderClient {
                       messages,
                       EMERGENCY_HISTORY_CHAR_BUDGET,
                     );
-                    const result = await callCompatibleProvider(
+                    const result = await callProvider(
                       provider,
                       credential.key,
                       emergency.messages,
@@ -1501,6 +1547,7 @@ class MultiProviderClient {
                       this.config,
                       execution,
                     );
+                    recordProviderAttempt(provider, credential.key, true);
                     clearCredentialCooldown(credentialId);
                     recordTokenUsage(provider.name, result.usage);
                     await recordResponseTelemetry({
