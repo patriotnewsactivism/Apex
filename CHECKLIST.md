@@ -17,11 +17,13 @@ Canonical production facts:
 
 ## Still operator / host configuration
 
-- [ ] Enable Railway GitHub "Wait for CI" so `production-checks` gates `main`.
-- [ ] Set `APEX_ARTIFACT_DIR` or `APEX_ARTIFACT_BUCKET` in Railway.
-- [ ] Copy lead-research API key **names** onto the Railway service (values stay in the host).
-- [ ] Confirm a third independent OpenRouter account if the daily free cap must rise.
-- [ ] Verify `/health.build.sha` after every `main` push.
+- [x] Enable Railway GitHub "Wait for CI" (`checkSuites=true` on the `main` trigger). Proven: a red `production-checks` run was skipped (`skippedReason: CI check suite failed`).
+- [x] Artifact volume `apex-artifacts` mounted at `/data/artifacts`; `APEX_ARTIFACT_DIR=/data/artifacts`.
+- [x] Lead-research keys present on Railway: `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`.
+- [ ] `GOOGLE_PLACES_API_KEY` and `YELP_API_KEY` are still absent (not in local env either — cannot invent values).
+- [ ] OpenRouter inference is a single key (`OPENROUTER_API_KEY`). `OPENROUTER_FREE_API_KEY` / `OPENROUTER_API_KEY_2` / `_4` are not on the service. Management keys 2/3 exist but do not add quota. A third *account* still requires a new inference key.
+- [x] `APEX_EXECUTOR_MODE=inprocess`.
+- [ ] Verify `/health.build.sha` after every `main` push. Wait-for-CI will skip red commits.
 
 ## Reliability
 
