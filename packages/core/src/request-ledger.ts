@@ -95,7 +95,7 @@ const UTC_DAY_MS = 24 * 60 * 60 * 1000;
  *  requests made outside this process (a second revision mid-rollout, a local
  *  run, the chat route on another instance) and the penalty for guessing high
  *  is a hard 429 wall with no allowance left to recover on. */
-const DEFAULT_TOTAL_CAP = 2_000;
+const DEFAULT_TOTAL_CAP = 2_775;
 /** Enough to get real work done immediately after a restart without letting a
  *  startup swarm eat the morning. ~1.4h of the steady-state rate. */
 const DEFAULT_PACING_BURST = 150;
@@ -242,20 +242,19 @@ function requestsAcrossAccount(fingerprint: string): number {
 }
 
 /**
- * The cap actually enforced: the configured value, clamped to what the
- * observed accounts can really serve.
+ * Workspace-wide hard ceiling.
  *
- * Clamping only ever LOWERS the ceiling, and only when the probe has real
- * data. A failed or not-yet-run probe leaves the configured value untouched,
- * so a network hiccup can never starve the workforce by pretending there are
- * fewer accounts than there are.
+ * This must remain distinct from any one provider's allowance. OpenRouter
+ * accounts have their own per-account caps (accountCapacityWindow), while
+ * direct BYOK providers such as Groq or Gemini have independent quota pools.
+ * Clamping the WORKSPACE ceiling to the number of observed OpenRouter accounts
+ * made APEX report a 2,775 cap while silently enforcing 2,000 when only two
+ * OpenRouter accounts were observed. Keep the operator's workspace ceiling
+ * authoritative; provider-specific gates decide whether a particular route is
+ * currently available beneath it.
  */
 export function effectiveRequestCap(): number {
-  const configured = totalRequestCap();
-  if (configured === 0) return 0;
-  const observedAccounts = getObservedAccountCount();
-  if (observedAccounts === null) return configured;
-  return Math.min(configured, observedAccounts * freeRequestsPerAccount());
+  return totalRequestCap();
 }
 
 export function totalRequestCap(): number {
@@ -671,7 +670,8 @@ export interface RequestLedgerSnapshot {
   /** Cap as configured, before the observed-account clamp. */
   configuredCap: number;
   /** Distinct OpenRouter accounts the credit probe found, or null if it has
-   *  not reported. `cap` is `min(configuredCap, accounts x per-account limit)`. */
+   *  not reported. This is provider-capacity telemetry only; it no longer
+   *  changes the workspace hard ceiling. */
   observedAccounts: number | null;
   /** Requests issued in the last 60s, against the short-window limit. */
   lastMinute: number;
