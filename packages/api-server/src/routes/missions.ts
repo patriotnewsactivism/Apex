@@ -282,6 +282,62 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/missions/stats
+ * Get mission statistics (counts by status, total budget, etc.).
+ * Registered before /:missionId so "stats" is not treated as a mission id.
+ */
+router.get('/stats', async (req: Request, res: Response) => {
+  try {
+    // Get all revenue-ops missions
+    const missions = await db
+      .select()
+      .from(goals)
+      .where(missionFilter());
+
+    const stats = {
+      total: missions.length,
+      byStatus: {
+        draft: 0,
+        validating: 0,
+        ready: 0,
+        running: 0,
+        waiting_approval: 0,
+        paused: 0,
+        blocked: 0,
+        budget_exhausted: 0,
+        completed: 0,
+        cancelled: 0,
+        failed: 0,
+      } as Record<string, number>,
+      totalBudgetCents: 0,
+      totalSpentCents: 0,
+      activeMissions: 0,
+    };
+
+    for (const m of missions) {
+      const payload = parseMissionPayload(m.result);
+      const status = payload.missionStatus;
+      if (stats.byStatus[status] !== undefined) {
+        stats.byStatus[status]++;
+      }
+      stats.totalBudgetCents += payload.budgetCents;
+      stats.totalSpentCents += payload.spentCents;
+      if (['running', 'ready', 'validating', 'paused', 'waiting_approval', 'blocked', 'budget_exhausted'].includes(status)) {
+        stats.activeMissions++;
+      }
+    }
+
+    return res.json(stats);
+  } catch (err) {
+    console.error('GET /api/missions/stats error:', err);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: err instanceof Error ? err.message : 'Unknown error',
+    });
+  }
+});
+
+/**
  * GET /api/missions/:missionId
  * Get a single mission with full details.
  */
@@ -852,59 +908,6 @@ router.post('/:missionId/budget-increase', async (req: Request, res: Response) =
   }
 });
 
-/**
- * GET /api/missions/stats
- * Get mission statistics (counts by status, total budget, etc.).
- */
-router.get('/stats', async (req: Request, res: Response) => {
-  try {
-    // Get all revenue-ops missions
-    const missions = await db
-      .select()
-      .from(goals)
-      .where(missionFilter());
 
-    const stats = {
-      total: missions.length,
-      byStatus: {
-        draft: 0,
-        validating: 0,
-        ready: 0,
-        running: 0,
-        waiting_approval: 0,
-        paused: 0,
-        blocked: 0,
-        budget_exhausted: 0,
-        completed: 0,
-        cancelled: 0,
-        failed: 0,
-      } as Record<string, number>,
-      totalBudgetCents: 0,
-      totalSpentCents: 0,
-      activeMissions: 0,
-    };
-
-    for (const m of missions) {
-      const payload = parseMissionPayload(m.result);
-      const status = payload.missionStatus;
-      if (stats.byStatus[status] !== undefined) {
-        stats.byStatus[status]++;
-      }
-      stats.totalBudgetCents += payload.budgetCents;
-      stats.totalSpentCents += payload.spentCents;
-      if (['running', 'ready', 'validating', 'paused', 'waiting_approval', 'blocked', 'budget_exhausted'].includes(status)) {
-        stats.activeMissions++;
-      }
-    }
-
-    return res.json(stats);
-  } catch (err) {
-    console.error('GET /api/missions/stats error:', err);
-    return res.status(500).json({
-      error: 'Internal server error',
-      message: err instanceof Error ? err.message : 'Unknown error',
-    });
-  }
-});
 
 export default router;

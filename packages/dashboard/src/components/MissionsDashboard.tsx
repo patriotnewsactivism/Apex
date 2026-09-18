@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Target, Pause, Play, Cancel, Send, DollarSign, Plus, MoreVertical, CheckCircle, XCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { Target, Pause, Play, Send, DollarSign, Plus, MoreVertical, CheckCircle, XCircle, AlertCircle, Loader2, X } from 'lucide-react';
 import { api } from '../lib/api.js';
 import type { MissionSummary, MissionDetail } from '../lib/missions.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
@@ -180,7 +180,7 @@ function MissionCard({ mission, onView, onPause, onResume, onCancel, onSubmit }:
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 11, color: 'var(--color-apex-muted)' }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <Target size={12} />
-          {mission.activeTasks > 0 ? `${mission.activeTasks} active` : 'No active steps'}
+          {mission.allowedChannels.length > 0 ? mission.allowedChannels.join(' · ') : 'No channels'}
         </span>
         <span style={{ fontFamily: 'var(--font-mono)' }}>
           {formatDate(mission.deadlineAt)}
@@ -527,7 +527,7 @@ function CreateMissionDialog({ onClose, onCreated }: { onClose: () => void; onCr
             <label style={{ display: 'block', fontSize: 11, color: 'var(--color-apex-muted)', fontWeight: 500, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>First Touch Opt-In</label>
             <div style={{ display: 'flex', gap: 8 }}>
               {(['manual', 'auto_with_warn'] as const).map(opt => (
-                <label key={opt} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--color-apex-line)', borderRadius: 5, cursor: 'pointer', fontSize: 12' }}>
+                <label key={opt} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--color-apex-line)', borderRadius: 5, cursor: 'pointer', fontSize: 12 }}>
                   <input
                     type="radio"
                     name="firstTouchOptIn"

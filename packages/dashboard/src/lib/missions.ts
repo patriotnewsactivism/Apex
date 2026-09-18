@@ -1,6 +1,5 @@
-// ─── Dashboard API client for Missions ──────────────────────────────────────────
-
-import type { ApiClient } from './base.js';
+// Dashboard types for revenue-ops missions.
+// Missions are APEX goals with missionType='revenue_ops' in goal.result (D1).
 
 export interface MissionSummary {
   missionId: string;
@@ -77,131 +76,60 @@ export interface MissionStats {
   activeMissions: number;
 }
 
-declare module './base.js' {
-  interface ApiClient {
-    missions: {
-      list(params?: { status?: string; projectId?: string; limit?: number; offset?: number }): Promise<{ missions: MissionSummary[]; total: number; limit: number; offset: number }>;
-      get(missionId: string): Promise<MissionDetail>;
-      create(data: {
-        objective: string;
-        targetDefinition: Record<string, unknown>;
-        qualificationRules: Record<string, unknown>;
-        allowedChannels: string[];
-        policy: {
-          budgetCents: number;
-          approveBeforePivot: boolean;
-          firstTouchOptIn: 'manual' | 'auto_with_warn';
-          requireApprovalForNewCampaigns?: boolean;
-          requireApprovalForOfferChange?: boolean;
-        };
-        deadlineAt?: string;
-        title?: string;
-        projectId?: string;
-        assignedAgentId?: string;
-      }): Promise<{
-        missionId: string;
-        status: string;
-        title: string;
-        objective: string;
-        budgetCents: number;
-        deadlineAt: string | undefined;
-        message: string;
-      }>;
-      pause(missionId: string, reason?: string): Promise<{ missionId: string; status: string; pausedAt: string; reason: string | undefined; message: string }>;
-      resume(missionId: string, reason?: string): Promise<{ missionId: string; status: string; resumedAt: string; reason: string | undefined; message: string }>;
-      cancel(missionId: string, reason: string): Promise<{ missionId: string; status: string; cancelledAt: string; reason: string; message: string }>;
-      submit(missionId: string, reason?: string): Promise<{ missionId: string; status: string; approvalId: string; message: string }>;
-      budgetExhaust(missionId: string, spentCents: number): Promise<{ missionId: string; status: string; spentCents: number; budgetCents: number; exhaustedAt: string; message: string }>;
-      budgetIncrease(missionId: string, newBudgetCents: number, approvedBy?: string): Promise<{ missionId: string; status: string; previousBudgetCents: number; newBudgetCents: number; resumedAt: string; approvedBy: string; message: string }>;
-      update(missionId: string, data: { title?: string; deadlineAt?: string; budgetCents?: number; allowedChannels?: string[] }): Promise<{ missionId: string; message: string; updated: Record<string, unknown> }>;
-      stats(): Promise<MissionStats>;
-    };
-  }
+export interface MissionListResponse {
+  missions: MissionSummary[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
-const missionApi = {
-  list(params?: { status?: string; projectId?: string; limit?: number; offset?: number }) {
-    const qs = new URLSearchParams();
-    if (params?.status) qs.set('status', params.status);
-    if (params?.projectId) qs.set('projectId', params.projectId);
-    if (params?.limit) qs.set('limit', String(params.limit));
-    if (params?.offset) qs.set('offset', String(params.offset));
-    return fetch(`/api/missions?${qs}`).then(r => r.json()) as Promise<{ missions: MissionSummary[]; total: number; limit: number; offset: number }>;
-  },
+export interface CreateMissionRequest {
+  objective: string;
+  targetDefinition: Record<string, unknown>;
+  qualificationRules: Record<string, unknown>;
+  allowedChannels: string[];
+  policy: {
+    budgetCents: number;
+    approveBeforePivot: boolean;
+    firstTouchOptIn: 'manual' | 'auto_with_warn';
+    requireApprovalForNewCampaigns?: boolean;
+    requireApprovalForOfferChange?: boolean;
+  };
+  deadlineAt?: string;
+  title?: string;
+  projectId?: string;
+  assignedAgentId?: string;
+}
 
-  get(missionId: string) {
-    return fetch(`/api/missions/${missionId}`).then(r => r.json()) as Promise<MissionDetail>;
-  },
+export interface CreateMissionResponse {
+  missionId: string;
+  status: string;
+  title: string;
+  objective: string;
+  budgetCents: number;
+  deadlineAt: string | undefined;
+  message: string;
+}
 
-  create(data: any) {
-    return fetch('/api/missions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    }).then(r => r.json()) as Promise<any>;
-  },
+export interface MissionActionResponse {
+  missionId: string;
+  status: string;
+  message: string;
+  pausedAt?: string;
+  resumedAt?: string;
+  cancelledAt?: string;
+  reason?: string;
+  approvalId?: string;
+  spentCents?: number;
+  budgetCents?: number;
+  exhaustedAt?: string;
+  previousBudgetCents?: number;
+  newBudgetCents?: number;
+  approvedBy?: string;
+}
 
-  pause(missionId: string, reason?: string) {
-    return fetch(`/api/missions/${missionId}/pause`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
-    }).then(r => r.json()) as Promise<any>;
-  },
-
-  resume(missionId: string, reason?: string) {
-    return fetch(`/api/missions/${missionId}/resume`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
-    }).then(r => r.json()) as Promise<any>;
-  },
-
-  cancel(missionId: string, reason: string) {
-    return fetch(`/api/missions/${missionId}/cancel`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
-    }).then(r => r.json()) as Promise<any>;
-  },
-
-  submit(missionId: string, reason?: string) {
-    return fetch(`/api/missions/${missionId}/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
-    }).then(r => r.json()) as Promise<any>;
-  },
-
-  budgetExhaust(missionId: string, spentCents: number) {
-    return fetch(`/api/missions/${missionId}/budget-exhaust`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ spentCents }),
-    }).then(r => r.json()) as Promise<any>;
-  },
-
-  budgetIncrease(missionId: string, newBudgetCents: number, approvedBy?: string) {
-    return fetch(`/api/missions/${missionId}/budget-increase`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ newBudgetCents, approvedBy }),
-    }).then(r => r.json()) as Promise<any>;
-  },
-
-  update(missionId: string, data: any) {
-    return fetch(`/api/missions/${missionId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    }).then(r => r.json()) as Promise<any>;
-  },
-
-  stats() {
-    return fetch('/api/missions/stats').then(r => r.json()) as Promise<MissionStats>;
-  },
-};
-
-export function registerMissionApi(api: ApiClient) {
-  api.missions = missionApi;
+export interface UpdateMissionResponse {
+  missionId: string;
+  message: string;
+  updated: Record<string, unknown>;
 }

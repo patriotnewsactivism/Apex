@@ -1,3 +1,13 @@
+import type {
+  CreateMissionRequest,
+  CreateMissionResponse,
+  MissionActionResponse,
+  MissionDetail,
+  MissionListResponse,
+  MissionStats,
+  UpdateMissionResponse,
+} from './missions.js';
+
 const API = '/api';
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
@@ -441,6 +451,58 @@ export const api = {
       apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/bring-in-ai`, { method: 'POST' }),
     /** Hang up every leg of the session. */
     end: (id: string) => apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/end`, { method: 'POST' }),
+  },
+
+  missions: {
+    list: (params?: { status?: string; projectId?: string; limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.status) qs.set('status', params.status);
+      if (params?.projectId) qs.set('projectId', params.projectId);
+      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.offset) qs.set('offset', String(params.offset));
+      const query = qs.toString();
+      return apiFetch<MissionListResponse>(`/missions${query ? `?${query}` : ''}`);
+    },
+    get: (missionId: string) =>
+      apiFetch<MissionDetail>(`/missions/${encodeURIComponent(missionId)}`),
+    create: (data: CreateMissionRequest) =>
+      apiFetch<CreateMissionResponse>('/missions', { method: 'POST', body: JSON.stringify(data) }),
+    pause: (missionId: string, reason?: string) =>
+      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/pause`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    resume: (missionId: string, reason?: string) =>
+      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/resume`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    cancel: (missionId: string, reason: string) =>
+      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    submit: (missionId: string, reason?: string) =>
+      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/submit`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    budgetExhaust: (missionId: string, spentCents: number) =>
+      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/budget-exhaust`, {
+        method: 'POST',
+        body: JSON.stringify({ spentCents }),
+      }),
+    budgetIncrease: (missionId: string, newBudgetCents: number, approvedBy?: string) =>
+      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/budget-increase`, {
+        method: 'POST',
+        body: JSON.stringify({ newBudgetCents, approvedBy }),
+      }),
+    update: (missionId: string, data: { title?: string; deadlineAt?: string; budgetCents?: number; allowedChannels?: string[] }) =>
+      apiFetch<UpdateMissionResponse>(`/missions/${encodeURIComponent(missionId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    stats: () => apiFetch<MissionStats>('/missions/stats'),
   },
 };
 

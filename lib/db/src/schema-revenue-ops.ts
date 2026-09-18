@@ -36,6 +36,7 @@ import {
   numeric,
 } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
+import { projects, goals } from './schema.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROVIDER CONNECTIONS
