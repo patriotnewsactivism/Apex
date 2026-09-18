@@ -195,8 +195,8 @@ export class HealthMonitor {
    * BuildMyBot is Neon/Postgres-backed. APEX must not depend on BuildMyBot's
    * database credentials or backend vendor to decide whether the product is
    * alive; the product owns that concern. Probe its public health contract
-   * instead. This keeps APEX decoupled from database migrations and prevents a
-   * missing legacy Supabase variable from generating false degradation.
+   * instead. This keeps APEX decoupled from database migrations and prevents
+   * retired backend configuration from generating false degradation.
    */
   async checkBuildMyBotAITeam(): Promise<ComponentCheckResult> {
     return safeCheck(async () => {
