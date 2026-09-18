@@ -26,8 +26,7 @@
 // unconfigured -- silently defeating the whole point of setting them. Using
 // dynamic import() below (inside main(), after these lines have already run)
 // avoids that: dynamic import() is a runtime expression, not hoisted.
-process.env.BUILDMYBOT_SUPABASE_URL ||= 'https://guard-script-dummy.supabase.co';
-process.env.BUILDMYBOT_SUPABASE_SERVICE_KEY ||= 'guard-script-dummy-key';
+process.env.BUILDMYBOT_APP_URL ||= 'https://www.buildmybot.app';
 process.env.CASEBUDDY_SUPABASE_URL ||= 'https://guard-script-dummy.supabase.co';
 process.env.CASEBUDDY_SUPABASE_SERVICE_KEY ||= 'guard-script-dummy-key';
 
