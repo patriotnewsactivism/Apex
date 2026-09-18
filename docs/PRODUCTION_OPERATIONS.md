@@ -15,7 +15,7 @@ Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google C
 3. A push to `main` is a production deploy. Confirm GitHub status `APEX - apex-backend` is Success.
 4. A build is not a deployment, a Railway Success status is not enough without public `/health.build.sha`, and an agent statement is not operational evidence.
 5. Production is considered released only when the public health endpoint reports the intended `build.sha` and the changed behavior has been smoke-tested.
-6. Enable Railway "Wait for CI" so a red `production-checks` run cannot ship.
+6. Railway Wait for CI is on (`checkSuites=true`). A red `production-checks` run cannot ship. The GitHub `Vercel` status is the dashboard static build (`vercel.json` → `@workspace/dashboard` only) and is not a Railway gate.
 
 The Cloud Run configuration block below is **rollback-only**. Do not use it while GCP billing is off.
 

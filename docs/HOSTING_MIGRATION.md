@@ -8,7 +8,7 @@ The plan below was written as preparation and was executed under pressure rather
 
 What that leaves open, and what is verified, is tracked in "Post-cutover state" below. The phase descriptions are retained as the record of intent, not as instructions.
 
-The service reuses the existing external durable database and existing secret names. The existing Dockerfile, long-running Node API, WebSockets/background workers, Chromium tooling, runtime Git tooling, `/health`, and `PORT` support are the deployment artifact. Vercel is only an optional later destination for the React dashboard; do not redesign the APEX backend into Vercel serverless functions.
+The service reuses the existing external durable database and existing secret names. The existing Dockerfile, long-running Node API, WebSockets/background workers, Chromium tooling, runtime Git tooling, `/health`, and `PORT` support are the deployment artifact. Vercel project `don-matthews/apex` is a GitHub-status dashboard build (`vercel.json` → `@workspace/dashboard` only); do not redesign the APEX backend into Vercel serverless functions, and do not treat the GitHub `Vercel` status as a Railway gate.
 
 ## Post-cutover state
 
@@ -119,12 +119,12 @@ say whether it does.
 
 ### Outstanding after the forced cutover
 
-1. **Lead-research credentials were not carried over.** Cloud Run supplied `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY` and `TAVILY_API_KEY`; copy those **names** onto the Railway service (values stay in the host).
+1. **Lead-research credentials.** `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, and `TAVILY_API_KEY` are on Railway. `GOOGLE_PLACES_API_KEY` and `YELP_API_KEY` are still absent (not in local env either — do not invent values).
 2. **`OPENROUTER_API_KEY_4` bought no capacity.** It is a second key on an account APEX already holds. A third *account* is what raises the free cap.
 3. **The Cloud Run deploy still fires on every green CI run** unless `APEX_DEPLOY_ENABLED` is not `production`/`all`. Keep it off while billing is disabled.
-4. **Railway deploys without waiting for CI.** Enable "Wait for CI" / checkSuites on the GitHub integration. Documented in `railway.toml` comments and ADR-015.
+4. **Railway Wait for CI is on** (`checkSuites=true` on the `main` GitHub trigger). A red `production-checks` run is skipped. The GitHub `Vercel` status is the dashboard static build and is not this gate.
 5. **One replica** (`ams`). Websocket tickets now persist in Postgres so a second replica is no longer blocked on in-memory tickets. Scale only after a live two-process ticket round-trip is proven.
-6. **Artifacts / executor.** Set `APEX_ARTIFACT_DIR` (volume) or `APEX_ARTIFACT_BUCKET`. Leave `APEX_EXECUTOR_JOB` unset on Railway; `APEX_EXECUTOR_MODE=inprocess` is the default.
+6. **Artifacts / executor.** `APEX_ARTIFACT_DIR=/data/artifacts` on volume `apex-artifacts`. Leave `APEX_EXECUTOR_JOB` unset on Railway; `APEX_EXECUTOR_MODE=inprocess` is set.
 
 ## Decision
 
@@ -163,7 +163,7 @@ Freeze new deploys to Cloud Run, verify Railway is on the intended commit, switc
 
 ## Phase 4 — optional frontend split
 
-After the backend is stable on Railway, the static React/Vite dashboard may be moved to Vercel if desired. If split, configure the dashboard API/WebSocket base URL explicitly and re-run CORS, cookie/auth, WebSocket-ticket, and mobile-layout tests. There is no requirement to split; the lowest-risk configuration is initially one Railway service serving both API and built dashboard.
+A Vercel GitHub integration already builds the static React/Vite dashboard (`don-matthews/apex`, `vercel.json` dashboard-only). The operator UI that serves production traffic is still the Railway service at `https://apex.donmatthews.live`. A real frontend split still requires an explicit API/WebSocket base URL plus CORS, cookie/auth, WebSocket-ticket, and mobile-layout tests. Do not treat a green GitHub `Vercel` status as proof that APEX production moved.
 
 ## No-money constraints
 

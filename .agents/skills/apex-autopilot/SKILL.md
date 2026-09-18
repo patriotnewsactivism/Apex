@@ -193,7 +193,7 @@ Verification must match the task:
 
 - Code-only task: tests and diff may be sufficient.
 - Runtime bug: reproduce before and after.
-- Deployment: verify the configured Google Cloud Run service serves a Ready revision built from the intended commit AND live `/health` `build.sha` equals that commit.
+- Deployment: verify Railway `apex-backend` succeeded for the intended commit AND live `/health` `build.sha` equals that commit. A green GitHub `Vercel` status is the dashboard static build, not this proof.
 - Agent failure: verify the affected agent/queue processes real work again.
 - Provider/capacity issue: verify provider roster, token caps, cooldown state, and a real completion/task path.
 - Business workflow: verify the record/state exists in the system, not merely that a draft was generated.
@@ -225,7 +225,7 @@ When asked to "check APEX," "fix APEX," "run APEX," or similar broad language, d
    - `/api/tokens`
    - pending approvals/escalations
    - recent jobs/tasks/logs relevant to the symptom
-7. If infrastructure is implicated, inspect Google Cloud Build history and the configured Cloud Run service/revision state (never AWS Lightsail/CodeBuild or Railway — those hosting paths are retired).
+7. If infrastructure is implicated, inspect the Railway `apex-backend` deployment and GitHub Actions `production-checks`. Do not treat the GitHub `Vercel` status as the control plane. Never inspect AWS Lightsail/CodeBuild as current APEX hosting — those paths are retired. Google Cloud Run is rollback-only.
 8. Classify the incident before changing anything.
 
 ### Common failure classification

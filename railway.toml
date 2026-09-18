@@ -4,8 +4,9 @@
 # see docs/HOSTING_MIGRATION.md.
 #
 # Two consequences worth stating where they will be read:
-#   - a push to main reaches production directly; there is no deploy workflow
-#     in front of Railway, and it does not wait for CI;
+#   - a push to main reaches production through Railway, not a deploy workflow;
+#     Wait for CI is a host GitHub-trigger setting (checkSuites), currently on,
+#     and gates on Actions production-checks — not the GitHub Vercel status;
 #   - changing builder, dockerfilePath or healthcheckPath changes how
 #     production is built and gated, so scripts/verify-deploy-provenance.ts
 #     asserts all three.
@@ -23,5 +24,5 @@ healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 # Operator setting on the GitHub integration (not a railway.toml key):
-# enable "Wait for CI" / checkSuites so a red production-checks run cannot
-# ship. Railway currently deploys from main as soon as the push lands.
+# Wait for CI / checkSuites is enabled so a red production-checks run cannot
+# ship. The GitHub Vercel status is the dashboard project and is not this gate.

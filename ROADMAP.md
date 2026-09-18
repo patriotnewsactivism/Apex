@@ -15,17 +15,18 @@ For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md` (ADR-015
 ## Done — live on Railway (2026-09-18)
 
 - Control plane, 13-agent workforce, dashboard, WebSocket LIVE keepalive, admin auth.
+- Railway Wait for CI (`checkSuites=true`); artifact volume `APEX_ARTIFACT_DIR=/data/artifacts`; `APEX_EXECUTOR_MODE=inprocess`.
+- Vercel GitHub status is a dashboard-only Vite build (`vercel.json`), not a control-plane gate.
 - Missions HTTP API and dashboard (live SHA `8cf1418`).
 - Approval yield (ADR-014) observed in production (`approvalYields > 0`).
 - Autonomy policy + Settings allowlist + decision-packet approvals (this change set).
 
 ## P0 — Finish the autonomy loop
 
-- Enable Railway "Wait for CI" / checkSuites so red CI cannot ship `main`.
-- Set `APEX_ARTIFACT_DIR` (or `APEX_ARTIFACT_BUCKET`) so finished files survive recycle.
+- Confirm `/health.build.sha` tracks `main` after Wait-for-CI skips a red commit.
 - Deploy the commit that registers mission agent tools and the outbound compliance evaluator; confirm `/health.build.sha`.
 - Exercise checkpoint/resume on a real long task (`checkpointsCreated` is still 0).
-- Copy lead-research keys onto Railway (`BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`, `GOOGLE_PLACES_API_KEY`, `YELP_API_KEY`) — names only, values stay in the host.
+- Copy remaining lead-research keys onto Railway (`GOOGLE_PLACES_API_KEY`, `YELP_API_KEY`) — names only, values stay in the host. Brave/Firecrawl/Tavily are already set.
 
 ## P1 — Reliability on this host
 

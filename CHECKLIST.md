@@ -18,6 +18,7 @@ Canonical production facts:
 ## Still operator / host configuration
 
 - [x] Enable Railway GitHub "Wait for CI" (`checkSuites=true` on the `main` trigger). Proven: a red `production-checks` run was skipped (`skippedReason: CI check suite failed`).
+- [x] Vercel GitHub status (`don-matthews/apex`) builds `@workspace/dashboard` only via `vercel.json`. It is not the control-plane gate; Railway Wait for CI uses Actions `production-checks`.
 - [x] Artifact volume `apex-artifacts` mounted at `/data/artifacts`; `APEX_ARTIFACT_DIR=/data/artifacts`.
 - [x] Lead-research keys present on Railway: `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`.
 - [ ] `GOOGLE_PLACES_API_KEY` and `YELP_API_KEY` are still absent (not in local env either — cannot invent values).

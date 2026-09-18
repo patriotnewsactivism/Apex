@@ -26,7 +26,7 @@ APEX itself runs on **Railway** — project `APEX`, service `apex-backend` — b
 
 The cutover from Google Cloud Run happened on 2026-09-14/15 and is described in `docs/HOSTING_MIGRATION.md`. Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/health`, and deploys itself from `main`; there is no deployment workflow in front of it.
 
-Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. `.github/workflows/deploy.yml` still describes that path and is kept as the tested way back, but it is gated behind the `APEX_DEPLOY_ENABLED` repository variable and must not be re-enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own; none of them is the APEX control-plane host.
+Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. `.github/workflows/deploy.yml` still describes that path and is kept as the tested way back, but it is gated behind the `APEX_DEPLOY_ENABLED` repository variable and must not be re-enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own (`don-matthews/apex`); none of them is the APEX control-plane host. That Vercel project posts the GitHub commit status named `Vercel`. `vercel.json` must build `@workspace/dashboard` only — never root `pnpm run build` / `typecheck:production`. Railway Wait for CI gates on GitHub Actions `production-checks`, not the Vercel status.
 
 A production release is complete only after all of these are true:
 
@@ -36,7 +36,7 @@ A production release is complete only after all of these are true:
 4. `https://apex.donmatthews.live/health` reports the expected `build.sha` and a healthy `taskQueue.verdict`;
 5. the changed feature is smoke-tested through its real production path.
 
-Railway currently deploys from `main` without waiting for CI. Treat a red CI run after a live SHA as an incident, and enable Railway "Wait for CI" / checkSuites on the GitHub integration when the operator can change that setting.
+Railway Wait for CI is enabled (`checkSuites=true` on the `main` GitHub trigger). A red `production-checks` run is skipped. Treat a red CI run after a live SHA as an incident. The GitHub `Vercel` status is the dashboard static build and is not a Railway gate.
 
 The retired Cloud Run path (`packages/cicd-automation/src/cloud-run-deployer.ts`, `cloudbuild.apex.yaml`, `.github/workflows/deploy.yml`) remains the tested rollback route. It is gated behind `APEX_DEPLOY_ENABLED` and must not be re-enabled while billing is off on project `apex-503709`.
 
@@ -294,7 +294,7 @@ Production CI currently includes:
 - provider routing guard;
 - provider backpressure guard (includes the LLM capacity-latch release checks);
 - budget-pause guard;
-- Cloud Run deploy-provenance guard (includes the retired-hosting-instructions check);
+- Cloud Run deploy-provenance guard (includes the retired-hosting-instructions check and the Vercel dashboard-only build check);
 - malformed-tool-call guard;
 - non-completion guard;
 - branch/review guard;

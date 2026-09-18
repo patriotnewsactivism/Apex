@@ -169,11 +169,55 @@ check(
   { runtimeBase, usesApk: /\bapk\s+add\b/.test(dockerfile), usesApt: /\bapt-get\b/.test(dockerfile) },
 );
 
-// The checks above read the Dockerfile as text. Text cannot tell you whether it
-// BUILDS, and until 2026-09-15 nothing anywhere did: CI had no docker step, and
-// Railway deploys from main with checkSuites disabled, so a Dockerfile that
-// failed to build reached production before anyone found out. The job that
-// closes that gap is itself worth pinning.
+console.log('\n── Vercel dashboard GitHub status ──');
+
+// The GitHub "Vercel" commit status is project don-matthews/apex. It is a
+// static Vite dashboard build, not the APEX control plane. Root package.json
+// `build` runs typecheck:production, so a vercel.json that only set
+// outputDirectory made Vercel execute the whole monorepo typecheck. Backend TS
+// errors then failed the GitHub status even though Railway Wait for CI gates
+// on Actions production-checks, not that status. Observed 2026-09-18 on
+// dpl_EQKGZyrY2S5QtJTznqnjuiKTU3rv / SHA bc8fa2f.
+const vercelConfig = JSON.parse(
+  fs.readFileSync(path.join(root, 'vercel.json'), 'utf8'),
+) as {
+  buildCommand?: unknown;
+  installCommand?: unknown;
+  outputDirectory?: unknown;
+  framework?: unknown;
+};
+const vercelBuild =
+  typeof vercelConfig.buildCommand === 'string' ? vercelConfig.buildCommand : '';
+check(
+  'Vercel builds @workspace/dashboard rather than root pnpm run build',
+  vercelBuild.includes('@workspace/dashboard') &&
+    vercelBuild.includes('run build') &&
+    !vercelBuild.includes('typecheck:production') &&
+    !/^\s*pnpm(?:\s+run)?\s+build\s*$/.test(vercelBuild),
+  { buildCommand: vercelConfig.buildCommand },
+);
+check(
+  'Vercel output is the Vite dashboard dist',
+  vercelConfig.outputDirectory === 'packages/dashboard/dist',
+  { outputDirectory: vercelConfig.outputDirectory },
+);
+check(
+  'Vercel install stays frozen to the committed lockfile',
+  typeof vercelConfig.installCommand === 'string' &&
+    vercelConfig.installCommand.includes('pnpm install') &&
+    vercelConfig.installCommand.includes('--frozen-lockfile'),
+  { installCommand: vercelConfig.installCommand },
+);
+check('Vercel framework is Vite, not a serverless backend', vercelConfig.framework === 'vite', {
+  framework: vercelConfig.framework,
+});
+
+// The Dockerfile checks above read text. Text cannot tell you whether it
+// BUILDS. Until 2026-09-15 CI had no docker step, and Railway deployed from
+// main with checkSuites disabled, so a Dockerfile that failed to build reached
+// production before anyone found out. The job that closes that gap is itself
+// worth pinning. Wait for CI is now a host GitHub-trigger setting; this image
+// build still has to fail the PR even if that host setting is later flipped.
 const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
 // Anchored to a real YAML mapping entry, not merely the words appearing
 // somewhere. The first version of this check matched /target:\s*runtime/ against

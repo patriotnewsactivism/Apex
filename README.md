@@ -12,7 +12,7 @@ Production URL: `https://apex.donmatthews.live`
 
 Railway builds the repository `Dockerfile` (see `railway.toml`), health-checks `/health`, restarts on failure, and deploys itself from `main`. There is no deploy workflow in front of it, so **a push to `main` reaches production directly**.
 
-Google Cloud Run is a retired APEX hosting path: billing is disabled on project `apex-503709`, so it serves nothing. AWS Lightsail/CodeBuild is retired and must not be restored. The React dashboard also has a Vercel project; Vercel, Render, and other platforms may appear in connectors or client-project tooling because APEX can manage software deployed elsewhere. None of them hosts the APEX control plane.
+Google Cloud Run is a retired APEX hosting path: billing is disabled on project `apex-503709`, so it serves nothing. AWS Lightsail/CodeBuild is retired and must not be restored. The React dashboard also has a Vercel project (`don-matthews/apex`) that posts the GitHub `Vercel` status from a Vite-only `vercel.json` build (`pnpm --filter @workspace/dashboard run build`). Vercel, Render, and other platforms may appear in connectors or client-project tooling because APEX can manage software deployed elsewhere. None of them hosts the APEX control plane, and the Vercel GitHub status is not a Railway deploy gate.
 
 Do not redirect APEX production to another platform without an explicit operator instruction. `.github/workflows/deploy.yml` and `cloudbuild.apex.yaml` still describe the Cloud Run path — kept deliberately as the rollback route — and are gated behind the `APEX_DEPLOY_ENABLED` repository variable. Re-enabling them while GCP billing is disabled produces a failed deploy on every merge, not a deployment.
 

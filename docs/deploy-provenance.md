@@ -1,11 +1,15 @@
 # Knowing what is actually running
 
-APEX production is the existing Google Cloud Run service mapped to
-`https://apex.donmatthews.live`.
+APEX production is the Railway service `apex-backend` mapped to
+`https://apex.donmatthews.live`. Google Cloud Run is the gated rollback path
+only. The GitHub `Vercel` status is the dashboard project `don-matthews/apex`
+(`vercel.json` builds `@workspace/dashboard` only) and is not production
+provenance.
 
-A deployment is not considered successful merely because a build completed or
-Cloud Run created a revision. The code answering production traffic must be the
-exact reviewed Git commit and its task queue must remain healthy.
+A deployment is not considered successful merely because a build completed, a
+Railway deploy reported Success, or Cloud Run created a revision. The code
+answering production traffic must be the exact reviewed Git commit and its task
+queue must remain healthy.
 
 ## What `/health` proves
 
