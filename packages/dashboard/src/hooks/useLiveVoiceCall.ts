@@ -307,32 +307,8 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
 
       const { ticket } = await api.auth.websocketTicket();
       const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
       const pageQs = startPage ? `&page=${encodeURIComponent(startPage)}` : '';
       const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}${pageQs}`);
-=======
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
->>>>>>> theirs
-=======
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
->>>>>>> theirs
-=======
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
->>>>>>> theirs
-=======
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
->>>>>>> theirs
-=======
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
->>>>>>> theirs
-=======
-      const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}`);
->>>>>>> theirs
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
@@ -425,19 +401,11 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
         setStatus((s) => (s === 'error' ? s : 'ended'));
       };
     } catch (err) {
-<<<<<<< ours
-<<<<<<< ours
       captureCtx.close().catch(() => {});
       captureCtxRef.current = null;
       playbackCtx.close().catch(() => {});
       playbackCtxRef.current = null;
       micStreamRef.current?.getTracks().forEach((t) => t.stop());
-=======
-      micStreamRef.current?.getTracks().forEach((track) => track.stop());
->>>>>>> theirs
-=======
-      micStreamRef.current?.getTracks().forEach((track) => track.stop());
->>>>>>> theirs
       micStreamRef.current = null;
       cbRef.current.onError?.(err instanceof Error ? err.message : 'Microphone access failed.');
       setStatus('error');

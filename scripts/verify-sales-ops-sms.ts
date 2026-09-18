@@ -36,6 +36,28 @@ async function main(): Promise<void> {
   const client = read('lib/db/src/client.ts');
   const telnyxAssistant = read('packages/api-server/src/routes/telnyx-assistant.ts');
   const apiClient = read('packages/dashboard/src/lib/api.ts');
+  const authMiddleware = read('packages/api-server/src/middleware/auth.ts');
+
+  // ── A third-party voice platform (Vapi) needs to call /sms/send from its own
+  //    tool-calling. It must not be handed the full admin token to do that —
+  //    a scoped token limited to exactly this one route, same pattern as the
+  //    existing outcome-ledger-ingest token. ───────────────────────────────────
+  check(
+    'a scoped Vapi SMS token is optional, not a hard-required env var',
+    /configuredVapiSmsToken = process\.env\.APEX_VAPI_SMS_TOKEN\?\.trim\(\) \|\| null/.test(authMiddleware),
+  );
+  check(
+    'the scoped token is checked with the same constant-time comparison as every other credential',
+    /validateVapiSmsToken.*constantTimeTokenMatch\(bearerToken\(authHeader\), configuredVapiSmsToken\)/s.test(authMiddleware),
+  );
+  check(
+    'the scoped token is accepted for exactly POST /api/sales-ops/sms/send, not the whole API',
+    /isVapiSmsRoute[\s\S]*?req\.method === 'POST' && path === '\/api\/sales-ops\/sms\/send'/.test(authMiddleware),
+  );
+  check(
+    'requireAdminAuth actually wires the scoped route check in, not just declares it',
+    /isVapiSmsRoute\(req\) && validateVapiSmsToken\(req\.headers\.authorization\)/.test(authMiddleware),
+  );
 
   // ── Backend: routes exist, mounted behind requireAdminAuth (this router,
   //    not telnyx-assistant.ts, which is the pre-auth webhook surface) ───────

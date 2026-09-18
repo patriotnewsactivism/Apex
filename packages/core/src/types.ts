@@ -76,6 +76,18 @@ export interface LLMExecutionContext {
   agentId?: string;
   role?: string;
   complexityHint?: number;
+  /** Set for a synchronous, human-initiated call (e.g. Don's chat) rather than
+   *  autonomous agent work. Interactive calls skip the smooth 24h pacing ramp
+   *  on the free-tier request budget and the paid spend cap: a human typing
+   *  one message at a time cannot cause the runaway burn a background agent
+   *  retrying unattended can, so there is nothing for the ramp to protect
+   *  against here. The hard daily caps and the per-minute provider rate limit
+   *  still apply unchanged — this only claims already-authorized budget
+   *  sooner, it never spends past what the operator configured. */
+  interactive?: boolean;
+  /** Optional stable key for stateful provider conversations that are not tied
+   * to a durable task (for example the human chat route). */
+  conversationId?: string;
 }
 
 export interface LLMClientConfig {

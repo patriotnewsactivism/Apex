@@ -46,7 +46,16 @@ const IN_CONTAINER_CI_OPT_IN = 'APEX_ALLOW_IN_CONTAINER_CI';
  *  guard can be verified without triggering a real clone. */
 export function isCiWorkspaceBlocked(): boolean {
   if (process.env[IN_CONTAINER_CI_OPT_IN] === '1') return false;
-  return Boolean(process.env.K_SERVICE);
+  // Production CI workspaces do not belong inside either Cloud Run or Railway.
+  // Both are runtime containers, not build workers. Cloud Run's /tmp is
+  // memory-backed; Railway uses ephemeral container storage. In either case a
+  // full monorepo clone + devDependency install competes with the live API
+  // process and can destabilize production.
+  return Boolean(
+    process.env.K_SERVICE ||
+      process.env.RAILWAY_SERVICE_ID ||
+      process.env.RAILWAY_ENVIRONMENT_ID,
+  );
 }
 
 let syncPromise: Promise<string> | null = null;
@@ -54,11 +63,10 @@ let syncPromise: Promise<string> | null = null;
 async function doSync(): Promise<string> {
   if (isCiWorkspaceBlocked()) {
     throw new Error(
-      `Refusing to build a CI workspace on ${process.env.K_SERVICE}: /tmp is RAM-backed here, ` +
-        'and a full install of this monorepo (478MB) is charged against the container memory limit, ' +
-        'which kills the whole agent workforce mid-install. Run tests, lint and builds in GitHub ' +
-        `Actions or on the standalone cicd-worker instead. Set ${IN_CONTAINER_CI_OPT_IN}=1 only on a ` +
-        'host with a real filesystem and memory to spare.',
+      `Refusing to build a CI workspace inside the production runtime (${process.env.K_SERVICE ? 'Cloud Run' : 'Railway'}): ` +
+        'a full install of this monorepo is hundreds of MB and competes with the live API container for ephemeral resources. ' +
+        'Run tests, lint and builds in GitHub Actions or on the standalone cicd-worker instead. ' +
+        `Set ${IN_CONTAINER_CI_OPT_IN}=1 only on a dedicated host with real filesystem capacity and memory to spare.`,
     );
   }
 

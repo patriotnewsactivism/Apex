@@ -7,6 +7,7 @@ import type {
   LLMTool,
   LLMToolCall,
 } from './types.js';
+import { callGeminiInteractions } from './gemini-interactions.js';
 import {
   getTokenLedgerSnapshot,
   isTotalDailyCapReached,
@@ -20,10 +21,16 @@ import {
   accountCapacityWindow,
   accountFingerprint,
   accountRequestsToday,
-  isRequestBudgetExhausted,
-  recordProviderRequest,
+  directProviderCapacityWindow,
+  emergencyRequestCapacityWindow,
+  markDirectProviderRequestSucceeded,
+  markPaidProviderRequestSucceeded,
+  markProviderRequestSucceeded,
   requestCapacityWindow,
-  totalRequestCap,
+  reserveDirectProviderRequest,
+  reservePaidProviderRequest,
+  reserveProviderRequest,
+  type DirectRequestPool,
 } from './request-ledger.js';
 import {
   dailySpendCapMicros,
@@ -72,6 +79,8 @@ export type ApexProviderName =
   | 'openrouter-free-router'
   | 'openrouter-nemotron-ultra'
   | 'openrouter-free-policy'
+  | 'groq-gpt-oss-120b-byok'
+  | 'gemini-3-8-flash-byok'
   | 'openrouter-deepseek-v4-flash-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
@@ -112,6 +121,10 @@ type ProviderSpec = {
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
+  /** Independent request quota pool. OpenRouter uses the 2,775/day pool;
+   * direct BYOK providers have their own counters. */
+  requestPool?: 'openrouter' | DirectRequestPool;
+  protocol?: 'openai-compatible' | 'gemini-interactions';
   activationEnv?: string;
   activationDescription?: string;
   /** Minimum spacing between request starts for this logical provider. */
@@ -146,6 +159,8 @@ function freeOpenRouterSpec(
     model,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_FREE_KEY_ENVS,
+    requestPool: 'openrouter',
+    protocol: 'openai-compatible',
     minIntervalMs: 500,
     toolCallingReliable: true,
     ...extras,
@@ -167,21 +182,66 @@ const PROVIDERS: readonly ProviderSpec[] = [
   // route and never uses paid credentials.
   freeOpenRouterSpec(FREE_POLICY_GATEWAY_NAME, DEFAULT_OPENROUTER_MODEL_CHAIN[0]),
   {
+    name: 'groq-gpt-oss-120b-byok',
+    model: 'openai/gpt-oss-120b',
+    baseURL: 'https://api.groq.com/openai/v1',
+    // Both configured key slots are eligible. If both keys belong to the same
+    // Groq organization they may still share provider-side quota, so APEX keeps
+    // one conservative Groq request pool rather than pretending each key adds
+    // independent capacity. Key 2 remains preferred by live voice in that path.
+    apiKeyEnvs: ['GROQ_API_KEY', 'GROQ_API_KEY_2'],
+    requestPool: 'groq',
+    protocol: 'openai-compatible',
+    activationEnv: 'APEX_GROQ_BYOK_ENABLED',
+    activationDescription: 'APEX_GROQ_BYOK_ENABLED=true is required',
+    minIntervalMs: 1_000,
+    toolCallingReliable: true,
+    supportsParallelToolCalls: true,
+  },
+  {
+    name: 'gemini-3-8-flash-byok',
+    model: 'gemini-3.8-flash',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+    // Two Settings slots. Google quota is commonly project-scoped, so the
+    // direct Gemini pool remains aggregate unless the operator explicitly
+    // raises its verified cap.
+    apiKeyEnvs: ['GEMINI_API_KEY', 'GEMINI_API_KEY_2'],
+    requestPool: 'gemini',
+    protocol: 'gemini-interactions',
+    activationEnv: 'APEX_GEMINI_BYOK_ENABLED',
+    activationDescription: 'APEX_GEMINI_BYOK_ENABLED=true is required',
+    minIntervalMs: 1_000,
+    toolCallingReliable: true,
+    supportsParallelToolCalls: true,
+  },
+  {
     name: PAID_FALLBACK_PROVIDER_NAME,
     model: PAID_FALLBACK_MODEL,
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
+    requestPool: 'openrouter',
+    protocol: 'openai-compatible',
     activationEnv: 'APEX_PAID_FALLBACK',
     activationDescription: 'APEX_PAID_FALLBACK=confirmed is required',
     minIntervalMs: 500,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
     reasoningEffort: 'low',
-    providerRouting: { sort: 'price' },
-    // deepseek/deepseek-v4-flash-0731, live catalog 2026-09-14.
-    usdPerMillionPrompt: 0.06,
-    usdPerMillionCompletion: 0.12,
+    // `sort: 'price'` pinned every request to whichever upstream host was
+    // cheapest for this model — confirmed live 2026-09-17 to be a host with a
+    // 60s p99 (Inceptron) or 31s p99 (Relace), both past LLM_REQUEST_TIMEOUT_MS.
+    // That produced a sustained 100% "request timed out" failure across the
+    // whole workforce even though the model itself, and this account's paid
+    // balance, were both fine. `sort: 'latency'` optimizes for the thing this
+    // route actually needs — answering inside the timeout — not raw price.
+    providerRouting: { sort: 'latency' },
+    // deepseek/deepseek-v4-flash-0731; representative low-latency-tier price
+    // (BaseTen/CoreWeave/DigitalOcean). Only a fallback estimate — actual
+    // settled cost from OpenRouter's response is used whenever present, and
+    // the served host (and its real price) now varies request to request.
+    usdPerMillionPrompt: 0.15,
+    usdPerMillionCompletion: 0.3,
   },
 ];
 
@@ -200,24 +260,38 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-nemotron-3-5-lightning-free',
   'openrouter-free-router',
   'openrouter-nemotron-ultra',
+  // Independent BYOK pools extend daily throughput after OpenRouter pacing or
+  // quota exhaustion. They are intentionally before the paid fallback.
+  'groq-gpt-oss-120b-byok',
+  'gemini-3-8-flash-byok',
 ];
 
-function activeProviderOrder(_role?: string): readonly ApexProviderName[] {
+function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
-    ? [FREE_POLICY_GATEWAY_NAME]
+    ? [
+        FREE_POLICY_GATEWAY_NAME,
+        'groq-gpt-oss-120b-byok',
+        'gemini-3-8-flash-byok',
+      ]
     : [...PROVIDER_ORDER];
   // The paid rung is appended only while it is BOTH enabled and in budget.
   // Dropping it from the order (rather than letting it fail) is what makes an
   // exhausted daily spend a graceful fall back to free models instead of an
-  // outage — the operator's "all free if absolutely necessary".
-  if (paidLLMFallbackEnabled() && paidSpendAvailable()) {
+  // outage — the operator's "all free if absolutely necessary". `pacingEnabled:
+  // false` (an interactive call — see LLMExecutionContext.interactive) checks
+  // only the hard daily $ cap here too: this order-building check and the
+  // in-loop paidOnly check in complete() must agree on affordability, or an
+  // interactive call that skips pacing in one and not the other ends up with
+  // an empty provider order and the exact misleading fallthrough this whole
+  // capacity-pause mechanism exists to prevent.
+  if (paidLLMFallbackEnabled() && paidSpendAvailable(Date.now(), pacingEnabled)) {
     freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
   }
   return freeOrder;
 }
 
-export function getProviderOrderForRole(_role?: string): ApexProviderName[] {
-  return [...activeProviderOrder(_role)];
+export function getProviderOrderForRole(_role?: string, pacingEnabled?: boolean): ApexProviderName[] {
+  return [...activeProviderOrder(_role, pacingEnabled)];
 }
 
 export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
@@ -600,14 +674,50 @@ export function getProviderBackpressureSnapshot(): {
  *  cycle from all 13 agents. A true answer means "worth attempting", not a
  *  guarantee -- the real reservation still happens inside complete().
  */
-export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
-  // A hard total cap is genuinely workspace-wide; nothing to re-probe.
-  if (isTotalDailyCapReached()) return false;
+function isOpenRouterProvider(provider: ProviderSpec): boolean {
+  return (provider.requestPool ?? 'openrouter') === 'openrouter';
+}
 
-  // A paced/exhausted free request window can still be served by the explicitly
-  // enabled paid continuity route. Free providers remain ineligible until the
-  // ramp releases capacity; the paid route does not consume the free ledger.
-  const freeRequestCapacityAvailable = requestCapacityWindow(now).allowed;
+function requestWindowForProvider(
+  provider: ProviderSpec,
+  at: number,
+  pacingEnabled?: boolean,
+) {
+  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+    return directProviderCapacityWindow(provider.requestPool, at, pacingEnabled);
+  }
+  return requestCapacityWindow(at, pacingEnabled);
+}
+
+function reserveProviderAttempt(
+  provider: ProviderSpec,
+  credentialKey: string,
+): void {
+  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+    reserveDirectProviderRequest(provider.requestPool, provider.name);
+  } else if (provider.paid) {
+    reservePaidProviderRequest(provider.name);
+  } else {
+    reserveProviderRequest(credentialKey);
+  }
+}
+
+function markProviderAttemptSucceeded(
+  provider: ProviderSpec,
+  credentialKey: string,
+): void {
+  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+    markDirectProviderRequestSucceeded(provider.requestPool, provider.name);
+  } else if (provider.paid) {
+    markPaidProviderRequestSucceeded(provider.name);
+  } else {
+    markProviderRequestSucceeded(credentialKey);
+  }
+}
+
+export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
+  if (isTotalDailyCapReached()) return false;
+  if (!emergencyRequestCapacityWindow(now).allowed) return false;
 
   const ledger = getTokenLedgerSnapshot();
   if (!ledger.pacing.total.allowed) return false;
@@ -623,13 +733,20 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
-    if (!freeRequestCapacityAvailable && !provider.paid) continue;
-    const usableCredentials = configuredCredentials(provider).filter(
-      (credential) =>
-        provider.paid ||
-        (!accountCooldown(credential.key) &&
-          accountCapacityWindow(credential.key).allowed),
-    );
+
+    // Each provider family owns its own request pool. An exhausted OpenRouter
+    // allowance must not park Groq/Gemini, and vice versa.
+    if (!requestWindowForProvider(provider, now).allowed) continue;
+
+    const usableCredentials = configuredCredentials(provider).filter((credential) => {
+      const credentialId = `${provider.name}:${credential.env}`;
+      if (credentialCooldown(credentialId)) return false;
+      if (!isOpenRouterProvider(provider) || provider.paid) return true;
+      return (
+        !accountCooldown(credential.key) &&
+        accountCapacityWindow(credential.key).allowed
+      );
+    });
     if (usableCredentials.length === 0) continue;
 
     const readyAt = providerCooldowns.get(provider.name) ?? 0;
@@ -917,13 +1034,15 @@ async function callCompatibleProvider(
   let routedModels = [provider.model];
 
   try {
-    const policy = getActiveOpenRouterModelPolicy();
+    const policy = isOpenRouterProvider(provider)
+      ? getActiveOpenRouterModelPolicy()
+      : null;
     const customPolicy = Boolean(policy) && provider.name === FREE_POLICY_GATEWAY_NAME;
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
       : [provider.model];
 
-    if (policy?.routingMode === 'adaptive') {
+    if (isOpenRouterProvider(provider) && policy?.routingMode === 'adaptive') {
       routedModels = await getAdaptiveModelOrder({
         role: config.role,
         candidates: routedModels,
@@ -950,13 +1069,15 @@ async function callCompatibleProvider(
       messages: toWireMessages(messages),
       temperature: config.temperature ?? 0.7,
       max_tokens: config.maxTokens ?? 2048,
-      // Explicitly request usage data so OpenRouter returns billed generation
-      // cost alongside token counts when available.
-      usage: { include: true },
+      // OpenRouter-specific usage/provider fields are intentionally omitted
+      // for direct OpenAI-compatible BYOK APIs such as Groq.
+      ...(isOpenRouterProvider(provider) ? { usage: { include: true } } : {}),
       ...(provider.reasoningEffort
         ? { reasoning: { effort: provider.reasoningEffort } }
         : {}),
-      ...(Object.keys(providerRouting).length > 0 ? { provider: providerRouting } : {}),
+      ...(isOpenRouterProvider(provider) && Object.keys(providerRouting).length > 0
+        ? { provider: providerRouting }
+        : {}),
     };
     if (customPolicy) {
       // OpenRouter rejects the whole request with HTTP 400 when `models` holds
@@ -1000,11 +1121,14 @@ async function callCompatibleProvider(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
-        'HTTP-Referer': 'https://apex.donmatthews.live',
-        'X-Title': 'APEX Agent Workforce',
-        // OpenRouter documents this as the stable opt-in for route audit data.
-        // Only a privacy-minimized subset is retained by APEX.
-        'X-OpenRouter-Metadata': 'enabled',
+        ...(isOpenRouterProvider(provider)
+          ? {
+              'HTTP-Referer': 'https://apex.donmatthews.live',
+              'X-Title': 'APEX Agent Workforce',
+              // Stable opt-in for OpenRouter route audit data.
+              'X-OpenRouter-Metadata': 'enabled',
+            }
+          : {}),
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -1075,6 +1199,33 @@ async function callCompatibleProvider(
   }
 }
 
+async function callProvider(
+  provider: ProviderSpec,
+  key: string,
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+  config: LLMClientConfig,
+  execution?: LLMExecutionContext,
+): Promise<LLMResponse> {
+  const baseURL = providerBaseURL(provider);
+  if (!baseURL) {
+    throw Object.assign(new Error('provider base URL is not configured'), { status: 0 });
+  }
+  if (provider.protocol === 'gemini-interactions') {
+    return callGeminiInteractions({
+      baseURL,
+      apiKey: key,
+      model: provider.model,
+      messages,
+      tools,
+      config,
+      execution,
+      timeoutMs: LLM_REQUEST_TIMEOUT_MS,
+    });
+  }
+  return callCompatibleProvider(provider, key, messages, tools, config, execution);
+}
+
 // ─── Client ──────────────────────────────────────────────────────────────────
 
 type CapacityBlock = {
@@ -1139,45 +1290,19 @@ class MultiProviderClient {
         );
       }
 
-      // Request budget. Checked BEFORE the token budget's reservation because
-      // the two ration different things and the request one is what actually
-      // binds on a free-tier account: OpenRouter allows a fixed number of
-      // calls per account per UTC day whatever their size, so a workspace can
-      // be nowhere near any token cap and still be refused.
-      //
-      // The `paced` outcome is the one that does the work day to day. It is
-      // not an outage — it means the ramp has not released the next request
-      // yet, so the agent parks briefly and resumes. That is the mechanism
-      // that spreads the allowance across 24h instead of letting the workforce
-      // spend it all before lunch.
-      let paidOnly = false;
-      if (isRequestBudgetExhausted()) {
-        if (paidLLMFallbackEnabled()) paidOnly = true;
-        else {
-          throw capacityPauseError([
-            {
-              source: 'workspace',
-              resumeAt: new Date(Date.now() + msUntilDailyReset()).toISOString(),
-              reason: `daily request cap reached (APEX_REQUEST_CAP_TOTAL=${totalRequestCap()})`,
-            },
-          ]);
-        }
-      }
-      const requestWindow = requestCapacityWindow();
-      if (!requestWindow.allowed) {
-        if (paidLLMFallbackEnabled()) paidOnly = true;
-        else {
-          throw capacityPauseError([
-            {
-              source: 'workspace',
-              resumeAt: requestWindow.resumeAt,
-              reason:
-                requestWindow.reason === 'daily_cap'
-                  ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
-                  : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
-            },
-          ]);
-        }
+      // Cross-provider emergency ceiling. Provider-specific request budgets are
+      // enforced inside the routing loop so an exhausted OpenRouter pool can
+      // fall through to independent Groq/Gemini BYOK capacity.
+      const pacingOverride = execution?.interactive ? false : undefined;
+      const emergencyWindow = emergencyRequestCapacityWindow(Date.now());
+      if (!emergencyWindow.allowed) {
+        throw capacityPauseError([
+          {
+            source: 'all-providers',
+            resumeAt: emergencyWindow.resumeAt,
+            reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
+          },
+        ]);
       }
 
       const trimmed = trimMessageHistory(messages);
@@ -1199,10 +1324,29 @@ class MultiProviderClient {
         const capacityBlocks: CapacityBlock[] = [];
         let nonCapacityFailureSeen = false;
 
-        for (const providerName of getProviderOrderForRole(this.config.role)) {
+        for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
-          if (paidOnly && !provider.paid) continue;
+
+          const providerRequestWindow = requestWindowForProvider(
+            provider,
+            Date.now(),
+            pacingOverride,
+          );
+          if (!providerRequestWindow.allowed) {
+            capacityBlocks.push({
+              source: provider.requestPool ?? 'openrouter',
+              resumeAt: providerRequestWindow.resumeAt,
+              reason:
+                providerRequestWindow.reason === 'daily_cap'
+                  ? `request cap reached (${providerRequestWindow.usedRequests}/${providerRequestWindow.cap})`
+                  : `request pacing active (${providerRequestWindow.usedRequests}/${providerRequestWindow.pacingAllowance} released of ${providerRequestWindow.cap}/day)`,
+            });
+            skipReasons.push(
+              `${provider.name}: ${providerRequestWindow.reason} request budget`,
+            );
+            continue;
+          }
 
           const activationIssue = providerActivationIssue(provider);
           if (activationIssue) {
@@ -1270,7 +1414,10 @@ class MultiProviderClient {
                 continue;
               }
 
-              const accountLock = provider.paid ? null : accountCooldown(credential.key);
+              const accountLock =
+                isOpenRouterProvider(provider) && !provider.paid
+                  ? accountCooldown(credential.key)
+                  : null;
               if (accountLock) {
                 skipReasons.push(`${credentialId}: account in cooldown`);
                 if (accountLock.capacityPause) {
@@ -1289,7 +1436,10 @@ class MultiProviderClient {
               // lets one exhausted OpenRouter account step aside while the
               // other two keep serving, instead of the whole chain stalling
               // on the first key that ran out.
-              const accountWindow = provider.paid ? null : accountCapacityWindow(credential.key);
+              const accountWindow =
+                isOpenRouterProvider(provider) && !provider.paid
+                  ? accountCapacityWindow(credential.key)
+                  : null;
               if (accountWindow && !accountWindow.allowed) {
                 skipReasons.push(
                   `${credentialId}: account request budget ` +
@@ -1303,10 +1453,52 @@ class MultiProviderClient {
                 continue;
               }
 
+              // Re-check immediately before reservation. There is deliberately
+              // no await between these checks and reserveProviderAttempt(), so
+              // concurrent agent turns cannot all consume the same final slot.
+              const emergencyAttemptWindow = emergencyRequestCapacityWindow(Date.now());
+              if (!emergencyAttemptWindow.allowed) {
+                capacityBlocks.push({
+                  source: 'all-providers',
+                  resumeAt: emergencyAttemptWindow.resumeAt,
+                  reason: `emergency request cap reached (${emergencyAttemptWindow.usedRequests}/${emergencyAttemptWindow.cap})`,
+                });
+                break;
+              }
+              const freshProviderWindow = requestWindowForProvider(
+                provider,
+                Date.now(),
+                pacingOverride,
+              );
+              if (!freshProviderWindow.allowed) {
+                capacityBlocks.push({
+                  source: provider.requestPool ?? 'openrouter',
+                  resumeAt: freshProviderWindow.resumeAt,
+                  reason:
+                    freshProviderWindow.reason === 'daily_cap'
+                      ? `request cap reached (${freshProviderWindow.usedRequests}/${freshProviderWindow.cap})`
+                      : 'request pacing active',
+                });
+                break;
+              }
+              const freshAccountWindow =
+                isOpenRouterProvider(provider) && !provider.paid
+                  ? accountCapacityWindow(credential.key)
+                  : null;
+              if (freshAccountWindow && !freshAccountWindow.allowed) {
+                capacityBlocks.push({
+                  source: credential.env,
+                  resumeAt: freshAccountWindow.resumeAt,
+                  reason: 'account request budget exhausted',
+                });
+                continue;
+              }
+
+              reserveProviderAttempt(provider, credential.key);
               providerAttempted = true;
 
               try {
-                const result = await callCompatibleProvider(
+                const result = await callProvider(
                   provider,
                   credential.key,
                   trimmed.messages,
@@ -1314,8 +1506,8 @@ class MultiProviderClient {
                   this.config,
                   execution,
                 );
-                if (!provider.paid) recordProviderRequest(credential.key, true);
-                else {
+                markProviderAttemptSucceeded(provider, credential.key);
+                if (provider.paid) {
                   // Charge the settled cost. OpenRouter returns it because the
                   // request sets `usage: { include: true }`; when it is absent
                   // fall back to list price rather than recording zero, since a
@@ -1339,12 +1531,9 @@ class MultiProviderClient {
                 });
                 return result;
               } catch (error) {
-                // A failed attempt still spent the account's daily request
-                // allowance — a 429, a timeout and a 500 are each one request
-                // as far as the provider is concerned. Counting only successes
-                // would hide exactly the traffic worth seeing: the fallback
-                // cascade, which burns several requests to serve one call.
-                if (!provider.paid) recordProviderRequest(credential.key, false);
+                // The request was reserved before dispatch, so failures already
+                // count against the correct provider pool. Only successful
+                // outcomes need a post-response ledger update.
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
@@ -1392,13 +1581,19 @@ class MultiProviderClient {
                 if (shouldCooldownCredential(status, message)) {
                   setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 }
-                if (!provider.paid && isAccountQuotaFailure(status, message)) {
+                if (
+                  isOpenRouterProvider(provider) &&
+                  !provider.paid &&
+                  isAccountQuotaFailure(status, message)
+                ) {
                   setAccountCooldown(credential.key, status, message, err.retryAfterMs);
                 }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
                 if (!capacityFailure) nonCapacityFailureSeen = true;
-                const newCooldown = credentialCooldown(credentialId) ?? accountCooldown(credential.key);
+                const newCooldown =
+                  credentialCooldown(credentialId) ??
+                  (isOpenRouterProvider(provider) ? accountCooldown(credential.key) : null);
                 if (newCooldown?.capacityPause) {
                   capacityBlocks.push({
                     source: credentialId,
@@ -1423,11 +1618,30 @@ class MultiProviderClient {
 
                 if (isRequestTooLargeError(status, message)) {
                   try {
+                    const allWindow = emergencyRequestCapacityWindow(Date.now());
+                    const poolWindow = requestWindowForProvider(
+                      provider,
+                      Date.now(),
+                      pacingOverride,
+                    );
+                    const retryAccountWindow =
+                      isOpenRouterProvider(provider) && !provider.paid
+                        ? accountCapacityWindow(credential.key)
+                        : null;
+                    if (
+                      !allWindow.allowed ||
+                      !poolWindow.allowed ||
+                      (retryAccountWindow && !retryAccountWindow.allowed)
+                    ) {
+                      continue;
+                    }
+
                     const emergency = trimMessageHistory(
                       messages,
                       EMERGENCY_HISTORY_CHAR_BUDGET,
                     );
-                    const result = await callCompatibleProvider(
+                    reserveProviderAttempt(provider, credential.key);
+                    const result = await callProvider(
                       provider,
                       credential.key,
                       emergency.messages,
@@ -1435,6 +1649,13 @@ class MultiProviderClient {
                       this.config,
                       execution,
                     );
+                    markProviderAttemptSucceeded(provider, credential.key);
+                    if (provider.paid) {
+                      recordSpend(
+                        provider.name,
+                        result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                      );
+                    }
                     clearCredentialCooldown(credentialId);
                     recordTokenUsage(provider.name, result.usage);
                     await recordResponseTelemetry({
@@ -1449,7 +1670,8 @@ class MultiProviderClient {
                     });
                     return result;
                   } catch {
-                    // Continue to the next credential/provider.
+                    // The retry was already reserved and therefore correctly
+                    // counted even when it fails. Continue to the next route.
                   }
                 }
               }
@@ -1558,6 +1780,7 @@ let localPipeline: any = null;
 let pipelineError: string | null = null;
 let pipelineAttempts = 0;
 let pipelineRetryAt = 0;
+let pipelineLoadPromise: Promise<unknown> | null = null;
 
 /** First load fetches Xenova/all-MiniLM-L6-v2 from Hugging Face, so it depends
  *  on the network. Retry it a few times rather than never again, but cap the
@@ -1614,28 +1837,42 @@ async function getLocalPipeline() {
   if (pipelineError && (pipelineAttempts >= PIPELINE_MAX_ATTEMPTS || Date.now() < pipelineRetryAt)) {
     throw new Error(pipelineError);
   }
+  // Boot starts every agent's loop within ~2s of each other, and a first task
+  // often needs a memory recall — so several callers can reach this function
+  // before any of them has finished loading the model. Without sharing the
+  // in-flight attempt, each ran its own full native-then-WASM-fallback load
+  // concurrently: observed in production as two independent "protobuf parsing
+  // failed" failures 62ms apart, immediately followed by the process going
+  // unresponsive long enough to fail a deploy healthcheck.
+  if (pipelineLoadPromise) return pipelineLoadPromise;
+
   pipelineAttempts += 1;
-  try {
-    const { pipeline } = await import('@xenova/transformers');
-    localPipeline = await pipeline(
-      'feature-extraction',
-      'Xenova/all-MiniLM-L6-v2',
-    );
-    pipelineError = null;
-    return localPipeline;
-  } catch (err) {
-    pipelineError = `Local embedding pipeline unavailable: ${describePipelineFailure(err)}`;
-    pipelineRetryAt = Date.now() + PIPELINE_RETRY_COOLDOWN_MS;
-    const exhausted = pipelineAttempts >= PIPELINE_MAX_ATTEMPTS;
-    console.warn(
-      `[LLM] ${pipelineError} (attempt ${pipelineAttempts}/${PIPELINE_MAX_ATTEMPTS}` +
-        `${exhausted ? '; giving up until restart' : `; retrying after ${PIPELINE_RETRY_COOLDOWN_MS / 60_000}m`})`,
-    );
-    if (err instanceof Error && err.stack) {
-      console.warn(`[LLM] embedding pipeline stack: ${err.stack.split('\n').slice(0, 4).join(' | ')}`);
+  pipelineLoadPromise = (async () => {
+    try {
+      const { pipeline } = await import('@xenova/transformers');
+      localPipeline = await pipeline(
+        'feature-extraction',
+        'Xenova/all-MiniLM-L6-v2',
+      );
+      pipelineError = null;
+      return localPipeline;
+    } catch (err) {
+      pipelineError = `Local embedding pipeline unavailable: ${describePipelineFailure(err)}`;
+      pipelineRetryAt = Date.now() + PIPELINE_RETRY_COOLDOWN_MS;
+      const exhausted = pipelineAttempts >= PIPELINE_MAX_ATTEMPTS;
+      console.warn(
+        `[LLM] ${pipelineError} (attempt ${pipelineAttempts}/${PIPELINE_MAX_ATTEMPTS}` +
+          `${exhausted ? '; giving up until restart' : `; retrying after ${PIPELINE_RETRY_COOLDOWN_MS / 60_000}m`})`,
+      );
+      if (err instanceof Error && err.stack) {
+        console.warn(`[LLM] embedding pipeline stack: ${err.stack.split('\n').slice(0, 4).join(' | ')}`);
+      }
+      throw new Error(pipelineError);
+    } finally {
+      pipelineLoadPromise = null;
     }
-    throw new Error(pipelineError);
-  }
+  })();
+  return pipelineLoadPromise;
 }
 
 /** Embedding-pipeline state for /health, so "is semantic recall actually
@@ -1821,6 +2058,10 @@ export function getKnownApiKeyEnvs(): string[] {
       ...OPENROUTER_FREE_KEY_ENVS,
       ...PROVIDERS.flatMap((provider) => provider.apiKeyEnvs),
     ]),
+    'GEMINI_API_KEY',
+    'GEMINI_API_KEY_2',
+    'GROQ_API_KEY',
+    'GROQ_API_KEY_2',
     'YELP_API_KEY',
     'GOOGLE_PLACES_API_KEY',
     'TAVILY_API_KEY',

@@ -49,10 +49,11 @@ async function main(): Promise<void> {
   check('dynamic-variables endpoint exists', /router\.post\('\/dynamic-variables', async/.test(route));
   check('take-message tool endpoint exists', /router\.post\('\/tools\/take-message', async/.test(route));
   check('send-confirmation tool endpoint exists', /router\.post\('\/tools\/send-confirmation', async/.test(route));
+  check('lookup-caller-history tool endpoint exists', /router\.post\('\/tools\/lookup-caller-history', async/.test(route));
   check('inbound SMS endpoint exists', /router\.post\('\/sms-inbound', async/.test(route));
 
   // ── Auth: every handler checks the key, and does so first ────────────────
-  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/sms-inbound'];
+  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/tools/lookup-caller-history', '/sms-inbound'];
   for (const h of handlers) {
     const idx = route.indexOf(`router.post('${h}', async`);
     const body = route.slice(idx, idx + 400);
@@ -113,6 +114,23 @@ async function main(): Promise<void> {
   check(
     'an urgent message gets a higher (lower-numbered) priority than a routine one',
     /CALLER_NAME_GOAL_PRIORITY_URGENT/.test(takeMsgBody) && /CALLER_NAME_GOAL_PRIORITY_NORMAL/.test(takeMsgBody),
+  );
+
+  // ── lookup-caller-history: bounded, defensive, and never throws to the caller ──
+  const lookupIdx = route.indexOf("router.post('/tools/lookup-caller-history'");
+  const lookupEndIdx = route.indexOf("router.post('/sms-inbound'");
+  const lookupBody = route.slice(lookupIdx, lookupEndIdx);
+  check(
+    'it matches SMS history against both the raw and E.164 forms of the number, like findKnownCaller does for leads',
+    /or\(eq\(smsMessages\.counterpartyNumber, phone\), eq\(smsMessages\.counterpartyNumber, e164\)\)/.test(lookupBody),
+  );
+  check(
+    'recent-message history is bounded (a live phone tool must not return an unbounded result set)',
+    /\.limit\(5\)/.test(lookupBody),
+  );
+  check(
+    'a lookup failure degrades to found:false rather than a 500 the assistant has no way to react to',
+    /catch \(err\) \{[\s\S]{0,300}found: false/.test(lookupBody),
   );
 
   // ── Env vars documented ───────────────────────────────────────────────────

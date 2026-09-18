@@ -170,6 +170,44 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
   router.get('/overview', async (_req, res) => {
     try {
       const dayStart = startOfUtcDay();
+      // Typed Drizzle predicates (gte(column, Date)) know how to encode a Date.
+      // Raw sql`` parameters do not carry that column encoder, and postgres-js
+      // can therefore receive the Date object where it expects a string/Buffer.
+      // Use one explicit ISO timestamptz parameter for the aggregate FILTERs.
+      const dayStartIso = dayStart.toISOString();
+
+      const emptyCallMetrics = {
+        completedTotal: 0,
+        completedToday: 0,
+        placedTotal: 0,
+        placedToday: 0,
+        checkoutLinksTotal: 0,
+        callSpendTotalUsd: 0,
+        callSpendTodayUsd: 0,
+      };
+
+      // A broken call-metrics aggregate must never blank the entire Sales Ops
+      // console. Isolate it from the rest of the overview so leads, email,
+      // campaigns, autonomy, and LLM spend continue rendering.
+      const callMetricsPromise = (async () => {
+        try {
+          return await db
+            .select({
+              completedTotal: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ended%')::int`,
+              completedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= CAST(${dayStartIso} AS timestamptz))::int`,
+              placedTotal: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ringing%')::int`,
+              placedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ringing%' and ${logs.timestamp} >= CAST(${dayStartIso} AS timestamptz))::int`,
+              checkoutLinksTotal: sql<number>`count(*) filter (where ${logs.message} like '%Checkout link created%')::int`,
+              callSpendTotalUsd: sql<number>`coalesce(sum((substring(${logs.message} from ${CALL_COST_PATTERN}))::float8) filter (where ${logs.message} like '%Outbound call ended%'), 0)::float8`,
+              callSpendTodayUsd: sql<number>`coalesce(sum((substring(${logs.message} from ${CALL_COST_PATTERN}))::float8) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= CAST(${dayStartIso} AS timestamptz)), 0)::float8`,
+            })
+            .from(logs)
+            .where(eq(logs.agentId, SALES_AGENT_ID));
+        } catch (err) {
+          console.error('[sales-ops] call metrics unavailable:', errorMessage(err));
+          return [emptyCallMetrics];
+        }
+      })();
 
       const [
         leadStatusRows,
@@ -192,18 +230,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
           .select({ n: sql<number>`count(*)::int` })
           .from(emailSends)
           .where(gte(emailSends.createdAt, dayStart)),
-        db
-          .select({
-            completedTotal: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ended%')::int`,
-            completedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= ${dayStart})::int`,
-            placedTotal: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ringing%')::int`,
-            placedToday: sql<number>`count(*) filter (where ${logs.message} like '%Outbound call ringing%' and ${logs.timestamp} >= ${dayStart})::int`,
-            checkoutLinksTotal: sql<number>`count(*) filter (where ${logs.message} like '%Checkout link created%')::int`,
-            callSpendTotalUsd: sql<number>`coalesce(sum((substring(${logs.message} from ${CALL_COST_PATTERN}))::float8) filter (where ${logs.message} like '%Outbound call ended%'), 0)::float8`,
-            callSpendTodayUsd: sql<number>`coalesce(sum((substring(${logs.message} from ${CALL_COST_PATTERN}))::float8) filter (where ${logs.message} like '%Outbound call ended%' and ${logs.timestamp} >= ${dayStart}), 0)::float8`,
-          })
-          .from(logs)
-          .where(eq(logs.agentId, SALES_AGENT_ID)),
+        callMetricsPromise,
         db
           .select({ status: leadCampaigns.status, n: sql<number>`count(*)::int` })
           .from(leadCampaigns)
@@ -233,15 +260,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         emailsTotal += row.n;
       }
 
-      const call = callRow[0] ?? {
-        completedTotal: 0,
-        completedToday: 0,
-        placedTotal: 0,
-        placedToday: 0,
-        checkoutLinksTotal: 0,
-        callSpendTotalUsd: 0,
-        callSpendTodayUsd: 0,
-      };
+      const call = callRow[0] ?? emptyCallMetrics;
 
       const spend = getSpendLedgerSnapshot();
       /** Round currency ledger values to four decimal places for API output. */

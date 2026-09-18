@@ -95,7 +95,7 @@ const UTC_DAY_MS = 24 * 60 * 60 * 1000;
  *  requests made outside this process (a second revision mid-rollout, a local
  *  run, the chat route on another instance) and the penalty for guessing high
  *  is a hard 429 wall with no allowance left to recover on. */
-const DEFAULT_TOTAL_CAP = 2_000;
+const DEFAULT_TOTAL_CAP = 2_775;
 /** Enough to get real work done immediately after a restart without letting a
  *  startup swarm eat the morning. ~1.4h of the steady-state rate. */
 const DEFAULT_PACING_BURST = 150;
@@ -242,20 +242,19 @@ function requestsAcrossAccount(fingerprint: string): number {
 }
 
 /**
- * The cap actually enforced: the configured value, clamped to what the
- * observed accounts can really serve.
+ * Workspace-wide hard ceiling.
  *
- * Clamping only ever LOWERS the ceiling, and only when the probe has real
- * data. A failed or not-yet-run probe leaves the configured value untouched,
- * so a network hiccup can never starve the workforce by pretending there are
- * fewer accounts than there are.
+ * This must remain distinct from any one provider's allowance. OpenRouter
+ * accounts have their own per-account caps (accountCapacityWindow), while
+ * direct BYOK providers such as Groq or Gemini have independent quota pools.
+ * Clamping the WORKSPACE ceiling to the number of observed OpenRouter accounts
+ * made APEX report a 2,775 cap while silently enforcing 2,000 when only two
+ * OpenRouter accounts were observed. Keep the operator's workspace ceiling
+ * authoritative; provider-specific gates decide whether a particular route is
+ * currently available beneath it.
  */
 export function effectiveRequestCap(): number {
-  const configured = totalRequestCap();
-  if (configured === 0) return 0;
-  const observedAccounts = getObservedAccountCount();
-  if (observedAccounts === null) return configured;
-  return Math.min(configured, observedAccounts * freeRequestsPerAccount());
+  return totalRequestCap();
 }
 
 export function totalRequestCap(): number {
@@ -405,7 +404,7 @@ export function calculateRequestCapacityWindow(input: {
   };
 }
 
-async function persistDatabaseDelta(day: string, account: string, succeeded: boolean): Promise<void> {
+async function persistDatabaseRequestDelta(day: string, account: string): Promise<void> {
   try {
     const [{ db, llmRequestUsageDaily }, { sql }] = await Promise.all([
       import('@workspace/db'),
@@ -413,12 +412,36 @@ async function persistDatabaseDelta(day: string, account: string, succeeded: boo
     ]);
     await db
       .insert(llmRequestUsageDaily)
-      .values({ day, account, requests: 1, succeeded: succeeded ? 1 : 0, updatedAt: new Date() })
+      .values({ day, account, requests: 1, succeeded: 0, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: [llmRequestUsageDaily.day, llmRequestUsageDaily.account],
         set: {
           requests: sql`${llmRequestUsageDaily.requests} + 1`,
-          succeeded: sql`${llmRequestUsageDaily.succeeded} + ${succeeded ? 1 : 0}`,
+          updatedAt: new Date(),
+        },
+      });
+    databasePersistenceReady = true;
+  } catch {
+    databasePersistenceReady = false;
+  }
+}
+
+async function persistDatabaseSuccessDelta(day: string, account: string): Promise<void> {
+  try {
+    const [{ db, llmRequestUsageDaily }, { sql }] = await Promise.all([
+      import('@workspace/db'),
+      import('drizzle-orm'),
+    ]);
+    // This UPSERT is safe even if the asynchronous request-reservation write
+    // has not reached Postgres yet; the later request delta brings requests
+    // back to 1 while this row preserves the successful outcome.
+    await db
+      .insert(llmRequestUsageDaily)
+      .values({ day, account, requests: 0, succeeded: 1, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [llmRequestUsageDaily.day, llmRequestUsageDaily.account],
+        set: {
+          succeeded: sql`${llmRequestUsageDaily.succeeded} + 1`,
           updatedAt: new Date(),
         },
       });
@@ -481,25 +504,130 @@ export async function initializeRequestLedgerPersistence(): Promise<boolean> {
   }
 }
 
-/** Record one upstream attempt against the account that served it. Takes the
- *  API key so the caller never handles the fingerprint; the key itself is
- *  hashed immediately and never stored, logged or reported. */
-export function recordProviderRequest(apiKey: string, succeeded: boolean): void {
+const PAID_REQUEST_ACCOUNT_PREFIX = 'paid-provider:';
+const DIRECT_REQUEST_ACCOUNT_PREFIX = 'direct-provider:';
+
+export type DirectRequestPool = 'groq' | 'gemini';
+
+const DIRECT_POOL_DEFAULTS: Record<DirectRequestPool, { cap: number; ratePerMinute: number; burst: number }> = {
+  // Groq publishes 1,000 RPD for GPT-OSS 120B on the base limits page. Keep
+  // 10% headroom for calls made outside this APEX process.
+  groq: { cap: 900, ratePerMinute: 8, burst: 25 },
+  // Gemini's exact RPD is project/model/tier specific and must be read from AI
+  // Studio. Start conservatively until APEX can ingest the live quota headers.
+  gemini: { cap: 500, ratePerMinute: 5, burst: 20 },
+};
+
+const directRecentRequests: Record<DirectRequestPool, number[]> = {
+  groq: [],
+  gemini: [],
+};
+
+function directAccountId(pool: DirectRequestPool, provider: string): string {
+  return `${DIRECT_REQUEST_ACCOUNT_PREFIX}${pool}:${provider}`;
+}
+
+function isDirectAccount(account: string): boolean {
+  return account.startsWith(DIRECT_REQUEST_ACCOUNT_PREFIX);
+}
+
+function directPoolForAccount(account: string): DirectRequestPool | null {
+  if (!isDirectAccount(account)) return null;
+  const rest = account.slice(DIRECT_REQUEST_ACCOUNT_PREFIX.length);
+  const pool = rest.split(':', 1)[0];
+  return pool === 'groq' || pool === 'gemini' ? pool : null;
+}
+
+function reserveRequestAccount(
+  account: string,
+  countInOpenRouterRateWindow = true,
+): void {
   try {
     rolloverIfNeeded();
-    const account = accountFingerprint(apiKey);
     const now = Date.now();
-    pruneRateWindow(now);
-    recentRequests.push(now);
+    if (countInOpenRouterRateWindow) {
+      pruneRateWindow(now);
+      recentRequests.push(now);
+    }
     const entry =
       state.accounts[account] ?? (state.accounts[account] = { requests: 0, succeeded: 0 });
+    // Reservation happens synchronously before fetch(). With no await between
+    // the capacity check and this increment, concurrent agent turns cannot all
+    // observe the same final slot and overshoot the daily cap.
     entry.requests += 1;
-    if (succeeded) entry.succeeded += 1;
     persist();
-    void persistDatabaseDelta(state.day, account, succeeded);
+    void persistDatabaseRequestDelta(state.day, account);
   } catch {
     // Request accounting must never take inference down.
   }
+}
+
+function markRequestAccountSucceeded(account: string): void {
+  try {
+    rolloverIfNeeded();
+    const entry = state.accounts[account];
+    if (!entry) return;
+    entry.succeeded = Math.min(entry.requests, entry.succeeded + 1);
+    persist();
+    void persistDatabaseSuccessDelta(state.day, account);
+  } catch {
+    // Outcome accounting must never take inference down.
+  }
+}
+
+export function reserveProviderRequest(apiKey: string): void {
+  reserveRequestAccount(accountFingerprint(apiKey));
+}
+
+export function markProviderRequestSucceeded(apiKey: string): void {
+  markRequestAccountSucceeded(accountFingerprint(apiKey));
+}
+
+export function reservePaidProviderRequest(provider: string): void {
+  reserveRequestAccount(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`);
+}
+
+export function markPaidProviderRequestSucceeded(provider: string): void {
+  markRequestAccountSucceeded(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`);
+}
+
+export function reserveDirectProviderRequest(
+  pool: DirectRequestPool,
+  provider: string,
+): void {
+  const now = Date.now();
+  const recent = directRecentRequests[pool];
+  pruneSpecificRateWindow(recent, now);
+  recent.push(now);
+  reserveRequestAccount(directAccountId(pool, provider), false);
+}
+
+export function markDirectProviderRequestSucceeded(
+  pool: DirectRequestPool,
+  provider: string,
+): void {
+  markRequestAccountSucceeded(directAccountId(pool, provider));
+}
+
+/** Backward-compatible one-shot accounting helpers used by verification code.
+ * Runtime inference uses reserve*() BEFORE fetch and mark*Succeeded() after. */
+export function recordProviderRequest(apiKey: string, succeeded: boolean): void {
+  reserveProviderRequest(apiKey);
+  if (succeeded) markProviderRequestSucceeded(apiKey);
+}
+
+export function recordPaidProviderRequest(provider: string, succeeded: boolean): void {
+  reservePaidProviderRequest(provider);
+  if (succeeded) markPaidProviderRequestSucceeded(provider);
+}
+
+export function recordDirectProviderRequest(
+  pool: DirectRequestPool,
+  provider: string,
+  succeeded: boolean,
+): void {
+  reserveDirectProviderRequest(pool, provider);
+  if (succeeded) markDirectProviderRequestSucceeded(pool, provider);
 }
 
 /**
@@ -517,21 +645,49 @@ export function accountRequestsToday(fingerprint: string): number {
   return requestsAcrossAccount(fingerprint);
 }
 
+/** Requests against the OpenRouter pool only. This is the pool governed by
+ * APEX_REQUEST_CAP_TOTAL=2775. Direct BYOK providers are intentionally excluded
+ * so they add independent capacity instead of consuming this allowance. */
 export function totalRequestsToday(): number {
+  rolloverIfNeeded();
+  let sum = 0;
+  for (const [account, entry] of Object.entries(state.accounts)) {
+    if (!isDirectAccount(account)) sum += entry.requests;
+  }
+  return sum;
+}
+
+export function allProviderRequestsToday(): number {
   rolloverIfNeeded();
   let sum = 0;
   for (const entry of Object.values(state.accounts)) sum += entry.requests;
   return sum;
 }
 
-/** Workspace-wide budget check for one more request. */
-export function requestCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
+export function directProviderRequestsToday(pool: DirectRequestPool): number {
+  rolloverIfNeeded();
+  let sum = 0;
+  for (const [account, entry] of Object.entries(state.accounts)) {
+    if (directPoolForAccount(account) === pool) sum += entry.requests;
+  }
+  return sum;
+}
+
+/** Workspace-wide budget check for one more request. `pacingEnabled: false`
+ *  (e.g. an interactive human request) skips the smoothing ramp and checks
+ *  only the hard daily cap — the per-minute rate limit below still applies
+ *  either way. Omit to use the configured default. */
+export function requestCapacityWindow(
+  at: number = Date.now(),
+  pacingEnabled?: boolean,
+): RequestCapacityWindow {
   rolloverIfNeeded(at);
   const daily = calculateRequestCapacityWindow({
     cap: effectiveRequestCap(),
     usedRequests: totalRequestsToday(),
     requestedRequests: 1,
     at,
+    pacingEnabled,
   });
   if (!daily.allowed) return daily;
 
@@ -547,6 +703,97 @@ export function requestCapacityWindow(at: number = Date.now()): RequestCapacityW
     reason: 'paced',
     resumeAt: new Date(Math.max(at + 1_000, resumeAt)).toISOString(),
   };
+}
+
+function directPoolNumber(
+  pool: DirectRequestPool,
+  suffix: 'CAP' | 'RATE_PER_MIN' | 'PACING_BURST',
+  fallback: number,
+): number {
+  const raw = process.env[`APEX_${pool.toUpperCase()}_REQUEST_${suffix}`];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+export function directProviderRequestCap(pool: DirectRequestPool): number {
+  return directPoolNumber(pool, 'CAP', DIRECT_POOL_DEFAULTS[pool].cap);
+}
+
+export function directProviderRatePerMinute(pool: DirectRequestPool): number {
+  return directPoolNumber(pool, 'RATE_PER_MIN', DIRECT_POOL_DEFAULTS[pool].ratePerMinute);
+}
+
+function directProviderBurst(pool: DirectRequestPool): number {
+  return directPoolNumber(pool, 'PACING_BURST', DIRECT_POOL_DEFAULTS[pool].burst);
+}
+
+function pruneSpecificRateWindow(recent: number[], at: number): void {
+  const cutoff = at - RATE_WINDOW_MS;
+  while (recent.length > 0 && recent[0] < cutoff) recent.shift();
+}
+
+function directRateLimitResumeAt(pool: DirectRequestPool, at: number): number | null {
+  const limit = directProviderRatePerMinute(pool);
+  if (limit <= 0) return null;
+  const recent = directRecentRequests[pool];
+  pruneSpecificRateWindow(recent, at);
+  if (recent.length < limit) return null;
+  return recent[0] + RATE_WINDOW_MS;
+}
+
+/** Independent quota window for direct BYOK providers. */
+export function directProviderCapacityWindow(
+  pool: DirectRequestPool,
+  at: number = Date.now(),
+  pacingEnabled?: boolean,
+): RequestCapacityWindow {
+  rolloverIfNeeded(at);
+  const cap = directProviderRequestCap(pool);
+  const daily = calculateRequestCapacityWindow({
+    cap,
+    usedRequests: directProviderRequestsToday(pool),
+    requestedRequests: 1,
+    at,
+    pacingEnabled,
+    burstRequests: Math.min(cap, directProviderBurst(pool)),
+  });
+  if (!daily.allowed) return daily;
+
+  const resumeAt = directRateLimitResumeAt(pool, at);
+  if (resumeAt === null) return daily;
+  return {
+    ...daily,
+    allowed: false,
+    reason: 'paced',
+    resumeAt: new Date(Math.max(at + 1_000, resumeAt)).toISOString(),
+  };
+}
+
+/** Emergency cross-provider ceiling. This is deliberately higher than the
+ * OpenRouter budget so BYOK adds capacity, but low enough that a retry storm
+ * can never return APEX to a five-figure request day. */
+const DEFAULT_EMERGENCY_TOTAL_CAP = 4_500;
+
+export function emergencyTotalRequestCap(): number {
+  const raw = process.env.APEX_EMERGENCY_REQUEST_CAP_TOTAL;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_EMERGENCY_TOTAL_CAP;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : DEFAULT_EMERGENCY_TOTAL_CAP;
+}
+
+export function emergencyRequestCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
+  rolloverIfNeeded(at);
+  return calculateRequestCapacityWindow({
+    cap: emergencyTotalRequestCap(),
+    usedRequests: allProviderRequestsToday(),
+    requestedRequests: 1,
+    at,
+    pacingEnabled: false,
+    burstRequests: emergencyTotalRequestCap(),
+  });
 }
 
 /**
@@ -647,7 +894,8 @@ export interface RequestLedgerSnapshot {
   /** Cap as configured, before the observed-account clamp. */
   configuredCap: number;
   /** Distinct OpenRouter accounts the credit probe found, or null if it has
-   *  not reported. `cap` is `min(configuredCap, accounts x per-account limit)`. */
+   *  not reported. This is provider-capacity telemetry only; it no longer
+   *  changes the workspace hard ceiling. */
   observedAccounts: number | null;
   /** Requests issued in the last 60s, against the short-window limit. */
   lastMinute: number;
@@ -655,6 +903,19 @@ export interface RequestLedgerSnapshot {
   /** Requests/day this workspace is on course for if the current rate holds.
    *  The number to compare against the provider allowance. */
   projectedDailyRequests: number | null;
+  /** All upstream attempts across OpenRouter + independent BYOK pools. */
+  allProviderRequests: number;
+  emergencyCap: number;
+  directProviders: Array<{
+    pool: DirectRequestPool;
+    requests: number;
+    cap: number;
+    remaining: number | null;
+    lastMinute: number;
+    ratePerMinute: number;
+    projectedDailyRequests: number | null;
+    pacing: RequestCapacityWindow;
+  }>;
   pacing: {
     enabled: boolean;
     burstRequests: number;
@@ -690,16 +951,30 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
   const accounts = [...fingerprints]
     .map((fingerprint) => {
       const entry = state.accounts[fingerprint] ?? { requests: 0, succeeded: 0 };
-      const cap = capForFingerprint(fingerprint);
-      const envNames = envNamesForFingerprint(fingerprint);
+      const directPool = directPoolForAccount(fingerprint);
+      const directProvider = directPool
+        ? fingerprint.slice(`${DIRECT_REQUEST_ACCOUNT_PREFIX}${directPool}:`.length)
+        : null;
+      const paidProvider = fingerprint.startsWith(PAID_REQUEST_ACCOUNT_PREFIX)
+        ? fingerprint.slice(PAID_REQUEST_ACCOUNT_PREFIX.length)
+        : null;
+      const cap = directPool
+        ? directProviderRequestCap(directPool)
+        : paidProvider
+          ? 0
+          : capForFingerprint(fingerprint);
+      const envNames = directPool || paidProvider ? [] : envNamesForFingerprint(fingerprint);
       return {
-        // A fingerprint with no live env name is a key that was rotated or
-        // removed mid-day; its spend still counts toward the workspace total,
-        // so say so rather than dropping the row or leaking the hash.
-        account: envNames.length > 0 ? envNames.join(' + ') : '(retired key)',
-        openRouterAccount: observedAccountFor(fingerprint),
+        account: directPool
+          ? `${directProvider ?? directPool} (BYOK:${directPool})`
+          : paidProvider
+            ? `${paidProvider} (paid)`
+            : envNames.length > 0
+              ? envNames.join(' + ')
+              : '(retired key)',
+        openRouterAccount: directPool || paidProvider ? null : observedAccountFor(fingerprint),
         requests: entry.requests,
-        accountRequests: requestsAcrossAccount(fingerprint),
+        accountRequests: directPool || paidProvider ? entry.requests : requestsAcrossAccount(fingerprint),
         succeeded: entry.succeeded,
         failed: Math.max(0, entry.requests - entry.succeeded),
         cap,
@@ -713,6 +988,7 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
         }),
       };
     })
+    .filter((entry) => !entry.account.includes('(BYOK:'))
     .sort((a, b) => b.requests - a.requests);
 
   const cap = effectiveRequestCap();
@@ -735,6 +1011,26 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
       ? Math.round((totalRequests * UTC_DAY_MS) / elapsed)
       : null;
 
+  const directProviders = (['groq', 'gemini'] as const).map((pool) => {
+    const requests = directProviderRequestsToday(pool);
+    const providerCap = directProviderRequestCap(pool);
+    const recent = directRecentRequests[pool];
+    pruneSpecificRateWindow(recent, at);
+    return {
+      pool,
+      requests,
+      cap: providerCap,
+      remaining: providerCap > 0 ? Math.max(0, providerCap - requests) : null,
+      lastMinute: recent.length,
+      ratePerMinute: directProviderRatePerMinute(pool),
+      projectedDailyRequests:
+        elapsed >= 15 * 60 * 1000
+          ? Math.round((requests * UTC_DAY_MS) / elapsed)
+          : null,
+      pacing: directProviderCapacityWindow(pool, at),
+    };
+  });
+
   const nextResumeAt =
     [totalPacing, ...accounts.map((entry) => entry.pacing)]
       .filter((window) => !window.allowed && window.resumeAt)
@@ -752,6 +1048,9 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
     lastMinute: requestsInLastMinute(at),
     ratePerMinute: ratePerMinute(),
     projectedDailyRequests,
+    allProviderRequests: allProviderRequestsToday(),
+    emergencyCap: emergencyTotalRequestCap(),
+    directProviders,
     pacing: {
       enabled: requestPacingEnabled(),
       burstRequests: cap > 0 ? pacingBurst(cap) : DEFAULT_PACING_BURST,

@@ -85,6 +85,58 @@ export interface DiagnosticFinding {
   action?: string;
 }
 
+export interface SpendSnapshot {
+  day: string;
+  persistence: 'postgres+memory' | 'memory-only';
+  spentUsd: number;
+  capUsd: number;
+  releasedUsd: number;
+  remainingUsd: number;
+  pacingEnabled: boolean;
+  state: 'disabled' | 'available' | 'paced' | 'daily_cap';
+  resumeAt: string | null;
+  projectedUsd: number | null;
+  hourlyBurnUsd: number | null;
+  projected30DayUsd: number | null;
+  utilizationPct: number;
+  providers: Array<{ provider: string; spentUsd: number }>;
+  requests: {
+    used: number;
+    cap: number;
+    configuredCap: number;
+    remaining: number | null;
+    utilizationPct: number;
+    projectedDaily: number | null;
+    lastMinute: number;
+    ratePerMinute: number;
+    pacingEnabled: boolean;
+    releasedSoFar: number;
+    persistence: 'postgres+memory' | 'memory-only';
+    allProviderUsed: number;
+    emergencyCap: number;
+    directProviders: Array<{
+      pool: 'groq' | 'gemini';
+      requests: number;
+      cap: number;
+      remaining: number | null;
+      lastMinute: number;
+      ratePerMinute: number;
+      projectedDailyRequests: number | null;
+      pacing: {
+        cap: number;
+        usedRequests: number;
+        requestedRequests: number;
+        pacingAllowance: number;
+        availableRequests: number | null;
+        allowed: boolean;
+        reason: 'uncapped' | 'available' | 'paced' | 'daily_cap';
+        resumeAt: string | null;
+      };
+    }>;
+  };
+  updatedAt: string;
+}
+
 export interface DiagnosticsReport {
   status: DiagnosticSeverity;
   generatedAt: string;
@@ -230,6 +282,10 @@ export const api = {
     text: () => apiFetchText('/diagnostics?format=text'),
   },
 
+  spend: {
+    live: () => apiFetch<SpendSnapshot>('/spend'),
+  },
+
   health: {
     report: () => apiFetch<HealthReport>('/health'),
     components: () => apiFetch<ComponentHealthRow[]>('/health/components'),
@@ -370,6 +426,22 @@ export const api = {
     sendSms: (body: { toNumber: string; body: string }) =>
       apiFetch<SmsSendResult>('/sales-ops/sms/send', { method: 'POST', body: JSON.stringify(body) }),
   },
+
+  callBridge: {
+    /** Dial the operator; the customer is dialed once they answer. */
+    start: (body: { operatorNumber: string; customerNumber: string }) =>
+      apiFetch<{ id: string; status: string; error?: string }>('/call-bridge/start', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    /** Poll the live status of a call bridge session. */
+    status: (id: string) => apiFetch<CallBridgeSession>(`/call-bridge/${encodeURIComponent(id)}`),
+    /** Dial the Apex Front Desk AI assistant into an already-active call. */
+    bringInAi: (id: string) =>
+      apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/bring-in-ai`, { method: 'POST' }),
+    /** Hang up every leg of the session. */
+    end: (id: string) => apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/end`, { method: 'POST' }),
+  },
 };
 
 // ─── Sales Ops Types ───────────────────────────────────────────────────────
@@ -478,6 +550,29 @@ export interface SmsSendResult {
   success: boolean;
   id?: string;
   error?: string;
+}
+
+export type CallBridgeStatus =
+  | 'dialing_operator'
+  | 'dialing_customer'
+  | 'active'
+  | 'ai_dialing'
+  | 'ai_joined'
+  | 'ended'
+  | 'failed';
+
+export interface CallBridgeSession {
+  id: string;
+  status: CallBridgeStatus;
+  operatorNumber: string;
+  customerNumber: string;
+  conferenceName: string;
+  operatorCallControlId: string | null;
+  customerCallControlId: string | null;
+  aiCallControlId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -974,25 +1069,3 @@ export interface SuggestionsResponse {
     }>;
   };
 }
-<<<<<<< ours
-<<<<<<< ours
-=======
-
-
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
-
-
->>>>>>> theirs

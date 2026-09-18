@@ -13,7 +13,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
+import { capacityPauseRemainingMs, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { setupLiveVoice } from './live-voice.js';
@@ -36,6 +36,7 @@ import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
+import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
@@ -191,16 +192,16 @@ async function main() {
         (provider) =>
           provider.name === PAID_FALLBACK_PROVIDER_NAME && provider.configured,
       );
-    const hardCapped =
-      tokenLedger.totalCapReached ||
-      (!paidContinuityAvailable && requestLedger.totalCapReached);
-    // `aggregatePaused` is the SAME expression llmCapacityAvailableNow() uses
-    // to return false (`!ledger.pacing.total.allowed`), and that function gates
-    // task claiming for every agent in the process. So this condition does not
-    // mean "throttled" -- it means the entire workforce has stopped.
-    const aggregatePaused =
-      !tokenLedger.pacing.total.allowed ||
-      (!paidContinuityAvailable && !requestLedger.pacing.total.allowed);
+    // OpenRouter, Groq and Gemini now have independent request pools. The only
+    // request-count state that is truly workspace-wide is the emergency
+    // all-provider ceiling; an exhausted 2,775 OpenRouter pool is NOT a hard
+    // cap while an enabled BYOK pool still has room.
+    const emergencyRequestCapReached =
+      requestLedger.emergencyCap > 0 &&
+      requestLedger.allProviderRequests >= requestLedger.emergencyCap;
+    const hardCapped = tokenLedger.totalCapReached || emergencyRequestCapReached;
+    const anyLLMCapacityAvailable = llmCapacityAvailableNow();
+    const aggregatePaused = !hardCapped && !anyLLMCapacityAvailable;
     const paidContinuityActive =
       paidContinuityAvailable && !requestLedger.pacing.total.allowed;
     // These two conditions used to collapse into one "paced" string, and that
@@ -326,6 +327,9 @@ async function main() {
         releasedSoFar: requestLedger.pacing.total.pacingAllowance,
         pacingEnabled: requestLedger.pacing.enabled,
         persistence: requestLedger.persistence,
+        allProviderUsed: requestLedger.allProviderRequests,
+        emergencyCap: requestLedger.emergencyCap,
+        directProviders: requestLedger.directProviders,
         accounts: requestLedger.accounts.map((account) => ({
           account: account.account,
           // Env names cannot show that two keys share one OpenRouter user, and
@@ -429,6 +433,13 @@ async function main() {
   // Must be mounted BEFORE requireAdminAuth for the same reason as the above.
   app.use('/api/telnyx-assistant', createTelnyxAssistantRouter(ceo));
 
+  // Call Bridge webhook — Telnyx Call Control events for operator-bridged
+  // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
+  // mounted at the same /api/telnyx-assistant prefix (a different router,
+  // registered separately for the feature's own file) since it is equally
+  // Telnyx-originated. Must be mounted BEFORE requireAdminAuth.
+  app.use('/api/telnyx-assistant', createCallBridgeWebhookRouter());
+
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
 
@@ -458,6 +469,7 @@ async function main() {
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));
+  app.use('/api/call-bridge', createCallBridgeRouter());
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs
@@ -467,6 +479,59 @@ async function main() {
     // used?" — the roster is what makes an unfilled free slot visible here
     // rather than only in a failed task's error_message.
     res.json({ ...getTokenLedgerSnapshot(), roster: getProviderRoster() });
+  });
+
+  // Live dollar spend / burn-rate observability. The source of truth is the
+  // Postgres-backed spend ledger in core, so a dashboard refresh or process
+  // restart cannot manufacture a fresh budget.
+  app.get('/api/spend', (_req, res) => {
+    const snapshot = getSpendLedgerSnapshot();
+    const hourlyBurnUsd =
+      snapshot.projectedUsd == null
+        ? null
+        : Math.round((snapshot.projectedUsd / 24) * 10_000) / 10_000;
+    const projected30DayUsd =
+      snapshot.projectedUsd == null
+        ? null
+        : Math.round(snapshot.projectedUsd * 30 * 100) / 100;
+    const utilizationPct =
+      snapshot.capUsd > 0
+        ? Math.round((snapshot.spentUsd / snapshot.capUsd) * 10_000) / 100
+        : 0;
+
+    const requests = getRequestLedgerSnapshot();
+    const remainingRequests =
+      requests.totalCap > 0 ? Math.max(0, requests.totalCap - requests.totalRequests) : null;
+    const requestUtilizationPct =
+      requests.totalCap > 0
+        ? Math.round((requests.totalRequests / requests.totalCap) * 10_000) / 100
+        : 0;
+
+    res.json({
+      ...snapshot,
+      hourlyBurnUsd,
+      projected30DayUsd,
+      utilizationPct,
+      requests: {
+        // This is the OpenRouter pool. BYOK pools are intentionally separate
+        // so they add capacity rather than consuming the 2,775 allowance.
+        used: requests.totalRequests,
+        cap: requests.totalCap,
+        configuredCap: requests.configuredCap,
+        remaining: remainingRequests,
+        utilizationPct: requestUtilizationPct,
+        projectedDaily: requests.projectedDailyRequests,
+        lastMinute: requests.lastMinute,
+        ratePerMinute: requests.ratePerMinute,
+        pacingEnabled: requests.pacing.enabled,
+        releasedSoFar: requests.pacing.total.pacingAllowance,
+        persistence: requests.persistence,
+        allProviderUsed: requests.allProviderRequests,
+        emergencyCap: requests.emergencyCap,
+        directProviders: requests.directProviders,
+      },
+      updatedAt: new Date().toISOString(),
+    });
   });
 
   /**

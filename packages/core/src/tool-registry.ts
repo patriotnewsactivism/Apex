@@ -692,7 +692,13 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         contactSourceUrl: z.string().url().optional().describe('Page that supports the contact details'),
         contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively checking the company site and public sources for a decision maker, email, and phone'),
         fitReason: z.string().describe('Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)'),
-        outreachAngle: z.string().optional().describe('Suggested angle for the first outreach message'),
+        // Was optional — a lead saved without one leaves {{outreachAngle}} blank
+        // in every email-campaign template that merges it (campaign-runner.ts),
+        // so an "optional" field was quietly shipping empty outreach copy.
+        // Required, like its sibling fitReason: once you know why a lead fits,
+        // you can say how to pitch it — there's no legitimate case where one
+        // exists and the other doesn't.
+        outreachAngle: z.string().describe('Suggested angle for the first outreach message — how to pitch BuildMyBot to them, based on fitReason'),
         campaignId: z.string().optional().describe('Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.'),
       }),
       requiresApproval: false,
@@ -1026,7 +1032,9 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           contactSourceUrl: z.string().url().optional(),
           contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively searching for contact details'),
           fitReason: z.string().describe('Why this company is a good fit for BuildMyBot'),
-          outreachAngle: z.string().optional().describe('Suggested outreach pitch'),
+          // Required — see saveResearchedLead's outreachAngle for why an
+          // "optional" angle was quietly shipping blank outreach copy.
+          outreachAngle: z.string().describe('Suggested outreach pitch, based on fitReason'),
         })).describe('Array of leads to save (10-20 at a time is ideal)'),
         campaignId: z.string().optional().describe('Attribute every lead in this batch to a lead campaign. Omit for ad-hoc research.'),
       }),
