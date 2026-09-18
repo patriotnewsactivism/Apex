@@ -54,7 +54,7 @@ const NASTY = [
   'ERROR provider chain exhausted: openrouter/deepseek-v4-flash 400 models_array_too_long; openrouter2/qwen3-max cooldown 30s; cerebras no key configured',
 ];
 const BOTTOM = ['Chat','Mission','Tasks','Agents','Settings'];
-const DRAWER = ['Approvals','Agent Network','Log Stream','Sales Operations','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD'];
+const DRAWER = ['Approvals','Agent Network','Log Stream','Sales Operations','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD','Spend / Burn'];
 
 // Every nav id in App.tsx mapped to the label this harness clicks to reach it.
 // The bottom bar uses shorthand ('Mission', 'Tasks', 'Agents') where the drawer
@@ -71,7 +71,7 @@ const NAV_ID_TO_LABEL = {
   'sales-ops': 'Sales Operations', leads: 'Leads', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
-  pipeline: 'CI/CD', settings: 'Settings',
+  pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
 };
 
 {
