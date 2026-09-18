@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { statfsSync } from 'fs';
+import { lstatSync, readdirSync } from 'fs';
 import {
   getCapacityDeferralStats,
   getDequeueHealth,
@@ -35,6 +35,63 @@ interface Finding {
 }
 
 const RANK: Record<Severity, number> = { critical: 0, warning: 1, ok: 2 };
+
+
+/** Measure the actual contents of a directory, not the filesystem that contains
+ * it. statfs('/tmp') reports whole-filesystem usage and produced a false
+ * ~900GB critical alert on Railway even though /tmp itself held ~5MB.
+ *
+ * The walk is bounded so the diagnostics endpoint cannot become the outage it
+ * is trying to diagnose. Symlinks are not followed. */
+function directoryUsageBytes(
+  root: string,
+  maxEntries = 25_000,
+  stopAfterBytes = 2 * 1024 * 1024 * 1024,
+): { bytes: number; truncated: boolean } {
+  const stack = [root];
+  let bytes = 0;
+  let entries = 0;
+
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (!dir) break;
+
+    let children: ReturnType<typeof readdirSync>;
+    try {
+      children = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const child of children) {
+      entries += 1;
+      if (entries > maxEntries || bytes >= stopAfterBytes) {
+        return { bytes, truncated: true };
+      }
+
+      const fullPath = `${dir}/${child.name}`;
+      try {
+        if (child.isSymbolicLink()) continue;
+        if (child.isDirectory()) {
+          stack.push(fullPath);
+          continue;
+        }
+        if (child.isFile()) bytes += lstatSync(fullPath).size;
+      } catch {
+        // Files can disappear while caches rotate; diagnostics is best effort.
+      }
+    }
+  }
+
+  return { bytes, truncated: false };
+}
+
+function runtimePlatform(): 'cloud-run' | 'railway' | 'container' | 'unknown' {
+  if (process.env.K_SERVICE) return 'cloud-run';
+  if (process.env.RAILWAY_SERVICE_ID || process.env.RAILWAY_ENVIRONMENT_ID) return 'railway';
+  if (process.env.NODE_ENV === 'production') return 'container';
+  return 'unknown';
+}
 
 export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
   const router = Router();
@@ -124,7 +181,7 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
         code: 'no_providers',
         title: 'No LLM provider credentials configured',
         detail: 'The workforce cannot do any work.',
-        action: 'Set OPENROUTER_API_KEY (and ideally OPENROUTER_API_KEY_2) in the Cloud Run service.',
+        action: 'Configure at least one enabled LLM provider credential in the production service.',
       });
     }
     if (backpressure.pausedProviders.length > 0) {
@@ -149,18 +206,24 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
     const usage = process.memoryUsage();
     const mb = (b: number) => Math.round((b / 1048576) * 10) / 10;
     let tmpUsedMb: number | null = null;
+    let tmpScanTruncated = false;
     try {
-      const st = statfsSync('/tmp');
-      tmpUsedMb = mb((st.blocks - st.bfree) * st.bsize);
+      const measured = directoryUsageBytes('/tmp');
+      tmpUsedMb = mb(measured.bytes);
+      tmpScanTruncated = measured.truncated;
     } catch { /* not fatal */ }
 
     if (tmpUsedMb !== null && tmpUsedMb > 300) {
+      const platform = runtimePlatform();
       findings.push({
         severity: 'critical',
-        code: 'tmpfs_growing',
-        title: `/tmp holds ${tmpUsedMb}MB`,
-        detail: 'On Cloud Run /tmp is RAM and counts against the container memory limit, while being invisible to process.memoryUsage().',
-        action: 'Something is writing to /tmp — a CI workspace or a cache. This is what silently OOM-killed the container on 2026-09-04.',
+        code: 'tmp_growing',
+        title: `/tmp holds ${tmpUsedMb}MB${tmpScanTruncated ? '+' : ''}`,
+        detail:
+          platform === 'cloud-run'
+            ? 'Cloud Run backs /tmp with container memory, so large temporary files can OOM the service while staying invisible to process.memoryUsage().'
+            : `Large temporary storage is accumulating inside the ${platform} runtime. This can exhaust ephemeral storage and is usually a CI workspace or cache leak.`,
+        action: 'Inspect /tmp for apex-ci-workspace, package-manager caches, compiler caches, or abandoned sandboxes. CI builds should run outside the production API container.',
       });
     }
 
@@ -171,7 +234,7 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
         code: 'recently_restarted',
         title: `Container started ${build.uptimeSeconds}s ago`,
         detail: `sha ${build.sha?.slice(0, 8) ?? 'unknown'}, built ${build.builtAt ?? 'unknown'}.`,
-        action: 'If the sha did not change, this was a restart, not a deploy. Repeated same-sha restarts mean an OOM kill — check tmpUsedMb above.',
+        action: 'If the sha did not change, this was a restart rather than a deploy. Repeated same-sha restarts warrant checking memory, /tmp usage, provider failures, and platform restart events.',
       });
     }
 
