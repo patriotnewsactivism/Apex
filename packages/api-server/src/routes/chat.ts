@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import { db, goals, approvals, logs, agents as agentsTable } from '@workspace/db';
@@ -295,6 +296,10 @@ export function createChatRouter(ceo: ApexCEO) {
 
       let goalCreated: { id: string; title: string } | undefined;
       const MAX_TURNS = 5;
+      // Stable only for this HTTP conversation/tool loop. Gemini uses it to
+      // preserve native Interactions state across local tool execution without
+      // leaking one user's chat state into the next request.
+      const conversationId = `chat-${randomUUID()}`;
 
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         // interactive: true — Don is synchronously waiting on this reply, so
@@ -302,7 +307,11 @@ export function createChatRouter(ceo: ApexCEO) {
         // background agent from front-loading a day's budget. It still can't
         // spend past the hard daily caps or the per-minute provider rate
         // limit; see LLMExecutionContext.interactive.
-        const response = await llm.complete(llmHistory, CHAT_TOOLS, { role: 'CEO', interactive: true });
+        const response = await llm.complete(llmHistory, CHAT_TOOLS, {
+          role: 'CEO',
+          interactive: true,
+          conversationId,
+        });
         llmHistory.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
 
         if (response.toolCalls.length === 0) {
