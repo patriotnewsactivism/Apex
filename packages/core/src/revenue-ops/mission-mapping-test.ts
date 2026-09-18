@@ -1,4 +1,4 @@
-// ─── Phase 1.1: Mission Mapping Test ─────────────────────────────────────────
+﻿// ─── Phase 1.1: Mission Mapping Test ─────────────────────────────────────────
 //
 // Tests whether APEX goals + tasks + task.context can express the spec's mission
 // lifecycle (draft/validating/ready/running/waiting_approval/paused/blocked/
@@ -769,3 +769,5 @@ main().then(({ passed, failed, hasGaps }) => {
   console.error('Test crashed:', err instanceof Error ? err.message : String(err));
   process.exit(2);
 });
+
+

@@ -1,4 +1,4 @@
-// ─── Revenue Operations Tools ──────────────────────────────────────────────────
+﻿// ─── Revenue Operations Tools ──────────────────────────────────────────────────
 //
 // Mission lifecycle tools for the revenue operations domain.
 // These tools operate on APEX goals (missions) + tasks (mission steps) + approvals,
@@ -37,7 +37,7 @@ The mission payload includes:
 - spentCents: starting at 0
 - deadlineAt: when the mission must complete by
 - approveBeforePivot: whether channel pivots require human approval
-- firstTouchOptIn: how to handle first-touch opt-in ('manual' | 'auto_with_warn')` 방식은 한국어로 설명하는 것이 적절할 수 있습니다.`,
+  - firstTouchOptIn: how to handle first-touch opt-in ('manual' | 'auto_with_warn'),
   schema: z.object({
     objective: z.string().min(10).max(500).describe('What the mission is trying to achieve (e.g., "Generate 12 qualified demos with commercial roofing companies in Texas").'),
     targetDefinition: z.record(z.unknown()).describe('Who/what the mission targets (e.g., { industries: ["roofing"], cities: ["Austin", "Houston", "Dallas"], employeeRange: [10, 100], naicsCodes: [238220] }).'),
