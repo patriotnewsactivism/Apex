@@ -181,9 +181,11 @@ const PROVIDERS: readonly ProviderSpec[] = [
     name: 'groq-gpt-oss-120b-byok',
     model: 'openai/gpt-oss-120b',
     baseURL: 'https://api.groq.com/openai/v1',
-    // Keep GROQ_API_KEY_2 reserved for live voice; two keys in one Groq org
-    // share limits and do not create a second request pool.
-    apiKeyEnvs: ['GROQ_API_KEY'],
+    // Both configured key slots are eligible. If both keys belong to the same
+    // Groq organization they may still share provider-side quota, so APEX keeps
+    // one conservative Groq request pool rather than pretending each key adds
+    // independent capacity. Key 2 remains preferred by live voice in that path.
+    apiKeyEnvs: ['GROQ_API_KEY', 'GROQ_API_KEY_2'],
     requestPool: 'groq',
     protocol: 'openai-compatible',
     minIntervalMs: 1_000,
@@ -194,7 +196,10 @@ const PROVIDERS: readonly ProviderSpec[] = [
     name: 'gemini-3-8-flash-byok',
     model: 'gemini-3.8-flash',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta',
-    apiKeyEnvs: ['GEMINI_API_KEY'],
+    // Two Settings slots. Google quota is commonly project-scoped, so the
+    // direct Gemini pool remains aggregate unless the operator explicitly
+    // raises its verified cap.
+    apiKeyEnvs: ['GEMINI_API_KEY', 'GEMINI_API_KEY_2'],
     requestPool: 'gemini',
     protocol: 'gemini-interactions',
     minIntervalMs: 1_000,
