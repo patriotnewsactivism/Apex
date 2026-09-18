@@ -496,11 +496,32 @@ async function main() {
         ? Math.round((snapshot.spentUsd / snapshot.capUsd) * 10_000) / 100
         : 0;
 
+    const requests = getRequestLedgerSnapshot();
+    const remainingRequests =
+      requests.totalCap > 0 ? Math.max(0, requests.totalCap - requests.totalRequests) : null;
+    const requestUtilizationPct =
+      requests.totalCap > 0
+        ? Math.round((requests.totalRequests / requests.totalCap) * 10_000) / 100
+        : 0;
+
     res.json({
       ...snapshot,
       hourlyBurnUsd,
       projected30DayUsd,
       utilizationPct,
+      requests: {
+        used: requests.totalRequests,
+        cap: requests.totalCap,
+        configuredCap: requests.configuredCap,
+        remaining: remainingRequests,
+        utilizationPct: requestUtilizationPct,
+        projectedDaily: requests.projectedDailyRequests,
+        lastMinute: requests.lastMinute,
+        ratePerMinute: requests.ratePerMinute,
+        pacingEnabled: requests.pacing.enabled,
+        releasedSoFar: requests.pacing.total.pacingAllowance,
+        persistence: requests.persistence,
+      },
       updatedAt: new Date().toISOString(),
     });
   });
