@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Activity,
@@ -41,7 +42,7 @@ function MetricCard({
   label: string;
   value: string;
   detail: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
 }) {
   return (
     <div className="glass-card" style={{ padding: 14, minWidth: 0 }}>
