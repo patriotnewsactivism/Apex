@@ -20,10 +20,9 @@ import {
   accountCapacityWindow,
   accountFingerprint,
   accountRequestsToday,
-  isRequestBudgetExhausted,
+  recordPaidProviderRequest,
   recordProviderRequest,
   requestCapacityWindow,
-  totalRequestCap,
 } from './request-ledger.js';
 import {
   dailySpendCapMicros,
@@ -1167,70 +1166,29 @@ class MultiProviderClient {
       // yet, so the agent parks briefly and resumes. That is the mechanism
       // that spreads the allowance across 24h instead of letting the workforce
       // spend it all before lunch.
-      let paidOnly = false;
-      if (isRequestBudgetExhausted()) {
-        if (paidLLMFallbackEnabled()) paidOnly = true;
-        else {
-          throw capacityPauseError([
-            {
-              source: 'workspace',
-              resumeAt: new Date(Date.now() + msUntilDailyReset()).toISOString(),
-              reason: `daily request cap reached (APEX_REQUEST_CAP_TOTAL=${totalRequestCap()})`,
-            },
-          ]);
-        }
-      }
-      // Interactive (human-typed, synchronous) calls skip the smoothing ramp
-      // on both budgets below — see LLMExecutionContext.interactive — but
-      // never the hard caps or the per-minute rate limit inside
-      // requestCapacityWindow() itself, which stay in force unconditionally.
+      // Interactive (human-typed, synchronous) calls may skip the smooth
+      // day-long pacing ramp, but the hard workspace request ceiling and the
+      // short-window rate limiter remain mandatory for EVERY provider.
+      //
+      // Paid fallback used to turn a denied free request window into
+      // `paidOnly=true`, which made the request ledger a free-tier meter
+      // instead of a workspace ceiling. Paid attempts were not recorded there,
+      // so a nominal 2-3k/day cap could still generate ~10k real upstream
+      // requests. The request window is now authoritative: no paid lane can
+      // tunnel around it.
       const pacingOverride = execution?.interactive ? false : undefined;
       const requestWindow = requestCapacityWindow(Date.now(), pacingOverride);
       if (!requestWindow.allowed) {
-        if (paidLLMFallbackEnabled()) paidOnly = true;
-        else {
-          throw capacityPauseError([
-            {
-              source: 'workspace',
-              resumeAt: requestWindow.resumeAt,
-              reason:
-                requestWindow.reason === 'daily_cap'
-                  ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
-                  : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
-            },
-          ]);
-        }
-      }
-
-      // paidOnly means free-tier capacity is exhausted for now, and getting
-      // here already confirmed paidLLMFallbackEnabled() — but an operator
-      // turning paid continuity on doesn't mean it can afford a request at
-      // this exact moment. The $/day cap is paced the same way the request
-      // budget above is, so it can be transiently unaffordable even while
-      // genuinely enabled. Without this check, every provider below is free
-      // (paidOnly skips it) or paid-but-absent-from-the-order (spend denied
-      // it), so the loop exits with nothing in providerErrors or skipReasons
-      // — "No usable provider credential was configured", which is false
-      // (every credential IS configured) and, worse, doesn't match the
-      // capacity-pause message shape base-agent.ts's isLLMIntentionalPause()
-      // looks for. That mismatch is what let a workspace-wide capacity pause
-      // read as an ordinary task failure: agents retried immediately instead
-      // of backing off until money was actually available again, burning
-      // the rest of both budgets faster and reinforcing the same pause.
-      if (paidOnly) {
-        const paidWindow = paidSpendCapacityWindow(Date.now(), pacingOverride);
-        if (!paidWindow.allowed) {
-          throw capacityPauseError([
-            {
-              source: PAID_FALLBACK_PROVIDER_NAME,
-              resumeAt: paidWindow.resumeAt,
-              reason:
-                paidWindow.reason === 'daily_cap'
-                  ? 'daily paid spend cap reached'
-                  : 'daily paid spend pacing active',
-            },
-          ]);
-        }
+        throw capacityPauseError([
+          {
+            source: 'workspace',
+            resumeAt: requestWindow.resumeAt,
+            reason:
+              requestWindow.reason === 'daily_cap'
+                ? `daily request cap reached (${requestWindow.usedRequests}/${requestWindow.cap})`
+                : `request pacing active (${requestWindow.usedRequests}/${requestWindow.pacingAllowance} released of ${requestWindow.cap}/day)`,
+          },
+        ]);
       }
 
       const trimmed = trimMessageHistory(messages);
@@ -1255,7 +1213,6 @@ class MultiProviderClient {
         for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
-          if (paidOnly && !provider.paid) continue;
 
           const activationIssue = providerActivationIssue(provider);
           if (activationIssue) {
@@ -1367,8 +1324,13 @@ class MultiProviderClient {
                   this.config,
                   execution,
                 );
-                if (!provider.paid) recordProviderRequest(credential.key, true);
-                else {
+                if (!provider.paid) {
+                  recordProviderRequest(credential.key, true);
+                } else {
+                  // Paid attempts still consume the workspace request budget.
+                  // Keep them in a synthetic provider bucket so they do not
+                  // corrupt the free-account quota accounting.
+                  recordPaidProviderRequest(provider.name, true);
                   // Charge the settled cost. OpenRouter returns it because the
                   // request sets `usage: { include: true }`; when it is absent
                   // fall back to list price rather than recording zero, since a
@@ -1398,6 +1360,7 @@ class MultiProviderClient {
                 // would hide exactly the traffic worth seeing: the fallback
                 // cascade, which burns several requests to serve one call.
                 if (!provider.paid) recordProviderRequest(credential.key, false);
+                else recordPaidProviderRequest(provider.name, false);
                 const err = error as ProviderRequestError;
                 const status = err.status;
                 const message =
