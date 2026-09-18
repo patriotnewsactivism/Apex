@@ -140,8 +140,12 @@ try {
   check('BACKEND can have a different first-choice model', backendChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nex-agi/nex-n2.5-mini:free');
   check(
-    'custom FREE roster uses the free-policy gateway, not a paid adapter',
-    JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([FREE_POLICY_GATEWAY_NAME]),
+    'custom FREE roster uses the free-policy gateway first, then independent BYOK continuity',
+    JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
+      FREE_POLICY_GATEWAY_NAME,
+      'groq-gpt-oss-120b-byok',
+      'gemini-3-8-flash-byok',
+    ]),
     getProviderOrderForRole('CEO'),
   );
   check('custom FREE policy still uses free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
