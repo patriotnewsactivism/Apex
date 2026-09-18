@@ -78,6 +78,14 @@ async function main(): Promise<void> {
       (route.match(/CAST\(\$\{dayStartIso\} AS timestamptz\)/g) ?? []).length === 3,
   );
 
+  check(
+    'call metrics are isolated so one aggregate failure cannot blank the entire Sales Ops overview',
+    /const callMetricsPromise = \(async \(\) => \{/.test(route) &&
+      /console\.error\('\[sales-ops\] call metrics unavailable:'/.test(route) &&
+      /return \[emptyCallMetrics\];/.test(route) &&
+      /callMetricsPromise,/.test(route),
+  );
+
   // ── Pure exports: run them, don't just read them ──────────────────────────
   const mod = (await import(
     path.join(root, 'packages/api-server/src/routes/sales-ops.ts')
