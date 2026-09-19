@@ -22,7 +22,7 @@ Canonical production facts:
 - [x] Artifact volume `apex-artifacts` mounted at `/data/artifacts`; `APEX_ARTIFACT_DIR=/data/artifacts`.
 - [x] Lead-research keys present on Railway: `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`.
 - [ ] `GOOGLE_PLACES_API_KEY` and `YELP_API_KEY` are still absent (not in local env either — cannot invent values).
-- [ ] OpenRouter inference is a single key (`OPENROUTER_API_KEY`). `OPENROUTER_FREE_API_KEY` / `OPENROUTER_API_KEY_2` / `_4` are not on the service. Management keys 2/3 exist but do not add quota. A third *account* still requires a new inference key.
+- [x] Live `/health` reports **3 OpenRouter accounts / 4 inference keys**. Paid credit is exhausted on some accounts; `:free` routing is unaffected. `railway variable list` still only names `OPENROUTER_API_KEY` plus management keys — do not invent additional secrets.
 - [x] `APEX_EXECUTOR_MODE=inprocess`.
 - [ ] Verify `/health.build.sha` after every `main` push. Wait-for-CI will skip red commits.
 
@@ -31,9 +31,10 @@ Canonical production facts:
 - [x] Scheduled delegation deduplicates.
 - [x] Provider-capacity pauses are separated from ordinary task failure.
 - [ ] Live-verify checkpoint/resume (`checkpointsCreated` still 0 as of 2026-09-18).
-- [ ] Second replica only after Postgres websocket tickets are proven live (`GET /api/diagnostics` replica-hop).
-- [ ] `/health.tmpUsedMb` measures `/tmp` contents (not `statfs` of the whole mount) — in this change set, not yet live.
-- [ ] Stale `worker_heartbeats` rows prune after 5 minutes — in this change set, not yet live.
+- [x] Postgres websocket tickets proven live (`GET /api/diagnostics` → `websocket_tickets_replica_safe`).
+- [ ] Second Railway replica still at 1 — only add after an operator decision; tickets are no longer the blocker.
+- [x] `/health.tmpUsedMb` is `/tmp` contents (live ~6 MB, not a filesystem `statfs` false terabyte).
+- [x] Stale `worker_heartbeats` prune after 5 minutes (live 1 healthy / 1 total).
 - [ ] Exercise Cloud Run rollback path only if billing is restored.
 
 ## Business / portfolio

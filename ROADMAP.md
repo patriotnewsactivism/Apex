@@ -17,6 +17,7 @@ For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md` (ADR-015
 - Control plane, 13-agent workforce, dashboard, WebSocket LIVE keepalive, admin auth.
 - Railway Wait for CI (`checkSuites=true`); artifact volume `APEX_ARTIFACT_DIR=/data/artifacts`; `APEX_EXECUTOR_MODE=inprocess`.
 - Vercel GitHub status is a dashboard-only Vite build (`vercel.json`), not a control-plane gate.
+- `/health.tmpUsedMb` is directory contents; stale worker heartbeats prune in 5 minutes; Postgres websocket tickets survive a replica hop.
 - Missions HTTP API and dashboard (live SHA `8cf1418`).
 - Approval yield (ADR-014) observed in production (`approvalYields > 0`).
 - Autonomy policy + Settings allowlist + decision-packet approvals (this change set).
@@ -30,9 +31,7 @@ For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md` (ADR-015
 
 ## P1 — Reliability on this host
 
-- Live-prove Postgres websocket tickets (diagnostics replica-hop) before adding a second replica.
-- Prune stale `worker_heartbeats` so `/health` does not list recycled instances.
-- Report `/health.tmpUsedMb` from `/tmp` contents, not the whole filesystem.
+- Add a second replica only with an explicit operator decision (tickets are proven).
 - Preview environments for APEX itself (Railway PR deploys).
 - Verify in-process executor demotion of `runtime=job` tasks under load.
 - Keep Cloud Run rollback path documented and gated.
