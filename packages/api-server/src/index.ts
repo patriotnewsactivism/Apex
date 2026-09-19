@@ -21,6 +21,7 @@ import { directoryUsageBytes } from './tmp-usage.js';
 import { setupLiveVoice } from './live-voice.js';
 import { createGoalsRouter } from './routes/goals.js';
 import { createMissionsRouter } from './routes/missions.js';
+import { createRevenueOpsWebhookRouter } from './routes/revenue-ops-webhooks.js';
 import { createChatRouter } from './routes/chat.js';
 import { createTranscribeRouter } from './routes/transcribe.js';
 import { createProjectsRouter } from './routes/projects.js';
