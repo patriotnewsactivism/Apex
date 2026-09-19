@@ -20,7 +20,10 @@ import { eq } from 'drizzle-orm';
 
 // ─── Tools ─────────────────────────────────────────────────────────────────────
 
-export const revenueCallTools: ToolDefinition[] = [
+// This is a heterogeneous tool collection: each entry has its own Zod input shape.
+// ToolDefinition defaults TInput to unknown, so use any only at the collection
+// boundary; every invocation is still runtime-validated by its schema.
+export const revenueCallTools: ToolDefinition<any>[] = [
   {
     name: 'call_initiate',
     description:

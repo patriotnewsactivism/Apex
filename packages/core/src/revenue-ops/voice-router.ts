@@ -21,7 +21,7 @@
 
 import { db } from '@workspace/db';
 import { providerConnections, calls } from '@workspace/db';
-import { eq, and, ne, sql } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
@@ -135,22 +135,30 @@ export async function selectVoiceProvider(
       provider: providerConnections.provider,
       name: providerConnections.name,
       status: providerConnections.status,
-      priority: providerConnections.priority,
+      configuration: providerConnections.configuration,
       type: providerConnections.type,
     })
     .from(providerConnections)
     .where(and(
       eq(providerConnections.organizationId, organizationId),
       eq(providerConnections.status, 'connected'),
-      ne(providerConnections.type, null),
     ))
-    .orderBy(providerConnections.priority)
     .limit(50);
 
-  // Filter to telephony-type providers only
-  const telephonyConnections = connections.filter(c =>
-    c.type === 'telephony' || c.provider === 'telnyx' || c.provider === 'vapi' || c.provider === 'retell'
-  );
+  // Filter to telephony-type providers only. provider_connections has no
+  // dedicated priority column; Revenue Ops stores optional routing preference
+  // in configuration.priority and defaults to 50 when absent.
+  const telephonyConnections = connections
+    .filter(c =>
+      c.type === 'telephony' || c.provider === 'telnyx' || c.provider === 'vapi' || c.provider === 'retell'
+    )
+    .map(c => ({
+      ...c,
+      priority:
+        typeof c.configuration.priority === 'number' && Number.isFinite(c.configuration.priority)
+          ? c.configuration.priority
+          : 50,
+    }));
 
   if (telephonyConnections.length === 0) {
     return { provider: null, reason: 'No connected telephony providers available.' };
