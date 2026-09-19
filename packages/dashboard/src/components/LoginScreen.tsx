@@ -2,9 +2,10 @@ import { useState } from 'react';
 
 interface LoginScreenProps {
   onLogin: () => void;
+  onBack?: () => void;
 }
 
-export function LoginScreen({ onLogin }: LoginScreenProps) {
+export function LoginScreen({ onLogin, onBack }: LoginScreenProps) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -61,6 +62,24 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
         padding: 24,
       }}
     >
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="btn-secondary"
+          style={{
+            position: 'absolute',
+            top: 20,
+            left: 20,
+            zIndex: 2,
+            fontSize: 12,
+            padding: '8px 12px',
+          }}
+        >
+          ← Back to APEX overview
+        </button>
+      )}
+
       {/* Quiet steel wash — not neon orbs */}
       <div
         aria-hidden
