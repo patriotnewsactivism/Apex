@@ -4,7 +4,6 @@ import {
   BarChart3,
   Bot,
   Check,
-  ChevronRight,
   CircleDollarSign,
   Crosshair,
   Database,
@@ -132,7 +131,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
       <header className="public-nav-wrap">
         <nav className="public-nav public-container" aria-label="APEX public navigation">
           <button className="public-brand" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-            <span className="public-brand-mark">Ax</span>
+            <span className="public-brand-mark" aria-hidden="true">A</span>
             <span>
               <strong>APEX</strong>
               <small>Autonomous AI Workforce</small>
@@ -142,6 +141,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
           <div className="public-nav-links">
             <button onClick={scrollToDemo}>How it works</button>
             <button onClick={scrollToPilot}>Pricing</button>
+            <button className="public-nav-pilot" onClick={scrollToPilot}>Start pilot</button>
             <button className="public-login-link" onClick={onOperatorLogin}>
               <LockKeyhole size={14} />
               Operator login
@@ -153,7 +153,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
       <main>
         <section className="public-hero public-container">
           <div className="public-hero-copy">
-            <div className="public-eyebrow">AUTONOMOUS REVENUE WORKFORCE</div>
+            <div className="public-eyebrow">MANAGED PIPELINE · AUTONOMOUS AI WORKFORCE</div>
             <h1>
               Give APEX an objective.
               <span> Let the workforce go to work.</span>
@@ -165,13 +165,18 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
             </p>
 
             <div className="public-hero-actions">
-              <button className="btn-primary public-cta" onClick={scrollToDemo}>
-                Run the interactive demo
+              <button className="btn-primary public-cta" onClick={scrollToPilot}>
+                Start the 30-Day Pilot
                 <ArrowRight size={16} />
               </button>
-              <button className="btn-secondary public-cta" onClick={scrollToPilot}>
-                See the $1,750 30-Day Pilot
+              <button className="btn-secondary public-cta" onClick={scrollToDemo}>
+                See how it works
               </button>
+            </div>
+
+            <div className="public-hero-note">
+              <strong>$1,750 one-time</strong>
+              <span>30 days · real market · no annual contract</span>
             </div>
 
             <div className="public-trust-row">
@@ -181,35 +186,13 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
             </div>
           </div>
 
-          <div className="public-command-card" aria-label="APEX operating model">
-            <div className="public-command-top">
-              <span>OBJECTIVE</span>
-              <span className="public-live-dot">LIVE WORKFLOW</span>
-            </div>
-            <div className="public-command-objective">
-              Build a qualified market, personalize the approach, execute approved outreach and advance positive
-              responses.
-            </div>
-
-            <div className="public-command-flow">
-              {['Research', 'Qualify', 'Personalize', 'Execute', 'Respond', 'Measure'].map((item, index) => (
-                <div className="public-flow-row" key={item}>
-                  <span className="public-flow-index">{String(index + 1).padStart(2, '0')}</span>
-                  <span>{item}</span>
-                  <ChevronRight size={14} />
-                </div>
-              ))}
-            </div>
-
-            <div className="public-command-footer">
-              <div>
-                <strong>13-agent</strong>
-                <span>hierarchical workforce</span>
-              </div>
-              <div>
-                <strong>1 system</strong>
-                <span>research → outreach → pipeline</span>
-              </div>
+          <div className="public-brand-visual" aria-label="APEX — Intelligence that executes">
+            <img src="/apex-branding.jpg" alt="APEX — Intelligence that executes." />
+            <div className="public-brand-visual-shade" />
+            <div className="public-brand-visual-caption">
+              <span>APEX OPERATING MODEL</span>
+              <strong>Research → strategy → outreach → revenue</strong>
+              <small>One coordinated workforce. Human control where it matters.</small>
             </div>
           </div>
         </section>
@@ -217,16 +200,16 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
         <section className="public-proof-strip">
           <div className="public-container public-proof-grid">
             <div>
-              <strong>Research</strong>
-              <span>ICP, target accounts, decision-makers and account context</span>
+              <strong>Define</strong>
+              <span>Your offer, market, economics and handoff rules</span>
             </div>
             <div>
-              <strong>Execute</strong>
-              <span>Prospect-specific strategy, approved channels and response handling</span>
+              <strong>Deploy</strong>
+              <span>Research, individualized strategy and controlled outreach</span>
             </div>
             <div>
-              <strong>Measure</strong>
-              <span>Qualified conversations, meetings, opportunities, revenue and cost</span>
+              <strong>Advance</strong>
+              <span>Responses, meetings, opportunities, revenue and cost</span>
             </div>
           </div>
         </section>
@@ -395,26 +378,27 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
         </section>
 
         <section className="public-section public-container">
-          <div className="public-not-grid">
-            <div>
-              <div className="public-eyebrow">WHAT APEX IS NOT</div>
-              <h2>Not a chatbot with a prettier prompt box.</h2>
-            </div>
-            <div className="public-not-list">
-              {[
-                ['A chatbot', 'Coordinate persistent work toward an objective.'],
-                ['A lead database', 'Research, qualify, personalize and advance prospects.'],
-                ['A CRM', 'Act on pipeline state instead of merely storing it.'],
-                ['A dialer', 'Use voice as one execution channel inside a larger strategy.'],
-                ['An email sequencer', 'Coordinate multiple channels and response handling.'],
-                ['A generic automation tool', 'Reason about the objective, execute approved actions and measure the outcome.'],
-              ].map(([not, does]) => (
-                <div className="public-not-row" key={not}>
-                  <span>{not}</span>
-                  <strong>{does}</strong>
-                </div>
-              ))}
-            </div>
+          <div className="public-section-heading">
+            <div className="public-eyebrow">YOUR ROLE IS SIMPLE</div>
+            <h2>You set the objective. APEX carries the workload.</h2>
+            <p>
+              APEX is built to remove the disconnected handoffs between research, sales activity and pipeline
+              management. You stay in control of the objective and approvals; the workforce handles the operating loop.
+            </p>
+          </div>
+
+          <div className="public-role-grid">
+            {[
+              ['01', 'Define the objective', 'Tell APEX what you sell, who you want, where to look, what matters and how a qualified opportunity should be handed off.'],
+              ['02', 'Approve the boundaries', 'Review the market, messaging, channels, volume and governance rules before execution begins.'],
+              ['03', 'Work the opportunities', 'APEX keeps the pipeline moving while you or your team handle the conversations that deserve a human.'],
+            ].map(([number, title, body]) => (
+              <article className="public-role-card glass-card" key={number}>
+                <span>{number}</span>
+                <h3>{title}</h3>
+                <p>{body}</p>
+              </article>
+            ))}
           </div>
         </section>
 
@@ -627,7 +611,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
 
       <footer className="public-footer public-container">
         <div className="public-brand">
-          <span className="public-brand-mark">Ax</span>
+          <span className="public-brand-mark" aria-hidden="true">A</span>
           <span><strong>APEX</strong><small>Autonomous AI Workforce</small></span>
         </div>
         <div>
