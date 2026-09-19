@@ -531,6 +531,10 @@ function isDirectAccount(account: string): boolean {
   return account.startsWith(DIRECT_REQUEST_ACCOUNT_PREFIX);
 }
 
+function isPaidAccount(account: string): boolean {
+  return account.startsWith(PAID_REQUEST_ACCOUNT_PREFIX);
+}
+
 function directPoolForAccount(account: string): DirectRequestPool | null {
   if (!isDirectAccount(account)) return null;
   const rest = account.slice(DIRECT_REQUEST_ACCOUNT_PREFIX.length);
@@ -584,7 +588,12 @@ export function markProviderRequestSucceeded(apiKey: string): void {
 }
 
 export function reservePaidProviderRequest(provider: string): void {
-  reserveRequestAccount(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`);
+  // Paid continuity has its own dollar ledger and pacing window. Counting it
+  // in the OpenRouter *free* request ramp turns the continuity route into the
+  // very stall it is meant to prevent: a paid request can consume a free slot,
+  // then a paced free pool blocks paid work too. It remains in the all-provider
+  // emergency ceiling below, but must not consume the free daily or RPM pool.
+  reserveRequestAccount(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`, false);
 }
 
 export function markPaidProviderRequestSucceeded(provider: string): void {
@@ -645,14 +654,15 @@ export function accountRequestsToday(fingerprint: string): number {
   return requestsAcrossAccount(fingerprint);
 }
 
-/** Requests against the OpenRouter pool only. This is the pool governed by
- * APEX_REQUEST_CAP_TOTAL=2775. Direct BYOK providers are intentionally excluded
- * so they add independent capacity instead of consuming this allowance. */
+/** Requests against the OpenRouter FREE pool only. This is the pool governed by
+ * APEX_REQUEST_CAP_TOTAL=2775. Direct BYOK and paid-continuity requests are
+ * intentionally excluded so both add independent capacity instead of consuming
+ * the free allowance. All attempts still count toward the emergency ceiling. */
 export function totalRequestsToday(): number {
   rolloverIfNeeded();
   let sum = 0;
   for (const [account, entry] of Object.entries(state.accounts)) {
-    if (!isDirectAccount(account)) sum += entry.requests;
+    if (!isDirectAccount(account) && !isPaidAccount(account)) sum += entry.requests;
   }
   return sum;
 }
@@ -703,6 +713,21 @@ export function requestCapacityWindow(
     reason: 'paced',
     resumeAt: new Date(Math.max(at + 1_000, resumeAt)).toISOString(),
   };
+}
+
+/**
+ * Paid continuity is governed by the spend ledger, not by OpenRouter's free
+ * request allowance. It stays inside the emergency all-provider ceiling and
+ * the provider's minimum-dispatch interval, but a paced free pool must never
+ * veto an enabled, in-budget paid fallback.
+ */
+export function paidProviderCapacityWindow(): RequestCapacityWindow {
+  return calculateRequestCapacityWindow({
+    cap: 0,
+    usedRequests: 0,
+    requestedRequests: 1,
+    pacingEnabled: false,
+  });
 }
 
 function directPoolNumber(
@@ -992,7 +1017,10 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
     .sort((a, b) => b.requests - a.requests);
 
   const cap = effectiveRequestCap();
-  const totalRequests = accounts.reduce((sum, entry) => sum + entry.requests, 0);
+  // Keep the operator-visible free-pool total on the same accounting path as
+  // requestCapacityWindow(). `accounts` also includes the paid-continuity row
+  // for auditability, but paid traffic must not make the free pool look spent.
+  const totalRequests = totalRequestsToday();
   const totalPacing = calculateRequestCapacityWindow({
     cap,
     usedRequests: totalRequests,

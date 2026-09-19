@@ -26,6 +26,7 @@ import {
   markDirectProviderRequestSucceeded,
   markPaidProviderRequestSucceeded,
   markProviderRequestSucceeded,
+  paidProviderCapacityWindow,
   requestCapacityWindow,
   reserveDirectProviderRequest,
   reservePaidProviderRequest,
@@ -683,6 +684,11 @@ function requestWindowForProvider(
   at: number,
   pacingEnabled?: boolean,
 ) {
+  // The paid continuity route has a separate dollar budget and pacing policy.
+  // Do not make it wait on the free OpenRouter request ramp: that would leave
+  // the workforce parked even while /health correctly reports paid fallback as
+  // enabled and affordable.
+  if (provider.paid) return paidProviderCapacityWindow();
   if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
     return directProviderCapacityWindow(provider.requestPool, at, pacingEnabled);
   }

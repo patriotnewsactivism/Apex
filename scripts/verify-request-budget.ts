@@ -66,8 +66,8 @@ async function main(): Promise<void> {
       /directProviderRequestsToday/.test(ledger),
   );
   check(
-    'OpenRouter totals explicitly exclude direct BYOK traffic',
-    /if \(!isDirectAccount\(account\)\) sum \+= entry\.requests/.test(ledger),
+    'OpenRouter free totals explicitly exclude direct BYOK and paid-continuity traffic',
+    /if \(!isDirectAccount\(account\) && !isPaidAccount\(account\)\) sum \+= entry\.requests/.test(ledger),
   );
   check(
     'all-provider totals include every pool for the emergency stop',
@@ -173,6 +173,12 @@ async function main(): Promise<void> {
     'provider execution also checks its own pool before credentials are tried',
     /const providerRequestWindow = requestWindowForProvider/.test(client),
   );
+  check(
+    'paid continuity bypasses the free request pool while remaining separately governed',
+    /if \(provider\.paid\) return paidProviderCapacityWindow\(\);/.test(client) &&
+      /function isPaidAccount\(account: string\)/.test(ledger) &&
+      /!isDirectAccount\(account\) && !isPaidAccount\(account\)/.test(ledger),
+  );
 
   // ── Observability ────────────────────────────────────────────────────────
   check(
@@ -210,8 +216,10 @@ async function main(): Promise<void> {
     emergencyTotalRequestCap,
     reserveProviderRequest,
     markProviderRequestSucceeded,
+    reservePaidProviderRequest,
     reserveDirectProviderRequest,
     markDirectProviderRequestSucceeded,
+    paidProviderCapacityWindow,
     getRequestLedgerSnapshot,
   } = ledgerModule;
 
@@ -235,9 +243,11 @@ async function main(): Promise<void> {
     atCap,
   );
 
-  // Direct traffic must not consume the OpenRouter meter.
+  // Direct BYOK and paid-continuity traffic must not consume the OpenRouter
+  // FREE meter. All three still count toward the emergency all-provider cap.
   reserveProviderRequest('guard-openrouter-key');
   markProviderRequestSucceeded('guard-openrouter-key');
+  reservePaidProviderRequest('guard-paid-continuity');
   reserveDirectProviderRequest('groq', 'guard-groq');
   markDirectProviderRequestSucceeded('groq', 'guard-groq');
   reserveDirectProviderRequest('gemini', 'guard-gemini');
@@ -246,9 +256,14 @@ async function main(): Promise<void> {
   const groq = snapshot.directProviders.find((row) => row.pool === 'groq');
   const gemini = snapshot.directProviders.find((row) => row.pool === 'gemini');
   check(
-    'one OpenRouter + two BYOK attempts report 1 OpenRouter and 3 all-provider requests',
-    snapshot.totalRequests === 1 && snapshot.allProviderRequests === 3,
-    { openRouter: snapshot.totalRequests, allProviders: snapshot.allProviderRequests },
+    'one free + one paid + two BYOK attempts report 1 free-pool and 4 all-provider requests',
+    snapshot.totalRequests === 1 && snapshot.allProviderRequests === 4,
+    { freePool: snapshot.totalRequests, allProviders: snapshot.allProviderRequests },
+  );
+  check(
+    'paid continuity does not consume the free request pacing window',
+    snapshot.lastMinute === 1 && paidProviderCapacityWindow().allowed,
+    { freeRequestsLastMinute: snapshot.lastMinute, paidWindow: paidProviderCapacityWindow() },
   );
   check(
     'direct pool counters remain independent',
