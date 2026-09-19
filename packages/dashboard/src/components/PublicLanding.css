@@ -2629,3 +2629,30 @@
     gap: 8px;
   }
 }
+
+
+/* Mobile headline refinement */
+@media (max-width: 720px) {
+  .public-hero h1 {
+    font-size: clamp(34px, 10.5vw, 48px);
+    line-height: 1.01;
+  }
+
+  .public-section-heading h2,
+  .public-not-grid h2,
+  .public-pilot h2,
+  .public-fit-card h2 {
+    font-size: clamp(29px, 8.5vw, 38px);
+    line-height: 1.1;
+  }
+
+  .public-final-cta h2 {
+    font-size: clamp(31px, 9vw, 42px);
+  }
+}
+
+@media (max-width: 420px) {
+  .public-hero h1 {
+    font-size: clamp(32px, 10vw, 42px);
+  }
+}
