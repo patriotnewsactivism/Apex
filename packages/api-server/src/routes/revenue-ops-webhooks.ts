@@ -22,7 +22,7 @@ function bufferFromRawBody(req: Request): Buffer | null {
   // the socket on demand. If the body was already consumed (parsed), this
   // returns null and we store a structural copy instead.
   try {
-    const raw = req.rawBody as Buffer | undefined;
+    const raw = (req as Request & { rawBody?: Buffer }).rawBody;
     if (raw && raw.length > 0) return raw.length <= RAW_BODY_CAP ? raw : raw.subarray(0, RAW_BODY_CAP);
   } catch {
     // noop
@@ -97,6 +97,7 @@ async function storeEvent(
 export function createRevenueOpsWebhookRouter(): Router {
   const router = Router();
 
+  try {
   // POST /api/telnyx/webhooks
   // Generic provider webhook ingestion. Provider-specific routers (e.g.
   // the existing /api/telnyx/webhook for inbound BuildMyBot calls) remain
@@ -128,7 +129,7 @@ export function createRevenueOpsWebhookRouter(): Router {
 
     if (provider === 'telnyx' || provider === 'vapi' || provider === 'retell' || provider === 'twilio') {
       const [conn] = await db
-        .select({ secretEnc: providerConnections.secretEnc, status: providerConnections.status })
+        .select({ encryptedCredentials: providerConnections.encryptedCredentials, status: providerConnections.status })
         .from(providerConnections)
         .where(and(
           eq(providerConnections.provider, provider),
@@ -136,13 +137,13 @@ export function createRevenueOpsWebhookRouter(): Router {
         ))
         .limit(1);
 
-      if (conn?.secretEnc) {
+      if (conn?.encryptedCredentials && Object.keys(conn.encryptedCredentials).length > 0) {
         // The crypto helpers live in lib/db/src/crypto.js but are not yet
         // re-exported from @workspace/db. For now, fall through to env var
         // so a deployed webhook still works without the decryption wiring.
-        // TODO: wire decrypt(secretEnc, APEX_ENCRYPTION_KEY) here once the
-        // barrel export is added (see AGENTS.md Phase 4 notes).
-        console.info(`[RevenueOps Webhook] ${provider} has a stored secret in provider_connections but decryption is not wired yet; using env var fallback.`);
+        // TODO: decrypt the provider-specific webhook secret from
+        // encryptedCredentials once the crypto helper is exported.
+        console.info(`[RevenueOps Webhook] ${provider} has stored credentials in provider_connections but decryption is not wired yet; using env var fallback.`);
       }
     }
 
@@ -218,6 +219,7 @@ export function createRevenueOpsWebhookRouter(): Router {
       void handleWebhookAsync(provider, eventId, eventType, body, rawBody).catch((err) => {
         console.error(`[RevenueOps Webhook] async handler failed for ${provider}:${eventId}:`, err instanceof Error ? err.message : String(err));
       });
+      return;
     } catch (storeErr) {
       // A store failure must not drop the webhook. If the insert failed because
       // of a conflict (ON CONFLICT DO NOTHING), that's fine — it's a duplicate.
@@ -226,7 +228,7 @@ export function createRevenueOpsWebhookRouter(): Router {
         return;
       }
       console.error(`[RevenueOps Webhook] failed to store event for ${provider}:`, storeErr instanceof Error ? storeErr.message : String(storeErr));
-      res.status(500).json({ error: 'Webhook storage failed' });
+      return res.status(500).json({ error: 'Webhook storage failed' });
     }
   });
 
@@ -258,8 +260,10 @@ async function handleWebhookAsync(
     try {
       await db.update(providerEvents).set({
         status: 'processing',
-        updatedAt: new Date(),
-      }).where(eq(providerEvents.id, eventId));
+      }).where(and(
+        eq(providerEvents.provider, provider),
+        eq(providerEvents.externalEventId, eventId),
+      ));
     } catch {
       // best-effort — don't let this block the async handler
     }
@@ -292,8 +296,10 @@ async function handleWebhookAsync(
       await db.update(providerEvents).set({
         status: 'processed',
         processedAt: new Date(),
-        updatedAt: new Date(),
-      }).where(eq(providerEvents.id, eventId));
+      }).where(and(
+        eq(providerEvents.provider, provider),
+        eq(providerEvents.externalEventId, eventId),
+      ));
     } catch {
       // best-effort
     }
@@ -327,7 +333,7 @@ async function handleCallEvent(
   // Update or create the calls row.
   try {
     const [existing] = await db
-      .select({ id: calls.id })
+      .select()
       .from(calls)
       .where(eq(calls.externalCallId, callId))
       .limit(1);
