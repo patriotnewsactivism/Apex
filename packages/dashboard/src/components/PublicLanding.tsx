@@ -1,18 +1,20 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowRight,
   BarChart3,
+  BellRing,
   Bot,
+  CalendarCheck,
   Check,
   CircleDollarSign,
+  Clock3,
   Crosshair,
-  Database,
   Gauge,
   LockKeyhole,
+  Mail,
   MessageSquareText,
   Network,
   PhoneCall,
-  Search,
   ShieldCheck,
   Sparkles,
   Target,
@@ -20,76 +22,88 @@ import {
 } from 'lucide-react';
 import './PublicLanding.css';
 
-type DemoVertical = 'home-services' | 'professional-services' | 'b2b';
-
 interface PublicLandingProps {
   onOperatorLogin: () => void;
 }
 
-const demoSteps = [
+interface DemoLead {
+  company: string;
+  industry: string;
+  city: string;
+  decisionMaker: string;
+  contact: string;
+  fitReason: string;
+  strategy: string;
+  emailSubject: string;
+  emailBody: string;
+  appointment: string;
+}
+
+const demoJourneySteps = [
+  'Lead loaded',
+  'Strategy ready',
+  'Email sent',
+  '48h no response',
+  'AI call',
+  'Appointment booked',
+  'Business notified',
+  'Prospect confirmed',
+];
+
+const demoLeads: DemoLead[] = [
   {
-    icon: <Target size={18} />,
-    label: 'Define the objective',
-    detail: 'Capture the offer, ideal customer, geography, exclusions, deal value and handoff rules.',
+    company: 'Ready Roofing & Solar',
+    industry: 'Roofing',
+    city: 'Dallas, TX',
+    decisionMaker: 'William Jeffery Thompson',
+    contact: 'Verified email + phone · redacted in public demo',
+    fitReason:
+      'APEX identified a Dallas roofing contractor taking phone and free-inspection leads for high-ticket roof replacement and solar work. After-hours and storm-surge inquiries create a clear missed-opportunity window.',
+    strategy:
+      'Lead with the cost of missed inspection and storm-damage opportunities. Position an always-on AI front desk that responds immediately, qualifies roof or solar needs, books inspections, and preserves the account context for the sales team.',
+    emailSubject: 'Capture the roofing leads that arrive when the office is closed',
+    emailBody:
+      'William — APEX identified a straightforward opportunity for Ready Roofing & Solar: high-value inspection and storm-damage inquiries do not always arrive during office hours. The system can answer those inquiries immediately, qualify the roof or solar need, book the next step, and keep the full conversation attached to the opportunity. I would start with a focused 30-day deployment around the Dallas market so the impact is measurable.',
+    appointment: 'Tuesday · 10:30 AM',
   },
   {
-    icon: <Search size={18} />,
-    label: 'Build the market',
-    detail: 'Generate a focused target-account universe instead of importing a generic purchased list.',
+    company: 'RESTOR Medical Spa',
+    industry: 'MedSpa',
+    city: 'Denver, CO',
+    decisionMaker: 'Dr. Flora Waples, MD',
+    contact: 'Verified email + phone · redacted in public demo',
+    fitReason:
+      'APEX identified a multi-location med spa taking phone and web appointment bookings with limited staffed hours, creating an after-hours window for injectable and consultation inquiries.',
+    strategy:
+      'Center the outreach on consultation capture across multiple locations. Show how voice and chat can answer common questions, qualify treatment interest, route by location, and book the consultation before the lead chooses another provider.',
+    emailSubject: 'A 24/7 consultation layer for RESTOR’s locations',
+    emailBody:
+      'Dr. Waples — RESTOR already has the demand channels in place. The gap APEX identified is what happens when a consultation or injectable inquiry arrives after staffed hours. APEX can respond immediately, qualify the treatment interest and preferred location, answer common questions, and move the prospect into a booked consultation while preserving the full context for your team.',
+    appointment: 'Thursday · 2:00 PM',
   },
   {
-    icon: <Database size={18} />,
-    label: 'Research the buyer',
-    detail: 'Identify decision-makers, enrich contact data, score fit and preserve account context.',
-  },
-  {
-    icon: <Sparkles size={18} />,
-    label: 'Create the strategy',
-    detail: 'Build prospect-specific positioning, channel sequencing and objection context.',
-  },
-  {
-    icon: <MessageSquareText size={18} />,
-    label: 'Execute approved outreach',
-    detail: 'Coordinate email, SMS, voice and follow-up only through configured, approved workflows.',
-  },
-  {
-    icon: <PhoneCall size={18} />,
-    label: 'Handle the response',
-    detail: 'Route positive signals to the right callback, scheduling, handoff or next-step path.',
-  },
-  {
-    icon: <BarChart3 size={18} />,
-    label: 'Measure the economics',
-    detail: 'Tie pipeline activity to qualified conversations, held meetings, opportunities, revenue and delivery cost.',
+    company: 'Robins Plumbing Inc',
+    industry: 'Plumbing',
+    city: 'Phoenix, AZ',
+    decisionMaker: 'Stephanie Robins',
+    contact: 'Verified email + phone · redacted in public demo',
+    fitReason:
+      'APEX identified a full-service plumbing company handling round-the-clock demand. Routine calls, web inquiries, and emergency triage create a workload that can consume staff time and leak revenue when response capacity is constrained.',
+    strategy:
+      'Position APEX as a front-desk operating layer: handle routine questions, qualify the service need, triage emergencies, book service windows, and escalate only the conversations that require a person.',
+    emailSubject: 'Take routine call load off the team without missing service revenue',
+    emailBody:
+      'Stephanie — APEX can sit in front of the routine call and web volume that reaches Robins Plumbing every day, handle the initial questions, qualify the service need, triage emergencies, and book the right service window. Your staff keeps control of the jobs that need a human while the system makes sure the rest of the pipeline does not go quiet.',
+    appointment: 'Wednesday · 9:00 AM',
   },
 ];
 
-const verticalContent: Record<DemoVertical, { name: string; target: string; sample: string[] }> = {
-  'home-services': {
-    name: 'Home Services',
-    target: 'Owner-led HVAC companies within a defined service area',
-    sample: ['NorthStar Mechanical', 'Metro Comfort', 'Summit Air & Heat'],
-  },
-  'professional-services': {
-    name: 'Professional Services',
-    target: 'Decision-maker-accessible firms with meaningful customer value',
-    sample: ['Harbor Advisory', 'Crestline Legal', 'Westgate Commercial'],
-  },
-  b2b: {
-    name: 'B2B Growth',
-    target: 'Growth-oriented companies with a definable account universe',
-    sample: ['SignalWorks', 'Ironwood Systems', 'Atlas Operations'],
-  },
-};
-
 export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
-  const [vertical, setVertical] = useState<DemoVertical>('home-services');
-  const [objective, setObjective] = useState('Create qualified sales conversations in a focused local market');
+  const [selectedLeadIndex, setSelectedLeadIndex] = useState(0);
   const [running, setRunning] = useState(false);
   const [activeStep, setActiveStep] = useState(-1);
   const [complete, setComplete] = useState(false);
-
-  const verticalInfo = useMemo(() => verticalContent[vertical], [vertical]);
+  const selectedLead = demoLeads[selectedLeadIndex];
 
   useEffect(() => {
     if (!running) return;
@@ -100,17 +114,41 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
     let step = 0;
     const timer = window.setInterval(() => {
       step += 1;
-      if (step >= demoSteps.length) {
+      if (step >= demoJourneySteps.length) {
         window.clearInterval(timer);
         setRunning(false);
         setComplete(true);
-        setActiveStep(demoSteps.length - 1);
+        setActiveStep(demoJourneySteps.length - 1);
         return;
       }
       setActiveStep(step);
-    }, 760);
+    }, 1650);
 
     return () => window.clearInterval(timer);
+  }, [running]);
+
+  const startDemo = () => {
+    setComplete(false);
+    setActiveStep(-1);
+    setRunning(true);
+  };
+
+  const selectDemoLead = (index: number) => {
+    if (running) return;
+    setSelectedLeadIndex(index);
+    setComplete(false);
+    setActiveStep(-1);
+  };
+
+  const scrollToDemo = () => {
+    document.getElementById('demo')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const scrollToPilot = () => {
+    document.getElementById('pilot')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  return () => window.clearInterval(timer);
   }, [running]);
 
   const startDemo = () => {
@@ -215,112 +253,182 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
         </section>
 
         <section className="public-section public-container" id="demo">
-          <div className="public-section-heading">
-            <div className="public-eyebrow">INTERACTIVE PRODUCT WALKTHROUGH</div>
-            <h2>See the operating loop, not another dashboard screenshot.</h2>
+          <div className="public-section-heading public-journey-heading">
+            <div className="public-eyebrow">LIVE SALES WORKFLOW SIMULATION</div>
+            <h2>Watch one researched lead move from intelligence to a booked appointment.</h2>
             <p>
-              This walkthrough uses fictional companies and simulated activity. Nothing is sent, called or changed
-              outside your browser.
+              These are APEX-researched account snapshots. Direct contact details are redacted. Outreach, responses,
+              calls and appointments below are simulated in your browser so you can watch the operating model without
+              sending a real message or placing a real call.
             </p>
           </div>
 
-          <div className="public-demo-grid">
-            <div className="public-demo-controls glass-card">
-              <div className="public-demo-label">1. Choose a market</div>
-              <div className="public-segmented" role="group" aria-label="Demo market">
-                {([
-                  ['home-services', 'Home services'],
-                  ['professional-services', 'Professional'],
-                  ['b2b', 'B2B growth'],
-                ] as const).map(([id, label]) => (
-                  <button
-                    key={id}
-                    className={vertical === id ? 'active' : ''}
-                    onClick={() => setVertical(id)}
-                    disabled={running}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+          <div className="public-demo-disclosure">
+            <ShieldCheck size={16} />
+            <span><strong>SIMULATION:</strong> real researched lead context, illustrative outreach and response path, zero external actions.</span>
+          </div>
 
-              <div className="public-demo-label">2. Give APEX the objective</div>
-              <textarea
-                value={objective}
-                onChange={(event) => setObjective(event.target.value)}
+          <div className="public-lead-picker" role="group" aria-label="Choose an APEX-researched lead">
+            {demoLeads.map((lead, index) => (
+              <button
+                key={lead.company}
+                className={selectedLeadIndex === index ? 'active' : ''}
+                onClick={() => selectDemoLead(index)}
                 disabled={running}
-                aria-label="Demo objective"
-              />
+              >
+                <span>{lead.industry}</span>
+                <strong>{lead.company}</strong>
+                <small>{lead.city}</small>
+              </button>
+            ))}
+          </div>
 
-              <div className="public-demo-market">
-                <span>Target profile</span>
-                <strong>{verticalInfo.target}</strong>
+          <div className="public-journey-shell">
+            <aside className="public-journey-intelligence">
+              <div className="public-journey-panel-title">
+                <span>01</span>
+                <div>
+                  <strong>Research snapshot</strong>
+                  <small>Already sourced by APEX</small>
+                </div>
               </div>
 
-              <button className="btn-primary public-run-demo" onClick={startDemo} disabled={running || !objective.trim()}>
-                {running ? 'APEX is working…' : complete ? 'Run it again' : 'Run APEX demo'}
+              <div className="public-lead-card">
+                <div className="public-lead-company">
+                  <div>
+                    <span>{selectedLead.industry}</span>
+                    <h3>{selectedLead.company}</h3>
+                    <small>{selectedLead.city}</small>
+                  </div>
+                  <div className="public-qualified-chip">QUALIFIED</div>
+                </div>
+
+                <div className="public-lead-person">
+                  <span>Decision maker</span>
+                  <strong>{selectedLead.decisionMaker}</strong>
+                  <small>{selectedLead.contact}</small>
+                </div>
+
+                <div className="public-lead-reason">
+                  <span>WHY THIS ACCOUNT</span>
+                  <p>{selectedLead.fitReason}</p>
+                </div>
+              </div>
+
+              <div className={'public-strategy-card ' + (activeStep >= 1 || complete ? 'revealed' : '')}>
+                <div className="public-card-label"><Sparkles size={14} /> UNIQUE SALES STRATEGY</div>
+                <p>{selectedLead.strategy}</p>
+                <div className="public-strategy-route">
+                  <span>Email</span><i>→</i><span>48h</span><i>→</i><span>Voice</span><i>→</i><span>Qualify</span><i>→</i><span>Handoff</span>
+                </div>
+              </div>
+
+              <button className="btn-primary public-journey-start" onClick={startDemo} disabled={running}>
+                {running ? 'APEX is running the workflow…' : complete ? 'Run the simulation again' : 'Run the live simulation'}
                 {!running && <ArrowRight size={16} />}
               </button>
-            </div>
+            </aside>
 
-            <div className="public-demo-terminal">
-              <div className="public-terminal-header">
+            <div className="public-journey-execution">
+              <div className="public-execution-topbar">
                 <div>
                   <span className="public-terminal-dot" />
                   <span className="public-terminal-dot" />
                   <span className="public-terminal-dot" />
                 </div>
-                <span>APEX · DEMO WORKSPACE</span>
-                <span>SIMULATION</span>
+                <strong>APEX · PROSPECT JOURNEY</strong>
+                <span>{running ? 'RUNNING' : complete ? 'COMPLETE' : 'READY'}</span>
               </div>
 
-              <div className="public-terminal-objective">
-                <span>OBJECTIVE</span>
-                <p>{objective}</p>
-              </div>
-
-              <div className="public-terminal-accounts">
-                {verticalInfo.sample.map((name) => (
-                  <span key={name}>{name}</span>
+              <div className="public-journey-progress" aria-label="Simulation progress">
+                {demoJourneySteps.map((step, index) => (
+                  <div
+                    key={step}
+                    className={
+                      'public-progress-step ' +
+                      (activeStep === index && running ? 'active ' : '') +
+                      (complete || activeStep > index ? 'done' : '')
+                    }
+                  >
+                    <span>{complete || activeStep > index ? <Check size={11} /> : index + 1}</span>
+                    <small>{step}</small>
+                  </div>
                 ))}
               </div>
 
-              <div className="public-step-list">
-                {demoSteps.map((step, index) => {
-                  const isDone = complete || activeStep > index;
-                  const isActive = running && activeStep === index;
-                  return (
-                    <div
-                      className={'public-step ' + (isDone ? 'done ' : '') + (isActive ? 'active' : '')}
-                      key={step.label}
-                    >
-                      <div className="public-step-icon">
-                        {isDone ? <Check size={17} /> : step.icon}
-                      </div>
-                      <div>
-                        <strong>{step.label}</strong>
-                        <span>{step.detail}</span>
-                      </div>
-                      <div className="public-step-state">
-                        {isDone ? 'done' : isActive ? 'working' : 'queued'}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {complete && (
-                <div className="public-demo-result">
-                  <Check size={18} />
-                  <div>
-                    <strong>Workflow complete.</strong>
-                    <span>
-                      In production, the next action would depend on your approvals, channel permissions and live
-                      prospect responses.
-                    </span>
+              <div className="public-execution-stage">
+                <article className={'public-action-card public-email-action ' + (activeStep >= 2 || complete ? 'visible' : '')}>
+                  <div className="public-action-head">
+                    <div><Mail size={17} /><span>FIRST CONTACT · PERSONALIZED EMAIL</span></div>
+                    <strong>{activeStep >= 2 || complete ? 'SENT' : 'QUEUED'}</strong>
                   </div>
+                  <div className="public-email-meta">
+                    <span>To</span><strong>{selectedLead.decisionMaker}</strong>
+                    <span>Subject</span><strong>{selectedLead.emailSubject}</strong>
+                  </div>
+                  <p>{selectedLead.emailBody}</p>
+                  <small>Generated from this prospect’s stored APEX research + individualized strategy.</small>
+                </article>
+
+                <div className={'public-time-jump ' + (activeStep >= 3 || complete ? 'visible' : '')}>
+                  <Clock3 size={16} />
+                  <div><strong>48 HOURS LATER</strong><span>No reply detected. Follow-up policy advances to voice.</span></div>
                 </div>
-              )}
+
+                <article className={'public-action-card public-call-action ' + (activeStep >= 4 || complete ? 'visible' : '')}>
+                  <div className="public-action-head">
+                    <div><PhoneCall size={17} /><span>AUTOMATIC AI FOLLOW-UP CALL</span></div>
+                    <strong>{activeStep >= 5 || complete ? 'QUALIFIED' : 'LIVE'}</strong>
+                  </div>
+                  <div className="public-call-wave" aria-hidden="true">
+                    {Array.from({ length: 24 }).map((_, index) => <i key={index} />)}
+                  </div>
+                  <div className="public-call-transcript">
+                    <p><strong>APEX:</strong> I’m following up on the note I sent about {selectedLead.company}. The reason I reached out was specific to the opportunity APEX identified in your current lead flow.</p>
+                    <p><strong>SIMULATED PROSPECT:</strong> I saw it. Give me the short version.</p>
+                    <p><strong>APEX:</strong> The system researches each account first, adapts the strategy, and then works email and voice until there is a qualified next step. Would a short walkthrough make sense?</p>
+                    <p><strong>SIMULATED PROSPECT:</strong> Yes. Put something on my calendar.</p>
+                  </div>
+                </article>
+
+                <article className={'public-appointment-card ' + (activeStep >= 5 || complete ? 'visible' : '')}>
+                  <CalendarCheck size={22} />
+                  <div>
+                    <span>QUALIFIED APPOINTMENT</span>
+                    <strong>{selectedLead.appointment}</strong>
+                    <small>CRM stage updated automatically · research + transcript attached</small>
+                  </div>
+                </article>
+
+                <div className="public-notification-grid">
+                  <article className={'public-notification-card ' + (activeStep >= 6 || complete ? 'visible' : '')}>
+                    <div className="public-card-label"><BellRing size={14} /> BUSINESS HANDOFF</div>
+                    <h4>Your sales team is notified instantly.</h4>
+                    <div><Mail size={14} /><span>Email: New qualified appointment + account brief</span></div>
+                    <div><MessageSquareText size={14} /><span>SMS: {selectedLead.company} booked · {selectedLead.appointment}</span></div>
+                  </article>
+
+                  <article className={'public-notification-card ' + (activeStep >= 7 || complete ? 'visible' : '')}>
+                    <div className="public-card-label"><Check size={14} /> PROSPECT CONFIRMATION</div>
+                    <h4>The prospect gets the next step too.</h4>
+                    <div><Mail size={14} /><span>Email: Calendar confirmation + meeting details</span></div>
+                    <div><MessageSquareText size={14} /><span>SMS: Appointment confirmed · reply to reschedule</span></div>
+                  </article>
+                </div>
+
+                {complete && (
+                  <div className="public-demo-result public-journey-result">
+                    <Check size={18} />
+                    <div>
+                      <strong>Pipeline outcome created.</strong>
+                      <span>
+                        Research → strategy → personalized email → timed follow-up call → qualification → appointment →
+                        two-sided notification, with the CRM state carried through the entire journey.
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </section>
