@@ -43,6 +43,7 @@
 }
 
 .public-brand-mark {
+  position: relative;
   width: 36px;
   height: 36px;
   display: inline-flex;
@@ -54,6 +55,17 @@
   font-family: var(--font-display);
   font-weight: 800;
   font-size: 14px;
+}
+
+.public-brand-mark::after {
+  content: '';
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-right: 1px solid #14120f;
+  border-top: 1px solid #14120f;
+  transform: rotate(45deg);
+  opacity: 0.6;
 }
 
 .public-brand > span:last-child {
@@ -106,6 +118,17 @@
   margin-left: 6px;
   color: var(--color-apex-brass);
   border: 1px solid var(--color-apex-border);
+}
+
+.public-nav-links .public-nav-pilot {
+  color: #14120f;
+  background: var(--color-apex-brass);
+  font-weight: 600;
+}
+
+.public-nav-links .public-nav-pilot:hover {
+  color: #14120f;
+  background: #c9a87a;
 }
 
 .public-hero {
@@ -161,6 +184,21 @@
   flex-wrap: wrap;
 }
 
+.public-hero-note {
+  margin-top: 18px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--color-apex-muted);
+  font-size: 12px;
+}
+
+.public-hero-note strong {
+  color: var(--color-apex-brass);
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+
 .public-cta {
   min-height: 46px;
   display: inline-flex;
@@ -195,6 +233,64 @@
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+}
+
+.public-brand-visual {
+  position: relative;
+  min-height: 480px;
+  overflow: hidden;
+  border: 1px solid var(--color-apex-border-hover);
+  border-radius: 12px;
+  background: #090d15;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+}
+
+.public-brand-visual img {
+  width: 100%;
+  height: 100%;
+  min-height: 480px;
+  display: block;
+  object-fit: cover;
+  object-position: center;
+  opacity: 0.92;
+}
+
+.public-brand-visual-shade {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(5, 8, 15, 0.04) 30%, rgba(5, 8, 15, 0.88) 100%),
+    linear-gradient(90deg, rgba(5, 8, 15, 0.2), transparent 55%);
+}
+
+.public-brand-visual-caption {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.public-brand-visual-caption span {
+  color: var(--color-apex-brass);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+
+.public-brand-visual-caption strong {
+  max-width: 420px;
+  color: #f1eee7;
+  font-family: var(--font-display);
+  font-size: clamp(22px, 3vw, 32px);
+  line-height: 1.08;
+}
+
+.public-brand-visual-caption small {
+  color: #b4bac5;
+  font-size: 11px;
 }
 
 .public-command-card::before {
@@ -696,6 +792,39 @@
   color: #cfd2d8;
 }
 
+.public-role-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.public-role-card {
+  min-height: 214px;
+  padding: 24px;
+}
+
+.public-role-card > span {
+  color: var(--color-apex-brass);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+
+.public-role-card h3 {
+  margin: 28px 0 9px;
+  color: var(--color-apex-text);
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.public-role-card p {
+  margin: 0;
+  color: var(--color-apex-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
 .public-pilot {
   display: grid;
   grid-template-columns: 0.9fr 1.1fr;
@@ -1127,6 +1256,10 @@
     max-width: 720px;
   }
 
+  .public-brand-visual {
+    max-width: 720px;
+  }
+
   .public-demo-grid,
   .public-not-grid,
   .public-pilot,
@@ -1136,6 +1269,10 @@
 
   .public-capability-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .public-role-grid {
+    grid-template-columns: 1fr;
   }
 
   .public-pilot-details {
@@ -1160,6 +1297,10 @@
     display: none;
   }
 
+  .public-nav-links .public-nav-pilot {
+    display: inline-flex;
+  }
+
   .public-nav-links .public-login-link {
     margin-left: 0;
   }
@@ -1167,6 +1308,17 @@
   .public-hero {
     padding-top: 56px;
     padding-bottom: 64px;
+  }
+
+  .public-brand-visual,
+  .public-brand-visual img {
+    min-height: 330px;
+  }
+
+  .public-brand-visual-caption {
+    left: 18px;
+    right: 18px;
+    bottom: 18px;
   }
 
   .public-hero h1 {
