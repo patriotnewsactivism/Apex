@@ -124,9 +124,9 @@ async function main(): Promise<void> {
       /tab === 'email' && <EmailCampaignsPanel \/>/.test(salesOpsPanel),
   );
   check(
-    'Sales Operations has a real nav entry and page title, so the panel is actually reachable',
-    /\{ id: 'sales-ops', label: 'Sales Operations'/.test(appTsx) &&
-      /'sales-ops': \{ title: 'Sales Operations', kicker: 'Business' \}/.test(appTsx),
+    'Revenue Operations has a real nav entry and page title, so the panel is actually reachable',
+    /\{ id: 'sales-ops', label: 'Revenue Operations'/.test(appTsx) &&
+      /'sales-ops': \{ title: 'Revenue Operations', kicker: 'Revenue' \}/.test(appTsx),
   );
 
   // ── The one piece of real logic: run it, don't just read it ──────────────

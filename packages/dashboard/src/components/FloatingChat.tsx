@@ -113,7 +113,9 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
           position: 'fixed',
           right: 16,
           bottom: isMobile ? 84 : 24,
-          zIndex: 60,
+          // The mobile drawer is z-index 50. Keep chat above the bottom bar
+          // (30) but below that drawer so navigation remains usable.
+          zIndex: isMobile ? 35 : 60,
           width: 54,
           height: 54,
           borderRadius: '50%',
@@ -156,7 +158,9 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
         right: 8,
         bottom: 76, // above the bottom nav
         height: 'min(58vh, 500px)',
-        zIndex: 60,
+        // The mobile drawer is z-index 50. Keep chat above the bottom bar
+        // (30) but below that drawer so navigation remains usable.
+        zIndex: isMobile ? 35 : 60,
       }
     : {
         position: 'fixed',
