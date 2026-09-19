@@ -1,0 +1,33 @@
+﻿diff --git a/packages/api-server/src/routes/sales-ops.ts b/packages/api-server/src/routes/sales-ops.ts
+index 7fd2cdf..b93e7ff 100644
+--- a/packages/api-server/src/routes/sales-ops.ts
++++ b/packages/api-server/src/routes/sales-ops.ts
+@@ -391,7 +391,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
+         taskId: null,
+         level: success ? 'acting' : 'error',
+         message: success
+-          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops.`
++          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops. Vapi call ID: ${(result as { callId?: string })?.callId ?? 'unknown'}. Initial status: ${(result as { status?: string })?.status ?? 'unknown'}.`
+           : `Operator outbound call to ${customerNumber} failed: ${(result as { error?: string })?.error ?? 'unknown error'}`,
+         timestamp: new Date(),
+       });
+diff --git a/packages/core/src/tool-registry.ts b/packages/core/src/tool-registry.ts
+index 8b2a623..cf4c095 100644
+--- a/packages/core/src/tool-registry.ts
++++ b/packages/core/src/tool-registry.ts
+@@ -2269,6 +2269,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
+ 
+         // Build the webhook URL for receiving call results (end-of-call-report)
+         const webhookUrl = process.env.VAPI_WEBHOOK_URL ?? `${process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live'}/api/vapi/webhook`;
++        const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
+ 
+         // Create a transient (inline) assistant ΓÇö no need to pre-create one via POST /assistant.
+         // The assistant config includes the cold call script as the system prompt,
+@@ -2332,6 +2333,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
+             },
+             server: {
+               url: webhookUrl,
++              ...(webhookSecret ? { headers: { 'x-webhook-secret': webhookSecret } } : {}),
+             },
+             silenceTimeoutSeconds: 30,
+             responseDelaySeconds: 0.4,

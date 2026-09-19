@@ -391,7 +391,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         taskId: null,
         level: success ? 'acting' : 'error',
         message: success
-          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops.`
+          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops. Vapi call ID: ${(result as { callId?: string })?.callId ?? 'unknown'}. Initial status: ${(result as { status?: string })?.status ?? 'unknown'}.`
           : `Operator outbound call to ${customerNumber} failed: ${(result as { error?: string })?.error ?? 'unknown error'}`,
         timestamp: new Date(),
       });
