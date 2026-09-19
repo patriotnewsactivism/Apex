@@ -2269,6 +2269,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
         // Build the webhook URL for receiving call results (end-of-call-report)
         const webhookUrl = process.env.VAPI_WEBHOOK_URL ?? `${process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live'}/api/vapi/webhook`;
+        const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
 
         // Create a transient (inline) assistant — no need to pre-create one via POST /assistant.
         // The assistant config includes the cold call script as the system prompt,
@@ -2332,6 +2333,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             },
             server: {
               url: webhookUrl,
+              ...(webhookSecret ? { headers: { 'x-webhook-secret': webhookSecret } } : {}),
             },
             silenceTimeoutSeconds: 30,
             responseDelaySeconds: 0.4,
