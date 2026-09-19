@@ -141,7 +141,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
 
           <div className="public-nav-links">
             <button onClick={scrollToDemo}>How it works</button>
-            <button onClick={scrollToPilot}>Founder Pilot</button>
+            <button onClick={scrollToPilot}>Pricing</button>
             <button className="public-login-link" onClick={onOperatorLogin}>
               <LockKeyhole size={14} />
               Operator login
@@ -170,7 +170,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                 <ArrowRight size={16} />
               </button>
               <button className="btn-secondary public-cta" onClick={scrollToPilot}>
-                See the $1,500 Founder Pilot
+                See the $1,750 30-Day Pilot
               </button>
             </div>
 
@@ -419,49 +419,172 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
         </section>
 
         <section className="public-section public-container" id="pilot">
-          <div className="public-pilot">
-            <div className="public-pilot-copy">
-              <div className="public-eyebrow">30-DAY FOUNDER PILOT</div>
-              <h2>Prove it against your own market.</h2>
-              <p>
-                A focused proof engagement designed to answer one question: can APEX create qualified pipeline for
-                your business?
-              </p>
+          <div className="public-section-heading public-pricing-heading">
+            <div className="public-eyebrow">APEX PRICING</div>
+            <h2>Start with a real 30-day deployment. Scale when APEX proves the economics.</h2>
+            <p>
+              The pilot is intentionally priced far below a standard APEX deployment so you can put the workforce to
+              work against your actual market before making a larger commitment.
+            </p>
+          </div>
 
-              <div className="public-pilot-price">
-                <strong>$1,500</strong>
-                <span>30 days · limited founder cohort</span>
+          <div className="public-pricing-anchor">
+            <div>
+              <span>STANDARD DEPLOYMENT</span>
+              <strong>From $4,500/month</strong>
+            </div>
+            <div className="public-pricing-anchor-arrow">→</div>
+            <div className="public-pricing-anchor-pilot">
+              <span>30-DAY PILOT</span>
+              <strong>$1,750 one-time</strong>
+              <small>Pilot payment credited toward your first full month when you continue.</small>
+            </div>
+          </div>
+
+          <div className="public-pricing-grid">
+            <article className="public-price-card public-price-card-featured">
+              <div className="public-price-badge">BEST WAY TO START</div>
+              <div className="public-price-kicker">30-DAY APEX PILOT</div>
+              <h3>Put APEX to work before you commit.</h3>
+              <div className="public-price">
+                <strong>$1,750</strong>
+                <span>one-time · 30 days</span>
               </div>
-
+              <p>
+                A managed deployment against a real market, with real prospect research, individualized strategy and
+                controlled multichannel execution.
+              </p>
               <a
-                className="btn-primary public-cta public-pilot-button"
-                href="mailto:don@donmatthews.live?subject=APEX%2030-Day%20Founder%20Pilot"
+                className="btn-primary public-cta public-price-cta"
+                href="mailto:don@donmatthews.live?subject=Start%20an%20APEX%2030-Day%20Pilot"
               >
-                Request a 15-minute Pipeline Audit
+                Start a 30-Day Pilot
                 <ArrowRight size={16} />
               </a>
-            </div>
-
-            <div className="public-pilot-details">
-              <div className="public-pilot-stat-grid">
-                <div><span>1</span><strong>Defined ICP</strong><small>One focused market first</small></div>
-                <div><span>Weekly</span><strong>Pipeline reporting</strong><small>Outcomes, not vanity metrics</small></div>
-                <div><span>Day 30</span><strong>Business review</strong><small>Results + next-month plan</small></div>
+              <div className="public-price-credit">
+                Continue after the pilot and the full <strong>$1,750</strong> is credited toward your first month.
               </div>
-
-              <div className="public-pilot-includes">
+              <div className="public-price-list">
                 {[
-                  'ICP and campaign strategy',
-                  'Qualified prospect research and enrichment',
-                  'Prospect-specific personalization',
-                  'Approved campaign execution and controlled follow-up',
-                  'Positive-response routing and scheduling/handoff logic',
-                  'Weekly pipeline summary and day-30 review',
+                  'Up to 2,500 researched and qualified prospects',
+                  'ICP, market targeting and campaign strategy',
+                  'Decision-maker and contact research',
+                  'Individualized strategy for each prospect',
+                  'Automated email outreach and controlled follow-up',
+                  'AI-powered outbound calling and inbound call handling',
+                  'SMS follow-up where appropriate',
+                  'CRM, pipeline tracking and appointment scheduling',
+                  'Campaign performance reporting',
+                  'Human approval controls and pilot review',
+                  'No annual contract required for the pilot',
                 ].map((item) => (
-                  <div key={item}><Check size={16} /> {item}</div>
+                  <div key={item}><Check size={15} /> <span>{item}</span></div>
                 ))}
               </div>
+            </article>
+
+            <article className="public-price-card">
+              <div className="public-price-kicker">APEX GROWTH</div>
+              <h3>Your ongoing autonomous sales operation.</h3>
+              <div className="public-price">
+                <strong>$4,500</strong>
+                <span>per month</span>
+              </div>
+              <p>For businesses ready to make APEX part of their daily revenue operation.</p>
+              <a
+                className="btn-secondary public-cta public-price-cta"
+                href="mailto:don@donmatthews.live?subject=APEX%20Growth%20Deployment"
+              >
+                Deploy APEX Growth
+              </a>
+              <div className="public-price-list">
+                {[
+                  'Up to 5,000 new researched prospects/month',
+                  'Continuous research and enrichment',
+                  'Multiple active outreach campaigns',
+                  'Personalized email, SMS, voice and follow-up',
+                  'Inbound and outbound AI sales agents',
+                  'CRM and pipeline management',
+                  'Appointment scheduling and lead nurturing',
+                  'Performance and revenue reporting',
+                  'Managed onboarding and support',
+                ].map((item) => (
+                  <div key={item}><Check size={15} /> <span>{item}</span></div>
+                ))}
+              </div>
+            </article>
+
+            <article className="public-price-card">
+              <div className="public-price-kicker">APEX SCALE</div>
+              <h3>Run larger territories and more campaigns.</h3>
+              <div className="public-price">
+                <strong>$7,500</strong>
+                <span>per month</span>
+              </div>
+              <p>For higher-volume sales operations, multiple markets or simultaneous campaign strategies.</p>
+              <a
+                className="btn-secondary public-cta public-price-cta"
+                href="mailto:don@donmatthews.live?subject=APEX%20Scale%20Deployment"
+              >
+                Talk About Scaling
+              </a>
+              <div className="public-price-list">
+                {[
+                  'Up to 15,000 new researched prospects/month',
+                  'Multiple simultaneous markets or campaigns',
+                  'Expanded outbound calling capacity',
+                  'Advanced segmentation and sales personas',
+                  'Higher-volume email and SMS orchestration',
+                  'Multi-agent sales workflows',
+                  'Advanced CRM automation and attribution',
+                  'Priority optimization and support',
+                ].map((item) => (
+                  <div key={item}><Check size={15} /> <span>{item}</span></div>
+                ))}
+              </div>
+            </article>
+
+            <article className="public-price-card">
+              <div className="public-price-kicker">APEX ENTERPRISE</div>
+              <h3>Autonomous revenue infrastructure at scale.</h3>
+              <div className="public-price">
+                <strong>$12,500+</strong>
+                <span>per month</span>
+              </div>
+              <p>For organizations that need custom volume, integrations, governance and dedicated deployment design.</p>
+              <a
+                className="btn-secondary public-cta public-price-cta"
+                href="mailto:don@donmatthews.live?subject=APEX%20Enterprise%20Deployment"
+              >
+                Build an Enterprise Deployment
+              </a>
+              <div className="public-price-list">
+                {[
+                  'High-volume prospect research',
+                  'Custom account and prospect limits',
+                  'Multiple business units, territories or brands',
+                  'Custom AI workforce configuration',
+                  'Dedicated voice and sales agents',
+                  'Custom workflow, API and CRM integrations',
+                  'Advanced governance and approval controls',
+                  'Custom reporting and priority support',
+                ].map((item) => (
+                  <div key={item}><Check size={15} /> <span>{item}</span></div>
+                ))}
+              </div>
+            </article>
+          </div>
+
+          <div className="public-pricing-close">
+            <div>
+              <div className="public-eyebrow">WHY THE PILOT</div>
+              <h3>You are not buying a demo. You are putting APEX to work.</h3>
             </div>
+            <p>
+              A standard APEX deployment begins at $4,500/month. The 30-day pilot lets you test the same operating
+              model against your own market for $1,750, with no annual commitment—and that investment rolls into your
+              first full month if you continue.
+            </p>
           </div>
         </section>
 
@@ -490,7 +613,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                 className="btn-primary public-cta"
                 href="mailto:don@donmatthews.live?subject=APEX%20Pipeline%20Audit"
               >
-                Talk about the Founder Pilot
+                Start with the 30-Day Pilot
                 <ArrowRight size={16} />
               </a>
               <button className="btn-secondary public-cta" onClick={onOperatorLogin}>
