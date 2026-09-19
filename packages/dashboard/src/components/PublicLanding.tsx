@@ -131,10 +131,10 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
       <header className="public-nav-wrap">
         <nav className="public-nav public-container" aria-label="APEX public navigation">
           <button className="public-brand" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
-            <span className="public-brand-mark" aria-hidden="true">A</span>
+            <span className="public-brand-emblem" aria-hidden="true">ΛΛ</span>
             <span>
               <strong>APEX</strong>
-              <small>Autonomous AI Workforce</small>
+              <small>Intelligence that executes.</small>
             </span>
           </button>
 
@@ -151,7 +151,12 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
       </header>
 
       <main>
-        <section className="public-hero public-container">
+        <section className="public-hero-cinematic">
+          <div className="public-hero-backdrop" aria-hidden="true">
+            <img src="/apex-branding.jpg" alt="" />
+            <div className="public-hero-backdrop-shade" />
+          </div>
+          <div className="public-hero public-container">
           <div className="public-hero-copy">
             <div className="public-eyebrow">MANAGED PIPELINE · AUTONOMOUS AI WORKFORCE</div>
             <h1>
@@ -186,14 +191,9 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
             </div>
           </div>
 
-          <div className="public-brand-visual" aria-label="APEX — Intelligence that executes">
+          <div className="public-hero-brand-lockup" aria-label="APEX — Intelligence that executes">
             <img src="/apex-branding.jpg" alt="APEX — Intelligence that executes." />
-            <div className="public-brand-visual-shade" />
-            <div className="public-brand-visual-caption">
-              <span>APEX OPERATING MODEL</span>
-              <strong>Research → strategy → outreach → revenue</strong>
-              <small>One coordinated workforce. Human control where it matters.</small>
-            </div>
+          </div>
           </div>
         </section>
 
