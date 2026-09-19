@@ -383,7 +383,18 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         },
       );
 
-      const success = !(result && typeof result === 'object' && 'success' in result && result.success === false);
+      type OutboundCallResult = {
+        success?: boolean;
+        error?: string;
+        callId?: string;
+        status?: string;
+        [key: string]: unknown;
+      };
+      const callResult: OutboundCallResult =
+        result.success && result.data && typeof result.data === 'object'
+          ? (result.data as OutboundCallResult)
+          : { success: false, error: result.error ?? 'Outbound call tool failed before reaching Vapi.' };
+      const success = result.success && callResult.success !== false;
 
       // Leave an honest operator-action record next to the agent's own call logs.
       await db.insert(logs).values({
@@ -391,12 +402,12 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         taskId: null,
         level: success ? 'acting' : 'error',
         message: success
-          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops. Vapi call ID: ${(result as { callId?: string })?.callId ?? 'unknown'}. Initial status: ${(result as { status?: string })?.status ?? 'unknown'}.`
-          : `Operator outbound call to ${customerNumber} failed: ${(result as { error?: string })?.error ?? 'unknown error'}`,
+          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops. Vapi call ID: ${callResult.callId ?? 'unknown'}. Initial status: ${callResult.status ?? 'unknown'}.`
+          : `Operator outbound call to ${customerNumber} failed: ${callResult.error ?? result.error ?? 'unknown error'}`,
         timestamp: new Date(),
       });
 
-      res.status(success ? 200 : 502).json(result);
+      res.status(success ? 200 : 502).json(success ? callResult : { ...callResult, success: false });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }
