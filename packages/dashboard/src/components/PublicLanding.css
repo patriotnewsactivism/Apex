@@ -1606,3 +1606,179 @@
     min-height: auto;
   }
 }
+
+
+/* Cinematic APEX brand treatment — uses the supplied APEX identity while preserving readable conversion copy. */
+.public-brand-emblem {
+  min-width: 54px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #dce5f1;
+  font-family: var(--font-display);
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: -0.28em;
+  padding-right: 0.28em;
+  text-shadow: 0 0 18px rgba(154, 196, 239, 0.38);
+}
+
+.public-hero-cinematic {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border-bottom: 1px solid rgba(123, 174, 226, 0.16);
+  background: #07111d;
+}
+
+.public-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
+}
+
+.public-hero-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 54%;
+  opacity: 0.48;
+  filter: saturate(0.82) contrast(1.08);
+  transform: scale(1.025);
+}
+
+.public-hero-backdrop-shade {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(5, 11, 20, 0.98) 0%, rgba(5, 11, 20, 0.90) 32%, rgba(5, 11, 20, 0.56) 58%, rgba(5, 11, 20, 0.20) 100%),
+    linear-gradient(180deg, rgba(5, 11, 20, 0.16) 0%, rgba(5, 11, 20, 0.10) 58%, rgba(5, 11, 20, 0.90) 100%);
+}
+
+.public-hero-cinematic .public-hero {
+  position: relative;
+  min-height: 720px;
+}
+
+.public-hero-cinematic .public-hero-copy {
+  position: relative;
+  z-index: 2;
+  padding: 28px 0;
+}
+
+.public-hero-cinematic .public-hero h1 {
+  text-shadow: 0 3px 26px rgba(0, 0, 0, 0.5);
+}
+
+.public-hero-cinematic .public-hero h1 span {
+  color: #dce8f6;
+  text-shadow: 0 0 28px rgba(130, 183, 238, 0.28);
+}
+
+.public-hero-cinematic .public-eyebrow {
+  color: #a9c7e8;
+}
+
+.public-hero-cinematic .public-hero-lede {
+  color: #c8d1dd;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.48);
+}
+
+.public-hero-cinematic .btn-primary {
+  border-color: rgba(146, 195, 244, 0.72);
+  background: linear-gradient(180deg, #dbe9f7, #a9c8e8);
+  color: #07111d;
+  box-shadow: 0 0 24px rgba(115, 177, 239, 0.28);
+}
+
+.public-hero-cinematic .btn-primary:hover {
+  background: #edf6ff;
+  box-shadow: 0 0 34px rgba(115, 177, 239, 0.42);
+}
+
+.public-hero-cinematic .public-hero-note strong {
+  color: #d8e8f8;
+}
+
+.public-hero-brand-lockup {
+  position: relative;
+  z-index: 2;
+  align-self: center;
+  justify-self: end;
+  width: min(520px, 100%);
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(173, 207, 241, 0.22);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(4, 10, 18, 0.44);
+  box-shadow:
+    0 34px 90px rgba(0, 0, 0, 0.46),
+    0 0 42px rgba(91, 151, 213, 0.12);
+}
+
+.public-hero-brand-lockup img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.public-hero-brand-lockup::after {
+  content: 'INTELLIGENCE THAT EXECUTES';
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  padding: 7px 9px;
+  border: 1px solid rgba(173, 207, 241, 0.22);
+  border-radius: 4px;
+  background: rgba(4, 10, 18, 0.72);
+  color: #d5e4f4;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+}
+
+@media (max-width: 900px) {
+  .public-hero-cinematic .public-hero {
+    min-height: auto;
+  }
+
+  .public-hero-backdrop img {
+    object-position: 62% center;
+    opacity: 0.34;
+  }
+
+  .public-hero-backdrop-shade {
+    background:
+      linear-gradient(180deg, rgba(5, 11, 20, 0.82) 0%, rgba(5, 11, 20, 0.72) 45%, rgba(5, 11, 20, 0.96) 100%),
+      linear-gradient(90deg, rgba(5, 11, 20, 0.92), rgba(5, 11, 20, 0.42));
+  }
+
+  .public-hero-brand-lockup {
+    justify-self: stretch;
+    width: 100%;
+    max-width: 620px;
+  }
+}
+
+@media (max-width: 640px) {
+  .public-brand-emblem {
+    min-width: 42px;
+    font-size: 20px;
+  }
+
+  .public-hero-backdrop img {
+    object-position: 68% center;
+    opacity: 0.26;
+  }
+
+  .public-hero-cinematic .public-hero-copy {
+    padding-top: 8px;
+  }
+
+  .public-hero-brand-lockup {
+    aspect-ratio: 16 / 10;
+  }
+}
