@@ -24,6 +24,10 @@ import {
   goals,
   suppressions,
   consentRecords,
+  sequenceStepExecutions,
+  meetings,
+  meetingAttendees,
+  salesOpportunities,
 } from '@workspace/db';
 import {
   eq,
@@ -37,6 +41,12 @@ import {
 import { randomUUID } from 'crypto';
 import type { ToolDefinition } from '../types.js';
 import { z } from 'zod';
+import {
+  ensureStrategyForEnrollment,
+  markStepExecution,
+  prepareDueRevenueStep,
+  queueDurableStepExecution,
+} from './workforce-loop.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -85,6 +95,10 @@ export interface AdvanceEnrollmentInput {
   outcome: 'interested' | 'not_interested' | 'no_answer' | 'busy' | 'voicemail' | 'booked' | 'callback' | 'disqualified' | 'responded';
   interactionId?: string;
   callId?: string;
+  meetingStartsAt?: string;
+  meetingEndsAt?: string;
+  meetingUrl?: string;
+  amountCents?: number;
 }
 
 // ─── Campaign creation ──────────────────────────────────────────────────────────
@@ -247,6 +261,11 @@ export async function queueNextStep(input: QueueNextStepInput): Promise<void> {
     throw new Error(`Enrollment ${input.enrollmentId} not found`);
   }
 
+  // Strategy creation is part of enrollment progression, not an optional
+  // dashboard action. This guarantees every outbound touch has an auditable
+  // prospect-specific reason and opening angle before it reaches a channel.
+  await ensureStrategyForEnrollment(input);
+
   if (enrollment.status === 'completed' || enrollment.status === 'failed' ||
       enrollment.status === 'suppressed' || enrollment.status === 'disqualified') {
     return; // Terminal state — do not queue more steps
@@ -283,6 +302,13 @@ export async function queueNextStep(input: QueueNextStepInput): Promise<void> {
       updatedAt: new Date(),
     })
     .where(eq(campaignEnrollments.id, enrollment.id));
+
+  await queueDurableStepExecution({
+    organizationId: input.organizationId,
+    enrollmentId: enrollment.id,
+    stepId: nextStep.id,
+    scheduledAt: nextActionAt,
+  });
 }
 
 // ─── Advance enrollment ─────────────────────────────────────────────────────────
@@ -304,6 +330,8 @@ export async function advanceEnrollment(
   if (!enrollment) {
     throw new Error(`Enrollment ${input.enrollmentId} not found`);
   }
+
+  const now = new Date();
 
   // Record the interaction
   if (input.interactionId) {
@@ -331,7 +359,15 @@ export async function advanceEnrollment(
 
   // Mark the current step as executed
   if (enrollment.currentStepId) {
-    await recordStepExecution(input.organizationId, enrollment.id, enrollment.currentStepId);
+    const interactionId = input.interactionId ?? undefined;
+    await markStepExecution({
+      organizationId: input.organizationId,
+      enrollmentId: enrollment.id,
+      stepId: enrollment.currentStepId,
+      status: newStatus === 'responded' || newStatus === 'booked' ? 'succeeded' : 'succeeded',
+      interactionId,
+      result: { outcome: input.outcome },
+    });
   }
 
   await db
@@ -342,9 +378,104 @@ export async function advanceEnrollment(
     })
     .where(eq(campaignEnrollments.id, enrollment.id));
 
+  if (['interested', 'responded', 'booked'].includes(input.outcome)) {
+    await upsertRevenueOpportunity({
+      organizationId: input.organizationId,
+      campaignId: enrollment.campaignId,
+      contactId: enrollment.contactId,
+      outcome: input.outcome,
+      amountCents: input.amountCents,
+      meetingStartsAt: input.meetingStartsAt,
+      meetingEndsAt: input.meetingEndsAt,
+      meetingUrl: input.meetingUrl,
+      now,
+    });
+  }
+
   // If booked or disqualified, mark as completed
   if (newStatus === 'booked' || newStatus === 'disqualified') {
     await completeEnrollment(input.organizationId, enrollment.id);
+  }
+}
+
+async function upsertRevenueOpportunity(input: {
+  organizationId: string;
+  campaignId: string;
+  contactId: string;
+  outcome: string;
+  amountCents?: number;
+  meetingStartsAt?: string;
+  meetingEndsAt?: string;
+  meetingUrl?: string;
+  now: Date;
+}): Promise<void> {
+  const [existing] = await db.select().from(salesOpportunities).where(and(
+    eq(salesOpportunities.organizationId, input.organizationId),
+    eq(salesOpportunities.contactId, input.contactId),
+    inArray(salesOpportunities.status, ['open', 'qualified', 'proposed', 'negotiated']),
+  )).limit(1);
+  const metadata = { campaignId: input.campaignId, lastOutcome: input.outcome };
+
+  if (existing) {
+    await db.update(salesOpportunities).set({
+      status: 'qualified',
+      amountCents: input.amountCents === undefined ? existing.amountCents : String(input.amountCents),
+      nextActionAt: input.meetingStartsAt ? new Date(input.meetingStartsAt) : input.now,
+      updatedAt: input.now,
+      metadata: { ...(existing.metadata ?? {}), ...metadata },
+    }).where(eq(salesOpportunities.id, existing.id));
+  } else {
+    await db.insert(salesOpportunities).values({
+      id: randomUUID(),
+      organizationId: input.organizationId,
+      contactId: input.contactId,
+      name: `Revenue opportunity from campaign ${input.campaignId}`,
+      amountCents: input.amountCents === undefined ? null : String(input.amountCents),
+      probability: input.outcome === 'booked' ? 0.65 : 0.35,
+      probabilitySource: 'rule_based',
+      source: 'campaign',
+      status: 'qualified',
+      nextActionAt: input.meetingStartsAt ? new Date(input.meetingStartsAt) : input.now,
+      metadata,
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+  }
+
+  if (input.outcome !== 'booked' || !input.meetingStartsAt || !input.meetingEndsAt) return;
+  const startsAt = new Date(input.meetingStartsAt);
+  const endsAt = new Date(input.meetingEndsAt);
+  if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) return;
+
+  const [existingMeeting] = await db.select({ id: meetings.id }).from(meetings).where(and(
+    eq(meetings.organizationId, input.organizationId),
+    eq(meetings.contactId, input.contactId),
+    eq(meetings.status, 'scheduled'),
+  )).limit(1);
+  if (existingMeeting) return;
+
+  const [meeting] = await db.insert(meetings).values({
+    id: randomUUID(),
+    organizationId: input.organizationId,
+    contactId: input.contactId,
+    provider: 'manual',
+    title: 'Revenue qualification meeting',
+    startsAt,
+    endsAt,
+    status: 'scheduled',
+    meetingUrl: input.meetingUrl,
+    metadata,
+    createdAt: input.now,
+    updatedAt: input.now,
+  }).returning({ id: meetings.id });
+  if (meeting) {
+    await db.insert(meetingAttendees).values({
+      id: randomUUID(),
+      meetingId: meeting.id,
+      contactId: input.contactId,
+      role: 'attendee',
+      createdAt: input.now,
+    }).onConflictDoNothing();
   }
 }
 
@@ -503,46 +634,22 @@ async function getExecutedStepPositions(
   organizationId: string,
   enrollmentId: string,
 ): Promise<Set<number>> {
-  // Look at interactions for this enrollment to see which steps were executed
-  const interactionsResult = await db
-    .select({ channel: interactions.channel })
-    .from(interactions)
-    .where(
-      and(
-        eq(interactions.organizationId, organizationId),
-        eq(interactions.campaignId, enrollmentId), // interactions store enrollmentId as campaignId
-      ),
-    )
-    .limit(100);
+  const executions = await db
+    .select({ stepId: sequenceStepExecutions.stepId })
+    .from(sequenceStepExecutions)
+    .where(and(
+      eq(sequenceStepExecutions.organizationId, organizationId),
+      eq(sequenceStepExecutions.enrollmentId, enrollmentId),
+      inArray(sequenceStepExecutions.status, ['succeeded', 'skipped']),
+    ));
 
-  // This is approximate — a proper implementation would track step execution
-  // in a separate table. For now, we infer from interaction channels.
-  const positions = new Set<number>();
-  // We can't determine exact positions from interactions alone,
-  // so we return an empty set (all steps are "pending")
-  return positions;
-}
-
-async function recordStepExecution(
-  organizationId: string,
-  enrollmentId: string,
-  stepId: string,
-): Promise<void> {
-  // Record that a step was executed — in a full implementation this would
-  // write to a step_execution table. For now, record an interaction.
-  const now = new Date();
-  await db.insert(interactions).values({
-    id: randomUUID(),
-    organizationId,
-    campaignId: enrollmentId,
-    contactId: null,
-    channel: 'internal',
-    direction: 'internal',
-    type: 'step_execution',
-    status: 'completed',
-    occurredAt: now,
-    createdAt: now,
-  });
+  if (executions.length === 0) return new Set<number>();
+  const stepIds = executions.map((execution) => execution.stepId);
+  const steps = await db
+    .select({ position: sequenceSteps.position })
+    .from(sequenceSteps)
+    .where(inArray(sequenceSteps.id, stepIds));
+  return new Set(steps.map((step) => step.position));
 }
 
 async function recordInteractionOutcome(
@@ -656,6 +763,29 @@ export function createCampaignTools(): ToolDefinition[] {
     },
   },
   {
+    name: 'activate_revenue_ops_campaign',
+    description:
+      'Activate a prepared revenue-ops campaign. Activation lets the durable workforce coordinator queue and prepare enrolled steps; real external sends remain behind their channel approval gates.',
+    schema: z.object({
+      organizationId: z.string(),
+      campaignId: z.string(),
+    }),
+    requiresApproval: false,
+    async execute(input: { organizationId: string; campaignId: string }) {
+      const [updated] = await db.update(campaigns).set({
+        status: 'active',
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(campaigns.id, input.campaignId),
+        eq(campaigns.organizationId, input.organizationId),
+        inArray(campaigns.status, ['draft', 'ready', 'paused']),
+      )).returning({ id: campaigns.id, status: campaigns.status });
+      if (!updated) throw new Error(`Campaign ${input.campaignId} is missing or cannot be activated.`);
+      return { campaignId: updated.id, status: updated.status, message: 'Revenue workforce coordination is active.' };
+    },
+  },
+  {
     name: 'queue_campaign_step',
     description:
       'Queue the next step for a campaign enrollment. Finds the next unexecuted step in the enrollment\'s sequence and schedules it based on the step\'s delay. If all steps are done, marks the enrollment completed.',
@@ -670,6 +800,19 @@ export function createCampaignTools(): ToolDefinition[] {
     },
   },
   {
+    name: 'prepare_revenue_workforce_step',
+    description:
+      'Prepare one due revenue-workforce step. This creates the prospect strategy and relationship-timeline event, then stops at the existing approval boundary for email, phone, or SMS. Internal task steps may complete automatically.',
+    schema: z.object({
+      organizationId: z.string(),
+      enrollmentId: z.string(),
+    }),
+    requiresApproval: false,
+    async execute(input: { organizationId: string; enrollmentId: string }) {
+      return prepareDueRevenueStep(input);
+    },
+  },
+  {
     name: 'advance_campaign_enrollment',
     description:
       'Record an outcome for a campaign enrollment (e.g. interested, not_interested, booked, no_answer). Records the interaction outcome, advances the enrollment status, and triggers pause-on-reply for other enrollments if the outcome is meaningful.',
@@ -679,6 +822,10 @@ export function createCampaignTools(): ToolDefinition[] {
         outcome: z.enum(['interested', 'not_interested', 'no_answer', 'busy', 'voicemail', 'booked', 'callback', 'disqualified', 'responded']),
         interactionId: z.string().optional(),
         callId: z.string().optional(),
+        meetingStartsAt: z.string().datetime().optional(),
+        meetingEndsAt: z.string().datetime().optional(),
+        meetingUrl: z.string().url().optional(),
+        amountCents: z.number().int().nonnegative().optional(),
       }),
     requiresApproval: false,
     async execute(input: AdvanceEnrollmentInput) {

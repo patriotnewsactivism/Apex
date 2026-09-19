@@ -31,7 +31,7 @@ import {
   type WorkerHeartbeatHandle,
 } from '@workspace/core';
 import { createWorkforce, initializeWorkforce } from '@workspace/agents';
-import { JobScheduler, CampaignRunner, createCampaignTools } from '@workspace/background-jobs';
+import { JobScheduler, CampaignRunner, RevenueWorkforceRunner, createCampaignTools } from '@workspace/background-jobs';
 import { startExecutorDispatchLoop, executorDispatchConfig } from '@workspace/executor';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { seedDefaultJobs, recoverStaleLeasedTasks } from './bootstrap-jobs.js';
@@ -57,6 +57,7 @@ export interface RuntimeBootstrapResult {
   workforce: Map<string, BaseAgent>;
   scheduler: JobScheduler;
   campaignRunner: CampaignRunner;
+  revenueWorkforceRunner: RevenueWorkforceRunner;
   supervisors: AgentSupervisorHandle[];
   executorDispatch: { stop(): void };
   heartbeat: WorkerHeartbeatHandle;
@@ -155,6 +156,12 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   const campaignRunner = new CampaignRunner();
   campaignRunner.start();
 
+  // Revenue workforce coordinator. It prepares one durable, auditable
+  // prospect step at a time and leaves external sends behind their existing
+  // approval gates.
+  const revenueWorkforceRunner = new RevenueWorkforceRunner();
+  revenueWorkforceRunner.start();
+
   // Sandbox-executor dispatch loop (Phase 4 of the durable-artifact/executor
   // work, ADR-013). No-op cycle when APEX_EXECUTOR_JOB is unset. Previously
   // started only by the HTTP process — a standalone worker could claim
@@ -188,11 +195,12 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   }
 
   async function shutdown(signal: string): Promise<void> {
-    log(`${signal} received; stopping scheduler, campaign runner, executor dispatch, heartbeat, and agent claim loops`);
+    log(`${signal} received; stopping scheduler, campaign runners, executor dispatch, heartbeat, and agent claim loops`);
     clearInterval(leaseRecoveryInterval);
     for (const supervisor of supervisors) supervisor.stop();
     executorDispatch.stop();
     campaignRunner.stop();
+    revenueWorkforceRunner.stop();
     scheduler.stop();
     heartbeat.stop();
     // Allow already-started work and database/provider I/O to settle
@@ -203,5 +211,5 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
     await Promise.allSettled(supervisors.map((supervisor) => supervisor.settled()));
   }
 
-  return { workforce, scheduler, campaignRunner, supervisors, executorDispatch, heartbeat, shutdown };
+  return { workforce, scheduler, campaignRunner, revenueWorkforceRunner, supervisors, executorDispatch, heartbeat, shutdown };
 }

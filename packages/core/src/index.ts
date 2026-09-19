@@ -42,3 +42,4 @@ export * from './execution-budget.js';
 export * from './work-classifier.js';
 export * from './worker-heartbeat.js';
 export * from './execution-outcome.js';
+export * from './revenue-ops/workforce-loop.js';
