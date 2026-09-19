@@ -148,22 +148,6 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
     document.getElementById('pilot')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  return () => window.clearInterval(timer);
-  }, [running]);
-
-  const startDemo = () => {
-    setComplete(false);
-    setRunning(true);
-  };
-
-  const scrollToDemo = () => {
-    document.getElementById('demo')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
-  const scrollToPilot = () => {
-    document.getElementById('pilot')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
-
   return (
     <div className="public-shell">
       <header className="public-nav-wrap">
