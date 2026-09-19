@@ -26,6 +26,7 @@ import { ArtifactsPanel } from './components/ArtifactsPanel.js';
 import { ScheduledJobsPanel } from './components/ScheduledJobsPanel.js';
 import { SpendBurnPanel } from './components/SpendBurnPanel.js';
 import { LoginScreen } from './components/LoginScreen.js';
+import { PublicLanding } from './components/PublicLanding.js';
 import {
   Target,
   Rocket,
@@ -800,6 +801,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
+  const [showLogin, setShowLogin] = useState<boolean>(false);
 
   useEffect(() => {
     const token = localStorage.getItem('apex_token');
@@ -846,7 +848,10 @@ export default function App() {
   // token invalidated while the tab is open returns to the login screen instead
   // of leaving empty panels behind.
   useEffect(() => {
-    const onUnauthorized = () => setAuthed(false);
+    const onUnauthorized = () => {
+      setAuthed(false);
+      setShowLogin(true);
+    };
     window.addEventListener('apex:unauthorized', onUnauthorized);
     return () => window.removeEventListener('apex:unauthorized', onUnauthorized);
   }, []);
@@ -854,6 +859,7 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem('apex_token');
     setAuthed(false);
+    setShowLogin(true);
   };
 
   if (loading) {
@@ -882,7 +888,19 @@ export default function App() {
   }
 
   if (!authed) {
-    return <LoginScreen onLogin={() => setAuthed(true)} />;
+    if (showLogin) {
+      return (
+        <LoginScreen
+          onLogin={() => {
+            setAuthed(true);
+            setShowLogin(false);
+          }}
+          onBack={() => setShowLogin(false)}
+        />
+      );
+    }
+
+    return <PublicLanding onOperatorLogin={() => setShowLogin(true)} />;
   }
 
   return (
