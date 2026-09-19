@@ -25,6 +25,7 @@ import { SuggestionsPanel } from './components/SuggestionsPanel.js';
 import { ArtifactsPanel } from './components/ArtifactsPanel.js';
 import { ScheduledJobsPanel } from './components/ScheduledJobsPanel.js';
 import { SpendBurnPanel } from './components/SpendBurnPanel.js';
+import { CommandCenter } from './components/CommandCenter.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { PublicLanding } from './components/PublicLanding.js';
 import {
@@ -41,16 +42,15 @@ import {
   Settings as SettingsIcon,
   Activity,
   GitBranch,
-  FolderGit2,
   Menu,
   X,
   Search,
   SlidersHorizontal,
-  Lightbulb,
   Brain,
   Package,
   CalendarClock,
   CircleDollarSign,
+  ChevronDown,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -224,34 +224,45 @@ function Sidebar({
   const isMobile = useIsMobile();
 
   // Groups mirror real org concerns — not a flat icon dump
+  const [showMore, setShowMore] = useState(false);
+
   const groups: NavGroup[] = [
     {
       label: 'Command',
       items: [
-        { id: 'chat', label: 'Chat', icon: <MessageSquare size={16} /> },
-        { id: 'mission', label: 'Mission Control', icon: <Target size={16} /> },
+        { id: 'command', label: 'Command Center', icon: <Target size={16} /> },
+        { id: 'chat', label: 'Talk to APEX', icon: <MessageSquare size={16} /> },
         { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={16} /> },
+      ],
+    },
+    {
+      label: 'Revenue',
+      items: [
+        { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
+        { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
       ],
     },
     {
       label: 'Workforce',
       items: [
         { id: 'agents', label: 'Agent Network', icon: <Network size={16} /> },
-        { id: 'tasks', label: 'Task Board', icon: <Kanban size={16} /> },
-        { id: 'logs', label: 'Log Stream', icon: <Terminal size={16} /> },
+        { id: 'tasks', label: 'Work Queue', icon: <Kanban size={16} /> },
+        { id: 'logs', label: 'Activity Log', icon: <Terminal size={16} /> },
       ],
     },
+  ];
+
+  const moreGroups: NavGroup[] = [
     {
-      label: 'Business',
+      label: 'Additional workspace',
       items: [
-        { id: 'sales-ops', label: 'Sales Operations', icon: <Rocket size={16} /> },
-        { id: 'leads', label: 'Leads', icon: <Search size={16} /> },
-        { id: 'suggestions', label: 'Suggestions', icon: <Lightbulb size={16} /> },
-        { id: 'multiapp', label: 'Portfolio', icon: <FolderGit2 size={16} /> },
+        { id: 'mission', label: 'Mission Control', icon: <Target size={16} /> },
+        { id: 'suggestions', label: 'Suggestions', icon: <MessageSquare size={16} /> },
+        { id: 'multiapp', label: 'Portfolio', icon: <Package size={16} /> },
       ],
     },
     {
-      label: 'Systems',
+      label: 'Systems & tools',
       items: [
         { id: 'control', label: 'Control Room', icon: <SlidersHorizontal size={16} /> },
         { id: 'artifacts', label: 'Artifacts', icon: <Package size={16} /> },
@@ -330,7 +341,7 @@ function Sidebar({
                   letterSpacing: '0.02em',
                 }}
               >
-                Ax
+                A
               </div>
               <div>
                 <div
@@ -351,7 +362,7 @@ function Sidebar({
                     marginTop: 1,
                   }}
                 >
-                  Workforce desk
+                  Autonomous workforce
                 </div>
               </div>
             </div>
@@ -475,6 +486,58 @@ function Sidebar({
               </div>
             </div>
           ))}
+          <button
+            onClick={() => setShowMore((open) => !open)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+              margin: '2px 10px 0',
+              padding: '8px 0',
+              color: 'var(--color-apex-muted)',
+              border: 0,
+              borderTop: '1px solid var(--color-apex-line)',
+              background: 'transparent',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 9,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              cursor: 'pointer',
+            }}
+          >
+            More systems
+            <ChevronDown size={14} style={{ transform: showMore ? 'rotate(180deg)' : 'none' }} />
+          </button>
+          {showMore && moreGroups.map((group) => (
+            <div key={group.label}>
+              <div className="apex-eyebrow" style={{ padding: '0 10px 6px' }}>{group.label}</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {group.items.map((item) => {
+                  const isActive = active === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      id={`nav-${item.id}`}
+                      onClick={() => handleNav(item.id)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: isMobile ? '11px 12px' : '8px 12px',
+                        borderRadius: 5, border: 'none', cursor: 'pointer',
+                        background: isActive ? 'var(--color-apex-brass-soft)' : 'transparent',
+                        color: isActive ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)',
+                        fontFamily: 'var(--font-sans)', fontSize: isMobile ? 14 : 13,
+                        fontWeight: isActive ? 600 : 450, width: '100%', textAlign: 'left',
+                        borderLeft: isActive ? '2px solid var(--color-apex-brass)' : '2px solid transparent',
+                      }}
+                    >
+                      {item.icon}{item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         {/* Footer */}
@@ -532,10 +595,10 @@ function MobileBottomBar({
   onNavigate: (id: string) => void;
 }) {
   const quickNav = [
-    { id: 'chat', icon: <MessageSquare size={20} />, label: 'Chat' },
-    { id: 'mission', icon: <Target size={20} />, label: 'Mission' },
-    { id: 'tasks', icon: <Kanban size={20} />, label: 'Tasks' },
-    { id: 'agents', icon: <Network size={20} />, label: 'Agents' },
+    { id: 'command', icon: <Target size={20} />, label: 'Command' },
+    { id: 'sales-ops', icon: <Rocket size={20} />, label: 'Revenue' },
+    { id: 'approvals', icon: <ShieldCheck size={20} />, label: 'Approvals' },
+    { id: 'agents', icon: <Network size={20} />, label: 'Workforce' },
     { id: 'settings', icon: <SettingsIcon size={20} />, label: 'Settings' },
   ];
 
@@ -591,7 +654,7 @@ function MobileBottomBar({
 
 /** Compose the authenticated dashboard shell and its navigable panels. */
 function AppContent({ onLogout }: { onLogout: () => void }) {
-  const [activePage, setActivePage] = useState('chat');
+  const [activePage, setActivePage] = useState('command');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const isMobile = useIsMobile();
   const { data: agents = [] } = useQuery({
@@ -601,6 +664,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
   });
 
   const pages: Record<string, ReactNode> = {
+    command: <CommandCenter agents={agents} onNavigate={setActivePage} />,
     chat: <QuickChat />,
     mission: <MissionsDashboard />,
     agents: <AgentNetwork agents={agents} />,
@@ -633,23 +697,24 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 
   // Plain titles — no emoji decoration
   const pageTitles: Record<string, { title: string; kicker: string }> = {
-    chat: { title: 'Chat', kicker: 'Command' },
+    command: { title: 'Command Center', kicker: 'APEX' },
+    chat: { title: 'Talk to APEX', kicker: 'Command' },
     mission: { title: 'Mission Control', kicker: 'Command' },
     agents: { title: 'Agent Network', kicker: 'Workforce' },
     tasks: { title: 'Task Board', kicker: 'Workforce' },
-    'sales-ops': { title: 'Sales Operations', kicker: 'Business' },
-    leads: { title: 'Lead Pipeline', kicker: 'Business' },
+    'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
+    leads: { title: 'Prospects', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
     scheduled: { title: 'Cron Registry', kicker: 'Systems' },
     spend: { title: 'Spend / Burn Rate', kicker: 'Systems' },
-    suggestions: { title: 'Suggestions', kicker: 'Business' },
+    suggestions: { title: 'Suggestions', kicker: 'Systems & tools' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },
     approvals: { title: 'Approval Queue', kicker: 'Command' },
     health: { title: 'System Health', kicker: 'Systems' },
     learning: { title: 'Intelligence', kicker: 'Systems' },
     pipeline: { title: 'CI/CD Pipeline', kicker: 'Systems' },
-    multiapp: { title: 'Portfolio', kicker: 'Business' },
+    multiapp: { title: 'Portfolio', kicker: 'Systems & tools' },
     settings: { title: 'Settings', kicker: 'Systems' },
   };
 
