@@ -53,12 +53,33 @@ const NASTY = [
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhcGV4LWxlYWQtcmVzZWFyY2hlciIsImlhdCI6MTc4ODQ5MTAxN30.QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ',
   'ERROR provider chain exhausted: openrouter/deepseek-v4-flash 400 models_array_too_long; openrouter2/qwen3-max cooldown 30s; cerebras no key configured',
 ];
-const BOTTOM = ['Chat','Mission','Tasks','Agents','Settings'];
-const DRAWER = ['Approvals','Agent Network','Log Stream','Sales Operations','Leads','Suggestions','Portfolio','Control Room','Artifacts','Cron Registry','Health','Intelligence','CI/CD','Spend / Burn'];
+const BOTTOM = [
+  { id: 'command', label: 'Command' },
+  { id: 'sales-ops', label: 'Revenue' },
+  { id: 'approvals', label: 'Approvals' },
+  { id: 'agents', label: 'Workforce' },
+  { id: 'settings', label: 'Settings' },
+];
+const DRAWER = [
+  { id: 'chat', label: 'Talk to APEX' },
+  { id: 'sales-ops', label: 'Revenue Operations' },
+  { id: 'mission', label: 'Mission Control' },
+  { id: 'tasks', label: 'Work Queue' },
+  { id: 'logs', label: 'Activity Log' },
+  { id: 'leads', label: 'Prospects' },
+  { id: 'suggestions', label: 'Suggestions' },
+  { id: 'multiapp', label: 'Portfolio' },
+  { id: 'control', label: 'Control Room' },
+  { id: 'artifacts', label: 'Artifacts' },
+  { id: 'scheduled', label: 'Cron Registry' },
+  { id: 'health', label: 'Health' },
+  { id: 'learning', label: 'Intelligence' },
+  { id: 'pipeline', label: 'CI/CD' },
+  { id: 'spend', label: 'Spend / Burn' },
+];
 
-// Every nav id in App.tsx mapped to the label this harness clicks to reach it.
-// The bottom bar uses shorthand ('Mission', 'Tasks', 'Agents') where the drawer
-// spells the view out, so the mapping cannot be derived from labels alone.
+// Every sidebar nav id in App.tsx mapped to its exact visible label. Bottom-bar
+// labels are intentionally shorter, so its click targets live in BOTTOM above.
 //
 // This exists because the view list silently fell behind the app twice: the
 // 'Cron Registry' and 'Artifacts' panels shipped and the harness kept printing
@@ -66,9 +87,9 @@ const DRAWER = ['Approvals','Agent Network','Log Stream','Sales Operations','Lea
 // A clean run that skipped a view is the same lie as a clean run that could not
 // see overflow, so an unknown id is FATAL rather than a warning.
 const NAV_ID_TO_LABEL = {
-  chat: 'Chat', mission: 'Mission', approvals: 'Approvals',
-  agents: 'Agents', tasks: 'Tasks', logs: 'Log Stream',
-  'sales-ops': 'Sales Operations', leads: 'Leads', suggestions: 'Suggestions',
+  command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals',
+  agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
+  'sales-ops': 'Revenue Operations', leads: 'Prospects', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
@@ -87,9 +108,9 @@ const NAV_ID_TO_LABEL = {
     console.error('FATAL: found no nav items in App.tsx — the nav shape changed, coverage is unverifiable.');
     process.exit(2);
   }
-  const checked = new Set([...BOTTOM, ...DRAWER]);
+  const checked = new Set([...BOTTOM, ...DRAWER].map(({ id }) => id));
   const missing = navIds
-    .filter(([, id]) => !NAV_ID_TO_LABEL[id] || !checked.has(NAV_ID_TO_LABEL[id]))
+    .filter(([, id, label]) => !NAV_ID_TO_LABEL[id] || !checked.has(id) || NAV_ID_TO_LABEL[id] !== label)
     .map(([, id, label]) => `${id} ("${label}")`);
   if (missing.length) {
     console.error(`FATAL: ${missing.length} view(s) in App.tsx are not checked by this harness:`);
@@ -221,14 +242,18 @@ for (const width of WIDTHS) {
   if (!canarySeen) { console.error(`FATAL: canary not detected at ${width}px — the detector is blind, results are meaningless.`); process.exitCode = 2; }
   else console.log(`   canary detected at ${width}px — detector is live`);
 
-  for (const label of BOTTOM) {
-    await page.getByText(label, { exact:true }).first().click({ timeout:4000 }).catch(()=>{});
+  for (const { label } of BOTTOM) {
+    await page.getByText(label, { exact:true }).first().click({ timeout:4000 });
     await page.waitForTimeout(500); await measure(label);
   }
-  for (const label of DRAWER) {
-    await page.getByLabel('Open menu').click({ timeout:4000 }).catch(()=>{});
+  for (const { id, label } of DRAWER) {
+    await page.getByLabel('Open menu').click({ timeout:4000 });
     await page.waitForTimeout(350);
-    await page.getByText(label, { exact:true }).first().click({ timeout:4000 }).catch(()=>{});
+    const item = page.locator(`#nav-${id}`);
+    if (!await item.isVisible()) {
+      await page.getByText('More systems', { exact:true }).click({ timeout:4000 });
+    }
+    await item.click({ timeout:4000 });
     await page.waitForTimeout(600); await measure(label);
 
     // Sales Operations consolidated three former top-level pages (Campaigns,
@@ -237,7 +262,7 @@ for (const width of WIDTHS) {
     // other five sub-tabs would silently lose the overflow coverage they had
     // as standalone pages — the same class of gap the view-coverage check
     // above exists to catch, just one level deeper.
-    if (label === 'Sales Operations') {
+    if (id === 'sales-ops') {
       for (const sub of SALES_OPS_SUBTABS) {
         await page.getByText(sub, { exact:true }).first().click({ timeout:4000 }).catch(()=>{});
         await page.waitForTimeout(500); await measure(`Sales Ops › ${sub}`);
