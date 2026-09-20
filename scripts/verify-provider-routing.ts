@@ -149,6 +149,12 @@ check(
     /callProvider\([\s\S]{0,180}providerMessages/.test(clientSource),
 );
 check(
+  'FlashX can use its native 131072-token completion envelope while smaller routes stay clamped',
+  /name: PAID_FALLBACK_PROVIDER_NAME[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
+    /maxOutputTokens: 16_384/.test(clientSource) &&
+    /Math\.min\(131_072, Math\.max/.test(clientSource),
+);
+check(
   'Groq and Gemini routing each have an operator activation switch',
   /activationEnv: 'APEX_GROQ_BYOK_ENABLED'/.test(clientSource) &&
     /activationEnv: 'APEX_GEMINI_BYOK_ENABLED'/.test(clientSource),
