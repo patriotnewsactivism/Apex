@@ -10,6 +10,7 @@ import {
 } from '../packages/core/src/model-routing.js';
 import {
   FREE_POLICY_GATEWAY_NAME,
+  PAID_FALLBACK_PROVIDER_NAME,
   getDefaultLLMConfig,
   getProviderCatalog,
   getProviderOrderForRole,
@@ -26,15 +27,16 @@ const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
 
 try {
   delete process.env[OPENROUTER_MODEL_POLICY_ENV];
-  console.log('── Zero-cost fallback ──');
+  console.log('── Free-first runtime + FlashX continuity ──');
   check(
     'no policy preserves the guarded free model chain',
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
   check(
-    'no policy preserves the whole automatic continuity chain',
-    getProviderOrderForRole('CEO').length === getProviderCatalog().length,
+    'runtime order is the free/BYOK catalog plus the dedicated FlashX continuity route',
+    getProviderOrderForRole('CEO').length === getProviderCatalog().length + 1 &&
+      getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
     getProviderOrderForRole('CEO'),
   );
   check(
@@ -145,6 +147,7 @@ try {
       FREE_POLICY_GATEWAY_NAME,
       'groq-gpt-oss-120b-byok',
       'gemini-3-8-flash-byok',
+      PAID_FALLBACK_PROVIDER_NAME,
     ]),
     getProviderOrderForRole('CEO'),
   );
@@ -164,13 +167,13 @@ try {
   check('model catalog pricing comes from live OpenRouter API', routeSource.includes("https://openrouter.ai/api/v1/models") && routeSource.includes('usdPerMillion'));
   check('efficiency is explicitly described as heuristic, not benchmark', routeSource.includes('It is not an intelligence benchmark'));
   check('intelligence API reports effective objective rather than hiding escalation', routeSource.includes('effectiveObjective') && routeSource.includes('baseObjective'));
-  check('API exposes production eligibility under zero-cost mode', routeSource.includes('productionEligible'));
-  check('API rejects paid production policies', routeSource.includes('zero-cost') || routeSource.includes(':free'));
+  check('API exposes free-roster production eligibility', routeSource.includes('productionEligible'));
+  check('API rejects arbitrary paid saved policies', routeSource.includes(':free') && routeSource.includes('FlashX'));
   check('dashboard reset restores the six-model free chain', panelSource.includes('nex-agi/nex-n2.5-mini:free') && !panelSource.includes('DeepSeek V4 Flash -> GPT-OSS'));
   check('dashboard no longer calls free models experiment-only', !/experiment-only/.test(panelSource));
   check('dashboard defaults the catalog filter to free-only', panelSource.includes('const [freeOnly, setFreeOnly] = useState(true)'));
   const probeSource = fs.readFileSync(path.join(root, 'scripts/llm-probe.mjs'), 'utf8');
-  check('diagnostic probe cannot spend money on paid providers', !/api\.mistral\.ai|api\.groq\.com|api\.cohere\.ai|api\.kilo\.ai/.test(probeSource));
+  check('default diagnostic probe stays free-only and cannot accidentally spend', !/api\.mistral\.ai|api\.groq\.com|api\.cohere\.ai|api\.kilo\.ai/.test(probeSource) && probeSource.includes('free-account credential'));
 } finally {
   if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
   else process.env[OPENROUTER_MODEL_POLICY_ENV] = previousPolicy;
