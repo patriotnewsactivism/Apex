@@ -239,11 +239,23 @@ async function main() {
     const emergencyRequestCapReached =
       requestLedger.emergencyCap > 0 &&
       requestLedger.allProviderRequests >= requestLedger.emergencyCap;
-    const hardCapped = tokenLedger.totalCapReached || emergencyRequestCapReached;
+    const legacyCapacityGovernorActive =
+      tokenLedger.totalCapReached ||
+      emergencyRequestCapReached ||
+      !tokenLedger.pacing.total.allowed ||
+      !requestLedger.pacing.total.allowed;
     const anyLLMCapacityAvailable = llmCapacityAvailableNow();
-    const aggregatePaused = !hardCapped && !anyLLMCapacityAvailable;
+    // A legacy free/BYOK cap is only a workforce hard-cap when no unrestricted
+    // continuity route can actually take work. Otherwise /health must report
+    // paid_continuity rather than falsely claiming the workforce is capped.
+    const hardCapped =
+      (tokenLedger.totalCapReached || emergencyRequestCapReached) &&
+      !anyLLMCapacityAvailable;
+    const aggregatePaused = !anyLLMCapacityAvailable;
     const paidContinuityActive =
-      paidContinuityAvailable && !requestLedger.pacing.total.allowed;
+      paidContinuityAvailable &&
+      anyLLMCapacityAvailable &&
+      legacyCapacityGovernorActive;
     // These two conditions used to collapse into one "paced" string, and that
     // cost a full day of production ambiguity on 2026-09-08: at 15:19 /health
     // read `paced` while claiming ran at ~15 tasks/min (two Nemotron providers
