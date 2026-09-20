@@ -84,7 +84,7 @@ function normalizeModel(entry: OpenRouterCatalogEntry) {
   const blended = inputPerMillion !== null && outputPerMillion !== null
     ? inputPerMillion * 0.8 + outputPerMillion * 0.2
     : null;
-  if (isFree) recommendedFor.push('zero-cost production');
+  if (isFree) recommendedFor.push('free-roster production');
   if (toolCalling && reasoning) recommendedFor.push('executive reasoning / autonomous agents');
   if (toolCalling && blended !== null && blended <= 0.75) recommendedFor.push('high-volume agent work');
   if (contextLength >= 524_288) recommendedFor.push('long-context research / repository analysis');
@@ -135,7 +135,7 @@ function ensureDefaultChainInCatalog<T extends { id: string }>(models: T[]): T[]
     .map((id) => ({
       id,
       name: DEFAULT_CHAIN_LABELS[id] ?? id,
-      description: 'Zero-cost production default. Exhaustion pauses APEX rather than spending money.',
+      description: 'Free-roster production default. If free/BYOK capacity is unavailable, the dedicated GLM FlashX continuity route may continue runtime inference.',
       contextLength: 0,
       pricing: { inputPerMillion: 0, outputPerMillion: 0, request: 0 },
       capabilities: {
@@ -151,7 +151,7 @@ function ensureDefaultChainInCatalog<T extends { id: string }>(models: T[]): T[]
       agentReady: true,
       capabilityScore: 70,
       efficiencyScore: 100,
-      recommendedFor: ['zero-cost production'],
+      recommendedFor: ['free-roster production'],
     })) as unknown as T[];
   return [...extras, ...models];
 }
@@ -285,7 +285,7 @@ export function createModelSettingsRouter(): Router {
       const candidate = parseOpenRouterModelPolicy(JSON.stringify(req.body));
       if (!candidate) {
         res.status(400).json({
-          error: 'Invalid production model policy. Select 1-500 zero-cost OpenRouter model IDs ending in :free, or exactly openrouter/free. Paid model IDs cannot be persisted while zero-cost mode is active; exhaustion pauses the workforce instead of spending money.',
+          error: 'Invalid saved model policy. Select 1-500 free OpenRouter model IDs ending in :free, or exactly openrouter/free. Arbitrary paid model IDs cannot be persisted. z-ai/glm-5.3-flashx is the dedicated paid runtime continuity exception and is managed outside the saved roster.',
         });
         return;
       }
