@@ -142,6 +142,10 @@ type ProviderSpec = {
   usdPerMillionPrompt?: number;
   usdPerMillionCompletion?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
+  /** Provider-side request envelope. Used to size output/history before the
+   * network call instead of learning the limit by burning a 413 attempt. */
+  maxRequestTokens?: number;
+  maxOutputTokens?: number;
   providerRouting?: {
     only?: readonly string[];
     allow_fallbacks?: boolean;
@@ -165,6 +169,13 @@ function freeOpenRouterSpec(
     minIntervalMs: 500,
     toolCallingReliable: true,
     ...extras,
+    // Free endpoints vary widely in latency. Prefer the endpoint most likely
+    // to answer inside APEX's bounded timeout while preserving the operator's
+    // exact model order and zero-cost roster.
+    providerRouting: {
+      sort: 'latency',
+      ...(extras.providerRouting ?? {}),
+    },
   };
 }
 
@@ -198,6 +209,12 @@ const PROVIDERS: readonly ProviderSpec[] = [
     minIntervalMs: 1_000,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
+    // Groq's verified on-demand envelope is 8,000 tokens/minute. Production
+    // was sending 8,518-13,888 token requests because leadership roles asked
+    // for up to 8,192 output tokens on top of the prompt. Stay below the hard
+    // edge and trim history before dispatch instead of spending calls on 413s.
+    maxRequestTokens: 7_600,
+    maxOutputTokens: 1_536,
   },
   {
     name: 'gemini-3-8-flash-byok',
@@ -346,6 +363,66 @@ export function estimateLLMRequestTokens(
     512,
     promptEstimate + Math.max(0, Math.floor(maxOutputTokens)),
   );
+}
+
+function estimatePromptTokens(
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+): number {
+  const messageChars = historySize(messages);
+  const toolChars = tools?.length ? JSON.stringify(tools).length : 0;
+  return Math.ceil((messageChars + toolChars) / 4);
+}
+
+export function prepareProviderRequest(
+  providerName: ApexProviderName,
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+  requestedMaxOutputTokens: number,
+): {
+  messages: LLMMessage[];
+  maxOutputTokens: number;
+  estimatedTotalTokens: number;
+  trimmed: boolean;
+} {
+  const provider = PROVIDER_BY_NAME.get(providerName);
+  if (!provider) throw new Error(`Unknown APEX provider: ${providerName}`);
+
+  const requestedOutput = Math.max(256, Math.floor(requestedMaxOutputTokens));
+  const providerOutput = provider.maxOutputTokens
+    ? Math.min(requestedOutput, provider.maxOutputTokens)
+    : requestedOutput;
+  if (!provider.maxRequestTokens) {
+    return {
+      messages,
+      maxOutputTokens: providerOutput,
+      estimatedTotalTokens: estimatePromptTokens(messages, tools) + providerOutput,
+      trimmed: false,
+    };
+  }
+
+  const safetyTokens = 256;
+  const toolChars = tools?.length ? JSON.stringify(tools).length : 0;
+  const messageCharBudget = Math.max(
+    4_000,
+    (provider.maxRequestTokens - providerOutput - safetyTokens) * 4 - toolChars,
+  );
+  const trimmed = trimMessageHistory(messages, messageCharBudget);
+  const promptTokens = estimatePromptTokens(trimmed.messages, tools);
+  const availableOutput = provider.maxRequestTokens - promptTokens - safetyTokens;
+  if (availableOutput < 256) {
+    throw new Error(
+      `provider request too large after trimming: ${promptTokens} prompt tokens leave ${availableOutput} output tokens`,
+    );
+  }
+  const maxOutputTokens = Math.min(providerOutput, availableOutput);
+
+  return {
+    messages: trimmed.messages,
+    maxOutputTokens,
+    estimatedTotalTokens: promptTokens + maxOutputTokens,
+    trimmed: trimmed.trimmed,
+  };
 }
 
 export function trimMessageHistory(
@@ -521,7 +598,10 @@ export function isCapacityFailure(
     status === 502 ||
     status === 503 ||
     status === 504 ||
-    (status === undefined && /request timed out|aborted/i.test(message))
+    (status === undefined &&
+      /request timed out|aborted|empty completion content \(finish_reason: error\)|provider returned no completion choice/i.test(
+        message,
+      ))
   );
 }
 
@@ -1071,10 +1151,16 @@ async function callCompatibleProvider(
       providerRouting.require_parameters = true;
     }
 
+    const prepared = prepareProviderRequest(
+      provider.name,
+      messages,
+      tools,
+      config.maxTokens ?? 2048,
+    );
     const body: Record<string, unknown> = {
-      messages: toWireMessages(messages),
+      messages: toWireMessages(prepared.messages),
       temperature: config.temperature ?? 0.7,
-      max_tokens: config.maxTokens ?? 2048,
+      max_tokens: prepared.maxOutputTokens,
       // OpenRouter-specific usage/provider fields are intentionally omitted
       // for direct OpenAI-compatible BYOK APIs such as Groq.
       ...(isOpenRouterProvider(provider) ? { usage: { include: true } } : {}),
@@ -1596,7 +1682,10 @@ class MultiProviderClient {
                 }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
-                if (!capacityFailure) nonCapacityFailureSeen = true;
+                const correctableRequestFailure = isRequestTooLargeError(status, message);
+                if (!capacityFailure && !correctableRequestFailure) {
+                  nonCapacityFailureSeen = true;
+                }
                 const newCooldown =
                   credentialCooldown(credentialId) ??
                   (isOpenRouterProvider(provider) ? accountCooldown(credential.key) : null);
@@ -1604,6 +1693,17 @@ class MultiProviderClient {
                   capacityBlocks.push({
                     source: credentialId,
                     resumeAt: new Date(newCooldown.until).toISOString(),
+                    reason: message.slice(0, 240),
+                  });
+                } else if (capacityFailure) {
+                  // Timeouts/aborts deliberately do not poison a credential,
+                  // but they are still temporary provider capacity failures.
+                  // Without a block they fell through as terminal "All LLM
+                  // providers failed" errors and consumed every task retry.
+                  const waitMs = Math.max(COOLDOWN_TIMEOUT_MS, err.retryAfterMs ?? 0);
+                  capacityBlocks.push({
+                    source: `${provider.name}/${attemptedModel}`,
+                    resumeAt: new Date(Date.now() + waitMs).toISOString(),
                     reason: message.slice(0, 240),
                   });
                 }
