@@ -944,10 +944,13 @@ function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key
 
 // ─── Process-wide call smoothing ─────────────────────────────────────────────
 
-const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 6);
+// One slot per current APEX agent by default. The semaphore still bounds
+// pathological task storms, but it no longer leaves 7 of the 13 agents waiting
+// solely because of an old six-call demo-era throttle.
+const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 13);
 const MAX_CONCURRENT_LLM_CALLS = Number.isFinite(configuredLLMConcurrency)
-  ? Math.min(16, Math.max(1, Math.floor(configuredLLMConcurrency)))
-  : 6;
+  ? Math.min(64, Math.max(1, Math.floor(configuredLLMConcurrency)))
+  : 13;
 
 let activeLLMCalls = 0;
 const llmCallWaitQueue: Array<() => void> = [];
