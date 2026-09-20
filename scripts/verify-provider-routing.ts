@@ -39,6 +39,7 @@ const byokProviders = [
   'gemini-3-8-flash-byok',
 ] as const;
 const automaticProviders = [...openRouterProviders, ...byokProviders];
+const fullRuntimeOrder = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
 
 const catalog = getProviderCatalog();
 const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
@@ -134,9 +135,10 @@ check(
     /const providerRequestWindow = requestWindowForProvider/.test(clientSource),
 );
 check(
-  'the emergency all-provider ceiling is checked before work is claimed and before dispatch',
-  /if \(!emergencyRequestCapacityWindow\(now\)\.allowed\) return false/.test(clientSource) &&
-    /const emergencyAttemptWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(clientSource),
+  'workspace emergency ceiling still guards free/BYOK while GLM continuity may bypass it',
+  /paidContinuityAvailable/.test(clientSource) &&
+    /const emergencyAttemptWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(clientSource) &&
+    /!provider\.paid && !emergencyAttemptWindow\.allowed/.test(clientSource),
 );
 check(
   'Groq and Gemini routing each have an operator activation switch',
@@ -200,7 +202,7 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
 check(
   'a custom FREE OpenRouter policy keeps independent BYOK fallbacks behind it',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
-    JSON.stringify([FREE_POLICY_GATEWAY_NAME, ...byokProviders]),
+    JSON.stringify([FREE_POLICY_GATEWAY_NAME, ...byokProviders, PAID_FALLBACK_PROVIDER_NAME]),
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
@@ -215,8 +217,8 @@ for (const role of [
 ]) {
   const order = getProviderOrderForRole(role);
   check(
-    `${role} uses OpenRouter free first, then independent BYOK pools`,
-    JSON.stringify(order) === JSON.stringify(automaticProviders),
+    `${role} uses free/BYOK first with GLM FlashX as final continuity`,
+    JSON.stringify(order) === JSON.stringify(fullRuntimeOrder),
     order,
   );
   const config = getDefaultLLMConfig(role);
