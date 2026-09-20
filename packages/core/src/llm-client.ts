@@ -1420,6 +1420,10 @@ class MultiProviderClient {
             Date.now(),
             pacingOverride,
           );
+          // FlashX can use its full upstream context window. Free/BYOK routes
+          // retain APEX history trimming to protect their smaller envelopes and
+          // quotas.
+          const providerMessages = provider.unrestricted ? messages : trimmed.messages;
           if (!providerRequestWindow.allowed) {
             capacityBlocks.push({
               source: provider.requestPool ?? 'openrouter',
@@ -1589,7 +1593,7 @@ class MultiProviderClient {
                 const result = await callProvider(
                   provider,
                   credential.key,
-                  trimmed.messages,
+                  providerMessages,
                   tools,
                   this.config,
                   execution,
