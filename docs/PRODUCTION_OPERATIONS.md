@@ -296,7 +296,7 @@ allowance, and is excluded from `llmRequests` on purpose.
 | `daily_cap` | Budget spent. **The paid rung drops out and APEX runs free-only** — the intended fallback, not an outage |
 | `disabled` | `APEX_DAILY_SPEND_USD=0`, or the rung is not enabled |
 
-Paid routing needs BOTH `APEX_PAID_FALLBACK=confirmed` (paid is allowed) and a
+Paid routing needs BOTH `FlashX route enabled when OPENROUTER_API_KEY is configured` (paid is allowed) and a
 non-zero `APEX_DAILY_SPEND_USD` (this much). A zero cap means spend nothing —
 money fails closed, where the request budget's `0` means uncapped.
 
