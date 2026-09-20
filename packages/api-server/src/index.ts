@@ -239,11 +239,19 @@ async function main() {
     const emergencyRequestCapReached =
       requestLedger.emergencyCap > 0 &&
       requestLedger.allProviderRequests >= requestLedger.emergencyCap;
-    const hardCapped = tokenLedger.totalCapReached || emergencyRequestCapReached;
+    const workspaceCapsReached =
+      tokenLedger.totalCapReached || emergencyRequestCapReached;
+    // Workspace caps no longer mean the workforce is hard-capped when paid GLM
+    // continuity is configured; GLM intentionally bypasses APEX request/token
+    // admission ceilings while provider-side backoff remains in force.
+    const hardCapped = workspaceCapsReached && !paidContinuityAvailable;
     const anyLLMCapacityAvailable = llmCapacityAvailableNow();
     const aggregatePaused = !hardCapped && !anyLLMCapacityAvailable;
     const paidContinuityActive =
-      paidContinuityAvailable && !requestLedger.pacing.total.allowed;
+      paidContinuityAvailable &&
+      (workspaceCapsReached ||
+        !requestLedger.pacing.total.allowed ||
+        !tokenLedger.pacing.total.allowed);
     // These two conditions used to collapse into one "paced" string, and that
     // cost a full day of production ambiguity on 2026-09-08: at 15:19 /health
     // read `paced` while claiming ran at ~15 tasks/min (two Nemotron providers
@@ -322,12 +330,9 @@ async function main() {
       // Provider account balance. The paid continuity route makes remaining
       // credit operational again, so keep it visible beside the routing state.
       providerCredits: getProviderCreditSnapshot(),
-      // Paid spend against the daily dollar budget. Reported next to the
-      // request meter because the two are the whole cost picture and neither
-      // implies the other: free requests cost nothing, paid requests consume
-      // no free allowance. `state: daily_cap` means the paid rung has dropped
-      // out of routing and APEX is running on free models alone — the intended
-      // fallback, not an outage.
+      // Paid spend telemetry. The GLM continuity route no longer uses this
+      // ledger as an admission gate; spent/projected cost remain visible so the
+      // operator can observe burn without throttling the workforce.
       llmSpend: getSpendLedgerSnapshot(),
       // Burn rate, unauthenticated and on purpose.
       //
