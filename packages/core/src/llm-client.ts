@@ -33,10 +33,7 @@ import {
   reserveProviderRequest,
   type DirectRequestPool,
 } from './request-ledger.js';
-import {
-  dailySpendCapMicros,
-  recordSpend,
-} from './spend-ledger.js';
+import { recordSpend } from './spend-ledger.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
   getActiveOpenRouterModelPolicy,
