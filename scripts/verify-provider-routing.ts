@@ -39,6 +39,7 @@ const byokProviders = [
   'gemini-3-8-flash-byok',
 ] as const;
 const automaticProviders = [...openRouterProviders, ...byokProviders];
+const runtimeProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
 
 const catalog = getProviderCatalog();
 const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
@@ -195,7 +196,7 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
 check(
   'a custom FREE OpenRouter policy keeps independent BYOK fallbacks behind it',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
-    JSON.stringify([FREE_POLICY_GATEWAY_NAME, ...byokProviders]),
+    JSON.stringify([FREE_POLICY_GATEWAY_NAME, ...byokProviders, PAID_FALLBACK_PROVIDER_NAME]),
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
@@ -210,8 +211,8 @@ for (const role of [
 ]) {
   const order = getProviderOrderForRole(role);
   check(
-    `${role} uses OpenRouter free first, then independent BYOK pools`,
-    JSON.stringify(order) === JSON.stringify(automaticProviders),
+    `${role} uses OpenRouter free first, then independent BYOK pools, then FlashX continuity`,
+    JSON.stringify(order) === JSON.stringify(runtimeProviders),
     order,
   );
   const config = getDefaultLLMConfig(role);
