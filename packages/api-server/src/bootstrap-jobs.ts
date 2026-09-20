@@ -51,7 +51,11 @@ export async function seedDefaultJobs(): Promise<void> {
         targetAgentId: 'apex-lead-research-001' as string | null,
         priority: 1,
         payload: {
-          systemDefinitionVersion: 2,
+          systemDefinitionVersion: 3,
+          // A dead task must not suppress every future sweep forever. The
+          // scheduler uses updatedAt inactivity and an atomic cutoff guard, so
+          // a task that has just resumed remains protected from replacement.
+          staleOpenTaskMinutes: 60,
           title: 'Lead generation sweep',
           description:
             'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered. Use searchBusinessDirectory and webSearch to find real qualifying businesses. For every lead, inspect public contact/about/team sources and attempt to find the decision maker, business email, and phone; never guess. Save the source and honest contact research status with saveResearchedLeadsBatch. Every saved lead must retain at least its verified company website as a contact path. Quality over quantity.',
@@ -65,7 +69,8 @@ export async function seedDefaultJobs(): Promise<void> {
         targetAgentId: 'apex-lead-research-001' as string | null,
         priority: 3,
         payload: {
-          systemDefinitionVersion: 3,
+          systemDefinitionVersion: 4,
+          staleOpenTaskMinutes: 120,
           maxPerRun: 5,
           title: 'Enrich pending lead contacts',
           description: 'Call listResearchedLeads with needsContactResearch=true and limit=5. Process at most 5 pending leads this run. Prefer the verified first-party business website, then one targeted public web-search pass for missing decision-maker/email/phone fields. Reject directory-domain, franchise-branch, city, and company-name mismatches. Never guess or synthesize contact data or email patterns. Do not repeat the same failed search/provider call in this task: on provider, quota, pacing, or capacity errors, stop cleanly rather than looping and leave remaining leads pending for the next scheduled run. Call updateLeadContactInfo for every genuinely attempted lead, include the supporting public source URL when found, and honestly mark partial, complete, or unavailable.',

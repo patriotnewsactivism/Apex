@@ -196,18 +196,71 @@ export class JobScheduler {
       // A recurring task_delegation job must never manufacture another copy of
       // the same expensive LLM task while the prior copy is still open.
       if (claimed.jobType === 'task_delegation' && claimed.targetAgentId) {
-        const liveScheduledTasks = await db
-          .select({ id: tasks.id, createdAt: tasks.createdAt })
+        const findLiveScheduledTasks = () => db
+          .select({
+            id: tasks.id,
+            createdAt: tasks.createdAt,
+            updatedAt: tasks.updatedAt,
+          })
           .from(tasks)
           .where(
             and(
-              eq(tasks.assignedAgentId, claimed.targetAgentId),
+              eq(tasks.assignedAgentId, claimed.targetAgentId!),
               eq(tasks.createdByAgentId, 'system-scheduler'),
               inArray(tasks.status, [...OPEN_TASK_STATUSES]),
               sql`${tasks.context}->>'scheduledJobId' = ${claimed.id}`,
             ),
           )
           .orderBy(asc(tasks.createdAt));
+
+        let liveScheduledTasks = await findLiveScheduledTasks();
+
+        // Dedupe alone is not sufficient: a pending/blocked task whose worker
+        // disappeared can remain open forever and suppress every future cron
+        // occurrence. Jobs must explicitly opt into stale replacement so a
+        // long-running operator-created task is never cancelled by surprise.
+        // updatedAt measures inactivity rather than total task age. The UPDATE
+        // repeats that cutoff predicate to avoid cancelling a task which made
+        // progress after this SELECT.
+        const staleOpenTaskMinutes = Number(
+          (claimed.payload as Record<string, unknown> | null)?.staleOpenTaskMinutes,
+        );
+        if (Number.isFinite(staleOpenTaskMinutes) && staleOpenTaskMinutes >= 10) {
+          const staleCutoff = new Date(now.getTime() - staleOpenTaskMinutes * 60_000);
+          const staleIds = liveScheduledTasks
+            .filter((task) => task.updatedAt <= staleCutoff)
+            .map((task) => task.id);
+
+          if (staleIds.length > 0) {
+            const cancelledStaleTasks = await db
+              .update(tasks)
+              .set({
+                status: 'cancelled',
+                errorMessage: `Superseded after ${staleOpenTaskMinutes} minutes without progress for scheduled job ${claimed.id}`,
+                nextRetryAt: null,
+                leasedAt: null,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  inArray(tasks.id, staleIds),
+                  inArray(tasks.status, [...OPEN_TASK_STATUSES]),
+                  lte(tasks.updatedAt, staleCutoff),
+                ),
+              )
+              .returning({ id: tasks.id });
+
+            if (cancelledStaleTasks.length > 0) {
+              console.warn(
+                `[JobScheduler] Cancelled ${cancelledStaleTasks.length} stale task(s) for scheduled job '${claimed.name}'`,
+              );
+            }
+
+            // Re-read after the guarded update. A task may have become active
+            // between SELECT and UPDATE; if so it remains the valid blocker.
+            liveScheduledTasks = await findLiveScheduledTasks();
+          }
+        }
 
         if (liveScheduledTasks.length > 1) {
           const duplicateIds = liveScheduledTasks.slice(1).map((row) => row.id);
