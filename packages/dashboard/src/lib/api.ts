@@ -10,6 +10,24 @@ import type {
 
 const API = '/api';
 
+type ApiErrorBody = {
+  error?: string;
+  message?: string;
+  details?: {
+    formErrors?: string[];
+    fieldErrors?: Record<string, string[] | undefined>;
+  };
+};
+
+function formatApiErrorDetails(details: ApiErrorBody['details']): string {
+  if (!details) return '';
+  const messages = [...(details.formErrors ?? [])];
+  for (const [field, errors] of Object.entries(details.fieldErrors ?? {})) {
+    for (const error of errors ?? []) messages.push(`${field}: ${error}`);
+  }
+  return messages.join('; ');
+}
+
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const token = localStorage.getItem('apex_token');
   const headers: Record<string, string> = {
@@ -33,8 +51,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       localStorage.removeItem('apex_token');
       window.dispatchEvent(new Event('apex:unauthorized'));
     }
-    const err = await res.json().catch(() => ({ error: res.statusText })) as { error: string };
-    throw new Error(err.error ?? `HTTP ${res.status}`);
+    const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
+    const summary = err.error ?? err.message ?? `HTTP ${res.status}`;
+    const details = formatApiErrorDetails(err.details);
+    throw new Error(details ? `${summary}: ${details}` : summary);
   }
   return res.json() as Promise<T>;
 }
