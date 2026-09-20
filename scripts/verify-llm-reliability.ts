@@ -71,6 +71,8 @@ const client = fs.readFileSync(path.join(root, 'packages/core/src/llm-client.ts'
 const claimGuard = fs.readFileSync(path.join(root, 'packages/core/src/capacity-claim-guard.ts'), 'utf8');
 const jobs = fs.readFileSync(path.join(root, 'packages/api-server/src/bootstrap-jobs.ts'), 'utf8');
 const scheduler = fs.readFileSync(path.join(root, 'packages/background-jobs/src/job-scheduler.ts'), 'utf8');
+const baseAgent = fs.readFileSync(path.join(root, 'packages/core/src/base-agent.ts'), 'utf8');
+const businessAgents = fs.readFileSync(path.join(root, 'packages/agents/src/business.ts'), 'utf8');
 
 check(
   'timeouts create a machine-readable capacity block instead of terminal chain failure',
@@ -87,6 +89,12 @@ check(
     /PRIORITY_GRACE_MS/.test(claimGuard) &&
     /latchReleaseAtMs \+ PRIORITY_GRACE_MS/.test(claimGuard) &&
     /!priorityAgents\.has\(this\.ownerAgentId\(\)\)/.test(claimGuard),
+);
+check(
+  'lead research wakes inside the bounded capacity-priority window',
+  /idlePollMaxMs:\s*5_000/.test(businessAgents) &&
+    /const idlePollMaxMs = Number\.isFinite\(configuredIdlePollMaxMs\)/.test(baseAgent) &&
+    /Math\.min\([\s\S]{0,160}idlePollMaxMs/.test(baseAgent),
 );
 check(
   'lead generation is the highest-priority recurring business task',
