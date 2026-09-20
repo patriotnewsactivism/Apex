@@ -26,10 +26,10 @@ interface LedgerState {
 const LEDGER_PATH =
   process.env.APEX_SPEND_LEDGER_PATH ?? '/tmp/apex/spend-ledger.json';
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_DAILY_SPEND_USD = 2;
+const DEFAULT_DAILY_SPEND_USD = 0;
 /** Enough to let a restart do useful paid work at once without allowing the
  *  whole day's budget to leave in the first minutes. */
-const DEFAULT_BURST_USD = 0.15;
+const DEFAULT_BURST_USD = 0;
 
 function utcDay(at: number = Date.now()): string {
   return new Date(at).toISOString().slice(0, 10);
@@ -73,7 +73,7 @@ function rolloverIfNeeded(at: number = Date.now()): void {
   }
 }
 
-/** Daily budget in micro-dollars. 0 disables paid spend outright. */
+/** Legacy monitoring budget in micro-dollars. It does not gate FlashX. */
 export function dailySpendCapMicros(): number {
   const raw = process.env.APEX_DAILY_SPEND_USD;
   if (raw === undefined || raw.trim() === '') {
@@ -362,16 +362,16 @@ export function paidSpendCapacityWindow(
   return spendCapacityWindow(callReserveUsd(), at, pacingEnabled);
 }
 
-/** True when paid inference has budget right now. False drops the paid rung
- *  from the routing order, leaving APEX on free models alone.
- *  `pacingEnabled: false` checks only the hard daily $ cap, skipping the
- *  smoothing ramp — see paidSpendCapacityWindow(). */
+/** Legacy budget-status helper retained for dashboards/tests.
+ * FlashX routing does not consult this value. */
 export function paidSpendAvailable(at: number = Date.now(), pacingEnabled?: boolean): boolean {
   return paidSpendCapacityWindow(at, pacingEnabled).allowed;
 }
 
 export interface SpendLedgerSnapshot {
   day: string;
+  /** False for the unrestricted FlashX route: this ledger is observability only. */
+  enforced: false;
   persistence: 'postgres+memory' | 'memory-only';
   spentUsd: number;
   capUsd: number;
@@ -399,6 +399,7 @@ export function getSpendLedgerSnapshot(at: number = Date.now()): SpendLedgerSnap
   const spent = spentMicrosToday();
   return {
     day: state.day,
+    enforced: false,
     persistence: databasePersistenceReady ? 'postgres+memory' : 'memory-only',
     spentUsd: usd(spent),
     capUsd: usd(window.capMicros),
