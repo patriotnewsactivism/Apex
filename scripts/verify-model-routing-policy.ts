@@ -73,8 +73,8 @@ try {
     })) === null,
   );
   check(
-    'paid DeepSeek policy cannot be persisted',
-    parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: ['deepseek/deepseek-v4-flash-0731'], rolePrimary: {} })) === null,
+    'paid GLM FlashX policy cannot be persisted',
+    parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: ['z-ai/glm-5.3-flashx'], rolePrimary: {} })) === null,
   );
   const freePolicy = parseOpenRouterModelPolicy(JSON.stringify({
     version: 1,
