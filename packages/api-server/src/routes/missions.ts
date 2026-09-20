@@ -8,7 +8,12 @@ import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import type { Request, Response } from 'express';
 
-const CreateMissionSchema = z.object({
+export const MissionDeadlineSchema = z.union([
+  z.string().date().transform((date) => `${date}T23:59:59.999Z`),
+  z.string().datetime(),
+]);
+
+export const CreateMissionSchema = z.object({
   objective: z.string().min(10).max(500),
   targetDefinition: z.record(z.unknown()),
   qualificationRules: z.record(z.unknown()),
@@ -20,7 +25,7 @@ const CreateMissionSchema = z.object({
     requireApprovalForNewCampaigns: z.boolean().optional(),
     requireApprovalForOfferChange: z.boolean().optional(),
   }),
-  deadlineAt: z.string().datetime().optional(),
+  deadlineAt: MissionDeadlineSchema.optional(),
   title: z.string().min(5).max(200).optional(),
   projectId: z.string().optional(),
   assignedAgentId: z.string().optional(),
