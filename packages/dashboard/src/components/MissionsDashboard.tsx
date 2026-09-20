@@ -372,6 +372,15 @@ function MissionDetailModal({ mission, onClose }: { mission: MissionDetail; onCl
 
 // ─── Create Mission Dialog ────────────────────────────────────────────────────────
 
+export function deadlineDateToIso(deadlineDate: string): string | undefined {
+  if (!deadlineDate) return undefined;
+  const deadline = new Date(`${deadlineDate}T23:59:59.999`);
+  if (Number.isNaN(deadline.getTime())) {
+    throw new Error('Deadline must be a valid calendar date.');
+  }
+  return deadline.toISOString();
+}
+
 function CreateMissionDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [objective, setObjective] = useState('');
   const [title, setTitle] = useState('');
@@ -400,11 +409,9 @@ function CreateMissionDialog({ onClose, onCreated }: { onClose: () => void; onCr
             requireApprovalForNewCampaigns: true,
             requireApprovalForOfferChange: true,
           },
-          deadlineAt: deadlineAt || undefined,
+          deadlineAt: deadlineDateToIso(deadlineAt),
           title: title.trim() || `Revenue Ops Mission: ${objective.slice(0, 60)}`,
         });
-        onCreated();
-        onClose();
         return result;
       } finally {
         setSubmitting(false);
