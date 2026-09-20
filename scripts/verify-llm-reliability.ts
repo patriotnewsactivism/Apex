@@ -70,6 +70,7 @@ check(
 const client = fs.readFileSync(path.join(root, 'packages/core/src/llm-client.ts'), 'utf8');
 const claimGuard = fs.readFileSync(path.join(root, 'packages/core/src/capacity-claim-guard.ts'), 'utf8');
 const jobs = fs.readFileSync(path.join(root, 'packages/api-server/src/bootstrap-jobs.ts'), 'utf8');
+const scheduler = fs.readFileSync(path.join(root, 'packages/background-jobs/src/job-scheduler.ts'), 'utf8');
 
 check(
   'timeouts create a machine-readable capacity block instead of terminal chain failure',
@@ -90,6 +91,13 @@ check(
 check(
   'lead generation is the highest-priority recurring business task',
   /id: 'system-lead-gen-sweep'[\s\S]{0,500}cronExpression: '\*\/10 \* \* \* \*'[\s\S]{0,180}priority: 1/.test(jobs),
+);
+check(
+  'stale lead tasks are atomically superseded instead of blocking every later sweep',
+  /id: 'system-lead-gen-sweep'[\s\S]{0,600}staleOpenTaskMinutes: 60/.test(jobs) &&
+    /lte\(tasks\.updatedAt, staleCutoff\)/.test(scheduler) &&
+    /returning\(\{ id: tasks\.id \}\)/.test(scheduler) &&
+    /liveScheduledTasks = await findLiveScheduledTasks\(\)/.test(scheduler),
 );
 check(
   'speculative discovery and prompt work are deprioritized behind revenue',
