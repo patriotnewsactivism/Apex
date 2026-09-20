@@ -50,11 +50,11 @@ import {
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
 // FREE-FIRST ROUTING POLICY. Automatic routing uses OpenRouter `:free` models
-// (plus the special `openrouter/free` router) while free capacity is available.
-// An operator may explicitly activate the reviewed paid continuity route with
-// APEX_PAID_FALLBACK=confirmed. It is last in the chain and may also run while
-// the free request budget is paced, so the workforce stays productive without
-// accidentally making paid inference the primary path.
+// (plus the special `openrouter/free` router), then independent Groq/Gemini
+// BYOK capacity, with the operator-approved paid GLM 5.3 FlashX continuity route
+// last. FlashX is always eligible when its funded OpenRouter credential exists
+// and bypasses APEX token/request/spend governors; upstream provider limits,
+// billing, error cooldowns, tool authorization, and human approval policy remain.
 //
 // Authoritative automatic order:
 //   1. nex-agi/nex-n2.5-mini:free
@@ -310,9 +310,7 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
 }
 
 /** Backward-compatible status helper: the paid FlashX route is always enabled. */
-export function paidLLMFallbackEnabled(
-  _mode: string | undefined = process.env.APEX_PAID_FALLBACK,
-): boolean {
+export function paidLLMFallbackEnabled(_mode?: string): boolean {
   return true;
 }
 
