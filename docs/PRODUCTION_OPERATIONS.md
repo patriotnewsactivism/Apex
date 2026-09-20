@@ -325,9 +325,11 @@ On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and
 **every LLM request returned HTTP 402** while `/health` reported `status: ok`,
 `taskQueue.verdict: ok`, 13 live agents and a healthy poll loop. Tasks were
-being claimed and every one of them failed. That paid-only arrangement is
-retired. A 402 now cools the exhausted account, rotates to another qualifying
-free account, and eventually capacity-pauses. It cannot select a paid model.
+being claimed and every one of them failed. That paid-only architecture is
+retired. A 402 is now treated as an upstream capacity/billing failure; APEX can
+continue through any other usable free/BYOK route, while FlashX remains the
+final paid continuity route whenever its funded OpenRouter credential has
+available provider-side credit.
 
 The credits probe now asks **every live unique key**, not the first one it finds.
 `loadedKeys` is how many distinct key strings are bound. `uniqueAccounts` is how
