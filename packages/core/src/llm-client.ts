@@ -118,6 +118,10 @@ type ProviderSpec = {
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
+  /** Bypass APEX token/request/spend governors for an operator-approved paid
+   * continuity route. Upstream provider billing/rate limits and reliability
+   * cooldowns still apply. */
+  unrestricted?: boolean;
   /** Independent request quota pool. OpenRouter uses the 2,775/day pool;
    * direct BYOK providers have their own counters. */
   requestPool?: 'openrouter' | DirectRequestPool;
@@ -234,6 +238,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
+    unrestricted: true,
     requestPool: 'openrouter',
     protocol: 'openai-compatible',
     minIntervalMs: 0,
@@ -785,11 +790,10 @@ function markProviderAttemptSucceeded(
 }
 
 export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
-  if (isTotalDailyCapReached()) return false;
-  if (!emergencyRequestCapacityWindow(now).allowed) return false;
-
+  const totalDailyCapReached = isTotalDailyCapReached();
+  const emergencyAllowed = emergencyRequestCapacityWindow(now).allowed;
   const ledger = getTokenLedgerSnapshot();
-  if (!ledger.pacing.total.allowed) return false;
+  const totalTokenPacingAllowed = ledger.pacing.total.allowed;
 
   const pacingByProvider = new Map(
     ledger.providers.map((entry) => [entry.provider, entry]),
@@ -802,6 +806,15 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
+
+    // Workspace token and emergency request governors apply to free/BYOK
+    // capacity, but never veto an explicitly unrestricted paid continuity route.
+    if (
+      !provider.unrestricted &&
+      (totalDailyCapReached || !emergencyAllowed || !totalTokenPacingAllowed)
+    ) {
+      continue;
+    }
 
     // Each provider family owns its own request pool. An exhausted OpenRouter
     // allowance must not park Groq/Gemini, and vice versa.
@@ -822,7 +835,11 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (readyAt > now) continue;
 
     const entry = pacingByProvider.get(provider.name);
-    if (entry && (entry.capReached || !entry.pacing.allowed)) continue;
+    if (
+      !provider.unrestricted &&
+      entry &&
+      (entry.capReached || !entry.pacing.allowed)
+    ) continue;
 
     return true;
   }
@@ -1356,26 +1373,11 @@ class MultiProviderClient {
     await acquireLLMConcurrencySlot();
 
     try {
-      if (isTotalDailyCapReached()) {
-        throw new Error(
-          'APEX daily token cap reached (APEX_TOKEN_CAP_TOTAL). LLM spend is paused until the UTC daily reset.',
-        );
-      }
-
-      // Cross-provider emergency ceiling. Provider-specific request budgets are
-      // enforced inside the routing loop so an exhausted OpenRouter pool can
-      // fall through to independent Groq/Gemini BYOK capacity.
+      // Workspace governors still protect free/BYOK traffic. The operator-
+      // approved FlashX continuity route is allowed to remain available after
+      // those budgets are exhausted.
       const pacingOverride = execution?.interactive ? false : undefined;
       const emergencyWindow = emergencyRequestCapacityWindow(Date.now());
-      if (!emergencyWindow.allowed) {
-        throw capacityPauseError([
-          {
-            source: 'all-providers',
-            resumeAt: emergencyWindow.resumeAt,
-            reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
-          },
-        ]);
-      }
 
       const trimmed = trimMessageHistory(messages);
       const estimatedTokens = estimateLLMRequestTokens(
@@ -1384,21 +1386,36 @@ class MultiProviderClient {
         this.config.maxTokens ?? 2048,
       );
       const totalReservation = reserveTotalTokenCapacity(estimatedTokens);
+      const globalCapacityBlocks: CapacityBlock[] = [];
+      if (!emergencyWindow.allowed) {
+        globalCapacityBlocks.push({
+          source: 'free-byok-providers',
+          resumeAt: emergencyWindow.resumeAt,
+          reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
+        });
+      }
       if (!totalReservation.allowed) {
-        throw capacityPauseError([
+        globalCapacityBlocks.push(
           capacityBlockFromReservation('workspace', totalReservation),
-        ]);
+        );
       }
 
       try {
         const providerErrors: string[] = [];
         const skipReasons: string[] = [];
-        const capacityBlocks: CapacityBlock[] = [];
+        const capacityBlocks: CapacityBlock[] = [...globalCapacityBlocks];
         let nonCapacityFailureSeen = false;
 
         for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
+
+          if (!provider.unrestricted && globalCapacityBlocks.length > 0) {
+            skipReasons.push(
+              `${provider.name}: workspace/free-provider capacity governor active`,
+            );
+            continue;
+          }
 
           const providerRequestWindow = requestWindowForProvider(
             provider,
@@ -1454,11 +1471,10 @@ class MultiProviderClient {
             continue;
           }
 
-          const providerReservation = reserveProviderTokenCapacity(
-            provider.name,
-            estimatedTokens,
-          );
-          if (!providerReservation.allowed) {
+          const providerReservation = provider.unrestricted
+            ? null
+            : reserveProviderTokenCapacity(provider.name, estimatedTokens);
+          if (providerReservation && !providerReservation.allowed) {
             capacityBlocks.push(
               capacityBlockFromReservation(provider.name, providerReservation),
             );
@@ -1528,10 +1544,12 @@ class MultiProviderClient {
               // Re-check immediately before reservation. There is deliberately
               // no await between these checks and reserveProviderAttempt(), so
               // concurrent agent turns cannot all consume the same final slot.
-              const emergencyAttemptWindow = emergencyRequestCapacityWindow(Date.now());
-              if (!emergencyAttemptWindow.allowed) {
+              const emergencyAttemptWindow = provider.unrestricted
+                ? null
+                : emergencyRequestCapacityWindow(Date.now());
+              if (emergencyAttemptWindow && !emergencyAttemptWindow.allowed) {
                 capacityBlocks.push({
-                  source: 'all-providers',
+                  source: 'free-byok-providers',
                   resumeAt: emergencyAttemptWindow.resumeAt,
                   reason: `emergency request cap reached (${emergencyAttemptWindow.usedRequests}/${emergencyAttemptWindow.cap})`,
                 });
@@ -1704,7 +1722,9 @@ class MultiProviderClient {
 
                 if (isRequestTooLargeError(status, message)) {
                   try {
-                    const allWindow = emergencyRequestCapacityWindow(Date.now());
+                    const allWindow = provider.unrestricted
+                      ? null
+                      : emergencyRequestCapacityWindow(Date.now());
                     const poolWindow = requestWindowForProvider(
                       provider,
                       Date.now(),
@@ -1715,7 +1735,7 @@ class MultiProviderClient {
                         ? accountCapacityWindow(credential.key)
                         : null;
                     if (
-                      !allWindow.allowed ||
+                      (allWindow && !allWindow.allowed) ||
                       !poolWindow.allowed ||
                       (retryAccountWindow && !retryAccountWindow.allowed)
                     ) {
@@ -1772,7 +1792,7 @@ class MultiProviderClient {
               );
             }
           } finally {
-            providerReservation.release();
+            providerReservation?.release();
           }
         }
 
