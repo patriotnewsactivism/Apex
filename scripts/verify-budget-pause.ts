@@ -34,15 +34,11 @@ const providerChain =
 const capacityPause =
   "APEX LLM capacity paused. resume-at=2026-08-25T00:00:00.000Z | groq: daily cap reached";
 const taskDefect = "TypeError: Cannot read properties of undefined";
-// The shape llm-client.ts now throws when free-tier capacity is exhausted
-// (paidOnly) AND the paid rung is separately unaffordable at that same
-// moment (spend pacing, not merely "disabled") — previously fell through to
-// a generic "no usable provider credential" message that this recognizer
-// rejects, so the workforce read a capacity pause as an ordinary task
-// failure and retried immediately instead of backing off.
+// Representative mixed-capacity pause used to verify that an upstream paid
+// route outage remains classified as capacity, not as a task defect.
 const paidRungAlsoPaused =
   "APEX LLM capacity paused. resume-at=2026-08-25T00:00:00.000Z | " +
-  "openrouter-glm-5-3-flashx-paid: upstream paid-provider capacity pause";
+  "openrouter-glm-5-3-flashx-paid: upstream capacity temporarily unavailable";
 
 check(
   "live daily-cap error is recognized",
