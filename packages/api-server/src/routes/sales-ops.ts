@@ -280,7 +280,8 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
           id,
           label: p.label,
         })),
-        // Live LLM dollar spend against today's daily budget.
+        // Live LLM dollar spend telemetry. spend.enforced=false means the
+        // legacy budget fields are informational and do not gate FlashX.
         spend,
         // Outbound calls, read from the durable Vapi call log lines.
         calls: {
@@ -315,6 +316,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
           callSpendTodayUsd: round4(call.callSpendTodayUsd ?? 0),
           projectedLlmUsd: spend.projectedUsd,
           dailyCapUsd: spend.capUsd,
+          spendCapEnforced: spend.enforced,
         },
       });
     } catch (err) {
