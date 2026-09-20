@@ -6,7 +6,7 @@ APEX production is **Railway** — project `APEX`, service `apex-backend` — be
 
 `https://apex.donmatthews.live`
 
-Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled) and kept only as the gated rollback path in `.github/workflows/deploy.yml`. See `docs/HOSTING_MIGRATION.md` and ADR-015. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
+Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled) and kept only as the gated rollback path in `.github/workflows/deploy.yml`. See `docs/HOSTING_MIGRATION.md` and ADR-015. Free-first OpenRouter routing with GLM FlashX continuity is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Operating principles
 
@@ -281,42 +281,19 @@ resolved to the same account before setting them.
 
 `scripts/verify-request-budget.ts` guards the accounting in CI.
 
-### Reading `llmSpend` (paid budget)
+### Reading `llmSpend` (paid continuity telemetry)
 
-APEX runs free-first with a paid rung behind it. The two are rationed
-differently and neither substitutes for the other: free inference is limited by
-REQUEST COUNT (1,000/account/day, shared across every `:free` model), paid
-inference by MONEY. A paid request therefore consumes none of the free
-allowance, and is excluded from `llmRequests` on purpose.
+APEX is free-first and uses `z-ai/glm-5.3-flashx` as the final paid continuity route. The spend ledger remains active for observability, but it is no longer an admission gate: `APEX_DAILY_SPEND_USD`, spend pacing, workspace request caps, workspace token caps, and the paid route's former dispatch delay do not disable or throttle FlashX.
 
-| `state` | Meaning |
-|---|---|
-| `available` | Paid rung is in the routing order |
-| `paced` | Budget exists but the ramp has not released it yet; clears shortly |
-| `daily_cap` | Budget spent. **The paid rung drops out and APEX runs free-only** — the intended fallback, not an outage |
-| `disabled` | `APEX_DAILY_SPEND_USD=0`, or the rung is not enabled |
+`APEX_PAID_FALLBACK=off` is the emergency kill switch. When it is absent, blank, or enabled, the funded OpenRouter key makes FlashX eligible after the free/BYOK routes.
 
-Paid routing needs BOTH `APEX_PAID_FALLBACK=confirmed` (paid is allowed) and a
-non-zero `APEX_DAILY_SPEND_USD` (this much). A zero cap means spend nothing —
-money fails closed, where the request budget's `0` means uncapped.
+The runtime records OpenRouter's settled cost when available and falls back to the published model price when it is not. The `spentUsd` and `projectedUsd` fields therefore remain useful burn-rate telemetry even though `state` is not used to admit or reject GLM requests.
 
-At DeepSeek V4 Flash list price ($0.06/M in, $0.12/M out), $2/day buys roughly
-1,000–3,300 requests depending on prompt size. Read `spentUsd` and
-`projectedUsd` rather than trusting that estimate.
-
-Two details that exist because they were got wrong first: cost is charged from
-OpenRouter's settled `cost` figure, falling back to list price when it is
-absent — recording zero there would let an unpriced response spend from the
-budget for free. And a small reserve is held back before admitting a paid call,
-because cost is only known after the response returns: without it a $2.00 cap
-settled at $2.0004, and the overshoot multiplies with concurrency.
+The paid continuity route still obeys real upstream constraints: valid funded credentials, OpenRouter/provider rate or capacity responses, retry-after, credential/provider cooldowns, circuit breakers, request validity, network timeouts, and all existing APEX approval/security boundaries.
 
 ### Reading `providerCredits`
 
-APEX's automatic routing chain is **zero-cost / free-only**. Nothing on the
-default path or a persisted production policy can spend money. An empty
-OpenRouter credit balance must never trigger paid inference; exhaustion is a
-capacity pause.
+APEX's operator-selectable roster is free-only, but the runtime is **free-first with paid GLM continuity**. The persisted production policy cannot add arbitrary paid models. The dedicated `z-ai/glm-5.3-flashx` route is appended after free/BYOK capacity and uses the funded OpenRouter credential.
 
 Current automatic order:
 
