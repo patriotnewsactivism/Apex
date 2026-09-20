@@ -13,6 +13,7 @@ import {
   getDefaultLLMConfig,
   getProviderCatalog,
   getProviderOrderForRole,
+  PAID_FALLBACK_PROVIDER_NAME,
   providerUsesFreeCredentials,
 } from '../packages/core/src/llm-client.js';
 
@@ -34,7 +35,8 @@ try {
   );
   check(
     'no policy preserves the whole automatic continuity chain',
-    getProviderOrderForRole('CEO').length === getProviderCatalog().length,
+    getProviderOrderForRole('CEO').length === getProviderCatalog().length + 1 &&
+      getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
     getProviderOrderForRole('CEO'),
   );
   check(
@@ -73,7 +75,7 @@ try {
     })) === null,
   );
   check(
-    'paid FlashX policy cannot be persisted',
+    'paid GLM FlashX policy cannot be persisted',
     parseOpenRouterModelPolicy(JSON.stringify({ version: 1, selectedModelIds: ['z-ai/glm-5.3-flashx'], rolePrimary: {} })) === null,
   );
   const freePolicy = parseOpenRouterModelPolicy(JSON.stringify({
@@ -145,6 +147,7 @@ try {
       FREE_POLICY_GATEWAY_NAME,
       'groq-gpt-oss-120b-byok',
       'gemini-3-8-flash-byok',
+      PAID_FALLBACK_PROVIDER_NAME,
     ]),
     getProviderOrderForRole('CEO'),
   );
