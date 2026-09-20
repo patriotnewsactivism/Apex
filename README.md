@@ -39,7 +39,7 @@ APEX currently routes production inference through OpenRouter using the zero-cos
 5. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
 6. NVIDIA Nemotron 3 Ultra Free (last resort)
 
-If every free account/route is exhausted, APEX pauses. There is no automatic paid fallback.
+After the free/BYOK routes, APEX appends `z-ai/glm-5.3-flashx` as the paid continuity route when the funded OpenRouter key is configured. It is enabled by default and is not blocked by APEX daily-spend, request-count, token, or model-specific dispatch caps. Set `APEX_PAID_FALLBACK=off` only when an emergency kill switch is needed. Provider/API limits, circuit breakers, retry-after behavior, and approval/security controls still apply.
 
 Qualifying credentials: `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and optional `OPENROUTER_API_KEY_4`. `OPENROUTER_API_KEY_3` is burned and is not used. Three independent OpenRouter accounts are load-balanced by key fingerprint. Two keys on the same account do not create separate quota — `/health` `providerCredits.uniqueAccounts` is the check. Optional `OPENROUTER_MGMT_KEY*` values inventory those accounts; they cannot infer. See `docs/FREE_ONLY_MODEL_POLICY.md`.
 
@@ -55,8 +55,8 @@ Production behavior deliberately keeps several fail-closed controls:
 
 - approval gates for production deploys/rollbacks and other irreversible effects;
 - task deduplication for scheduled delegation;
-- provider pacing, backpressure, retry-after handling, and circuit breakers;
-- token reservation/pacing to prevent concurrent oversubscription;
+- provider backpressure, retry-after handling, and circuit breakers;
+- token reservation/pacing for free/BYOK capacity; paid GLM continuity bypasses APEX token/request admission ceilings;
 - malformed-tool-call and non-completion guards;
 - exact build-SHA verification after deployment;
 - admin authentication with no hardcoded credential fallback;
