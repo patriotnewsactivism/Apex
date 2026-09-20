@@ -1394,10 +1394,17 @@ class MultiProviderClient {
       const emergencyWindow = emergencyRequestCapacityWindow(Date.now());
 
       const trimmed = trimMessageHistory(messages);
+      // Workspace/free-route reservation is sized to the restricted providers'
+      // existing 16K ceiling. A larger FlashX output setting must not inflate
+      // the free/BYOK reservation and accidentally skip those cheaper routes.
+      const restrictedOutputEstimate = Math.min(
+        this.config.maxTokens ?? 2048,
+        16_384,
+      );
       const estimatedTokens = estimateLLMRequestTokens(
         trimmed.messages,
         tools,
-        this.config.maxTokens ?? 2048,
+        restrictedOutputEstimate,
       );
       const totalReservation = reserveTotalTokenCapacity(estimatedTokens);
       const globalCapacityBlocks: CapacityBlock[] = [];
