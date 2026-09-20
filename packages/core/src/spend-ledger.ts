@@ -1,35 +1,15 @@
 /**
- * Daily USD spend ledger — the dollar counterpart to request-ledger.ts.
+ * Daily USD spend ledger — observability for paid inference.
  *
- * WHY THIS EXISTS
- * ------------------------------------------------------------------
- * PR #149 restored a paid fallback rung behind APEX_PAID_FALLBACK, and
- * costUsd has been captured per response since the model-intelligence work.
- * Nothing enforced a limit on either. Enabling paid inference therefore meant
- * UNBOUNDED spend, which is precisely how this account reached $24.28 of usage
- * against $20 of credit on 2026-09-12 and returned HTTP 402 on every request
- * while three accounts' free allowance sat unused.
+ * GLM 5.3 FlashX is an operator-approved unrestricted continuity route.
+ * This ledger records actual paid usage for dashboards, projections, and
+ * auditability, but its historical budget/pacing helpers no longer gate
+ * FlashX routing. OpenRouter/Z.ai billing and upstream limits are authoritative.
  *
- * The three budgets meter different things and none substitutes for another:
- *
- *   token-ledger    tokens      (per provider; a proxy for size)
- *   request-ledger  requests    (what the FREE tier rations: 1,000/account/day)
- *   spend-ledger    dollars     (what PAID inference actually costs)
- *
- * A free request costs no money and a paid request consumes no free allowance,
- * so the paid rung is deliberately excluded from the request budget and
- * governed here instead.
- *
- * Exhausting this budget is not an outage. The paid rung simply drops out of
- * the routing order and APEX continues on free models alone — "fall back to
- * all free if absolutely necessary", which is the operator's stated intent.
- *
- * Configuration:
- *   APEX_DAILY_SPEND_USD=2.00      dollars/day (0 disables paid spend entirely)
- *   APEX_SPEND_PACING_ENABLED=true spread the budget across the UTC day
- *   APEX_SPEND_PACING_BURST_USD=0.15
+ * The helper functions remain for backward-compatible telemetry surfaces and
+ * historical diagnostics. Do not use them to disable or pace FlashX without
+ * a new operator decision.
  */
-
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 
