@@ -308,10 +308,10 @@ export function ModelRouterPanel() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <BrainCircuit size={20} color="#8b7ec8" />
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>OpenRouter Model Control</span>
-            <ModelBadge>ZERO-COST MODE</ModelBadge>
+            <ModelBadge>FREE-FIRST + GLM CONTINUITY</ModelBadge>
           </div>
           <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '6px 0 0', lineHeight: 1.45, maxWidth: 820 }}>
-            Production inference is $0-only. Nex N2.5 Mini Free is the primary model. Free models can be selected; paid models stay visible for comparison but cannot join the production roster. If every free account and route is exhausted, APEX pauses — it does not fall back to paid DeepSeek, GPT-OSS, Grok, or any other billable endpoint.
+            Nex N2.5 Mini Free remains the primary model and saved operator rosters stay free-only. When free/BYOK capacity is unavailable, APEX can continue through z-ai/glm-5.3-flashx using the funded OpenRouter key. The GLM continuity route is not subject to APEX spend, request, token, or model-specific pacing caps; provider-side limits and failure backoff still apply.
           </p>
         </div>
         <button
