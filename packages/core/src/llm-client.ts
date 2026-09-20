@@ -236,8 +236,8 @@ const PROVIDERS: readonly ProviderSpec[] = [
     paid: true,
     requestPool: 'openrouter',
     protocol: 'openai-compatible',
-    activationEnv: 'APEX_PAID_FALLBACK',
-    activationDescription: 'APEX_PAID_FALLBACK=confirmed is required',
+    // Paid GLM is production-eligible by default when a funded OpenRouter key
+    // is configured. APEX_PAID_FALLBACK=off remains an emergency kill switch.
     // Operator requested no APEX-side pacing for the paid GLM continuity route.
     // Provider/account limits and failure backoff still apply upstream.
     minIntervalMs: 0,
@@ -283,16 +283,9 @@ function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly 
         'gemini-3-8-flash-byok',
       ]
     : [...PROVIDER_ORDER];
-  // The paid rung is appended only while it is BOTH enabled and in budget.
-  // Dropping it from the order (rather than letting it fail) is what makes an
-  // exhausted daily spend a graceful fall back to free models instead of an
-  // outage — the operator's "all free if absolutely necessary". `pacingEnabled:
-  // false` (an interactive call — see LLMExecutionContext.interactive) checks
-  // only the hard daily $ cap here too: this order-building check and the
-  // in-loop paidOnly check in complete() must agree on affordability, or an
-  // interactive call that skips pacing in one and not the other ends up with
-  // an empty provider order and the exact misleading fallthrough this whole
-  // capacity-pause mechanism exists to prevent.
+  // The paid GLM rung is appended whenever it is enabled. It is no longer gated
+  // by APEX's daily-dollar budget or spend-pacing ledger; cost is still recorded
+  // for observability. The free/BYOK routes remain ahead of it in normal order.
   if (paidLLMFallbackEnabled()) {
     freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
   }
@@ -312,11 +305,15 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
   );
 }
 
-/** Paid inference requires an explicit operator confirmation. */
+/** Paid GLM continuity is enabled by default. Operators may still hard-disable
+ * it with APEX_PAID_FALLBACK=off/false/0 as an emergency kill switch. */
 export function paidLLMFallbackEnabled(
   mode: string | undefined = process.env.APEX_PAID_FALLBACK,
 ): boolean {
-  return enabled(mode);
+  if (mode === undefined || mode.trim() === '') return true;
+  return !['0', 'false', 'off', 'disabled', 'no'].includes(
+    mode.trim().toLowerCase(),
+  );
 }
 
 function enabled(value: string | undefined): boolean {
