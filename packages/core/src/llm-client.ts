@@ -236,19 +236,19 @@ const PROVIDERS: readonly ProviderSpec[] = [
     paid: true,
     requestPool: 'openrouter',
     protocol: 'openai-compatible',
+    // Paid GLM is production-eligible by default when a funded OpenRouter key
+    // is configured. APEX_PAID_FALLBACK=off remains an emergency kill switch.
+    // Operator requested no APEX-side pacing for the paid GLM continuity route.
+    // Provider/account limits and failure backoff still apply upstream.
     minIntervalMs: 0,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
-    // `sort: 'price'` pinned every request to whichever upstream host was
-    // cheapest for this model — confirmed live 2026-09-17 to be a host with a
-    // 60s p99 (Inceptron) or 31s p99 (Relace), both past LLM_REQUEST_TIMEOUT_MS.
-    // That produced a sustained 100% "request timed out" failure across the
-    // whole workforce even though the model itself, and this account's paid
-    // balance, were both fine. `sort: 'latency'` optimizes for the thing this
-    // route actually needs — answering inside the timeout — not raw price.
+    // Prefer the lowest-latency healthy FlashX endpoint. OpenRouter's live
+    // catalog currently exposes z-ai/glm-5.3-flashx at $0.37/M input and
+    // $1.25/M output with a 1,048,576-token context window.
     providerRouting: { sort: 'latency' },
-    // z-ai/glm-5.3-flashx OpenRouter list price as of 2026-09-20.
-    // Actual settled cost from OpenRouter's response remains authoritative.
+    // Fallback estimate only. Settled OpenRouter usage cost remains authoritative
+    // whenever the response includes it.
     usdPerMillionPrompt: 0.37,
     usdPerMillionCompletion: 1.25,
   },
@@ -283,11 +283,12 @@ function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly 
         'gemini-3-8-flash-byok',
       ]
     : [...PROVIDER_ORDER];
-  // Paid FlashX continuity is always part of the route when its credential is
-  // configured. APEX does not impose a model-specific activation flag, spend
-  // ceiling, request cap, or pacing gate on this route; upstream OpenRouter/Z.ai
-  // limits remain authoritative.
-  freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
+  // The paid GLM rung is appended whenever it is enabled. It is no longer gated
+  // by APEX's daily-dollar budget or spend-pacing ledger; cost is still recorded
+  // for observability. The free/BYOK routes remain ahead of it in normal order.
+  if (paidLLMFallbackEnabled()) {
+    freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
+  }
   return freeOrder;
 }
 
@@ -304,11 +305,15 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
   );
 }
 
-/** Backward-compatible status helper: the paid FlashX route is always enabled. */
+/** Paid GLM continuity is enabled by default. Operators may still hard-disable
+ * it with APEX_PAID_FALLBACK=off/false/0 as an emergency kill switch. */
 export function paidLLMFallbackEnabled(
-  _mode: string | undefined = process.env.APEX_PAID_FALLBACK,
+  mode: string | undefined = process.env.APEX_PAID_FALLBACK,
 ): boolean {
-  return true;
+  if (mode === undefined || mode.trim() === '') return true;
+  return !['0', 'false', 'off', 'disabled', 'no'].includes(
+    mode.trim().toLowerCase(),
+  );
 }
 
 function enabled(value: string | undefined): boolean {
@@ -785,11 +790,16 @@ function markProviderAttemptSucceeded(
 }
 
 export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
-  if (isTotalDailyCapReached()) return false;
-  if (!emergencyRequestCapacityWindow(now).allowed) return false;
+  const paidContinuityAvailable =
+    paidLLMFallbackEnabled() && Boolean(process.env.OPENROUTER_API_KEY);
+
+  // Workspace request/token ceilings still govern free and BYOK traffic, but
+  // they must not park the paid GLM continuity route.
+  if (isTotalDailyCapReached() && !paidContinuityAvailable) return false;
+  if (!emergencyRequestCapacityWindow(now).allowed && !paidContinuityAvailable) return false;
 
   const ledger = getTokenLedgerSnapshot();
-  if (!ledger.pacing.total.allowed) return false;
+  if (!ledger.pacing.total.allowed && !paidContinuityAvailable) return false;
 
   const pacingByProvider = new Map(
     ledger.providers.map((entry) => [entry.provider, entry]),
@@ -822,7 +832,7 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (readyAt > now) continue;
 
     const entry = pacingByProvider.get(provider.name);
-    if (entry && (entry.capReached || !entry.pacing.allowed)) continue;
+    if (!provider.paid && entry && (entry.capReached || !entry.pacing.allowed)) continue;
 
     return true;
   }
@@ -852,6 +862,9 @@ function providerBaseURL(provider: ProviderSpec): string | undefined {
 }
 
 function providerActivationIssue(provider: ProviderSpec): string | null {
+  if (provider.paid && !paidLLMFallbackEnabled()) {
+    return provider.activationDescription ?? 'paid inference requires explicit operator confirmation';
+  }
   if (provider.activationEnv && !enabled(process.env[provider.activationEnv])) {
     return provider.activationDescription ?? `${provider.activationEnv}=true is required`;
   }
@@ -1356,25 +1369,34 @@ class MultiProviderClient {
     await acquireLLMConcurrencySlot();
 
     try {
+      const paidContinuityAvailable =
+        paidLLMFallbackEnabled() && Boolean(process.env.OPENROUTER_API_KEY);
+      let forcePaidOnly = false;
+
       if (isTotalDailyCapReached()) {
-        throw new Error(
-          'APEX daily token cap reached (APEX_TOKEN_CAP_TOTAL). LLM spend is paused until the UTC daily reset.',
-        );
+        if (paidContinuityAvailable) forcePaidOnly = true;
+        else {
+          throw new Error(
+            'APEX daily token cap reached (APEX_TOKEN_CAP_TOTAL). LLM spend is paused until the UTC daily reset.',
+          );
+        }
       }
 
-      // Cross-provider emergency ceiling. Provider-specific request budgets are
-      // enforced inside the routing loop so an exhausted OpenRouter pool can
-      // fall through to independent Groq/Gemini BYOK capacity.
+      // Cross-provider emergency ceiling still governs free/BYOK traffic.
+      // When it is reached, a configured paid GLM route remains available.
       const pacingOverride = execution?.interactive ? false : undefined;
       const emergencyWindow = emergencyRequestCapacityWindow(Date.now());
       if (!emergencyWindow.allowed) {
-        throw capacityPauseError([
-          {
-            source: 'all-providers',
-            resumeAt: emergencyWindow.resumeAt,
-            reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
-          },
-        ]);
+        if (paidContinuityAvailable) forcePaidOnly = true;
+        else {
+          throw capacityPauseError([
+            {
+              source: 'all-providers',
+              resumeAt: emergencyWindow.resumeAt,
+              reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
+            },
+          ]);
+        }
       }
 
       const trimmed = trimMessageHistory(messages);
@@ -1383,11 +1405,20 @@ class MultiProviderClient {
         tools,
         this.config.maxTokens ?? 2048,
       );
-      const totalReservation = reserveTotalTokenCapacity(estimatedTokens);
-      if (!totalReservation.allowed) {
-        throw capacityPauseError([
-          capacityBlockFromReservation('workspace', totalReservation),
-        ]);
+      let totalReservation: TokenCapacityReservation | null = null;
+      if (!forcePaidOnly) {
+        totalReservation = reserveTotalTokenCapacity(estimatedTokens);
+        if (!totalReservation.allowed) {
+          if (paidContinuityAvailable) {
+            totalReservation.release();
+            totalReservation = null;
+            forcePaidOnly = true;
+          } else {
+            throw capacityPauseError([
+              capacityBlockFromReservation('workspace', totalReservation),
+            ]);
+          }
+        }
       }
 
       try {
@@ -1399,12 +1430,14 @@ class MultiProviderClient {
         for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
+          if (forcePaidOnly && !provider.paid) continue;
 
           const providerRequestWindow = requestWindowForProvider(
             provider,
             Date.now(),
             pacingOverride,
           );
+          const providerMessages = provider.paid ? messages : trimmed.messages;
           if (!providerRequestWindow.allowed) {
             capacityBlocks.push({
               source: provider.requestPool ?? 'openrouter',
@@ -1454,11 +1487,10 @@ class MultiProviderClient {
             continue;
           }
 
-          const providerReservation = reserveProviderTokenCapacity(
-            provider.name,
-            estimatedTokens,
-          );
-          if (!providerReservation.allowed) {
+          const providerReservation = provider.paid
+            ? null
+            : reserveProviderTokenCapacity(provider.name, estimatedTokens);
+          if (providerReservation && !providerReservation.allowed) {
             capacityBlocks.push(
               capacityBlockFromReservation(provider.name, providerReservation),
             );
@@ -1529,7 +1561,7 @@ class MultiProviderClient {
               // no await between these checks and reserveProviderAttempt(), so
               // concurrent agent turns cannot all consume the same final slot.
               const emergencyAttemptWindow = emergencyRequestCapacityWindow(Date.now());
-              if (!emergencyAttemptWindow.allowed) {
+              if (!provider.paid && !emergencyAttemptWindow.allowed) {
                 capacityBlocks.push({
                   source: 'all-providers',
                   resumeAt: emergencyAttemptWindow.resumeAt,
@@ -1573,7 +1605,7 @@ class MultiProviderClient {
                 const result = await callProvider(
                   provider,
                   credential.key,
-                  trimmed.messages,
+                  providerMessages,
                   tools,
                   this.config,
                   execution,
@@ -1715,7 +1747,7 @@ class MultiProviderClient {
                         ? accountCapacityWindow(credential.key)
                         : null;
                     if (
-                      !allWindow.allowed ||
+                      (!provider.paid && !allWindow.allowed) ||
                       !poolWindow.allowed ||
                       (retryAccountWindow && !retryAccountWindow.allowed)
                     ) {
@@ -1772,7 +1804,7 @@ class MultiProviderClient {
               );
             }
           } finally {
-            providerReservation.release();
+            providerReservation?.release();
           }
         }
 
@@ -1788,7 +1820,7 @@ class MultiProviderClient {
           }`,
         );
       } finally {
-        totalReservation.release();
+        totalReservation?.release();
       }
     } finally {
       releaseLLMConcurrencySlot();
