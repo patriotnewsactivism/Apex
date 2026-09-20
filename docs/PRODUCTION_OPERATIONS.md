@@ -291,7 +291,9 @@ apply its legacy paid activation flag, daily spend ceiling, spend pacing, free
 request caps, workspace token cap, provider token cap, or the 4,500-attempt
 free/BYOK emergency ceiling to FlashX. OpenRouter/Z.ai account balance,
 provider-side rate limits, request failures, and reliability cooldowns remain
-authoritative.
+authoritative. FlashX receives the full normal conversation history instead of
+the smaller free/BYOK history trim; provider-side context limits remain the hard
+boundary.
 
 The spend ledger still records settled provider cost and exposes burn-rate data
 through `/health`, `/api/spend`, and Revenue Operations. Its snapshot includes
