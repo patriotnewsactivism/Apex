@@ -190,7 +190,7 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 Current production defaults in `.env.example` are intended for a real workforce, not the temporary demo throttle:
 
-- `APEX_MAX_CONCURRENT_LLM_CALLS=6`
+- `APEX_MAX_CONCURRENT_LLM_CALLS=13` — one slot per current agent; configurable up to 64
 - `APEX_LEAD_RESEARCH_CONCURRENCY=3`
 - `APEX_MAX_OUTPUT_TOKENS=4096`
 - leadership roles may use larger role-specific output ceilings
