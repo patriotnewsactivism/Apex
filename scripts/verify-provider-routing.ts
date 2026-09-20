@@ -170,8 +170,8 @@ check(
 );
 
 console.log('\n── Paid continuity policy ──');
-check('paid OpenRouter inference is off without confirmation', paidLLMFallbackEnabled(undefined) === false);
-check('explicit confirmation enables paid inference', paidLLMFallbackEnabled('confirmed') === true);
+check('paid OpenRouter GLM continuity is enabled by default', paidLLMFallbackEnabled(undefined) === true);
+check('explicit off disables paid inference', paidLLMFallbackEnabled('off') === false);
 const previousPaidMode = process.env.APEX_PAID_FALLBACK;
 process.env.APEX_PAID_FALLBACK = 'confirmed';
 check(
@@ -180,8 +180,8 @@ check(
   getProviderOrderForRole('CEO'),
 );
 check(
-  'paid continuity model remains the reviewed DeepSeek route',
-  PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731',
+  'paid continuity model is GLM 5.3 FlashX',
+  PAID_FALLBACK_MODEL === 'z-ai/glm-5.3-flashx',
 );
 if (previousPaidMode === undefined) delete process.env.APEX_PAID_FALLBACK;
 else process.env.APEX_PAID_FALLBACK = previousPaidMode;
