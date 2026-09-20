@@ -1,6 +1,6 @@
-# APEX zero-cost OpenRouter policy
+# APEX free-first OpenRouter policy
 
-Effective immediately, APEX must fail closed to **no inference** rather than spend money. This is an operational constraint, not a preference.
+The operator-selected production roster remains free-only, but runtime continuity now has one explicit paid exception: `z-ai/glm-5.3-flashx`. APEX tries the free/BYOK routes first and appends FlashX as the final continuity route whenever the funded OpenRouter credential is configured. `APEX_PAID_FALLBACK=off` is the emergency kill switch.
 
 ## Production model order
 
@@ -13,7 +13,7 @@ Automatic routing must use only OpenRouter model IDs ending in `:free`, in this 
 5. `openrouter/free` — emergency free-model router, only with tool requirements preserved.
 6. `nvidia/nemotron-3-ultra-550b-a55b:free` — last-resort deep/long-context fallback while its availability is degraded.
 
-MiniMax M3 Free is not in the production chain until its current free endpoint/tool behavior is directly re-verified. Paid DeepSeek, GPT-OSS, Grok/Bedrock, or any other billable model must never be reached automatically while zero-cost mode is enabled.
+MiniMax M3 Free is not in the production chain until its current free endpoint/tool behavior is directly re-verified. DeepSeek V4 Flash 0731 is retired. No paid model may be added to the operator-persisted roster; `z-ai/glm-5.3-flashx` is the single runtime continuity exception.
 
 ## Account capacity
 
@@ -25,7 +25,7 @@ Three live API keys are not automatically three accounts. `/health` `providerCre
 
 ## Custom persisted policies
 
-A valid production policy may contain only `:free` IDs or exactly `openrouter/free`. Custom policies use the `openrouter-free-policy` gateway with the **same free-account credential roster** as automatic routing. They never switch to `OPENROUTER_PAID_KEY_ENVS` and never reach a paid adapter because a custom policy exists.
+A valid production policy may contain only `:free` IDs or exactly `openrouter/free`. Custom policies use the `openrouter-free-policy` gateway with the **same free-account credential roster** as automatic routing. They never switch the persisted roster to `OPENROUTER_PAID_KEY_ENVS`. After that free-policy gateway and the independent BYOK routes, runtime may still append the separate GLM FlashX continuity provider.
 
 OpenRouter's native `models` fallback array is capped at 3 entries per request. Larger free rosters are truncated to that ceiling for a single gateway attempt; the automatic six-route chain remains available when no custom policy is set.
 
@@ -33,18 +33,18 @@ OpenRouter's native `models` fallback array is capped at 3 entries per request. 
 
 ## Account rotation and fail-closed pause
 
-Credentials are tried least-used-account first (fingerprint of the key, not the env var name). Multiple env names holding the same key collapse to one retry bucket. A 429/402 on one qualifying account cools that account and moves to another before abandoning the current free model. Failed attempts count against the daily allowance, so retries are bounded. When every free account/model is unavailable, APEX enters a capacity-pause state exposed on `/health` and the dashboard. Account cooldowns also gate `llmCapacityAvailableNow()`, so agents do not claim work they cannot serve.
+Credentials are tried least-used-account first (fingerprint of the key, not the env var name). Multiple env names holding the same key collapse to one retry bucket. A 429/402 on one qualifying account cools that account and moves to another before abandoning the current free model. Failed attempts count against the daily allowance, so retries are bounded. When every free account/model is unavailable, APEX advances to GLM FlashX when that route is configured and enabled. A capacity pause occurs only when no usable route remains. Account cooldowns still gate free-account selection and provider backoff.
 
 ## Hard invariants
 
-- No silent paid fallback.
-- No non-`:free` model in the automatic production chain, except the special `openrouter/free` free router.
-- A 402, exhausted balance, or paid-provider availability must not trigger paid inference.
-- A 429/capacity failure should move to another qualifying account before burning repeated retries on one account.
-- Provider/model failure should advance to the next free model with bounded retry/circuit-breaker behavior.
-- When every free account/model is exhausted or unavailable, put the workforce into a capacity-pause state and expose that state in `/health` and the dashboard.
-- Frontend labels, backend defaults, agent metadata, API validation, tests, `.env.example`, and operator documentation must all report the same chain.
+- The operator-persisted roster stays free-only (`:free` or exactly `openrouter/free`).
+- `z-ai/glm-5.3-flashx` is the only automatic paid runtime continuity route.
+- FlashX is enabled by default when the funded OpenRouter key is configured; `APEX_PAID_FALLBACK=off` disables it.
+- APEX does not apply daily-dollar, request-count, token, model-specific dispatch-delay, or forced-reasoning admission limits to FlashX.
+- Provider/account limits, retry-after behavior, circuit breakers, credential cooldowns, approval gates, and security controls remain authoritative.
+- A 429/capacity failure on free traffic should move to another qualifying free account/model before using continuity.
+- Frontend labels, backend defaults, agent metadata, tests, `.env.example`, and operator documentation must report the same free-first + GLM continuity chain.
 
 ## Verification gate
 
-Before merge/deploy, CI must prove that the automatic provider catalog is free-only, the first model is Nex-N2.5-Mini Free, no paid provider is reachable from automatic routing, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot accidentally re-enable a paid fallback.
+Before merge/deploy, CI must prove that the selectable provider catalog remains free-only, Nex-N2.5-Mini Free remains first, GLM FlashX is the sole paid continuity exception and is last, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot persist an arbitrary paid model.
