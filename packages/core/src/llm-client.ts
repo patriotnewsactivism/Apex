@@ -33,11 +33,7 @@ import {
   reserveProviderRequest,
   type DirectRequestPool,
 } from './request-ledger.js';
-import {
-  dailySpendCapMicros,
-  paidSpendAvailable,
-  recordSpend,
-} from './spend-ledger.js';
+import { recordSpend } from './spend-ledger.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
   getActiveOpenRouterModelPolicy,
@@ -82,7 +78,7 @@ export type ApexProviderName =
   | 'openrouter-free-policy'
   | 'groq-gpt-oss-120b-byok'
   | 'gemini-3-8-flash-byok'
-  | 'openrouter-deepseek-v4-flash-paid';
+  | 'openrouter-glm-5-3-flashx-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
 export const FREE_POLICY_GATEWAY_NAME: ApexProviderName = 'openrouter-free-policy';
@@ -113,8 +109,8 @@ export const OPENROUTER_FREE_KEY_ENVS = [
 /** The funded inference key confirmed by its matching OpenRouter account usage. */
 export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY'] as const;
 export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName =
-  'openrouter-deepseek-v4-flash-paid';
-export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
+  'openrouter-glm-5-3-flashx-paid';
+export const PAID_FALLBACK_MODEL = 'z-ai/glm-5.3-flashx';
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -240,12 +236,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     paid: true,
     requestPool: 'openrouter',
     protocol: 'openai-compatible',
-    activationEnv: 'APEX_PAID_FALLBACK',
-    activationDescription: 'APEX_PAID_FALLBACK=confirmed is required',
-    minIntervalMs: 500,
+    minIntervalMs: 0,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
-    reasoningEffort: 'low',
     // `sort: 'price'` pinned every request to whichever upstream host was
     // cheapest for this model — confirmed live 2026-09-17 to be a host with a
     // 60s p99 (Inceptron) or 31s p99 (Relace), both past LLM_REQUEST_TIMEOUT_MS.
@@ -254,12 +247,10 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // balance, were both fine. `sort: 'latency'` optimizes for the thing this
     // route actually needs — answering inside the timeout — not raw price.
     providerRouting: { sort: 'latency' },
-    // deepseek/deepseek-v4-flash-0731; representative low-latency-tier price
-    // (BaseTen/CoreWeave/DigitalOcean). Only a fallback estimate — actual
-    // settled cost from OpenRouter's response is used whenever present, and
-    // the served host (and its real price) now varies request to request.
-    usdPerMillionPrompt: 0.15,
-    usdPerMillionCompletion: 0.3,
+    // z-ai/glm-5.3-flashx OpenRouter list price as of 2026-09-20.
+    // Actual settled cost from OpenRouter's response remains authoritative.
+    usdPerMillionPrompt: 0.37,
+    usdPerMillionCompletion: 1.25,
   },
 ];
 
@@ -292,19 +283,11 @@ function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly 
         'gemini-3-8-flash-byok',
       ]
     : [...PROVIDER_ORDER];
-  // The paid rung is appended only while it is BOTH enabled and in budget.
-  // Dropping it from the order (rather than letting it fail) is what makes an
-  // exhausted daily spend a graceful fall back to free models instead of an
-  // outage — the operator's "all free if absolutely necessary". `pacingEnabled:
-  // false` (an interactive call — see LLMExecutionContext.interactive) checks
-  // only the hard daily $ cap here too: this order-building check and the
-  // in-loop paidOnly check in complete() must agree on affordability, or an
-  // interactive call that skips pacing in one and not the other ends up with
-  // an empty provider order and the exact misleading fallthrough this whole
-  // capacity-pause mechanism exists to prevent.
-  if (paidLLMFallbackEnabled() && paidSpendAvailable(Date.now(), pacingEnabled)) {
-    freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
-  }
+  // Paid FlashX continuity is always part of the route when its credential is
+  // configured. APEX does not impose a model-specific activation flag, spend
+  // ceiling, request cap, or pacing gate on this route; upstream OpenRouter/Z.ai
+  // limits remain authoritative.
+  freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
   return freeOrder;
 }
 
@@ -321,11 +304,11 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
   );
 }
 
-/** Paid inference requires an explicit operator confirmation. */
+/** Backward-compatible status helper: the paid FlashX route is always enabled. */
 export function paidLLMFallbackEnabled(
-  mode: string | undefined = process.env.APEX_PAID_FALLBACK,
+  _mode: string | undefined = process.env.APEX_PAID_FALLBACK,
 ): boolean {
-  return enabled(mode);
+  return true;
 }
 
 function enabled(value: string | undefined): boolean {
@@ -869,9 +852,6 @@ function providerBaseURL(provider: ProviderSpec): string | undefined {
 }
 
 function providerActivationIssue(provider: ProviderSpec): string | null {
-  if (provider.paid && !paidLLMFallbackEnabled()) {
-    return provider.activationDescription ?? 'paid inference requires explicit operator confirmation';
-  }
   if (provider.activationEnv && !enabled(process.env[provider.activationEnv])) {
     return provider.activationDescription ?? `${provider.activationEnv}=true is required`;
   }

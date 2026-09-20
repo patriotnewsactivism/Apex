@@ -169,22 +169,17 @@ check(
       clientSource.indexOf('const result = await callProvider(', clientSource.indexOf('reserveProviderAttempt(provider, credential.key);')),
 );
 
-console.log('\n── Paid continuity policy ──');
-check('paid OpenRouter inference is off without confirmation', paidLLMFallbackEnabled(undefined) === false);
-check('explicit confirmation enables paid inference', paidLLMFallbackEnabled('confirmed') === true);
-const previousPaidMode = process.env.APEX_PAID_FALLBACK;
-process.env.APEX_PAID_FALLBACK = 'confirmed';
+console.log('\n── Paid FlashX continuity policy ──');
+check('paid FlashX inference is enabled without an APEX activation flag', paidLLMFallbackEnabled(undefined) === true);
 check(
-  'paid continuity route remains last after all free/BYOK capacity',
+  'paid FlashX continuity route remains last after all free/BYOK capacity',
   getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
   getProviderOrderForRole('CEO'),
 );
 check(
-  'paid continuity model remains the reviewed DeepSeek route',
-  PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731',
+  'paid continuity model is GLM 5.3 FlashX',
+  PAID_FALLBACK_MODEL === 'z-ai/glm-5.3-flashx',
 );
-if (previousPaidMode === undefined) delete process.env.APEX_PAID_FALLBACK;
-else process.env.APEX_PAID_FALLBACK = previousPaidMode;
 
 console.log('\n── Custom OpenRouter policy + BYOK continuity ──');
 const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
