@@ -716,10 +716,10 @@ export function requestCapacityWindow(
 }
 
 /**
- * Paid continuity is governed by the spend ledger, not by OpenRouter's free
- * request allowance. It stays inside the emergency all-provider ceiling and
- * the provider's minimum-dispatch interval, but a paced free pool must never
- * veto an enabled, in-budget paid fallback.
+ * Paid GLM continuity has no APEX-side request-budget admission limit. It is
+ * still counted for observability, but the free OpenRouter pool, workspace
+ * emergency ceiling, and APEX dispatch pacing do not veto this route. Upstream
+ * provider/account limits and runtime failure backoff remain authoritative.
  */
 export function paidProviderCapacityWindow(): RequestCapacityWindow {
   return calculateRequestCapacityWindow({
