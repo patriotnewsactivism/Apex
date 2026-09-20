@@ -144,6 +144,11 @@ check(
   /name: PAID_FALLBACK_PROVIDER_NAME[\s\S]{0,260}unrestricted: true/.test(clientSource),
 );
 check(
+  'unrestricted FlashX receives full history rather than the free-route trim',
+  /const providerMessages = provider\.unrestricted \? messages : trimmed\.messages/.test(clientSource) &&
+    /callProvider\([\s\S]{0,180}providerMessages/.test(clientSource),
+);
+check(
   'Groq and Gemini routing each have an operator activation switch',
   /activationEnv: 'APEX_GROQ_BYOK_ENABLED'/.test(clientSource) &&
     /activationEnv: 'APEX_GEMINI_BYOK_ENABLED'/.test(clientSource),
