@@ -281,44 +281,35 @@ resolved to the same account before setting them.
 
 `scripts/verify-request-budget.ts` guards the accounting in CI.
 
-### Reading `llmSpend` (paid budget)
+### Reading `llmSpend` (paid telemetry)
 
-APEX runs free-first with a paid rung behind it. The two are rationed
-differently and neither substitutes for the other: free inference is limited by
-REQUEST COUNT (1,000/account/day, shared across every `:free` model), paid
-inference by MONEY. A paid request therefore consumes none of the free
-allowance, and is excluded from `llmRequests` on purpose.
+`llmSpend` is now **observability, not an APEX routing gate** for the reviewed
+`z-ai/glm-5.3-flashx` continuity route.
 
-| `state` | Meaning |
-|---|---|
-| `available` | Paid rung is in the routing order |
-| `paced` | Budget exists but the ramp has not released it yet; clears shortly |
-| `daily_cap` | Budget spent. **The paid rung drops out and APEX runs free-only** — the intended fallback, not an outage |
-| `disabled` | `APEX_DAILY_SPEND_USD=0`, or the rung is not enabled |
+FlashX is eligible whenever `OPENROUTER_API_KEY` is configured. APEX does not
+apply its legacy paid activation flag, daily spend ceiling, spend pacing, free
+request caps, workspace token cap, provider token cap, or the 4,500-attempt
+free/BYOK emergency ceiling to FlashX. OpenRouter/Z.ai account balance,
+provider-side rate limits, request failures, and reliability cooldowns remain
+authoritative.
 
-Paid routing needs BOTH `FlashX route enabled when OPENROUTER_API_KEY is configured` (paid is allowed) and a
-non-zero `APEX_DAILY_SPEND_USD` (this much). A zero cap means spend nothing —
-money fails closed, where the request budget's `0` means uncapped.
+The spend ledger still records settled provider cost and exposes burn-rate data
+through `/health`, `/api/spend`, and Revenue Operations. Its snapshot includes
+`enforced: false` so operators and UIs can distinguish telemetry targets from
+routing controls. Historical `capUsd`, `releasedUsd`, `state`, and
+`resumeAt` fields are retained for compatibility; they must not be interpreted
+as reasons FlashX was removed from routing.
 
-At DeepSeek V4 Flash list price ($0.06/M in, $0.12/M out), $2/day buys roughly
-1,000–3,300 requests depending on prompt size. Read `spentUsd` and
-`projectedUsd` rather than trusting that estimate.
-
-Two details that exist because they were got wrong first: cost is charged from
-OpenRouter's settled `cost` figure, falling back to list price when it is
-absent — recording zero there would let an unpriced response spend from the
-budget for free. And a small reserve is held back before admitting a paid call,
-because cost is only known after the response returns: without it a $2.00 cap
-settled at $2.0004, and the overshoot multiplies with concurrency.
+Current OpenRouter list-price fallback in code for FlashX is $0.37/M input and
+$1.25/M output tokens. OpenRouter's settled response cost is used when present.
 
 ### Reading `providerCredits`
 
-APEX's automatic routing chain is **zero-cost / free-only**. Nothing on the
-default path or a persisted production policy can spend money. An empty
-OpenRouter credit balance must never trigger paid inference; exhaustion is a
-capacity pause.
+`providerCredits` reports the upstream OpenRouter account balance used by the
+paid FlashX continuity route. A positive APEX health state does not guarantee
+provider credit; HTTP 402 from OpenRouter is still authoritative.
 
-Current automatic order:
+Current runtime routing order:
 
 1. `nex-agi/nex-n2.5-mini:free`
 2. `nex-agi/nex-n2.5-pro:free`
@@ -326,6 +317,9 @@ Current automatic order:
 4. `nvidia/nemotron-3.5-lightning:free`
 5. `openrouter/free`
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
+7. direct Groq GPT-OSS 120B BYOK when enabled
+8. direct Gemini 3.8 Flash BYOK when enabled
+9. `z-ai/glm-5.3-flashx` paid continuity
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and
