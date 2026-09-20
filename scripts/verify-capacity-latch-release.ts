@@ -144,16 +144,15 @@ async function main(): Promise<void> {
       ),
   );
   check(
-    'a hard total daily cap still parks the workforce (not re-probed away)',
-    /llmCapacityAvailableNow[\s\S]{0,400}if \(isTotalDailyCapReached\(\)\) return false;/.test(
-      clientSrc,
-    ),
+    'workspace caps still park capped providers without vetoing unrestricted continuity',
+    /const totalDailyCapReached = isTotalDailyCapReached\(\)/.test(clientSrc) &&
+      /!provider\.unrestricted[\s\S]{0,220}totalDailyCapReached/.test(clientSrc),
   );
   check(
-    'one paced provider does not veto capacity when another can take work',
-    /(for \(const provider of PROVIDERS\)|for \(const providerName of activeOrder\))[\s\S]{0,900}return true;/.test(
-      clientSrc,
-    ),
+    'one paced or capped provider does not veto capacity when another route can take work',
+    clientSrc.includes('for (const providerName of activeOrder)') &&
+      /if \(!requestWindowForProvider\(provider, now\)\.allowed\) continue;/.test(clientSrc) &&
+      /return true;[\s\S]{0,80}\}\s*return false;/.test(clientSrc),
   );
   check(
     '/health distinguishes a parked workforce from an idle one',
