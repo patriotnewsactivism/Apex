@@ -39,9 +39,13 @@ if (failures > 0) {
 }
 console.log('✅ ALL OPENROUTER BACKPRESSURE GUARDS PASSED');
 
-// Capacity backpressure is only correct if it also *releases*. The GitHub App
-// cannot edit .github/workflows, so this already-wired guard chains it.
-void import('./verify-capacity-latch-release.js').catch((err: unknown) => {
+// The GitHub App cannot edit .github/workflows, so this already-wired guard
+// chains the new regression suite before the asynchronous latch suite. Keeping
+// one promise chain prevents a failing suite from racing process.exit against
+// the other suite's output.
+void import('./verify-llm-reliability.js').then(
+  () => import('./verify-capacity-latch-release.js'),
+).catch((err: unknown) => {
   console.error(err);
   process.exit(1);
 });

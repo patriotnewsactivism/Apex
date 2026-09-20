@@ -90,6 +90,15 @@ export class TaskQueue {
     this.agentId = agentId;
   }
 
+  /** Stable owner identity for process-wide claim admission policy.
+   *
+   * Capacity recovery is coordinated outside this class so every agent shares
+   * one gate. Exposing only the queue owner avoids reaching through a private
+   * field or leaking any task/database details into that policy layer. */
+  ownerAgentId(): string {
+    return this.agentId;
+  }
+
   /** Create and durably enqueue a task. */
   async enqueue(input: TaskInput & { createdByAgentId?: string }): Promise<Task> {
     const now = new Date();

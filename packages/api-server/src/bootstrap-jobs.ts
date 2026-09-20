@@ -47,10 +47,11 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-lead-gen-sweep',
         name: 'Lead generation research sweep',
         jobType: 'task_delegation',
-        cronExpression: '0 */2 * * *', // every 2 h
+        cronExpression: '*/10 * * * *', // rapid sourcing; open-task dedupe prevents overlap
         targetAgentId: 'apex-lead-research-001' as string | null,
-        priority: 3,
+        priority: 1,
         payload: {
+          systemDefinitionVersion: 2,
           title: 'Lead generation sweep',
           description:
             'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered. Use searchBusinessDirectory and webSearch to find real qualifying businesses. For every lead, inspect public contact/about/team sources and attempt to find the decision maker, business email, and phone; never guess. Save the source and honest contact research status with saveResearchedLeadsBatch. Every saved lead must retain at least its verified company website as a contact path. Quality over quantity.',
@@ -103,9 +104,9 @@ export async function seedDefaultJobs(): Promise<void> {
         jobType: 'opportunity_discovery',
         cronExpression: '47 */2 * * *',
         targetAgentId: null as string | null,
-        priority: 4,
+        priority: 8,
         payload: {
-          systemDefinitionVersion: 1,
+          systemDefinitionVersion: 2,
           maxProjectsPerRun: 6,
           maxCandidatesPerProject: 4,
         } as Record<string, unknown>,
@@ -116,8 +117,8 @@ export async function seedDefaultJobs(): Promise<void> {
         jobType: 'workforce_planner',
         cronExpression: '7 */2 * * *',
         targetAgentId: null as string | null,
-        priority: 4,
-        payload: { systemDefinitionVersion: 2 } as Record<string, unknown>,
+        priority: 8,
+        payload: { systemDefinitionVersion: 3 } as Record<string, unknown>,
       },
       {
         id: 'system-prompt-evolution',
@@ -125,9 +126,9 @@ export async function seedDefaultJobs(): Promise<void> {
         jobType: 'prompt_self_improve',
         cronExpression: '27 */6 * * *',
         targetAgentId: null as string | null,
-        priority: 5,
+        priority: 9,
         payload: {
-          systemDefinitionVersion: 1,
+          systemDefinitionVersion: 2,
           role: 'auto',
           maxIterations: 4,
         } as Record<string, unknown>,
@@ -206,9 +207,9 @@ export async function seedDefaultJobs(): Promise<void> {
         jobType: 'branch_review',
         cronExpression: '35 */2 * * *', // every 2 h, after :30 provider-work recovery
         targetAgentId: 'apex-cto-001' as string | null,
-        priority: 4,
+        priority: 7,
         payload: {
-          systemDefinitionVersion: 2,
+          systemDefinitionVersion: 3,
           subordinates: [
             'apex-lead-dev-001',
             'apex-frontend-001',
