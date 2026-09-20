@@ -86,7 +86,7 @@ Do not reuse credentials from another application or project. Do not infer that 
 
 ## LLM intelligence policy — OpenRouter production
 
-`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. The normal chain is restricted to zero-cost OpenRouter `:free` IDs (or exactly `openrouter/free`). One reviewed paid continuity route, `z-ai/glm-5.3-flashx`, is always eligible when its funded OpenRouter credential is configured. APEX applies no model-specific activation flag, spend ceiling, request cap, pacing delay, or forced reasoning-effort limit to FlashX; upstream OpenRouter/Z.ai limits remain authoritative. Do not add other paid providers without a new operator decision.
+`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit routes through OpenRouter. The normal chain remains zero-cost-first (`:free` IDs or exactly `openrouter/free`) with one paid continuity route: `z-ai/glm-5.3-flashx`. The GLM route is enabled by default when the funded OpenRouter credential is present; `APEX_PAID_FALLBACK=off` remains an emergency kill switch. APEX does not apply a paid-dollar gate, paid request cap, forced reasoning level, or model-specific dispatch delay to this route. Provider/account limits, circuit breakers, retries, and approval/security controls remain authoritative.
 
 With no valid operator policy, the reviewed production fallback is:
 
@@ -97,7 +97,7 @@ With no valid operator policy, the reviewed production fallback is:
 5. `openrouter/free` (tool requirements preserved)
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
 
-Nex N2.5 Mini Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. The paid `z-ai/glm-5.3-flashx` continuity route remains last after the free/BYOK chain and is always eligible when its credential is configured. Free-pool exhaustion therefore does not require an APEX paid-route activation flag or spend-cap release.
+Nex N2.5 Mini Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. `z-ai/glm-5.3-flashx` is appended as the final continuity route by default and remains available even when APEX's paid-spend telemetry exceeds its former budget threshold; cost is recorded for observability rather than used as an admission gate.
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
