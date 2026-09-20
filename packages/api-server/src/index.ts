@@ -322,12 +322,10 @@ async function main() {
       // Provider account balance. The paid continuity route makes remaining
       // credit operational again, so keep it visible beside the routing state.
       providerCredits: getProviderCreditSnapshot(),
-      // Paid spend against the daily dollar budget. Reported next to the
-      // request meter because the two are the whole cost picture and neither
-      // implies the other: free requests cost nothing, paid requests consume
-      // no free allowance. `state: daily_cap` means the paid rung has dropped
-      // out of routing and APEX is running on free models alone — the intended
-      // fallback, not an outage.
+      // Paid LLM spend telemetry. For the unrestricted GLM 5.3 FlashX route,
+      // this ledger is observational only (`enforced: false`); APEX spend,
+      // request, emergency, and token governors do not remove FlashX from the
+      // route. OpenRouter/Z.ai billing and upstream limits remain authoritative.
       llmSpend: getSpendLedgerSnapshot(),
       // Burn rate, unauthenticated and on purpose.
       //
