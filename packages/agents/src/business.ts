@@ -100,6 +100,13 @@ businesses per call), then webSearch for additional coverage. Never give up afte
       tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'requestPeerReview'],
       maxIterations: 30,
       approvalRequired: false,
+      // Capacity recovery reserves the first eight seconds for revenue work.
+      // The default empty-queue backoff can reach 60 seconds, which allowed
+      // this loop to sleep through every protected window while other agents
+      // repeatedly claimed the newly available LLM slot. Polling at the
+      // existing five-second floor keeps the loop cheap and guarantees it can
+      // claim a pending scheduled sweep during that window.
+      idlePollMaxMs: 5_000,
       // Emergency reliability mode: lead sweeps are expensive and were the
       // source of the observed five-at-once provider pacing storm. Keep this
       // worker serialized; broad territory fan-out can still create tasks,

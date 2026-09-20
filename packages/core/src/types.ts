@@ -176,6 +176,10 @@ export interface AgentConfig {
   // so N independent swarm instances actually execute in parallel instead of
   // queuing up behind one another.
   concurrency?: number;
+  // Maximum empty-queue polling delay. Most agents back off to 60 seconds to
+  // avoid waste; latency-sensitive roles may opt into a shorter bounded wake
+  // cadence when scheduled work must catch a brief capacity-priority window.
+  idlePollMaxMs?: number;
 }
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────

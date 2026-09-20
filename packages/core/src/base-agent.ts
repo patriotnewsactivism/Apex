@@ -426,6 +426,13 @@ export abstract class BaseAgent {
     // Consecutive polls that found an empty queue — drives the idle backoff
     // below. Reset to 0 as soon as a task is dequeued.
     let idleCycles = 0;
+    const configuredIdlePollMaxMs = this.config.idlePollMaxMs ?? IDLE_POLL_CAP_MS;
+    const idlePollMaxMs = Number.isFinite(configuredIdlePollMaxMs)
+      ? Math.max(
+          IDLE_POLL_FLOOR_MS,
+          Math.min(IDLE_POLL_CAP_MS, Math.floor(configuredIdlePollMaxMs)),
+        )
+      : IDLE_POLL_CAP_MS;
     // Promise<unknown> (not Promise<void>): executeTask resolves TaskResult on
     // success and the .catch handler resolves void on failure -- the union
     // type doesn't matter here, only Promise.race()'s settle timing is used.
@@ -559,7 +566,7 @@ export abstract class BaseAgent {
           idleCycles++;
           const idleWaitMs = Math.min(
             IDLE_POLL_FLOOR_MS * Math.pow(2, Math.min(idleCycles - 1, 4)),
-            IDLE_POLL_CAP_MS,
+            idlePollMaxMs,
           );
           await new Promise((r) => setTimeout(r, idleWaitMs));
           continue;
