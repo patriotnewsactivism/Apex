@@ -168,6 +168,9 @@ function freeOpenRouterSpec(
     protocol: 'openai-compatible',
     minIntervalMs: 500,
     toolCallingReliable: true,
+    // Preserve the former shared APEX completion ceiling on free routes even
+    // though FlashX can now be configured up to its much larger native limit.
+    maxOutputTokens: 16_384,
     ...extras,
     // Free endpoints vary widely in latency. Prefer the endpoint most likely
     // to answer inside APEX's bounded timeout while preserving the operator's
@@ -231,6 +234,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     minIntervalMs: 1_000,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
+    maxOutputTokens: 16_384,
   },
   {
     name: PAID_FALLBACK_PROVIDER_NAME,
@@ -244,6 +248,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
     minIntervalMs: 0,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
+    // FlashX supports up to 131,072 completion tokens. This is an upstream
+    // model envelope, not an APEX spend/request throttle.
+    maxOutputTokens: 131_072,
     // `sort: 'price'` pinned every request to whichever upstream host was
     // cheapest for this model — confirmed live 2026-09-17 to be a host with a
     // 60s p99 (Inceptron) or 31s p99 (Relace), both past LLM_REQUEST_TIMEOUT_MS.
@@ -1294,6 +1301,15 @@ async function callProvider(
   config: LLMClientConfig,
   execution?: LLMExecutionContext,
 ): Promise<LLMResponse> {
+  const providerConfig: LLMClientConfig = provider.maxOutputTokens
+    ? {
+        ...config,
+        maxTokens: Math.min(
+          config.maxTokens ?? 2048,
+          provider.maxOutputTokens,
+        ),
+      }
+    : config;
   const baseURL = providerBaseURL(provider);
   if (!baseURL) {
     throw Object.assign(new Error('provider base URL is not configured'), { status: 0 });
@@ -1305,12 +1321,12 @@ async function callProvider(
       model: provider.model,
       messages,
       tools,
-      config,
+      config: providerConfig,
       execution,
       timeoutMs: LLM_REQUEST_TIMEOUT_MS,
     });
   }
-  return callCompatibleProvider(provider, key, messages, tools, config, execution);
+  return callCompatibleProvider(provider, key, messages, tools, providerConfig, execution);
 }
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -1853,8 +1869,11 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
       process.env.APEX_MAX_OUTPUT_TOKENS ??
       defaultMaxTokens,
   );
+  // The operator may request up to FlashX's native 131,072-token completion
+  // envelope. Each smaller provider clamps the request again at dispatch, so
+  // raising this does not force free/BYOK routes beyond their safe ceiling.
   const maxTokens = Number.isFinite(configuredMaxTokens)
-    ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
+    ? Math.min(131_072, Math.max(256, Math.floor(configuredMaxTokens)))
     : defaultMaxTokens;
   // Derived from the live chain rather than restated as a literal. When these
   // were independent, flipping PROVIDER_ORDER to free-only left every agent
