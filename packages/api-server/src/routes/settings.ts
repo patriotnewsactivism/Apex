@@ -41,7 +41,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
         key: 'OPENROUTER_API_KEY_2', label: 'Secondary API Key', placeholder: 'sk-or-v1-...', secret: true,
         probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },
       },
-      { key: 'APEX_MAX_CONCURRENT_LLM_CALLS', label: 'Global LLM Concurrency', placeholder: '6' },
+      { key: 'APEX_MAX_CONCURRENT_LLM_CALLS', label: 'Global LLM Concurrency', placeholder: '13 (1 per current agent)' },
       { key: 'APEX_LEAD_RESEARCH_CONCURRENCY', label: 'Lead Research Concurrency', placeholder: '3' },
       { key: 'APEX_TOKEN_CAP_TOTAL', label: 'Optional Daily Token Cap', placeholder: '0 = unlimited' },
       { key: 'APEX_TOKEN_CAPS', label: 'Optional Per-Provider Token Caps', placeholder: 'provider:tokens,...' },
