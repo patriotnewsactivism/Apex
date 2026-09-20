@@ -281,42 +281,27 @@ resolved to the same account before setting them.
 
 `scripts/verify-request-budget.ts` guards the accounting in CI.
 
-### Reading `llmSpend` (paid budget)
+### Reading `llmSpend` (paid telemetry)
 
-APEX runs free-first with a paid rung behind it. The two are rationed
-differently and neither substitutes for the other: free inference is limited by
-REQUEST COUNT (1,000/account/day, shared across every `:free` model), paid
-inference by MONEY. A paid request therefore consumes none of the free
-allowance, and is excluded from `llmRequests` on purpose.
+APEX remains free-first, with `z-ai/glm-5.3-flashx` as the final paid continuity
+route. The FlashX route is eligible whenever the funded `OPENROUTER_API_KEY`
+credential is configured. APEX does **not** apply a FlashX-specific activation
+flag, daily dollar cap, request cap, pacing delay, or forced reasoning-effort
+limit. OpenRouter/Z.ai account billing, upstream rate limits, and service limits
+remain authoritative.
 
-| `state` | Meaning |
-|---|---|
-| `available` | Paid rung is in the routing order |
-| `paced` | Budget exists but the ramp has not released it yet; clears shortly |
-| `daily_cap` | Budget spent. **The paid rung drops out and APEX runs free-only** — the intended fallback, not an outage |
-| `disabled` | `APEX_DAILY_SPEND_USD=0`, or the rung is not enabled |
+Paid requests remain isolated from the OpenRouter free-request ledger, so they
+do not consume the free-account request allowance. APEX still records settled
+provider cost for observability. `llmSpend`, `spentUsd`, and related spend
+fields are therefore telemetry for this route, not admission controls.
 
-Paid routing needs BOTH `FlashX route enabled when OPENROUTER_API_KEY is configured` (paid is allowed) and a
-non-zero `APEX_DAILY_SPEND_USD` (this much). A zero cap means spend nothing —
-money fails closed, where the request budget's `0` means uncapped.
-
-At DeepSeek V4 Flash list price ($0.06/M in, $0.12/M out), $2/day buys roughly
-1,000–3,300 requests depending on prompt size. Read `spentUsd` and
-`projectedUsd` rather than trusting that estimate.
-
-Two details that exist because they were got wrong first: cost is charged from
-OpenRouter's settled `cost` figure, falling back to list price when it is
-absent — recording zero there would let an unpriced response spend from the
-budget for free. And a small reserve is held back before admitting a paid call,
-because cost is only known after the response returns: without it a $2.00 cap
-settled at $2.0004, and the overshoot multiplies with concurrency.
+If OpenRouter does not return a settled cost, APEX estimates the missing figure
+from the configured FlashX list-price fallback. Production accounting should
+prefer OpenRouter's settled `cost` whenever present.
 
 ### Reading `providerCredits`
 
-APEX's automatic routing chain is **zero-cost / free-only**. Nothing on the
-default path or a persisted production policy can spend money. An empty
-OpenRouter credit balance must never trigger paid inference; exhaustion is a
-capacity pause.
+APEX's primary automatic chain is free-first. Persisted operator policies remain restricted to production-eligible free routes, but runtime continuity appends the paid `z-ai/glm-5.3-flashx` route last whenever its funded OpenRouter credential is configured. If that paid account itself is unavailable or exhausted, APEX continues through ordinary provider-capacity handling rather than inventing another paid route.
 
 Current automatic order:
 
@@ -326,6 +311,9 @@ Current automatic order:
 4. `nvidia/nemotron-3.5-lightning:free`
 5. `openrouter/free`
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
+7. Groq BYOK (`openai/gpt-oss-120b`) when enabled/configured
+8. Gemini BYOK (`gemini-3.8-flash`) when enabled/configured
+9. `z-ai/glm-5.3-flashx` paid continuity when `OPENROUTER_API_KEY` is configured
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and
@@ -333,7 +321,7 @@ routing chain was paid-only, there was no free rung to fall through to, and
 `taskQueue.verdict: ok`, 13 live agents and a healthy poll loop. Tasks were
 being claimed and every one of them failed. That paid-only arrangement is
 retired. A 402 now cools the exhausted account, rotates to another qualifying
-free account, and eventually capacity-pauses. It cannot select a paid model.
+free account, and eventually capacity-pauses. It can then continue to the separately funded FlashX continuity route when that credential is configured.
 
 The credits probe now asks **every live unique key**, not the first one it finds.
 `loadedKeys` is how many distinct key strings are bound. `uniqueAccounts` is how
