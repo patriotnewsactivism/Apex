@@ -42,7 +42,7 @@ const taskDefect = "TypeError: Cannot read properties of undefined";
 // failure and retried immediately instead of backing off.
 const paidRungAlsoPaused =
   "APEX LLM capacity paused. resume-at=2026-08-25T00:00:00.000Z | " +
-  "openrouter-deepseek-v4-flash-paid: daily paid spend pacing active";
+  "openrouter-glm-5-3-flashx-paid: upstream paid-provider capacity pause";
 
 check(
   "live daily-cap error is recognized",
