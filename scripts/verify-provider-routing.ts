@@ -155,6 +155,11 @@ check(
     /Math\.min\(131_072, Math\.max/.test(clientSource),
 );
 check(
+  'a high FlashX output setting cannot inflate the free-route token reservation',
+  /const restrictedOutputEstimate = Math\.min\([\s\S]{0,120}16_384/.test(clientSource) &&
+    /estimateLLMRequestTokens\([\s\S]{0,160}restrictedOutputEstimate/.test(clientSource),
+);
+check(
   'Groq and Gemini routing each have an operator activation switch',
   /activationEnv: 'APEX_GROQ_BYOK_ENABLED'/.test(clientSource) &&
     /activationEnv: 'APEX_GEMINI_BYOK_ENABLED'/.test(clientSource),
