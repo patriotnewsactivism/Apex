@@ -39,7 +39,7 @@ const byokProviders = [
   'gemini-3-8-flash-byok',
 ] as const;
 const automaticProviders = [...openRouterProviders, ...byokProviders];
-const runtimeProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
+const fullRuntimeOrder = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
 
 const catalog = getProviderCatalog();
 const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
@@ -135,9 +135,10 @@ check(
     /const providerRequestWindow = requestWindowForProvider/.test(clientSource),
 );
 check(
-  'the emergency all-provider ceiling is checked before work is claimed and before dispatch',
-  /if \(!emergencyRequestCapacityWindow\(now\)\.allowed\) return false/.test(clientSource) &&
-    /const emergencyAttemptWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(clientSource),
+  'workspace emergency ceiling still guards free/BYOK while GLM continuity may bypass it',
+  /paidContinuityAvailable/.test(clientSource) &&
+    /const emergencyAttemptWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(clientSource) &&
+    /!provider\.paid && !emergencyAttemptWindow\.allowed/.test(clientSource),
 );
 check(
   'Groq and Gemini routing each have an operator activation switch',
@@ -170,10 +171,13 @@ check(
       clientSource.indexOf('const result = await callProvider(', clientSource.indexOf('reserveProviderAttempt(provider, credential.key);')),
 );
 
-console.log('\n── Paid FlashX continuity policy ──');
-check('paid FlashX inference is enabled without an APEX activation flag', paidLLMFallbackEnabled(undefined) === true);
+console.log('\n── Paid continuity policy ──');
+check('paid OpenRouter GLM continuity is enabled by default', paidLLMFallbackEnabled(undefined) === true);
+check('explicit off disables paid inference', paidLLMFallbackEnabled('off') === false);
+const previousPaidMode = process.env.APEX_PAID_FALLBACK;
+process.env.APEX_PAID_FALLBACK = 'confirmed';
 check(
-  'paid FlashX continuity route remains last after all free/BYOK capacity',
+  'paid continuity route remains last after all free/BYOK capacity',
   getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
   getProviderOrderForRole('CEO'),
 );
@@ -181,6 +185,8 @@ check(
   'paid continuity model is GLM 5.3 FlashX',
   PAID_FALLBACK_MODEL === 'z-ai/glm-5.3-flashx',
 );
+if (previousPaidMode === undefined) delete process.env.APEX_PAID_FALLBACK;
+else process.env.APEX_PAID_FALLBACK = previousPaidMode;
 
 console.log('\n── Custom OpenRouter policy + BYOK continuity ──');
 const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
@@ -211,8 +217,8 @@ for (const role of [
 ]) {
   const order = getProviderOrderForRole(role);
   check(
-    `${role} uses OpenRouter free first, then independent BYOK pools, then FlashX continuity`,
-    JSON.stringify(order) === JSON.stringify(runtimeProviders),
+    `${role} uses free/BYOK first with GLM FlashX as final continuity`,
+    JSON.stringify(order) === JSON.stringify(fullRuntimeOrder),
     order,
   );
   const config = getDefaultLLMConfig(role);
