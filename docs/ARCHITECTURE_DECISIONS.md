@@ -511,7 +511,7 @@ DeepSeek V4 Flash 0731 is retired. FlashX is eligible whenever the funded `OPENR
 
 APEX does not use its legacy paid-spend budget, spend pacing, free request-count caps, provider token caps, workspace token caps, workspace emergency request cap, forced reasoning level, or model-specific dispatch delay to veto FlashX. Those controls continue to govern the free/BYOK pools where applicable.
 
-FlashX receives the full conversation history on its normal attempt rather than the smaller history trim used to protect free/BYOK routes. Provider-side context limits remain authoritative, and the corrective oversized-request retry may still trim history after a provider rejects a request.
+FlashX receives the full conversation history on its normal attempt rather than the smaller history trim used to protect free/BYOK routes. The operator-configurable completion ceiling may reach FlashX's 131,072-token native output envelope; smaller providers clamp requests to their own lower envelopes. Provider-side context limits remain authoritative, and the corrective oversized-request retry may still trim history after a provider rejects a request.
 
 ### Controls that remain
 
