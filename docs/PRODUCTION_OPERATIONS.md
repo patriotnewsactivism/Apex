@@ -6,7 +6,7 @@ APEX production is **Railway** — project `APEX`, service `apex-backend` — be
 
 `https://apex.donmatthews.live`
 
-Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled) and kept only as the gated rollback path in `.github/workflows/deploy.yml`. See `docs/HOSTING_MIGRATION.md` and ADR-015. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
+Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled) and kept only as the gated rollback path in `.github/workflows/deploy.yml`. See `docs/HOSTING_MIGRATION.md` and ADR-015. Free-first OpenRouter routing with GLM FlashX continuity is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Operating principles
 
@@ -281,27 +281,19 @@ resolved to the same account before setting them.
 
 `scripts/verify-request-budget.ts` guards the accounting in CI.
 
-### Reading `llmSpend` (paid telemetry)
+### Reading `llmSpend` (paid continuity telemetry)
 
-APEX remains free-first, with `z-ai/glm-5.3-flashx` as the final paid continuity
-route. The FlashX route is eligible whenever the funded `OPENROUTER_API_KEY`
-credential is configured. APEX does **not** apply a FlashX-specific activation
-flag, daily dollar cap, request cap, pacing delay, or forced reasoning-effort
-limit. OpenRouter/Z.ai account billing, upstream rate limits, and service limits
-remain authoritative.
+APEX is free-first and uses `z-ai/glm-5.3-flashx` as the final paid continuity route. The spend ledger remains active for observability, but it is no longer an admission gate: `APEX_DAILY_SPEND_USD`, spend pacing, workspace request caps, workspace token caps, and the paid route's former dispatch delay do not disable or throttle FlashX.
 
-Paid requests remain isolated from the OpenRouter free-request ledger, so they
-do not consume the free-account request allowance. APEX still records settled
-provider cost for observability. `llmSpend`, `spentUsd`, and related spend
-fields are therefore telemetry for this route, not admission controls.
+`APEX_PAID_FALLBACK=off` is the emergency kill switch. When it is absent, blank, or enabled, the funded OpenRouter key makes FlashX eligible after the free/BYOK routes.
 
-If OpenRouter does not return a settled cost, APEX estimates the missing figure
-from the configured FlashX list-price fallback. Production accounting should
-prefer OpenRouter's settled `cost` whenever present.
+The runtime records OpenRouter's settled cost when available and falls back to the published model price when it is not. The `spentUsd` and `projectedUsd` fields therefore remain useful burn-rate telemetry even though `state` is not used to admit or reject GLM requests.
+
+The paid continuity route still obeys real upstream constraints: valid funded credentials, OpenRouter/provider rate or capacity responses, retry-after, credential/provider cooldowns, circuit breakers, request validity, network timeouts, and all existing APEX approval/security boundaries.
 
 ### Reading `providerCredits`
 
-APEX's primary automatic chain is free-first. Persisted operator policies remain restricted to production-eligible free routes, but runtime continuity appends the paid `z-ai/glm-5.3-flashx` route last whenever its funded OpenRouter credential is configured. If that paid account itself is unavailable or exhausted, APEX continues through ordinary provider-capacity handling rather than inventing another paid route.
+APEX's operator-selectable roster is free-only, but the runtime is **free-first with paid GLM continuity**. The persisted production policy cannot add arbitrary paid models. The dedicated `z-ai/glm-5.3-flashx` route is appended after free/BYOK capacity and uses the funded OpenRouter credential.
 
 Current automatic order:
 
@@ -311,9 +303,6 @@ Current automatic order:
 4. `nvidia/nemotron-3.5-lightning:free`
 5. `openrouter/free`
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
-7. Groq BYOK (`openai/gpt-oss-120b`) when enabled/configured
-8. Gemini BYOK (`gemini-3.8-flash`) when enabled/configured
-9. `z-ai/glm-5.3-flashx` paid continuity when `OPENROUTER_API_KEY` is configured
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and
@@ -321,7 +310,7 @@ routing chain was paid-only, there was no free rung to fall through to, and
 `taskQueue.verdict: ok`, 13 live agents and a healthy poll loop. Tasks were
 being claimed and every one of them failed. That paid-only arrangement is
 retired. A 402 now cools the exhausted account, rotates to another qualifying
-free account, and eventually capacity-pauses. It can then continue to the separately funded FlashX continuity route when that credential is configured.
+free account, and eventually capacity-pauses. It cannot select a paid model.
 
 The credits probe now asks **every live unique key**, not the first one it finds.
 `loadedKeys` is how many distinct key strings are bound. `uniqueAccounts` is how
