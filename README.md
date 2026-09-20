@@ -30,18 +30,23 @@ See:
 
 `packages/core/src/llm-client.ts` is the production source of truth for LLM routing.
 
-APEX currently routes production inference through OpenRouter using the zero-cost free-agent chain:
+APEX uses a free-first runtime chain with one dedicated paid continuity exception:
 
 1. Nex N2.5 Mini Free (`nex-agi/nex-n2.5-mini:free`) — primary
 2. Nex N2.5 Pro Free (`nex-agi/nex-n2.5-pro:free`)
 3. NVIDIA Nemotron 3 Super Free
 4. NVIDIA Nemotron 3.5 Lightning Free
 5. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
-6. NVIDIA Nemotron 3 Ultra Free (last resort)
+6. NVIDIA Nemotron 3 Ultra Free
+7. direct Groq GPT-OSS 120B BYOK when enabled
+8. direct Gemini 3.8 Flash BYOK when enabled
+9. GLM 5.3 FlashX (`z-ai/glm-5.3-flashx`) — paid continuity
 
-If every free account/route is exhausted, APEX pauses. There is no automatic paid fallback.
+The operator-persisted model roster remains free-only. FlashX is a separate runtime continuity route and is always eligible when the funded `OPENROUTER_API_KEY` is configured. APEX does not apply its spend, free-request, workspace-token, provider-token, emergency-request, model-specific pacing, or forced-reasoning governors to FlashX. Upstream OpenRouter/Z.ai billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply.
 
-Qualifying credentials: `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and optional `OPENROUTER_API_KEY_4`. `OPENROUTER_API_KEY_3` is burned and is not used. Three independent OpenRouter accounts are load-balanced by key fingerprint. Two keys on the same account do not create separate quota — `/health` `providerCredits.uniqueAccounts` is the check. Optional `OPENROUTER_MGMT_KEY*` values inventory those accounts; they cannot infer. See `docs/FREE_ONLY_MODEL_POLICY.md`.
+FlashX also receives the full available conversation history rather than APEX's smaller free-route history trim, allowing the runtime to use its large upstream context window.
+
+Qualifying free credentials include `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and optional `OPENROUTER_API_KEY_4`. Multiple keys on one OpenRouter account do not create separate free quota. `/health` `providerCredits.uniqueAccounts` is the account-level check. See `docs/FREE_ONLY_MODEL_POLICY.md` for the free-roster policy and FlashX continuity exception.
 
 ## Workforce
 
