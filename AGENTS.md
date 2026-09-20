@@ -97,7 +97,7 @@ With no valid operator policy, the reviewed production fallback is:
 5. `openrouter/free` (tool requirements preserved)
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
 
-Nex N2.5 Mini Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. The paid `z-ai/glm-5.3-flashx` continuity route remains last after the free/BYOK chain and is always eligible when its credential is configured. Free-pool, workspace-token, emergency-request, and legacy paid-spend exhaustion do not veto FlashX. Provider-side limits and reliability cooldowns still apply.
+Nex N2.5 Mini Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. The paid `z-ai/glm-5.3-flashx` continuity route remains last after the free/BYOK chain and is always eligible when its credential is configured. Free-pool, workspace-token, emergency-request, and legacy paid-spend exhaustion do not veto FlashX. FlashX receives the full normal conversation history instead of the smaller free-route history trim. Provider-side context/rate limits and reliability cooldowns still apply.
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
