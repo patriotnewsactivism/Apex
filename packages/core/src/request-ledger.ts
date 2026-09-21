@@ -552,6 +552,10 @@ function reserveRequestAccount(
     if (countInOpenRouterRateWindow) {
       pruneRateWindow(now);
       recentRequests.push(now);
+      const recent = recentAccountRequests.get(account) ?? [];
+      pruneSpecificRateWindow(recent, now);
+      recent.push(now);
+      recentAccountRequests.set(account, recent);
     }
     const entry =
       state.accounts[account] ?? (state.accounts[account] = { requests: 0, succeeded: 0 });
@@ -755,7 +759,7 @@ function directProviderBurst(pool: DirectRequestPool): number {
 
 function pruneSpecificRateWindow(recent: number[], at: number): void {
   const cutoff = at - RATE_WINDOW_MS;
-  while (recent.length > 0 && recent[0] < cutoff) recent.shift();
+  while (recent.length > 0 && recent[0] <= cutoff) recent.shift();
 }
 
 function directRateLimitResumeAt(pool: DirectRequestPool, at: number): number | null {
@@ -826,16 +830,16 @@ export function emergencyRequestCapacityWindow(at: number = Date.now()): Request
  *
  * Operators write APEX_REQUEST_CAPS against env NAMES, because that is what
  * they can see and reason about, while spend is tracked against the account
- * fingerprint. When several names hold the same key they are one account, so
+ * fingerprint. Confirmed sibling keys and aliases share one account, so
  * the strictest cap among them wins — summing them would recreate exactly the
  * over-authorization this fingerprinting exists to prevent.
  */
 function capForFingerprint(fingerprint: string): number {
   const caps = parseCaps();
-  const applicable = envNamesForFingerprint(fingerprint)
-    .map((name) => caps[name])
+  const applicable = accountSiblings(fingerprint)
+    .flatMap((sibling) => [caps[sibling], ...envNamesForFingerprint(sibling).map((name) => caps[name])])
     .filter((cap): cap is number => Number.isFinite(cap) && cap > 0);
-  if (applicable.length === 0) return caps[fingerprint] ?? 0;
+  if (applicable.length === 0) return 0;
   return Math.min(...applicable);
 }
 
@@ -847,12 +851,18 @@ export function accountCapacityWindow(
 ): RequestCapacityWindow {
   rolloverIfNeeded(at);
   const fingerprint = accountFingerprint(apiKey);
-  return calculateRequestCapacityWindow({
+  const daily = calculateRequestCapacityWindow({
     cap: capForFingerprint(fingerprint),
-    usedRequests: accountRequestsToday(fingerprint),
+    usedRequests: requestsAcrossAccount(fingerprint),
     requestedRequests: 1,
     at,
   });
+  if (!daily.allowed) return daily;
+  const recent = accountRecentRequests(fingerprint, at);
+  const limit = accountRatePerMinute();
+  if (limit <= 0 || recent.length < limit) return daily;
+  return { ...daily, allowed: false, reason: 'paced',
+    resumeAt: new Date(recent[recent.length - limit] + RATE_WINDOW_MS).toISOString() };
 }
 
 // ─── Short-window rate limiting ──────────────────────────────────────────────
@@ -871,6 +881,20 @@ export function accountCapacityWindow(
 // both are needed: the cap stops the day being overspent, this stops any
 // single minute triggering the provider's own limiter.
 const recentRequests: number[] = [];
+const recentAccountRequests = new Map<string, number[]>();
+
+function accountRatePerMinute(): number {
+  const raw = Number(process.env.APEX_ACCOUNT_REQUEST_RATE_PER_MIN ?? 15);
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 15;
+}
+
+function accountRecentRequests(fingerprint: string, at: number): number[] {
+  return accountSiblings(fingerprint).flatMap(sibling => {
+    const recent = recentAccountRequests.get(sibling) ?? [];
+    pruneSpecificRateWindow(recent, at);
+    return recent;
+  }).sort((a, b) => a - b);
+}
 const RATE_WINDOW_MS = 60_000;
 /** Below OpenRouter's typical 20/min free-tier ceiling, with headroom for the
  *  retry a failure triggers. Sustained throughput is still governed by the
@@ -887,7 +911,7 @@ function ratePerMinute(): number {
 
 function pruneRateWindow(at: number): void {
   const cutoff = at - RATE_WINDOW_MS;
-  while (recentRequests.length > 0 && recentRequests[0] < cutoff) recentRequests.shift();
+  while (recentRequests.length > 0 && recentRequests[0] <= cutoff) recentRequests.shift();
 }
 
 /** Requests issued in the last 60 seconds. */
@@ -961,6 +985,8 @@ export interface RequestLedgerSnapshot {
      *  meters and what the balancer levels. Equals `requests` when this key is
      *  alone on its account. */
     accountRequests: number;
+    lastMinute: number;
+    ratePerMinute: number;
     succeeded: number;
     failed: number;
     cap: number;
@@ -972,7 +998,7 @@ export interface RequestLedgerSnapshot {
 
 export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedgerSnapshot {
   rolloverIfNeeded(at);
-  const fingerprints = new Set(Object.keys(state.accounts));
+  const fingerprints = new Set([...Object.keys(state.accounts), ...observedAccountByFingerprint.keys()]);
   const accounts = [...fingerprints]
     .map((fingerprint) => {
       const entry = state.accounts[fingerprint] ?? { requests: 0, succeeded: 0 };
@@ -989,6 +1015,7 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
           ? 0
           : capForFingerprint(fingerprint);
       const envNames = directPool || paidProvider ? [] : envNamesForFingerprint(fingerprint);
+      const accountRequests = directPool || paidProvider ? entry.requests : requestsAcrossAccount(fingerprint);
       return {
         account: directPool
           ? `${directProvider ?? directPool} (BYOK:${directPool})`
@@ -999,18 +1026,23 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
               : '(retired key)',
         openRouterAccount: directPool || paidProvider ? null : observedAccountFor(fingerprint),
         requests: entry.requests,
-        accountRequests: directPool || paidProvider ? entry.requests : requestsAcrossAccount(fingerprint),
+        accountRequests,
+        lastMinute: directPool || paidProvider ? 0 : accountRecentRequests(fingerprint, at).length,
+        ratePerMinute: directPool || paidProvider ? 0 : accountRatePerMinute(),
         succeeded: entry.succeeded,
         failed: Math.max(0, entry.requests - entry.succeeded),
         cap,
-        capReached: cap > 0 && entry.requests >= cap,
-        percentOfCap: cap > 0 ? Math.round((entry.requests / cap) * 1000) / 10 : null,
-        pacing: calculateRequestCapacityWindow({
-          cap,
-          usedRequests: entry.requests,
-          requestedRequests: 1,
-          at,
-        }),
+        capReached: cap > 0 && accountRequests >= cap,
+        percentOfCap: cap > 0 ? Math.round((accountRequests / cap) * 1000) / 10 : null,
+        pacing: (() => {
+          const daily = calculateRequestCapacityWindow({ cap, usedRequests: accountRequests, requestedRequests: 1, at });
+          const recent = directPool || paidProvider ? [] : accountRecentRequests(fingerprint, at);
+          const limit = accountRatePerMinute();
+          return daily.allowed && limit > 0 && recent.length >= limit
+            ? { ...daily, allowed: false, reason: 'paced' as const,
+                resumeAt: new Date(recent[recent.length - limit] + RATE_WINDOW_MS).toISOString() }
+            : daily;
+        })(),
       };
     })
     .filter((entry) => !entry.account.includes('(BYOK:'))

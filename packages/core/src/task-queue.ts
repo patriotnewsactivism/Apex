@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { prepareWorkBundle, readWorkBundle, appendWorkBundle, recordTurnEconomy } from './turn-economy.js';
 import { db, tasks } from '@workspace/db';
 import { eq, and, or, isNull, lte, sql } from 'drizzle-orm';
 import type { Task } from '@workspace/db';
@@ -103,7 +104,7 @@ export class TaskQueue {
   async enqueue(input: TaskInput & { createdByAgentId?: string }): Promise<Task> {
     const now = new Date();
     const taskId = randomUUID();
-    const taskRecord: Task = {
+    let taskRecord: Task = {
       id: taskId,
       goalId: input.goalId ?? null,
       parentTaskId: input.parentTaskId ?? null,
@@ -128,7 +129,36 @@ export class TaskQueue {
       resultArtifacts: null,
     };
 
+    taskRecord = prepareWorkBundle(taskRecord, now.getTime());
+    const bundle = readWorkBundle(taskRecord.context);
     try {
+      if (bundle) {
+        const result = await db.transaction(async (tx) => {
+          // Serialize compatible enqueues across processes. Row locks also
+          // serialize with dequeue/cancel; never append after execution starts.
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${bundle.scope}, 0))`);
+          const candidates = await tx.select().from(tasks).where(and(
+            eq(tasks.status, 'pending'),
+            eq(tasks.assignedAgentId, this.agentId),
+            isNull(tasks.startedAt),
+            sql`${tasks.context}->'workBundle'->>'scope' = ${bundle.scope}`,
+            sql`${tasks.nextRetryAt} > now()`,
+          )).orderBy(tasks.createdAt).limit(20).for('update');
+          for (const candidate of candidates) {
+            const merged = appendWorkBundle(candidate, taskRecord);
+            if (!merged) continue;
+            const [updated] = await tx.update(tasks).set({
+              description: merged.description, context: merged.context, updatedAt: merged.updatedAt,
+            }).where(and(eq(tasks.id, candidate.id), eq(tasks.status, 'pending'))).returning();
+            if (updated) return { task: updated, merged: true };
+          }
+          const [created] = await tx.insert(tasks).values(taskRecord).returning();
+          if (!created) throw new Error('insert returned no task row');
+          return { task: created, merged: false };
+        });
+        recordTurnEconomy(result.merged ? 'itemsCoalesced' : 'bundlesCreated');
+        return result.task;
+      }
       const [created] = await db.insert(tasks).values(taskRecord).returning();
       if (!created) throw new Error('insert returned no task row');
       return created;
@@ -136,6 +166,16 @@ export class TaskQueue {
       requireDurabilityOrAllowLocalFallback('enqueue', err);
     }
 
+    if (bundle) {
+      for (let index = 0; index < this.memoryQueue.length; index++) {
+        const merged = appendWorkBundle(this.memoryQueue[index], taskRecord);
+        if (!merged) continue;
+        this.memoryQueue[index] = merged;
+        recordTurnEconomy('itemsCoalesced');
+        return merged;
+      }
+      recordTurnEconomy('bundlesCreated');
+    }
     this.memoryQueue.push(taskRecord);
     return taskRecord;
   }

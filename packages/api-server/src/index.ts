@@ -1,3 +1,4 @@
+import { getTurnEconomySnapshot } from '@workspace/core';
 // APEX API Server — force rebuild 2026-07-30 to clear stale Docker cache
 import { config } from 'dotenv';
 import { resolve, join, dirname } from 'path';
@@ -556,6 +557,7 @@ async function main() {
 
     res.json({
       ...snapshot,
+      turnEconomy: getTurnEconomySnapshot(),
       hourlyBurnUsd,
       projected30DayUsd,
       utilizationPct,
@@ -576,6 +578,7 @@ async function main() {
         allProviderUsed: requests.allProviderRequests,
         emergencyCap: requests.emergencyCap,
         directProviders: requests.directProviders,
+        accounts: requests.accounts,
       },
       updatedAt: new Date().toISOString(),
     });

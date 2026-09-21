@@ -171,3 +171,10 @@ Fix stale documentation in the same work item that discovers it. Historical note
 Only mark work complete when the implementation exists and the relevant verification has actually passed. For production changes, that includes live verification after deployment. If a result is unknown, say it is unknown; do not infer success from a build, commit, queued task, or agent narrative.
 
 APEX should optimize for durable correctness, recoverability, auditability, and useful autonomous throughput—not impressive-looking activity.
+
+### Turn Economy foundation
+
+See [Turn Economy](docs/TURN_ECONOMY.md) for optional background work bundles,
+batch campaign snapshots, explicit tasks without LLM calls, shared-account quota
+checks and process-scoped productivity metrics. Bundling is disabled by default;
+producers must explicitly accept the shared task/result contract before opting in.

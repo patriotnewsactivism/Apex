@@ -542,3 +542,14 @@ A proposed change should include:
 9. documentation changes.
 
 Once accepted, mark the old ADR **Superseded**, point to the replacement decision, and update all canonical docs so two active instructions do not coexist.
+
+## Turn Economy foundation (2026-09-20; not production-verified)
+
+Use opt-in enqueue-time bundles stored in existing task context/description and
+`next_retry_at`, with Postgres scope/row locks, instead of merging already-owned
+tasks. All items share one lifecycle; exact creator/goal/parent/agent/context
+matching and bounded windows protect isolation. Read-only campaign snapshots
+can run as explicit deterministic tasks through the existing tool registry.
+Account caps and RPM use confirmed sibling credentials; existing reservation
+admission is process-local. New productivity counters are labelled process-local
+and do not estimate saved requests or quality. See [contract and rollout](TURN_ECONOMY.md).

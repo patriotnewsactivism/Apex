@@ -292,6 +292,23 @@ export function SpendBurnPanel() {
         </div>
       </div>
 
+      {data.turnEconomy && <div className="glass-card" style={{ padding: 14, marginBottom: 10 }}>
+        <div className="apex-eyebrow">Turn economy · this process since {new Date(data.turnEconomy.since).toLocaleString()}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: 10, marginTop: 10 }}>
+          <MetricCard label="Successful tools / request" value={data.turnEconomy.successfulToolsPerRequest?.toFixed(2) ?? '—'}
+            detail="All upstream attempts, including retries. Successful tools are not a quality score." icon={<Activity size={16} />} />
+          <MetricCard label="Items coalesced" value={String(data.turnEconomy.itemsCoalesced)}
+            detail={data.turnEconomy.bundlingEnabled ? `Opt-in bundles · ${data.turnEconomy.bundleWindowMs / 1000}s window` : 'Bundling disabled'} icon={<Gauge size={16} />} />
+          <MetricCard label="Tasks without LLM" value={String(data.turnEconomy.deterministicTasks)}
+            detail="Completed deterministic campaign snapshots" icon={<Activity size={16} />} />
+        </div>
+      </div>}
+      {data.requests.accounts?.map(account => <div key={account.account} className="glass-card" style={{ padding: 12, marginBottom: 6, overflowWrap: 'anywhere' }}>
+        <strong>{account.account}</strong>: {account.accountRequests.toLocaleString()} / {account.cap || 'uncapped'} account requests
+        {account.openRouterAccount && <span> · shared account {account.openRouterAccount}</span>}
+        {account.capReached && <span> · cap reached</span>}
+      </div>)}
+
       <div className="apex-eyebrow" style={{ margin: '0 0 8px 2px' }}>
         Dollar burn
       </div>

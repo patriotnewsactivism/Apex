@@ -1,3 +1,4 @@
+import { recordTurnEconomy } from './turn-economy.js';
 import type {
   LLMClientConfig,
   LLMExecutionContext,
@@ -772,6 +773,7 @@ function reserveProviderAttempt(
   provider: ProviderSpec,
   credentialKey: string,
 ): void {
+  recordTurnEconomy('requests');
   if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
     reserveDirectProviderRequest(provider.requestPool, provider.name);
   } else if (provider.paid) {
