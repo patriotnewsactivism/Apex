@@ -3,6 +3,7 @@ import { db, approvals, tasks as tasksTable } from '@workspace/db';
 import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { BaseAgent as CoreBaseAgent, emitApexEvent } from './base-agent.js';
 import { getToolRegistry } from './tool-registry.js';
+import { operatorAutoApproveAllEnabled } from './approval-policy.js';
 import {
   ApprovalYieldSignal,
   approvalPayloadsEqual,
@@ -78,6 +79,28 @@ async function recoverResolvedApprovalWaits(): Promise<number> {
 }
 
 /**
+ * Apply the operator's standing approval to every durable gated approval that
+ * was already pending before the global override became active. Escalations
+ * are deliberately untouched: they are messages, not execution gates.
+ */
+async function sweepOperatorAutoApprovals(): Promise<number> {
+  if (!operatorAutoApproveAllEnabled()) return 0;
+  const approved = await db
+    .update(approvals)
+    .set({
+      status: 'approved',
+      reviewedAt: new Date(),
+      reviewerNote: 'Auto-approved under standing operator authorization (APEX_OPERATOR_AUTO_APPROVE_ALL).',
+    })
+    .where(and(
+      eq(approvals.kind, 'approval'),
+      eq(approvals.status, 'pending'),
+    ))
+    .returning({ id: approvals.id });
+  return approved.length;
+}
+
+/**
  * Durable replacement for the old 5-minute in-process wait timeout. That
  * timeout's real job was giving every approval SOME eventual resolution so a
  * task could never wait forever — but 5 minutes is far too short for a human
@@ -91,6 +114,7 @@ async function recoverResolvedApprovalWaits(): Promise<number> {
  * never auto-approve, preserving the fail-closed default.
  */
 async function sweepExpiredPendingApprovals(): Promise<number> {
+  if (operatorAutoApproveAllEnabled()) return 0;
   const autoRejectMs = resolveApprovalAutoRejectMs();
   if (autoRejectMs <= 0) return 0;
   const cutoff = new Date(Date.now() - autoRejectMs);
@@ -116,6 +140,10 @@ function ensureApprovalRecoveryLoop(): void {
 
   const sweep = async () => {
     try {
+      const autoApproved = await sweepOperatorAutoApprovals();
+      if (autoApproved > 0) {
+        console.log(`[approvals] Auto-approved ${autoApproved} pending approval(s) under standing operator authorization.`);
+      }
       const expired = await sweepExpiredPendingApprovals();
       if (expired > 0) {
         console.log(`[approvals] Auto-rejected ${expired} approval(s) that exceeded the durable decision window.`);
