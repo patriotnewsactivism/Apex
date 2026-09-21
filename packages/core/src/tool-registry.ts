@@ -301,6 +301,113 @@ async function deliverQueuedEmailSend(
 
 // ─── Built-in Tool Definitions ────────────────────────────────────────────────
 
+// ─── OpenStreetMap business lookup ───────────────────────────────────────────
+//
+// The keyless directory fallback used to regex-match the query against the OSM
+// `name` tag across all of the United States. Businesses are named "Aable Bail
+// Bonds", not "bail bonds agency", so a category phrase matched nothing and the
+// "always works" fallback returned zero on every sweep for months. OSM models
+// what a business *is* in its tags, so that is what we query.
+
+/** Query keywords → the OSM tags that actually describe that business type. */
+const OSM_CATEGORY_TAGS: ReadonlyArray<{ keywords: readonly string[]; tags: readonly string[] }> = [
+  { keywords: ['bail bond', 'bail bonds', 'bail bondsman'], tags: ['office=bail_bond'] },
+  { keywords: ['hvac', 'heating and air', 'air conditioning'], tags: ['craft=hvac', 'shop=hvac'] },
+  { keywords: ['roofing', 'roofer'], tags: ['craft=roofer'] },
+  { keywords: ['plumbing', 'plumber'], tags: ['craft=plumber'] },
+  { keywords: ['electrician', 'electrical contractor'], tags: ['craft=electrician'] },
+  { keywords: ['solar'], tags: ['craft=solar', 'shop=solar'] },
+  { keywords: ['pest control', 'exterminator'], tags: ['craft=pest_control'] },
+  { keywords: ['landscaping', 'lawn care', 'landscaper'], tags: ['craft=gardener', 'shop=garden_centre'] },
+  { keywords: ['cleaning service', 'janitorial', 'maid service'], tags: ['craft=cleaning', 'shop=dry_cleaning'] },
+  { keywords: ['law firm', 'attorney', 'lawyer', 'legal', 'personal injury', 'dui', 'criminal defense', 'family law', 'bankruptcy', 'immigration attorney'], tags: ['office=lawyer'] },
+  { keywords: ['real estate', 'realtor', 'brokerage'], tags: ['office=estate_agent'] },
+  { keywords: ['property management', 'vacation rental'], tags: ['office=property_management', 'office=estate_agent'] },
+  { keywords: ['insurance'], tags: ['office=insurance'] },
+  { keywords: ['accounting', 'cpa', 'bookkeeping', 'tax prep'], tags: ['office=accountant', 'office=tax_advisor'] },
+  { keywords: ['dentist', 'dental'], tags: ['amenity=dentist', 'healthcare=dentist'] },
+  { keywords: ['medspa', 'med spa', 'medical spa', 'plastic surgery', 'esthetic'], tags: ['shop=beauty', 'leisure=spa', 'healthcare=clinic'] },
+  { keywords: ['veterinary', 'veterinarian', 'animal hospital', 'pet clinic'], tags: ['amenity=veterinary'] },
+  { keywords: ['auto repair', 'auto body', 'collision repair', 'mechanic'], tags: ['shop=car_repair'] },
+  { keywords: ['pool service', 'pool cleaning'], tags: ['shop=swimming_pool', 'craft=pool_maintenance'] },
+  { keywords: ['chiropractor', 'chiropractic'], tags: ['healthcare=chiropractor'] },
+  { keywords: ['pharmacy'], tags: ['amenity=pharmacy'] },
+  { keywords: ['gym', 'fitness'], tags: ['leisure=fitness_centre'] },
+];
+
+/** Business-shaped filler that is neither a category nor a place name. */
+const OSM_GENERIC_WORDS = new Set([
+  'agency', 'agencies', 'company', 'companies', 'service', 'services', 'shop', 'shops',
+  'contractor', 'contractors', 'business', 'businesses', 'firm', 'firms', 'llc', 'inc',
+  'near', 'in', 'around', 'local', 'best', 'top', 'licensed', 'family', 'owned',
+  'phone', 'website', 'contact', 'address', '24/7', '24', 'hour', 'hours',
+  'clinic', 'clinics', 'center', 'centre', 'official', 'about', 'us', 'team',
+]);
+
+/** Match a free-text query onto OSM tag filters. Empty when nothing is recognized. */
+export function osmTagFiltersForQuery(query: string): { tags: string[]; matchedKeywords: string[] } {
+  const lower = query.toLowerCase();
+  const tags = new Set<string>();
+  const matchedKeywords: string[] = [];
+  for (const entry of OSM_CATEGORY_TAGS) {
+    for (const keyword of entry.keywords) {
+      if (lower.includes(keyword)) {
+        matchedKeywords.push(keyword);
+        for (const tag of entry.tags) tags.add(tag);
+      }
+    }
+  }
+  return { tags: [...tags], matchedKeywords };
+}
+
+/** Strip matched category words and generic filler, leaving the place name. */
+export function osmLocationFromQuery(query: string, matchedKeywords: readonly string[]): string {
+  let remaining = query.toLowerCase();
+  // Longest first: "bail bond" and "bail bonds" both match, and stripping the
+  // shorter one first leaves an orphaned "s" that poisons the geocode.
+  for (const keyword of [...matchedKeywords].sort((a, b) => b.length - a.length)) {
+    remaining = remaining.split(keyword).join(' ');
+  }
+  return remaining
+    .split(/\s+/)
+    .filter((word) => word && !OSM_GENERIC_WORDS.has(word))
+    .join(' ')
+    .trim();
+}
+
+/**
+ * Public Overpass instances, tried in order. The main one rejects with 503
+ * under load often enough that a single endpoint makes this provider
+ * effectively unavailable — measured 2026-09-21, all-503/timeout across the
+ * public pool. Failover raises the odds; it does not make this a dependable
+ * lead source. A real directory key (Yelp/Google Places) is the durable fix.
+ */
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass.osm.jp/api/interpreter',
+] as const;
+
+/**
+ * Geocode a place name to an Overpass bounding box via Nominatim.
+ * Nominatim returns [south, north, west, east]; Overpass wants (s,w,n,e).
+ */
+async function nominatimBoundingBox(place: string): Promise<string | undefined> {
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(place)}&format=json&limit=1`;
+  const res = await fetch(url, {
+    // Nominatim's usage policy requires an identifying User-Agent.
+    headers: { 'User-Agent': 'APEX-LeadResearch/1.0 (apex.donmatthews.live)' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) return undefined;
+  const data = (await res.json()) as Array<{ boundingbox?: [string, string, string, string] }>;
+  const box = data[0]?.boundingbox;
+  if (!box || box.length !== 4) return undefined;
+  const [south, north, west, east] = box;
+  return `${south},${west},${north},${east}`;
+}
+
 export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
   return [
     // Read File
@@ -403,14 +510,25 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ query, maxResults }) {
         const n = maxResults ?? 10;
         const results: Array<{ title: string; url: string; snippet: string }> = [];
+        // Why each provider produced nothing. A non-ok HTTP response used to
+        // fall through silently — the catch only fires on thrown exceptions —
+        // so an expired key looked exactly like "no results for this query",
+        // and the agent burned its capacity rewording the query instead.
+        const diagnostics: string[] = [];
 
         // ── Strategy 0: Tavily Search API (best quality, AI-optimized) ──
         const tavilyKey = process.env.TAVILY_API_KEY;
+        if (!tavilyKey) diagnostics.push('tavily: TAVILY_API_KEY not set');
         if (tavilyKey) {
           try {
             const tavilyRes = await fetch('https://api.tavily.com/search', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                // Current Tavily auth. The body api_key below is the legacy
+                // form, kept so an older key/plan keeps working.
+                Authorization: `Bearer ${tavilyKey}`,
+              },
               body: JSON.stringify({
                 api_key: tavilyKey,
                 query,
@@ -418,7 +536,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 search_depth: 'advanced',
                 include_answer: true,
               }),
+              signal: AbortSignal.timeout(20_000),
             });
+            if (!tavilyRes.ok) {
+              const body = await tavilyRes.text().catch(() => '');
+              const detail = `tavily: HTTP ${tavilyRes.status} ${body.slice(0, 200)}`.trim();
+              diagnostics.push(detail);
+              console.warn(`[webSearch] ${detail} for "${query}"`);
+            }
             if (tavilyRes.ok) {
               const tavilyData = await tavilyRes.json() as {
                 answer?: string;
@@ -432,28 +557,40 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 results.push({ title: r.title, url: r.url, snippet: r.content });
               }
               if (results.length > 0) return { query, provider: 'tavily', results: results.slice(0, n + 1) };
+              diagnostics.push('tavily: 200 but zero results');
             }
           } catch (e) {
+            diagnostics.push(`tavily: ${e instanceof Error ? e.message : String(e)}`);
             console.warn(`[webSearch] Tavily failed for "${query}": ${e}`);
           }
         }
 
         // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
         const braveKey = process.env.BRAVE_SEARCH_API_KEY;
+        if (!braveKey) diagnostics.push('brave: BRAVE_SEARCH_API_KEY not set');
         if (braveKey) {
           try {
             const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
             const braveRes = await fetch(braveUrl, {
               headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
+              signal: AbortSignal.timeout(20_000),
             });
+            if (!braveRes.ok) {
+              const body = await braveRes.text().catch(() => '');
+              const detail = `brave: HTTP ${braveRes.status} ${body.slice(0, 200)}`.trim();
+              diagnostics.push(detail);
+              console.warn(`[webSearch] ${detail} for "${query}"`);
+            }
             if (braveRes.ok) {
               const braveData = await braveRes.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
               for (const r of braveData.web?.results ?? []) {
                 results.push({ title: r.title, url: r.url, snippet: r.description });
               }
               if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n) };
+              diagnostics.push('brave: 200 but zero results');
             }
           } catch (e) {
+            diagnostics.push(`brave: ${e instanceof Error ? e.message : String(e)}`);
             console.warn(`[webSearch] Brave failed for "${query}": ${e}`);
           }
         }
@@ -509,6 +646,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
           if (results.length > 0) return { query, provider: 'duckduckgo-html-fallback', results: results.slice(0, n) };
         } catch (e) {
+          diagnostics.push(`duckduckgo-html: ${e instanceof Error ? e.message : String(e)}`);
           console.warn(`[webSearch] DuckDuckGo HTML failed for "${query}": ${e}`);
         }
 
@@ -532,11 +670,24 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         }
 
         if (results.length === 0) {
+          if (diagnostics.length > 0) {
+            console.warn(`[webSearch] all providers empty for "${query}": ${diagnostics.join(' | ')}`);
+          }
+          // A provider-side failure is NOT a query problem. Telling the agent
+          // to "be more specific" when the real cause is an expired key sends
+          // it into a reword-and-retry loop that spends LLM capacity and never
+          // recovers, which is exactly what happened in production.
+          const providerFailure = diagnostics.some(
+            (d) => /HTTP \d|not set|timed out|aborted|fetch failed/i.test(d),
+          );
           return {
             query,
             provider: 'none',
             results: [],
-            suggestion: 'No results found. Try a more specific query — for example, search by specific state, city, or industry keyword instead of broad regional terms.',
+            diagnostics,
+            suggestion: providerFailure
+              ? 'Every search provider failed or is unconfigured — this is NOT a query problem. Rewording will not help. Report this and use another tool.'
+              : 'No results found. Try a more specific query — for example, search by specific state, city, or industry keyword instead of broad regional terms.',
           };
         }
 
@@ -987,57 +1138,117 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           }
         }
         // ── Provider 3: OpenStreetMap Overpass API (no key, always works) ──
-        // Free, no signup, no credit card. Lower data quality but covers millions of businesses.
-        try {
-          // Extract a broad search area from the query
-          // Overpass uses a bounding box; we use a large US region as default
-          // and search for businesses by name keyword
-          const keyword = query.replace(/\b(in|near|around|Texas|Florida|California|Arizona|Georgia|Oklahoma|Louisiana|Alabama|Mississippi|South Carolina|North Carolina|New York|New Jersey|Illinois|Michigan|Washington|Dallas|Houston|Miami|Tampa|Orlando|San Antonio|Austin|Charlotte|Jacksonville|Fort Lauderdale|Naples|Deerfield)\b/gi, '').trim();
+        // Free, no signup, no credit card. Queries by OSM category tag inside a
+        // geocoded bounding box — NOT by name. A business is tagged
+        // office=bail_bond; it is not named "bail bonds agency", which is why
+        // the previous name-regex version returned zero on every sweep.
+        const osmNotes: string[] = [];
+        const { tags: osmTags, matchedKeywords } = osmTagFiltersForQuery(query);
+        const place = osmLocationFromQuery(query, matchedKeywords);
 
-          const overpassQuery = `[out:json][timeout:15];
-            area["name"="United States"]->.us;
-            (
-              node["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}",i](area.us);
-              way["name"~"${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}",i](area.us);
-            );
-            out body 50;`;
+        if (osmTags.length === 0) {
+          osmNotes.push(`OSM: no known category tag for "${query}"`);
+        } else if (!place) {
+          osmNotes.push(`OSM: no place name left in "${query}" after removing the category — include a city or state`);
+        } else {
+          try {
+            const bbox = await nominatimBoundingBox(place);
+            if (!bbox) {
+              osmNotes.push(`OSM: could not geocode "${place}"`);
+            } else {
+              const selectors = osmTags
+                .map((tag) => {
+                  const [key, value] = tag.split('=');
+                  return `  nwr["${key}"="${value}"](${bbox});`;
+                })
+                .join('\n');
+              const overpassQuery = `[out:json][timeout:25];\n(\n${selectors}\n);\nout center tags 60;`;
 
-          const osmRes = await fetch('https://overpass-api.de/api/interpreter', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `data=${encodeURIComponent(overpassQuery)}`,
-            signal: AbortSignal.timeout(15_000),
-          });
+              let osmRes: Response | undefined;
+              for (const endpoint of OVERPASS_ENDPOINTS) {
+                try {
+                  const attempt = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/x-www-form-urlencoded',
+                      'User-Agent': 'APEX-LeadResearch/1.0 (apex.donmatthews.live)',
+                    },
+                    body: `data=${encodeURIComponent(overpassQuery)}`,
+                    signal: AbortSignal.timeout(25_000),
+                  });
+                  if (attempt.ok) {
+                    osmRes = attempt;
+                    break;
+                  }
+                  osmNotes.push(`OSM: ${new URL(endpoint).host} HTTP ${attempt.status}`);
+                } catch (e) {
+                  osmNotes.push(
+                    `OSM: ${new URL(endpoint).host} ${e instanceof Error ? e.message : String(e)}`,
+                  );
+                }
+              }
 
-          if (osmRes.ok) {
-            const osmData = await osmRes.json() as {
-              elements: Array<{
-                tags?: Record<string, string>;
-              }>;
-            };
+              if (!osmRes) {
+                osmNotes.push('OSM: every public Overpass endpoint refused');
+              } else {
+                const osmData = (await osmRes.json()) as {
+                  elements?: Array<{ tags?: Record<string, string> }>;
+                };
 
-            const businesses = (osmData.elements ?? [])
-              .filter((e) => e.tags?.name)
-              .slice(0, 50)
-              .map((e) => ({
-                name: e.tags!.name,
-                address: [e.tags!['addr:street'], e.tags!['addr:city'], e.tags!['addr:state']].filter(Boolean).join(', ') || '',
-                phone: e.tags!['phone'] ?? e.tags!['contact:phone'],
-                website: e.tags!['website'] ?? e.tags!['contact:website'],
-                industry: e.tags!.office ?? e.tags!.craft ?? e.tags!.shop ?? e.tags!.amenity ?? keyword,
-                city: e.tags!['addr:city'] ?? '',
-                source: 'osm' as const,
-              }));
+                const businesses = (osmData.elements ?? [])
+                  .filter((e) => e.tags?.name)
+                  .slice(0, 50)
+                  .map((e) => {
+                    const t = e.tags!;
+                    return {
+                      name: t.name,
+                      address:
+                        [t['addr:housenumber'], t['addr:street'], t['addr:city'], t['addr:state']]
+                          .filter(Boolean)
+                          .join(' ')
+                          .trim() || '',
+                      phone: t['phone'] ?? t['contact:phone'],
+                      website: t['website'] ?? t['contact:website'],
+                      industry: t.office ?? t.craft ?? t.shop ?? t.amenity ?? t.healthcare ?? '',
+                      city: t['addr:city'] ?? '',
+                      source: 'osm' as const,
+                    };
+                  });
 
-            if (businesses.length > 0) {
-              return { query, total: businesses.length, businesses, provider: 'osm' };
+                if (businesses.length > 0) {
+                  return {
+                    query,
+                    total: businesses.length,
+                    businesses,
+                    provider: 'osm',
+                    area: place,
+                    tags: osmTags,
+                  };
+                }
+                osmNotes.push(`OSM: 0 businesses tagged ${osmTags.join('/')} in "${place}"`);
+              }
             }
+          } catch (e) {
+            osmNotes.push(`OSM: ${e instanceof Error ? e.message : String(e)}`);
           }
-        } catch {
-          // All providers failed
         }
 
-        return { query, total: 0, businesses: [], provider: 'none', error: 'No business directory API returned results. Set GOOGLE_PLACES_API_KEY (Places API (New), enabled in the same Google Cloud project APEX already deploys to) for real phone numbers and company websites; YELP_API_KEY is also supported but returns Yelp listing URLs rather than the business’s own site. OSM Overpass is the keyless fallback and is sparse for US small businesses. Use webSearch as an alternative.' };
+        return {
+          query,
+          total: 0,
+          businesses: [],
+          provider: 'none',
+          // Real reasons, so the agent can act instead of guessing. Without
+          // these it reruns query variants against a source that structurally
+          // cannot answer them.
+          attempts: [
+            yelpKey ? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
+            googleKey ? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
+            ...osmNotes,
+          ],
+          error:
+            'No business directory API returned results. Set GOOGLE_PLACES_API_KEY (Places API (New), enabled in the same Google Cloud project APEX already deploys to) for real phone numbers and company websites; YELP_API_KEY is also supported but returns Yelp listing URLs rather than the business’s own site. OSM Overpass is the keyless fallback: it only answers when the query names a recognized business category AND a geocodable city/state. Use webSearch as an alternative.',
+        };
       },
     },
 
