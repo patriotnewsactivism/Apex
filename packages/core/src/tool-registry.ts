@@ -534,6 +534,54 @@ async function tomtomGeoBias(place: string, key: string): Promise<string> {
   return bias;
 }
 
+/**
+ * The one definition of a researched lead as it arrives from a producer.
+ *
+ * It exists as a named export rather than inline in each tool because the
+ * producers are not all agents. campaign-runner.ts builds this payload in
+ * deterministic code and hands it to saveResearchedLeadsBatch, and that
+ * producer went silently, totally broken twice:
+ *
+ *   #124 made contactResearchStatus required
+ *   #175 made outreachAngle required
+ *
+ * The runner was never updated for either, so from #124 onward EVERY save it
+ * attempted was rejected by this schema before touching the database — for
+ * every lead, in every city, on all three retries. It stayed invisible
+ * because the directory had no working provider and so usually found nothing
+ * to save; the moment TomTom landed (#194) and results started arriving, the
+ * runner began spending a real qualification model call per segment and
+ * throwing away 100% of the output. That is what an overnight bill with no
+ * leads to show for it looks like.
+ *
+ * A schema a non-agent producer must satisfy belongs somewhere that producer
+ * can import and be type-checked against. `ResearchedLeadInput` below is that
+ * type, so the next required field breaks `pnpm run typecheck:production`
+ * instead of breaking production.
+ */
+export const researchedLeadInputSchema = z.object({
+  companyName: z.string().describe('Real company name as found in search results'),
+  website: z.string().optional().describe('Company website URL, used for de-dup'),
+  industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa, Real Estate'),
+  city: z.string().optional(),
+  decisionMakerName: z.string().optional().describe('Publicly verified owner, founder, office manager, or other relevant decision maker; never guess'),
+  contactEmail: z.string().email().optional().describe('Publicly listed business email'),
+  contactPhone: z.string().optional().describe('Publicly listed business phone number'),
+  contactSourceUrl: z.string().url().optional().describe('Page that supports the contact details'),
+  contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively checking the company site and public sources for a decision maker, email, and phone'),
+  fitReason: z.string().describe('Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)'),
+  // Was optional — a lead saved without one leaves {{outreachAngle}} blank
+  // in every email-campaign template that merges it (campaign-runner.ts),
+  // so an "optional" field was quietly shipping empty outreach copy.
+  // Required, like its sibling fitReason: once you know why a lead fits,
+  // you can say how to pitch it — there's no legitimate case where one
+  // exists and the other doesn't.
+  outreachAngle: z.string().describe('Suggested angle for the first outreach message — how to pitch BuildMyBot to them, based on fitReason'),
+});
+
+/** Exactly what a producer must hand saveResearchedLead(sBatch). */
+export type ResearchedLeadInput = z.infer<typeof researchedLeadInputSchema>;
+
 export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
   return [
     // Read File
@@ -983,24 +1031,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       name: 'saveResearchedLead',
       description:
         "Save a qualified outbound lead to the researched_leads table. Call this once per qualifying company found via web search — do NOT just describe leads in your final answer, they must be persisted here to count as pipeline output. Checks for an existing row with the same website first and skips the insert if found (returns duplicate: true) so the team never double-works a company.",
-      schema: z.object({
-        companyName: z.string().describe('Real company name as found in search results'),
-        website: z.string().optional().describe('Company website URL, used for de-dup'),
-        industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa, Real Estate'),
-        city: z.string().optional(),
-        decisionMakerName: z.string().optional().describe('Publicly verified owner, founder, office manager, or other relevant decision maker; never guess'),
-        contactEmail: z.string().email().optional().describe('Publicly listed business email'),
-        contactPhone: z.string().optional().describe('Publicly listed business phone number'),
-        contactSourceUrl: z.string().url().optional().describe('Page that supports the contact details'),
-        contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively checking the company site and public sources for a decision maker, email, and phone'),
-        fitReason: z.string().describe('Why this company matches the ICP pain point (missed calls, slow lead response, after-hours gaps)'),
-        // Was optional — a lead saved without one leaves {{outreachAngle}} blank
-        // in every email-campaign template that merges it (campaign-runner.ts),
-        // so an "optional" field was quietly shipping empty outreach copy.
-        // Required, like its sibling fitReason: once you know why a lead fits,
-        // you can say how to pitch it — there's no legitimate case where one
-        // exists and the other doesn't.
-        outreachAngle: z.string().describe('Suggested angle for the first outreach message — how to pitch BuildMyBot to them, based on fitReason'),
+      schema: researchedLeadInputSchema.extend({
         campaignId: z.string().optional().describe('Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.'),
       }),
       requiresApproval: false,
@@ -1590,21 +1621,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       name: 'saveResearchedLeadsBatch',
       description: 'Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.',
       schema: z.object({
-        leads: z.array(z.object({
-          companyName: z.string().describe('Real company name'),
-          website: z.string().optional().describe('Company website URL'),
-          industry: z.string().optional().describe('e.g. HVAC, Roofing, Personal Injury, MedSpa'),
-          city: z.string().optional(),
-          decisionMakerName: z.string().optional().describe('Publicly verified decision maker; never guess'),
-          contactEmail: z.string().email().optional(),
-          contactPhone: z.string().optional(),
-          contactSourceUrl: z.string().url().optional(),
-          contactResearchStatus: z.enum(['partial', 'complete', 'unavailable']).describe('Result after actively searching for contact details'),
-          fitReason: z.string().describe('Why this company is a good fit for BuildMyBot'),
-          // Required — see saveResearchedLead's outreachAngle for why an
-          // "optional" angle was quietly shipping blank outreach copy.
-          outreachAngle: z.string().describe('Suggested outreach pitch, based on fitReason'),
-        })).describe('Array of leads to save (10-20 at a time is ideal)'),
+        leads: z.array(researchedLeadInputSchema).describe('Array of leads to save (10-20 at a time is ideal)'),
         campaignId: z.string().optional().describe('Attribute every lead in this batch to a lead campaign. Omit for ad-hoc research.'),
       }),
       requiresApproval: false,
