@@ -174,12 +174,11 @@ Credential environment variables:
 - `OPENROUTER_FREE_API_KEY`
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_API_KEY_2`
-- `OPENROUTER_API_KEY_4` — optional extra independent account
+- `OPENROUTER_API_KEY_3` — optional independent-account credential
+- `OPENROUTER_API_KEY_4` — optional independent-account credential
 - `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so `/health` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials. The paid continuity route uses the funded `OPENROUTER_API_KEY` inference credential, never a management key.
 
-`OPENROUTER_API_KEY_3` is burned (100% live failures) and is not a production roster member.
-
-Three independent qualifying OpenRouter accounts (each historically funded with at least $10, so each should receive the higher `:free` daily allowance) are load-balanced by key fingerprint. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Nominal ceiling is about **3,000 free requests/day** if all three accounts retain their qualifying allowance. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; only the explicitly confirmed continuity route may spend paid credit after free execution becomes unavailable.
+All configured qualifying OpenRouter accounts are load-balanced by key fingerprint; `_3` and `_4` are both valid production roster slots. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Available free-request capacity scales with the number of distinct qualifying accounts actually detected by `/health`; credential count alone is not treated as account count. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; only the explicitly confirmed continuity route may spend paid credit after free execution becomes unavailable.
 
 OpenRouter requests retain provider pacing, retry-after handling, transient cooldowns, circuit breakers, context trimming, token reservations, structured tool calls, and serving-provider diagnostics.
 
