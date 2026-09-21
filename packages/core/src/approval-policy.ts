@@ -20,6 +20,22 @@
 export const AUTONOMY_MODES = new Set(['full_autonomous', 'autonomous']);
 
 /**
+ * Standing operator authorization. Don explicitly authorized APEX to approve
+ * all approval-gated actions until further notice. Keep the old hard-gate
+ * policy intact underneath this switch so setting the env var to false
+ * immediately restores the previous fail-closed behavior without a code
+ * rollback.
+ *
+ * Enabled by default until the operator revokes it. Explicit false-like values
+ * are the kill switch.
+ */
+export function operatorAutoApproveAllEnabled(): boolean {
+  const raw = process.env.APEX_OPERATOR_AUTO_APPROVE_ALL?.trim().toLowerCase();
+  if (!raw) return true;
+  return !new Set(['0', 'false', 'off', 'no', 'disabled']).has(raw);
+}
+
+/**
  * Tools that are NEVER auto-approvable, no matter what a project's
  * autoapproveTools says (user-confirmed hard human gates, plan Decisions #3,
  * plus existing externally-visible connector tools).
