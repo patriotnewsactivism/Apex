@@ -191,7 +191,12 @@ check(
 );
 
 console.log('\n── Paid FlashX continuity policy ──');
-check('paid FlashX inference is enabled without an APEX activation flag', paidLLMFallbackEnabled(undefined) === true);
+const previousPaidFlag = process.env.APEX_PAID_FALLBACK_ENABLED;
+delete process.env.APEX_PAID_FALLBACK_ENABLED;
+check(
+  'paid FlashX inference needs no APEX activation flag — an unset variable leaves it on',
+  paidLLMFallbackEnabled(undefined) === true,
+);
 check(
   'paid FlashX continuity route remains last after all free/BYOK capacity',
   getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
@@ -201,6 +206,37 @@ check(
   'paid continuity model is GLM 5.3 FlashX',
   PAID_FALLBACK_MODEL === 'z-ai/glm-5.3-flashx',
 );
+
+// The operator's off switch. Before it existed the route was appended
+// unconditionally and this helper returned a literal `true`, so the only way
+// to stop paid spend was unsetting OPENROUTER_API_KEY -- which is also a
+// member of OPENROUTER_FREE_KEY_ENVS and would have cost a free-pool account
+// at the same time. Both halves are checked: the flag must be readable AND
+// the route must actually leave the chain, because a flag that only changes
+// what /health reports is worse than none.
+process.env.APEX_PAID_FALLBACK_ENABLED = 'false';
+check(
+  'APEX_PAID_FALLBACK_ENABLED=false reports the paid route as disabled',
+  paidLLMFallbackEnabled(undefined) === false,
+);
+check(
+  'APEX_PAID_FALLBACK_ENABLED=false removes the paid route from the chain entirely',
+  !getProviderOrderForRole('CEO').includes(PAID_FALLBACK_PROVIDER_NAME),
+  getProviderOrderForRole('CEO'),
+);
+check(
+  'disabling paid does not remove any free or BYOK provider',
+  JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(automaticProviders),
+  getProviderOrderForRole('CEO'),
+);
+process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
+check(
+  'APEX_PAID_FALLBACK_ENABLED=true puts the paid route back, still last',
+  getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
+  getProviderOrderForRole('CEO'),
+);
+if (previousPaidFlag === undefined) delete process.env.APEX_PAID_FALLBACK_ENABLED;
+else process.env.APEX_PAID_FALLBACK_ENABLED = previousPaidFlag;
 
 console.log('\n── Custom OpenRouter policy + BYOK continuity ──');
 const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];

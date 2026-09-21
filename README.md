@@ -42,7 +42,7 @@ APEX uses a free-first runtime chain with one dedicated paid continuity exceptio
 8. direct Gemini 3.8 Flash BYOK when enabled
 9. GLM 5.3 FlashX (`z-ai/glm-5.3-flashx`) — paid continuity
 
-The operator-persisted model roster remains free-only. FlashX is a separate runtime continuity route and is always eligible when the funded `OPENROUTER_API_KEY` is configured. APEX does not apply its spend, free-request, workspace-token, provider-token, emergency-request, model-specific pacing, or forced-reasoning governors to FlashX. Upstream OpenRouter/Z.ai billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply.
+The operator-persisted model roster remains free-only. FlashX is a separate runtime continuity route and is eligible by default when the funded `OPENROUTER_API_KEY` is configured. Set `APEX_PAID_FALLBACK_ENABLED=false` to remove it from the chain and run free-only; APEX then parks the workforce when free and BYOK capacity are spent rather than spending money. Every free and BYOK provider is unaffected — do not unset `OPENROUTER_API_KEY` to stop paid spend, because it is also a free-pool account. APEX does not apply its spend, free-request, workspace-token, provider-token, emergency-request, model-specific pacing, or forced-reasoning governors to FlashX. Upstream OpenRouter/Z.ai billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply.
 
 FlashX also receives the full available conversation history rather than APEX's smaller free-route history trim, allowing the runtime to use its large upstream context window.
 

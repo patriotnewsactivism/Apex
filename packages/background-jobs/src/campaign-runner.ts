@@ -12,6 +12,7 @@ import {
   getDefaultLLMConfig,
   getToolRegistry,
   normalizeIndustry,
+  type ResearchedLeadInput,
   type ToolContext,
 } from '@workspace/core';
 
@@ -248,12 +249,7 @@ interface DirectoryBusiness {
  *  provider answered — Yelp uses single-letter keys to save tokens, Google and
  *  OSM use full names. Normalize once here so the rest of the runner does not
  *  care who answered. */
-function readBusiness(b: DirectoryBusiness): {
-  companyName: string;
-  website?: string;
-  industry?: string;
-  city?: string;
-} | null {
+export function readBusiness(b: DirectoryBusiness): DirectoryLead | null {
   const companyName = (b.name ?? b.n ?? '').trim();
   if (!companyName) return null;
   const website = (b.website ?? b.w ?? '').trim() || undefined;
@@ -262,7 +258,88 @@ function readBusiness(b: DirectoryBusiness): {
     website,
     industry: (b.industry ?? b.i ?? '').trim() || undefined,
     city: (b.city ?? b.c ?? '').trim() || undefined,
+    // Was parsed off the provider response and then dropped on the floor.
+    // TomTom and Google both return the business's own number, and a lead
+    // with a phone is one Sales can actually work; without it the row is
+    // a name and a URL.
+    phone: (b.phone ?? b.p ?? '').trim() || undefined,
   };
+}
+
+/** What the directory step knows about a business, before qualification. */
+export interface DirectoryLead {
+  companyName: string;
+  website?: string;
+  industry?: string;
+  city?: string;
+  phone?: string;
+}
+
+/**
+ * How much of a contact path a directory row actually gives us.
+ *
+ * Never 'complete': this loop reads a business directory and stops there. It
+ * does not open the company site, so it never has a verified decision maker
+ * or email, and claiming otherwise would mark leads as fully enriched that
+ * the enrichment pass still needs to work.
+ */
+function contactStatusFor(b: DirectoryLead): ResearchedLeadInput['contactResearchStatus'] {
+  return b.phone || b.website ? 'partial' : 'unavailable';
+}
+
+/**
+ * Every field saveResearchedLeadsBatch requires that has nothing to do with
+ * the model. Typed as the tool's own input type so that adding a required
+ * field to researchedLeadInputSchema breaks `pnpm run typecheck:production`
+ * here, which is the whole reason this producer is typed at all.
+ *
+ * Module level, not a closure inside qualifyBatch, so the payload shape can
+ * be verified against the real schema with no LLM and no database.
+ */
+export function campaignLeadBase(
+  segment: Pick<typeof campaignSegments.$inferSelect, 'industry' | 'city'>,
+  b: DirectoryLead,
+): Omit<ResearchedLeadInput, 'fitReason' | 'outreachAngle'> {
+  return {
+    companyName: b.companyName,
+    website: b.website,
+    industry: segment.industry,
+    city: b.city || segment.city,
+    contactPhone: b.phone,
+    contactResearchStatus: contactStatusFor(b),
+  };
+}
+
+/**
+ * The copy used when the qualification model is unavailable or unparseable.
+ *
+ * outreachAngle here was `undefined`, which is what made the fallback worse
+ * than useless: the angle is required, so the one path built to keep the hunt
+ * alive through a provider outage produced a payload guaranteed to be
+ * rejected. A plainer opener is the entire point of a fallback.
+ */
+export function templateCopyFor(
+  segment: Pick<typeof campaignSegments.$inferSelect, 'industry' | 'city'>,
+  b: DirectoryLead,
+): Pick<ResearchedLeadInput, 'fitReason' | 'outreachAngle'> {
+  return {
+    fitReason:
+      `${segment.industry} business in ${segment.city} — BuildMyBot's ICP for speed-to-lead: ` +
+      `missed inbound calls, slow first response, and no after-hours coverage. ` +
+      `Not yet individually qualified (${b.companyName} was captured from a directory search).`,
+    outreachAngle:
+      `Ask ${b.companyName} what happens to a ${segment.industry.toLowerCase()} call that comes in ` +
+      `after hours or while the crew is on a job — then show BuildMyBot answering it in ` +
+      `${b.city || segment.city} and booking the appointment.`,
+  };
+}
+
+/** A failure the same inputs will reproduce exactly, so a retry is pure
+ *  waste. Right now that means a tool rejecting our arguments: the registry
+ *  validates every call against the tool's Zod schema before executing it,
+ *  and a payload that fails that check fails it every time. */
+export function isDeterministicFailure(message: string): boolean {
+  return message.startsWith('Invalid args for ') || message.startsWith('Unknown tool: ');
 }
 
 /** Strip to a comparable hostname so "https://www.acme.com/" and
@@ -462,7 +539,14 @@ export class CampaignRunner {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const attempts = segment.attempts ?? 1;
-      const exhaustedRetries = attempts >= (segment.maxAttempts ?? 3);
+      // A schema rejection is deterministic: the same producer building the
+      // same payload will be rejected identically next tick, so retrying it
+      // buys nothing and costs another qualification model call per attempt.
+      // Live on 2026-09-21 that was 3x the spend on every city in the
+      // territory for a payload that could never be accepted. Retries are for
+      // flaky directories and provider outages, not for our own bugs.
+      const exhaustedRetries =
+        isDeterministicFailure(message) || attempts >= (segment.maxAttempts ?? 3);
       await db
         .update(campaignSegments)
         .set({
@@ -476,7 +560,11 @@ export class CampaignRunner {
         .where(eq(campaignSegments.id, segment.id));
       console.warn(
         `[campaigns] ${campaign.name} · ${label} attempt ${attempts} failed: ${message}` +
-          (exhaustedRetries ? ' — retries exhausted, segment marked failed' : ' — will retry'),
+          (isDeterministicFailure(message)
+            ? ' — not retryable (the payload itself is rejected), segment marked failed'
+            : exhaustedRetries
+              ? ' — retries exhausted, segment marked failed'
+              : ' — will retry'),
       );
     }
   }
@@ -507,22 +595,10 @@ export class CampaignRunner {
   private async qualifyBatch(
     campaign: typeof leadCampaigns.$inferSelect,
     segment: typeof campaignSegments.$inferSelect,
-    businesses: Array<{ companyName: string; website?: string; industry?: string; city?: string }>,
-  ): Promise<Array<{
-    companyName: string;
-    website?: string;
-    industry?: string;
-    city?: string;
-    fitReason: string;
-    outreachAngle?: string;
-  }>> {
-    const template = (b: { companyName: string }) => ({
-      fitReason:
-        `${segment.industry} business in ${segment.city} — BuildMyBot's ICP for speed-to-lead: ` +
-        `missed inbound calls, slow first response, and no after-hours coverage. ` +
-        `Not yet individually qualified (${b.companyName} was captured from a directory search).`,
-      outreachAngle: undefined as string | undefined,
-    });
+    businesses: DirectoryLead[],
+  ): Promise<ResearchedLeadInput[]> {
+    const base = (b: DirectoryLead) => campaignLeadBase(segment, b);
+    const template = (b: DirectoryLead) => templateCopyFor(segment, b);
 
     try {
       const client = createLLMClient(getDefaultLLMConfig('LEAD_RESEARCH'));
@@ -549,17 +625,17 @@ export class CampaignRunner {
           const p = parsed[i];
           const fallback = template(b);
           return {
-            ...b,
-            industry: segment.industry,
-            city: b.city || segment.city,
+            ...base(b),
             fitReason:
               typeof p?.fitReason === 'string' && p.fitReason.trim()
                 ? p.fitReason.trim()
                 : fallback.fitReason,
+            // Per field, not per lead: a model that writes a good reason and
+            // drops the angle should keep the reason it wrote.
             outreachAngle:
               typeof p?.outreachAngle === 'string' && p.outreachAngle.trim()
                 ? p.outreachAngle.trim()
-                : undefined,
+                : fallback.outreachAngle,
           };
         });
       }
@@ -570,12 +646,7 @@ export class CampaignRunner {
       );
     }
 
-    return businesses.map((b) => ({
-      ...b,
-      industry: segment.industry,
-      city: b.city || segment.city,
-      ...template(b),
-    }));
+    return businesses.map((b) => ({ ...base(b), ...template(b) }));
   }
 
   /** Close campaigns that have hit target or run out of territory.

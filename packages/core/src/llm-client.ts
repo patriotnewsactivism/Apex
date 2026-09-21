@@ -296,11 +296,11 @@ function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly 
         'gemini-3-8-flash-byok',
       ]
     : [...PROVIDER_ORDER];
-  // Paid FlashX continuity is always part of the route when its credential is
-  // configured. APEX does not impose a model-specific activation flag, spend
-  // ceiling, request cap, or pacing gate on this route; upstream OpenRouter/Z.ai
-  // limits remain authoritative.
-  freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
+  // Paid FlashX continuity is part of the route by default when its credential
+  // is configured. APEX imposes no spend ceiling, request cap, or pacing gate
+  // on it; upstream OpenRouter/Z.ai limits remain authoritative. The operator
+  // can remove the route entirely with APEX_PAID_FALLBACK_ENABLED=false.
+  if (paidLLMFallbackEnabled()) freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
   return freeOrder;
 }
 
@@ -317,9 +317,28 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
   );
 }
 
-/** Backward-compatible status helper: the paid FlashX route is always enabled. */
+/**
+ * Whether the paid FlashX continuity route is part of the chain.
+ *
+ * On by default, which is the reviewed behavior: an unset variable changes
+ * nothing. `APEX_PAID_FALLBACK_ENABLED=false` removes the route, and then
+ * APEX is free-only — when the free pool and BYOK capacity are spent the
+ * workforce parks until the daily reset rather than spending money.
+ *
+ * This exists because there was no way to stop paid spend at all. The route
+ * was unconditionally appended and the helper unconditionally returned true,
+ * so the only lever was unsetting OPENROUTER_API_KEY — which is also a member
+ * of OPENROUTER_FREE_KEY_ENVS, so it would have removed a free-pool account
+ * at the same time. An operator asking to go back to free allotments should
+ * not have to give up free capacity to do it.
+ *
+ * An explicit flag, not a spend cap: a cap needs a settled-cost feed to
+ * enforce and fails open when that feed is late. This fails closed.
+ */
 export function paidLLMFallbackEnabled(_mode?: string): boolean {
-  return true;
+  const raw = process.env.APEX_PAID_FALLBACK_ENABLED;
+  if (raw === undefined || raw.trim() === '') return true;
+  return enabled(raw);
 }
 
 function enabled(value: string | undefined): boolean {
