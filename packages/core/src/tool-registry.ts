@@ -376,6 +376,63 @@ export function osmLocationFromQuery(query: string, matchedKeywords: readonly st
     .trim();
 }
 
+/** Search radius around a geocoded place for TomTom POI lookups. ~40km covers
+ *  a US metro and its inner suburbs without spilling into the next city. */
+const TOMTOM_RADIUS_METRES = 40_000;
+
+/** US states, for finding where the place name starts in a lead query. */
+const US_STATES = [
+  'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut',
+  'delaware', 'florida', 'georgia', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa',
+  'kansas', 'kentucky', 'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan',
+  'minnesota', 'mississippi', 'missouri', 'montana', 'nebraska', 'nevada',
+  'new hampshire', 'new jersey', 'new mexico', 'new york', 'north carolina',
+  'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania', 'rhode island',
+  'south carolina', 'south dakota', 'tennessee', 'texas', 'utah', 'vermont',
+  'virginia', 'washington', 'west virginia', 'wisconsin', 'wyoming',
+  'district of columbia',
+] as const;
+
+const US_STATE_ABBREVS = new Set([
+  'al','ak','az','ar','ca','co','ct','de','fl','ga','hi','id','il','in','ia','ks','ky',
+  'la','me','md','ma','mi','mn','ms','mo','mt','ne','nv','nh','nj','nm','ny','nc','nd',
+  'oh','ok','or','pa','ri','sc','sd','tn','tx','ut','vt','va','wa','wv','wi','wy','dc',
+]);
+
+/**
+ * Split "roofing contractor Dallas Texas" into the business term and the place.
+ *
+ * Anchors on the state, which a lead query essentially always carries, and
+ * treats the word before it as the city. Returns an empty place when no state
+ * is present; the caller then searches without a geo bias rather than guessing
+ * a location, which is the difference between "near Houston" and "anywhere a
+ * string matched".
+ */
+export function splitBusinessQuery(query: string): { term: string; place: string } {
+  const words = query.trim().split(/\s+/);
+  const lower = words.map((w) => w.toLowerCase().replace(/[.,]/g, ''));
+
+  for (let i = 0; i < lower.length; i++) {
+    // Two-word states ("north carolina") before single-word ones.
+    const two = i + 1 < lower.length ? `${lower[i]} ${lower[i + 1]}` : '';
+    const three = i + 2 < lower.length ? `${lower[i]} ${lower[i + 1]} ${lower[i + 2]}` : '';
+    let stateLen = 0;
+    if (three && (US_STATES as readonly string[]).includes(three)) stateLen = 3;
+    else if (two && (US_STATES as readonly string[]).includes(two)) stateLen = 2;
+    else if ((US_STATES as readonly string[]).includes(lower[i]) || US_STATE_ABBREVS.has(lower[i])) stateLen = 1;
+    if (stateLen === 0) continue;
+
+    // The token before the state is the city, when there is one.
+    const placeStart = i > 0 ? i - 1 : i;
+    return {
+      term: words.slice(0, placeStart).join(' ').trim(),
+      place: words.slice(placeStart, i + stateLen).join(' ').trim(),
+    };
+  }
+
+  return { term: query.trim(), place: '' };
+}
+
 /**
  * Public Overpass instances, tried in order. The main one rejects with 503
  * under load often enough that a single endpoint makes this provider
@@ -1277,24 +1334,107 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             // Fall through to OSM fallback
           }
         }
-        // ── Provider 3: OpenStreetMap Overpass API (no key, always works) ──
+        // Why each remaining provider produced nothing, surfaced to the agent
+        // so a dead source reads as a dead source and not as "no such business".
+        const providerNotes: string[] = [];
+
+        // ── Provider 3: TomTom Search (POI) ──
+        // Returns the business's OWN phone and website rather than a directory
+        // listing URL, which is what makes a result usable downstream: the
+        // domain feeds hunterDomainSearch for decision-maker enrichment.
+        //
+        // Geo-bounding matters. Measured 2026-09-21 on the same query: free-text
+        // "bail bonds Houston Texas" returned businesses in Crockett and Sulphur
+        // Springs plus a parking lot, while geocoding the place first and
+        // searching lat/lon/radius returned 16/20 real Houston agencies with a
+        // phone or site. So resolve the place, then search inside it.
+        const tomtomKey = process.env.TOMTOM_API_KEY;
+        if (tomtomKey) {
+          try {
+            const { place: ttPlace, term: ttTerm } = splitBusinessQuery(query);
+
+            let geoBias = '';
+            if (ttPlace) {
+              const geoRes = await fetch(
+                `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(ttPlace)}.json?key=${encodeURIComponent(tomtomKey)}&limit=1&countrySet=US`,
+                { signal: AbortSignal.timeout(15_000) },
+              );
+              if (geoRes.ok) {
+                const geo = (await geoRes.json()) as {
+                  results?: Array<{ position?: { lat?: number; lon?: number } }>;
+                };
+                const pos = geo.results?.[0]?.position;
+                if (typeof pos?.lat === 'number' && typeof pos?.lon === 'number') {
+                  geoBias = `&lat=${pos.lat}&lon=${pos.lon}&radius=${TOMTOM_RADIUS_METRES}`;
+                }
+              }
+            }
+
+            const poiRes = await fetch(
+              `https://api.tomtom.com/search/2/poiSearch/${encodeURIComponent(ttTerm || query)}.json?key=${encodeURIComponent(tomtomKey)}&limit=50&countrySet=US${geoBias}`,
+              { signal: AbortSignal.timeout(20_000) },
+            );
+            if (!poiRes.ok) {
+              const body = await poiRes.text().catch(() => '');
+              providerNotes.push(`tomtom: HTTP ${poiRes.status} ${body.slice(0, 160)}`.trim());
+            } else {
+              const poi = (await poiRes.json()) as {
+                results?: Array<{
+                  poi?: { name?: string; phone?: string; url?: string; categories?: string[] };
+                  address?: { freeformAddress?: string; municipality?: string; countrySubdivision?: string };
+                }>;
+              };
+              const mapped = (poi.results ?? [])
+                .filter((r) => r.poi?.name)
+                .map((r) => ({
+                  name: r.poi!.name!,
+                  address: r.address?.freeformAddress ?? '',
+                  phone: r.poi!.phone,
+                  // TomTom omits the scheme; downstream wants a fetchable URL.
+                  website: r.poi!.url ? (/^https?:\/\//i.test(r.poi!.url!) ? r.poi!.url! : `https://${r.poi!.url!}`) : undefined,
+                  industry: r.poi!.categories?.join(', ') ?? '',
+                  city: r.address?.municipality ?? '',
+                  source: 'tomtom' as const,
+                }))
+                // A lead with neither a phone nor a site has no contact path, so
+                // it cannot satisfy the save rules. Keep them, but never let
+                // them crowd out contactable ones when the list is truncated.
+                .sort((a, b) => Number(Boolean(b.phone || b.website)) - Number(Boolean(a.phone || a.website)));
+
+              if (mapped.length > 0) {
+                return {
+                  query,
+                  total: mapped.length,
+                  businesses: mapped.slice(0, 50),
+                  provider: 'tomtom',
+                  area: ttPlace || undefined,
+                  withContactPath: mapped.filter((b) => b.phone || b.website).length,
+                };
+              }
+              providerNotes.push(`tomtom: 0 results for "${ttTerm || query}"${ttPlace ? ` near ${ttPlace}` : ''}`);
+            }
+          } catch (e) {
+            providerNotes.push(`tomtom: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        // ── Provider 4: OpenStreetMap Overpass API (no key, always works) ──
         // Free, no signup, no credit card. Queries by OSM category tag inside a
         // geocoded bounding box — NOT by name. A business is tagged
         // office=bail_bond; it is not named "bail bonds agency", which is why
         // the previous name-regex version returned zero on every sweep.
-        const osmNotes: string[] = [];
         const { tags: osmTags, matchedKeywords } = osmTagFiltersForQuery(query);
         const place = osmLocationFromQuery(query, matchedKeywords);
 
         if (osmTags.length === 0) {
-          osmNotes.push(`OSM: no known category tag for "${query}"`);
+          providerNotes.push(`OSM: no known category tag for "${query}"`);
         } else if (!place) {
-          osmNotes.push(`OSM: no place name left in "${query}" after removing the category — include a city or state`);
+          providerNotes.push(`OSM: no place name left in "${query}" after removing the category — include a city or state`);
         } else {
           try {
             const bbox = await nominatimBoundingBox(place);
             if (!bbox) {
-              osmNotes.push(`OSM: could not geocode "${place}"`);
+              providerNotes.push(`OSM: could not geocode "${place}"`);
             } else {
               const selectors = osmTags
                 .map((tag) => {
@@ -1320,16 +1460,16 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                     osmRes = attempt;
                     break;
                   }
-                  osmNotes.push(`OSM: ${new URL(endpoint).host} HTTP ${attempt.status}`);
+                  providerNotes.push(`OSM: ${new URL(endpoint).host} HTTP ${attempt.status}`);
                 } catch (e) {
-                  osmNotes.push(
+                  providerNotes.push(
                     `OSM: ${new URL(endpoint).host} ${e instanceof Error ? e.message : String(e)}`,
                   );
                 }
               }
 
               if (!osmRes) {
-                osmNotes.push('OSM: every public Overpass endpoint refused');
+                providerNotes.push('OSM: every public Overpass endpoint refused');
               } else {
                 const osmData = (await osmRes.json()) as {
                   elements?: Array<{ tags?: Record<string, string> }>;
@@ -1365,11 +1505,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                     tags: osmTags,
                   };
                 }
-                osmNotes.push(`OSM: 0 businesses tagged ${osmTags.join('/')} in "${place}"`);
+                providerNotes.push(`OSM: 0 businesses tagged ${osmTags.join('/')} in "${place}"`);
               }
             }
           } catch (e) {
-            osmNotes.push(`OSM: ${e instanceof Error ? e.message : String(e)}`);
+            providerNotes.push(`OSM: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
 
@@ -1384,7 +1524,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           attempts: [
             yelpKey ? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
             googleKey ? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
-            ...osmNotes,
+            ...(tomtomKey ? [] : ['tomtom: TOMTOM_API_KEY not set']),
+            ...providerNotes,
           ],
           error:
             'No business directory API returned results. Set GOOGLE_PLACES_API_KEY (Places API (New), enabled in the same Google Cloud project APEX already deploys to) for real phone numbers and company websites; YELP_API_KEY is also supported but returns Yelp listing URLs rather than the business’s own site. OSM Overpass is the keyless fallback: it only answers when the query names a recognized business category AND a geocodable city/state. Use webSearch as an alternative.',

@@ -193,6 +193,44 @@ async function main(): Promise<void> {
     ),
   );
 
+
+  // ── 5. TomTom directory provider ────────────────────────────────────────
+  console.log('\n── tomtom directory provider ──');
+  const { splitBusinessQuery } = mod;
+  for (const [q, term, place] of [
+    ['bail bonds agency Houston Texas', 'bail bonds agency', 'Houston Texas'],
+    ['roofing contractor Dallas Texas', 'roofing contractor', 'Dallas Texas'],
+    ['auto repair shop Charlotte North Carolina', 'auto repair shop', 'Charlotte North Carolina'],
+    ['pest control company Orlando FL', 'pest control company', 'Orlando FL'],
+  ] as const) {
+    const got = splitBusinessQuery(q);
+    check(`"${q}" → term "${term}" @ "${place}"`, got.term === term && got.place === place, got);
+  }
+  const noState = splitBusinessQuery('bail bonds agency');
+  check(
+    'no state in the query yields an empty place (search without a geo bias, never a guessed one)',
+    noState.place === '' && noState.term === 'bail bonds agency',
+    noState,
+  );
+
+  check(
+    'TomTom geocodes the place first, then searches lat/lon/radius',
+    /api\.tomtom\.com\/search\/2\/geocode/.test(src) &&
+      /&lat=\$\{pos\.lat\}&lon=\$\{pos\.lon\}&radius=\$\{TOMTOM_RADIUS_METRES\}/.test(src),
+  );
+  check(
+    'TomTom results without a phone or website never crowd out contactable ones',
+    /Number\(Boolean\(b\.phone \|\| b\.website\)\)/.test(src),
+  );
+  check(
+    'a schemeless TomTom url is normalized to a fetchable one',
+    /\^https\?:\\\/\\\/\/i\.test/.test(src),
+  );
+  check(
+    'a missing TOMTOM_API_KEY is reported as an attempt, not silence',
+    /tomtom: TOMTOM_API_KEY not set/.test(src),
+  );
+
   if (failures > 0) {
     console.error(`\n${failures} lead-source-tool check(s) failed.`);
     process.exit(1);
