@@ -251,7 +251,7 @@ export function ModelRouterPanel() {
 
   const toggleModel = (modelId: string) => {
     if (!isProductionEligible(modelId)) {
-      setSavedMessage('Paid OpenRouter models are visible for comparison only. Zero-cost production mode cannot persist a billable model; exhaustion pauses APEX instead of spending money.');
+      setSavedMessage('Arbitrary paid OpenRouter models are comparison-only and cannot be saved into the operator roster. z-ai/glm-5.3-flashx is the dedicated runtime continuity exception managed outside the saved free roster.');
       return;
     }
     setPolicy((previous) => {
@@ -308,10 +308,10 @@ export function ModelRouterPanel() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <BrainCircuit size={20} color="#8b7ec8" />
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-apex-text)' }}>OpenRouter Model Control</span>
-            <ModelBadge>ZERO-COST MODE</ModelBadge>
+            <ModelBadge>FREE-FIRST + GLM CONTINUITY</ModelBadge>
           </div>
           <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '6px 0 0', lineHeight: 1.45, maxWidth: 820 }}>
-            Production inference is $0-only. Nex N2.5 Mini Free is the primary model. Free models can be selected; paid models stay visible for comparison but cannot join the production roster. If every free account and route is exhausted, APEX pauses — it does not fall back to paid DeepSeek, GPT-OSS, Grok, or any other billable endpoint.
+            Nex N2.5 Mini Free remains the primary model and saved operator rosters stay free-only. When free/BYOK capacity is unavailable, APEX can continue through z-ai/glm-5.3-flashx using the funded OpenRouter key. FlashX is not subject to APEX spend, request, token, emergency-cap, or model-specific pacing limits; provider-side limits and reliability backoff still apply.
           </p>
         </div>
         <button
@@ -465,7 +465,7 @@ export function ModelRouterPanel() {
                         disabled={!isProductionEligible(model.id)}
                         onChange={() => toggleModel(model.id)}
                         aria-label={`Select ${model.name}`}
-                        title={!isProductionEligible(model.id) ? 'Paid models are ineligible for the production roster while zero-cost mode is active' : undefined}
+                        title={!isProductionEligible(model.id) ? 'Arbitrary paid models cannot join the saved free roster; FlashX continuity is managed separately' : undefined}
                       />
                     </td>
                     <td style={{ padding: 9, maxWidth: 300 }}>
@@ -630,7 +630,7 @@ export function ModelRouterPanel() {
 
       {ineligibleSelected && (
         <div style={{ color: '#c45c66', fontSize: 11 }}>
-          Remove paid models from the roster before saving. Zero-cost mode rejects billable production policies.
+          Remove arbitrary paid models from the saved roster. FlashX continuity is a dedicated runtime exception and is managed separately.
         </div>
       )}
       {(saveMutation.error || resetMutation.error) && (
@@ -653,7 +653,7 @@ export function ModelRouterPanel() {
           disabled={resetMutation.isPending}
           style={{ display: 'flex', alignItems: 'center', gap: 6 }}
         >
-          <RotateCcw size={13} /> Reset to zero-cost defaults
+          <RotateCcw size={13} /> Reset free roster defaults
         </button>
       </div>
 

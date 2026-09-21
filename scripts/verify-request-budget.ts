@@ -5,11 +5,13 @@
  *   - OpenRouter pool: 2,775 requests/day
  *   - Groq BYOK: independent provider pool
  *   - Gemini BYOK: independent provider pool
- *   - Emergency all-provider ceiling: 4,500 requests/day
+ *   - Emergency free/BYOK ceiling: 4,500 requests/day
+ *   - Paid FlashX attempts remain counted for observability but are not vetoed
+ *     by APEX's emergency/free-pool ceilings.
  *
  * Every upstream attempt is RESERVED before fetch(). Success is marked after
- * the response. That ordering makes the hard caps concurrency-safe and means
- * timeouts/429s/failures still consume the allowance they actually burned.
+ * the response. That ordering makes restricted-pool caps concurrency-safe and
+ * means timeouts/429s/failures remain visible in usage accounting.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -127,14 +129,14 @@ async function main(): Promise<void> {
     !/recordProviderAttempt\(/.test(client),
   );
   check(
-    'a fresh pool and emergency-cap check occurs immediately before reservation',
-    /const emergencyAttemptWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
+    'a fresh pool check occurs before every reservation and emergency caps skip unrestricted FlashX',
+    /const emergencyAttemptWindow = provider\.unrestricted[\s\S]{0,120}\? null[\s\S]{0,120}: emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
       /const freshProviderWindow = requestWindowForProvider/.test(credentialLoop),
   );
   check(
-    'oversize retries require a fresh quota check and their own reservation',
-    /const allWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
-      /reserveProviderAttempt\(provider, credential\.key\);[\s\S]{0,500}?const result = await callProvider/.test(
+    'oversize retries recheck restricted quotas and always make their own reservation',
+    /const allWindow = provider\.unrestricted[\s\S]{0,120}\? null[\s\S]{0,120}: emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
+      /reserveProviderAttempt\(provider, credential\.key\);[\s\S]{0,700}?const result = await callProvider/.test(
         credentialLoop.slice(credentialLoop.indexOf('if (isRequestTooLargeError')),
       ),
   );
@@ -174,7 +176,7 @@ async function main(): Promise<void> {
     /const providerRequestWindow = requestWindowForProvider/.test(client),
   );
   check(
-    'paid continuity bypasses the free request pool while remaining separately governed',
+    'paid continuity bypasses the free request pool and uses an uncapped APEX request window',
     /if \(provider\.paid\) return paidProviderCapacityWindow\(\);/.test(client) &&
       /function isPaidAccount\(account: string\)/.test(ledger) &&
       /!isDirectAccount\(account\) && !isPaidAccount\(account\)/.test(ledger),
@@ -244,7 +246,8 @@ async function main(): Promise<void> {
   );
 
   // Direct BYOK and paid-continuity traffic must not consume the OpenRouter
-  // FREE meter. All three still count toward the emergency all-provider cap.
+  // FREE meter. All attempts still appear in the aggregate observability count;
+  // only restricted free/BYOK routes are vetoed by the APEX emergency ceiling.
   reserveProviderRequest('guard-openrouter-key');
   markProviderRequestSucceeded('guard-openrouter-key');
   reservePaidProviderRequest('guard-paid-continuity');

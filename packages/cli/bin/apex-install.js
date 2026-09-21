@@ -54,14 +54,25 @@ const MINIMAL_ORG_CHART = {
 };
 
 const LLM_CHAIN = {
-  fallbackOrder: ["cerebras", "groq", "cohere", "mistral"],
-  disabled: {
-    qwen: "dead — invalid/blocked keys portfolio-wide as of last audit",
-    kilo: "billing-blocked — negative balance",
-    deepseek: "billing-blocked — insufficient balance",
-    xai: "billing-blocked — credits exhausted",
+  fallbackOrder: [
+    "nex-agi/nex-n2.5-mini:free",
+    "nex-agi/nex-n2.5-pro:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "openrouter/free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+  ],
+  byokContinuity: [
+    "groq:openai/gpt-oss-120b",
+    "gemini:gemini-3.8-flash",
+  ],
+  paidContinuity: {
+    provider: "openrouter",
+    model: "z-ai/glm-5.3-flashx",
+    unrestrictedByApexCapacityGovernors: true,
   },
-  note: "Verify each provider is still live before relying on this in production — re-run a real completion call, don't trust this file blindly after time has passed.",
+  disabled: {},
+  note: "Template mirrors APEX free-first routing as of 2026-09-20. Runtime source of truth remains packages/core/src/llm-client.ts; provider-side limits and approval/security controls remain authoritative.",
 };
 
 const PROMPT_FORGE_CONFIG = {

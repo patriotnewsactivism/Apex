@@ -50,11 +50,11 @@ import {
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
 // FREE-FIRST ROUTING POLICY. Automatic routing uses OpenRouter `:free` models
-// (plus the special `openrouter/free` router) while free capacity is available.
-// An operator may explicitly activate the reviewed paid continuity route with
-// APEX_PAID_FALLBACK=confirmed. It is last in the chain and may also run while
-// the free request budget is paced, so the workforce stays productive without
-// accidentally making paid inference the primary path.
+// (plus the special `openrouter/free` router), then independent Groq/Gemini
+// BYOK capacity, with the operator-approved paid GLM 5.3 FlashX continuity route
+// last. FlashX is always eligible when its funded OpenRouter credential exists
+// and bypasses APEX token/request/spend governors; upstream provider limits,
+// billing, error cooldowns, tool authorization, and human approval policy remain.
 //
 // Authoritative automatic order:
 //   1. nex-agi/nex-n2.5-mini:free
@@ -118,6 +118,10 @@ type ProviderSpec = {
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
+  /** Bypass APEX token/request/spend governors for an operator-approved paid
+   * continuity route. Upstream provider billing/rate limits and reliability
+   * cooldowns still apply. */
+  unrestricted?: boolean;
   /** Independent request quota pool. OpenRouter uses the 2,775/day pool;
    * direct BYOK providers have their own counters. */
   requestPool?: 'openrouter' | DirectRequestPool;
@@ -164,6 +168,9 @@ function freeOpenRouterSpec(
     protocol: 'openai-compatible',
     minIntervalMs: 500,
     toolCallingReliable: true,
+    // Preserve the former shared APEX completion ceiling on free routes even
+    // though FlashX can now be configured up to its much larger native limit.
+    maxOutputTokens: 16_384,
     ...extras,
     // Free endpoints vary widely in latency. Prefer the endpoint most likely
     // to answer inside APEX's bounded timeout while preserving the operator's
@@ -227,6 +234,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     minIntervalMs: 1_000,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
+    maxOutputTokens: 16_384,
   },
   {
     name: PAID_FALLBACK_PROVIDER_NAME,
@@ -234,11 +242,15 @@ const PROVIDERS: readonly ProviderSpec[] = [
     baseURL: 'https://openrouter.ai/api/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
+    unrestricted: true,
     requestPool: 'openrouter',
     protocol: 'openai-compatible',
     minIntervalMs: 0,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
+    // FlashX supports up to 131,072 completion tokens. This is an upstream
+    // model envelope, not an APEX spend/request throttle.
+    maxOutputTokens: 131_072,
     // `sort: 'price'` pinned every request to whichever upstream host was
     // cheapest for this model — confirmed live 2026-09-17 to be a host with a
     // 60s p99 (Inceptron) or 31s p99 (Relace), both past LLM_REQUEST_TIMEOUT_MS.
@@ -305,9 +317,7 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
 }
 
 /** Backward-compatible status helper: the paid FlashX route is always enabled. */
-export function paidLLMFallbackEnabled(
-  _mode: string | undefined = process.env.APEX_PAID_FALLBACK,
-): boolean {
+export function paidLLMFallbackEnabled(_mode?: string): boolean {
   return true;
 }
 
@@ -785,11 +795,10 @@ function markProviderAttemptSucceeded(
 }
 
 export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
-  if (isTotalDailyCapReached()) return false;
-  if (!emergencyRequestCapacityWindow(now).allowed) return false;
-
+  const totalDailyCapReached = isTotalDailyCapReached();
+  const emergencyAllowed = emergencyRequestCapacityWindow(now).allowed;
   const ledger = getTokenLedgerSnapshot();
-  if (!ledger.pacing.total.allowed) return false;
+  const totalTokenPacingAllowed = ledger.pacing.total.allowed;
 
   const pacingByProvider = new Map(
     ledger.providers.map((entry) => [entry.provider, entry]),
@@ -802,6 +811,15 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (!providerConfigured(provider)) continue;
     if (providerActivationIssue(provider)) continue;
     if (!providerBaseURL(provider)) continue;
+
+    // Workspace token and emergency request governors apply to free/BYOK
+    // capacity, but never veto an explicitly unrestricted paid continuity route.
+    if (
+      !provider.unrestricted &&
+      (totalDailyCapReached || !emergencyAllowed || !totalTokenPacingAllowed)
+    ) {
+      continue;
+    }
 
     // Each provider family owns its own request pool. An exhausted OpenRouter
     // allowance must not park Groq/Gemini, and vice versa.
@@ -822,7 +840,11 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (readyAt > now) continue;
 
     const entry = pacingByProvider.get(provider.name);
-    if (entry && (entry.capReached || !entry.pacing.allowed)) continue;
+    if (
+      !provider.unrestricted &&
+      entry &&
+      (entry.capReached || !entry.pacing.allowed)
+    ) continue;
 
     return true;
   }
@@ -922,10 +944,13 @@ function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key
 
 // ─── Process-wide call smoothing ─────────────────────────────────────────────
 
-const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 6);
+// One slot per current APEX agent by default. The semaphore still bounds
+// pathological task storms, but it no longer leaves 7 of the 13 agents waiting
+// solely because of an old six-call demo-era throttle.
+const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 13);
 const MAX_CONCURRENT_LLM_CALLS = Number.isFinite(configuredLLMConcurrency)
-  ? Math.min(16, Math.max(1, Math.floor(configuredLLMConcurrency)))
-  : 6;
+  ? Math.min(64, Math.max(1, Math.floor(configuredLLMConcurrency)))
+  : 13;
 
 let activeLLMCalls = 0;
 const llmCallWaitQueue: Array<() => void> = [];
@@ -1279,6 +1304,15 @@ async function callProvider(
   config: LLMClientConfig,
   execution?: LLMExecutionContext,
 ): Promise<LLMResponse> {
+  const providerConfig: LLMClientConfig = provider.maxOutputTokens
+    ? {
+        ...config,
+        maxTokens: Math.min(
+          config.maxTokens ?? 2048,
+          provider.maxOutputTokens,
+        ),
+      }
+    : config;
   const baseURL = providerBaseURL(provider);
   if (!baseURL) {
     throw Object.assign(new Error('provider base URL is not configured'), { status: 0 });
@@ -1290,12 +1324,12 @@ async function callProvider(
       model: provider.model,
       messages,
       tools,
-      config,
+      config: providerConfig,
       execution,
       timeoutMs: LLM_REQUEST_TIMEOUT_MS,
     });
   }
-  return callCompatibleProvider(provider, key, messages, tools, config, execution);
+  return callCompatibleProvider(provider, key, messages, tools, providerConfig, execution);
 }
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -1356,55 +1390,66 @@ class MultiProviderClient {
     await acquireLLMConcurrencySlot();
 
     try {
-      if (isTotalDailyCapReached()) {
-        throw new Error(
-          'APEX daily token cap reached (APEX_TOKEN_CAP_TOTAL). LLM spend is paused until the UTC daily reset.',
-        );
-      }
-
-      // Cross-provider emergency ceiling. Provider-specific request budgets are
-      // enforced inside the routing loop so an exhausted OpenRouter pool can
-      // fall through to independent Groq/Gemini BYOK capacity.
+      // Workspace governors still protect free/BYOK traffic. The operator-
+      // approved FlashX continuity route is allowed to remain available after
+      // those budgets are exhausted.
       const pacingOverride = execution?.interactive ? false : undefined;
       const emergencyWindow = emergencyRequestCapacityWindow(Date.now());
-      if (!emergencyWindow.allowed) {
-        throw capacityPauseError([
-          {
-            source: 'all-providers',
-            resumeAt: emergencyWindow.resumeAt,
-            reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
-          },
-        ]);
-      }
 
       const trimmed = trimMessageHistory(messages);
+      // Workspace/free-route reservation is sized to the restricted providers'
+      // existing 16K ceiling. A larger FlashX output setting must not inflate
+      // the free/BYOK reservation and accidentally skip those cheaper routes.
+      const restrictedOutputEstimate = Math.min(
+        this.config.maxTokens ?? 2048,
+        16_384,
+      );
       const estimatedTokens = estimateLLMRequestTokens(
         trimmed.messages,
         tools,
-        this.config.maxTokens ?? 2048,
+        restrictedOutputEstimate,
       );
       const totalReservation = reserveTotalTokenCapacity(estimatedTokens);
+      const globalCapacityBlocks: CapacityBlock[] = [];
+      if (!emergencyWindow.allowed) {
+        globalCapacityBlocks.push({
+          source: 'free-byok-providers',
+          resumeAt: emergencyWindow.resumeAt,
+          reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
+        });
+      }
       if (!totalReservation.allowed) {
-        throw capacityPauseError([
+        globalCapacityBlocks.push(
           capacityBlockFromReservation('workspace', totalReservation),
-        ]);
+        );
       }
 
       try {
         const providerErrors: string[] = [];
         const skipReasons: string[] = [];
-        const capacityBlocks: CapacityBlock[] = [];
+        const capacityBlocks: CapacityBlock[] = [...globalCapacityBlocks];
         let nonCapacityFailureSeen = false;
 
         for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
 
+          if (!provider.unrestricted && globalCapacityBlocks.length > 0) {
+            skipReasons.push(
+              `${provider.name}: workspace/free-provider capacity governor active`,
+            );
+            continue;
+          }
+
           const providerRequestWindow = requestWindowForProvider(
             provider,
             Date.now(),
             pacingOverride,
           );
+          // FlashX can use its full upstream context window. Free/BYOK routes
+          // retain APEX history trimming to protect their smaller envelopes and
+          // quotas.
+          const providerMessages = provider.unrestricted ? messages : trimmed.messages;
           if (!providerRequestWindow.allowed) {
             capacityBlocks.push({
               source: provider.requestPool ?? 'openrouter',
@@ -1454,11 +1499,10 @@ class MultiProviderClient {
             continue;
           }
 
-          const providerReservation = reserveProviderTokenCapacity(
-            provider.name,
-            estimatedTokens,
-          );
-          if (!providerReservation.allowed) {
+          const providerReservation = provider.unrestricted
+            ? null
+            : reserveProviderTokenCapacity(provider.name, estimatedTokens);
+          if (providerReservation && !providerReservation.allowed) {
             capacityBlocks.push(
               capacityBlockFromReservation(provider.name, providerReservation),
             );
@@ -1528,10 +1572,12 @@ class MultiProviderClient {
               // Re-check immediately before reservation. There is deliberately
               // no await between these checks and reserveProviderAttempt(), so
               // concurrent agent turns cannot all consume the same final slot.
-              const emergencyAttemptWindow = emergencyRequestCapacityWindow(Date.now());
-              if (!emergencyAttemptWindow.allowed) {
+              const emergencyAttemptWindow = provider.unrestricted
+                ? null
+                : emergencyRequestCapacityWindow(Date.now());
+              if (emergencyAttemptWindow && !emergencyAttemptWindow.allowed) {
                 capacityBlocks.push({
-                  source: 'all-providers',
+                  source: 'free-byok-providers',
                   resumeAt: emergencyAttemptWindow.resumeAt,
                   reason: `emergency request cap reached (${emergencyAttemptWindow.usedRequests}/${emergencyAttemptWindow.cap})`,
                 });
@@ -1573,7 +1619,7 @@ class MultiProviderClient {
                 const result = await callProvider(
                   provider,
                   credential.key,
-                  trimmed.messages,
+                  providerMessages,
                   tools,
                   this.config,
                   execution,
@@ -1704,7 +1750,9 @@ class MultiProviderClient {
 
                 if (isRequestTooLargeError(status, message)) {
                   try {
-                    const allWindow = emergencyRequestCapacityWindow(Date.now());
+                    const allWindow = provider.unrestricted
+                      ? null
+                      : emergencyRequestCapacityWindow(Date.now());
                     const poolWindow = requestWindowForProvider(
                       provider,
                       Date.now(),
@@ -1715,7 +1763,7 @@ class MultiProviderClient {
                         ? accountCapacityWindow(credential.key)
                         : null;
                     if (
-                      !allWindow.allowed ||
+                      (allWindow && !allWindow.allowed) ||
                       !poolWindow.allowed ||
                       (retryAccountWindow && !retryAccountWindow.allowed)
                     ) {
@@ -1772,7 +1820,7 @@ class MultiProviderClient {
               );
             }
           } finally {
-            providerReservation.release();
+            providerReservation?.release();
           }
         }
 
@@ -1831,8 +1879,11 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
       process.env.APEX_MAX_OUTPUT_TOKENS ??
       defaultMaxTokens,
   );
+  // The operator may request up to FlashX's native 131,072-token completion
+  // envelope. Each smaller provider clamps the request again at dispatch, so
+  // raising this does not force free/BYOK routes beyond their safe ceiling.
   const maxTokens = Number.isFinite(configuredMaxTokens)
-    ? Math.min(16_384, Math.max(256, Math.floor(configuredMaxTokens)))
+    ? Math.min(131_072, Math.max(256, Math.floor(configuredMaxTokens)))
     : defaultMaxTokens;
   // Derived from the live chain rather than restated as a literal. When these
   // were independent, flipping PROVIDER_ORDER to free-only left every agent

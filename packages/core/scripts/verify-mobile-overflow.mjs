@@ -51,7 +51,7 @@ const NASTY = [
   '{"tool":"searchBusinessDirectory","args":{"industry":"commercial real estate","city":"Baton Rouge","radiusMeters":50000,"fields":["name","address","phone","website","rating"]},"result":{"count":20,"source":"google"}}',
   'https://places.googleapis.com/v1/places:searchText?fields=places.displayName,places.formattedAddress,places.nationalPhoneNumber,places.websiteUri,places.rating,places.userRatingCount',
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhcGV4LWxlYWQtcmVzZWFyY2hlciIsImlhdCI6MTc4ODQ5MTAxN30.QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ',
-  'ERROR provider chain exhausted: openrouter/deepseek-v4-flash 400 models_array_too_long; openrouter2/qwen3-max cooldown 30s; cerebras no key configured',
+  'ERROR provider chain exhausted: openrouter/glm-5.3-flashx 429 upstream_rate_limit; openrouter/free cooldown 30s; gemini unavailable',
 ];
 const BOTTOM = [
   { id: 'command', label: 'Command' },

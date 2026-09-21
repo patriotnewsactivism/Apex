@@ -1,9 +1,10 @@
-// Live-probe the ZERO-COST APEX OpenRouter chain using LOCAL .env credentials.
-// Prints status/model only — never key values.
+// Live-probe the FREE portion of the APEX OpenRouter chain using LOCAL .env
+// credentials. Prints status/model only — never key values.
 //
-// This script must not spend money. It only calls OpenRouter `:free` models
-// (plus exactly `openrouter/free`) with the free-account credential roster.
-// Paid DeepSeek/GPT-OSS/Grok/Bedrock/Mistral/direct-provider probes are gone.
+// This default diagnostic must not spend money. It intentionally probes only
+// OpenRouter `:free` models (plus exactly `openrouter/free`). The dedicated
+// paid z-ai/glm-5.3-flashx continuity route is verified through runtime health/
+// telemetry and an explicitly authorized live call, not this free probe.
 //
 // Usage: node scripts/llm-probe.mjs
 
@@ -44,7 +45,7 @@ if (credentials.length === 0) {
   process.exit(0);
 }
 
-console.log(`Probing ${MODELS.length} zero-cost OpenRouter routes across ${credentials.length} independent account(s).`);
+console.log(`Probing ${MODELS.length} free OpenRouter routes across ${credentials.length} independent account(s).`);
 
 for (const model of MODELS) {
   for (const credential of credentials) {
@@ -55,7 +56,7 @@ for (const model of MODELS) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${credential.key}`,
           "HTTP-Referer": "https://apex.donmatthews.live",
-          "X-Title": "APEX zero-cost probe",
+          "X-Title": "APEX free-route probe",
         },
         body: JSON.stringify({
           model,

@@ -47,7 +47,7 @@ function main(): void {
   if (!expr) process.exit(1);
 
   check(
-    'hard all-provider cap reports capped first',
+    'true no-route hard cap reports capped first',
     /hardCapped\s*\n?\s*\?\s*"capped"/.test(expr),
     expr,
   );
@@ -65,28 +65,28 @@ function main(): void {
   check('healthy capacity reports available', /"available"/.test(expr), expr);
 
   check(
-    'request hard-cap reporting uses the emergency all-provider ceiling, not the OpenRouter pool alone',
+    'request hard-cap reporting uses the emergency all-provider ceiling but does not hide usable FlashX',
     /const emergencyRequestCapReached =\s*[\s\S]{0,180}?requestLedger\.allProviderRequests >= requestLedger\.emergencyCap/.test(source) &&
-      /const hardCapped = tokenLedger\.totalCapReached \|\| emergencyRequestCapReached/.test(source),
+      /const hardCapped =[\s\S]{0,180}?emergencyRequestCapReached[\s\S]{0,120}?!anyLLMCapacityAvailable/.test(source),
   );
 
   check(
     'aggregatePaused delegates to the same runtime capacity probe agents use',
     /const anyLLMCapacityAvailable = llmCapacityAvailableNow\(\);/.test(source) &&
-      /const aggregatePaused = !hardCapped && !anyLLMCapacityAvailable;/.test(source),
+      /const aggregatePaused = !anyLLMCapacityAvailable;/.test(source),
   );
 
   const probeStart = client.indexOf('export function llmCapacityAvailableNow(');
   const probeEnd = client.indexOf('\n}\n', probeStart);
   const probe = client.slice(probeStart, probeEnd + 3);
   check(
-    'capacity probe refuses the emergency all-provider cap',
-    /if \(!emergencyRequestCapacityWindow\(now\)\.allowed\) return false;/.test(probe),
+    'capacity probe applies emergency caps to restricted routes without vetoing unrestricted continuity',
+    /!provider\.unrestricted[\s\S]{0,220}!emergencyAllowed/.test(probe),
     probe,
   );
   check(
-    'capacity probe still honors token pacing',
-    /if \(!ledger\.pacing\.total\.allowed\) return false;/.test(probe),
+    'capacity probe applies token pacing to restricted routes without vetoing unrestricted continuity',
+    /!provider\.unrestricted[\s\S]{0,260}!totalTokenPacingAllowed/.test(probe),
     probe,
   );
   check(

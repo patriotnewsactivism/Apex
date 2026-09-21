@@ -39,6 +39,7 @@ const byokProviders = [
   'gemini-3-8-flash-byok',
 ] as const;
 const automaticProviders = [...openRouterProviders, ...byokProviders];
+const runtimeProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
 
 const catalog = getProviderCatalog();
 const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
@@ -134,9 +135,29 @@ check(
     /const providerRequestWindow = requestWindowForProvider/.test(clientSource),
 );
 check(
-  'the emergency all-provider ceiling is checked before work is claimed and before dispatch',
-  /if \(!emergencyRequestCapacityWindow\(now\)\.allowed\) return false/.test(clientSource) &&
-    /const emergencyAttemptWindow = emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(clientSource),
+  'the emergency free/BYOK ceiling cannot veto unrestricted FlashX',
+  /!provider\.unrestricted[\s\S]{0,180}!emergencyAllowed/.test(clientSource) &&
+    /const emergencyAttemptWindow = provider\.unrestricted[\s\S]{0,120}\? null[\s\S]{0,120}: emergencyRequestCapacityWindow/.test(clientSource),
+);
+check(
+  'FlashX is marked unrestricted from APEX token/request/spend governors',
+  /name: PAID_FALLBACK_PROVIDER_NAME[\s\S]{0,260}unrestricted: true/.test(clientSource),
+);
+check(
+  'unrestricted FlashX receives full history rather than the free-route trim',
+  /const providerMessages = provider\.unrestricted \? messages : trimmed\.messages/.test(clientSource) &&
+    /callProvider\([\s\S]{0,180}providerMessages/.test(clientSource),
+);
+check(
+  'FlashX can use its native 131072-token completion envelope while smaller routes stay clamped',
+  /name: PAID_FALLBACK_PROVIDER_NAME[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
+    /maxOutputTokens: 16_384/.test(clientSource) &&
+    /Math\.min\(131_072, Math\.max/.test(clientSource),
+);
+check(
+  'a high FlashX output setting cannot inflate the free-route token reservation',
+  /const restrictedOutputEstimate = Math\.min\([\s\S]{0,120}16_384/.test(clientSource) &&
+    /estimateLLMRequestTokens\([\s\S]{0,160}restrictedOutputEstimate/.test(clientSource),
 );
 check(
   'Groq and Gemini routing each have an operator activation switch',
@@ -195,7 +216,7 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
 check(
   'a custom FREE OpenRouter policy keeps independent BYOK fallbacks behind it',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
-    JSON.stringify([FREE_POLICY_GATEWAY_NAME, ...byokProviders]),
+    JSON.stringify([FREE_POLICY_GATEWAY_NAME, ...byokProviders, PAID_FALLBACK_PROVIDER_NAME]),
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
@@ -210,8 +231,8 @@ for (const role of [
 ]) {
   const order = getProviderOrderForRole(role);
   check(
-    `${role} uses OpenRouter free first, then independent BYOK pools`,
-    JSON.stringify(order) === JSON.stringify(automaticProviders),
+    `${role} uses free/BYOK first with unrestricted FlashX continuity last`,
+    JSON.stringify(order) === JSON.stringify(runtimeProviders),
     order,
   );
   const config = getDefaultLLMConfig(role);

@@ -496,6 +496,37 @@ Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/h
 - Do not restore Lightsail/CodeBuild. Do not treat Vercel as the APEX control plane. The existing Vercel project `don-matthews/apex` builds `@workspace/dashboard` only (`vercel.json`) and posts the GitHub `Vercel` status.
 - ADR-001 is historical. Current hosting instructions live here, in `AGENTS.md`, and in `docs/HOSTING_MIGRATION.md`.
 
+## ADR-016 — Free-first inference with unrestricted GLM 5.3 FlashX continuity
+
+**Status:** Accepted  
+**Date:** 2026-09-20
+
+The earlier zero-cost-only runtime rule is superseded for continuity routing. The operator-selected/persisted OpenRouter roster remains free-only, but APEX appends one explicit paid runtime route after the free and independent BYOK pools:
+
+`z-ai/glm-5.3-flashx`
+
+DeepSeek V4 Flash 0731 is retired. FlashX is eligible whenever the funded `OPENROUTER_API_KEY` is configured.
+
+### Admission and throughput policy
+
+APEX does not use its legacy paid-spend budget, spend pacing, free request-count caps, provider token caps, workspace token caps, workspace emergency request cap, forced reasoning level, or model-specific dispatch delay to veto FlashX. Those controls continue to govern the free/BYOK pools where applicable.
+
+FlashX receives the full conversation history on its normal attempt rather than the smaller history trim used to protect free/BYOK routes. The operator-configurable completion ceiling may reach FlashX's 131,072-token native output envelope; smaller providers clamp requests to their own lower envelopes. Provider-side context limits remain authoritative, and the corrective oversized-request retry may still trim history after a provider rejects a request.
+
+### Controls that remain
+
+“Unrestricted by APEX capacity governors” is not a bypass of security or upstream reality. FlashX still requires a valid funded credential and remains subject to OpenRouter/Z.ai billing, availability, provider-side rate enforcement, retry-after, credential/provider cooldowns, circuit breakers, network/request timeouts, malformed-request handling, tool authorization, approval gates, authentication, data boundaries, and irreversible-action governance.
+
+The operator model-policy UI continues to reject arbitrary paid models. FlashX is a dedicated runtime continuity exception, not a broad paid-model allowlist.
+
+### Observability
+
+Actual settled OpenRouter cost remains recorded. `/health`, Revenue Operations, model intelligence, token/request telemetry, and spend telemetry must distinguish “free capacity exhausted, FlashX continuing” from a genuinely parked workforce. The spend snapshot reports `enforced: false` for the legacy APEX paid budget.
+
+### Verification
+
+Deterministic guards must prove that DeepSeek V4 Flash 0731 is absent from the continuity route, FlashX is the sole paid runtime exception and remains last, APEX capacity governors do not veto it, full history reaches it, and provider reliability/security/approval controls remain intact.
+
 ## How to change an architecture decision
 
 A proposed change should include:
