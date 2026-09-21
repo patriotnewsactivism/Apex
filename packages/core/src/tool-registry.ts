@@ -448,10 +448,52 @@ const OVERPASS_ENDPOINTS = [
 ] as const;
 
 /**
+ * A city's coordinates never change, so every repeat geocode is a request
+ * spent for an answer already known. That matters because the lookups are
+ * metered: TomTom's free Search tier is 2,500 requests/month, the lead-gen
+ * sweep runs every 10 minutes, and a geo-bounded directory call costs two
+ * requests (geocode + search). Caching the geocode halves that, and the same
+ * sweep hammers the same handful of metros repeatedly, so the hit rate is
+ * high. It also keeps APEX well inside Nominatim's 1-request/second policy.
+ *
+ * Successes only. A failure may be transient — a 5xx or a timeout — and
+ * caching it would turn one bad minute into a permanently dead place name.
+ */
+const GEOCODE_CACHE_MAX = 500;
+const geocodeCache = new Map<string, string>();
+
+function geocodeCacheKey(provider: string, place: string): string {
+  return `${provider}:${place.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+}
+
+/** Remember a successful geocode, evicting the oldest entry when full. */
+export function rememberGeocode(provider: string, place: string, value: string): void {
+  const key = geocodeCacheKey(provider, place);
+  if (!geocodeCache.has(key) && geocodeCache.size >= GEOCODE_CACHE_MAX) {
+    // Map preserves insertion order, so the first key is the oldest.
+    const oldest = geocodeCache.keys().next().value;
+    if (oldest !== undefined) geocodeCache.delete(oldest);
+  }
+  geocodeCache.set(key, value);
+}
+
+export function cachedGeocode(provider: string, place: string): string | undefined {
+  return geocodeCache.get(geocodeCacheKey(provider, place));
+}
+
+/** The cache is process-global; tests need to reset it between cases. */
+export function clearGeocodeCache(): void {
+  geocodeCache.clear();
+}
+
+/**
  * Geocode a place name to an Overpass bounding box via Nominatim.
  * Nominatim returns [south, north, west, east]; Overpass wants (s,w,n,e).
  */
 async function nominatimBoundingBox(place: string): Promise<string | undefined> {
+  const hit = cachedGeocode('nominatim', place);
+  if (hit) return hit;
+
   const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(place)}&format=json&limit=1`;
   const res = await fetch(url, {
     // Nominatim's usage policy requires an identifying User-Agent.
@@ -463,7 +505,33 @@ async function nominatimBoundingBox(place: string): Promise<string | undefined> 
   const box = data[0]?.boundingbox;
   if (!box || box.length !== 4) return undefined;
   const [south, north, west, east] = box;
-  return `${south},${west},${north},${east}`;
+  const bbox = `${south},${west},${north},${east}`;
+  rememberGeocode('nominatim', place, bbox);
+  return bbox;
+}
+
+/**
+ * Resolve a place to the `&lat=&lon=&radius=` fragment TomTom's POI search
+ * uses to stay inside one metro. Empty string when the place cannot be
+ * resolved, so the caller searches without a geo bias rather than a wrong one.
+ */
+async function tomtomGeoBias(place: string, key: string): Promise<string> {
+  if (!place) return '';
+  const hit = cachedGeocode('tomtom', place);
+  if (hit) return hit;
+
+  const res = await fetch(
+    `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(place)}.json?key=${encodeURIComponent(key)}&limit=1&countrySet=US`,
+    { signal: AbortSignal.timeout(15_000) },
+  );
+  if (!res.ok) return '';
+  const geo = (await res.json()) as { results?: Array<{ position?: { lat?: number; lon?: number } }> };
+  const pos = geo.results?.[0]?.position;
+  if (typeof pos?.lat !== 'number' || typeof pos?.lon !== 'number') return '';
+
+  const bias = `&lat=${pos.lat}&lon=${pos.lon}&radius=${TOMTOM_RADIUS_METRES}`;
+  rememberGeocode('tomtom', place, bias);
+  return bias;
 }
 
 export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
@@ -1352,23 +1420,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         if (tomtomKey) {
           try {
             const { place: ttPlace, term: ttTerm } = splitBusinessQuery(query);
-
-            let geoBias = '';
-            if (ttPlace) {
-              const geoRes = await fetch(
-                `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(ttPlace)}.json?key=${encodeURIComponent(tomtomKey)}&limit=1&countrySet=US`,
-                { signal: AbortSignal.timeout(15_000) },
-              );
-              if (geoRes.ok) {
-                const geo = (await geoRes.json()) as {
-                  results?: Array<{ position?: { lat?: number; lon?: number } }>;
-                };
-                const pos = geo.results?.[0]?.position;
-                if (typeof pos?.lat === 'number' && typeof pos?.lon === 'number') {
-                  geoBias = `&lat=${pos.lat}&lon=${pos.lon}&radius=${TOMTOM_RADIUS_METRES}`;
-                }
-              }
-            }
+            const geoBias = await tomtomGeoBias(ttPlace, tomtomKey);
 
             const poiRes = await fetch(
               `https://api.tomtom.com/search/2/poiSearch/${encodeURIComponent(ttTerm || query)}.json?key=${encodeURIComponent(tomtomKey)}&limit=50&countrySet=US${geoBias}`,
