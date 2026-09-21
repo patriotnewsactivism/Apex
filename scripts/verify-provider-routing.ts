@@ -113,8 +113,8 @@ check(
   /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY'\]/.test(clientSource),
 );
 check(
-  'dead OPENROUTER_API_KEY_3 remains outside the free roster',
-  !/'OPENROUTER_API_KEY_3'/.test(
+  'OPENROUTER_API_KEY_3 is restored to the free credential roster',
+  /'OPENROUTER_API_KEY_3'/.test(
     clientSource.slice(
       clientSource.indexOf('OPENROUTER_FREE_KEY_ENVS'),
       clientSource.indexOf('] as const;', clientSource.indexOf('OPENROUTER_FREE_KEY_ENVS')),
