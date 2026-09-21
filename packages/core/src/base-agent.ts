@@ -1,3 +1,4 @@
+import { readWorkBundle, recordTurnEconomy, missingBundleItems, resolveDeterministicRead } from './turn-economy.js';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { db, agents, approvals, messages, tasks as tasksTable, taskCheckpoints, learningInsights, strategyRecommendations } from '@workspace/db';
@@ -634,6 +635,7 @@ export abstract class BaseAgent {
     let decisionToolCallCount = 0;
     let repetitionIntervened = false;
     let budgetPrompted = false;
+    let bundleCoveragePrompted = false;
 
     const recordMetricsAsync = (success: boolean, errorMsg?: string) => {
       const durationMs = Date.now() - startTime;
@@ -657,6 +659,28 @@ export abstract class BaseAgent {
     try {
       await this.logger.thinking(`Starting task: ${title}`, taskId);
       this.setStatus('thinking');
+
+      // Explicit read-only jobs can finish without memory retrieval or an LLM.
+      // This is a closed allowlist, not a generic tool/approval bypass.
+      const deterministicRead = resolveDeterministicRead(context, this.config.tools, this.config.approvalRequired);
+      if (deterministicRead) {
+        const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+        const result = await registry.execute(deterministicRead.tool, deterministicRead.args, {
+          agentId: this.config.id, taskId, workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
+          requestApproval: async () => false,
+        });
+        recordTurnEconomy(result.success ? 'successfulTools' : 'failedTools');
+        toolExecutions++;
+        if (!result.success) throw new Error(result.error ?? 'Campaign snapshot failed');
+        const output = JSON.stringify(result.data);
+        await this.taskQueue.complete(taskId, output);
+        recordTurnEconomy('deterministicTasks');
+        recordTurnEconomy('completedTasks');
+        await this.logger.info('Task completed with deterministic campaign snapshot', taskId);
+        this.setStatus('idle');
+        recordMetricsAsync(true);
+        return { success: true, output };
+      }
 
       const contextBudget = resolveBudget();
 
@@ -706,6 +730,10 @@ export abstract class BaseAgent {
             content: `## Task: ${title}\n\n${description}\n\nContext: ${JSON.stringify(context, null, 2)}`,
           },
         ];
+
+        const bundle = readWorkBundle(context);
+        if (bundle) history.push({ role: 'user', content:
+          `Resolve all ${bundle.itemIds.length} work items in this bundle. Use multiple independent structured tool calls per turn where possible. Report an outcome for EACH item ID, including failures or unresolved work; do not infer success from another item's result. Approval requirements apply to every action.` });
 
         // Heavy-work nudge (Phase 4): only on a fresh execution (a resumed
         // one already has this context, and re-nudging every resume would be
@@ -993,6 +1021,15 @@ export abstract class BaseAgent {
 
         if (response.toolCalls.length === 0) {
           const result = response.content;
+          const missingItems = missingBundleItems(context, result);
+          if (missingItems.length) {
+            if (!bundleCoveragePrompted && iterations < maxIter) {
+              bundleCoveragePrompted = true;
+              history.push({ role: 'user', content: `Your final report omitted these bundle item IDs: ${missingItems.join(', ')}. Report the actual outcome of every item; do not repeat completed side effects.` });
+              continue;
+            }
+            throw new Error('Incomplete work bundle: final report omitted item outcomes');
+          }
 
           // "I couldn't do it" is not a completed task. Checked only after the
           // self-review turn above, so the agent has already had one explicit
@@ -1035,6 +1072,7 @@ export abstract class BaseAgent {
           }
 
           await this.taskQueue.complete(taskId, result);
+          recordTurnEconomy('completedTasks');
           await this.memory.remember(`task:${taskId}:result`, result.slice(0, 500), { importance: 0.6 });
           await this.logger.info(`Task completed: ${title}`, taskId);
           this.setStatus('idle');
@@ -1119,6 +1157,7 @@ export abstract class BaseAgent {
 
           const toolCallStartedAt = Date.now();
           const result = await registry.execute(tc.name, tc.args, toolContext);
+          recordTurnEconomy(result.success ? 'successfulTools' : 'failedTools');
           // Reaching here means the call did not yield (ApprovalYieldSignal
           // throws out of registry.execute() before this line — that path
           // gets its own logTaskOutcome at the outer catch instead).

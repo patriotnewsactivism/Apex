@@ -116,6 +116,12 @@ export interface DiagnosticFinding {
 }
 
 export interface SpendSnapshot {
+  turnEconomy?: {
+    scope: 'process'; since: string; requests: number; successfulTools: number; failedTools: number;
+    bundlesCreated: number; itemsCoalesced: number; deterministicTasks: number; completedTasks: number;
+    successfulToolsPerRequest: number | null; requestsPerCompletedTask: number | null;
+    bundlingEnabled: boolean; bundleWindowMs: number;
+  };
   day: string;
   persistence: 'postgres+memory' | 'memory-only';
   spentUsd: number;
@@ -142,6 +148,8 @@ export interface SpendSnapshot {
     pacingEnabled: boolean;
     releasedSoFar: number;
     persistence: 'postgres+memory' | 'memory-only';
+    accounts?: Array<{ account: string; openRouterAccount: string | null; requests: number;
+      accountRequests: number; cap: number; capReached: boolean; percentOfCap: number | null }>;
     allProviderUsed: number;
     emergencyCap: number;
     directProviders: Array<{

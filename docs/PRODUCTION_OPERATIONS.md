@@ -590,3 +590,14 @@ Policy and provenance:
 - `docs/deploy-provenance.md`
 
 When this runbook conflicts with current source or direct production evidence, stop, identify the conflict, and update the documentation after establishing the truth. Do not silently follow stale instructions.
+
+### Turn Economy rollout
+
+The foundation in `docs/TURN_ECONOMY.md` is staged and has not been verified in
+production. `APEX_WORK_BUNDLES_ENABLED` defaults false. Collect the explicitly
+process-scoped spend-panel baseline before enabling a compatible producer's
+`context.bundleKey`. Opt-in means one shared task/result/approval/cancellation
+unit; independent-result producers must remain unbundled. Existing account cap
+configuration now applies across confirmed sibling credentials; account RPM is
+separate from workspace RPM. No new database migration or provider credential
+is required. Disabling bundling stops new aggregation; existing bundles drain.

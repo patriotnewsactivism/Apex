@@ -186,6 +186,17 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 `scripts/verify-provider-routing.ts`, `scripts/verify-provider-backpressure.ts`, `scripts/verify-model-routing-policy.ts`, and `scripts/verify-model-intelligence.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
 
+## Turn Economy
+
+`docs/TURN_ECONOMY.md` describes opt-in durable queue bundles, the read-only
+`campaign_snapshot` tool, the explicit no-LLM task path and process-scoped
+productivity counters. Bundling defaults off. Opted-in producers accept one
+shared task/result/approval/cancellation unit for compatible items; never merge
+existing independent tasks. Preserve exact context/scope isolation, fixed
+collection deadlines, row locking and per-tool approvals. Known sibling
+credentials share the strictest configured daily cap and account RPM window.
+Quota admission is still process-local; do not claim distributed reservations.
+
 ## Production concurrency and spend controls
 
 Current production defaults in `.env.example` are intended for a real workforce, not the temporary demo throttle:

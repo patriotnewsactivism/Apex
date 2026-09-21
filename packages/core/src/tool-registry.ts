@@ -1,3 +1,4 @@
+import { campaignSnapshotTool } from './campaign-snapshot.js';
 import { readFile, writeFile, mkdir, readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, resolve, relative, dirname } from 'path';
@@ -2898,6 +2899,7 @@ export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
   if (!_registry) {
     _registry = new ToolRegistry();
     const root = workspaceRoot ?? process.cwd();
+    _registry.register(campaignSnapshotTool);
     for (const tool of createBuiltinTools(root)) {
      _registry.register(tool);
     }
