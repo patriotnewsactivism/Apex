@@ -949,6 +949,145 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+    // ── Hunter.io: B2B contact discovery and verification ───────────────────
+    // Fills the gap that stalled the "enrich missing decision-maker contacts"
+    // goal: webSearch finds a company's site, but reading a name and address
+    // off an About page is exactly the step the model was caught fabricating.
+    // Hunter returns sourced, confidence-scored contacts, and the results land
+    // through the existing updateLeadContactInfo so nothing is persisted that
+    // did not come from a real lookup.
+    //
+    // Read-only lookups, same class as webSearch/searchBusinessDirectory — no
+    // external side effect, so not approval-gated. Actually SENDING to an
+    // address found here still goes through hard-gated send_email.
+    {
+      name: 'hunterDomainSearch',
+      description:
+        "Find the people and email addresses published for a company domain. The main decision-maker discovery call: pass the lead's own website domain. Returns each contact's email, confidence score, name, job title, and the public source URLs Hunter saw it on. Persist results with updateLeadContactInfo — never invent a contact this did not return.",
+      schema: z.object({
+        domain: z.string().describe("Company domain, e.g. 'acmehvac.com' — not a full URL"),
+        limit: z.number().optional().describe('Max contacts to return (default 10)'),
+        seniority: z.string().optional().describe("Optional filter: 'junior', 'senior', or 'executive'"),
+      }),
+      requiresApproval: false,
+      async execute({ domain, limit, seniority }) {
+        const key = process.env.HUNTER_API_KEY;
+        if (!key) {
+          return { domain, total: 0, contacts: [], error: 'HUNTER_API_KEY is not set. Ask the operator to configure it; do not guess contacts.' };
+        }
+        const params = new URLSearchParams({ domain, limit: String(limit ?? 10) });
+        if (seniority) params.set('seniority', seniority);
+        const res = await fetch(`https://api.hunter.io/v2/domain-search?${params.toString()}`, {
+          headers: { 'X-API-Key': key },
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          return { domain, total: 0, contacts: [], error: `Hunter domain-search HTTP ${res.status}: ${body.slice(0, 200)}` };
+        }
+        const data = (await res.json()) as {
+          data?: {
+            organization?: string;
+            emails?: Array<{
+              value?: string;
+              confidence?: number;
+              first_name?: string;
+              last_name?: string;
+              position?: string;
+              seniority?: string;
+              linkedin?: string;
+              phone_number?: string;
+              sources?: Array<{ uri?: string }>;
+            }>;
+          };
+        };
+        const contacts = (data.data?.emails ?? []).map((e) => ({
+          email: e.value,
+          confidence: e.confidence,
+          name: [e.first_name, e.last_name].filter(Boolean).join(' ') || undefined,
+          position: e.position,
+          seniority: e.seniority,
+          linkedin: e.linkedin,
+          phone: e.phone_number,
+          sourceUrl: e.sources?.[0]?.uri,
+        }));
+        return { domain, organization: data.data?.organization, total: contacts.length, contacts };
+      },
+    },
+
+    {
+      name: 'hunterEmailFinder',
+      description:
+        "Find one specific person's work email when you already know their name and their company domain. Use after hunterDomainSearch has named a decision maker but not returned their address. Returns the address with a confidence score, or no email when Hunter cannot source one — record that as unavailable rather than guessing a pattern.",
+      schema: z.object({
+        domain: z.string().describe("Company domain, e.g. 'acmehvac.com'"),
+        firstName: z.string().describe('Person first name'),
+        lastName: z.string().describe('Person last name'),
+      }),
+      requiresApproval: false,
+      async execute({ domain, firstName, lastName }) {
+        const key = process.env.HUNTER_API_KEY;
+        if (!key) {
+          return { domain, email: null, error: 'HUNTER_API_KEY is not set. Ask the operator to configure it; do not guess an address pattern.' };
+        }
+        const params = new URLSearchParams({ domain, first_name: firstName, last_name: lastName });
+        const res = await fetch(`https://api.hunter.io/v2/email-finder?${params.toString()}`, {
+          headers: { 'X-API-Key': key },
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          return { domain, email: null, error: `Hunter email-finder HTTP ${res.status}: ${body.slice(0, 200)}` };
+        }
+        const data = (await res.json()) as {
+          data?: { email?: string; score?: number; position?: string; sources?: Array<{ uri?: string }> };
+        };
+        return {
+          domain,
+          email: data.data?.email ?? null,
+          confidence: data.data?.score,
+          position: data.data?.position,
+          sourceUrl: data.data?.sources?.[0]?.uri,
+        };
+      },
+    },
+
+    {
+      name: 'hunterEmailVerify',
+      description:
+        "Check whether an email address is actually deliverable before it is used for outreach. Returns deliverable | undeliverable | risky | unknown with a score. Verify before saving an address to a lead: a bounced send damages sender reputation for every later campaign.",
+      schema: z.object({
+        email: z.string().email().describe('Email address to verify'),
+      }),
+      requiresApproval: false,
+      async execute({ email }) {
+        const key = process.env.HUNTER_API_KEY;
+        if (!key) {
+          return { email, result: 'unknown', error: 'HUNTER_API_KEY is not set. Ask the operator to configure it.' };
+        }
+        const params = new URLSearchParams({ email });
+        const res = await fetch(`https://api.hunter.io/v2/email-verifier?${params.toString()}`, {
+          headers: { 'X-API-Key': key },
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          return { email, result: 'unknown', error: `Hunter email-verifier HTTP ${res.status}: ${body.slice(0, 200)}` };
+        }
+        const data = (await res.json()) as {
+          data?: { result?: string; score?: number; disposable?: boolean; webmail?: boolean; smtp_check?: boolean };
+        };
+        return {
+          email,
+          result: data.data?.result ?? 'unknown',
+          score: data.data?.score,
+          disposable: data.data?.disposable,
+          webmail: data.data?.webmail,
+          smtpCheck: data.data?.smtp_check,
+        };
+      },
+    },
+
     // Read the researched leads pipeline (for Sales/BizDev review, status reporting)
     {
       name: 'listResearchedLeads',

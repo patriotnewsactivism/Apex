@@ -97,7 +97,7 @@ Each lead needs: company name, website, industry, city, contact-research result,
 Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,
       llm: { provider: 'openrouter-nex-n2-5-mini-free', model: 'nex-agi/nex-n2.5-mini:free' },
-      tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'requestPeerReview'],
+      tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'hunterDomainSearch', 'hunterEmailFinder', 'hunterEmailVerify', 'requestPeerReview'],
       maxIterations: 30,
       approvalRequired: false,
       // Capacity recovery reserves the first eight seconds for revenue work.

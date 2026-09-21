@@ -142,6 +142,57 @@ async function main(): Promise<void> {
     /Rewording will not help/.test(webSearchSrc),
   );
 
+
+  // ── 4. Hunter.io contact enrichment ─────────────────────────────────────
+  console.log('\n── hunter contact enrichment ──');
+  const tools = mod.createBuiltinTools(root);
+  const byName = new Map(tools.map((t) => [t.name, t]));
+
+  for (const name of ['hunterDomainSearch', 'hunterEmailFinder', 'hunterEmailVerify']) {
+    const tool = byName.get(name);
+    check(`${name} is registered`, Boolean(tool));
+    check(
+      `${name} is a read-only lookup, not approval-gated`,
+      tool?.requiresApproval !== true,
+    );
+  }
+
+  // Fail closed without a key: no invented contacts, and a reason the agent
+  // can report instead of falling back to guessing an address pattern.
+  const savedKey = process.env.HUNTER_API_KEY;
+  delete process.env.HUNTER_API_KEY;
+  try {
+    const search = byName.get('hunterDomainSearch');
+    const found = (await search!.execute({ domain: 'example.com' }, {
+      agentId: 'guard', workspaceRoot: root,
+    } as never)) as { contacts?: unknown[]; error?: string };
+    check(
+      'hunterDomainSearch without a key returns zero contacts and names the missing env var',
+      (found.contacts ?? []).length === 0 && /HUNTER_API_KEY/.test(found.error ?? ''),
+      found,
+    );
+
+    const finder = byName.get('hunterEmailFinder');
+    const one = (await finder!.execute(
+      { domain: 'example.com', firstName: 'Ada', lastName: 'Lovelace' },
+      { agentId: 'guard', workspaceRoot: root } as never,
+    )) as { email?: string | null; error?: string };
+    check(
+      'hunterEmailFinder without a key returns no email rather than a guessed pattern',
+      one.email === null && /HUNTER_API_KEY/.test(one.error ?? ''),
+      one,
+    );
+  } finally {
+    if (savedKey !== undefined) process.env.HUNTER_API_KEY = savedKey;
+  }
+
+  check(
+    'the Lead Researcher can actually call the Hunter tools',
+    /'hunterDomainSearch'[\s\S]{0,120}'hunterEmailVerify'/.test(
+      fs.readFileSync(path.join(root, 'packages/agents/src/business.ts'), 'utf8'),
+    ),
+  );
+
   if (failures > 0) {
     console.error(`\n${failures} lead-source-tool check(s) failed.`);
     process.exit(1);
