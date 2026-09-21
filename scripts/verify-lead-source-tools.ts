@@ -231,6 +231,70 @@ async function main(): Promise<void> {
     /tomtom: TOMTOM_API_KEY not set/.test(src),
   );
 
+
+  // ── 6. Geocode cache ────────────────────────────────────────────────────
+  // A city's coordinates are permanent, so a repeat lookup is a request spent
+  // on a known answer. TomTom's free Search tier is 2,500/month and a
+  // geo-bounded directory call costs two requests, so this halves the burn.
+  console.log('\n── geocode cache ──');
+  const { rememberGeocode, cachedGeocode, clearGeocodeCache } = mod;
+
+  clearGeocodeCache();
+  rememberGeocode('tomtom', 'Houston Texas', '&lat=29.76&lon=-95.36&radius=40000');
+  check(
+    'a remembered geocode is returned on the next lookup',
+    cachedGeocode('tomtom', 'Houston Texas') === '&lat=29.76&lon=-95.36&radius=40000',
+  );
+  check(
+    'lookups are case- and whitespace-insensitive (the agent does not normalize)',
+    cachedGeocode('tomtom', '  houston   TEXAS ') === '&lat=29.76&lon=-95.36&radius=40000',
+  );
+  check(
+    'providers keep separate namespaces (a TomTom bias is not an Overpass bbox)',
+    cachedGeocode('nominatim', 'Houston Texas') === undefined,
+  );
+
+  // The real property: a second directory call for the same metro must not
+  // re-geocode. Counted against a stubbed fetch rather than asserted from
+  // source, so a refactor that quietly drops the cache fails here.
+  clearGeocodeCache();
+  const realFetch = globalThis.fetch;
+  let geocodeCalls = 0;
+  let poiCalls = 0;
+  globalThis.fetch = (async (input: string | URL | Request, _init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/search/2/geocode/')) {
+      geocodeCalls += 1;
+      return new Response(JSON.stringify({ results: [{ position: { lat: 29.76, lon: -95.36 } }] }), { status: 200 });
+    }
+    poiCalls += 1;
+    return new Response(
+      JSON.stringify({ results: [{ poi: { name: 'Test Bail Bonds', phone: '+1 713-000-0000', url: 'testbail.com' }, address: { municipality: 'Houston' } }] }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
+  const savedTomTom = process.env.TOMTOM_API_KEY;
+  process.env.TOMTOM_API_KEY = 'guard-script-test-key';
+  try {
+    const directory = byName.get('searchBusinessDirectory')!;
+    const ctx = { agentId: 'guard', workspaceRoot: root } as never;
+    await directory.execute({ query: 'bail bonds agency Houston Texas' }, ctx);
+    await directory.execute({ query: 'roofing contractor Houston Texas' }, ctx);
+    await directory.execute({ query: 'medspa Houston Texas' }, ctx);
+    check(
+      'three searches in the same metro geocode ONCE, not three times',
+      geocodeCalls === 1,
+      { geocodeCalls, poiCalls },
+    );
+    check('each search still runs its own POI query', poiCalls === 3, { geocodeCalls, poiCalls });
+  } finally {
+    globalThis.fetch = realFetch;
+    if (savedTomTom === undefined) delete process.env.TOMTOM_API_KEY;
+    else process.env.TOMTOM_API_KEY = savedTomTom;
+    clearGeocodeCache();
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} lead-source-tool check(s) failed.`);
     process.exit(1);
