@@ -29,6 +29,7 @@
 process.env.BUILDMYBOT_APP_URL ||= 'https://www.buildmybot.app';
 process.env.CASEBUDDY_SUPABASE_URL ||= 'https://guard-script-dummy.supabase.co';
 process.env.CASEBUDDY_SUPABASE_SERVICE_KEY ||= 'guard-script-dummy-key';
+process.env.APEX_OPERATOR_AUTO_APPROVE_ALL = 'false'; // exercise the underlying fail-closed policy
 
 type ApprovalPolicyModule = typeof import('../packages/core/src/approval-policy.js');
 type ToolRegistryModule = typeof import('../packages/core/src/tool-registry-with-base44.js');
