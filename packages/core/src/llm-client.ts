@@ -2207,6 +2207,7 @@ export function getKnownApiKeyEnvs(): string[] {
     'GROQ_API_KEY_2',
     'YELP_API_KEY',
     'GOOGLE_PLACES_API_KEY',
+    'TOMTOM_API_KEY',
     'HUNTER_API_KEY',
     'TAVILY_API_KEY',
     'BRAVE_SEARCH_API_KEY',
