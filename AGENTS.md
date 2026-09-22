@@ -55,6 +55,20 @@ QA Director -- independent quality/oversight role
 
 The production workforce is 13 agents. Generic specialist classes may exist in source but are not part of the instantiated production organization unless the workforce definition changes explicitly.
 
+### Virtual specialist departments
+
+APEX also has a **virtual specialist layer** in `packages/core/src/specialists/`. These specialists are not additional always-on workers and do not change the 13-agent production organization. They are named, department-scoped execution profiles routed through an existing standing role using task context (`specialistId`).
+
+The specialist layer exists so APEX can maintain real departments — Revenue & Sales, Marketing & Growth, BuildMyBot Product, Newsroom & Investigations, Video & Media, Publishing, Legal Research & Records, Engineering & Reliability, Business Operations, Executive Command, and APEX Control Plane — without multiplying baseline worker/model cost.
+
+Rules:
+- A specialist profile changes task focus and operating instructions only; it grants no extra tools, credentials, permissions, or approval bypass.
+- `dispatchSpecialist` routes one specialist to its standing parent role.
+- `dispatchDepartment` activates a department's default or explicitly selected specialist roster as durable tasks.
+- Revenue-facing department work should optimize for measurable pipeline, conversion, retained customers, and revenue rather than raw activity.
+- External messages/calls, public publishing, financial actions, production changes, and other governed effects retain the normal approval/tool policy.
+- Do not describe the specialist profiles as separate persistent workers. The persistent production workforce remains 13 agents.
+
 Tasks are expected to progress through real delegation, tools, verification, learning, and measurable completion. Announcing intended work is not completion.
 
 ## Stack and conventions
