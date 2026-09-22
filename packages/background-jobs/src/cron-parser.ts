@@ -138,54 +138,61 @@ export class CronParser {
    * Searches forward up to 1 year. Returns null if no match found (should
    * be impossible for any valid expression).
    */
-  static nextRun(expression: string, from: Date = new Date()): Date | null {
+  static nextRun(
+    expression: string,
+    from: Date = new Date(),
+    timeZone = 'UTC',
+  ): Date | null {
     const fields = CronParser.parse(expression);
-    const maxSearchMs = 366 * 24 * 60 * 60 * 1000; // 1 year
-    const deadline = from.getTime() + maxSearchMs;
+    const maxIterations = 60 * 24 * 366; // one year, minute-by-minute
+    const weekdayMap: Record<string, number> = {
+      Sun: 0,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    };
 
-    // Start from the next minute
-    const candidate = new Date(from);
-    candidate.setSeconds(0, 0);
-    candidate.setMinutes(candidate.getMinutes() + 1);
+    // Constructing the formatter also validates the IANA timezone. System jobs
+    // carry an explicit timezone in payload; dynamic/user jobs default to UTC.
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      weekday: 'short',
+      hourCycle: 'h23',
+    });
 
-    while (candidate.getTime() < deadline) {
-      const month = candidate.getMonth() + 1; // 1-based
-      const dayOfMonth = candidate.getDate();
-      const dayOfWeek = candidate.getDay(); // 0=Sunday
-      const hour = candidate.getHours();
-      const minute = candidate.getMinutes();
+    const candidate = new Date(from.getTime());
+    candidate.setUTCSeconds(0, 0);
+    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
 
-      // Check month
-      if (!fields.months.includes(month)) {
-        // Skip to first valid month
-        candidate.setMonth(candidate.getMonth() + 1, 1);
-        candidate.setHours(0, 0, 0, 0);
-        continue;
+    for (let i = 0; i < maxIterations; i++) {
+      const parts = formatter.formatToParts(candidate);
+      const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+
+      const month = Number.parseInt(get('month'), 10);
+      const dayOfMonth = Number.parseInt(get('day'), 10);
+      const hour = Number.parseInt(get('hour'), 10);
+      const minute = Number.parseInt(get('minute'), 10);
+      const dayOfWeek = weekdayMap[get('weekday')];
+
+      if (
+        fields.months.includes(month) &&
+        fields.daysOfMonth.includes(dayOfMonth) &&
+        fields.daysOfWeek.includes(dayOfWeek) &&
+        fields.hours.includes(hour) &&
+        fields.minutes.includes(minute)
+      ) {
+        return new Date(candidate.getTime());
       }
 
-      // Check day of month AND day of week (both must match)
-      if (!fields.daysOfMonth.includes(dayOfMonth) || !fields.daysOfWeek.includes(dayOfWeek)) {
-        candidate.setDate(candidate.getDate() + 1);
-        candidate.setHours(0, 0, 0, 0);
-        continue;
-      }
-
-      // Check hour
-      if (!fields.hours.includes(hour)) {
-        candidate.setHours(candidate.getHours() + 1, 0, 0, 0);
-        continue;
-      }
-
-      // Check minute
-      if (!fields.minutes.includes(minute)) {
-        candidate.setMinutes(candidate.getMinutes() + 1, 0, 0);
-        continue;
-      }
-
-      // All fields match
-      return candidate;
+      candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
     }
 
-    return null; // No match within search window
-  }
-}
+    return null;
+  }}
