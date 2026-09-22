@@ -118,10 +118,10 @@ export const EXISTING_AGENT_ALIASES: ExistingAgentAlias[] = [
   },
   {
     "id": "apex-qa-director-001",
-    "name": "Breakers",
+    "name": "QA Director",
     "role": "QA_DIRECTOR",
-    "department": "Portfolio",
-    "parentId": "apex-portfolio-commander-001"
+    "department": "BuildMyBot",
+    "parentId": "apex-bmb-commander-001"
   }
 ];
 
@@ -6254,9 +6254,9 @@ export const PORTFOLIO_AGENT_DEFINITIONS: PortfolioAgentDefinition[] = [
     "approvalRequired": false
   },
   {
-    "id": "apex-portfolio-breakers-001",
-    "name": "Portfolio Breakers",
-    "role": "PORTFOLIO_BREAKERS",
+    "id": "apex-breakers-001",
+    "name": "Breakers",
+    "role": "BREAKERS",
     "department": "Portfolio",
     "tier": 2,
     "parentId": "apex-portfolio-commander-001",
