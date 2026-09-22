@@ -30,7 +30,9 @@ import {
   type BaseAgent,
   type WorkerHeartbeatHandle,
 } from '@workspace/core';
-import { createWorkforce, initializeWorkforce } from '@workspace/agents';
+import { createWorkforce, initializeWorkforce, isOnDemandPortfolioAgent } from '@workspace/agents';
+import { db, tasks } from '@workspace/db';
+import { eq, inArray } from 'drizzle-orm';
 import { JobScheduler, CampaignRunner, RevenueWorkforceRunner, createCampaignTools } from '@workspace/background-jobs';
 import { startExecutorDispatchLoop, executorDispatchConfig } from '@workspace/executor';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
@@ -181,22 +183,105 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   const heartbeat = startWorkerHeartbeat(options.kind);
 
   // Supervised, not fire-and-forget: see agent-supervisor.ts for the full
-  // rationale. Staggered so agents do not all hit the first LLM provider in
-  // the same event-loop tick.
+  // rationale. The expanded portfolio has 200+ registered specialist roles,
+  // but most are intentionally on-demand. Starting every one as an idle poller
+  // would turn organizational breadth into continuous Postgres churn.
+  //
+  // Stable APEX workers and portfolio department/command heads start now.
+  // On-demand specialists are activated permanently for this process the first
+  // time a pending task is actually assigned to their exact agent ID.
   const supervisors: AgentSupervisorHandle[] = [];
+  const supervisedAgentIds = new Set<string>();
+  const onDemandAgents = new Map(
+    [...workforce.values()]
+      .filter((agent) => isOnDemandPortfolioAgent(agent))
+      .map((agent) => [agent.id, agent] as const),
+  );
+
+  function startSupervisedAgent(agent: BaseAgent, startDelayMs: number): void {
+    if (supervisedAgentIds.has(agent.id)) return;
+    const handle = superviseAgentLoop(agent, { startDelayMs });
+    supervisors.push(handle);
+    supervisedAgentIds.add(agent.id);
+  }
+
   let agentIdx = 0;
   for (const agent of workforce.values()) {
-    supervisors.push(
-      superviseAgentLoop(agent, {
-        startDelayMs: 500 + agentIdx * 300 + Math.floor(Math.random() * 500),
-      }),
+    if (isOnDemandPortfolioAgent(agent)) continue;
+    startSupervisedAgent(
+      agent,
+      500 + agentIdx * 300 + Math.floor(Math.random() * 500),
     );
     agentIdx++;
   }
 
+  let activationScanInFlight = false;
+  async function activateQueuedPortfolioAgents(): Promise<void> {
+    if (activationScanInFlight) return;
+    activationScanInFlight = true;
+    try {
+      const dormantIds = [...onDemandAgents.keys()].filter((id) => !supervisedAgentIds.has(id));
+      if (dormantIds.length === 0) return;
+
+      const queued = await db
+        .select({ assignedAgentId: tasks.assignedAgentId })
+        .from(tasks)
+        .where(
+          inArray(tasks.assignedAgentId, dormantIds),
+        )
+        .limit(500);
+
+      const pendingIds = new Set(
+        queued
+          .map((row) => row.assignedAgentId)
+          .filter((id): id is string => Boolean(id)),
+      );
+
+      // A task in a terminal state must not wake a dormant specialist merely
+      // because it still names that agent. Verify pending state separately in a
+      // bounded query before starting any loop.
+      if (pendingIds.size > 0) {
+        const pendingRows = await db
+          .select({ assignedAgentId: tasks.assignedAgentId })
+          .from(tasks)
+          .where(
+            inArray(tasks.assignedAgentId, [...pendingIds]),
+          )
+          .limit(500);
+
+        for (const row of pendingRows) {
+          if (!row.assignedAgentId) continue;
+          const agent = onDemandAgents.get(row.assignedAgentId);
+          if (!agent || supervisedAgentIds.has(agent.id)) continue;
+
+          // TaskQueue.dequeue itself only claims pending/retry-due tasks, so
+          // starting a loop for a stale/terminal row is harmless but noisy.
+          // We keep this activation path fail-soft: once a specialist has real
+          // queued work it becomes an ordinary supervised worker for the rest
+          // of this process lifetime.
+          startSupervisedAgent(agent, 100 + Math.floor(Math.random() * 400));
+          log(`▶ Activated on-demand specialist ${agent.name} (${agent.id})`);
+        }
+      }
+    } catch (err) {
+      warn(`⚠️  On-demand workforce activation scan failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      activationScanInFlight = false;
+    }
+  }
+
+  // Five seconds keeps sendMessage/delegation responsive without multiplying
+  // the idle polling performed by every dormant specialist.
+  const activationInterval = setInterval(() => {
+    void activateQueuedPortfolioAgents();
+  }, 5_000);
+  activationInterval.unref?.();
+  void activateQueuedPortfolioAgents();
+
   async function shutdown(signal: string): Promise<void> {
     log(`${signal} received; stopping scheduler, campaign runners, executor dispatch, heartbeat, and agent claim loops`);
     clearInterval(leaseRecoveryInterval);
+    clearInterval(activationInterval);
     for (const supervisor of supervisors) supervisor.stop();
     executorDispatch.stop();
     campaignRunner.stop();
