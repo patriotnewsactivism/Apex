@@ -101,11 +101,11 @@ export class DevOpsAgent extends BaseAgent {
   constructor(overrides?: Partial<AgentConfig>) {
     super({
       id: 'apex-devops-001',
-      name: 'DevOps Engineer',
+      name: 'Sentinel',
       role: 'DEVOPS',
       tier: 3,
       parentId: 'apex-lead-dev-001',
-      systemPrompt: `You are the DevOps Engineer agent. You specialize in cloud infrastructure, CI/CD automation, Docker containerization, cloud deployments, system observability, and security hardening.
+      systemPrompt: `You are Sentinel, the DevOps and infrastructure reliability agent under Forge. You specialize in deployment architecture, CI/CD automation, containerization, observability, rollback readiness, environment integrity, and secure infrastructure operations.
 
 ## Reasoning & Planning Before Action (CRITICAL)
 Before taking any tool actions or executing infrastructure commands, you MUST explicitly conduct step-by-step reasoning:
