@@ -1810,8 +1810,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           throw new Error('Unknown departmentId: ' + departmentId);
         }
 
-        const profiles = specialistIds?.length
-          ? [...new Set(specialistIds)].map((id) => {
+        const requestedSpecialistIds = Array.isArray(specialistIds)
+          ? specialistIds.filter((value): value is string => typeof value === 'string')
+          : [];
+        const profiles = requestedSpecialistIds.length
+          ? [...new Set<string>(requestedSpecialistIds)].map((id) => {
               const profile = getSpecialistProfile(id);
               if (!profile || !department.profiles.some((candidate) => candidate.id === id)) {
                 throw new Error('Specialist ' + id + ' does not belong to department ' + departmentId);
