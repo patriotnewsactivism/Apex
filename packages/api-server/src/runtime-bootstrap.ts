@@ -32,7 +32,7 @@ import {
 } from '@workspace/core';
 import { createWorkforce, initializeWorkforce, isOnDemandPortfolioAgent } from '@workspace/agents';
 import { db, tasks } from '@workspace/db';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { JobScheduler, CampaignRunner, RevenueWorkforceRunner, createCampaignTools } from '@workspace/background-jobs';
 import { startExecutorDispatchLoop, executorDispatchConfig } from '@workspace/executor';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
@@ -227,41 +227,22 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
         .select({ assignedAgentId: tasks.assignedAgentId })
         .from(tasks)
         .where(
-          inArray(tasks.assignedAgentId, dormantIds),
+          and(
+            inArray(tasks.assignedAgentId, dormantIds),
+            eq(tasks.status, 'pending'),
+          ),
         )
         .limit(500);
 
-      const pendingIds = new Set(
-        queued
-          .map((row) => row.assignedAgentId)
-          .filter((id): id is string => Boolean(id)),
-      );
+      for (const row of queued) {
+        if (!row.assignedAgentId) continue;
+        const agent = onDemandAgents.get(row.assignedAgentId);
+        if (!agent || supervisedAgentIds.has(agent.id)) continue;
 
-      // A task in a terminal state must not wake a dormant specialist merely
-      // because it still names that agent. Verify pending state separately in a
-      // bounded query before starting any loop.
-      if (pendingIds.size > 0) {
-        const pendingRows = await db
-          .select({ assignedAgentId: tasks.assignedAgentId })
-          .from(tasks)
-          .where(
-            inArray(tasks.assignedAgentId, [...pendingIds]),
-          )
-          .limit(500);
-
-        for (const row of pendingRows) {
-          if (!row.assignedAgentId) continue;
-          const agent = onDemandAgents.get(row.assignedAgentId);
-          if (!agent || supervisedAgentIds.has(agent.id)) continue;
-
-          // TaskQueue.dequeue itself only claims pending/retry-due tasks, so
-          // starting a loop for a stale/terminal row is harmless but noisy.
-          // We keep this activation path fail-soft: once a specialist has real
-          // queued work it becomes an ordinary supervised worker for the rest
-          // of this process lifetime.
-          startSupervisedAgent(agent, 100 + Math.floor(Math.random() * 400));
-          log(`▶ Activated on-demand specialist ${agent.name} (${agent.id})`);
-        }
+        // Once real queued work exists, the specialist becomes an ordinary
+        // supervised worker for the rest of this process lifetime.
+        startSupervisedAgent(agent, 100 + Math.floor(Math.random() * 400));
+        log(`▶ Activated on-demand specialist ${agent.name} (${agent.id})`);
       }
     } catch (err) {
       warn(`⚠️  On-demand workforce activation scan failed: ${err instanceof Error ? err.message : String(err)}`);
