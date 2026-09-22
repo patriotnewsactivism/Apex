@@ -138,6 +138,120 @@ export async function seedDefaultJobs(): Promise<void> {
           maxIterations: 4,
         } as Record<string, unknown>,
       },
+      // ── Portfolio workforce operating cadence (America/Chicago) ─────────
+      {
+        id: 'system-news-scout-morning',
+        name: 'Morning newsroom opportunity scan',
+        jobType: 'task_delegation',
+        cronExpression: '0 7 * * *',
+        targetAgentId: 'apex-news-scout-001' as string | null,
+        priority: 4,
+        payload: {
+          systemDefinitionVersion: 1,
+          timeZone: 'America/Chicago',
+          staleOpenTaskMinutes: 180,
+          title: 'Morning newsroom opportunity scan',
+          description:
+            'Scan current public sources for the strongest accountability, civil-rights, courts, surveillance, local-government, and public-interest story opportunities. Verify the source URLs, separate confirmed facts from leads, and produce a short ranked newsroom brief. Send the most promising evidence-backed candidates to Watchdog (apex-watchdog-001) for investigation. Do not publish anything.',
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-watchdog-morning',
+        name: 'Morning investigative follow-through',
+        jobType: 'task_delegation',
+        cronExpression: '15 7 * * *',
+        targetAgentId: 'apex-watchdog-001' as string | null,
+        priority: 4,
+        payload: {
+          systemDefinitionVersion: 1,
+          timeZone: 'America/Chicago',
+          staleOpenTaskMinutes: 240,
+          title: 'Investigate morning newsroom lead',
+          description:
+            'Take the strongest currently available newsroom lead, prioritize any fresh NewsScout brief delivered to you, and investigate it with primary/authoritative sources where possible. Build the factual spine, chronology, key documents, unresolved questions, and source URLs. Send the resulting fact package to FactCheck (apex-factcheck-001). Do not publish or overstate unresolved allegations.',
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-factcheck-morning',
+        name: 'Morning newsroom fact check',
+        jobType: 'task_delegation',
+        cronExpression: '30 7 * * *',
+        targetAgentId: 'apex-factcheck-001' as string | null,
+        priority: 4,
+        payload: {
+          systemDefinitionVersion: 1,
+          timeZone: 'America/Chicago',
+          staleOpenTaskMinutes: 180,
+          title: 'Fact-check morning investigative package',
+          description:
+            'Review the strongest current Watchdog/newsroom package. Verify material claims against supporting sources, flag disputed or unverified points, verify names/dates/quotes, and return a publication-readiness fact-check memo. Send the verified executive summary to Atlas (apex-ceo-001). Do not publish anything.',
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-atlas-morning-brief',
+        name: 'Atlas morning executive briefing',
+        jobType: 'task_delegation',
+        cronExpression: '0 8 * * *',
+        targetAgentId: 'apex-ceo-001' as string | null,
+        priority: 3,
+        payload: {
+          systemDefinitionVersion: 1,
+          timeZone: 'America/Chicago',
+          staleOpenTaskMinutes: 180,
+          title: 'Morning executive brief',
+          description:
+            'Prepare the morning executive brief. Synthesize verified overnight changes, workforce/queue health, open incidents, BuildMyBot/APEX status, revenue/pipeline movement, newsroom opportunities and fact-check results, approvals needing human attention, cost anomalies, and the highest-impact next actions. Clearly separate verified outcomes from pending/delegated work.',
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-mission-control-hourly',
+        name: 'Mission Control hourly health sweep',
+        jobType: 'task_delegation',
+        cronExpression: '5 * * * *',
+        targetAgentId: 'apex-mission-control-001' as string | null,
+        priority: 2,
+        payload: {
+          systemDefinitionVersion: 1,
+          timeZone: 'America/Chicago',
+          staleOpenTaskMinutes: 90,
+          title: 'Hourly workforce and platform health sweep',
+          description:
+            'Check current APEX workforce, scheduler, queue, capacity, campaign, and platform health using real tools. Identify only current actionable degradation; distinguish recovered historical errors from live incidents. Route a concise evidence-backed incident or remediation brief to APEX Commander (apex-apex-commander-001) when action is warranted. Do not invent busywork when healthy.',
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-breakers-nightly',
+        name: 'Nightly cross-portfolio regression sweep',
+        jobType: 'task_delegation',
+        cronExpression: '30 2 * * *',
+        targetAgentId: 'apex-breakers-001' as string | null,
+        priority: 6,
+        payload: {
+          systemDefinitionVersion: 1,
+          timeZone: 'America/Chicago',
+          staleOpenTaskMinutes: 360,
+          title: 'Nightly owned-product regression sweep',
+          description:
+            'Run a non-destructive black-box regression review across currently active owned products/sites and their critical public user journeys. Use real browser/health evidence where tools support it. Report reproducible failures, severity, URLs/paths, and the correct department/agent to fix each issue. Do not attack third-party systems, do not create load tests against production, and do not deploy fixes directly.',
+        } as Record<string, unknown>,
+      },
+      {
+        id: 'system-portfolio-weekly-review',
+        name: 'Weekly product and revenue strategy review',
+        jobType: 'task_delegation',
+        cronExpression: '30 8 * * 1',
+        targetAgentId: 'apex-portfolio-commander-001' as string | null,
+        priority: 6,
+        payload: {
+          systemDefinitionVersion: 1,
+          timeZone: 'America/Chicago',
+          staleOpenTaskMinutes: 480,
+          title: 'Weekly portfolio strategy review',
+          description:
+            'Review the portfolio for the past week: shipped vs planned work, product health, revenue funnel evidence, costs, repeated incidents, customer/QA signals, technical debt, content/news/media opportunities, and cross-project dependencies. Produce a prioritized strategy memo for Atlas with no more than the highest-value actions. Do not convert speculative ideas into claimed commitments.',
+        } as Record<string, unknown>,
+      },
+
       // ── Closed-loop autonomy roster ──────────────────────────────────────
       // Delegation used to be one-way: a manager handed work down and its own
       // task finished immediately, so nothing ever read the outcome back. This
@@ -200,10 +314,10 @@ export async function seedDefaultJobs(): Promise<void> {
         priority: 4,
         payload: {
           systemDefinitionVersion: 3,
-          subordinates: ['apex-lead-research-001', 'apex-sales-001', 'apex-marketing-001', 'apex-success-001'],
-          includeBuildMyBot2: true,
+          subordinates: ['apex-cfo-001', 'apex-ledger-001', 'apex-pricing-001', 'apex-procurement-001', 'apex-contracts-001', 'apex-entitymanager-001', 'apex-investorrelations-001', 'apex-grantscout-001', 'apex-metrics-001'],
+          includeBuildMyBot2: false,
           focus:
-            'You run BuildMyBot.App day-to-day operations. Priorities in order: (1) BuildMyBot2 health — if snapshot.buildmybot2 shows current open critical errors, flagged/escalated shifts, or leads stalling without a reply, act: read buildmybot_status, then send a corrective briefing with buildmybot_send_briefing or file one real ticket with buildmybot_dispatch_engineering. Historical provider failures listed as recovered are not current incidents. (2) Pipeline — leads researched but never worked are wasted spend; make sure the Lead Researcher is covering new industries/regions rather than re-covering the same ones, and that Sales is actually reviewing what was found. (3) Content and support cadence. Be honest about what is genuinely not wired yet (real outbound email/SMS and payments are not) — never report outreach that did not happen.',
+            'Run the internal operations branch: financial/cost visibility, contracts and renewals, entity/filing calendars, vendor/procurement issues, grant/funding opportunities, and portfolio metrics. Route BuildMyBot issues to BMB Commander, revenue issues to RevenueChief, marketing to Madison, and engineering to Forge instead of duplicating their work. Report only verified amounts/status and keep spending, filings, and agreements behind human approval.',
         } as Record<string, unknown>,
       },
       {
@@ -211,19 +325,24 @@ export async function seedDefaultJobs(): Promise<void> {
         name: 'CTO engineering branch review',
         jobType: 'branch_review',
         cronExpression: '35 */2 * * *', // every 2 h, after :30 provider-work recovery
-        targetAgentId: 'apex-cto-001' as string | null,
+        targetAgentId: 'apex-lead-dev-001' as string | null,
         priority: 7,
         payload: {
           systemDefinitionVersion: 3,
           subordinates: [
-            'apex-lead-dev-001',
+            'apex-cto-001',
             'apex-frontend-001',
             'apex-backend-001',
             'apex-devops-001',
             'apex-qa-001',
+            'apex-database-001',
+            'apex-voice-001',
+            'apex-integrations-001',
+            'apex-security-001',
+            'apex-performance-001',
           ],
           focus:
-            'You run engineering for Apex itself and for buildmybot2. Priorities in order: (1) Stability over features — call health_check first and act only on current degradation. A successful task newer than an old provider-chain failure means that outage recovered; do not request credits or keys from historical errors alone. (2) Repeated current failures are engineering defects until proven otherwise — diagnose the root cause rather than re-running the same work. (3) Delegate exactly once through apex-lead-dev-001; never also assign its Frontend, Backend, DevOps, or QA reports directly. Idle agents need no invented work. (4) BuildMyBot2 work must keep its repository context; do not inspect the Apex filesystem as if it were BuildMyBot2. (5) Ship through PRs, never direct pushes; deploys stay approval-gated. Escalate a missing capability only after a current tool or health check proves it is missing.',
+            'You are Forge, engineering execution lead. Priorities: current stability first, then verified defects, then high-value delivery. Use Architect for design questions and the exact engineering specialists for implementation/QA when useful. Diagnose repeated current failures instead of retrying blindly. Keep repository context correct across Apex and BuildMyBot2. Ship code through reviewable PRs; production deploys remain approval-gated. Never manufacture work merely because a specialist is idle.',
         } as Record<string, unknown>,
       },
       // ── Autonomous execution scheduler roster (2026-09-06) ───────────────
@@ -252,7 +371,14 @@ export async function seedDefaultJobs(): Promise<void> {
     ];
 
     for (const def of defaults) {
-      const nextRunAt = CronParser.nextRun(def.cronExpression, now) ?? new Date(now.getTime() + 60_000);
+      const payload = def.payload as Record<string, unknown>;
+      const timeZone =
+        typeof payload.timeZone === 'string' && payload.timeZone.trim()
+          ? payload.timeZone.trim()
+          : 'UTC';
+      const nextRunAt =
+        CronParser.nextRun(def.cronExpression, now, timeZone) ??
+        new Date(now.getTime() + 60_000);
       await db
         .insert(scheduledJobs)
         .values({
