@@ -195,4 +195,5 @@ export class CronParser {
     }
 
     return null;
-  }}
+  }
+}
