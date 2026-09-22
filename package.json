@@ -12,7 +12,8 @@
     "verify:lead-contact-enrichment": "node packages/core/node_modules/tsx/dist/cli.mjs scripts/verify-lead-contact-enrichment.ts",
     "dev:api": "pnpm --filter @workspace/api-server run dev",
     "dev:dashboard": "pnpm --filter @workspace/dashboard run dev",
-    "dev": "concurrently \"pnpm run dev:api\" \"pnpm run dev:dashboard\""
+    "dev": "concurrently \"pnpm run dev:api\" \"pnpm run dev:dashboard\"",
+    "verify:specialist-swarm": "node packages/core/node_modules/tsx/dist/cli.mjs scripts/verify-specialist-swarm.ts"
   },
   "private": true,
   "devDependencies": {

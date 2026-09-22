@@ -46,6 +46,7 @@ import {
 } from './execution-budget.js';
 import { classifyWorkload, buildHeavyWorkAdvisory, buildHeavyWorkExecutionNudge } from './work-classifier.js';
 import { logTaskOutcome, logToolCallOutcome } from './execution-outcome.js';
+import { buildSpecialistSystemPrompt } from './specialists/index.js';
 import type {
   AgentConfig,
   AgentStatus,
@@ -720,8 +721,9 @@ export abstract class BaseAgent {
         // Build initial message history
         const memContext = await this.memory.buildMemoryContext(description);
         const learningContext = await this.buildLearningContext(this.config.role);
+        const specialistContext = buildSpecialistSystemPrompt(context, this.config.role);
         const systemPrompt =
-          this.config.systemPrompt + STANDING_OPERATING_RULES + memContext + learningContext;
+          this.config.systemPrompt + STANDING_OPERATING_RULES + specialistContext + memContext + learningContext;
 
         history = [
           { role: 'system', content: systemPrompt },

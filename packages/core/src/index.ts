@@ -45,3 +45,5 @@ export * from './execution-outcome.js';
 export * from './revenue-ops/workforce-loop.js';
 
 export { getTurnEconomySnapshot } from './turn-economy.js';
+
+export * from './specialists/index.js';
