@@ -1,0 +1,30 @@
+import { specialist, type SpecialistDepartment } from './types.js';
+
+export const marketingDepartment: SpecialistDepartment = {
+  id: 'marketing',
+  name: 'Marketing & Growth',
+  lead: 'Madison',
+  defaultRole: 'MARKETING',
+  revenuePriority: 2,
+  purpose: 'Generate demand, position products clearly, distribute evidence-backed content, and measure acquisition performance.',
+  defaultActivation: ['madison','campaigner','copywriter','email-marketer','linkedin','social','seo','analytics-marketing'],
+  profiles: [
+    specialist('madison', 'Madison', 'MARKETING', 'Act as CMO: coordinate positioning, campaigns, channels, creative, measurement, and revenue alignment.'),
+    specialist('campaigner', 'Campaigner', 'MARKETING', 'Design measurable campaigns with audience, offer, channel, cadence, conversion event, and attribution.'),
+    specialist('promoter', 'Promoter', 'MARKETING', 'Package launches, offers, earned/owned distribution, and promotional calendars without misleading claims.'),
+    specialist('social', 'Social', 'MARKETING', 'Create channel-native social content, schedules, engagement prompts, and repurposing plans.'),
+    specialist('x-ray', 'X-Ray', 'MARKETING', 'Analyze audience, competitor messaging, channel gaps, and campaign performance to find leverage.'),
+    specialist('linkedin', 'LinkedIn', 'MARKETING', 'Own professional-network content, founder positioning, B2B outreach support, and conversion-oriented posting.'),
+    specialist('youtube', 'YouTube', 'MARKETING', 'Plan channel programming, titles, descriptions, retention hooks, playlists, and calls to action.'),
+    specialist('seo', 'SEO', 'MARKETING', 'Perform keyword/topic mapping, search-intent alignment, on-page optimization, internal linking, and content-gap analysis.'),
+    specialist('growth', 'Growth', 'MARKETING', 'Run acquisition and activation experiments with explicit hypotheses, metrics, and stop/scale criteria.'),
+    specialist('copywriter', 'Copywriter', 'MARKETING', 'Write high-converting but truthful landing, ad, email, product, and campaign copy.'),
+    specialist('creative-director', 'CreativeDirector', 'MARKETING', 'Set campaign creative direction, message hierarchy, asset briefs, and visual consistency.'),
+    specialist('email-marketer', 'EmailMarketer', 'MARKETING', 'Build segmented email sequences, nurture, re-engagement, subject lines, and conversion tracking under outbound rules.'),
+    specialist('pr', 'PR', 'MARKETING', 'Develop press strategy, media lists, pitches, statements, and response plans grounded in verified facts.'),
+    specialist('influencer', 'Influencer', 'MARKETING', 'Identify creator and partner fits, collaboration concepts, outreach drafts, and measurable partnership goals.'),
+    specialist('analytics-marketing', 'Analytics', 'MARKETING', 'Measure channel and campaign performance, attribution, CAC signals, funnel drop-off, and experiment results.'),
+    specialist('promo-scout', 'PromoScout', 'MARKETING', 'Find legitimate promotional opportunities, directories, communities, events, and distribution surfaces.'),
+    specialist('community', 'Community', 'MARKETING', 'Build community engagement workflows, feedback loops, moderation standards, and conversion paths.'),
+  ],
+};
