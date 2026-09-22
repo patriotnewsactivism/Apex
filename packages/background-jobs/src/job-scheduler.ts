@@ -34,6 +34,12 @@ import { ExecutorDispatchJob } from './executor-dispatch-job.js';
 const OPEN_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const;
 const DEFAULT_STALE_CLAIM_MS = 5 * 60 * 1000;
 
+function scheduledJobTimeZone(job: { payload?: unknown }): string {
+  const payload = job.payload as Record<string, unknown> | null | undefined;
+  const timeZone = payload?.timeZone;
+  return typeof timeZone === 'string' && timeZone.trim() ? timeZone.trim() : 'UTC';
+}
+
 export interface JobSchedulerConfig {
   pollIntervalMs?: number;  // default 60_000
   staleClaimMs?: number;    // default 5 minutes; must exceed normal job timeout
@@ -281,7 +287,7 @@ export class JobScheduler {
 
         if (liveScheduledTasks.length > 0) {
           const nextRun = claimed.cronExpression
-            ? CronParser.nextRun(claimed.cronExpression, now)
+            ? CronParser.nextRun(claimed.cronExpression, now, scheduledJobTimeZone(claimed))
             : new Date(now.getTime() + this.pollIntervalMs);
           await db
             .update(scheduledJobs)
@@ -317,7 +323,7 @@ export class JobScheduler {
       }
 
       if (job.cronExpression) {
-        const nextRun = CronParser.nextRun(job.cronExpression, completedAt);
+        const nextRun = CronParser.nextRun(job.cronExpression, completedAt, scheduledJobTimeZone(job));
         await db
           .update(scheduledJobs)
           .set({
