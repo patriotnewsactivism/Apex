@@ -161,7 +161,11 @@ export class JobExecutor {
           if (job.cronExpression) {
             // A recurring job is not permanently destroyed by a transient
             // outage. Close this failed occurrence and schedule the next one.
-            const nextRun = CronParser.nextRun(job.cronExpression, completedAt);
+            const payload = job.payload as Record<string, unknown> | null | undefined;
+            const timeZone = typeof payload?.timeZone === 'string' && payload.timeZone.trim()
+              ? payload.timeZone.trim()
+              : 'UTC';
+            const nextRun = CronParser.nextRun(job.cronExpression, completedAt, timeZone);
             await db.update(scheduledJobs).set({
               retryCount: 0,
               error: `Recovered after ${maxRetries} retries: ${errorMsg}`,
