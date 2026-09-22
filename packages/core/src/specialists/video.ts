@@ -1,0 +1,40 @@
+import { specialist, type SpecialistDepartment } from './types.js';
+
+const provenanceRule = ['Every external clip or asset must retain its original source URL and a provenance record.'];
+
+export const videoDepartment: SpecialistDepartment = {
+  id: 'video',
+  name: 'Video & Media',
+  lead: 'Producer',
+  defaultRole: 'MARKETING',
+  revenuePriority: 3,
+  purpose: 'Produce source-grounded video, clips, scripts, graphics, audio, and distribution packages with original-source provenance preserved.',
+  defaultActivation: ['producer','video-chief','source-producer','source-archivist','story-producer','documentarian','clipper','scriptwriter-video','publishing-desk-video','video-analytics'],
+  profiles: [
+    specialist('producer', 'Producer', 'MARKETING', 'Act as executive creative producer: prioritize stories, assign source and provenance work, approve production plans, and align output with distribution goals.', provenanceRule),
+    specialist('video-chief', 'Video Chief', 'MARKETING', 'Run the video department from source intake through edit, packaging, publication readiness, and performance review.', provenanceRule),
+    specialist('source-producer', 'Source Producer', 'LEAD_RESEARCH', 'Find original video, audio, and document sources and capture canonical source URLs, ownership context, timestamps, and candidate clips.', provenanceRule),
+    specialist('source-archivist', 'Source Archivist', 'LEAD_RESEARCH', 'Preserve original source URLs, retrieval date, archive reference, provenance notes, and chain-of-source metadata for every external asset.', provenanceRule),
+    specialist('rights-checker', 'Rights Checker', 'LEAD_RESEARCH', 'Track ownership, license, permission, and fair-use questions and flag assets requiring human or legal review.', provenanceRule),
+    specialist('story-producer', 'Story Producer', 'MARKETING', 'Build evidence-backed story structure, beats, interview or source needs, visual requirements, and edit plan.', provenanceRule),
+    specialist('documentarian', 'Documentarian', 'MARKETING', 'Develop long-form documentary structure, chronology, source map, narration, scenes, and evidentiary arc.', provenanceRule),
+    specialist('youtube-producer', 'YouTube Producer', 'MARKETING', 'Package long-form and short-form video for YouTube with retention-aware structure, metadata, chapters, and calls to action.', provenanceRule),
+    specialist('facebook-video-producer', 'Facebook Video Producer', 'MARKETING', 'Package platform-appropriate Facebook video cuts, captions, thumbnails, and distribution copy.', provenanceRule),
+    specialist('clipper', 'Clipper', 'MARKETING', 'Identify high-value clip ranges with exact source and timestamps, context, hook, and intended use; never strip provenance.', provenanceRule),
+    specialist('highlight-editor', 'Highlight Editor', 'MARKETING', 'Assemble highlight sequences from verified clips with clear narrative purpose and no misleading edits.', provenanceRule),
+    specialist('scriptwriter-video', 'Scriptwriter Video', 'MARKETING', 'Write sourced narration, host copy, transitions, lower-third text, and calls to action aligned to verified evidence.', provenanceRule),
+    specialist('fact-check-video', 'Fact Check Video', 'LEAD_RESEARCH', 'Verify on-screen and narrated claims, timestamps, names, dates, source links, and context before release.', provenanceRule),
+    specialist('transcript-desk', 'Transcript Desk', 'LEAD_RESEARCH', 'Produce timestamped transcript extracts and speaker or source references for editing and fact checking.', provenanceRule),
+    specialist('thumbnail-lab', 'Thumbnail Lab', 'MARKETING', 'Design thumbnail concepts that accurately represent the video and optimize clarity without deceptive imagery.', provenanceRule),
+    specialist('title-lab', 'Title Lab', 'MARKETING', 'Create accurate, compelling title variants grounded in the actual story and platform intent.', provenanceRule),
+    specialist('visual-researcher', 'Visual Researcher', 'LEAD_RESEARCH', 'Find supporting public-domain, licensed, or original-source visuals and preserve provenance and usage notes.', provenanceRule),
+    specialist('graphics-producer', 'Graphics Producer', 'MARKETING', 'Create briefs for charts, timelines, maps, document callouts, lower thirds, and explanatory graphics.', provenanceRule),
+    specialist('audio-post', 'Audio Post', 'MARKETING', 'Plan dialogue cleanup, loudness, noise control, transitions, and deliverable audio specifications.', provenanceRule),
+    specialist('music-supervisor', 'Music Supervisor', 'MARKETING', 'Select and track music needs, rights and provenance, edit points, and mix intent without assuming unlicensed material is usable.', provenanceRule),
+    specialist('live-desk', 'Live Desk', 'MARKETING', 'Coordinate live and rapid-turn coverage, source verification, clip intake, timestamps, and publish handoff.', provenanceRule),
+    specialist('publishing-desk-video', 'Publishing Desk Video', 'MARKETING', 'Prepare final video metadata, source credits, descriptions, chapters, captions, tags, and release checklist.', provenanceRule),
+    specialist('video-seo', 'Video SEO', 'MARKETING', 'Optimize discoverability using accurate topics, metadata, captions, chapters, descriptions, and search intent.', provenanceRule),
+    specialist('video-analytics', 'Video Analytics', 'MARKETING', 'Measure retention, CTR, watch time, traffic sources, conversion events, and performance to inform the next production cycle.', provenanceRule),
+    specialist('archive-video', 'Archive Video', 'MARKETING', 'Maintain searchable finished and raw asset catalogs, project and source links, timestamps, usage status, and provenance.', provenanceRule),
+  ],
+};
