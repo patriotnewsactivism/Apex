@@ -16,6 +16,7 @@ import { createRevenueOpsTools } from './revenue-ops/tools.js';
 import { createCampaignTools } from './revenue-ops/campaign-engine.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
 import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-client.js';
+import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProfile, listSpecialistDepartments, listSpecialists } from './specialists/index.js';
 import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
 import { db, messages } from '@workspace/db';
@@ -1704,6 +1705,162 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           context: contextData,
         });
         return { success: true, taskId, targetRole, message: `Review request dispatched to ${targetRole}` };
+      },
+    },
+
+    // ─── Specialist departments: virtual roles routed through standing agents ──
+    {
+      name: 'listSpecialistDepartments',
+      description: 'List the configured APEX specialist departments and their callable specialist profiles. Specialists are virtual roles routed through the standing workforce and do not add permissions.',
+      schema: z.object({
+        departmentId: z.string().optional().describe('Optional department id to return only that department and its specialists'),
+      }),
+      requiresApproval: false,
+      async execute({ departmentId }) {
+        if (departmentId) {
+          const department = getSpecialistDepartment(departmentId);
+          if (!department) {
+            return {
+              found: false,
+              departmentId,
+              availableDepartments: listSpecialistDepartments().map((d) => d.id),
+            };
+          }
+          return {
+            found: true,
+            department: {
+              ...department,
+              profiles: listSpecialists(departmentId),
+            },
+          };
+        }
+        return {
+          departments: listSpecialistDepartments().map((department) => ({
+            id: department.id,
+            name: department.name,
+            lead: department.lead,
+            purpose: department.purpose,
+            revenuePriority: department.revenuePriority,
+            defaultActivation: department.defaultActivation,
+            specialistCount: department.profiles.length,
+          })),
+          totalDepartments: listSpecialistDepartments().length,
+          totalSpecialists: listSpecialists().length,
+        };
+      },
+    },
+
+    {
+      name: 'dispatchSpecialist',
+      description: 'Dispatch one named specialist profile through its real standing APEX parent role. The specialist changes task focus only; normal tools, permissions, approvals, telemetry, checkpoints, and model routing still apply.',
+      schema: z.object({
+        specialistId: z.string().describe('Specialist id from listSpecialistDepartments'),
+        objective: z.string().describe('Concrete objective the specialist must execute'),
+        context: z.record(z.any()).optional().describe('Additional task context'),
+      }),
+      requiresApproval: false,
+      async execute({ specialistId, objective, context }, ctx) {
+        if (!ctx.delegateToRole) {
+          throw new Error('delegateToRole is not available in this context');
+        }
+        const profile = getSpecialistProfile(specialistId);
+        if (!profile) {
+          throw new Error('Unknown specialistId: ' + specialistId);
+        }
+        const department = listSpecialistDepartments().find((d) => d.profiles.some((p) => p.id === specialistId));
+        const taskId = await ctx.delegateToRole(profile.parentRole, {
+          title: '[' + (department?.name ?? 'Specialist') + ': ' + profile.name + '] ' + objective.slice(0, 100),
+          description: '## Specialist Objective\n' + objective + '\n\nExecute this objective as the named specialist. Use available tools and return evidence-backed results, not a role-play description.',
+          parentTaskId: ctx.taskId,
+          context: {
+            ...(context ?? {}),
+            specialistId: profile.id,
+            specialistName: profile.name,
+            departmentId: department?.id,
+            dispatchedByTaskId: ctx.taskId,
+          },
+        });
+        return {
+          success: true,
+          taskId,
+          specialistId: profile.id,
+          specialistName: profile.name,
+          departmentId: department?.id,
+          routedRole: profile.parentRole,
+        };
+      },
+    },
+
+    {
+      name: 'dispatchDepartment',
+      description: 'Activate a complete specialist department against one objective. By default it dispatches the department revenue-focused activation roster; optionally provide exact specialist ids. Each specialist becomes a durable task on its real parent role.',
+      schema: z.object({
+        departmentId: z.string().describe('Department id from listSpecialistDepartments'),
+        objective: z.string().describe('Shared department objective'),
+        specialistIds: z.array(z.string()).optional().describe('Optional exact specialist ids. If omitted, the department default activation roster is used.'),
+        sharedContext: z.record(z.any()).optional().describe('Context copied to every specialist task'),
+      }),
+      requiresApproval: false,
+      async execute({ departmentId, objective, specialistIds, sharedContext }, ctx) {
+        if (!ctx.delegateToRole) {
+          throw new Error('delegateToRole is not available in this context');
+        }
+        const department = getSpecialistDepartment(departmentId);
+        if (!department) {
+          throw new Error('Unknown departmentId: ' + departmentId);
+        }
+
+        const profiles = specialistIds?.length
+          ? [...new Set(specialistIds)].map((id) => {
+              const profile = getSpecialistProfile(id);
+              if (!profile || !department.profiles.some((candidate) => candidate.id === id)) {
+                throw new Error('Specialist ' + id + ' does not belong to department ' + departmentId);
+              }
+              return profile;
+            })
+          : defaultDepartmentActivation(departmentId);
+
+        if (profiles.length === 0) {
+          throw new Error('Department ' + departmentId + ' has no specialists selected for activation');
+        }
+
+        const departmentDispatchId = randomUUID();
+        const tasks: Array<{ specialistId: string; specialistName: string; routedRole: string; taskId: string }> = [];
+
+        for (const profile of profiles) {
+          const taskId = await ctx.delegateToRole(profile.parentRole, {
+            title: '[' + department.name + ': ' + profile.name + '] ' + objective.slice(0, 90),
+            description:
+              '## Department Objective\n' + objective +
+              '\n\n## Assignment\nYou are the ' + profile.name + ' specialist inside the ' + department.name +
+              ' department. Execute your part of the objective using available tools. Produce concrete evidence, artifacts, findings, or next actions. Do not merely describe what you would do.',
+            parentTaskId: ctx.taskId,
+            context: {
+              ...(sharedContext ?? {}),
+              departmentDispatchId,
+              departmentId: department.id,
+              specialistId: profile.id,
+              specialistName: profile.name,
+              dispatchedByTaskId: ctx.taskId,
+            },
+          });
+          tasks.push({
+            specialistId: profile.id,
+            specialistName: profile.name,
+            routedRole: profile.parentRole,
+            taskId,
+          });
+        }
+
+        return {
+          success: true,
+          departmentDispatchId,
+          departmentId: department.id,
+          departmentName: department.name,
+          activatedSpecialists: profiles.length,
+          tasks,
+          message: 'Department activated: ' + department.name + ' (' + profiles.length + ' specialist tasks)',
+        };
       },
     },
 
