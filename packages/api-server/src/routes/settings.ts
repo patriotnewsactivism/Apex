@@ -74,6 +74,29 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
+    id: 'qwencloud-token-plan',
+    name: 'QwenCloud — Token Plan',
+    description: 'Prepaid QwenCloud Token Plan capacity. Uses the sk-sp- key with the Token Plan base URL only. Routing stays off until APEX_QWEN_TOKEN_PLAN_ENABLED=true and the key is set. This does not draw OpenRouter free quota.',
+    category: 'ai',
+    docsUrl: 'https://docs.qwencloud.com/token-plan/overview',
+    envVars: [
+      { key: 'APEX_QWEN_TOKEN_PLAN_ENABLED', label: 'Routing Enabled', placeholder: 'true or false' },
+      { key: 'APEX_QWEN_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '1200' },
+      { key: 'APEX_QWEN_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '6' },
+      { key: 'QWENCLOUD_TOKEN_PLAN_MODEL', label: 'Model', placeholder: 'qwen3.8-flash' },
+      {
+        key: 'QWENCLOUD_TOKEN_PLAN_API_KEY',
+        label: 'Token Plan API Key',
+        placeholder: 'sk-sp-...',
+        secret: true,
+        probe: {
+          kind: 'openai-models',
+          baseUrl: 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
+        },
+      },
+    ],
+  },
+  {
     id: 'groq-byok',
     name: 'Groq — BYOK Pool',
     description: 'Two Groq API key slots for direct BYOK inference capacity. Keys are stored and tested independently; Groq organization-level limits may still be shared across keys from the same organization.',

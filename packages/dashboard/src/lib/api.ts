@@ -153,7 +153,7 @@ export interface SpendSnapshot {
     allProviderUsed: number;
     emergencyCap: number;
     directProviders: Array<{
-      pool: 'groq' | 'gemini';
+      pool: 'groq' | 'gemini' | 'qwen';
       requests: number;
       cap: number;
       remaining: number | null;

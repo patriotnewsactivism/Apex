@@ -503,7 +503,7 @@ export async function initializeRequestLedgerPersistence(): Promise<boolean> {
 const PAID_REQUEST_ACCOUNT_PREFIX = 'paid-provider:';
 const DIRECT_REQUEST_ACCOUNT_PREFIX = 'direct-provider:';
 
-export type DirectRequestPool = 'groq' | 'gemini';
+export type DirectRequestPool = 'groq' | 'gemini' | 'qwen';
 
 const DIRECT_POOL_DEFAULTS: Record<DirectRequestPool, { cap: number; ratePerMinute: number; burst: number }> = {
   // Groq publishes 1,000 RPD for GPT-OSS 120B on the base limits page. Keep
@@ -512,11 +512,17 @@ const DIRECT_POOL_DEFAULTS: Record<DirectRequestPool, { cap: number; ratePerMinu
   // Gemini's exact RPD is project/model/tier specific and must be read from AI
   // Studio. Start conservatively until APEX can ingest the live quota headers.
   gemini: { cap: 500, ratePerMinute: 5, burst: 20 },
+  // QwenCloud Token Plan bills prepaid credits, not OpenRouter requests. This
+  // cap is an APEX safety rail so the workforce cannot drain a monthly
+  // subscription in one day. Raise APEX_QWEN_REQUEST_CAP from the plan's
+  // remaining credits when a higher ceiling is intended.
+  qwen: { cap: 1200, ratePerMinute: 6, burst: 15 },
 };
 
 const directRecentRequests: Record<DirectRequestPool, number[]> = {
   groq: [],
   gemini: [],
+  qwen: [],
 };
 
 function directAccountId(pool: DirectRequestPool, provider: string): string {
@@ -535,7 +541,7 @@ function directPoolForAccount(account: string): DirectRequestPool | null {
   if (!isDirectAccount(account)) return null;
   const rest = account.slice(DIRECT_REQUEST_ACCOUNT_PREFIX.length);
   const pool = rest.split(':', 1)[0];
-  return pool === 'groq' || pool === 'gemini' ? pool : null;
+  return pool === 'groq' || pool === 'gemini' || pool === 'qwen' ? pool : null;
 }
 
 function reserveRequestAccount(
@@ -1067,7 +1073,7 @@ export function getRequestLedgerSnapshot(at: number = Date.now()): RequestLedger
       ? Math.round((totalRequests * UTC_DAY_MS) / elapsed)
       : null;
 
-  const directProviders = (['groq', 'gemini'] as const).map((pool) => {
+  const directProviders = (['groq', 'gemini', 'qwen'] as const).map((pool) => {
     const requests = directProviderRequestsToday(pool);
     const providerCap = directProviderRequestCap(pool);
     const recent = directRecentRequests[pool];

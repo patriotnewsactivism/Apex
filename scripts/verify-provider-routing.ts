@@ -35,6 +35,7 @@ const openRouterProviders = [
   'openrouter-nemotron-ultra',
 ] as const;
 const byokProviders = [
+  'qwencloud-token-plan',
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ] as const;
@@ -46,7 +47,7 @@ const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
 const byokCatalog = catalog.slice(openRouterProviders.length);
 
 console.log('── Multi-pool automatic provider order ──');
-check('eight automatic routes exist: six OpenRouter + two BYOK', catalog.length === 8, catalog);
+check('nine automatic routes exist: six OpenRouter + three BYOK', catalog.length === 9, catalog);
 check(
   'automatic provider order is exact',
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(automaticProviders),
@@ -81,20 +82,28 @@ check(
   byokCatalog,
 );
 check(
-  'Groq BYOK is GPT-OSS 120B with structured/parallel tools',
-  byokCatalog[0]?.name === 'groq-gpt-oss-120b-byok' &&
-    byokCatalog[0]?.model === 'openai/gpt-oss-120b' &&
+  'QwenCloud Token Plan is qwen3.8-flash with structured/parallel tools',
+  byokCatalog[0]?.name === 'qwencloud-token-plan' &&
+    byokCatalog[0]?.model === 'qwen3.8-flash' &&
     byokCatalog[0]?.toolCallingReliable === true &&
     byokCatalog[0]?.supportsParallelToolCalls === true,
   byokCatalog[0],
 );
 check(
-  'Gemini BYOK is Gemini 3.8 Flash with structured/parallel tools',
-  byokCatalog[1]?.name === 'gemini-3-8-flash-byok' &&
-    byokCatalog[1]?.model === 'gemini-3.8-flash' &&
+  'Groq BYOK is GPT-OSS 120B with structured/parallel tools',
+  byokCatalog[1]?.name === 'groq-gpt-oss-120b-byok' &&
+    byokCatalog[1]?.model === 'openai/gpt-oss-120b' &&
     byokCatalog[1]?.toolCallingReliable === true &&
     byokCatalog[1]?.supportsParallelToolCalls === true,
   byokCatalog[1],
+);
+check(
+  'Gemini BYOK is Gemini 3.8 Flash with structured/parallel tools',
+  byokCatalog[2]?.name === 'gemini-3-8-flash-byok' &&
+    byokCatalog[2]?.model === 'gemini-3.8-flash' &&
+    byokCatalog[2]?.toolCallingReliable === true &&
+    byokCatalog[2]?.supportsParallelToolCalls === true,
+  byokCatalog[2],
 );
 check(
   'OpenRouter/free still preserves tool requirements',
@@ -124,8 +133,9 @@ check(
 
 console.log('\n── Independent request-pool routing ──');
 check(
-  'OpenRouter, Groq and Gemini are tagged with separate request pools',
+  'OpenRouter, QwenCloud, Groq and Gemini are tagged with separate request pools',
   /requestPool: 'openrouter'/.test(clientSource) &&
+    /requestPool: 'qwen'/.test(clientSource) &&
     /requestPool: 'groq'/.test(clientSource) &&
     /requestPool: 'gemini'/.test(clientSource),
 );
@@ -160,9 +170,15 @@ check(
     /estimateLLMRequestTokens\([\s\S]{0,160}restrictedOutputEstimate/.test(clientSource),
 );
 check(
-  'Groq and Gemini routing each have an operator activation switch',
-  /activationEnv: 'APEX_GROQ_BYOK_ENABLED'/.test(clientSource) &&
+  'QwenCloud, Groq and Gemini routing each have an operator activation switch',
+  /activationEnv: 'APEX_QWEN_TOKEN_PLAN_ENABLED'/.test(clientSource) &&
+    /activationEnv: 'APEX_GROQ_BYOK_ENABLED'/.test(clientSource) &&
     /activationEnv: 'APEX_GEMINI_BYOK_ENABLED'/.test(clientSource),
+);
+check(
+  'QwenCloud Token Plan uses the subscription base URL and disables thinking',
+  /token-plan\.ap-southeast-1\.maas\.aliyuncs\.com\/compatible-mode\/v1/.test(clientSource) &&
+    /name: 'qwencloud-token-plan'[\s\S]{0,1200}enable_thinking: false/.test(clientSource),
 );
 check(
   'native Gemini traffic is dispatched through the Interactions adapter',

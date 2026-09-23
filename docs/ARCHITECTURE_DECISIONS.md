@@ -134,6 +134,7 @@ The API/UI must expose the effective objective when complexity escalation change
 
 - OpenRouter remains the production inference gateway, but production-persisted model IDs must be zero-cost (`:free` or exactly `openrouter/free`).
 - Do not silently restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain outside OpenRouter.
+- The operator-approved QwenCloud Token Plan route is a separate direct pool: it activates only with `APEX_QWEN_TOKEN_PLAN_ENABLED=true` and `QWENCLOUD_TOKEN_PLAN_API_KEY`, calls `qwen3.8-flash` on the Token Plan base URL, and does not restore the retired Qwen chain.
 - Do not restore paid DeepSeek/GPT-OSS/Grok/Bedrock as automatic fallbacks.
 - The reviewed Nex N2.5 Mini Free → … → Nemotron 3 Ultra Free chain remains the fail-safe when no valid custom policy is present.
 - OpenRouter gateway pacing, retry-after behavior, circuit breakers, token reservation, malformed-tool-call rejection, non-completion detection, and actual served-model diagnostics remain production controls.

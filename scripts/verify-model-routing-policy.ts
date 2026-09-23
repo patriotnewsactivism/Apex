@@ -145,6 +145,7 @@ try {
     'custom FREE roster uses the free-policy gateway first, then independent BYOK continuity',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
       FREE_POLICY_GATEWAY_NAME,
+      'qwencloud-token-plan',
       'groq-gpt-oss-120b-byok',
       'gemini-3-8-flash-byok',
       PAID_FALLBACK_PROVIDER_NAME,

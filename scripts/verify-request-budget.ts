@@ -62,8 +62,8 @@ async function main(): Promise<void> {
 
   // ── Independent BYOK pools ───────────────────────────────────────────────
   check(
-    'Groq and Gemini have independent durable request pools',
-    /export type DirectRequestPool = 'groq' \| 'gemini'/.test(ledger) &&
+    'Groq, Gemini and QwenCloud have independent durable request pools',
+    /export type DirectRequestPool = 'groq' \| 'gemini' \| 'qwen'/.test(ledger) &&
       /directProviderCapacityWindow/.test(ledger) &&
       /directProviderRequestsToday/.test(ledger),
   );
@@ -90,8 +90,10 @@ async function main(): Promise<void> {
   );
   check(
     'BYOK pools have explicit runtime activation switches',
-    /APEX_GROQ_BYOK_ENABLED/.test(client) &&
+      /APEX_QWEN_TOKEN_PLAN_ENABLED/.test(client) &&
+      /APEX_GROQ_BYOK_ENABLED/.test(client) &&
       /APEX_GEMINI_BYOK_ENABLED/.test(client) &&
+      /APEX_QWEN_TOKEN_PLAN_ENABLED/.test(settings) &&
       /APEX_GROQ_BYOK_ENABLED/.test(settings) &&
       /APEX_GEMINI_BYOK_ENABLED/.test(settings),
   );
@@ -204,6 +206,7 @@ async function main(): Promise<void> {
   process.env.APEX_REQUEST_CAP_TOTAL = '2775';
   process.env.APEX_GROQ_REQUEST_CAP = '900';
   process.env.APEX_GEMINI_REQUEST_CAP = '500';
+  process.env.APEX_QWEN_REQUEST_CAP = '1200';
   process.env.APEX_EMERGENCY_REQUEST_CAP_TOTAL = '4500';
   process.env.APEX_REQUEST_RATE_PER_MIN = '0';
 
@@ -228,6 +231,7 @@ async function main(): Promise<void> {
   check('runtime OpenRouter cap resolves to 2,775', effectiveRequestCap() === 2775);
   check('runtime Groq cap resolves to 900', directProviderRequestCap('groq') === 900);
   check('runtime Gemini cap resolves to 500', directProviderRequestCap('gemini') === 500);
+  check('runtime QwenCloud cap resolves to 1,200', directProviderRequestCap('qwen') === 1200);
   check('runtime emergency cap resolves to 4,500', emergencyTotalRequestCap() === 4500);
 
   const dayStart = Date.UTC(2026, 8, 18);
@@ -254,13 +258,15 @@ async function main(): Promise<void> {
   reserveDirectProviderRequest('groq', 'guard-groq');
   markDirectProviderRequestSucceeded('groq', 'guard-groq');
   reserveDirectProviderRequest('gemini', 'guard-gemini');
+  reserveDirectProviderRequest('qwen', 'guard-qwen');
 
   const snapshot = getRequestLedgerSnapshot();
   const groq = snapshot.directProviders.find((row) => row.pool === 'groq');
   const gemini = snapshot.directProviders.find((row) => row.pool === 'gemini');
+  const qwen = snapshot.directProviders.find((row) => row.pool === 'qwen');
   check(
-    'one free + one paid + two BYOK attempts report 1 free-pool and 4 all-provider requests',
-    snapshot.totalRequests === 1 && snapshot.allProviderRequests === 4,
+    'one free + one paid + three BYOK attempts report 1 free-pool and 5 all-provider requests',
+    snapshot.totalRequests === 1 && snapshot.allProviderRequests === 5,
     { freePool: snapshot.totalRequests, allProviders: snapshot.allProviderRequests },
   );
   check(
@@ -270,7 +276,7 @@ async function main(): Promise<void> {
   );
   check(
     'direct pool counters remain independent',
-    groq?.requests === 1 && gemini?.requests === 1,
+    groq?.requests === 1 && gemini?.requests === 1 && qwen?.requests === 1,
     snapshot.directProviders,
   );
   check(

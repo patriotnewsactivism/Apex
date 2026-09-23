@@ -38,9 +38,10 @@ APEX uses a free-first runtime chain with one dedicated paid continuity exceptio
 4. NVIDIA Nemotron 3.5 Lightning Free
 5. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
 6. NVIDIA Nemotron 3 Ultra Free
-7. direct Groq GPT-OSS 120B BYOK when enabled
-8. direct Gemini 3.8 Flash BYOK when enabled
-9. GLM 5.3 FlashX (`z-ai/glm-5.3-flashx`) — paid continuity
+7. QwenCloud Token Plan (`qwen3.8-flash`) when `APEX_QWEN_TOKEN_PLAN_ENABLED=true` and `QWENCLOUD_TOKEN_PLAN_API_KEY` is set
+8. direct Groq GPT-OSS 120B BYOK when enabled
+9. direct Gemini 3.8 Flash BYOK when enabled
+10. GLM 5.3 FlashX (`z-ai/glm-5.3-flashx`) — paid continuity
 
 The operator-persisted model roster remains free-only. FlashX is a separate runtime continuity route and is eligible by default when the funded `OPENROUTER_API_KEY` is configured. Set `APEX_PAID_FALLBACK_ENABLED=false` to remove it from the chain and run free-only; APEX then parks the workforce when free and BYOK capacity are spent rather than spending money. Every free and BYOK provider is unaffected — do not unset `OPENROUTER_API_KEY` to stop paid spend, because it is also a free-pool account. APEX does not apply its spend, free-request, workspace-token, provider-token, emergency-request, model-specific pacing, or forced-reasoning governors to FlashX. Upstream OpenRouter/Z.ai billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply.
 

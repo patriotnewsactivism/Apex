@@ -319,9 +319,10 @@ Current runtime routing order:
 4. `nvidia/nemotron-3.5-lightning:free`
 5. `openrouter/free`
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
-7. direct Groq GPT-OSS 120B BYOK when enabled
-8. direct Gemini 3.8 Flash BYOK when enabled
-9. `z-ai/glm-5.3-flashx` paid continuity
+7. QwenCloud Token Plan `qwen3.8-flash` when `APEX_QWEN_TOKEN_PLAN_ENABLED=true` and `QWENCLOUD_TOKEN_PLAN_API_KEY` is set
+8. direct Groq GPT-OSS 120B BYOK when enabled
+9. direct Gemini 3.8 Flash BYOK when enabled
+10. `z-ai/glm-5.3-flashx` paid continuity
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and

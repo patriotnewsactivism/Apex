@@ -51,11 +51,12 @@ import {
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
 // FREE-FIRST ROUTING POLICY. Automatic routing uses OpenRouter `:free` models
-// (plus the special `openrouter/free` router), then independent Groq/Gemini
-// BYOK capacity, with the operator-approved paid GLM 5.3 FlashX continuity route
-// last. FlashX is always eligible when its funded OpenRouter credential exists
-// and bypasses APEX token/request/spend governors; upstream provider limits,
-// billing, error cooldowns, tool authorization, and human approval policy remain.
+// (plus the special `openrouter/free` router), then independent QwenCloud
+// Token Plan / Groq / Gemini BYOK capacity, with the operator-approved paid
+// GLM 5.3 FlashX continuity route last. FlashX is always eligible when its
+// funded OpenRouter credential exists and bypasses APEX token/request/spend
+// governors; upstream provider limits, billing, error cooldowns, tool
+// authorization, and human approval policy remain.
 //
 // Authoritative automatic order:
 //   1. nex-agi/nex-n2.5-mini:free
@@ -77,6 +78,7 @@ export type ApexProviderName =
   | 'openrouter-free-router'
   | 'openrouter-nemotron-ultra'
   | 'openrouter-free-policy'
+  | 'qwencloud-token-plan'
   | 'groq-gpt-oss-120b-byok'
   | 'gemini-3-8-flash-byok'
   | 'openrouter-glm-5-3-flashx-paid';
@@ -144,6 +146,10 @@ type ProviderSpec = {
   usdPerMillionPrompt?: number;
   usdPerMillionCompletion?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
+  /** Optional env override for the model id. Empty leaves `model` in place. */
+  modelEnv?: string;
+  /** Extra JSON fields merged into an OpenAI-compatible chat request. */
+  requestExtras?: Record<string, unknown>;
   /** Provider-side request envelope. Used to size output/history before the
    * network call instead of learning the limit by burning a 413 attempt. */
   maxRequestTokens?: number;
@@ -198,6 +204,32 @@ const PROVIDERS: readonly ProviderSpec[] = [
   // Custom persisted FREE policies share this gateway. It is not an automatic
   // route and never uses paid credentials.
   freeOpenRouterSpec(FREE_POLICY_GATEWAY_NAME, DEFAULT_OPENROUTER_MODEL_CHAIN[0]),
+  {
+    name: 'qwencloud-token-plan',
+    // Verified 2026-09-23 against the Token Plan chat-completions API,
+    // including structured tool calls. qwen3.8-flash is on both the personal
+    // and team Token Plan allowlists. This is the operator-approved QwenCloud
+    // subscription route, not the retired direct Qwen chain.
+    model: 'qwen3.8-flash',
+    modelEnv: 'QWENCLOUD_TOKEN_PLAN_MODEL',
+    baseURL: () => {
+      const override = process.env.QWENCLOUD_TOKEN_PLAN_BASE_URL?.trim();
+      return override || 'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
+    },
+    apiKeyEnvs: ['QWENCLOUD_TOKEN_PLAN_API_KEY'],
+    requestPool: 'qwen',
+    protocol: 'openai-compatible',
+    activationEnv: 'APEX_QWEN_TOKEN_PLAN_ENABLED',
+    activationDescription: 'APEX_QWEN_TOKEN_PLAN_ENABLED=true is required',
+    minIntervalMs: 500,
+    toolCallingReliable: true,
+    supportsParallelToolCalls: true,
+    // Thinking can consume the completion budget and return empty content,
+    // which APEX treats as a failed generation. Tool calls on this endpoint
+    // were verified with thinking disabled.
+    requestExtras: { enable_thinking: false },
+    maxOutputTokens: 16_384,
+  },
   {
     name: 'groq-gpt-oss-120b-byok',
     model: 'openai/gpt-oss-120b',
@@ -285,6 +317,9 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'openrouter-nemotron-ultra',
   // Independent BYOK pools extend daily throughput after OpenRouter pacing or
   // quota exhaustion. They are intentionally before the paid fallback.
+  // QwenCloud Token Plan is first among them: it spends prepaid subscription
+  // credits rather than another provider's free or pay-as-you-go quota.
+  'qwencloud-token-plan',
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ];
@@ -293,6 +328,7 @@ function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly 
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
     ? [
         FREE_POLICY_GATEWAY_NAME,
+        'qwencloud-token-plan',
         'groq-gpt-oss-120b-byok',
         'gemini-3-8-flash-byok',
       ]
@@ -775,6 +811,19 @@ function isOpenRouterProvider(provider: ProviderSpec): boolean {
   return (provider.requestPool ?? 'openrouter') === 'openrouter';
 }
 
+function directRequestPool(provider: ProviderSpec): DirectRequestPool | null {
+  const pool = provider.requestPool;
+  return pool === 'groq' || pool === 'gemini' || pool === 'qwen' ? pool : null;
+}
+
+function resolvedProviderModel(provider: ProviderSpec): string {
+  if (provider.modelEnv) {
+    const override = process.env[provider.modelEnv]?.trim();
+    if (override) return override;
+  }
+  return provider.model;
+}
+
 function requestWindowForProvider(
   provider: ProviderSpec,
   at: number,
@@ -785,9 +834,8 @@ function requestWindowForProvider(
   // the workforce parked even while /health correctly reports paid fallback as
   // enabled and affordable.
   if (provider.paid) return paidProviderCapacityWindow();
-  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
-    return directProviderCapacityWindow(provider.requestPool, at, pacingEnabled);
-  }
+  const directPool = directRequestPool(provider);
+  if (directPool) return directProviderCapacityWindow(directPool, at, pacingEnabled);
   return requestCapacityWindow(at, pacingEnabled);
 }
 
@@ -796,8 +844,9 @@ function reserveProviderAttempt(
   credentialKey: string,
 ): void {
   recordTurnEconomy('requests');
-  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
-    reserveDirectProviderRequest(provider.requestPool, provider.name);
+  const directPool = directRequestPool(provider);
+  if (directPool) {
+    reserveDirectProviderRequest(directPool, provider.name);
   } else if (provider.paid) {
     reservePaidProviderRequest(provider.name);
   } else {
@@ -809,8 +858,9 @@ function markProviderAttemptSucceeded(
   provider: ProviderSpec,
   credentialKey: string,
 ): void {
-  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
-    markDirectProviderRequestSucceeded(provider.requestPool, provider.name);
+  const directPool = directRequestPool(provider);
+  if (directPool) {
+    markDirectProviderRequestSucceeded(directPool, provider.name);
   } else if (provider.paid) {
     markPaidProviderRequestSucceeded(provider.name);
   } else {
@@ -1155,7 +1205,7 @@ async function callCompatibleProvider(
     const customPolicy = Boolean(policy) && provider.name === FREE_POLICY_GATEWAY_NAME;
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
-      : [provider.model];
+      : [resolvedProviderModel(provider)];
 
     if (isOpenRouterProvider(provider) && policy?.routingMode === 'adaptive') {
       routedModels = await getAdaptiveModelOrder({
@@ -1196,6 +1246,7 @@ async function callCompatibleProvider(
       ...(provider.reasoningEffort
         ? { reasoning: { effort: provider.reasoningEffort } }
         : {}),
+      ...(provider.requestExtras ?? {}),
       ...(isOpenRouterProvider(provider) && Object.keys(providerRouting).length > 0
         ? { provider: providerRouting }
         : {}),
@@ -1208,7 +1259,7 @@ async function callCompatibleProvider(
       // gateway that refuses every call.
       routedModels = routedModels.slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
       body.models = routedModels;
-    } else body.model = provider.model;
+    } else body.model = resolvedProviderModel(provider);
 
     if (wireTools?.length) {
       body.tools = wireTools;
