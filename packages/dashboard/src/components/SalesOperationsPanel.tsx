@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
-import { CostAndMonitoring, SingleCallLauncher, AutomationLauncher } from './SalesOpsPanel.js';
+import { CostAndMonitoring, SingleCallLauncher, AutomationLauncher, UpcomingAppointments } from './SalesOpsPanel.js';
 import { LeadCampaignsSection } from './CampaignsPanel.js';
 import { EmailCampaignsPanel } from './EmailCampaignsPanel.js';
 import { SmsPanel } from './SmsPanel.js';
@@ -114,7 +114,12 @@ export function SalesOperationsPanel() {
         </div>
       )}
 
-      {tab === 'overview' && overview && <CostAndMonitoring data={overview} />}
+      {tab === 'overview' && overview && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <UpcomingAppointments />
+          <CostAndMonitoring data={overview} />
+        </div>
+      )}
       {tab === 'calls' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* The newer, more capable option first: you talk to the customer

@@ -30,6 +30,97 @@ const PLAN_NAMES: Record<string, string> = {
   enterprise: 'Enterprise ($499/mo)',
 };
 
+// ─── record_meeting_outcome date resolution ─────────────────────────────────
+//
+// The AI gives us a date, a time, and one of four US region names -- never a
+// raw UTC offset, because "what's the UTC offset for Pacific time on
+// September 23rd" is not a question a prospect-facing sales call should be
+// asking anyone. Region names need real IANA timezone data to resolve
+// correctly across a DST transition, and no timezone library is a dependency
+// of this repo, so this leans on the ICU data already built into Node itself.
+const US_REGION_TO_IANA_ZONE: Record<string, string> = {
+  Eastern: 'America/New_York',
+  Central: 'America/Chicago',
+  Mountain: 'America/Denver',
+  Pacific: 'America/Los_Angeles',
+};
+
+/**
+ * Resolve a wall-clock date + time in a named US region to the real UTC
+ * instant, correctly across DST, with no timezone library.
+ *
+ * The trick: format a naive UTC guess back out AS IF it were already in the
+ * target zone, using Intl.DateTimeFormat (backed by the runtime's real IANA
+ * tzdata). The difference between that and the guess is the zone's actual
+ * offset in effect at that moment -- DST included -- so one correction is
+ * exact for every real-world zone, all of which sit on whole/half-hour
+ * offsets with no sub-minute drift near a transition.
+ *
+ * Returns null on anything unparseable rather than guessing -- a wrong
+ * appointment time is worse than a missing one, since nobody would think to
+ * double check a value that is merely displayed with confidence.
+ */
+export function zonedTimeToUtc(
+  dateStr: string | undefined,
+  timeStr: string | undefined,
+  region: string | undefined,
+): Date | null {
+  if (!dateStr || !timeStr || !region) return null;
+  const zone = US_REGION_TO_IANA_ZONE[region];
+  if (!zone) return null;
+
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
+  const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(timeStr.trim());
+  if (!dateMatch || !timeMatch) return null;
+
+  const [, y, mo, d] = dateMatch;
+  const [, h, mi] = timeMatch;
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  const hour = Number(h);
+  const minute = Number(mi);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+
+  const guessUtcMs = Date.UTC(year, month - 1, day, hour, minute);
+
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const parts = formatter.formatToParts(new Date(guessUtcMs));
+  const part = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? NaN);
+  const asIfUtcMs = Date.UTC(
+    part('year'),
+    part('month') - 1,
+    part('day'),
+    part('hour'),
+    part('minute'),
+    part('second'),
+  );
+  if (!Number.isFinite(asIfUtcMs)) return null;
+
+  const offsetMs = asIfUtcMs - guessUtcMs;
+  return new Date(guessUtcMs - offsetMs);
+}
+
+/** Fallback disposition when the call ended before record_meeting_outcome was
+ *  ever called (voicemail, hang-up, no-answer never give the AI the chance).
+ *  Conservative on purpose: 'no_decision' rather than guessing interest from
+ *  endedReason strings that vary by provider and change without notice. */
+export function fallbackDispositionFromEndedReason(endedReason: string): 'voicemail' | 'no_answer' | 'no_decision' {
+  const reason = endedReason.toLowerCase();
+  if (reason.includes('voicemail')) return 'voicemail';
+  if (reason.includes('no-answer') || reason.includes('customer-did-not-answer')) return 'no_answer';
+  return 'no_decision';
+}
+
 async function createStripeCheckoutSession(plan: string, email: string): Promise<{ checkoutUrl?: string; error?: string }> {
   const stripeKey = process.env.STRIPE_SECRET_KEY || process.env.BUILDMYBOT_STRIPE_SECRET_KEY;
   if (!stripeKey) {
@@ -95,7 +186,7 @@ export function createVapiWebhookRouter(): Router {
         return;
       }
 
-      const { db, logs } = await import('@workspace/db');
+      const { db, logs, callOutcomes } = await import('@workspace/db');
 
       switch (message.type) {
         // ── Function call: AI called a tool during the conversation ──────────
@@ -107,6 +198,97 @@ export function createVapiWebhookRouter(): Router {
           const customerName = message.call?.customer?.name ?? '';
 
           console.log(`[Vapi] Function call: ${fnName}(${JSON.stringify(args)}) on call ${callId}`);
+
+          if (fnName === 'record_meeting_outcome') {
+            const disposition =
+              typeof args.disposition === 'string' &&
+              ['appointment_booked', 'callback_requested', 'not_interested', 'no_decision'].includes(args.disposition)
+                ? args.disposition
+                : 'no_decision';
+            const appointmentDateRaw = typeof args.appointmentDate === 'string' ? args.appointmentDate : null;
+            const appointmentTimeRaw = typeof args.appointmentTime === 'string' ? args.appointmentTime : null;
+            const appointmentTimezoneRaw = typeof args.appointmentTimezone === 'string' ? args.appointmentTimezone : null;
+            const contactEmail = typeof args.contactEmail === 'string' ? args.contactEmail.trim() || null : null;
+            const objection = typeof args.objection === 'string' ? args.objection : null;
+            const nextAction = typeof args.nextAction === 'string' ? args.nextAction : null;
+
+            const appointmentAt =
+              disposition === 'appointment_booked'
+                ? zonedTimeToUtc(appointmentDateRaw ?? undefined, appointmentTimeRaw ?? undefined, appointmentTimezoneRaw ?? undefined)
+                : null;
+
+            if (callId === 'unknown') {
+              console.warn('[Vapi] record_meeting_outcome fired with no call id -- cannot persist');
+            } else {
+              // ON CONFLICT rather than a select-then-branch: two rapid function
+              // calls on the same call_id (the AI correcting itself mid-call)
+              // must not race into two rows or lose the second call's update.
+              await db
+                .insert(callOutcomes)
+                .values({
+                  id: crypto.randomUUID(),
+                  callId,
+                  customerNumber,
+                  customerName: customerName || null,
+                  disposition,
+                  appointmentAt,
+                  appointmentDateRaw,
+                  appointmentTimeRaw,
+                  appointmentTimezoneRaw,
+                  contactEmail,
+                  objection,
+                  nextAction,
+                  createdByAgentId: 'apex-sales-001',
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                })
+                .onConflictDoUpdate({
+                  target: callOutcomes.callId,
+                  set: {
+                    disposition,
+                    appointmentAt,
+                    appointmentDateRaw,
+                    appointmentTimeRaw,
+                    appointmentTimezoneRaw,
+                    contactEmail,
+                    objection,
+                    nextAction,
+                    updatedAt: new Date(),
+                  },
+                });
+            }
+
+            const dispositionLabel = disposition.replace(/_/g, ' ');
+            const appointmentLine =
+              disposition === 'appointment_booked'
+                ? appointmentAt
+                  ? ` -- ${appointmentAt.toISOString()} (${appointmentTimezoneRaw ?? 'timezone unclear'}, parsed from "${appointmentDateRaw} ${appointmentTimeRaw}")`
+                  : ` -- date/time given ("${appointmentDateRaw} ${appointmentTimeRaw} ${appointmentTimezoneRaw}") could not be parsed; recorded as text only`
+                : '';
+            await db.insert(logs).values({
+              agentId: 'apex-sales-001',
+              taskId: null,
+              level: 'info',
+              message: `📅 Call outcome recorded — ${dispositionLabel}${appointmentLine} — ${customerName || customerNumber}`,
+              timestamp: new Date(),
+            });
+
+            console.log(`[Vapi] record_meeting_outcome: ${disposition} on call ${callId}${appointmentAt ? ` @ ${appointmentAt.toISOString()}` : ''}`);
+
+            return res.json({
+              result: {
+                success: true,
+                disposition,
+                appointmentAt: appointmentAt ? appointmentAt.toISOString() : null,
+                message:
+                  disposition === 'appointment_booked'
+                    ? appointmentAt
+                      ? `Recorded. Confirm it back to them naturally, then wrap up.`
+                      : `Recorded, but I could not parse that date/time precisely -- read it back to the prospect to confirm, and it will still be saved as text for a human to follow up on.`
+                    : 'Recorded.',
+              },
+            });
+          }
 
           if (fnName === 'send_checkout_link') {
             const rawPlan = args.plan || 'starter';
@@ -158,6 +340,7 @@ export function createVapiWebhookRouter(): Router {
           const transcript = call.artifact?.transcript ?? message.artifact?.transcript ?? '';
           const endedReason = message.endedReason ?? call.endedReason ?? 'unknown';
           const cost = call.cost ?? 0;
+          const callId = call.id;
 
           await db.insert(logs).values({
             agentId: 'apex-sales-001',
@@ -166,6 +349,46 @@ export function createVapiWebhookRouter(): Router {
             message: `📞 Outbound call ended — ${endedReason}. Cost: $${Number(cost).toFixed(2)}. Summary: ${analysis.summary ?? 'N/A'}${transcript ? ` | Transcript: ${transcript.slice(0, 500)}...` : ''}`,
             timestamp: new Date(),
           });
+
+          // Enrich the structured row rather than replace it: if
+          // record_meeting_outcome already ran, this must add transcript/
+          // cost/endedReason WITHOUT touching the disposition or appointment
+          // it already captured. If it never ran (voicemail, no answer, a
+          // hang-up before the AI could call it), this INSERTs the only
+          // record that call will ever get, with a conservative disposition
+          // derived from endedReason -- never left silently unrecorded.
+          if (callId) {
+            const customerNumber = call.customer?.number ?? '';
+            const customerName = call.customer?.name ?? '';
+            await db
+              .insert(callOutcomes)
+              .values({
+                id: crypto.randomUUID(),
+                callId,
+                customerNumber,
+                customerName: customerName || null,
+                disposition: fallbackDispositionFromEndedReason(String(endedReason)),
+                summary: typeof analysis.summary === 'string' ? analysis.summary : null,
+                transcript: transcript || null,
+                endedReason: String(endedReason),
+                costUsd: typeof cost === 'number' ? cost : Number(cost) || null,
+                createdByAgentId: 'apex-sales-001',
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .onConflictDoUpdate({
+                target: callOutcomes.callId,
+                set: {
+                  summary: typeof analysis.summary === 'string' ? analysis.summary : null,
+                  transcript: transcript || null,
+                  endedReason: String(endedReason),
+                  costUsd: typeof cost === 'number' ? cost : Number(cost) || null,
+                  updatedAt: new Date(),
+                },
+              });
+          } else {
+            console.warn('[Vapi] end-of-call-report with no call id -- cannot persist call_outcomes row');
+          }
 
           console.log(`[Vapi] Call ended: ${call.id}, reason: ${endedReason}, cost: $${cost}, summary: ${(analysis.summary ?? '').slice(0, 100)}`);
           break;

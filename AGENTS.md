@@ -341,6 +341,7 @@ Production CI currently includes:
 - task-repetition guard (circular-investigation detection, budget nudge);
 - durable-worker-heartbeat guard (schema/migration, /health separation from process-local liveness);
 - autonomy-dashboard guard (every metric backed by a real query/counter);
+- call-outcome-capture guard (DST-correct appointment timezone resolution, upsert never lets end-of-call-report overwrite a disposition the mid-call function already recorded);
 - crash-recovery integration guard (create → claim → disappear → resume → exactly-one-side-effect → complete);
 - dashboard build;
 - mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across all 17 nav views at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.

@@ -6,8 +6,9 @@ import {
   type SalesOpsCallResult,
   type SalesOpsAutomateResult,
   type ResearchedLead,
+  type CallOutcome,
 } from '../lib/api.js';
-import { PhoneCall, Zap, DollarSign, Mail, Users, AlertTriangle, Rocket } from 'lucide-react';
+import { PhoneCall, Zap, DollarSign, Mail, Users, AlertTriangle, Rocket, CalendarClock } from 'lucide-react';
 
 // ─── Small presentational helpers ──────────────────────────────────────────
 
@@ -124,6 +125,98 @@ function primaryButtonStyle(disabled: boolean): React.CSSProperties {
  *  for reuse on CampaignsPanel, which is now the "monitor everything" home —
  *  this component's own definition stays here since AutomationLauncher below
  *  still needs the same overview query this file already fetches. */
+/** Local-time display for a UTC appointment instant, with the browser's own
+ *  zone abbreviation -- an operator reading this dashboard cares what time it
+ *  is FOR THEM, not what the prospect's stated region resolved to server-side. */
+function formatAppointment(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
+/**
+ * What record_meeting_outcome actually booked, sorted soonest first -- the
+ * "what do I need to show up for" view. Before this, a booked appointment
+ * existed only as a sentence inside a call transcript; this is the same data
+ * as a queryable row, refreshed independently of the heavier overview query
+ * so a slow campaign aggregate never hides a meeting that's about to happen.
+ */
+export function UpcomingAppointments() {
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ['sales-ops-upcoming-appointments'],
+    queryFn: () => api.salesOps.callOutcomes({ upcoming: true, limit: 25 }),
+    refetchInterval: 30000,
+  });
+
+  const appointments = data?.outcomes ?? [];
+
+  return (
+    <div className="glass-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <SectionTitle
+        icon={<CalendarClock size={18} />}
+        title="Upcoming appointments"
+        hint="Booked live by the AI during an outbound call (record_meeting_outcome), soonest first."
+      />
+
+      {isLoading && (
+        <div style={{ color: 'var(--color-apex-muted)', fontSize: 13 }}>Loading…</div>
+      )}
+      {isError && (
+        <div style={{ color: 'var(--color-apex-red)', fontSize: 13, fontFamily: 'var(--font-mono)' }}>
+          Failed to load: {error instanceof Error ? error.message : String(error)}
+        </div>
+      )}
+      {!isLoading && !isError && appointments.length === 0 && (
+        <div style={{ color: 'var(--color-apex-muted)', fontSize: 13 }}>
+          Nothing booked right now.
+        </div>
+      )}
+
+      {appointments.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {appointments.map((a: CallOutcome) => (
+            <div
+              key={a.id}
+              style={{
+                padding: '12px 14px',
+                borderRadius: 8,
+                background: 'rgba(0,0,0,0.2)',
+                border: '1px solid var(--color-apex-line)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                minWidth: 0,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <span className="apex-display" style={{ fontSize: 15, color: 'var(--color-apex-brass)' }}>
+                  {a.appointmentAt
+                    ? formatAppointment(a.appointmentAt)
+                    : `${a.appointmentDateRaw ?? '?'} ${a.appointmentTimeRaw ?? ''} ${a.appointmentTimezoneRaw ?? ''} (unparsed — confirm manually)`}
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
+                  {a.customerName || a.customerNumber}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--color-apex-muted)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {a.customerName && <span style={{ fontFamily: 'var(--font-mono)' }}>{a.customerNumber}</span>}
+                {a.contactEmail && <span>{a.contactEmail}</span>}
+                {a.nextAction && <span>Next: {a.nextAction}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CostAndMonitoring({ data }: { data: SalesOpsOverview }) {
   const { spend, runningCost, calls, emails, leads, campaigns } = data;
   const capPct = spend.capUsd > 0 ? Math.min(100, (spend.spentUsd / spend.capUsd) * 100) : 0;

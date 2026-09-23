@@ -913,6 +913,46 @@ export async function migrate() {
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+
+  // ── Outbound call outcomes (2026-09-23) ──────────────────────────────────
+  // Structured disposition/appointment capture for make_outbound_call, so a
+  // booked meeting is a queryable row instead of a sentence buried in a
+  // transcript. See schema.ts for the write-path explanation.
+  await client`
+    CREATE TABLE IF NOT EXISTS call_outcomes (
+      id text PRIMARY KEY,
+      call_id text NOT NULL,
+      lead_id text,
+      customer_number text NOT NULL,
+      customer_name text,
+      disposition text NOT NULL DEFAULT 'no_decision',
+      appointment_at timestamptz,
+      appointment_date_raw text,
+      appointment_time_raw text,
+      appointment_timezone_raw text,
+      contact_email text,
+      objection text,
+      next_action text,
+      summary text,
+      transcript text,
+      ended_reason text,
+      cost_usd real,
+      created_by_agent_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  // Both write paths (the mid-call function and end-of-call-report) upsert by
+  // call_id, so this must be unique for ON CONFLICT to target the right row.
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS call_outcomes_call_id_unique
+    ON call_outcomes (call_id)
+  `;
+  // The dashboard's "what's booked" query: future appointments, soonest first.
+  await client`
+    CREATE INDEX IF NOT EXISTS call_outcomes_appointment_idx
+    ON call_outcomes (appointment_at) WHERE appointment_at IS NOT NULL
+  `;
 }
 
 export { schema };

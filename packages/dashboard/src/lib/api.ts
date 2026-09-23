@@ -464,6 +464,15 @@ export const api = {
   salesOps: {
     /** Fetch the current spend, outreach, campaign, and pipeline summary. */
     overview: () => apiFetch<SalesOpsOverview>('/sales-ops/overview'),
+    /** Structured disposition/appointment records from outbound calls.
+     *  upcoming=true narrows to booked appointments not yet in the past. */
+    callOutcomes: (params?: { upcoming?: boolean; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.upcoming) qs.set('upcoming', 'true');
+      if (params?.limit) qs.set('limit', String(params.limit));
+      const query = qs.toString();
+      return apiFetch<{ outcomes: CallOutcome[] }>(`/sales-ops/call-outcomes${query ? `?${query}` : ''}`);
+    },
     /** Place one operator-initiated outbound call. */
     placeCall: (body: SalesOpsCallRequest) =>
       apiFetch<SalesOpsCallResult>('/sales-ops/call', { method: 'POST', body: JSON.stringify(body) }),
@@ -563,6 +572,32 @@ export interface SalesOpsSpend {
   resumeAt: string | null;
   projectedUsd: number | null;
   providers: Array<{ provider: string; spentUsd: number }>;
+}
+
+/** One outbound call's structured outcome — mirrors lib/db/src/schema.ts's
+ *  callOutcomes table. appointmentAt is the parsed UTC instant (null if the
+ *  AI's date/time could not be resolved); the *Raw fields are what it
+ *  actually said, kept even when parsing failed so nothing is silently lost. */
+export interface CallOutcome {
+  id: string;
+  callId: string;
+  leadId: string | null;
+  customerNumber: string;
+  customerName: string | null;
+  disposition: 'appointment_booked' | 'callback_requested' | 'not_interested' | 'voicemail' | 'no_answer' | 'no_decision';
+  appointmentAt: string | null;
+  appointmentDateRaw: string | null;
+  appointmentTimeRaw: string | null;
+  appointmentTimezoneRaw: string | null;
+  contactEmail: string | null;
+  objection: string | null;
+  nextAction: string | null;
+  summary: string | null;
+  transcript: string | null;
+  endedReason: string | null;
+  costUsd: number | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SalesOpsOverview {
