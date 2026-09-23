@@ -38,8 +38,9 @@ import {
   logs,
   integrationSettings,
   smsMessages,
+  callOutcomes,
 } from '@workspace/db';
-import { eq, gte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, sql } from 'drizzle-orm';
 import { getSpendLedgerSnapshot } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
@@ -410,6 +411,40 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       });
 
       res.status(success ? 200 : 502).json(success ? callResult : { ...callResult, success: false });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── GET /call-outcomes — structured disposition/appointment records ─────────
+  //
+  // Everything an outbound call actually produced, as real rows rather than
+  // the free-text lines the call-metrics aggregate above has to regex out of
+  // `logs`. ?upcoming=true narrows to booked appointments not yet in the past,
+  // soonest first — the "what do I need to show up for" view.
+  router.get('/call-outcomes', async (req, res) => {
+    try {
+      const upcomingOnly = req.query.upcoming === 'true';
+      const limitParam = Number(req.query.limit);
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 200) : 50;
+
+      const rows = upcomingOnly
+        ? await db
+            .select()
+            .from(callOutcomes)
+            .where(and(
+              eq(callOutcomes.disposition, 'appointment_booked'),
+              gte(callOutcomes.appointmentAt, new Date()),
+            ))
+            .orderBy(asc(callOutcomes.appointmentAt))
+            .limit(limit)
+        : await db
+            .select()
+            .from(callOutcomes)
+            .orderBy(desc(callOutcomes.createdAt))
+            .limit(limit);
+
+      res.json({ outcomes: rows });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }

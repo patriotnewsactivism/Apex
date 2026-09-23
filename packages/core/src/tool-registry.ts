@@ -189,6 +189,11 @@ function zodTypeToJson(t: z.ZodTypeAny): Record<string, unknown> {
 //                       routes/resend-webhook.ts) — delivery/open/click/
 //                       bounce/complaint events land there, not here.
 
+/** Used to spell out the weekday in the outbound-call system prompt (e.g.
+ *  "2026-09-23 (Wednesday)") -- getUTCDay() alone is a bare 0-6 index the
+ *  model would have to know how to decode. */
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
 function resendFromAddress(): string {
@@ -3003,6 +3008,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // session for the prospect. The Vapi webhook handler at the server URL
         // receives the function call, creates the Stripe session, and returns
         // the checkout URL — the AI then tells the prospect "I've sent you a link."
+        // The AI resolves relative dates ("next Tuesday") against whatever it
+        // believes today is, and it has no other source for that than this
+        // prompt. Prepended server-side -- not left to whoever wrote
+        // assistantPrompt to remember -- so every caller (agent, Sales Ops
+        // console, or a manually pasted script) gets correct date resolution
+        // for record_meeting_outcome, not just the ones that thought to
+        // include it.
+        const todayContext = `Today's date is ${new Date().toISOString().slice(0, 10)} (${DAY_NAMES[new Date().getUTCDay()]}). Use this to resolve any relative date the prospect gives you (e.g. "next Tuesday", "tomorrow") into an exact calendar date.`;
+
         const callBody = {
           assistant: {
             name: 'APEX Outbound SDR',
@@ -3013,7 +3027,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               messages: [
                 {
                   role: 'system',
-                  content: assistantPrompt,
+                  content: `${todayContext}\n\n${assistantPrompt}`,
                 },
               ],
               temperature: 0.7,
@@ -3039,6 +3053,49 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                       },
                     },
                     required: ['plan', 'email'],
+                  },
+                },
+              },
+              {
+                type: 'function',
+                function: {
+                  name: 'record_meeting_outcome',
+                  description: "Call this exactly once, as soon as the outcome of the call is known -- right after the prospect commits to a meeting, declines, or asks for a callback, or in the last moment before you hang up either way. This is the ONLY way the outcome is saved: a meeting only counts as booked if you call this with disposition 'appointment_booked'. Do not just say it out loud and skip calling this.",
+                  parameters: {
+                    type: 'object',
+                    properties: {
+                      disposition: {
+                        type: 'string',
+                        enum: ['appointment_booked', 'callback_requested', 'not_interested', 'no_decision'],
+                        description: 'appointment_booked = a specific day AND time was agreed. callback_requested = they want to be contacted again but gave no specific time. not_interested = they declined. no_decision = the call ended without a clear outcome either way.',
+                      },
+                      appointmentDate: {
+                        type: 'string',
+                        description: "Required when disposition is appointment_booked, omit otherwise. The meeting date in strict YYYY-MM-DD format -- resolve any relative date (\"next Tuesday\") against today's date, given above, into the real calendar date.",
+                      },
+                      appointmentTime: {
+                        type: 'string',
+                        description: "Required when disposition is appointment_booked, omit otherwise. The meeting time in strict 24-hour HH:MM format (e.g. '14:00' for 2 PM).",
+                      },
+                      appointmentTimezone: {
+                        type: 'string',
+                        enum: ['Eastern', 'Central', 'Mountain', 'Pacific'],
+                        description: 'Required when disposition is appointment_booked, omit otherwise. The US timezone the prospect meant. If they did not say, use your best judgment from area code or context.',
+                      },
+                      contactEmail: {
+                        type: 'string',
+                        description: "The prospect's email address, if you collected one for a meeting invitation or follow-up. Omit if none was given.",
+                      },
+                      objection: {
+                        type: 'string',
+                        description: 'The main reason given, in their own words, if they declined or hesitated rather than booking. Omit if none was given.',
+                      },
+                      nextAction: {
+                        type: 'string',
+                        description: 'One sentence on what should happen next (e.g. "Call back Thursday afternoon", "Send the one-pager to this email").',
+                      },
+                    },
+                    required: ['disposition'],
                   },
                 },
               },
