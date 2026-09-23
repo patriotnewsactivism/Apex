@@ -5,14 +5,15 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "tsx watch --import ./src/instrument.ts src/index.ts",
+    "start": "tsx --import ./src/instrument.ts src/index.ts",
     "start:worker": "tsx src/worker.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "migrate:production": "tsx src/migrate-production.ts"
   },
   "dependencies": {
+    "@sentry/node": "^10.75.1",
     "@workspace/agents": "workspace:*",
     "@workspace/background-jobs": "workspace:*",
     "@workspace/cicd-automation": "workspace:*",
