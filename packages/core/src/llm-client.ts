@@ -537,8 +537,10 @@ const providerNextAttemptAt = new Map<ApexProviderName, number>();
 export const OPENROUTER_MAX_FALLBACK_MODELS = 3;
 
 const configuredRequestTimeoutMs = Number(process.env.APEX_LLM_REQUEST_TIMEOUT_MS ?? 30_000);
+// Cap raised from 60s → 180s so paid FlashX continuity can answer past slow
+// OpenRouter upstream p99 without burning the whole free-chain timeout budget.
 export const LLM_REQUEST_TIMEOUT_MS = Number.isFinite(configuredRequestTimeoutMs)
-  ? Math.min(60_000, Math.max(10_000, Math.floor(configuredRequestTimeoutMs)))
+  ? Math.min(180_000, Math.max(10_000, Math.floor(configuredRequestTimeoutMs)))
   : 30_000;
 
 const COOLDOWN_429_MS = 30_000;
