@@ -6,14 +6,15 @@ import { join } from 'node:path';
 
 const dir = mkdtempSync(join(tmpdir(), 'apex-account-test-'));
 const fp = (key: string) => createHash('sha256').update(key).digest('hex').slice(0, 16);
-const keyA = 'test-credential-a', keyB = 'test-credential-b', keyC = 'test-credential-c';
+const keyA = 'test-credential-a', keyB = 'test-credential-b', keyC = 'test-credential-c', keyD = 'test-credential-d';
 process.env.APEX_REQUEST_LEDGER_PATH = join(dir, 'ledger.json');
 process.env.APEX_REQUEST_PACING_ENABLED = 'false';
 process.env.APEX_REQUEST_RATE_PER_MIN = '0';
 process.env.APEX_ACCOUNT_REQUEST_RATE_PER_MIN = '2';
 process.env.OPENROUTER_FREE_API_KEY = keyA;
 process.env.OPENROUTER_API_KEY_2 = keyB;
-process.env.OPENROUTER_API_KEY_4 = keyC;
+process.env.OPENROUTER_API_KEY_3 = keyC;
+process.env.OPENROUTER_API_KEY_4 = keyD;
 process.env.APEX_REQUEST_CAPS = 'OPENROUTER_FREE_API_KEY:4,OPENROUTER_API_KEY_2:6';
 writeFileSync(process.env.APEX_REQUEST_LEDGER_PATH, JSON.stringify({
   day: new Date().toISOString().slice(0, 10), accounts: {
@@ -23,7 +24,7 @@ writeFileSync(process.env.APEX_REQUEST_LEDGER_PATH, JSON.stringify({
 
 async function main() {
   const ledger = await import('../packages/core/src/request-ledger.js');
-  ledger.setObservedAccounts(new Map([[fp(keyA), 'account-1'], [fp(keyB), 'account-1'], [fp(keyC), 'account-2']]));
+  ledger.setObservedAccounts(new Map([[fp(keyA), 'account-1'], [fp(keyB), 'account-1'], [fp(keyC), 'account-2'], [fp(keyD), 'account-3']]));
   for (const key of [keyA, keyB]) {
     const window = ledger.accountCapacityWindow(key);
     assert.equal(window.cap, 4);
@@ -31,7 +32,7 @@ async function main() {
     assert.equal(window.allowed, false);
   }
   const rows = ledger.getRequestLedgerSnapshot().accounts;
-  assert.equal(rows.length, 3, 'unused observed credentials remain visible');
+  assert.equal(rows.length, 4, 'restored key 3 and key 4 credentials remain visible');
   for (const row of rows.filter(row => row.openRouterAccount === 'account-1')) {
     assert.equal(row.requests, 2);
     assert.equal(row.accountRequests, 4);

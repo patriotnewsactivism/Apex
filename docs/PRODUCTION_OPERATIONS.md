@@ -176,7 +176,7 @@ can see is how that went unnoticed:
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
-| `accounts[]` | Per-KEY split. APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2` and `OPENROUTER_API_KEY_4`; `OPENROUTER_API_KEY_3` is burned and is not a roster member. Env names holding the same key collapse into one row. Two rows can still be one account — read `openRouterAccount` for that |
+| `accounts[]` | Per-KEY split. APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and `OPENROUTER_API_KEY_4`. Env names holding the same key collapse into one row. Two rows can still be one account — read `openRouterAccount` for that |
 | `accounts[].requests` | What this KEY served. Not a capacity figure on its own |
 | `accounts[].openRouterAccount` | Which OpenRouter user the key belongs to (`oracct_…`, or `null` before the credit probe resolves it). **Rows sharing this value share one 1,000/day bucket** |
 | `accounts[].accountRequests` | Requests today across every key on that account — what the free tier actually meters, and the number credentials are sorted on. Compare THIS between distinct `openRouterAccount` values to judge balance |
@@ -240,7 +240,7 @@ model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
 `limit_source: openrouter_free_tier_daily`. Adding more free *models* buys
 nothing against it (all three rungs went into cooldown together, because they
 draw on one bucket); adding a key for another account buys a whole extra
-1,000/day. `OPENROUTER_API_KEY_4` is wired for exactly that — set it and load
+1,000/day. `OPENROUTER_API_KEY_3` and `OPENROUTER_API_KEY_4` are both wired for exactly that — set either slot and load
 balancing picks the account up with no other change. It has to be a key from an
 account APEX does not already hold: a second key on an existing account raises
 neither the ceiling nor the throughput, and `providerCredits.sharedQuota: true`

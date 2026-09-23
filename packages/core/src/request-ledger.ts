@@ -43,10 +43,8 @@ import { dirname } from 'path';
  *
  * This matters because the two are not one-to-one. APEX reads OpenRouter keys
  * from OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY, OPENROUTER_API_KEY_2,
- * and OPENROUTER_API_KEY_4 across three real qualifying accounts.
- * OPENROUTER_API_KEY_3 is burned (100% live failures) and is not a roster
- * member. Extra env names for the same key are credential
- * redundancy, not extra capacity. Keying on the env name would split one
+ * OPENROUTER_API_KEY_3, and OPENROUTER_API_KEY_4. Extra env names for the same
+ * key or account are credential redundancy, not extra capacity. Keying on the env name would split one
  * account's spend across several rows, so a per-account cap of 1,000 set on
  * two names that hold the same key would authorize 2,000 requests against an
  * account that allows 1,000. The cap would read as enforced and be wrong in
@@ -89,12 +87,10 @@ const LEDGER_PATH =
   process.env.APEX_REQUEST_LEDGER_PATH ?? '/tmp/apex/request-ledger.json';
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Free-tier reality as of 2026-09: three OpenRouter accounts, 1,000/day each
- *  once a $10 deposit lifts them off the ~200/day base tier. 2,900 sits 100
- *  under that 3,000 ceiling rather than on it, because this ledger cannot see
- *  requests made outside this process (a second revision mid-rollout, a local
- *  run, the chat route on another instance) and the penalty for guessing high
- *  is a hard 429 wall with no allowance left to recover on. */
+/** Conservative workspace default. Actual account capacity is resolved from
+ *  the live OpenRouter account identities reported by the credit probe. The
+ *  credential roster includes OPENROUTER_API_KEY_3 and _4; duplicate keys or
+ *  multiple keys from one account still collapse into one quota bucket. */
 const DEFAULT_TOTAL_CAP = 2_775;
 /** Enough to get real work done immediately after a restart without letting a
  *  startup swarm eat the morning. ~1.4h of the steady-state rate. */

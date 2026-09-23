@@ -46,7 +46,7 @@ The operator-persisted model roster remains free-only. FlashX is a separate runt
 
 FlashX also receives the full available conversation history rather than APEX's smaller free-route history trim, allowing the runtime to use its large upstream context window.
 
-Qualifying free credentials include `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and optional `OPENROUTER_API_KEY_4`. Multiple keys on one OpenRouter account do not create separate free quota. `/health` `providerCredits.uniqueAccounts` is the account-level check. See `docs/FREE_ONLY_MODEL_POLICY.md` for the free-roster policy and FlashX continuity exception.
+Qualifying free credentials include `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and `OPENROUTER_API_KEY_4`. Multiple keys on one OpenRouter account do not create separate free quota. `/health` `providerCredits.uniqueAccounts` is the account-level check. See `docs/FREE_ONLY_MODEL_POLICY.md` for the free-roster policy and FlashX continuity exception.
 
 ## Workforce
 
