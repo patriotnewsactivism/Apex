@@ -1,3 +1,5 @@
+import './instrument.js';
+import * as Sentry from '@sentry/node';
 import { getTurnEconomySnapshot } from '@workspace/core';
 // APEX API Server — force rebuild 2026-07-30 to clear stale Docker cache
 import { config } from 'dotenv';
@@ -661,6 +663,12 @@ async function main() {
     }
   });
 
+  // Intentional error for Sentry verification. Always behind admin auth so
+  // production never exposes an ungated throw, including when NODE_ENV is unset.
+  app.get('/debug-sentry', requireAdminAuth, () => {
+    throw new Error('My first Sentry error!');
+  });
+
   // Serve dashboard static files if built
   const primaryDist = resolve(__dirname, '../../dashboard/dist');
   const fallbackDist = resolve(process.cwd(), 'packages/dashboard/dist');
@@ -687,6 +695,9 @@ async function main() {
   } else {
     console.log('ℹ️  No dashboard build found — API-only mode');
   }
+
+  // After every route, and before any later error middleware.
+  Sentry.setupExpressErrorHandler(app);
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ APEX running on http://0.0.0.0:${PORT}`);
