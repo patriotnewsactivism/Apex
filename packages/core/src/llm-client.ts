@@ -84,7 +84,7 @@ import {
 // routes outside that policy.
 
 export type ApexProviderName =
-  | 'qwen-qwencloud-token-plan'
+  | 'qwen-dashscope-byok'
   | 'openrouter-nex-n2-5-mini-free'
   | 'openrouter-nex-n2-5-pro-free'
   | 'openrouter-nemotron-super'
@@ -208,7 +208,7 @@ function envPositiveInt(name: string, fallback: number): number {
 
 const PROVIDERS: readonly ProviderSpec[] = [
   {
-    name: 'qwen-qwencloud-token-plan',
+    name: 'qwen-dashscope-byok',
     model: 'qwen3.8-flash',
     // QwenCloud Token Plan OpenAI-compatible endpoint. Token Plan (`sk-sp-...`)
     // credentials are not interchangeable with pay-as-you-go (`sk-...`)
@@ -231,7 +231,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // Primary route hit by the whole workforce on every call, not an
     // occasional fallback — keep spacing tight enough that it can't become
     // the bottleneck itself. Override with
-    // APEX_LLM_MIN_INTERVAL_MS_QWEN_QWENCLOUD_TOKEN_PLAN if the plan needs more room.
+    // APEX_LLM_MIN_INTERVAL_MS_QWEN_DASHSCOPE_BYOK if the plan needs more room.
     minIntervalMs: 250,
     toolCallingReliable: true,
     // Not yet confirmed against DashScope's compatible-mode docs that
@@ -343,7 +343,7 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   // Operator-funded paid BYOK, governed but tried first — see the routing
   // policy comment above and ADR-017. Falls through when unconfigured,
   // disabled, or failing.
-  'qwen-qwencloud-token-plan',
+  'qwen-dashscope-byok',
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
@@ -359,7 +359,7 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
 function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
     ? [
-        'qwen-qwencloud-token-plan',
+        'qwen-dashscope-byok',
         FREE_POLICY_GATEWAY_NAME,
         'groq-gpt-oss-120b-byok',
         'gemini-3-8-flash-byok',
@@ -2009,7 +2009,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model = primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
-    provider: primary?.name ?? 'qwen-qwencloud-token-plan',
+    provider: primary?.name ?? 'qwen-dashscope-byok',
     model,
     temperature: 0.7,
     maxTokens,
