@@ -20,6 +20,7 @@ A release is not complete until `https://apex.donmatthews.live/health` reports t
 
 See:
 
+- `docs/APEX_MASTER_OPERATING_MANUAL.md` — consolidated current system inventory, controls, capability map, and bug-eradication baseline for engineers/Copilot.
 - `AGENTS.md` — canonical repository instructions for coding agents and contributors.
 - `docs/PRODUCTION_OPERATIONS.md` — production deploy, verification, rollback, and incident runbook.
 - `docs/deploy-provenance.md` — exact source-to-image-to-runtime provenance contract.
