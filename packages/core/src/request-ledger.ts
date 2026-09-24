@@ -512,14 +512,16 @@ const DIRECT_POOL_DEFAULTS: Record<DirectRequestPool, { cap: number; ratePerMinu
   // Gemini's exact RPD is project/model/tier specific and must be read from AI
   // Studio. Start conservatively until APEX can ingest the live quota headers.
   gemini: { cap: 500, ratePerMinute: 5, burst: 20 },
-  // Qwen is the PRIMARY route (tried by all 13 agents on every call), not an
-  // occasional fallback, so it needs meaningfully more headroom than Groq/
-  // Gemini's fallback-tier defaults. The operator's actual DashScope Model
-  // Studio plan RPM/TPM is not known here — these are a conservative
-  // placeholder, not a verified quota. Confirm the real plan limits in the
-  // Model Studio console and set APEX_QWEN_REQUEST_CAP /
+  // QwenCloud Token Plan is the PRIMARY route (tried by all 13 agents on
+  // every call), not an occasional fallback, so it needs more headroom than
+  // Groq/Gemini's fallback-tier defaults -- but it is also a finite prepaid
+  // subscription, not a per-account daily allowance like Groq/Gemini's free
+  // tiers, so an overly generous cap risks draining a month's plan in a day.
+  // The operator's actual Token Plan RPM/quota is not known here — this is a
+  // deliberately conservative placeholder, not a verified quota. Confirm the
+  // real plan limits in the QwenCloud console and set APEX_QWEN_REQUEST_CAP /
   // APEX_QWEN_REQUEST_RATE_PER_MIN / APEX_QWEN_REQUEST_PACING_BURST to match.
-  qwen: { cap: 5_000, ratePerMinute: 60, burst: 100 },
+  qwen: { cap: 2_500, ratePerMinute: 25, burst: 50 },
 };
 
 const directRecentRequests: Record<DirectRequestPool, number[]> = {

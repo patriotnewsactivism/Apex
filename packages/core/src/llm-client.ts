@@ -50,21 +50,27 @@ import {
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// ROUTING POLICY (operator decision 2026-09-23, ADR-017). Automatic routing
-// tries the operator-funded Qwen3.8 Flash QwenCloud Token Plan route FIRST: the operator
-// holds a paid QwenCloud Token Plan and wants it
-// used rather than left idle while free capacity serves instead. QwenCloud is
-// governed like Groq/Gemini — its own capped/paced request pool, its own
-// activation switch — and is explicitly NOT unrestricted like FlashX: every
-// APEX workspace/emergency/pacing governor still applies to it. If Qwen is
-// unconfigured, disabled, or fails, routing falls through to OpenRouter
-// `:free` models (plus the special `openrouter/free` router), then
-// independent Groq/Gemini BYOK capacity, with the operator-approved paid GLM
-// 5.3 FlashX continuity route last. FlashX alone is always eligible when its
-// funded OpenRouter credential exists and bypasses APEX token/request/spend
-// governors; upstream provider limits, billing, error cooldowns, tool
-// authorization, and human approval policy remain for every route, Qwen and
-// FlashX included.
+// ROUTING POLICY (operator decision 2026-09-23/24, ADR-017). Automatic
+// routing tries the operator-funded QwenCloud (qwencloud.com) Token Plan
+// route FIRST: the operator holds a paid QwenCloud Token Plan subscription
+// and wants it used rather than left idle while free capacity serves
+// instead. This is a distinct product from Alibaba Cloud Model Studio/
+// DashScope -- the provider `name`/env-var identifiers below still say
+// "dashscope" for historical reasons (an early draft of this integration
+// assumed that product before the operator's real credential proved
+// otherwise) and were deliberately left as-is once corrected, rather than
+// renamed, to avoid unnecessary churn -- see ADR-017 for the full history.
+// QwenCloud is governed like Groq/Gemini — its own capped/paced request
+// pool, its own activation switch — and is explicitly NOT unrestricted like
+// FlashX: every APEX workspace/emergency/pacing governor still applies to
+// it. If QwenCloud is unconfigured, disabled, or fails, routing falls
+// through to OpenRouter `:free` models (plus the special `openrouter/free`
+// router), then independent Groq/Gemini BYOK capacity, with the
+// operator-approved paid GLM 5.3 FlashX continuity route last. FlashX alone
+// is always eligible when its funded OpenRouter credential exists and
+// bypasses APEX token/request/spend governors; upstream provider limits,
+// billing, error cooldowns, tool authorization, and human approval policy
+// remain for every route, QwenCloud and FlashX included.
 //
 // Authoritative automatic order:
 //   0. qwen3.8-flash             (Token Plan, governed, primary when configured)
@@ -231,22 +237,27 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // Primary route hit by the whole workforce on every call, not an
     // occasional fallback — keep spacing tight enough that it can't become
     // the bottleneck itself. Override with
-    // APEX_LLM_MIN_INTERVAL_MS_QWEN_DASHSCOPE_BYOK if the plan needs more room.
+    // APEX_LLM_MIN_INTERVAL_MS_QWEN_DASHSCOPE_BYOK if the plan needs more room
+    // (derived from the `name` below, which keeps its original identifier —
+    // see the provenance note atop this file).
     minIntervalMs: 250,
     toolCallingReliable: true,
-    // Not yet confirmed against DashScope's compatible-mode docs that
+    // Not yet confirmed against QwenCloud's compatible-mode docs that
     // `parallel_tool_calls` is honored server-side. Left unset (so the field
     // is never sent) rather than risk a 400 on every primary-route request;
-    // flip on once verified live.
+    // flip on once verified live. Live-tested 2026-09-24 without this flag:
+    // a tool-call request with the model's default (enabled) thinking mode
+    // completed correctly (tool_calls populated, content empty -- a case the
+    // completion guard below already exempts), well inside a normal budget.
     maxOutputTokens: envPositiveInt('APEX_QWEN_MAX_OUTPUT_TOKENS', 8_192),
-    // usdPerMillionPrompt/usdPerMillionCompletion intentionally omitted:
-    // secondary sources disagreed on current DashScope pricing for this model
-    // (roughly $0.14-0.15/M input, $0.42-0.47/M output as of 2026-09) and
-    // could not be confirmed against Alibaba Cloud's own pricing page.
-    // QwenCloud's OpenAI-compatible response may not carry a settled
-    // `usage.cost` field the way OpenRouter's does. Spend tracking for this
-    // route reports $0 until verified per-token pricing is filled in here
-    // from the operator's actual Model Studio billing console.
+    // usdPerMillionPrompt/usdPerMillionCompletion intentionally omitted: a
+    // prepaid Token Plan subscription's real constraint is plan-token/request
+    // consumption (tracked by the request pool below), not a per-call dollar
+    // rate, and no per-call dollar rate for this specific plan could be
+    // confirmed against qwencloud.com's own pricing page. QwenCloud's
+    // OpenAI-compatible response also carries no settled `usage.cost` field
+    // the way OpenRouter's does. Spend-ledger entries for this route report
+    // $0 unless/until the operator wants dollar-equivalent tracking added.
   },
   freeOpenRouterSpec('openrouter-nex-n2-5-mini-free', 'nex-agi/nex-n2.5-mini:free'),
   freeOpenRouterSpec('openrouter-nex-n2-5-pro-free', 'nex-agi/nex-n2.5-pro:free'),
