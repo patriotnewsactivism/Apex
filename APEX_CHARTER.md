@@ -6,10 +6,11 @@
 > roster, deployment, or roadmap statement dated 2026-07-12 below is a
 > **historical snapshot**, not current operational instruction.
 >
-> Current production is the existing **Google Cloud Run** service behind
-> `https://apex.donmatthews.live`. AWS Lightsail/CodeBuild and Railway are
-> retired APEX hosting paths. Current production inference routes through
-> OpenRouter as defined in `packages/core/src/llm-client.ts`.
+> **CURRENT PRODUCTION CORRECTION — 2026-09-24:** APEX production runs on **Railway**
+> (project `APEX`, service `apex-backend`) behind `https://apex.donmatthews.live`.
+> Google Cloud Run and AWS Lightsail/CodeBuild are retired hosting paths and must not
+> be treated as current production. Current inference routing is defined by
+> `packages/core/src/llm-client.ts` and the current architecture/operations docs.
 >
 > For current engineering and operations, follow `AGENTS.md`, `README.md`,
 > `docs/ARCHITECTURE_DECISIONS.md`, `docs/PRODUCTION_OPERATIONS.md`, and direct
