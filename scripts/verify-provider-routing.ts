@@ -38,31 +38,43 @@ const byokProviders = [
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ] as const;
-const automaticProviders = [...openRouterProviders, ...byokProviders];
+// Operator-funded paid BYOK, governed but tried first (ADR-017) — distinct
+// from the unrestricted FlashX continuity route, which stays last.
+const primaryPaidBYOKProvider = 'qwen-dashscope-byok' as const;
+const automaticProviders = [primaryPaidBYOKProvider, ...openRouterProviders, ...byokProviders];
 const runtimeProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
 
 const catalog = getProviderCatalog();
-const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
-const byokCatalog = catalog.slice(openRouterProviders.length);
+const primaryCatalogEntry = catalog[0];
+const openRouterCatalog = catalog.slice(1, 1 + openRouterProviders.length);
+const byokCatalog = catalog.slice(1 + openRouterProviders.length);
 
 console.log('── Multi-pool automatic provider order ──');
-check('eight automatic routes exist: six OpenRouter + two BYOK', catalog.length === 8, catalog);
+check('nine automatic routes exist: Qwen primary + six OpenRouter + two BYOK', catalog.length === 9, catalog);
 check(
   'automatic provider order is exact',
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(automaticProviders),
   catalog.map((provider) => provider.name),
 );
 check(
-  'the first six models remain the reviewed OpenRouter free chain',
+  'Qwen3.8 Flash is the primary route: paid for spend accounting, but not free-credentialed',
+  primaryCatalogEntry?.name === 'qwen-dashscope-byok' &&
+    primaryCatalogEntry?.model === 'qwen3.8-flash' &&
+    primaryCatalogEntry?.paid === true &&
+    primaryCatalogEntry?.usesFreeCredentials === false,
+  primaryCatalogEntry,
+);
+check(
+  'the next six models remain the reviewed OpenRouter free chain',
   JSON.stringify(openRouterCatalog.map((provider) => provider.model)) ===
     JSON.stringify([...DEFAULT_OPENROUTER_MODEL_CHAIN]),
   openRouterCatalog.map((provider) => provider.model),
 );
 check(
-  'Nex N2.5 Mini Free remains the production primary',
-  catalog[0]?.name === 'openrouter-nex-n2-5-mini-free' &&
-    catalog[0]?.model === 'nex-agi/nex-n2.5-mini:free',
-  catalog[0],
+  'Nex N2.5 Mini Free remains the production primary of the free chain',
+  openRouterCatalog[0]?.name === 'openrouter-nex-n2-5-mini-free' &&
+    openRouterCatalog[0]?.model === 'nex-agi/nex-n2.5-mini:free',
+  openRouterCatalog[0],
 );
 check(
   'all six OpenRouter automatic routes remain zero-cost and use the free credential roster',
@@ -124,8 +136,9 @@ check(
 
 console.log('\n── Independent request-pool routing ──');
 check(
-  'OpenRouter, Groq and Gemini are tagged with separate request pools',
+  'OpenRouter, Qwen, Groq and Gemini are tagged with separate request pools',
   /requestPool: 'openrouter'/.test(clientSource) &&
+    /requestPool: 'qwen'/.test(clientSource) &&
     /requestPool: 'groq'/.test(clientSource) &&
     /requestPool: 'gemini'/.test(clientSource),
 );
@@ -160,8 +173,9 @@ check(
     /estimateLLMRequestTokens\([\s\S]{0,160}restrictedOutputEstimate/.test(clientSource),
 );
 check(
-  'Groq and Gemini routing each have an operator activation switch',
-  /activationEnv: 'APEX_GROQ_BYOK_ENABLED'/.test(clientSource) &&
+  'Qwen, Groq and Gemini routing each have an operator activation switch',
+  /activationEnv: 'APEX_QWEN_BYOK_ENABLED'/.test(clientSource) &&
+    /activationEnv: 'APEX_GROQ_BYOK_ENABLED'/.test(clientSource) &&
     /activationEnv: 'APEX_GEMINI_BYOK_ENABLED'/.test(clientSource),
 );
 check(
@@ -250,9 +264,9 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   explorationRate: 0,
 });
 check(
-  'a custom FREE OpenRouter policy keeps independent BYOK fallbacks behind it',
+  'a custom FREE OpenRouter policy keeps Qwen primary and independent BYOK fallbacks behind it',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
-    JSON.stringify([FREE_POLICY_GATEWAY_NAME, ...byokProviders, PAID_FALLBACK_PROVIDER_NAME]),
+    JSON.stringify([primaryPaidBYOKProvider, FREE_POLICY_GATEWAY_NAME, ...byokProviders, PAID_FALLBACK_PROVIDER_NAME]),
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
@@ -273,9 +287,9 @@ for (const role of [
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} still defaults to Nex N2.5 Mini Free`,
-    config.provider === 'openrouter-nex-n2-5-mini-free' &&
-      config.model === 'nex-agi/nex-n2.5-mini:free',
+    `${role} still defaults to Qwen3.8 Flash, the operator-funded primary route`,
+    config.provider === 'qwen-dashscope-byok' &&
+      config.model === 'qwen3.8-flash',
     config,
   );
 }

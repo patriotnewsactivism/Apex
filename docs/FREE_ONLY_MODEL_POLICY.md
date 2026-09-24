@@ -2,6 +2,8 @@
 
 The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception: `z-ai/glm-5.3-flashx`, appended after the free/BYOK routes whenever the funded `OPENROUTER_API_KEY` is configured.
 
+**Scope note (2026-09-23, ADR-017):** this free roster is no longer the first thing APEX tries overall. An operator-funded, governed Qwen3.8 Flash BYOK route (`qwen-dashscope-byok`) is now tried before it, falling through to the chain below only when Qwen is unconfigured, disabled, or failing. Everything in this document remains accurate for the free roster and FlashX continuity route specifically — "first" and "free-first" below mean first/free-first *within that scope*, not first in APEX's overall runtime order. See `AGENTS.md` ("LLM intelligence policy") and `docs/ARCHITECTURE_DECISIONS.md` ADR-017 for Qwen's placement and governance.
+
 ## Production model order
 
 Automatic routing must use only OpenRouter model IDs ending in `:free`, in this order:
@@ -43,8 +45,8 @@ Credentials are tried least-used-account first (fingerprint of the key, not the 
 - APEX does not apply daily-dollar, free-request, token, emergency-request, model-specific dispatch-delay, forced-reasoning, or free-route history-trimming limits to FlashX.
 - Provider/account limits, billing, retry-after behavior, circuit breakers, cooldowns, request timeouts, authentication, tool authorization, approval gates, and irreversible-action governance remain authoritative.
 - Free-account rotation and free/BYOK capacity are attempted before FlashX.
-- Frontend labels, backend defaults, agent metadata, tests, environment examples, and operator documentation must report the same free-first + GLM continuity chain.
+- Frontend labels, backend defaults, agent metadata, tests, environment examples, and operator documentation must report the same free-roster + GLM continuity chain, understood as sitting behind the separately governed Qwen primary route (ADR-017).
 
 ## Verification gate
 
-Before merge/deploy, CI must prove that the selectable persisted provider catalog remains free-only, Nex N2.5 Mini Free remains first, GLM FlashX is the sole paid continuity exception and is last, APEX capacity governors do not veto FlashX, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot persist an arbitrary paid model.
+Before merge/deploy, CI must prove that the selectable persisted provider catalog remains free-only, Nex N2.5 Mini Free remains first *within the free chain* (Qwen precedes the whole free chain per ADR-017), GLM FlashX is the sole paid *continuity* (unrestricted, last-resort) exception and is last, APEX capacity governors do not veto FlashX, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot persist an arbitrary paid model.

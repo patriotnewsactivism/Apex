@@ -48,6 +48,33 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
+    id: 'qwen-byok',
+    name: 'Qwen (Alibaba Cloud Model Studio) — Primary BYOK',
+    description: 'Operator-funded DashScope token plan. Tried before the free OpenRouter chain on every call; governed by its own capped/paced request pool, not an unrestricted spend route. International (Singapore) endpoint by default — see APEX_QWEN_BASE_URL for mainland accounts.',
+    category: 'ai',
+    docsUrl: 'https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope',
+    envVars: [
+      { key: 'APEX_QWEN_BYOK_ENABLED', label: 'Routing Enabled', placeholder: 'true or false' },
+      { key: 'APEX_QWEN_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '5000' },
+      { key: 'APEX_QWEN_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '60' },
+      { key: 'APEX_QWEN_BASE_URL', label: 'Base URL Override (mainland accounts)', placeholder: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+      {
+        key: 'QWEN_API_KEY',
+        label: 'Qwen API Key 1',
+        placeholder: 'sk-...',
+        secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+      },
+      {
+        key: 'QWEN_API_KEY_2',
+        label: 'Qwen API Key 2',
+        placeholder: 'sk-...',
+        secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1' },
+      },
+    ],
+  },
+  {
     id: 'gemini-byok',
     name: 'Google Gemini — BYOK Pool',
     description: 'Two independent Gemini API key slots for APEX BYOK capacity. Keys are stored securely in integration settings and can be tested independently; routing activation is controlled separately from credential storage.',

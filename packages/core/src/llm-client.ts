@@ -50,26 +50,41 @@ import {
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// FREE-FIRST ROUTING POLICY. Automatic routing uses OpenRouter `:free` models
-// (plus the special `openrouter/free` router), then independent Groq/Gemini
-// BYOK capacity, with the operator-approved paid GLM 5.3 FlashX continuity route
-// last. FlashX is always eligible when its funded OpenRouter credential exists
-// and bypasses APEX token/request/spend governors; upstream provider limits,
-// billing, error cooldowns, tool authorization, and human approval policy remain.
+// ROUTING POLICY (operator decision 2026-09-23, ADR-017). Automatic routing
+// tries the operator-funded Qwen3.8 Flash BYOK route FIRST: the operator
+// holds a paid Alibaba Cloud Model Studio (DashScope) token plan and wants it
+// used rather than left idle while free capacity serves instead. Qwen is
+// governed like Groq/Gemini — its own capped/paced request pool, its own
+// activation switch — and is explicitly NOT unrestricted like FlashX: every
+// APEX workspace/emergency/pacing governor still applies to it. If Qwen is
+// unconfigured, disabled, or fails, routing falls through to OpenRouter
+// `:free` models (plus the special `openrouter/free` router), then
+// independent Groq/Gemini BYOK capacity, with the operator-approved paid GLM
+// 5.3 FlashX continuity route last. FlashX alone is always eligible when its
+// funded OpenRouter credential exists and bypasses APEX token/request/spend
+// governors; upstream provider limits, billing, error cooldowns, tool
+// authorization, and human approval policy remain for every route, Qwen and
+// FlashX included.
 //
 // Authoritative automatic order:
+//   0. qwen3.8-flash             (paid BYOK, governed, primary when configured)
 //   1. nex-agi/nex-n2.5-mini:free
 //   2. nex-agi/nex-n2.5-pro:free
 //   3. nvidia/nemotron-3-super-120b-a12b:free
 //   4. nvidia/nemotron-3.5-lightning:free
 //   5. openrouter/free  (tool requirements preserved)
 //   6. nvidia/nemotron-3-ultra-550b-a55b:free
+//   7. groq-gpt-oss-120b-byok    (BYOK, when enabled)
+//   8. gemini-3.8-flash-byok     (BYOK, when enabled)
+//   9. z-ai/glm-5.3-flashx       (paid, unrestricted continuity, last)
 //
 // MiniMax M3 Free is intentionally absent until a new direct API verification
-// proves the exact `:free` slug works. Persisted model policies remain
-// zero-cost-only; paid continuity is a separate, reviewed runtime route.
+// proves the exact `:free` slug works. Persisted OpenRouter model policies
+// remain zero-cost-only; Qwen and FlashX are separate, reviewed runtime
+// routes outside that policy.
 
 export type ApexProviderName =
+  | 'qwen-dashscope-byok'
   | 'openrouter-nex-n2-5-mini-free'
   | 'openrouter-nex-n2-5-pro-free'
   | 'openrouter-nemotron-super'
@@ -184,7 +199,55 @@ function freeOpenRouterSpec(
   };
 }
 
+function envPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
 const PROVIDERS: readonly ProviderSpec[] = [
+  {
+    name: 'qwen-dashscope-byok',
+    model: 'qwen3.8-flash',
+    // Alibaba Cloud Model Studio (DashScope) OpenAI-compatible endpoint.
+    // International (Singapore) by default, confirmed live 2026-09-23. A
+    // mainland-registered account's key will not authenticate against this
+    // host — override with APEX_QWEN_BASE_URL=
+    // https://dashscope.aliyuncs.com/compatible-mode/v1 if that's the case.
+    baseURL: () =>
+      process.env.APEX_QWEN_BASE_URL?.trim() ||
+      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    apiKeyEnvs: ['QWEN_API_KEY', 'QWEN_API_KEY_2'],
+    // Real money from a purchased token plan, so spend is recorded like any
+    // paid route — but deliberately NOT `unrestricted`. This is a governed
+    // primary route on its own capped/paced pool, not a FlashX-style bypass
+    // of APEX's workspace/emergency/pacing governors.
+    paid: true,
+    requestPool: 'qwen',
+    protocol: 'openai-compatible',
+    activationEnv: 'APEX_QWEN_BYOK_ENABLED',
+    activationDescription: 'APEX_QWEN_BYOK_ENABLED=true is required',
+    // Primary route hit by the whole workforce on every call, not an
+    // occasional fallback — keep spacing tight enough that it can't become
+    // the bottleneck itself. Override with
+    // APEX_LLM_MIN_INTERVAL_MS_QWEN_DASHSCOPE_BYOK if the plan needs more room.
+    minIntervalMs: 250,
+    toolCallingReliable: true,
+    // Not yet confirmed against DashScope's compatible-mode docs that
+    // `parallel_tool_calls` is honored server-side. Left unset (so the field
+    // is never sent) rather than risk a 400 on every primary-route request;
+    // flip on once verified live.
+    maxOutputTokens: envPositiveInt('APEX_QWEN_MAX_OUTPUT_TOKENS', 8_192),
+    // usdPerMillionPrompt/usdPerMillionCompletion intentionally omitted:
+    // secondary sources disagreed on current DashScope pricing for this model
+    // (roughly $0.14-0.15/M input, $0.42-0.47/M output as of 2026-09) and
+    // could not be confirmed against Alibaba Cloud's own pricing page.
+    // DashScope's compatible-mode response also carries no settled
+    // `usage.cost` field the way OpenRouter's does. Spend tracking for this
+    // route reports $0 until verified per-token pricing is filled in here
+    // from the operator's actual Model Studio billing console.
+  },
   freeOpenRouterSpec('openrouter-nex-n2-5-mini-free', 'nex-agi/nex-n2.5-mini:free'),
   freeOpenRouterSpec('openrouter-nex-n2-5-pro-free', 'nex-agi/nex-n2.5-pro:free'),
   freeOpenRouterSpec('openrouter-nemotron-super', 'nvidia/nemotron-3-super-120b-a12b:free'),
@@ -277,6 +340,10 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
  * Custom persisted policies do not appear here; they use FREE_POLICY_GATEWAY_NAME.
  */
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
+  // Operator-funded paid BYOK, governed but tried first — see the routing
+  // policy comment above and ADR-017. Falls through when unconfigured,
+  // disabled, or failing.
+  'qwen-dashscope-byok',
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
@@ -292,6 +359,7 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
 function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
     ? [
+        'qwen-dashscope-byok',
         FREE_POLICY_GATEWAY_NAME,
         'groq-gpt-oss-120b-byok',
         'gemini-3-8-flash-byok',
@@ -780,14 +848,23 @@ function requestWindowForProvider(
   at: number,
   pacingEnabled?: boolean,
 ) {
-  // The paid continuity route has a separate dollar budget and pacing policy.
-  // Do not make it wait on the free OpenRouter request ramp: that would leave
-  // the workforce parked even while /health correctly reports paid fallback as
-  // enabled and affordable.
-  if (provider.paid) return paidProviderCapacityWindow();
-  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+  // Direct BYOK pools — including a paid-but-governed one like Qwen — always
+  // use their own independent capacity window, checked before the `paid`
+  // branch below. Qwen is `paid: true` purely for spend-ledger accounting; it
+  // must stay on its own governed pool rather than inherit FlashX's
+  // ungoverned window.
+  if (
+    provider.requestPool === 'groq' ||
+    provider.requestPool === 'gemini' ||
+    provider.requestPool === 'qwen'
+  ) {
     return directProviderCapacityWindow(provider.requestPool, at, pacingEnabled);
   }
+  // The unrestricted paid continuity route (FlashX) has a separate dollar
+  // budget and pacing policy. Do not make it wait on the free OpenRouter
+  // request ramp: that would leave the workforce parked even while /health
+  // correctly reports paid fallback as enabled and affordable.
+  if (provider.paid) return paidProviderCapacityWindow();
   return requestCapacityWindow(at, pacingEnabled);
 }
 
@@ -796,7 +873,11 @@ function reserveProviderAttempt(
   credentialKey: string,
 ): void {
   recordTurnEconomy('requests');
-  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+  if (
+    provider.requestPool === 'groq' ||
+    provider.requestPool === 'gemini' ||
+    provider.requestPool === 'qwen'
+  ) {
     reserveDirectProviderRequest(provider.requestPool, provider.name);
   } else if (provider.paid) {
     reservePaidProviderRequest(provider.name);
@@ -809,7 +890,11 @@ function markProviderAttemptSucceeded(
   provider: ProviderSpec,
   credentialKey: string,
 ): void {
-  if (provider.requestPool === 'groq' || provider.requestPool === 'gemini') {
+  if (
+    provider.requestPool === 'groq' ||
+    provider.requestPool === 'gemini' ||
+    provider.requestPool === 'qwen'
+  ) {
     markDirectProviderRequestSucceeded(provider.requestPool, provider.name);
   } else if (provider.paid) {
     markPaidProviderRequestSucceeded(provider.name);
@@ -1912,19 +1997,19 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   // Derived from the live chain rather than restated as a literal. When these
   // were independent, flipping PROVIDER_ORDER to free-only left every agent
   // still advertising the paid model it no longer used — the same class of
-  // quiet lie as an agent stuck reporting `error` while working fine. An
-  // explicit operator model policy still wins, since that is a deliberate
-  // choice rather than a stale default.
-  const primaryName = hasCustomOpenRouterModelPolicy()
-    ? FREE_POLICY_GATEWAY_NAME
-    : PROVIDER_ORDER[0];
+  // quiet lie as an agent stuck reporting `error` while working fine.
+  //
+  // Qwen leads PROVIDER_ORDER and also leads activeProviderOrder()'s
+  // custom-policy branch (ADR-017), so it is unconditionally the route
+  // actually attempted first — including when an operator OpenRouter model
+  // policy is set. Reporting the free-policy gateway as "primary" here would
+  // repeat exactly the quiet-lie bug this function exists to avoid.
+  const primaryName = PROVIDER_ORDER[0];
   const primary = PROVIDER_BY_NAME.get(primaryName);
-  const model = hasCustomOpenRouterModelPolicy()
-    ? (getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0])
-    : (primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0]);
+  const model = primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
-    provider: primary?.name ?? 'openrouter-nex-n2-5-mini-free',
+    provider: primary?.name ?? 'qwen-dashscope-byok',
     model,
     temperature: 0.7,
     maxTokens,
