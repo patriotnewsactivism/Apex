@@ -142,8 +142,9 @@ try {
   check('BACKEND can have a different first-choice model', backendChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nex-agi/nex-n2.5-mini:free');
   check(
-    'custom FREE roster uses the free-policy gateway first, then independent BYOK continuity',
+    'custom FREE roster still tries Qwen primary first, then the free-policy gateway, then independent BYOK continuity',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
+      'qwen-dashscope-byok',
       FREE_POLICY_GATEWAY_NAME,
       'groq-gpt-oss-120b-byok',
       'gemini-3-8-flash-byok',
@@ -152,8 +153,17 @@ try {
     getProviderOrderForRole('CEO'),
   );
   check('custom FREE policy still uses free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
-  check('default LLM config reflects the role-selected primary model', getDefaultLLMConfig('CEO').model === 'nex-agi/nex-n2.5-pro:free', getDefaultLLMConfig('CEO'));
-  check('default LLM config advertises the free-policy gateway during custom routing', getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME, getDefaultLLMConfig('CEO'));
+  // Qwen genuinely is dispatched first even under a custom operator policy
+  // (ADR-017), so the default config must advertise Qwen, not the
+  // free-policy gateway or role pin — anything else would be the same
+  // "advertises a model it no longer tries first" bug getDefaultLLMConfig
+  // exists to avoid.
+  check(
+    'default LLM config advertises Qwen as primary, even during custom FREE routing',
+    getDefaultLLMConfig('CEO').provider === 'qwen-dashscope-byok' &&
+      getDefaultLLMConfig('CEO').model === 'qwen3.8-flash',
+    getDefaultLLMConfig('CEO'),
+  );
 
   console.log('\n── OpenRouter native fallback wire contract ──');
   const root = process.env.GITHUB_WORKSPACE ?? process.cwd();

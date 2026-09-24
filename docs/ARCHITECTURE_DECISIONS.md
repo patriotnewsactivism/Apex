@@ -133,7 +133,7 @@ The API/UI must expose the effective objective when complexity escalation change
 ### Consequences
 
 - OpenRouter remains the production inference gateway, but production-persisted model IDs must be zero-cost (`:free` or exactly `openrouter/free`).
-- Do not silently restore the retired direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain outside OpenRouter.
+- Do not silently restore the retired direct Gemini/Groq/Cohere/Poolside/Kilo/Mistral production provider chain outside OpenRouter. Qwen was restored on 2026-09-23 as a reviewed, governed BYOK exception under an explicit operator decision — see ADR-017. That restoration does not reopen Cohere/Poolside/Kilo/Mistral, and remains subject to the same "not silently" bar: any further change to Qwen's role in the chain needs the same review.
 - Do not restore paid DeepSeek/GPT-OSS/Grok/Bedrock as automatic fallbacks.
 - The reviewed Nex N2.5 Mini Free → … → Nemotron 3 Ultra Free chain remains the fail-safe when no valid custom policy is present.
 - OpenRouter gateway pacing, retry-after behavior, circuit breakers, token reservation, malformed-tool-call rejection, non-completion detection, and actual served-model diagnostics remain production controls.
@@ -526,6 +526,47 @@ Actual settled OpenRouter cost remains recorded. `/health`, Revenue Operations, 
 ### Verification
 
 Deterministic guards must prove that DeepSeek V4 Flash 0731 is absent from the continuity route, FlashX is the sole paid runtime exception and remains last, APEX capacity governors do not veto it, full history reaches it, and provider reliability/security/approval controls remain intact.
+
+## ADR-017 — Qwen3.8 Flash is restored as a governed, primary paid BYOK route
+
+**Status:** Accepted  
+**Date:** 2026-09-23
+
+ADR-004 retired the direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain in favor of OpenRouter, with Gemini and Groq later restored as reviewed, capped BYOK exceptions. This decision restores Qwen as a third reviewed BYOK exception, on the operator's explicit instruction after purchasing a paid Alibaba Cloud Model Studio (DashScope) token plan: the operator wants that capacity used, not left idle while free OpenRouter capacity serves instead. Cohere, Poolside, Kilo, and Mistral remain retired; this decision does not reopen them.
+
+Unlike Gemini/Groq, which sit behind the free OpenRouter chain as overflow, Qwen (`qwen-dashscope-byok`, model `qwen3.8-flash`) is tried **first**, ahead of the free chain, in every routing branch — including when an operator OpenRouter model policy is active. It falls through to the existing free/BYOK/FlashX chain when unconfigured, disabled, rate-limited, or failing.
+
+### Why Qwen is not FlashX
+
+ADR-016 established `z-ai/glm-5.3-flashx` as the sole **unrestricted** paid continuity route — last in the chain, bypassing APEX's spend/token/request/emergency/pacing governors, reserved for capacity-of-last-resort. Qwen is deliberately architected as the opposite kind of exception: **first**, not last, and fully **governed**, not unrestricted.
+
+- Qwen runs on its own independent request pool (`requestPool: 'qwen'`), capped and paced like Groq/Gemini via `APEX_QWEN_REQUEST_CAP` / `APEX_QWEN_REQUEST_RATE_PER_MIN` / `APEX_QWEN_REQUEST_PACING_BURST`.
+- APEX's workspace token reservation, emergency all-provider ceiling, and pacing governors all still apply to Qwen (it is not marked `unrestricted`).
+- Qwen is marked `paid: true` for spend-ledger accounting (a purchased token plan is real money), but that flag no longer implies "ungoverned" — `requestWindowForProvider` now checks a provider's independent request pool before its `paid` flag, so a paid-but-governed route and the one paid-and-unrestricted route (FlashX) cannot be conflated.
+- `APEX_QWEN_BYOK_ENABLED=false`, or leaving `QWEN_API_KEY` unset, removes Qwen from the chain the same way the equivalent switches do for Groq/Gemini/FlashX. This is a standing operator off switch, not a one-time migration flag.
+
+### Cost and operational impact
+
+DashScope's compatible-mode endpoint does not return a settled `usage.cost` the way OpenRouter's response does, and current per-token pricing for `qwen3.8-flash` could not be confirmed against Alibaba Cloud's own pricing page at the time of this change (secondary sources disagreed: roughly $0.14-0.15/M input, $0.42-0.47/M output as of 2026-09). `usdPerMillionPrompt`/`usdPerMillionCompletion` are left unset in the provider spec rather than guessed; spend-ledger entries for this route report $0 until the operator confirms real pricing from their Model Studio billing console and those fields are filled in. This is a known, disclosed gap, not a silent one: `/api/tokens` and the spend snapshot under-report actual DashScope dollar cost until corrected.
+
+The daily request cap / rate-per-minute defaults (`APEX_QWEN_REQUEST_CAP=5000`, `APEX_QWEN_REQUEST_RATE_PER_MIN=60`) are a conservative placeholder sized for a primary route serving the whole workforce, not a verified DashScope plan limit — confirm and adjust against the operator's actual plan.
+
+International (Singapore) is the default DashScope region (`https://dashscope-intl.aliyuncs.com/compatible-mode/v1`); a mainland-registered account's key will not authenticate there and needs `APEX_QWEN_BASE_URL` set to the Beijing endpoint instead.
+
+### Rollback
+
+Set `APEX_QWEN_BYOK_ENABLED=false` (or clear `QWEN_API_KEY`) to remove Qwen from the chain immediately with no code change; the free/BYOK/FlashX chain is unaffected and unchanged by this decision. Reverting the code change itself (removing the `qwen-dashscope-byok` provider spec) is the full rollback if the route needs to be retired again.
+
+### Consequences
+
+- `getDefaultLLMConfig` now advertises Qwen as the primary provider/model for every role, including under a custom OpenRouter model policy — matching what is genuinely attempted first. Reporting anything else would repeat the "advertises a model it no longer tries first" defect that function exists to prevent.
+- This is a routing change only; it does not affect hosting, deployment, or the Cloud Run/Railway provenance contract.
+- CI (`scripts/verify-provider-routing.ts`, `scripts/verify-model-routing-policy.ts`, `scripts/verify-request-budget.ts`) asserts Qwen's position, governance (not unrestricted), and independent request pool, alongside the pre-existing FlashX-is-sole-unrestricted-exception and free-chain-order guarantees, which are unchanged.
+- ADR-004's "do not silently restore... Qwen" consequence is superseded by this entry for Qwen specifically; Cohere/Poolside/Kilo/Mistral remain retired and untouched.
+
+### Verification
+
+Deterministic guards must prove: Qwen is first in every routing branch; Qwen is `paid: true` but never `unrestricted`; Qwen uses its own independent, capped request pool distinct from FlashX's ungoverned window; FlashX remains last and the sole unrestricted exception; the six-model free chain and Groq/Gemini BYOK are otherwise unchanged in content and relative order.
 
 ## How to change an architecture decision
 

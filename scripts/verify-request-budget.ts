@@ -62,8 +62,8 @@ async function main(): Promise<void> {
 
   // ── Independent BYOK pools ───────────────────────────────────────────────
   check(
-    'Groq and Gemini have independent durable request pools',
-    /export type DirectRequestPool = 'groq' \| 'gemini'/.test(ledger) &&
+    'Qwen, Groq and Gemini have independent durable request pools',
+    /export type DirectRequestPool = 'groq' \| 'gemini' \| 'qwen'/.test(ledger) &&
       /directProviderCapacityWindow/.test(ledger) &&
       /directProviderRequestsToday/.test(ledger),
   );
@@ -89,9 +89,18 @@ async function main(): Promise<void> {
       /protocol: 'gemini-interactions'/.test(client),
   );
   check(
+    'Qwen BYOK uses qwen3.8-flash on its own governed (non-unrestricted) request pool',
+    /name: 'qwen-dashscope-byok'/.test(client) &&
+      /model: 'qwen3\.8-flash'/.test(client) &&
+      /requestPool: 'qwen'/.test(client) &&
+      !/name: 'qwen-dashscope-byok'[\s\S]{0,600}unrestricted: true/.test(client),
+  );
+  check(
     'BYOK pools have explicit runtime activation switches',
-    /APEX_GROQ_BYOK_ENABLED/.test(client) &&
+    /APEX_QWEN_BYOK_ENABLED/.test(client) &&
+      /APEX_GROQ_BYOK_ENABLED/.test(client) &&
       /APEX_GEMINI_BYOK_ENABLED/.test(client) &&
+      /APEX_QWEN_BYOK_ENABLED/.test(settings) &&
       /APEX_GROQ_BYOK_ENABLED/.test(settings) &&
       /APEX_GEMINI_BYOK_ENABLED/.test(settings),
   );
