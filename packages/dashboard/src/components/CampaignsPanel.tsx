@@ -300,20 +300,53 @@ function CampaignCard({ campaign }: { campaign: CampaignProgress }) {
   );
 }
 
+// Name only — the server (packages/background-jobs/src/us-geo.ts) owns the
+// actual city expansion. Kept in sync manually: 3 cities per state there, so
+// the segment-count preview below multiplies by 3 and by 51 (50 states + DC).
+const US_STATES: ReadonlyArray<{ code: string; name: string }> = [
+  { code: 'AL', name: 'Alabama' }, { code: 'AK', name: 'Alaska' }, { code: 'AZ', name: 'Arizona' },
+  { code: 'AR', name: 'Arkansas' }, { code: 'CA', name: 'California' }, { code: 'CO', name: 'Colorado' },
+  { code: 'CT', name: 'Connecticut' }, { code: 'DE', name: 'Delaware' }, { code: 'DC', name: 'Washington DC' },
+  { code: 'FL', name: 'Florida' }, { code: 'GA', name: 'Georgia' }, { code: 'HI', name: 'Hawaii' },
+  { code: 'ID', name: 'Idaho' }, { code: 'IL', name: 'Illinois' }, { code: 'IN', name: 'Indiana' },
+  { code: 'IA', name: 'Iowa' }, { code: 'KS', name: 'Kansas' }, { code: 'KY', name: 'Kentucky' },
+  { code: 'LA', name: 'Louisiana' }, { code: 'ME', name: 'Maine' }, { code: 'MD', name: 'Maryland' },
+  { code: 'MA', name: 'Massachusetts' }, { code: 'MI', name: 'Michigan' }, { code: 'MN', name: 'Minnesota' },
+  { code: 'MS', name: 'Mississippi' }, { code: 'MO', name: 'Missouri' }, { code: 'MT', name: 'Montana' },
+  { code: 'NE', name: 'Nebraska' }, { code: 'NV', name: 'Nevada' }, { code: 'NH', name: 'New Hampshire' },
+  { code: 'NJ', name: 'New Jersey' }, { code: 'NM', name: 'New Mexico' }, { code: 'NY', name: 'New York' },
+  { code: 'NC', name: 'North Carolina' }, { code: 'ND', name: 'North Dakota' }, { code: 'OH', name: 'Ohio' },
+  { code: 'OK', name: 'Oklahoma' }, { code: 'OR', name: 'Oregon' }, { code: 'PA', name: 'Pennsylvania' },
+  { code: 'RI', name: 'Rhode Island' }, { code: 'SC', name: 'South Carolina' }, { code: 'SD', name: 'South Dakota' },
+  { code: 'TN', name: 'Tennessee' }, { code: 'TX', name: 'Texas' }, { code: 'UT', name: 'Utah' },
+  { code: 'VT', name: 'Vermont' }, { code: 'VA', name: 'Virginia' }, { code: 'WA', name: 'Washington' },
+  { code: 'WV', name: 'West Virginia' }, { code: 'WI', name: 'Wisconsin' }, { code: 'WY', name: 'Wyoming' },
+];
+const CITIES_PER_STATE = 3;
+
+type TargetMode = 'cities' | 'states' | 'national';
+
 function NewCampaignForm({ onDone }: { onDone: () => void }) {
   const qc = useQueryClient();
   const [name, setName] = useState('');
   const [industries, setIndustries] = useState('');
   const [cities, setCities] = useState('');
+  const [mode, setMode] = useState<TargetMode>('cities');
+  const [selectedStates, setSelectedStates] = useState<string[]>([]);
   const [target, setTarget] = useState('100');
   const [error, setError] = useState<string | null>(null);
+
+  const toggleState = (code: string) =>
+    setSelectedStates((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
 
   const create = useMutation({
     mutationFn: () =>
       api.campaigns.create({
         name: name.trim(),
         industries: industries.split(',').map((s) => s.trim()).filter(Boolean),
-        cities: cities.split(',').map((s) => s.trim()).filter(Boolean),
+        cities: mode === 'cities' ? cities.split(',').map((s) => s.trim()).filter(Boolean) : [],
+        states: mode === 'states' ? selectedStates : undefined,
+        national: mode === 'national',
         targetLeads: Number(target) || 100,
       }),
     onSuccess: () => {
@@ -326,9 +359,13 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
   });
 
   const industryCount = industries.split(',').filter((s) => s.trim()).length;
-  const cityCount = cities.split(',').filter((s) => s.trim()).length;
+  const cityCount =
+    mode === 'cities' ? cities.split(',').filter((s) => s.trim()).length
+    : mode === 'states' ? selectedStates.length * CITIES_PER_STATE
+    : US_STATES.length * CITIES_PER_STATE;
   const segments = industryCount * cityCount;
-  const ready = name.trim().length >= 3 && segments > 0;
+  const targetReady = mode === 'cities' ? cityCount > 0 : mode === 'states' ? selectedStates.length > 0 : true;
+  const ready = name.trim().length >= 3 && industryCount > 0 && targetReady && segments <= 200;
 
   return (
     <motion.div className="glass-card" style={{ padding: 18 }} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
@@ -340,12 +377,75 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
           value={industries}
           onChange={(e) => setIndustries(e.target.value)}
         />
-        <input
-          className="apex-input"
-          placeholder="Cities, comma separated — Dallas TX, Houston TX, Austin TX"
-          value={cities}
-          onChange={(e) => setCities(e.target.value)}
-        />
+
+        <div style={{ display: 'flex', gap: 6 }}>
+          {(['cities', 'states', 'national'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              className={mode === m ? 'btn-primary' : 'btn-secondary'}
+              style={{ fontSize: 11, padding: '5px 10px', flex: 1, textTransform: 'capitalize' }}
+            >
+              {m === 'cities' ? 'City list' : m === 'states' ? 'Select states' : 'National (50 states)'}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'cities' && (
+          <input
+            className="apex-input"
+            placeholder="Cities, comma separated — Dallas TX, Houston TX, Austin TX"
+            value={cities}
+            onChange={(e) => setCities(e.target.value)}
+          />
+        )}
+
+        {mode === 'states' && (
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 5,
+              maxHeight: 160,
+              overflowY: 'auto',
+              padding: 8,
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: 6,
+            }}
+          >
+            {US_STATES.map((s) => {
+              const on = selectedStates.includes(s.code);
+              return (
+                <button
+                  key={s.code}
+                  type="button"
+                  onClick={() => toggleState(s.code)}
+                  title={s.name}
+                  style={{
+                    fontSize: 10,
+                    fontFamily: 'var(--font-mono)',
+                    padding: '3px 7px',
+                    borderRadius: 4,
+                    border: `1px solid ${on ? 'var(--color-apex-accent, #5a9eae)' : 'rgba(255,255,255,0.12)'}`,
+                    background: on ? 'rgba(90,158,174,0.18)' : 'transparent',
+                    color: on ? 'var(--color-apex-text)' : 'var(--color-apex-muted)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {s.code}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {mode === 'national' && (
+          <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', padding: '4px 2px' }}>
+            All 50 states + DC — {US_STATES.length * CITIES_PER_STATE} principal cities.
+          </div>
+        )}
+
         <input
           className="apex-input"
           type="number"
@@ -356,7 +456,7 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
         {segments > 0 && (
           <div style={{ fontSize: 11, color: segments > 200 ? '#c45c66' : 'var(--color-apex-muted)' }}>
             {industryCount} industries × {cityCount} cities = {segments} territory segments
-            {segments > 200 && ' — over the 200 ceiling, split this into several campaigns'}
+            {segments > 200 && ' — over the 200 ceiling. Fewer industries, fewer states, or split into several campaigns.'}
           </div>
         )}
         {error && <div style={{ fontSize: 11, color: '#c45c66' }}>{error}</div>}

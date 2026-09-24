@@ -9,16 +9,27 @@ import { broadcast } from '../websocket.js';
 // stored. A cached percentage goes stale the moment a segment lands, and a
 // stored ETA is a number that looks authoritative while being wrong.
 
-const createSchema = z.object({
-  name: z.string().min(3).max(120),
-  industries: z.array(z.string().min(1)).min(1).max(20),
-  cities: z.array(z.string().min(1)).min(1).max(50),
-  targetLeads: z.number().int().min(1).max(5000).optional().default(100),
-  goalId: z.string().optional(),
-  projectId: z.string().optional(),
-  pushToBuildmybot: z.boolean().optional().default(false),
-  notes: z.string().max(2000).optional(),
-});
+const createSchema = z
+  .object({
+    name: z.string().min(3).max(120),
+    industries: z.array(z.string().min(1)).min(1).max(20),
+    // Explicit cities remain supported and combine with states/national
+    // below rather than being replaced by them.
+    cities: z.array(z.string().min(1)).max(50).optional().default([]),
+    // Two-letter USPS codes — each expands to that state's principal cities.
+    states: z.array(z.string().min(2).max(2)).max(51).optional(),
+    // Shorthand for every state at once.
+    national: z.boolean().optional().default(false),
+    targetLeads: z.number().int().min(1).max(5000).optional().default(100),
+    goalId: z.string().optional(),
+    projectId: z.string().optional(),
+    pushToBuildmybot: z.boolean().optional().default(false),
+    notes: z.string().max(2000).optional(),
+  })
+  .refine(
+    (v) => v.cities.length > 0 || (v.states?.length ?? 0) > 0 || v.national,
+    { message: 'Provide at least one city, one state, or national=true.', path: ['cities'] },
+  );
 
 /** Only these transitions are meaningful, and only from a live campaign.
  *  Resuming a completed campaign would restart territory it already finished. */

@@ -291,6 +291,8 @@ export const api = {
       name: string;
       industries: string[];
       cities: string[];
+      states?: string[];
+      national?: boolean;
       targetLeads?: number;
       pushToBuildmybot?: boolean;
       notes?: string;
@@ -897,6 +899,7 @@ export interface EmailSendRow {
   toEmail: string;
   toName: string | null;
   subject: string;
+  body: string | null;
   status: string;
   errorMessage: string | null;
   sentAt: string | null;

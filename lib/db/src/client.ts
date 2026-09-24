@@ -861,6 +861,11 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS email_sends_campaign_idx
     ON email_sends (campaign_id, status)
   `;
+  // Resolved HTML body, so an operator can preview/audit exactly what a
+  // campaign sends from the dashboard instead of needing a CC on every send.
+  await client`
+    ALTER TABLE email_sends ADD COLUMN IF NOT EXISTS body text
+  `;
   // The webhook correlates purely on provider_id — never on anything else the
   // webhook body claims — so this must be unique wherever it is set.
   await client`
