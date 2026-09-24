@@ -51,9 +51,9 @@ import {
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
 // ROUTING POLICY (operator decision 2026-09-23, ADR-017). Automatic routing
-// tries the operator-funded Qwen3.8 Flash BYOK route FIRST: the operator
-// holds a paid Alibaba Cloud Model Studio (DashScope) token plan and wants it
-// used rather than left idle while free capacity serves instead. Qwen is
+// tries the operator-funded Qwen3.8 Flash QwenCloud Token Plan route FIRST: the operator
+// holds a paid QwenCloud Token Plan and wants it
+// used rather than left idle while free capacity serves instead. QwenCloud is
 // governed like Groq/Gemini — its own capped/paced request pool, its own
 // activation switch — and is explicitly NOT unrestricted like FlashX: every
 // APEX workspace/emergency/pacing governor still applies to it. If Qwen is
@@ -67,7 +67,7 @@ import {
 // FlashX included.
 //
 // Authoritative automatic order:
-//   0. qwen3.8-flash             (paid BYOK, governed, primary when configured)
+//   0. qwen3.8-flash             (Token Plan, governed, primary when configured)
 //   1. nex-agi/nex-n2.5-mini:free
 //   2. nex-agi/nex-n2.5-pro:free
 //   3. nvidia/nemotron-3-super-120b-a12b:free
@@ -84,7 +84,7 @@ import {
 // routes outside that policy.
 
 export type ApexProviderName =
-  | 'qwen-dashscope-byok'
+  | 'qwen-qwencloud-token-plan'
   | 'openrouter-nex-n2-5-mini-free'
   | 'openrouter-nex-n2-5-pro-free'
   | 'openrouter-nemotron-super'
@@ -208,16 +208,16 @@ function envPositiveInt(name: string, fallback: number): number {
 
 const PROVIDERS: readonly ProviderSpec[] = [
   {
-    name: 'qwen-dashscope-byok',
+    name: 'qwen-qwencloud-token-plan',
     model: 'qwen3.8-flash',
-    // Alibaba Cloud Model Studio (DashScope) OpenAI-compatible endpoint.
-    // International (Singapore) by default, confirmed live 2026-09-23. A
-    // mainland-registered account's key will not authenticate against this
-    // host — override with APEX_QWEN_BASE_URL=
-    // https://dashscope.aliyuncs.com/compatible-mode/v1 if that's the case.
+    // QwenCloud Token Plan OpenAI-compatible endpoint. Token Plan (`sk-sp-...`)
+    // credentials are not interchangeable with pay-as-you-go (`sk-...`)
+    // credentials/endpoints. The env override remains available for controlled
+    // migrations without another code change.
     baseURL: () =>
+      process.env.QWEN_BASE_URL?.trim() ||
       process.env.APEX_QWEN_BASE_URL?.trim() ||
-      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+      'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1',
     apiKeyEnvs: ['QWEN_API_KEY', 'QWEN_API_KEY_2'],
     // Real money from a purchased token plan, so spend is recorded like any
     // paid route — but deliberately NOT `unrestricted`. This is a governed
@@ -231,7 +231,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // Primary route hit by the whole workforce on every call, not an
     // occasional fallback — keep spacing tight enough that it can't become
     // the bottleneck itself. Override with
-    // APEX_LLM_MIN_INTERVAL_MS_QWEN_DASHSCOPE_BYOK if the plan needs more room.
+    // APEX_LLM_MIN_INTERVAL_MS_QWEN_QWENCLOUD_TOKEN_PLAN if the plan needs more room.
     minIntervalMs: 250,
     toolCallingReliable: true,
     // Not yet confirmed against DashScope's compatible-mode docs that
@@ -243,7 +243,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // secondary sources disagreed on current DashScope pricing for this model
     // (roughly $0.14-0.15/M input, $0.42-0.47/M output as of 2026-09) and
     // could not be confirmed against Alibaba Cloud's own pricing page.
-    // DashScope's compatible-mode response also carries no settled
+    // QwenCloud's OpenAI-compatible response may not carry a settled
     // `usage.cost` field the way OpenRouter's does. Spend tracking for this
     // route reports $0 until verified per-token pricing is filled in here
     // from the operator's actual Model Studio billing console.
@@ -343,7 +343,7 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   // Operator-funded paid BYOK, governed but tried first — see the routing
   // policy comment above and ADR-017. Falls through when unconfigured,
   // disabled, or failing.
-  'qwen-dashscope-byok',
+  'qwen-qwencloud-token-plan',
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
@@ -359,7 +359,7 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
 function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
     ? [
-        'qwen-dashscope-byok',
+        'qwen-qwencloud-token-plan',
         FREE_POLICY_GATEWAY_NAME,
         'groq-gpt-oss-120b-byok',
         'gemini-3-8-flash-byok',
@@ -2009,7 +2009,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model = primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
-    provider: primary?.name ?? 'qwen-dashscope-byok',
+    provider: primary?.name ?? 'qwen-qwencloud-token-plan',
     model,
     temperature: 0.7,
     maxTokens,
