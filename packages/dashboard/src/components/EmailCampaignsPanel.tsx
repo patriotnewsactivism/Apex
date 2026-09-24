@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type EmailCampaignProgress } from '../lib/api.js';
-import { Play, Pause, X, ChevronDown, ChevronRight, Mail } from 'lucide-react';
+import { api, type EmailCampaignProgress, type EmailSendRow } from '../lib/api.js';
+import { Play, Pause, X, ChevronDown, ChevronRight, Mail, Eye } from 'lucide-react';
 
 // The send path (start_email_campaign / send_email_campaign_batch) has run as
 // an agent-only tool chain since 2026-09-06 — this is the first place a human
@@ -57,6 +57,63 @@ function FunnelBar({ campaign }: { campaign: EmailCampaignProgress }) {
           />
         );
       })}
+    </div>
+  );
+}
+
+/** One recipient row, expandable to the exact resolved subject/body — the
+ *  real content that was queued or sent, not the raw template. This is the
+ *  operator's window into what a campaign actually says, in place of a CC on
+ *  every send (which would put a personal address in every recipient's
+ *  headers and doesn't give a historical record for sends already delivered). */
+function SendRow({ send }: { send: EmailSendRow }) {
+  const [open, setOpen] = useState(false);
+  const hasBody = Boolean(send.body);
+
+  return (
+    <div style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+      <button
+        onClick={() => hasBody && setOpen(!open)}
+        disabled={!hasBody}
+        style={{
+          display: 'flex',
+          width: '100%',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 11,
+          padding: '4px 0',
+          background: 'none',
+          border: 'none',
+          color: 'var(--color-apex-muted)',
+          cursor: hasBody ? 'pointer' : 'default',
+          textAlign: 'left',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+          {hasBody && (open ? <ChevronDown size={11} /> : <Eye size={11} style={{ opacity: 0.6 }} />)}
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {send.toName ? `${send.toName} <${send.toEmail}>` : send.toEmail}
+          </span>
+        </span>
+        <span style={{ flex: 'none', color: STATUS_COLOR[send.status] ?? 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
+          {send.status}
+        </span>
+      </button>
+      {open && hasBody && (
+        <div style={{ margin: '2px 0 10px', padding: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6 }}>
+          <div style={{ fontSize: 11, color: 'var(--color-apex-text)', fontWeight: 600, marginBottom: 6 }}>{send.subject}</div>
+          <div
+            style={{ fontSize: 11, color: 'var(--color-apex-muted)', lineHeight: 1.5, maxHeight: 260, overflowY: 'auto' }}
+            // Content is APEX's own resolved template output, not third-party
+            // HTML — this is exactly what Resend was sent.
+            dangerouslySetInnerHTML={{ __html: send.body ?? '' }}
+          />
+          {send.errorMessage && (
+            <div style={{ fontSize: 10, color: '#c45c66', marginTop: 6 }}>{send.errorMessage}</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -158,28 +215,11 @@ function EmailCampaignCard({ campaign }: { campaign: EmailCampaignProgress }) {
               <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginBottom: 10 }}>
                 <strong style={{ color: 'var(--color-apex-text)' }}>Subject:</strong> {detail.campaign.subjectTemplate}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {detail.sends.slice(0, 25).map((send) => (
-                  <div
-                    key={send.id}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: 8,
-                      fontSize: 11,
-                      padding: '4px 0',
-                      borderBottom: '1px solid rgba(255,255,255,0.04)',
-                      color: 'var(--color-apex-muted)',
-                    }}
-                  >
-                    <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {send.toName ? `${send.toName} <${send.toEmail}>` : send.toEmail}
-                    </span>
-                    <span style={{ flex: 'none', color: STATUS_COLOR[send.status] ?? 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
-                      {send.status}
-                    </span>
-                  </div>
-                ))}
+              <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', marginBottom: 6, opacity: 0.8 }}>
+                Click a recipient to preview the exact email it received.
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {detail.sends.slice(0, 25).map((send) => <SendRow key={send.id} send={send} />)}
                 {detail.sends.length === 0 && <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>No sends recorded yet.</div>}
               </div>
             </>

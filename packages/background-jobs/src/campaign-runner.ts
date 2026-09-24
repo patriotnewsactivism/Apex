@@ -15,6 +15,7 @@ import {
   type ResearchedLeadInput,
   type ToolContext,
 } from '@workspace/core';
+import { citiesForStates, allStateCodes } from './us-geo.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
 //
@@ -148,7 +149,17 @@ export function computeCampaignProgress(
 export interface CreateCampaignInput {
   name: string;
   industries: string[];
+  /** Explicit cities, e.g. "Dallas TX". Combined with states/national below,
+   *  not replaced by them — a caller can mix a hand-picked city with whole
+   *  states in one campaign. */
   cities: string[];
+  /** Two-letter USPS codes (e.g. "TX", "CA") — expands to that state's 3
+   *  principal cities via STATE_CITIES instead of typing them out. */
+  states?: string[];
+  /** Every state's principal cities — the "all 50 states" shorthand. Combines
+   *  with cities/states rather than overriding them, though in practice it
+   *  already covers everything they would add. */
+  national?: boolean;
   targetLeads?: number;
   goalId?: string;
   projectId?: string;
@@ -175,10 +186,16 @@ export async function createCampaign(input: CreateCampaignInput): Promise<{
   const industries = [...new Set(
     input.industries.map((i) => normalizeIndustry(i)).filter((i): i is string => Boolean(i)),
   )];
-  const cities = [...new Set(input.cities.map((c) => c.trim()).filter(Boolean))];
+  const explicitCities = input.cities.map((c) => c.trim()).filter(Boolean);
+  const expandedCities = input.national
+    ? citiesForStates(allStateCodes())
+    : citiesForStates(input.states ?? []);
+  const cities = [...new Set([...explicitCities, ...expandedCities])];
 
   if (industries.length === 0) throw new Error('At least one industry is required.');
-  if (cities.length === 0) throw new Error('At least one city is required.');
+  if (cities.length === 0) {
+    throw new Error('At least one city, state, or national=true is required.');
+  }
 
   const cells: Array<{ industry: string; city: string }> = [];
   for (const industry of industries) {

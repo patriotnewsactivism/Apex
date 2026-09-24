@@ -229,6 +229,7 @@ async function createQueuedEmailSend(args: {
   toEmail: string;
   toName?: string | null;
   subject: string;
+  body?: string | null;
   createdByAgentId: string;
 }): Promise<void> {
   const { db, emailSends } = await import('@workspace/db');
@@ -239,6 +240,7 @@ async function createQueuedEmailSend(args: {
     toEmail: args.toEmail.trim().toLowerCase(),
     toName: args.toName ?? null,
     subject: args.subject,
+    body: args.body ?? null,
     status: 'queued',
     createdByAgentId: args.createdByAgentId,
     createdAt: new Date(),
@@ -3231,6 +3233,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           toEmail,
           toName: toName ?? null,
           subject,
+          body: html,
           createdByAgentId: ctx.agentId,
         });
         const result = await deliverQueuedEmailSend(id, toEmail, subject, html);
@@ -3332,6 +3335,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             toEmail: lead.contactEmail as string,
             toName: lead.companyName,
             subject: resolveMergeFields(subjectTemplate, fields),
+            // Resolved now, not at send time, so the operator can preview the
+            // exact per-recipient email in the dashboard before ever approving
+            // send_email_campaign_batch.
+            body: resolveMergeFields(bodyTemplate, fields),
             status: 'queued',
             createdByAgentId: ctx.agentId,
             createdAt: new Date(),
@@ -3409,7 +3416,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             industry: lead?.industry ?? '',
             city: lead?.city ?? '',
           };
-          const html = resolveMergeFields(campaign.bodyTemplate, fields);
+          // Rows queued by start_email_campaign already carry their resolved
+          // body; only re-resolve here for rows queued before that column
+          // existed, so replaying a pre-existing queue does not break.
+          const html = row.body ?? resolveMergeFields(campaign.bodyTemplate, fields);
           const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html);
           if (result.success) sent++;
           else if (result.status === 'suppressed') suppressed++;

@@ -31,7 +31,16 @@ export function createCampaignTools(): ToolDefinition[] {
           .describe('Industries to cover, e.g. ["HVAC", "Plumbing"]. Normalized to the canonical taxonomy automatically.'),
         cities: z
           .array(z.string())
-          .describe('Cities to cover, e.g. ["Dallas TX", "Houston TX"]. Include the state.'),
+          .optional()
+          .describe('Explicit cities, e.g. ["Dallas TX", "Houston TX"]. Include the state. Combines with states/national below rather than being replaced by them.'),
+        states: z
+          .array(z.string().length(2))
+          .optional()
+          .describe('Two-letter USPS state codes, e.g. ["TX", "CA"] — expands to each state\'s 3 principal cities. Use instead of typing out cities when the brief is state- or region-scoped.'),
+        national: z
+          .boolean()
+          .optional()
+          .describe('Cover all 50 states + DC at once (3 principal cities each = ~151 cities). The existing 200-segment ceiling still applies, so pair this with few industries or it will be rejected with a "split into several campaigns" error.'),
         targetLeads: z.number().optional().describe('How many NEW leads to find before stopping. Default 100.'),
         pushToBuildmybot: z
           .boolean()
@@ -40,11 +49,13 @@ export function createCampaignTools(): ToolDefinition[] {
         notes: z.string().optional().describe('Any extra ICP context to record with the campaign.'),
       }),
       requiresApproval: false,
-      async execute({ name, industries, cities, targetLeads, pushToBuildmybot, notes }, ctx) {
+      async execute({ name, industries, cities, states, national, targetLeads, pushToBuildmybot, notes }, ctx) {
         const created = await createCampaign({
           name,
           industries,
-          cities,
+          cities: cities ?? [],
+          states,
+          national,
           targetLeads,
           pushToBuildmybot,
           notes,

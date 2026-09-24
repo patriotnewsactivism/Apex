@@ -35,5 +35,6 @@ export {
 
 export { CampaignRunner, createCampaign, computeCampaignProgress, STALL_AFTER_MS } from './campaign-runner.js';
 export type { CampaignProgress, CreateCampaignInput } from './campaign-runner.js';
+export { US_STATES, STATE_CITIES, citiesForStates, allStateCodes } from './us-geo.js';
 export { createCampaignTools } from './campaign-tools.js';
 export { RevenueWorkforceRunner } from './revenue-workforce-runner.js';
