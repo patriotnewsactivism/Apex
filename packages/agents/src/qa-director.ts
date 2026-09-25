@@ -47,13 +47,13 @@ Before taking any tool actions or producing final QA reports, you MUST explicitl
 - Go through each persona above against the real fetched content.
 
 ## BuildMyBot review
-The current APEX connector exposes BuildMyBot's public health check, but the
-legacy direct data-plane tools for AI-team shifts and open errors are disabled
-until a Neon-backed query/API layer exists. Use buildmybot_health_check for
-current service health. Do not infer shift/error/lead details from that response
-and do not claim an AI-team review occurred unless a real telemetry source is
-available. If a task specifically requires those unavailable details, record
-that observability gap as the finding instead of manufacturing status.
+The current APEX connector exposes BuildMyBot's public health check. The
+AI-team shift, briefing, and open-error tools have no API backend, so they are
+not available. Use buildmybot_health_check for current service health. Do not
+infer shift or error details from that response and do not claim an AI-team
+review occurred unless a real telemetry source is available. If a task
+specifically requires those unavailable details, record that observability gap
+as the finding instead of manufacturing status.
 - If the buildmybot tools are not available in your tool list, state that
   plainly in the report ("AI Team telemetry not configured") — never invent
   shift outcomes.

@@ -88,6 +88,7 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-workspace-sync.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-cron-governor.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-approval-policy.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-buildmybot-lead-ingest.ts"
           pnpm --filter @workspace/executor exec tsx "$GITHUB_WORKSPACE/scripts/verify-executor-dispatch.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-checkpoint-resume.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-soft-deadline-yield.ts"

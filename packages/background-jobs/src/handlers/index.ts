@@ -36,10 +36,9 @@ export function partitionRecoveredProviderFailures<
 
 /** BuildMyBot2 operational telemetry.
  *
- * BuildMyBot is Neon/Postgres-backed and owns its database boundary. APEX uses
- * the application's public health contract instead of coupling autonomous jobs
- * to database-vendor credentials. Detailed product telemetry belongs behind a
- * BuildMyBot management API, not a direct cross-database connection.
+ * BuildMyBot persists product data in Supabase and owns that database.
+ * APEX uses the application's public health contract instead of connecting
+ * to it. Shift, briefing, and error telemetry have no API backend yet.
  */
 async function fetchBuildMyBot2Telemetry(): Promise<Record<string, unknown>> {
   const appUrl = (process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app').replace(/\/$/, '');
@@ -63,15 +62,15 @@ async function fetchBuildMyBot2Telemetry(): Promise<Record<string, unknown>> {
       service: payload?.service ?? 'buildmybot2',
       build: payload?.build ?? null,
       voice: payload?.voice ?? null,
-      backend: 'neon-postgres',
+      backend: 'buildmybot-api',
       note:
-        'Detailed AI-team/lead/error telemetry is intentionally not read directly from BuildMyBot database. Use the Neon-backed BuildMyBot management API once exposed.',
+        'Detailed AI-team/error telemetry is not read from BuildMyBot. Those tools have no API backend yet. Lead handoff uses the authenticated ingest API when BUILDMYBOT_LEAD_INGEST_TOKEN is set.',
     };
   } catch (err) {
     return {
       healthy: false,
       latencyMs: Date.now() - started,
-      backend: 'neon-postgres',
+      backend: 'buildmybot-api',
       note: `unreachable: ${err instanceof Error ? err.message : String(err)}`,
     };
   }

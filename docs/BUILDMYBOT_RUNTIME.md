@@ -9,7 +9,7 @@
 - Railway production environment ID: `6ce38db0-789b-4fe9-ad02-f068fe6866ae`
 - Public domains: `buildmybot.app` and `www.buildmybot.app`
 - Runtime: Node/Express (`server.ts`), with handlers under `api/*.ts`
-- Durable application state (as assumed by current APEX connector/source): Neon/Postgres. Verify against the BuildMyBot2 repository/live configuration before database-level work.
+- Durable application state: Supabase. APEX does not connect to that database. Lead handoff uses `POST`/`GET /api/integrations/apex/leads` on `BUILDMYBOT_API_BASE_URL` (default `https://www.buildmybot.app`) with `Authorization: Bearer $BUILDMYBOT_LEAD_INGEST_TOKEN`.
 
 Railway automatically deploys BuildMyBot2 from `main`. APEX's `buildmybot_deploy` tool exists only as an approval-gated manual Railway redeploy/recovery path; it is not required after every normal merge.
 
@@ -21,7 +21,23 @@ This is distinct from APEX itself: APEX's control-plane/autonomous workforce als
 
 ## APEX connector data-plane status
 
-APEX currently exposes BuildMyBot service-control capabilities such as health checks, workforce triggers, engineering dispatch, and approval-gated redeploy/recovery. The legacy direct data-plane tools for BuildMyBot status, briefings, errors, lead push, and recent-lead reads are intentionally filtered out in `packages/core/src/buildmybot-connector.ts` until their query layer is genuinely Neon-backed or a BuildMyBot management API exposes those operations.
+APEX exposes BuildMyBot service-control capabilities such as health checks, workforce triggers, engineering dispatch, and approval-gated redeploy/recovery.
 
-Therefore, do not treat `buildmybot_status`, `buildmybot_send_briefing`, `buildmybot_open_errors`, `buildmybot_resolve_error`, `buildmybot_push_leads`, or `buildmybot_recent_leads` as available runtime tools. Product-usage/visitor analytics are also not provided by the current APEX connector.
+Lead handoff is the authenticated ingest client:
+
+- `buildmybot_push_leads` posts APEX researched leads. `dryRun` defaults to true. A real push (`dryRun: false`) is hard-gated like other outbound tools. Each lead uses a stable `externalId` of `apex:<researched_leads.id>`. Batches larger than 200 are chunked.
+- `buildmybot_recent_leads` reads `GET /api/integrations/apex/leads`.
+- If `BUILDMYBOT_LEAD_INGEST_TOKEN` is unset, both tools return a not-configured result and do not throw.
+- `401` means the bearer token does not match BuildMyBot. `503` means ingest is disabled on the BuildMyBot side.
+
+`buildmybot_status`, `buildmybot_send_briefing`, `buildmybot_open_errors`, and `buildmybot_resolve_error` stay unregistered because those operations have no API backend. Product-usage/visitor analytics are also not provided by this connector.
+
+### Lead ingest environment
+
+```text
+BUILDMYBOT_API_BASE_URL=
+BUILDMYBOT_LEAD_INGEST_TOKEN=
+```
+
+`BUILDMYBOT_API_BASE_URL` defaults to `https://www.buildmybot.app` when empty. `BUILDMYBOT_LEAD_INGEST_TOKEN` must be the same value as `APEX_LEAD_INGEST_TOKEN` on BuildMyBot, and the BuildMyBot API must be deployed before APEX can hand leads off.
 
