@@ -7,7 +7,10 @@ import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from '
 import { randomUUID } from 'crypto';
 import { db, voiceChatSessions, voiceChatTurns } from '@workspace/db';
 import { eq } from 'drizzle-orm';
-import { tryStartGeminiLiveSession } from './gemini-live-session.js';
+import {
+  tryStartGeminiLiveSession,
+  type GeminiLiveFailoverState,
+} from './gemini-live-session.js';
 
 // ─── Live voice: direct Gemini 3.8 Live, with Deepgram fallback ──────────────
 //
@@ -157,6 +160,11 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     let currentPageNote = startPage
       ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
       : '';
+    let geminiStarted = false;
+    let pendingGeminiFailover: GeminiLiveFailoverState | null = null;
+    let activateDeepgramFallback:
+      | ((handoff?: GeminiLiveFailoverState) => void)
+      | null = null;
 
     // Direct Gemini Live is the preferred browser/admin voice path. The
     // browser begins streaming mic frames immediately, so observe and retain
@@ -189,20 +197,24 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     const requestedProvider = (process.env.APEX_LIVE_VOICE_PROVIDER || 'gemini').toLowerCase();
     if (geminiKey && requestedProvider !== 'deepgram') {
       client.on('message', captureDuringGeminiSetup);
-      const geminiStarted = await tryStartGeminiLiveSession({
+      geminiStarted = await tryStartGeminiLiveSession({
         client,
         ceo,
         apiKey: geminiKey,
         startPage,
+        onFailover: (state) => {
+          pendingGeminiFailover = state;
+          activateDeepgramFallback?.(state);
+        },
       });
       client.off('message', captureDuringGeminiSetup);
 
       if (geminiStarted) {
         console.log('🎙️  Live voice client connected via Gemini 3.8 Live');
-        return;
+      } else {
+        if (client.readyState !== WebSocket.OPEN) return;
+        console.warn('[live-voice] Gemini Live setup unavailable; falling back to Deepgram');
       }
-      if (client.readyState !== WebSocket.OPEN) return;
-      console.warn('[live-voice] Gemini Live setup unavailable; falling back to Deepgram');
     }
 
     const deepgramKey = process.env.DEEPGRAM_API_KEY;
@@ -212,11 +224,16 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     // dedicated key provisioned for live-voice specifically — prefer it, and
     // only fall back to the shared key where the dedicated one isn't set.
     const groqKey = process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY;
-    if (!deepgramKey || !groqKey) {
+    if ((!deepgramKey || !groqKey) && !geminiStarted) {
       const missing = [!deepgramKey && 'DEEPGRAM_API_KEY', !groqKey && 'GROQ_API_KEY_2 or GROQ_API_KEY'].filter(Boolean).join(' and ');
       client.send(JSON.stringify({ type: 'error', message: `${missing} not configured on this deployment.` }));
       client.close(1011, 'Not configured');
       return;
+    }
+    if ((!deepgramKey || !groqKey) && geminiStarted) {
+      console.warn(
+        '[live-voice] Gemini is active, but mid-call Deepgram failover is unavailable because fallback credentials are missing',
+      );
     }
     // Optional: when absent, speak falls back to Deepgram's bundled Aura
     // voice (still functional) rather than breaking live voice entirely over
@@ -226,23 +243,27 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
 
     console.log('🎙️  Live voice client connected');
 
-    // Durable transcript record (see schema.ts voiceChatSessions/voiceChatTurns).
-    // Fire-and-forget: never let a DB hiccup add latency to call setup or
-    // silently fail the call itself. Created before Deepgram is even
-    // contacted so a call that never connects is still visible in history,
-    // not just ones that succeeded — the same lesson already applied to
-    // call_outcomes in tool-registry.ts's make_outbound_call.
-    const voiceSessionId = randomUUID();
-    db.insert(voiceChatSessions)
-      .values({ id: voiceSessionId, startPage: startPage ?? null })
-      .catch((err) => console.error('[live-voice] failed to persist session start:', err instanceof Error ? err.message : String(err)));
+    // Deepgram persistence is lazy: when Gemini remains healthy there should
+    // not be a second empty voice-history session. A row is created only when
+    // the fallback actually activates.
+    let voiceSessionId: string | null = null;
+    const ensureDeepgramSessionRow = (): string => {
+      if (voiceSessionId) return voiceSessionId;
+      const id = randomUUID();
+      voiceSessionId = id;
+      db.insert(voiceChatSessions)
+        .values({ id, startPage: startPage ?? null })
+        .catch((err) => console.error('[live-voice] failed to persist session start:', err instanceof Error ? err.message : String(err)));
+      return id;
+    };
     const persistTurn = (role: 'user' | 'assistant', text: string) => {
       if (!text) return;
       db.insert(voiceChatTurns)
-        .values({ id: randomUUID(), sessionId: voiceSessionId, role, text })
+        .values({ id: randomUUID(), sessionId: ensureDeepgramSessionRow(), role, text })
         .catch((err) => console.error('[live-voice] failed to persist turn:', err instanceof Error ? err.message : String(err)));
     };
 
+    let deepgramActive = false;
     let agentReady = false;
     let goalCreatedThisSession: { id: string; title: string } | undefined;
     let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
@@ -296,6 +317,16 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     };
 
     const connectToDeepgram = () => {
+      if (!deepgramKey || !groqKey) {
+        const missing = [!deepgramKey && 'DEEPGRAM_API_KEY', !groqKey && 'GROQ_API_KEY_2 or GROQ_API_KEY'].filter(Boolean).join(' and ');
+        safeSendClient({
+          type: 'error',
+          message: `Gemini became unavailable and ${missing} is not configured for Deepgram failover.`,
+        });
+        client.close(1011, 'Fallback not configured');
+        return;
+      }
+
       agentReady = false;
       const dg = new WebSocket(DEEPGRAM_AGENT_URL, {
         headers: { Authorization: `Token ${deepgramKey}` },
@@ -574,10 +605,32 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
       });
     };
 
-    connectToDeepgram();
+    activateDeepgramFallback = (handoff?: GeminiLiveFailoverState) => {
+      if (deepgramActive || client.readyState !== WebSocket.OPEN) return;
+
+      if (handoff) {
+        deepgramBufferedAudio = handoff.bufferedAudio.slice(-MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES);
+        lastSpeechStartedAt = handoff.lastSpeechStartedAt;
+        firstAudioPending = handoff.lastSpeechStartedAt !== null;
+        currentPageNote = handoff.currentPageNote || currentPageNote;
+        pendingDeepgramContext = null;
+        console.warn('[live-voice] switching active Live Talk call from Gemini to Deepgram:', handoff.reason);
+        safeSendClient({ type: 'toolActivity', name: 'switching_voice_provider' });
+      }
+
+      deepgramActive = true;
+      ensureDeepgramSessionRow();
+      connectToDeepgram();
+    };
+
+    if (pendingGeminiFailover) {
+      activateDeepgramFallback(pendingGeminiFailover);
+    } else if (!geminiStarted) {
+      activateDeepgramFallback();
+    }
 
     client.on('message', (raw, isBinary) => {
-      if (isBinary) return;
+      if (!deepgramActive || isBinary) return;
       let msg: any;
       try {
         msg = JSON.parse(rawDataToBuffer(raw).toString('utf8'));
@@ -626,6 +679,7 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     });
 
     client.on('close', () => {
+      if (!deepgramActive) return;
       console.log('🎙️  Live voice client disconnected');
       intentionallyClosed = true;
       clearReconnectTimer();
@@ -633,10 +687,12 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
       if (deepgram.readyState === WebSocket.OPEN || deepgram.readyState === WebSocket.CONNECTING) {
         deepgram.close();
       }
-      db.update(voiceChatSessions)
-        .set({ endedAt: new Date() })
-        .where(eq(voiceChatSessions.id, voiceSessionId))
-        .catch((err) => console.error('[live-voice] failed to persist session end:', err instanceof Error ? err.message : String(err)));
+      if (voiceSessionId) {
+        db.update(voiceChatSessions)
+          .set({ endedAt: new Date() })
+          .where(eq(voiceChatSessions.id, voiceSessionId))
+          .catch((err) => console.error('[live-voice] failed to persist session end:', err instanceof Error ? err.message : String(err)));
+      }
     });
 
     client.on('error', (err) => {
