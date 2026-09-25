@@ -66,6 +66,7 @@ import { eq } from 'drizzle-orm';
 //   server -> client: { type: 'goalCreated', id, title }         action taken
 //   server -> client: { type: 'approvalResolved', id, action }   action taken
 //   server -> client: { type: 'toolActivity', name }             brief "doing X" ping
+//   server -> client: { type: 'latency', stage, ms }              live timing sample
 //   server -> client: { type: 'interrupted' }                    barge-in
 //   server -> client: { type: 'turnComplete' }                   close caption bubble
 //   server -> client: { type: 'error', message }                 unrecoverable — retries exhausted
@@ -214,6 +215,13 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     // message can be more useful than a generic one if every retry in the
     // budget hits the same wall (e.g. still rate-limited after 15s of retries).
     let lastFailureReason: string | undefined;
+    // Latency chain for the current spoken turn. The browser emits a
+    // speech_started marker from its local VAD fast path while the raw mic
+    // stream continues uninterrupted. Provider VAD and first returned audio
+    // are measured from that server receipt so clock domains stay consistent.
+    let lastSpeechStartedAt: number | null = null;
+    let lastUserTranscriptAt: number | null = null;
+    let firstAudioPending = false;
 
     const safeSendClient = (payload: Record<string, unknown>) => {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(payload));
@@ -252,6 +260,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         // misclassify a JSON event as audio and corrupt the stream — same
         // lesson already applied in telnyx-deepgram-agent.ts).
         if (isBinary) {
+          if (firstAudioPending && lastSpeechStartedAt !== null) {
+            safeSendClient({ type: 'latency', stage: 'first_audio', ms: Date.now() - lastSpeechStartedAt });
+            firstAudioPending = false;
+          }
           safeSendClient({ type: 'audio', data: rawDataToBuffer(raw).toString('base64') });
           return;
         }
@@ -287,7 +299,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
                     `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
                     `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
                     `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
-                    `tool — don't just say you will.${currentPageNote}` +
+                    `tool — don't just say you will. For multi-step, long-running, debugging, deployment, research, or ` +
+                    `architecture work, create_goal immediately and keep the live conversation responsive instead of ` +
+                    `trying to complete the heavy work inside this realtime turn. Acknowledge briefly, dispatch it, and ` +
+                    `stay available for another instruction while the swarm works.${currentPageNote}` +
                     `You will receive "[screen context]" updates whenever Don moves to a different Apex page. ` +
                     `Use them to understand what "this" or "that" refers to — NEVER read a screen update aloud, ` +
                     `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
@@ -328,9 +343,14 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
             break;
 
           // Barge-in: the caller started talking over the agent's own speech.
-          case 'UserStartedSpeaking':
+          case 'UserStartedSpeaking': {
+            const now = Date.now();
+            if (lastSpeechStartedAt === null) lastSpeechStartedAt = now;
+            safeSendClient({ type: 'latency', stage: 'speech_vad', ms: now - lastSpeechStartedAt });
+            firstAudioPending = true;
             safeSendClient({ type: 'interrupted' });
             break;
+          }
 
           // All audio for the agent's current turn has been sent — the client
           // uses this to close the current caption bubble (streaming transcript
@@ -347,6 +367,16 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               break;
             }
             if (text) {
+              if (role === 'user') {
+                lastUserTranscriptAt = Date.now();
+                if (lastSpeechStartedAt !== null) {
+                  safeSendClient({
+                    type: 'latency',
+                    stage: 'transcript_ready',
+                    ms: lastUserTranscriptAt - lastSpeechStartedAt,
+                  });
+                }
+              }
               safeSendClient({ type: 'transcript', role, text });
               persistTurn(role, text);
             }
@@ -356,26 +386,45 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
           case 'FunctionCallRequest': {
             const functions = Array.isArray(event.functions) ? (event.functions as DeepgramFunctionCall[]) : [];
             for (const fc of functions) {
-              safeSendClient({ type: 'toolActivity', name: fc.name });
-              let args: Record<string, unknown> = {};
-              let result: Record<string, unknown>;
-              try {
-                args = fc.arguments ? JSON.parse(fc.arguments) : {};
-                result = await executeTool({ name: fc.name, args }, ceo);
-              } catch (err) {
-                result = { error: err instanceof Error ? err.message : String(err) };
-              }
-              if (fc.name === 'create_goal' && result.goalId) {
-                goalCreatedThisSession = { id: String(result.goalId), title: String(result.title ?? args.title ?? '') };
-                safeSendClient({ type: 'goalCreated', ...goalCreatedThisSession });
-              }
-              if (
-                (fc.name === 'approve_pending_approval' || fc.name === 'reject_pending_approval' || fc.name === 'acknowledge_escalation') &&
-                !result.error
-              ) {
-                safeSendClient({ type: 'approvalResolved', id: args.id, action: fc.name });
-              }
-              safeSendDeepgram({ type: 'FunctionCallResponse', id: fc.id, name: fc.name, content: JSON.stringify(result) });
+              // Never hold the realtime websocket event handler open on tool
+              // execution. Heavy work should normally be converted to
+              // create_goal by the voice prompt above; even quick status or
+              // approval tools execute detached so mic/audio events remain
+              // responsive while the result is being produced.
+              void (async () => {
+                const dispatchedAt = Date.now();
+                safeSendClient({ type: 'toolActivity', name: fc.name });
+                if (lastSpeechStartedAt !== null) {
+                  safeSendClient({ type: 'latency', stage: 'tool_dispatch', ms: dispatchedAt - lastSpeechStartedAt });
+                }
+                if (lastUserTranscriptAt !== null) {
+                  safeSendClient({
+                    type: 'latency',
+                    stage: 'command_classification',
+                    ms: dispatchedAt - lastUserTranscriptAt,
+                  });
+                }
+                let args: Record<string, unknown> = {};
+                let result: Record<string, unknown>;
+                try {
+                  args = fc.arguments ? JSON.parse(fc.arguments) : {};
+                  result = await executeTool({ name: fc.name, args }, ceo);
+                } catch (err) {
+                  result = { error: err instanceof Error ? err.message : String(err) };
+                }
+                safeSendClient({ type: 'latency', stage: 'tool_complete', ms: Date.now() - dispatchedAt });
+                if (fc.name === 'create_goal' && result.goalId) {
+                  goalCreatedThisSession = { id: String(result.goalId), title: String(result.title ?? args.title ?? '') };
+                  safeSendClient({ type: 'goalCreated', ...goalCreatedThisSession });
+                }
+                if (
+                  (fc.name === 'approve_pending_approval' || fc.name === 'reject_pending_approval' || fc.name === 'acknowledge_escalation') &&
+                  !result.error
+                ) {
+                  safeSendClient({ type: 'approvalResolved', id: args.id, action: fc.name });
+                }
+                safeSendDeepgram({ type: 'FunctionCallResponse', id: fc.id, name: fc.name, content: JSON.stringify(result) });
+              })();
             }
             break;
           }
@@ -468,6 +517,13 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         if (deepgram.readyState === WebSocket.OPEN) {
           deepgram.send(Buffer.from(msg.data, 'base64'));
         }
+      } else if (msg.type === 'speech_started') {
+        // Local browser VAD fast-path marker. Raw microphone audio is already
+        // streaming continuously; this only establishes a same-clock baseline
+        // for provider VAD / first-audio timing and never interrupts the
+        // provider session itself.
+        lastSpeechStartedAt = Date.now();
+        firstAudioPending = true;
       } else if (msg.type === 'context' && typeof msg.text === 'string' && msg.text.length <= 300) {
         // Don navigated to a different Apex page mid-call. Injected as a
         // silent context note — the system prompt above tells the model
