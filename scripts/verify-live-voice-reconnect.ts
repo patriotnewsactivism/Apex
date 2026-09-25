@@ -34,6 +34,7 @@ async function main(): Promise<void> {
   console.log('Verifying live-voice Deepgram reconnect handling...\n');
 
   const source = read('packages/api-server/src/live-voice.ts');
+  const geminiSource = read('packages/api-server/src/gemini-live-session.ts');
 
   // ── Pure helper: run it, don't just read it ──────────────────────────────
   const mod = (await import(
@@ -142,6 +143,48 @@ async function main(): Promise<void> {
   check(
     'a mid-call screen navigation is remembered so a reconnect\'s fresh prompt reflects it, not just the call-start page',
     /currentPageNote = `\\n\\nDon's current screen: \$\{msg\.text\}`;/.test(source),
+  );
+
+
+  // ── Gemini -> Deepgram mid-call continuity ────────────────────────────────
+  check(
+    'Gemini exposes a mid-call failover callback carrying buffered mic audio and live context',
+    /onFailover\?: \(state: GeminiLiveFailoverState\) => void;/.test(geminiSource) &&
+      /bufferedAudio: bufferedAudio\.slice\(-MAX_BUFFERED_AUDIO_FRAMES\)/.test(geminiSource) &&
+      /lastSpeechStartedAt,/.test(geminiSource) &&
+      /currentPageNote,/.test(geminiSource),
+  );
+  check(
+    'a failed Gemini resume setup consumes the remaining retry budget instead of immediately ending the call',
+    /connect\(sessionHandle\)\.then\(\(ok\) => \{[\s\S]{0,180}if \(!ok\) \{[\s\S]{0,120}scheduleReconnect\('Gemini Live resume setup failed'\)/.test(geminiSource),
+  );
+  check(
+    'exhausting Gemini resume attempts hands the live browser call to the fallback instead of closing it',
+    /if \(reconnectAttempts >= RECONNECT_MAX_ATTEMPTS\) \{\s*failoverToDeepgram\(reason\);/.test(geminiSource) &&
+      /onFailover\(\{[\s\S]{0,300}bufferedAudio:/.test(geminiSource),
+  );
+  check(
+    'provider handoff flushes queued Gemini playback before Deepgram can speak',
+    /safeSendClient\(\{ type: 'interrupted' \}\);[\s\S]{0,180}if \(onFailover\)/.test(geminiSource),
+  );
+  check(
+    'live-voice wires Gemini mid-call failure into the existing Deepgram session without returning after Gemini starts',
+    /onFailover: \(state\) => \{[\s\S]{0,160}activateDeepgramFallback\?\.\(state\)/.test(source) &&
+      /if \(geminiStarted\) \{\s*console\.log\('🎙️  Live voice client connected via Gemini 3\.8 Live'\);\s*\} else \{/.test(source) &&
+      /activateDeepgramFallback = \(handoff\?: GeminiLiveFailoverState\)/.test(source),
+  );
+  check(
+    'Deepgram ignores browser mic events until fallback is actually active, preventing duplicate Gemini+Deepgram ingestion',
+    /client\.on\('message', \(raw, isBinary\) => \{\s*if \(!deepgramActive \|\| isBinary\) return;/.test(source),
+  );
+  const activationStart = source.indexOf('activateDeepgramFallback =');
+  const activationCredentialGuard = source.indexOf("if (!deepgramKey || !groqKey) {", activationStart);
+  const activationMarkActive = source.indexOf('deepgramActive = true;', activationStart);
+  check(
+    'fallback credentials are validated before deepgramActive is set, so unavailable fallback cannot clean up an uninitialized socket',
+    activationStart > -1 &&
+      activationCredentialGuard > activationStart &&
+      activationMarkActive > activationCredentialGuard,
   );
 
   if (failures > 0) {

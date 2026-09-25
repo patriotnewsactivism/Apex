@@ -36,11 +36,19 @@ interface GeminiServerContent {
   };
 }
 
+export interface GeminiLiveFailoverState {
+  bufferedAudio: string[];
+  lastSpeechStartedAt: number | null;
+  currentPageNote: string;
+  reason: string;
+}
+
 interface GeminiLiveOptions {
   client: WebSocket;
   ceo: ApexCEO;
   apiKey: string;
   startPage?: string;
+  onFailover?: (state: GeminiLiveFailoverState) => void;
 }
 
 export async function tryStartGeminiLiveSession({
@@ -48,6 +56,7 @@ export async function tryStartGeminiLiveSession({
   ceo,
   apiKey,
   startPage,
+  onFailover,
 }: GeminiLiveOptions): Promise<boolean> {
   let currentPageNote = startPage
     ? '\n\nDon\'s current screen: he is looking at the "' + startPage + '" page.'
@@ -65,6 +74,9 @@ export async function tryStartGeminiLiveSession({
   let lastUserTranscriptAt: number | null = null;
   let firstAudioPending = false;
   let bufferedAudio: string[] = [];
+  let handleClientMessage:
+    | ((raw: WebSocket.RawData, isBinary: boolean) => void)
+    | null = null;
   const cancelledToolIds = new Set<string>();
 
   const safeSendClient = (payload: Record<string, unknown>) => {
@@ -435,52 +447,113 @@ export async function tryStartGeminiLiveSession({
 
         if (intentionallyClosed || client.readyState !== WebSocket.OPEN) return;
 
-        if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-          safeSendClient({
-            type: 'error',
-            message: 'Gemini Live disconnected and could not resume after several attempts.',
-          });
-          client.close();
-          return;
-        }
-
-        const delay = Math.min(2000, RECONNECT_BASE_MS * 2 ** reconnectAttempts);
-        reconnectAttempts += 1;
-        console.warn(
-          '[gemini-live] connection dropped (' +
+        scheduleReconnect(
+          'Gemini Live connection closed with code ' +
             code +
-            '); resuming in ' +
-            delay +
-            'ms (attempt ' +
-            reconnectAttempts +
-            '/' +
-            RECONNECT_MAX_ATTEMPTS +
-            ')',
+            (reason.length ? ': ' + reason.toString().slice(0, 120) : ''),
         );
-
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          if (intentionallyClosed || client.readyState !== WebSocket.OPEN) return;
-          void connect(sessionHandle).then((ok) => {
-            if (!ok && client.readyState === WebSocket.OPEN) {
-              safeSendClient({
-                type: 'error',
-                message: 'Gemini Live could not resume the session.',
-              });
-              client.close();
-            }
-          });
-        }, delay);
       });
     });
   };
+
+  const endGeminiSessionRow = () => {
+    if (!voiceSessionId) return;
+    const endingId = voiceSessionId;
+    voiceSessionId = null;
+    db.update(voiceChatSessions)
+      .set({ endedAt: new Date() })
+      .where(eq(voiceChatSessions.id, endingId))
+      .catch((err) =>
+        console.error(
+          '[gemini-live] failed to persist session end:',
+          err instanceof Error ? err.message : String(err),
+        ),
+      );
+  };
+
+  const failoverToDeepgram = (reason: string) => {
+    if (intentionallyClosed || client.readyState !== WebSocket.OPEN) return;
+    intentionallyClosed = true;
+    upstreamReady = false;
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (handleClientMessage) {
+      client.off('message', handleClientMessage);
+    }
+
+    try {
+      if (upstream?.readyState === WebSocket.OPEN || upstream?.readyState === WebSocket.CONNECTING) {
+        upstream.close(1000, 'switching to Deepgram fallback');
+      }
+    } catch {
+      // ignore shutdown race
+    }
+
+    endGeminiSessionRow();
+    // Clear any Gemini audio already queued in the browser before Deepgram
+    // begins speaking, otherwise the two providers can overlap during handoff.
+    safeSendClient({ type: 'interrupted' });
+
+    if (onFailover) {
+      console.warn('[gemini-live] resume budget exhausted; handing live call to Deepgram:', reason);
+      onFailover({
+        bufferedAudio: bufferedAudio.slice(-MAX_BUFFERED_AUDIO_FRAMES),
+        lastSpeechStartedAt,
+        currentPageNote,
+        reason,
+      });
+      bufferedAudio = [];
+      return;
+    }
+
+    safeSendClient({
+      type: 'error',
+      message: 'Gemini Live disconnected and could not resume after several attempts.',
+    });
+    client.close();
+  };
+
+  function scheduleReconnect(reason: string): void {
+    if (intentionallyClosed || client.readyState !== WebSocket.OPEN) return;
+
+    if (reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+      failoverToDeepgram(reason);
+      return;
+    }
+
+    const delay = Math.min(2000, RECONNECT_BASE_MS * 2 ** reconnectAttempts);
+    reconnectAttempts += 1;
+    console.warn(
+      '[gemini-live] resuming in ' +
+        delay +
+        'ms (attempt ' +
+        reconnectAttempts +
+        '/' +
+        RECONNECT_MAX_ATTEMPTS +
+        '): ' +
+        reason,
+    );
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (intentionallyClosed || client.readyState !== WebSocket.OPEN) return;
+      void connect(sessionHandle).then((ok) => {
+        if (!ok) {
+          scheduleReconnect('Gemini Live resume setup failed');
+        }
+      });
+    }, delay);
+  }
 
   // Attach browser input BEFORE provider setup begins. The browser starts
   // streaming microphone frames as soon as /ws/voice-live opens, so waiting
   // until setupComplete here used to drop the first spoken command entirely.
   // While Gemini is connecting/reconnecting, audio is retained in the bounded
   // ring buffer and flushed in order as soon as the upstream session is ready.
-  const handleClientMessage = (raw: WebSocket.RawData, isBinary: boolean) => {
+  handleClientMessage = (raw: WebSocket.RawData, isBinary: boolean) => {
     if (isBinary) return;
 
     let msg: any;
@@ -554,7 +627,7 @@ export async function tryStartGeminiLiveSession({
     intentionallyClosed = true;
     // Hand browser ownership back to live-voice.ts. Its temporary setup
     // prebuffer observed the same frames and will seed the Deepgram fallback.
-    client.off('message', handleClientMessage);
+    if (handleClientMessage) client.off('message', handleClientMessage);
     return false;
   }
 
@@ -574,17 +647,7 @@ export async function tryStartGeminiLiveSession({
       // ignore shutdown race
     }
 
-    if (voiceSessionId) {
-      db.update(voiceChatSessions)
-        .set({ endedAt: new Date() })
-        .where(eq(voiceChatSessions.id, voiceSessionId))
-        .catch((err) =>
-          console.error(
-            '[gemini-live] failed to persist session end:',
-            err instanceof Error ? err.message : String(err),
-          ),
-        );
-    }
+    endGeminiSessionRow();
   });
 
   client.on('error', (err) => {
