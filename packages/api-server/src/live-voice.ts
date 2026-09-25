@@ -106,6 +106,11 @@ const KEEPALIVE_INTERVAL_MS = 5_000;
 export const RECONNECT_BASE_DELAY_MS = 500;
 export const RECONNECT_MAX_DELAY_MS = 15_000;
 export const RECONNECT_MAX_ATTEMPTS = 5;
+// Keep roughly 8-10 seconds of 16 kHz microphone frames while a provider is
+// setting up or reconnecting. Realtime voice should drop stale audio only when
+// this bounded safety window is exceeded, never merely because SettingsApplied
+// has not arrived yet.
+const MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES = 400;
 
 /**
  * Exponential backoff with full jitter (AWS's recommended formula: uniform
@@ -153,23 +158,50 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
       ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
       : '';
 
-    // Direct Gemini Live is the preferred browser/admin voice path. Keep the
-    // browser websocket open while we attempt setup; if Gemini cannot reach
-    // setupComplete (for example an account/project access denial), fall back
-    // to the proven Deepgram path below without making the operator redial.
+    // Direct Gemini Live is the preferred browser/admin voice path. The
+    // browser begins streaming mic frames immediately, so observe and retain
+    // those frames while Gemini is still negotiating setup. If Gemini fails,
+    // the captured command is handed to Deepgram rather than disappearing in
+    // the provider handoff.
+    let fallbackSeedAudio: string[] = [];
+    let fallbackSeedSpeechStartedAt: number | null = null;
+    const captureDuringGeminiSetup = (raw: WebSocket.RawData, isBinary: boolean) => {
+      if (isBinary) return;
+      let msg: any;
+      try {
+        msg = JSON.parse(rawDataToBuffer(raw).toString('utf8'));
+      } catch {
+        return;
+      }
+      if (msg.type === 'audio' && typeof msg.data === 'string') {
+        fallbackSeedAudio.push(msg.data);
+        if (fallbackSeedAudio.length > MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES) {
+          fallbackSeedAudio = fallbackSeedAudio.slice(-MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES);
+        }
+      } else if (msg.type === 'speech_started') {
+        fallbackSeedSpeechStartedAt = Date.now();
+      } else if (msg.type === 'context' && typeof msg.text === 'string' && msg.text.length <= 300) {
+        currentPageNote = `\n\nDon's current screen: ${msg.text}`;
+      }
+    };
+
     const geminiKey = process.env.GEMINI_API_KEY;
     const requestedProvider = (process.env.APEX_LIVE_VOICE_PROVIDER || 'gemini').toLowerCase();
     if (geminiKey && requestedProvider !== 'deepgram') {
+      client.on('message', captureDuringGeminiSetup);
       const geminiStarted = await tryStartGeminiLiveSession({
         client,
         ceo,
         apiKey: geminiKey,
         startPage,
       });
+      client.off('message', captureDuringGeminiSetup);
+
       if (geminiStarted) {
         console.log('🎙️  Live voice client connected via Gemini 3.8 Live');
         return;
       }
+      if (client.readyState !== WebSocket.OPEN) return;
       console.warn('[live-voice] Gemini Live setup unavailable; falling back to Deepgram');
     }
 
@@ -238,9 +270,11 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     // speech_started marker from its local VAD fast path while the raw mic
     // stream continues uninterrupted. Provider VAD and first returned audio
     // are measured from that server receipt so clock domains stay consistent.
-    let lastSpeechStartedAt: number | null = null;
+    let lastSpeechStartedAt: number | null = fallbackSeedSpeechStartedAt;
     let lastUserTranscriptAt: number | null = null;
-    let firstAudioPending = false;
+    let firstAudioPending = fallbackSeedSpeechStartedAt !== null;
+    let deepgramBufferedAudio = fallbackSeedAudio.slice(-MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES);
+    let pendingDeepgramContext: string | null = null;
 
     const safeSendClient = (payload: Record<string, unknown>) => {
       if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(payload));
@@ -349,6 +383,25 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
 
           case 'SettingsApplied':
             agentReady = true;
+
+            // Preserve speech that arrived while Deepgram was negotiating
+            // SettingsApplied (or reconnecting). The old implementation simply
+            // returned early from the browser handler and lost these frames.
+            if (deepgramBufferedAudio.length > 0) {
+              const queuedFrames = deepgramBufferedAudio;
+              deepgramBufferedAudio = [];
+              for (const data of queuedFrames) {
+                if (dg.readyState !== WebSocket.OPEN) break;
+                dg.send(Buffer.from(data, 'base64'));
+              }
+            }
+            if (pendingDeepgramContext) {
+              const contextContent = `[screen context — do not read aloud or comment] ${pendingDeepgramContext}`;
+              pendingContextEchoes.add(contextContent);
+              safeSendDeepgram({ type: 'InjectUserMessage', content: contextContent });
+              pendingDeepgramContext = null;
+            }
+
             // A fresh session (first connect or a successful reconnect) means
             // whatever caused the previous drop, if any, is over — a LATER
             // drop should get the full retry budget again, not be penalized
@@ -525,16 +578,21 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     connectToDeepgram();
 
     client.on('message', (raw, isBinary) => {
-      if (!agentReady || isBinary) return;
+      if (isBinary) return;
       let msg: any;
       try {
         msg = JSON.parse(rawDataToBuffer(raw).toString('utf8'));
       } catch {
         return;
       }
-      if (msg.type === 'audio' && msg.data) {
-        if (deepgram.readyState === WebSocket.OPEN) {
+      if (msg.type === 'audio' && typeof msg.data === 'string') {
+        if (agentReady && deepgram.readyState === WebSocket.OPEN) {
           deepgram.send(Buffer.from(msg.data, 'base64'));
+        } else {
+          deepgramBufferedAudio.push(msg.data);
+          if (deepgramBufferedAudio.length > MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES) {
+            deepgramBufferedAudio = deepgramBufferedAudio.slice(-MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES);
+          }
         }
       } else if (msg.type === 'speech_started') {
         // Local browser VAD fast-path marker. Raw microphone audio is already
@@ -553,12 +611,16 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         // currentPageNote so a reconnect's fresh Settings prompt starts
         // from where Don actually is, not just where the call began.
         currentPageNote = `\n\nDon's current screen: ${msg.text}`;
-        const contextContent = `[screen context — do not read aloud or comment] ${msg.text}`;
-        pendingContextEchoes.add(contextContent);
-        safeSendDeepgram({
-          type: 'InjectUserMessage',
-          content: contextContent,
-        });
+        if (agentReady) {
+          const contextContent = `[screen context — do not read aloud or comment] ${msg.text}`;
+          pendingContextEchoes.add(contextContent);
+          safeSendDeepgram({
+            type: 'InjectUserMessage',
+            content: contextContent,
+          });
+        } else {
+          pendingDeepgramContext = msg.text;
+        }
       } else if (msg.type === 'end') {
         client.close();
       }
