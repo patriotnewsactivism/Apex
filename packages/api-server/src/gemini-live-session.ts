@@ -493,6 +493,9 @@ export async function tryStartGeminiLiveSession({
     }
 
     endGeminiSessionRow();
+    // Clear any Gemini audio already queued in the browser before Deepgram
+    // begins speaking, otherwise the two providers can overlap during handoff.
+    safeSendClient({ type: 'interrupted' });
 
     if (onFailover) {
       console.warn('[gemini-live] resume budget exhausted; handing live call to Deepgram:', reason);
