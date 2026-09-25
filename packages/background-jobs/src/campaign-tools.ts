@@ -40,7 +40,7 @@ export function createCampaignTools(): ToolDefinition[] {
         national: z
           .boolean()
           .optional()
-          .describe('Cover all 50 states + DC at once (3 principal cities each = ~151 cities). The existing 200-segment ceiling still applies, so pair this with few industries or it will be rejected with a "split into several campaigns" error.'),
+          .describe('Cover all 50 states + DC at once (3 principal cities each = ~153 cities). National multi-industry campaigns are supported up to the 5,000-segment safety ceiling, and the runner stops early when the target lead count is reached.'),
         targetLeads: z.number().optional().describe('How many NEW leads to find before stopping. Default 100.'),
         pushToBuildmybot: z
           .boolean()
