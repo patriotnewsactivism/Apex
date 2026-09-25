@@ -51,6 +51,7 @@ import type {
   AgentConfig,
   AgentStatus,
   ApexEvent,
+  LLMClientConfig,
   LLMMessage,
   TaskInput,
   TaskResult,
@@ -291,6 +292,11 @@ const STANDING_OPERATING_RULES = `
 export abstract class BaseAgent {
   protected config: AgentConfig;
   protected llm: LLMClient;
+  // The actually-effective LLM config (role default merged with any explicit
+  // per-agent override), stored separately from config.llm because most
+  // agents don't set an override at all and config.llm is otherwise the raw,
+  // possibly-undefined value a subclass happened to pass in.
+  protected llmConfig: LLMClientConfig;
   protected memory: MemoryManager;
   protected logger: AgentLogger;
   protected taskQueue: TaskQueue;
@@ -308,11 +314,11 @@ export abstract class BaseAgent {
 
   constructor(config: AgentConfig) {
     this.config = config;
-    const llmConfig = {
+    this.llmConfig = {
       ...getDefaultLLMConfig(config.role),
       ...config.llm,
     };
-    this.llm = createLLMClient(llmConfig);
+    this.llm = createLLMClient(this.llmConfig);
     this.memory = new MemoryManager(config.id);
     this.logger = new AgentLogger(config.id, (level: LogLevel, message: string) => {
       emitApexEvent({
@@ -364,13 +370,28 @@ export abstract class BaseAgent {
         parentId: this.config.parentId ?? null,
         status: 'idle',
         systemPrompt: this.config.systemPrompt,
-        model: this.config.llm.model,
-        provider: this.config.llm.provider,
+        // this.llmConfig, not this.config.llm: the former is the merged,
+        // actually-effective config (role default + any override); the
+        // latter is the raw override alone, which most agents don't set and
+        // which was previously written here unmerged -- so the dashboard
+        // showed whatever hardcoded literal (or nothing) a subclass passed,
+        // never the real derived default an agent with no override actually
+        // dispatches through.
+        model: this.llmConfig.model,
+        provider: this.llmConfig.provider,
         createdAt: new Date(),
       }).onConflictDoUpdate({
         target: agents.id,
         set: {
           status: 'idle',
+          // Also refresh model/provider on every restart for an agent row
+          // that already existed: persistActualProvider() only corrects
+          // these after that agent's first real LLM call post-restart, so
+          // without this an agent that stays idle for a while keeps
+          // whatever was last persisted -- possibly long stale -- right
+          // through the restart this fix itself ships in.
+          model: this.llmConfig.model,
+          provider: this.llmConfig.provider,
           lastActiveAt: new Date(),
         },
       });

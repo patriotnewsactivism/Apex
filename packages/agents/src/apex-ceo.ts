@@ -1,4 +1,4 @@
-import { BaseAgent, emitApexEvent, getDefaultLLMConfig } from '@workspace/core';
+import { BaseAgent, emitApexEvent } from '@workspace/core';
 import type { AgentConfig } from '@workspace/core';
 import { db, goals } from '@workspace/db';
 import { eq } from 'drizzle-orm';
@@ -143,7 +143,9 @@ export class ApexCEO extends BaseAgent {
       role: 'CEO',
       tier: 0,
       systemPrompt: SYSTEM_PROMPT,
-      llm: getDefaultLLMConfig('CEO'),
+      // No llm override: base-agent.ts applies getDefaultLLMConfig('CEO')
+      // automatically, always live rather than a snapshot from whenever this
+      // was last written.
       tools: [
         'sendMessage',
         'readFile',
