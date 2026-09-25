@@ -103,6 +103,22 @@ export interface ChatResponse {
   goalCreated?: { id: string; title: string };
 }
 
+export interface VoiceChatTurn {
+  id: string;
+  sessionId: string;
+  role: 'user' | 'assistant';
+  text: string;
+  createdAt: string;
+}
+
+export interface VoiceChatSession {
+  id: string;
+  startPage: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  turns: VoiceChatTurn[];
+}
+
 // ─── Diagnostics ──────────────────────────────────────────────────────────────
 
 export type DiagnosticSeverity = 'critical' | 'warning' | 'ok';
@@ -220,6 +236,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ message, history, page }),
       }),
+    // Durable history of live browser voice calls (live-voice.ts) — every
+    // attempt, including ones that never connected, since the session row is
+    // written before Deepgram is even contacted.
+    voiceSessions: (limit = 20) =>
+      apiFetch<{ sessions: VoiceChatSession[] }>(`/chat/voice-sessions?limit=${limit}`).then((r) => r.sessions),
   },
 
   tasks: {
