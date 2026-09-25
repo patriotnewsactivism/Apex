@@ -121,12 +121,12 @@ check(
   catalog.every((provider) => !provider.model.includes('minimax')),
 );
 check(
-  'paid OpenRouter credentials remain isolated to the funded primary key',
-  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY'\]/.test(clientSource),
+  'paid OpenRouter credentials remain isolated to the funded key (OPENROUTER_API_KEY_4)',
+  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY_4'\]/.test(clientSource),
 );
 check(
-  'OPENROUTER_API_KEY_3 is restored to the free credential roster',
-  /'OPENROUTER_API_KEY_3'/.test(
+  'free credential roster holds exactly one key per OpenRouter account (no duplicate OPENROUTER_API_KEY_3)',
+  !/'OPENROUTER_API_KEY_3'/.test(
     clientSource.slice(
       clientSource.indexOf('OPENROUTER_FREE_KEY_ENVS'),
       clientSource.indexOf('] as const;', clientSource.indexOf('OPENROUTER_FREE_KEY_ENVS')),

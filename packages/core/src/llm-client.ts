@@ -122,15 +122,22 @@ export const FREE_POLICY_GATEWAY_NAME: ApexProviderName = 'openrouter-free-polic
  * bucket. Do not treat extra env vars as extra accounts.
  */
 export const OPENROUTER_FREE_KEY_ENVS = [
+  // Exactly one inference key per independent OpenRouter account (operator
+  // decision 2026-09-25). OPENROUTER_API_KEY_3 was a second key on the same
+  // account as OPENROUTER_FREE_API_KEY and added no :free capacity.
   'OPENROUTER_FREE_API_KEY',
   'OPENROUTER_API_KEY_2',
   'OPENROUTER_API_KEY',
-  'OPENROUTER_API_KEY_3',
   'OPENROUTER_API_KEY_4',
 ] as const;
 
-/** The funded inference key confirmed by its matching OpenRouter account usage. */
-export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY'] as const;
+/**
+ * The funded inference key. As of 2026-09-25 only the OPENROUTER_API_KEY_4
+ * account has a positive credit balance (verified via its management key);
+ * the other three accounts are overdrawn, so the previous paid key
+ * (OPENROUTER_API_KEY) failed every FlashX request with 402.
+ */
+export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_4'] as const;
 export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName =
   'openrouter-glm-5-3-flashx-paid';
 export const PAID_FALLBACK_MODEL = 'z-ai/glm-5.3-flashx';
