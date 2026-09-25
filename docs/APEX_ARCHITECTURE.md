@@ -116,7 +116,7 @@ Apex already implements essentially the full "detected, isolated, logged, retrie
 
 ## Observability
 
-Apex: `/health` (build SHA, task-queue verdict, workforce liveness, LLM capacity state), `/api/tokens` (spend), structured logs. Apex-Stream: `/health` (DB reachability only — the README itself is careful to say this doesn't prove the agent fleet is healthy), `/api/audit/verify` (recomputes the entire hash chain on demand), per-agent heartbeats. **Recommendation, not implemented in this audit**: if the Apex↔Apex-Stream integration above is built, Apex's own `/health` or a new `/api/status` should surface "last Apex-Stream event received at X" so an operator can tell the integration itself is alive, distinct from either system's own health.
+Apex: public `/health` (status and build SHA; HTTP 503 when the task queue is broken) and authenticated `GET /api/health/detail` (task-queue verdict, workforce liveness, LLM capacity, spend, workers), `/api/tokens` (spend), structured logs. Apex-Stream: `/health` (DB reachability only — the README itself is careful to say this doesn't prove the agent fleet is healthy), `/api/audit/verify` (recomputes the entire hash chain on demand), per-agent heartbeats. **Recommendation, not implemented in this audit**: if the Apex↔Apex-Stream integration above is built, Apex's own `/health` or a new `/api/status` should surface "last Apex-Stream event received at X" so an operator can tell the integration itself is alive, distinct from either system's own health.
 
 ## Deployment model
 

@@ -30,13 +30,14 @@ echo "APEX read-only preflight"
 echo "Base URL: $BASE_URL"
 
 get_public "/health"
+get_auth "/api/health/detail"
 get_auth "/api/agents"
 get_auth "/api/tokens"
 
 cat <<'EOF'
 
 Preflight complete.
-Next: compare /health build.sha with the intended source commit, then inspect
-only the routes/logs relevant to any observed failure. This script performs
-no writes and does not print the admin token.
+Next: compare /health build.sha with the intended source commit. Queue,
+capacity, spend, and worker detail are on authenticated GET /api/health/detail.
+This script performs no writes and does not print the admin token.
 EOF

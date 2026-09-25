@@ -33,7 +33,7 @@ A production release is complete only after all of these are true:
 1. the intended reviewed commit is on `main`;
 2. CI `production-checks` is green for that code state;
 3. Railway service `apex-backend` reports Success for that commit (GitHub status `APEX - apex-backend`);
-4. `https://apex.donmatthews.live/health` reports the expected `build.sha` and a healthy `taskQueue.verdict`;
+4. `https://apex.donmatthews.live/health` reports the expected `build.sha` (HTTP 200); authenticated `GET /api/health/detail` reports a healthy `taskQueue.verdict`;
 5. the changed feature is smoke-tested through its real production path.
 
 Railway Wait for CI is enabled (`checkSuites=true` on the `main` GitHub trigger). A red `production-checks` run is skipped. Treat a red CI run after a live SHA as an incident. The GitHub `Vercel` status is the dashboard static build and is not a Railway gate.
@@ -176,9 +176,9 @@ Credential environment variables:
 - `OPENROUTER_API_KEY_2`
 - `OPENROUTER_API_KEY_3` — optional independent-account credential
 - `OPENROUTER_API_KEY_4` — optional independent-account credential
-- `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so `/health` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials. The paid continuity route uses the funded `OPENROUTER_API_KEY` inference credential, never a management key.
+- `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so authenticated `GET /api/health/detail` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials. The paid continuity route uses the funded `OPENROUTER_API_KEY` inference credential, never a management key.
 
-All configured qualifying OpenRouter accounts are load-balanced by key fingerprint; `_3` and `_4` are both valid production roster slots. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Available free-request capacity scales with the number of distinct qualifying accounts actually detected by `/health`; credential count alone is not treated as account count. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; only the explicitly confirmed continuity route may spend paid credit after free execution becomes unavailable.
+All configured qualifying OpenRouter accounts are load-balanced by key fingerprint; `_3` and `_4` are both valid production roster slots. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Available free-request capacity scales with the number of distinct qualifying accounts actually detected by authenticated `GET /api/health/detail`; credential count alone is not treated as account count. Failed requests consume quota, so retries are bounded. Account 429/402 rotates to another qualifying account before abandoning the current free model; only the explicitly confirmed continuity route may spend paid credit after free execution becomes unavailable.
 
 OpenRouter requests retain provider pacing, retry-after handling, transient cooldowns, circuit breakers, context trimming, token reservations, structured tool calls, and serving-provider diagnostics.
 
@@ -226,7 +226,7 @@ The scheduled-task dedupe and provider backpressure fixes are permanent reliabil
 
 Token capacity is not the same as a spending allowance. OpenRouter account billing controls remain authoritative. If explicit APEX token caps are added, treat them as hard operational limits and reserve/pace atomically so concurrent workers cannot oversubscribe them.
 
-`GET /api/tokens` is the operational usage view. Public `/health` exposes only aggregate non-secret capacity state.
+`GET /api/tokens` and authenticated `GET /api/health/detail` are the operational usage views. Public `GET /health` returns only `{ status, build }` (sha/version and start/uptime). It still returns HTTP 503 when the task queue is provably broken. It does not include account ids, env names, balances, spend, caps, or worker ids.
 
 ## Deployment safety
 
@@ -250,7 +250,7 @@ Normal rollback uses Railway's existing service/revision history and must be fol
 
 ## Approval and security rules
 
-- All `/api/*` routes except `/api/auth/login` and `/health` remain behind `requireAdminAuth`.
+- All `/api/*` routes except `/api/auth/login` remain behind `requireAdminAuth`. Public `GET /health` is unauthenticated and minimal so Railway can healthcheck it. `GET /api/health/detail` is behind `requireAdminAuth`.
 - `APEX_ADMIN_PASSWORD` and `APEX_ADMIN_TOKEN` are deployment secrets; there is no source-code fallback.
 - Secrets are referenced by environment-variable name only in logs, reports, commits, issues, PR descriptions, and documentation. Never log or commit secret values.
 - Human approval is per tool. Do not create a global bypass.
@@ -285,7 +285,7 @@ See `SECURITY.md` for the repository-wide security contract.
 - **Approval yield**: `requestHumanApproval` never waits in-process anymore — it persists the pending approval and yields immediately via `ApprovalYieldSignal`. `POST /api/approvals/:id/approve|reject` requeues the task immediately (fast path); the durable recovery sweep in `instrumented-base-agent.ts` is the backstop. A gated approval durably waits until a human decides or `APEX_APPROVAL_AUTO_REJECT_HOURS` elapses (default 24h; 0 disables it) — auto-**reject** only, never auto-approve.
 - **Heavy-work classifier** (`work-classifier.ts`) is advisory only: it nudges agents toward the existing `run_executor_job` tool but never sets `context.runtime` itself, since that silently reassigns a task to the fixed executor identity/tool set.
 - **Shared runtime bootstrap** (`packages/api-server/src/runtime-bootstrap.ts`): both `index.ts` and `worker.ts` call this one routine for settings load, token-ledger hydration, lease recovery, workforce/scheduler creation, default job seeding, `CampaignRunner`, executor dispatch, and the durable worker heartbeat. Adding a new runtime-critical subsystem to only one entrypoint reintroduces the divergence this closed — always add it here.
-- **Durable worker heartbeat**: every runtime upserts to `worker_heartbeats` on a 15s interval; `/health`'s `workerHeartbeats` field is separate from the process-local `workforce` liveness block. A healthy HTTP listener is never proof that an autonomous worker process is alive.
+- **Durable worker heartbeat**: every runtime upserts to `worker_heartbeats` on a 15s interval; authenticated `GET /api/health/detail`'s `workerHeartbeats` field is separate from the process-local `workforce` liveness block. A healthy HTTP listener is never proof that an autonomous worker process is alive. Public `GET /health` does not include worker ids.
 - **Task economy** (`execution-budget.ts`): deterministic repetition detection (3× identical tool+args outside polling/decision exemptions) and a budget nudge, each firing at most once per task.
 - **Autonomy dashboard**: `GET /api/autonomy` reports worker health, task-queue shape, checkpoint/yield counts, executor jobs, retry backlog, approvals, throughput, goals, and duplicate-side-effect-prevention events.
 
@@ -302,7 +302,7 @@ For any real code fix or feature:
 5. Build the dashboard and verify real output.
 6. Require green CI before ordinary merge/release.
 7. Merge/push the exact reviewed SHA to `main`; Railway's Wait-for-CI gate must allow service `apex-backend` to deploy it.
-8. Confirm Railway reports Success for that commit and verify `https://apex.donmatthews.live/health` reports that SHA and a healthy queue.
+8. Confirm Railway reports Success for that commit and verify `https://apex.donmatthews.live/health` reports that SHA. Confirm a healthy queue on authenticated `GET /api/health/detail` (`taskQueue.verdict`).
 9. Smoke-test the actual changed feature against production.
 10. Record what was verified and what remains unverified.
 
@@ -340,7 +340,7 @@ Production CI currently includes:
 - soft-deadline yield guard (hard/soft timeout resolution, no silent drift between start() and executeTask());
 - heavy-work routing guard (classifier true/false positives, advisory-only wiring);
 - task-repetition guard (circular-investigation detection, budget nudge);
-- durable-worker-heartbeat guard (schema/migration, /health separation from process-local liveness);
+- durable-worker-heartbeat guard (schema/migration, authenticated health-detail separation from process-local liveness; public `/health` stays minimal);
 - autonomy-dashboard guard (every metric backed by a real query/counter);
 - call-outcome-capture guard (DST-correct appointment timezone resolution, upsert never lets end-of-call-report overwrite a disposition the mid-call function already recorded);
 - crash-recovery integration guard (create → claim → disappear → resume → exactly-one-side-effect → complete);

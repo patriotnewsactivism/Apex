@@ -193,7 +193,7 @@ async function main(): Promise<void> {
 
   // ── Observability ────────────────────────────────────────────────────────
   check(
-    '/health exposes OpenRouter, BYOK, and emergency usage',
+    'authenticated /api/health/detail exposes OpenRouter, BYOK, and emergency usage',
     /allProviderUsed: requestLedger\.allProviderRequests/.test(apiServer) &&
       /emergencyCap: requestLedger\.emergencyCap/.test(apiServer) &&
       /directProviders: requestLedger\.directProviders/.test(apiServer),

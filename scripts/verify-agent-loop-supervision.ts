@@ -240,7 +240,7 @@ export async function checkAgentLoopSupervision(): Promise<number> {
     workerRuntime.includes('bootstrap.shutdown('),
   );
   check(
-    '/health publishes real workforce liveness, not just the constructed count',
+    'authenticated health detail publishes real workforce liveness, not just the constructed count',
     server.includes('workforce: getWorkforceLiveness()'),
   );
   check(

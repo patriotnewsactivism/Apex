@@ -16,7 +16,7 @@ Google Cloud Run is a retired APEX hosting path: billing is disabled on project 
 
 Do not redirect APEX production to another platform without an explicit operator instruction. The old Cloud Run GitHub deploy workflow has been removed. `cloudbuild.apex.yaml` and the Cloud Run deployer remain only as an explicitly gated migration-back path behind `APEX_DEPLOY_ENABLED`; reactivating that path while GCP billing is disabled cannot deploy anything.
 
-A release is not complete until `https://apex.donmatthews.live/health` reports the exact expected `build.sha` and a healthy task queue.
+A release is not complete until `https://apex.donmatthews.live/health` reports the exact expected `build.sha` and authenticated `GET /api/health/detail` reports a healthy task queue.
 
 See:
 
@@ -48,7 +48,7 @@ The operator-persisted OpenRouter model roster remains free-only; Qwen sits outs
 
 FlashX also receives the full available conversation history rather than APEX's smaller free-route history trim, allowing the runtime to use its large upstream context window.
 
-Qualifying free credentials include `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and `OPENROUTER_API_KEY_4`. Multiple keys on one OpenRouter account do not create separate free quota. `/health` `providerCredits.uniqueAccounts` is the account-level check. See `docs/FREE_ONLY_MODEL_POLICY.md` for the free-roster policy and FlashX continuity exception.
+Qualifying free credentials include `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and `OPENROUTER_API_KEY_4`. Multiple keys on one OpenRouter account do not create separate free quota. Authenticated `GET /api/health/detail` `providerCredits.uniqueAccounts` is the account-level check. See `docs/FREE_ONLY_MODEL_POLICY.md` for the free-roster policy and FlashX continuity exception.
 
 ## Workforce
 
@@ -84,7 +84,7 @@ APEX can execute and ship deliverables durably even though the container filesys
 - code deliverables ship to new GitHub repos per workstream; hosted deliverables deploy through registered deploy hooks (`deploy_via_hook`);
 - a managed `work_generation` cron plans deduplicated batches of work from goals, accepted opportunities, and workstreams; `cron_governor` keeps dynamic crons within ceilings and the 15-minute floor;
 - a long task checkpoints and resumes across execution slices instead of losing progress at the 10-minute hard timeout, and a gated approval yields the execution cleanly (no live in-process wait) rather than blocking a concurrency slot while a human decides — see `docs/ARCHITECTURE_DECISIONS.md` (ADR-014);
-- both the HTTP control plane and the dedicated `start:worker` runtime share one bootstrap routine, and every runtime reports a durable heartbeat so `/health` can tell a healthy web server apart from a healthy autonomous worker;
+- both the HTTP control plane and the dedicated `start:worker` runtime share one bootstrap routine, and every runtime reports a durable heartbeat so authenticated `GET /api/health/detail` can tell a healthy web server apart from a healthy autonomous worker;
 - `GET /api/autonomy` (admin-auth) reports whether APEX is actually doing useful unattended work: worker health, checkpoint/yield activity, executor jobs, retry backlog, approvals, and throughput.
 
 See `docs/ARCHITECTURE_DECISIONS.md` (ADR-013, ADR-014) and `docs/PRODUCTION_OPERATIONS.md`.

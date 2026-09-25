@@ -62,7 +62,7 @@ At the beginning of any substantial APEX task, resolve truth in this order:
 
 1. **Current explicit user instruction.** This defines the requested objective and any current authorization.
 2. **Current repository `AGENTS.md`.** Treat it as APEX's canonical engineering/runtime instructions unless direct live evidence proves it stale.
-3. **Live runtime evidence.** `/health`, current `build.sha`, queue liveness, provider/token state, active deployment, logs, database state, and authenticated API responses outrank planning documents.
+3. **Live runtime evidence.** Public `/health` (`build.sha` and readiness), authenticated `GET /api/health/detail` (queue, capacity, workers), provider/token state, active deployment, logs, database state, and authenticated API responses outrank planning documents.
 4. **Current source code on the branch/commit actually under investigation.** Read implementation before claiming behavior.
 5. **`APEX_CHARTER.md`, `ROADMAP.md`, `CHECKLIST.md`, and planning docs.** Use for mission/history, not as proof that a feature is live.
 6. **Conversation claims or old notes.** Useful as leads only; verify before treating them as current fact.
@@ -319,7 +319,7 @@ Current expected sequence is conceptually:
 4. Build the exact clean commit with Google Cloud Build using `cloudbuild.apex.yaml` and an immutable SHA-derived image tag.
 5. Update only the existing Cloud Run service image with `gcloud run services update` so existing secrets, environment, service account, scaling, ingress, resources, and domain mapping are preserved.
 6. Wait for the new revision to become Ready.
-7. Call the public `/health` endpoint and confirm `build.sha` equals the intended commit and the task queue is healthy.
+7. Call the public `/health` endpoint and confirm `build.sha` equals the intended commit. Confirm `taskQueue.verdict` on authenticated `GET /api/health/detail`.
 8. Smoke-test the changed feature through the real production path.
 
 A successful Cloud Build is not a deployment. A Ready Cloud Run revision is not enough without public live-commit and feature verification.

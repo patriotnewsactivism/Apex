@@ -12,7 +12,7 @@ This is a convenience reference for the `apex-autopilot` skill. It is not the ca
 - Production image build: Railway builds the repository `Dockerfile` per `railway.toml`.
 - Production release: `main` is gated by GitHub Actions `production-checks` plus Railway Wait for CI; verify the exact live SHA after Railway reports success.
 - A push/merge to `main` alone does not prove a live deployment.
-- `/health` exposes the build commit (`build.sha`), uptime, task-queue liveness, and aggregate LLM-capacity state; repeated dequeue failures can make health fail.
+- Public `/health` exposes status and the build commit (`build.sha` / `build.version`). Repeated dequeue failures still make it return HTTP 503. Task-queue verdict, LLM capacity, spend, accounts, and worker ids are on authenticated `GET /api/health/detail`.
 - Database: Postgres through `DATABASE_URL` using Drizzle. A runtime DB credential is not blanket Supabase/project-management authorization.
 - Package manager: pnpm; runtime/tooling target Node.js 22; ESM/TypeScript.
 - Production inference routes through OpenRouter. Inspect `packages/core/src/llm-client.ts` rather than relying on a historical provider snapshot.
@@ -28,7 +28,7 @@ For a claimed production release, require all applicable proof:
 2. CI is green for the intended release state.
 3. GitHub Actions `production-checks` is green and Railway Wait for CI accepts the commit.
 4. Railway reports a successful deployment of `apex-backend` for the intended commit.
-5. Public `https://apex.donmatthews.live/health` returns the intended `build.sha` and healthy queue state.
+5. Public `https://apex.donmatthews.live/health` returns the intended `build.sha`. Authenticated `GET /api/health/detail` shows a healthy `taskQueue.verdict`.
 6. The changed behavior passes a live smoke test.
 
 Without steps 5-6, report **deployment not yet proven live**.

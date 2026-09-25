@@ -291,7 +291,7 @@ At minimum, production evidence must show:
 3. the durable Cloud Run execution source wakes/processes the job;
 4. resulting child tasks are durably claimed and executed;
 5. a worker replacement/restart does not lose the occurrence or duplicate a side effect;
-6. `/health` reports the expected immutable build SHA and a healthy task-queue verdict after the scenario.
+6. `/health` reports the expected immutable build SHA, and authenticated `GET /api/health/detail` reports a healthy task-queue verdict after the scenario.
 
 Operational procedure is documented in `docs/DURABLE_AUTONOMY_OPERATIONS.md`.
 
@@ -521,7 +521,7 @@ The operator model-policy UI continues to reject arbitrary paid models. FlashX i
 
 ### Observability
 
-Actual settled OpenRouter cost remains recorded. `/health`, Revenue Operations, model intelligence, token/request telemetry, and spend telemetry must distinguish “free capacity exhausted, FlashX continuing” from a genuinely parked workforce. The spend snapshot reports `enforced: false` for the legacy APEX paid budget.
+Actual settled OpenRouter cost remains recorded. Authenticated `GET /api/health/detail`, Revenue Operations, model intelligence, token/request telemetry, and spend telemetry must distinguish “free capacity exhausted, FlashX continuing” from a genuinely parked workforce. Public `GET /health` does not carry that snapshot. The spend snapshot reports `enforced: false` for the legacy APEX paid budget.
 
 ### Verification
 
@@ -577,6 +577,29 @@ Set `APEX_QWEN_BYOK_ENABLED=false` (or clear `QWEN_API_KEY`) to remove QwenCloud
 ### Verification
 
 Deterministic guards must prove: QwenCloud is first in every routing branch; QwenCloud is `paid: true` but never `unrestricted`; QwenCloud uses its own independent, capped request pool distinct from FlashX's ungoverned window; FlashX remains last and the sole unrestricted exception; the six-model free chain and Groq/Gemini BYOK are otherwise unchanged in content and relative order. Live verification against the operator's actual QwenCloud credential (plain completion and tool-calling, with and without thinking) is recorded in this ADR and the corresponding PR history rather than restated here.
+
+## ADR-018 — Public /health is a minimal readiness probe
+
+**Status:** Accepted
+**Date:** 2026-09-25
+
+Public `GET /health` is unauthenticated because Railway healthchecks that path (`railway.toml` `healthcheckPath = "/health"`) and because release verification needs the running commit without an admin token. The same response had grown into an operational dump: OpenRouter account ids, env var names, credit balances, spend, request caps, worker ids, and workforce pause state.
+
+### Decision
+
+- Public `GET /health` returns only `{ status, build: { sha, version, builtAt, startedAt, uptimeSeconds } }`.
+- Readiness is unchanged: HTTP 200 when the task queue is usable, HTTP 503 when `isTaskQueueBroken()` is true. The body `status` is `ok` or `degraded` to match. The probe is not hard-coded 200.
+- The previous operational body is `GET /api/health/detail`, mounted under `requireAdminAuth`.
+- In-process `health_check` / `get_system_status` receive that same snapshot through `configureHealthMonitorRuntimeDeps({ runtimeHealthDetail })`. They do not scrape the public probe.
+- `build.version` is the running commit SHA, the same value as `build.sha`.
+
+Account, spend, cap, and worker diagnosis stays available to an operator with `APEX_ADMIN_TOKEN`, to the dashboard's existing authenticated `/api/tokens` and `/api/spend` routes, and to agents inside the API process. It is not available to the internet.
+
+### Consequences
+
+- Railway's healthcheck path stays `/health` and still fails the deploy when the queue is provably broken.
+- Release checks that previously read `taskQueue.verdict` from the public body must use authenticated `GET /api/health/detail`. Public `/health` still proves `build.sha`.
+- No new production secret, service, or healthcheck path is required. The change takes effect when this commit is deployed.
 
 ## How to change an architecture decision
 

@@ -49,7 +49,7 @@ The orchestrator itself (`services/orchestrator`) requires a full set of AWS res
 | Test | *(no unit-test runner; see `scripts/verify-*.ts` — run individually via `tsx scripts/verify-<name>.ts`)* | `npm test` |
 | Dev (all) | `pnpm run dev` | `npm run dashboard:dev` (services run individually, each via their own `npm run dev` inside `services/<name>`) |
 | Deploy | `./scripts/deploy-from-shell.sh` (see `docs/PRODUCTION_OPERATIONS.md`) | GitHub Actions `deploy.yml`, gated by `APEX_STREAM_DEPLOY_ENABLED` (see Apex-Stream's `docs/PRODUCTION_OPERATIONS.md`) |
-| Health | `curl https://apex.donmatthews.live/health` | `curl <orchestrator-url>/health` (DB reachability only — does not prove the agent fleet is healthy) |
+| Health | `curl https://apex.donmatthews.live/health` (status + build.sha). Queue, capacity, spend, and workers: `curl -H "Authorization: Bearer $APEX_ADMIN_TOKEN" https://apex.donmatthews.live/api/health/detail` | `curl <orchestrator-url>/health` (DB reachability only — does not prove the agent fleet is healthy) |
 | Rollback | see Apex `docs/PRODUCTION_OPERATIONS.md` | see Apex-Stream `docs/PRODUCTION_OPERATIONS.md` |
 
 ## 3. Recovery mechanisms already in place

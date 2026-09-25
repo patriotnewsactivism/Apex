@@ -371,7 +371,11 @@ export const api = {
   },
 
   health: {
+    // Component report from the authenticated HealthMonitor route (/api/health).
+    // Capacity, spend, accounts, and workers are `detail` (/api/health/detail).
+    // Public GET /health is status + build only; this client does not call it.
     report: () => apiFetch<HealthReport>('/health'),
+    detail: () => apiFetch<Record<string, unknown>>('/health/detail'),
     components: () => apiFetch<ComponentHealthRow[]>('/health/components'),
     alerts: () => apiFetch<{ alerts: HealthAlert[]; summary: AlertSummary }>('/health/alerts'),
     acknowledge: (alertId: string) =>

@@ -19,10 +19,11 @@
  * ask OpenRouter which user each live key belongs to.
  *
  * GET /api/v1/key (inference key) returns creator_user_id. That id is hashed
- * before it ever touches /health — the public payload shows `oracct_<8 hex>`,
- * which is enough to tell "three keys, two accounts" without leaking the
- * OpenRouter user id. GET /api/v1/credits is probed per unique key so a single
- * exhausted account cannot paint the whole roster as empty.
+ * before it ever touches authenticated GET /api/health/detail — that payload
+ * shows `oracct_<8 hex>`, which is enough to tell "three keys, two accounts"
+ * without leaking the OpenRouter user id. Public GET /health does not include
+ * it. GET /api/v1/credits is probed per unique key so a single exhausted
+ * account cannot paint the whole roster as empty.
  *
  * Optional management keys (OPENROUTER_MGMT_KEY*) cannot run inference. When
  * present they list that account's keys so APEX can say whether the live
@@ -30,8 +31,9 @@
  * or rotate credentials; minting a key is an operator action.
  *
  * Deliberately NOT counted against the daily request budget: these are account
- * endpoints, not generations. Deliberately cached: /health is polled
- * continuously and this must not turn into its own traffic source.
+ * endpoints, not generations. Deliberately cached: authenticated health detail
+ * and health_check can be polled, and this must not turn into its own traffic
+ * source.
  */
 
 import { createHash } from 'crypto';
@@ -462,7 +464,7 @@ async function fetchCredits(): Promise<void> {
   // Promise.all preserves order, so each probe result lines up with the
   // credential it came from — which is the only place the key fingerprint and
   // the OpenRouter account id are both in hand. The fingerprint stays here and
-  // never reaches the /health payload.
+  // never reaches the authenticated health-detail payload.
   const identities = new Map<string, string>(
     inference.map((entry, index) => [entry.fingerprint, accounts[index].account]),
   );
@@ -480,10 +482,11 @@ async function fetchCredits(): Promise<void> {
 /**
  * Last known balance, refreshing in the background when stale.
  *
- * Never awaits the network: /health has to answer even when OpenRouter is the
- * thing that is down, and a health endpoint that hangs on a third party is a
- * worse outage than the one it is reporting. First call returns null, and the
- * value appears on the next poll.
+ * Never awaits the network: authenticated GET /api/health/detail has to answer
+ * even when OpenRouter is the thing that is down, and a health endpoint that
+ * hangs on a third party is a worse outage than the one it is reporting.
+ * First call returns null, and the value appears on the next poll. Public
+ * GET /health does not include this snapshot.
  */
 export function getProviderCreditSnapshot(): ProviderCreditSnapshot | null {
   const now = Date.now();
@@ -497,7 +500,7 @@ export function getProviderCreditSnapshot(): ProviderCreditSnapshot | null {
   return cached;
 }
 
-/** Warm the cache at boot so the first /health already carries a balance. */
+/** Warm the cache at boot so the first authenticated health detail already carries a balance. */
 export async function initializeProviderCredits(): Promise<ProviderCreditSnapshot | null> {
   lastAttemptAt = Date.now();
   await fetchCredits();

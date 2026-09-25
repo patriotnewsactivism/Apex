@@ -36,6 +36,7 @@ import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createHealthRouter } from './routes/health.js';
+import { sendPublicHealth } from './public-health.js';
 import { createDiagnosticsRouter } from './routes/diagnostics.js';
 import { createJobsRouter } from './routes/jobs.js';
 import { createLearningRouter } from './routes/learning.js';
@@ -196,20 +197,15 @@ async function main() {
     },
   }));
 
-  // Health check.
+  // Public health probe.
   //
-  // This used to return a flat {status:'ok'} that proved only that Express was
-  // listening. On 2026-08-19 every agent's dequeue() was throwing on 100% of
-  // calls for hours while this endpoint reported 'ok' — so a deploy "verified"
-  // against it was not verified at all. It now reports:
-  //   · build provenance (which commit is actually running, and for how long),
-  //     so "did my fix reach production?" is one curl instead of a redeploy;
-  //   · task-queue liveness, so a queue failing identically forever is visible
-  //     from outside the box.
-  // A provably broken queue returns HTTP 503, which makes the automated deploy
-  // verifier in @workspace/cicd-automation reject such a release instead of
-  // reporting a healthy deploy of a service that cannot do any work.
-  app.get('/health', async (_req, res) => {
+  // Railway healthchecks GET /health and only needs HTTP 200 when the process
+  // can serve, plus enough body to see which commit is running. On 2026-08-19
+  // a flat {status:'ok'} hid a queue that was failing every dequeue, so a
+  // provably broken queue still returns HTTP 503 here. The operational
+  // snapshot (accounts, spend, caps, workers, pause state) moved to
+  // authenticated GET /api/health/detail — the public body is status + build.
+  async function buildRuntimeHealthDetail() {
     const queue = getDequeueHealth();
     const broken = isTaskQueueBroken();
     const agentStatusCounts = [...workforce.values()].reduce<
@@ -298,7 +294,7 @@ async function main() {
     // is the thing that is down.
     const heartbeats = await getWorkerHeartbeatSummary();
     const noHealthyWorkers = heartbeats.totalWorkerCount > 0 && heartbeats.healthyWorkerCount === 0;
-    res.status(broken ? 503 : 200).json({
+    return {
       status: broken ? 'degraded' : 'ok',
       agents: workforce.size,
       agentStatusCounts,
@@ -312,9 +308,9 @@ async function main() {
             ? 'recovered — dequeue is succeeding now, but has failed before (see counters)'
             : 'ok',
       },
-      // Non-secret capacity state makes a healthy HTTP listener distinguishable
-      // from a workforce intentionally parked by quota pacing. Detailed usage
-      // and provider roster remain behind admin auth at GET /api/tokens.
+      // Capacity state for authenticated GET /api/health/detail. A healthy
+      // HTTP listener is distinguishable from a workforce parked by quota
+      // pacing. Provider roster detail also lives at GET /api/tokens.
       llmCapacity: {
         state: capacityState,
         pacingEnabled: tokenLedger.pacing.enabled,
@@ -342,16 +338,16 @@ async function main() {
       // request, emergency, and token governors do not remove FlashX from the
       // route. OpenRouter/Z.ai billing and upstream limits remain authoritative.
       llmSpend: getSpendLedgerSnapshot(),
-      // Burn rate, unauthenticated and on purpose.
+      // Request burn rate. Visible to authenticated operators at
+      // GET /api/health/detail (and /api/spend), not on the public probe.
       //
       // The provider allowance that actually constrains APEX is denominated in
       // REQUESTS (OpenRouter free tier: a fixed number of calls per account per
       // UTC day), but every cap and pause in the process was denominated in
       // tokens, so nothing anywhere reported the number that was running out.
       // That is how ~5,000 requests/day went unnoticed against a 3,000/day
-      // ceiling. Counts are not secrets; leaving this behind admin auth is what
-      // made the overrun invisible, so it sits next to llmCapacity where a
-      // plain curl finds it.
+      // ceiling. The figures stay on the admin detail route so an operator
+      // curl with APEX_ADMIN_TOKEN still sees them.
       //
       // `projected` is the figure to compare against the provider allowance;
       // it is null for the first 15 minutes of each UTC day, when too little
@@ -445,7 +441,15 @@ async function main() {
         };
       })(),
       timestamp: Date.now(),
-    });
+    };
+  }
+
+  configureHealthMonitorRuntimeDeps({
+    runtimeHealthDetail: () => buildRuntimeHealthDetail(),
+  });
+
+  app.get('/health', (_req, res) => {
+    sendPublicHealth(res, { broken: isTaskQueueBroken(), build: getBuildInfo() });
   });
 
   // Health Monitor & Alert Manager setup
@@ -505,7 +509,7 @@ async function main() {
   app.use('/api/approvals', createApprovalsRouter());
   app.use('/api/memory', createMemoryRouter());
   app.use('/api/tools', createToolsRouter());
-  app.use('/api/health', createHealthRouter(healthMonitor, alertManager));
+  app.use('/api/health', createHealthRouter(healthMonitor, alertManager, () => buildRuntimeHealthDetail()));
   app.use('/api/jobs', createJobsRouter());
   app.use('/api/learning', createLearningRouter(workforce));
   app.use('/api/suggestions', createSuggestionsRouter());

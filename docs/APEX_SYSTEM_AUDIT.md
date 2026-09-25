@@ -117,7 +117,7 @@ Apex: single long-lived bearer secret (`APEX_ADMIN_TOKEN`), constant-time compar
 
 ## 14. Existing observability
 
-Apex: structured logging conventions, a `HealthMonitor` running 8 read-only checks every 60 seconds (DB, LLM providers, memory, tool registry, task backlog, WebSocket, an external product's shift status, ARIA dispatch volume — note this "ARIA" is Apex's own name for a dispatch-volume metric, unrelated to Apex-Stream's Aria agent), a `/health` endpoint reporting build SHA + task-queue verdict + workforce liveness, and a token-spend ledger at `/api/tokens`. Apex-Stream: structured JSON logging with deny-by-default field redaction, a hash-chained append-only audit log with a `/api/audit/verify` endpoint that recomputes the whole chain on demand, and per-agent heartbeats surfaced at `/api/agents`.
+Apex: structured logging conventions, a `HealthMonitor` running 8 read-only checks every 60 seconds (DB, LLM providers, memory, tool registry, task backlog, WebSocket, an external product's shift status, ARIA dispatch volume — note this "ARIA" is Apex's own name for a dispatch-volume metric, unrelated to Apex-Stream's Aria agent), a public `/health` endpoint reporting build SHA (operational task-queue, workforce, capacity, and spend detail moved to authenticated `GET /api/health/detail` in ADR-018), and a token-spend ledger at `/api/tokens`. Apex-Stream: structured JSON logging with deny-by-default field redaction, a hash-chained append-only audit log with a `/api/audit/verify` endpoint that recomputes the whole chain on demand, and per-agent heartbeats surfaced at `/api/agents`.
 
 ## 15. Existing tests
 

@@ -110,19 +110,27 @@ Do not use `gcloud run deploy` as an ordinary APEX release fallback.
 
 ## Production verification
 
-Inspect the public health endpoint:
+Inspect the public health endpoint, then the authenticated operational snapshot:
 
 ```bash
 curl -fsS https://apex.donmatthews.live/health
+curl -fsS -H "Authorization: Bearer $APEX_ADMIN_TOKEN" \
+  https://apex.donmatthews.live/api/health/detail
 ```
+
+Public `GET /health` returns only `status` and `build` (sha/version, start, uptime)
+and HTTP 503 when the task queue is provably broken. Railway healthchecks that
+path. Account ids, env names, balances, spend, caps, and worker ids are only
+on `GET /api/health/detail`.
 
 Required release evidence includes:
 
-- HTTP success;
-- `build.sha` equals the exact release commit;
-- `taskQueue.verdict` is healthy;
+- public HTTP success;
+- public `build.sha` equals the exact release commit;
+- authenticated `taskQueue.verdict` is healthy;
 - no new repeated queue failures are accumulating;
-- LLM capacity state is understood if degraded (see below);
+- LLM capacity state is understood if degraded (see below; read it from
+  `/api/health/detail`);
 - the changed user/operator path works in a real smoke test.
 
 ### Reading `llmCapacity.state`
@@ -164,8 +172,9 @@ in tokens until 2026-09-12, so the number that was actually running out was
 counted nowhere. APEX was issuing roughly 5,000 requests/day against a
 3,000/day ceiling and nothing reported it.
 
-`/health` now carries the figure, unauthenticated, because a burn rate nobody
-can see is how that went unnoticed:
+Authenticated `GET /api/health/detail` carries the figure (also on `GET /api/spend`).
+It is not on public `GET /health`. A burn rate nobody with admin auth can see
+is how the overrun went unnoticed:
 
 | Field | Meaning |
 |---|---|
@@ -276,7 +285,7 @@ since that is what an operator can see, but they resolve to the account that
 key belongs to. When several names hold one key the strictest cap among them
 applies to the account as a whole — summing them would authorize more than the
 account actually allows, which is the failure the key-based grouping exists to
-prevent. Read the `accounts[]` labels on `/health` to see which names APEX has
+prevent. Read the `accounts[]` labels on authenticated `GET /api/health/detail` to see which names APEX has
 resolved to the same account before setting them.
 
 `scripts/verify-request-budget.ts` guards the accounting in CI.
@@ -296,7 +305,7 @@ the smaller free/BYOK history trim; provider-side context limits remain the hard
 boundary.
 
 The spend ledger still records settled provider cost and exposes burn-rate data
-through `/health`, `/api/spend`, and Revenue Operations. Its snapshot includes
+through authenticated `GET /api/health/detail`, `/api/spend`, and Revenue Operations. Its snapshot includes
 `enforced: false` so operators and UIs can distinguish telemetry targets from
 routing controls. Historical `capUsd`, `releasedUsd`, `state`, and
 `resumeAt` fields are retained for compatibility; they must not be interpreted
@@ -364,7 +373,7 @@ up. Do not paste management keys into chat.
 | `exhausted` | At or below zero on at least one account. Free routing is unaffected. Paid models cannot be selected; APEX capacity-pauses if free capacity is also gone. |
 | `unknown` | No key configured, or the lookup failed. `detail` says which |
 
-The balance is cached for 10 minutes and fetched in the background: `/health`
+The balance is cached for 10 minutes and fetched in the background: authenticated `GET /api/health/detail`
 never awaits it, because a health endpoint that hangs on a third party is a
 worse outage than the one it reports. The credits and key-identity endpoints
 are account lookups, not generations, so they consume none of the daily request

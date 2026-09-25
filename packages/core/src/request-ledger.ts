@@ -51,8 +51,9 @@ import { dirname } from 'path';
  * the direction that costs you the day.
  *
  * The fingerprint is a truncated SHA-256 of the key. It is used only as a
- * grouping identity and a database key; it is NEVER reported — `/health` and
- * every log line show the env names, which are not secrets.
+ * grouping identity and a database key; it is NEVER reported — authenticated
+ * GET /api/health/detail and logs show the env names. Public GET /health does
+ * not.
  */
 export interface RequestAccountDay {
   /** Upstream attempts started, whatever their outcome. */

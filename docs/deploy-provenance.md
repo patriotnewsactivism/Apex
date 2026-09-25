@@ -21,8 +21,8 @@ The ordinary production chain is:
 4. Railway's configured Wait-for-CI trigger builds the repository `Dockerfile`
    and deploys service `apex-backend`;
 5. confirm Railway reports Success for that same commit;
-6. verify `https://apex.donmatthews.live/health` reports the expected build SHA
-   and a healthy `taskQueue.verdict`;
+6. verify `https://apex.donmatthews.live/health` reports the expected build SHA,
+   and authenticated `GET /api/health/detail` reports a healthy `taskQueue.verdict`;
 7. smoke-test the changed production path.
 
 `railway.toml` fixes the build to the repository `Dockerfile` and the health
@@ -32,15 +32,18 @@ provided, otherwise that Railway commit SHA, otherwise `unknown`.
 
 ## What `/health` proves
 
-Important fields include:
+Public `GET /health` is the Railway healthcheck and the unauthenticated release
+probe. It returns HTTP 200 when the task queue can dequeue, and HTTP 503 when
+that queue is provably broken. The body is only:
 
-- `build.sha` — the source commit reported by the running service; on Railway
-  this falls back to `RAILWAY_GIT_COMMIT_SHA`;
+- `status` — `ok` or `degraded` (matches the HTTP status);
+- `build.sha` / `build.version` — the source commit reported by the running
+  service; on Railway this falls back to `RAILWAY_GIT_COMMIT_SHA`;
 - `build.startedAt` / `build.uptimeSeconds` — evidence that a running instance
-  actually started;
-- `taskQueue.verdict` — must remain healthy after rollout;
-- `llmCapacity.state` — operational LLM-capacity signal, separate from
-  application health.
+  actually started.
+
+`taskQueue.verdict`, `llmCapacity.state`, account identity, spend, request
+caps, and worker ids are on authenticated `GET /api/health/detail`.
 
 A health response is runtime evidence, not a substitute for the CI and Railway
 deployment records. Conversely, a successful Railway deployment is not enough
@@ -50,12 +53,14 @@ if the public health endpoint is serving a different SHA.
 
 ```bash
 curl -s https://apex.donmatthews.live/health | jq
+curl -s -H "Authorization: Bearer $APEX_ADMIN_TOKEN" \
+  https://apex.donmatthews.live/api/health/detail | jq
 ```
 
 Record the reviewed SHA, the `production-checks` result, the Railway
-`apex-backend` deployment result, the live health SHA/task-queue verdict, and
-the production smoke test. Never invent or infer a missing service ID, token,
-secret, or deployment result.
+`apex-backend` deployment result, the live health SHA, the authenticated
+task-queue verdict, and the production smoke test. Never invent or infer a
+missing service ID, token, secret, or deployment result.
 
 ## Retired Cloud Run migration-back path
 

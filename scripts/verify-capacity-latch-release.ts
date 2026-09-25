@@ -155,7 +155,7 @@ async function main(): Promise<void> {
       /return true;[\s\S]{0,80}\}\s*return false;/.test(clientSrc),
   );
   check(
-    '/health distinguishes a parked workforce from an idle one',
+    'authenticated health detail distinguishes a parked workforce from an idle one',
     apiSrc.includes('workforceParkedUntil') &&
       apiSrc.includes('capacityPauseRemainingMs()'),
   );

@@ -21,7 +21,8 @@ Write-Host "APEX read-only preflight"
 Write-Host "Base URL: $BaseUrl"
 
 Get-ApexPublic "/health"
+Get-ApexAuth "/api/health/detail"
 Get-ApexAuth "/api/agents"
 Get-ApexAuth "/api/tokens"
 
-Write-Host "`nPreflight complete. Compare /health build.sha with the intended source commit before diagnosing code vs deployment drift."
+Write-Host "`nPreflight complete. Compare /health build.sha with the intended source commit. Queue, capacity, spend, and worker detail are on authenticated GET /api/health/detail."
