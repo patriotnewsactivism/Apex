@@ -177,10 +177,14 @@ async function main(): Promise<void> {
     'Deepgram ignores browser mic events until fallback is actually active, preventing duplicate Gemini+Deepgram ingestion',
     /client\.on\('message', \(raw, isBinary\) => \{\s*if \(!deepgramActive \|\| isBinary\) return;/.test(source),
   );
+  const activationStart = source.indexOf('activateDeepgramFallback =');
+  const activationCredentialGuard = source.indexOf("if (!deepgramKey || !groqKey) {", activationStart);
+  const activationMarkActive = source.indexOf('deepgramActive = true;', activationStart);
   check(
     'fallback credentials are validated before deepgramActive is set, so unavailable fallback cannot clean up an uninitialized socket',
-    source.indexOf("if (!deepgramKey || !groqKey) {", source.indexOf('activateDeepgramFallback =')) <
-      source.indexOf('deepgramActive = true;', source.indexOf('activateDeepgramFallback =')),
+    activationStart > -1 &&
+      activationCredentialGuard > activationStart &&
+      activationMarkActive > activationCredentialGuard,
   );
 
   if (failures > 0) {
