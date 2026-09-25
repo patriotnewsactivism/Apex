@@ -998,6 +998,8 @@ export function ChatPanel({
                   {[
                     ['VAD', liveLatency.speech_vad],
                     ['stop', liveLatency.barge_in_playback_stop],
+                    ['STT', liveLatency.transcript_ready],
+                    ['classify', liveLatency.command_classification],
                     ['tool', liveLatency.tool_dispatch],
                     ['tool done', liveLatency.tool_complete],
                     ['audio', liveLatency.first_audio],
