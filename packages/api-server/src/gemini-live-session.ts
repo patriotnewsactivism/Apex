@@ -458,13 +458,10 @@ export async function tryStartGeminiLiveSession({
   const initialConnected = await connect();
   if (!initialConnected) {
     intentionallyClosed = true;
-    if (upstream?.readyState === WebSocket.OPEN || upstream?.readyState === WebSocket.CONNECTING) {
-      try {
-        upstream.close();
-      } catch {
-        // ignore
-      }
-    }
+    // connect() already closes the initial socket on setup timeout, and the
+    // close/error path has already fired for transport/provider rejection.
+    // Nothing else owns the browser socket yet, so return cleanly and let
+    // live-voice.ts activate its Deepgram fallback on this same call.
     return false;
   }
 
