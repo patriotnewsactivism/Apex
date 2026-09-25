@@ -51,7 +51,6 @@ export const OPENROUTER_CREDIT_KEY_ENVS = [
   'OPENROUTER_FREE_API_KEY',
   'OPENROUTER_API_KEY_2',
   'OPENROUTER_API_KEY',
-  'OPENROUTER_API_KEY_3',
   'OPENROUTER_API_KEY_4',
 ] as const;
 
@@ -87,6 +86,12 @@ export interface ProviderManagementSnapshot {
   listedKeys: number;
   /** True when a live inference key's sha256 appears in this account's list. */
   liveInferenceKeyMatched: boolean;
+  /** Account balance from GET /credits. Inference keys now get HTTP 403 on
+   * that endpoint, so the management key is the only reliable source. */
+  account: string | null;
+  remaining: number | null;
+  totalCredits: number | null;
+  totalUsage: number | null;
   detail: string | null;
 }
 
@@ -274,24 +279,49 @@ function listedKeyHashes(body: unknown): string[] {
 
 async function probeManagementKey(
   entry: { env: string; key: string },
-  liveKeyHashes: Set<string>,
+  liveKeyAccounts: ReadonlyMap<string, string>,
 ): Promise<ProviderManagementSnapshot> {
+  const empty = { account: null, remaining: null, totalCredits: null, totalUsage: null };
   try {
-    const result = await fetchJson(KEYS_URL, entry.key);
+    const [result, creditsRes] = await Promise.all([
+      fetchJson(KEYS_URL, entry.key),
+      fetchJson(CREDITS_URL, entry.key).catch(() => null),
+    ]);
+    const credits = creditsRes?.ok
+      ? ((creditsRes.body as { data?: OpenRouterCredits } | null)?.data ?? null)
+      : null;
+    const totalCredits = credits && Number.isFinite(Number(credits.total_credits))
+      ? Number(credits.total_credits)
+      : null;
+    const totalUsage = credits && Number.isFinite(Number(credits.total_usage))
+      ? Number(credits.total_usage)
+      : null;
+    const remaining = totalCredits !== null && totalUsage !== null
+      ? Math.round((totalCredits - totalUsage) * 100) / 100
+      : null;
     if (!result.ok) {
       return {
         env: entry.env,
         listedKeys: 0,
         liveInferenceKeyMatched: false,
+        ...empty,
+        remaining,
+        totalCredits,
+        totalUsage,
         detail: `keys HTTP ${result.status} — management keys cannot infer; this endpoint lists this account's inference keys`,
       };
     }
     const hashes = listedKeyHashes(result.body);
-    const matched = hashes.some((hash) => liveKeyHashes.has(hash));
+    const matchedHash = hashes.find((hash) => liveKeyAccounts.has(hash));
+    const matched = matchedHash !== undefined;
     return {
       env: entry.env,
       listedKeys: hashes.length,
       liveInferenceKeyMatched: matched,
+      account: matched ? (liveKeyAccounts.get(matchedHash) ?? null) : null,
+      remaining,
+      totalCredits,
+      totalUsage,
       detail: matched
         ? null
         : hashes.length === 0
@@ -303,9 +333,36 @@ async function probeManagementKey(
       env: entry.env,
       listedKeys: 0,
       liveInferenceKeyMatched: false,
+      ...empty,
       detail: error instanceof Error ? error.message : 'management key listing failed',
     };
   }
+}
+
+/** Fill balances the inference-key probe could not read (HTTP 403) from the
+ * matching management key's /credits answer. */
+function backfillBalances(
+  accounts: ProviderAccountSnapshot[],
+  management: ProviderManagementSnapshot[],
+): ProviderAccountSnapshot[] {
+  return accounts.map((account) => {
+    if (account.remaining !== null) return account;
+    const mgmt = management.find(
+      (row) => row.account === account.account && row.remaining !== null,
+    );
+    if (!mgmt) return account;
+    const status = creditStatus(mgmt.remaining);
+    return {
+      ...account,
+      remaining: mgmt.remaining,
+      totalCredits: mgmt.totalCredits,
+      totalUsage: mgmt.totalUsage,
+      status,
+      detail: status === 'exhausted'
+        ? `paid credits exhausted (via ${mgmt.env}) — :free routing is unaffected`
+        : `balance via ${mgmt.env}`,
+    };
+  });
 }
 
 function summarize(
@@ -410,12 +467,14 @@ async function fetchCredits(): Promise<void> {
     inference.map((entry, index) => [entry.fingerprint, accounts[index].account]),
   );
 
-  const liveHashes = new Set(inference.map((entry) => keySha256(entry.key)));
+  const liveKeyAccounts = new Map<string, string>(
+    inference.map((entry, index) => [keySha256(entry.key), accounts[index].account]),
+  );
   const management = await Promise.all(
-    configuredManagementCredentials().map((entry) => probeManagementKey(entry, liveHashes)),
+    configuredManagementCredentials().map((entry) => probeManagementKey(entry, liveKeyAccounts)),
   );
 
-  cached = summarize(accounts, management, identities);
+  cached = summarize(backfillBalances(accounts, management), management, identities);
 }
 
 /**
