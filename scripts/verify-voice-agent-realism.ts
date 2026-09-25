@@ -167,6 +167,38 @@ function main(): void {
       /falling back to Deepgram/.test(liveVoiceSource),
   );
 
+
+  check(
+    'Gemini browser input listener is attached before the initial provider connection so startup speech is buffered',
+    /client\.on\('message', handleClientMessage\)[\s\S]{0,180}const initialConnected = await connect\(\)/.test(geminiLiveSource),
+  );
+  check(
+    'Gemini startup snapshot has a hard latency budget instead of blocking provider connect on Postgres',
+    /LIVE_SNAPSHOT_BUDGET_MS\s*=\s*300/.test(geminiLiveSource) &&
+      /Promise\.race\(\[[\s\S]{0,500}buildLiveSnapshot\(\)/.test(geminiLiveSource),
+  );
+  check(
+    'Gemini keeps an extended bounded reconnect/startup microphone buffer',
+    /MAX_BUFFERED_AUDIO_FRAMES\s*=\s*400/.test(geminiLiveSource),
+  );
+  check(
+    'Deepgram fallback preserves audio during failed Gemini setup and while SettingsApplied/reconnect is pending',
+    /captureDuringGeminiSetup/.test(liveVoiceSource) &&
+      /fallbackSeedAudio/.test(liveVoiceSource) &&
+      /deepgramBufferedAudio/.test(liveVoiceSource) &&
+      /MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES\s*=\s*400/.test(liveVoiceSource) &&
+      !/if \(!agentReady \|\| isBinary\) return;/.test(liveVoiceSource),
+  );
+
+  const browserVoiceSource = fs.readFileSync(path.join(root, 'packages/dashboard/src/hooks/useLiveVoiceCall.ts'), 'utf8');
+  check(
+    'browser drops stale in-flight agent audio during the local barge-in/provider-interruption gap',
+    /suppressAgentAudioRef/.test(browserVoiceSource) &&
+      /if \(suppressAgentAudioRef\.current\) return;/.test(browserVoiceSource) &&
+      /}, 700\);/.test(browserVoiceSource) &&
+      /}, 150\);/.test(browserVoiceSource),
+  );
+
   // ── telnyx-deepgram-agent.ts: inbound BuildMyBot calls ────────────────────
   const telnyxAgentSource = fs.readFileSync(path.join(root, 'packages/api-server/src/telnyx-deepgram-agent.ts'), 'utf8');
   checkSpeakBlock('telnyx-deepgram-agent.ts', telnyxAgentSource);

@@ -11,7 +11,11 @@ const GEMINI_LIVE_MODEL = 'gemini-3.8-live';
 const INITIAL_SETUP_TIMEOUT_MS = 5000;
 const RECONNECT_MAX_ATTEMPTS = 3;
 const RECONNECT_BASE_MS = 250;
-const MAX_BUFFERED_AUDIO_FRAMES = 100;
+// ~8.5 seconds at the browser's ~21 ms/1024-sample capture cadence. This is
+// intentionally large enough to preserve a normal spoken command across a
+// provider reconnect without allowing an unbounded per-call queue.
+const MAX_BUFFERED_AUDIO_FRAMES = 400;
+const LIVE_SNAPSHOT_BUDGET_MS = 300;
 
 interface GeminiFunctionCall {
   id: string;
@@ -95,7 +99,19 @@ export async function tryStartGeminiLiveSession({
   const buildSystemPrompt = async (): Promise<string> => {
     let snapshot = '';
     try {
-      snapshot = await buildLiveSnapshot();
+      // Live Talk startup must not wait indefinitely on Postgres. The provider
+      // connection is the latency-critical path; if the status snapshot is
+      // slow, start the call with a short placeholder and let tools fetch
+      // current state on demand.
+      snapshot = await Promise.race([
+        buildLiveSnapshot(),
+        new Promise<string>((resolve) =>
+          setTimeout(
+            () => resolve('Live status snapshot is still loading; use the status tools for current state.'),
+            LIVE_SNAPSHOT_BUDGET_MS,
+          ),
+        ),
+      ]);
     } catch (err) {
       console.error('[gemini-live] buildLiveSnapshot failed:', err);
     }
@@ -459,17 +475,12 @@ export async function tryStartGeminiLiveSession({
     });
   };
 
-  const initialConnected = await connect();
-  if (!initialConnected) {
-    intentionallyClosed = true;
-    // connect() already closes the initial socket on setup timeout, and the
-    // close/error path has already fired for transport/provider rejection.
-    // Nothing else owns the browser socket yet, so return cleanly and let
-    // live-voice.ts activate its Deepgram fallback on this same call.
-    return false;
-  }
-
-  client.on('message', (raw, isBinary) => {
+  // Attach browser input BEFORE provider setup begins. The browser starts
+  // streaming microphone frames as soon as /ws/voice-live opens, so waiting
+  // until setupComplete here used to drop the first spoken command entirely.
+  // While Gemini is connecting/reconnecting, audio is retained in the bounded
+  // ring buffer and flushed in order as soon as the upstream session is ready.
+  const handleClientMessage = (raw: WebSocket.RawData, isBinary: boolean) => {
     if (isBinary) return;
 
     let msg: any;
@@ -534,7 +545,18 @@ export async function tryStartGeminiLiveSession({
       sendGemini({ realtimeInput: { audioStreamEnd: true } });
       client.close();
     }
-  });
+  };
+
+  client.on('message', handleClientMessage);
+
+  const initialConnected = await connect();
+  if (!initialConnected) {
+    intentionallyClosed = true;
+    // Hand browser ownership back to live-voice.ts. Its temporary setup
+    // prebuffer observed the same frames and will seed the Deepgram fallback.
+    client.off('message', handleClientMessage);
+    return false;
+  }
 
   client.on('close', () => {
     intentionallyClosed = true;

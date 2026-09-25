@@ -118,6 +118,12 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   const wasPlayingRef = useRef(false);
   const localSpeechFramesRef = useRef(0);
   const localSpeechActiveRef = useRef(false);
+  // When local VAD detects a barge-in, provider interruption confirmation is
+  // still one network round-trip away. Drop stale agent packets during that
+  // short window so an interrupted sentence cannot refill the playback queue
+  // immediately after stopPlayback().
+  const suppressAgentAudioRef = useRef(false);
+  const suppressAgentAudioTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const LOCAL_BARGE_RMS = 0.035;
   const LOCAL_BARGE_FRAMES = 2;
   const cbRef = useRef(callbacks);
@@ -131,6 +137,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   }, []);
 
   const playChunk = useCallback((b64: string) => {
+    if (suppressAgentAudioRef.current) return;
     // The playback context is created inside the user gesture in start(); if it
     // is missing we have nothing to play into (and creating one here would be
     // born suspended on iOS anyway).
@@ -166,6 +173,11 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     micStreamRef.current = null;
     stopPlayback();
+    if (suppressAgentAudioTimerRef.current) {
+      clearTimeout(suppressAgentAudioTimerRef.current);
+      suppressAgentAudioTimerRef.current = null;
+    }
+    suppressAgentAudioRef.current = false;
     try {
       playSilentSrcRef.current?.stop();
     } catch {
@@ -352,6 +364,16 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
 
             if (wasPlayingRef.current) {
               const detectedAt = performance.now();
+              suppressAgentAudioRef.current = true;
+              if (suppressAgentAudioTimerRef.current) {
+                clearTimeout(suppressAgentAudioTimerRef.current);
+              }
+              // Failsafe: if provider interruption confirmation is lost, do
+              // not leave playback muted for the rest of the call.
+              suppressAgentAudioTimerRef.current = setTimeout(() => {
+                suppressAgentAudioRef.current = false;
+                suppressAgentAudioTimerRef.current = null;
+              }, 700);
               stopPlayback();
               cbRef.current.onLatency?.({
                 stage: 'barge_in_playback_stop',
@@ -395,11 +417,25 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
             break;
           case 'interrupted':
             stopPlayback();
+            if (suppressAgentAudioTimerRef.current) {
+              clearTimeout(suppressAgentAudioTimerRef.current);
+            }
+            // Keep a tiny grace window for response packets that were already
+            // on the wire when Gemini/Deepgram acknowledged the interruption.
+            suppressAgentAudioTimerRef.current = setTimeout(() => {
+              suppressAgentAudioRef.current = false;
+              suppressAgentAudioTimerRef.current = null;
+            }, 150);
             break;
           case 'transcript':
             cbRef.current.onTranscript?.(msg.role, msg.text);
             break;
           case 'turnComplete':
+            if (suppressAgentAudioTimerRef.current) {
+              clearTimeout(suppressAgentAudioTimerRef.current);
+              suppressAgentAudioTimerRef.current = null;
+            }
+            suppressAgentAudioRef.current = false;
             cbRef.current.onTurnComplete?.();
             break;
           case 'goalCreated':
