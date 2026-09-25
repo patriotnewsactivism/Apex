@@ -189,8 +189,20 @@ async function main(): Promise<void> {
         systemContent,
       );
 
+      // Regression pin for the exact production bug reported 2026-09-25:
+      // Vapi's Create Call schema rejects `tools` living directly on
+      // `assistant` ("assistant.property tools should not exist") because it
+      // belongs to the LLM config, nested under assistant.model. This one
+      // property being one level too shallow made EVERY outbound call fail
+      // with a 400 before it ever dialed.
+      check(
+        'assistant.tools does NOT exist at the top level (the exact shape Vapi rejects)',
+        capturedBody?.assistant?.tools === undefined,
+        capturedBody?.assistant?.tools,
+      );
       const fns: Array<{ type: string; function: { name: string; parameters: any } }> =
-        capturedBody?.assistant?.tools ?? [];
+        capturedBody?.assistant?.model?.tools ?? [];
+      check('assistant.model.tools exists and is non-empty (tools correctly nested under model)', fns.length > 0);
       const recordFn = fns.find((f) => f.function?.name === 'record_meeting_outcome');
       check('record_meeting_outcome is one of the functions offered to the AI', Boolean(recordFn));
       check(
@@ -222,6 +234,36 @@ async function main(): Promise<void> {
           timezoneEnum,
         );
       }
+
+      // ── A call Vapi rejects must still return a clear error to the caller ──
+      // (whether that rejection is durably logged is checked structurally
+      // below, since this guard has no live DB to assert an actual insert
+      // against).
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url === 'https://api.vapi.ai/call') {
+          return new Response(
+            JSON.stringify({ message: ['assistant.property tools should not exist'], error: 'Bad Request', statusCode: 400 }),
+            { status: 400 },
+          );
+        }
+        throw new Error(`Unexpected fetch in guard: ${url}`);
+      }) as typeof fetch;
+
+      const rejected = await makeCall.execute(
+        {
+          customerNumber: '+18582264822',
+          customerName: 'Guard Prospect',
+          assistantPrompt: 'You are a test assistant.',
+          firstMessage: 'Hi, is this a test?',
+        },
+        ctx,
+      );
+      check(
+        'a Vapi-rejected call returns success: false with the status and body surfaced',
+        (rejected as any)?.success === false && /Vapi call failed \(400\)/.test((rejected as any)?.error ?? ''),
+        rejected,
+      );
     } finally {
       globalThis.fetch = realFetch;
       if (savedApiKey === undefined) delete process.env.VAPI_API_KEY;
@@ -246,6 +288,62 @@ async function main(): Promise<void> {
     'the idempotent DDL creates the call_id unique index the onConflictDoUpdate upserts rely on',
     /CREATE UNIQUE INDEX IF NOT EXISTS call_outcomes_call_id_unique\s*\n\s*ON call_outcomes \(call_id\)/.test(clientSource),
   );
+  check(
+    "schema.ts documents the failed_to_dial disposition (added 2026-09-25 so a call Vapi rejects pre-flight is distinguishable from one that connected and reached no_decision)",
+    /failed_to_dial/.test(schemaSource),
+  );
+
+  // ── make_outbound_call itself must never let an attempt go unlogged ──────
+  //
+  // Structural rather than executed-against-a-live-DB: this guard has no
+  // database, and the tool's own DB write is deliberately try/caught so a
+  // logging failure can never mask the real Vapi result -- which also means
+  // executing it here would prove nothing about whether the insert call is
+  // even present. Pinning the source shape is the same technique already
+  // used above for vapi.ts's webhook upserts.
+  const registrySource = fs.readFileSync(path.join(root, 'packages/core/src/tool-registry.ts'), 'utf8');
+  const mocStart = registrySource.indexOf("name: 'make_outbound_call'");
+  const mocEnd = registrySource.indexOf("name: 'get_call_status'");
+  check('found the make_outbound_call tool body to inspect', mocStart > -1 && mocEnd > mocStart);
+  if (mocStart > -1 && mocEnd > mocStart) {
+    const mocBody = registrySource.slice(mocStart, mocEnd);
+    check(
+      'a Vapi rejection (!res.ok) writes a call_outcomes row with disposition failed_to_dial',
+      /if \(!res\.ok\)[\s\S]*?disposition: 'failed_to_dial'/.test(mocBody),
+    );
+    check(
+      "the failed_to_dial row keys on a synthetic id, never a real Vapi call id (Vapi never issued one for a rejected request)",
+      /callId: `failed_\$\{randomUUID\(\)\}`/.test(mocBody),
+    );
+    check(
+      'a successfully accepted call writes a call_outcomes row immediately (visible before the webhook ever fires), keyed on the real Vapi call id',
+      /callId: data\.id/.test(mocBody) && /disposition: 'no_decision'/.test(mocBody),
+    );
+    check(
+      'the success-path insert upserts rather than risking a duplicate-key throw if the webhook already raced ahead of it',
+      /\.onConflictDoUpdate\(\{\s*target: callOutcomes\.callId/.test(mocBody),
+    );
+    check(
+      'both call_outcomes writes are wrapped so a logging failure can never mask or throw over the real tool result',
+      (mocBody.match(/catch \(logErr\)/g) ?? []).length >= 2,
+    );
+  }
+
+  // ── configure_inbound_assistant had the identical `tools` placement bug ──
+  // (hits POST/PATCH /assistant rather than /call, but the same Assistant
+  // schema — tools belongs under model there too).
+  const ciaStart = registrySource.indexOf("name: 'configure_inbound_assistant'");
+  const ciaEnd = registrySource.indexOf("name: 'provision_inbound_number'");
+  check('found the configure_inbound_assistant tool body to inspect', ciaStart > -1 && ciaEnd > ciaStart);
+  if (ciaStart > -1 && ciaEnd > ciaStart) {
+    const ciaBody = registrySource.slice(ciaStart, ciaEnd);
+    const modelBlockMatch = /model:\s*\{([\s\S]*?)\n\s{10}\},/.exec(ciaBody);
+    check(
+      'configure_inbound_assistant nests tools inside assistantBody.model, not as a sibling of it (the same shape Vapi rejects)',
+      Boolean(modelBlockMatch && /tools:\s*\[/.test(modelBlockMatch[1])),
+      modelBlockMatch?.[1],
+    );
+  }
 
   // ── The webhook upserts rather than blindly inserting twice ─────────────
   const vapiSource = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/vapi.ts'), 'utf8');
