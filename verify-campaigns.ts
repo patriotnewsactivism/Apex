@@ -1,5 +1,5 @@
 import { normalizeIndustry } from './packages/core/src/industry-taxonomy.js';
-import { computeCampaignProgress, STALL_AFTER_MS } from './packages/background-jobs/src/campaign-runner.js';
+import { computeCampaignProgress, MAX_CAMPAIGN_SEGMENTS, STALL_AFTER_MS } from './packages/background-jobs/src/campaign-runner.js';
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, detail = '') {
@@ -24,6 +24,10 @@ check('unknown industry is tidied, not dropped',
 check('junk types get tidied not stored raw',
   (normalizeIndustry('point_of_interest, establishment') || '').length < 30);
 check('empty input yields undefined', normalizeIndustry('') === undefined && normalizeIndustry(null) === undefined);
+
+console.log('\n-- campaign territory limit --');
+check('national four-industry campaign fits expanded limit', 4 * 153 <= MAX_CAMPAIGN_SEGMENTS);
+check('expanded campaign limit is 5,000 segments', MAX_CAMPAIGN_SEGMENTS === 5_000, String(MAX_CAMPAIGN_SEGMENTS));
 
 console.log('\n-- progress math --');
 const base = (over: any = {}) => ({

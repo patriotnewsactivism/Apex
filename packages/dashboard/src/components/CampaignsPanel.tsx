@@ -323,6 +323,7 @@ const US_STATES: ReadonlyArray<{ code: string; name: string }> = [
   { code: 'WV', name: 'West Virginia' }, { code: 'WI', name: 'Wisconsin' }, { code: 'WY', name: 'Wyoming' },
 ];
 const CITIES_PER_STATE = 3;
+const MAX_CAMPAIGN_SEGMENTS = 5_000;
 
 type TargetMode = 'cities' | 'states' | 'national';
 
@@ -365,7 +366,11 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
     : US_STATES.length * CITIES_PER_STATE;
   const segments = industryCount * cityCount;
   const targetReady = mode === 'cities' ? cityCount > 0 : mode === 'states' ? selectedStates.length > 0 : true;
-  const ready = name.trim().length >= 3 && industryCount > 0 && targetReady && segments <= 200;
+  const ready =
+    name.trim().length >= 3 &&
+    industryCount > 0 &&
+    targetReady &&
+    segments <= MAX_CAMPAIGN_SEGMENTS;
 
   return (
     <motion.div className="glass-card" style={{ padding: 18 }} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}>
@@ -454,9 +459,18 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
           onChange={(e) => setTarget(e.target.value)}
         />
         {segments > 0 && (
-          <div style={{ fontSize: 11, color: segments > 200 ? '#c45c66' : 'var(--color-apex-muted)' }}>
+          <div
+            style={{
+              fontSize: 11,
+              color: segments > MAX_CAMPAIGN_SEGMENTS ? '#c45c66' : 'var(--color-apex-muted)',
+            }}
+          >
             {industryCount} industries × {cityCount} cities = {segments} territory segments
-            {segments > 200 && ' — over the 200 ceiling. Fewer industries, fewer states, or split into several campaigns.'}
+            {segments > MAX_CAMPAIGN_SEGMENTS
+              ? ` — over the ${MAX_CAMPAIGN_SEGMENTS.toLocaleString()} safety ceiling.`
+              : segments > 200
+                ? ' — large campaign; APEX will work it progressively and stop as soon as the lead target is met.'
+                : ''}
           </div>
         )}
         {error && <div style={{ fontSize: 11, color: '#c45c66' }}>{error}</div>}

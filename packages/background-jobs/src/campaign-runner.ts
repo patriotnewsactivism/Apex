@@ -168,9 +168,16 @@ export interface CreateCampaignInput {
   notes?: string;
 }
 
-/** Hard ceiling on territory size. 20 industries x 50 cities would enqueue
- *  1,000 segments and a day of directory calls from one careless tool call. */
-const MAX_SEGMENTS = 200;
+/** Safety ceiling on territory size. The API currently allows at most 20
+ * industries combined with national targeting plus up to 50 explicit cities,
+ * which tops out below this value. Keeping a guard here protects direct tool
+ * callers from accidentally creating an unbounded cross product while allowing
+ * national multi-industry campaigns to run as one consolidated campaign. */
+export const MAX_CAMPAIGN_SEGMENTS = 5_000;
+
+/** Insert large territories in bounded batches so campaign creation does not
+ * build one oversized SQL statement. */
+const SEGMENT_INSERT_BATCH = 500;
 
 /**
  * Create a campaign and enqueue its territory as the cross product of
@@ -201,10 +208,10 @@ export async function createCampaign(input: CreateCampaignInput): Promise<{
   for (const industry of industries) {
     for (const city of cities) cells.push({ industry, city });
   }
-  if (cells.length > MAX_SEGMENTS) {
+  if (cells.length > MAX_CAMPAIGN_SEGMENTS) {
     throw new Error(
       `That territory is ${cells.length} segments (${industries.length} industries x ${cities.length} cities); ` +
-        `the ceiling is ${MAX_SEGMENTS}. Split it into several campaigns.`,
+        `the safety ceiling is ${MAX_CAMPAIGN_SEGMENTS}. Narrow the territory or split it into multiple campaigns.`,
     );
   }
 
@@ -226,16 +233,19 @@ export async function createCampaign(input: CreateCampaignInput): Promise<{
     createdByAgentId: input.createdByAgentId,
   });
 
-  await db.insert(campaignSegments).values(
-    cells.map((cell) => ({
-      id: randomUUID(),
-      campaignId,
-      industry: cell.industry,
-      city: cell.city,
-      status: 'pending',
-      createdAt: now,
-    })),
-  );
+  for (let offset = 0; offset < cells.length; offset += SEGMENT_INSERT_BATCH) {
+    const batch = cells.slice(offset, offset + SEGMENT_INSERT_BATCH);
+    await db.insert(campaignSegments).values(
+      batch.map((cell) => ({
+        id: randomUUID(),
+        campaignId,
+        industry: cell.industry,
+        city: cell.city,
+        status: 'pending',
+        createdAt: now,
+      })),
+    );
+  }
 
   emitApexEvent({
     type: 'campaign:started',
