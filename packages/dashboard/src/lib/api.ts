@@ -303,6 +303,14 @@ export const api = {
 
   emailCampaigns: {
     list: () => apiFetch<{ campaigns: EmailCampaignProgress[] }>('/email-campaigns').then((r) => r.campaigns),
+    sends: (params?: { limit?: number; scope?: 'all' | 'campaign' | 'one-off'; status?: string }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.scope && params.scope !== 'all') qs.set('scope', params.scope);
+      if (params?.status) qs.set('status', params.status);
+      const query = qs.toString();
+      return apiFetch<{ sends: EmailSendRow[] }>(`/email-campaigns/sends${query ? `?${query}` : ''}`).then((r) => r.sends);
+    },
     get: (id: string) =>
       apiFetch<{ campaign: EmailCampaignProgress & { subjectTemplate: string; bodyTemplate: string; result: string | null }; sends: EmailSendRow[] }>(
         `/email-campaigns/${id}`,

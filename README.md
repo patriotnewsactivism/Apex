@@ -14,7 +14,7 @@ Railway builds the repository `Dockerfile` (see `railway.toml`), health-checks `
 
 Google Cloud Run is a retired APEX hosting path: billing is disabled on project `apex-503709`, so it serves nothing. AWS Lightsail/CodeBuild is retired and must not be restored. The React dashboard also has a Vercel project (`don-matthews/apex`) that posts the GitHub `Vercel` status from a Vite-only `vercel.json` build (`pnpm --filter @workspace/dashboard run build`). Vercel, Render, and other platforms may appear in connectors or client-project tooling because APEX can manage software deployed elsewhere. None of them hosts the APEX control plane, and the Vercel GitHub status is not a Railway deploy gate.
 
-Do not redirect APEX production to another platform without an explicit operator instruction. `.github/workflows/deploy.yml` and `cloudbuild.apex.yaml` still describe the Cloud Run path — kept deliberately as the rollback route — and are gated behind the `APEX_DEPLOY_ENABLED` repository variable. Re-enabling them while GCP billing is disabled produces a failed deploy on every merge, not a deployment.
+Do not redirect APEX production to another platform without an explicit operator instruction. The old Cloud Run GitHub deploy workflow has been removed. `cloudbuild.apex.yaml` and the Cloud Run deployer remain only as an explicitly gated migration-back path behind `APEX_DEPLOY_ENABLED`; reactivating that path while GCP billing is disabled cannot deploy anything.
 
 A release is not complete until `https://apex.donmatthews.live/health` reports the exact expected `build.sha` and a healthy task queue.
 
@@ -139,15 +139,13 @@ Before production deployment:
 1. Start from current `main` with a clean tree.
 2. Require green production CI.
 3. Confirm the exact commit intended for release.
-4. Use the configured Google Cloud project, region, and **existing** Cloud Run service. Never guess these identifiers and never create a substitute service.
-5. Build an immutable image from the exact commit.
-6. Update the existing Cloud Run service to that image.
-7. Wait for the new revision to become Ready.
-8. Verify `/health.build.sha` equals the released commit and `taskQueue.verdict` is healthy.
-9. Smoke-test the changed production path.
-10. Record anything that remains unverified.
+4. Push/merge that exact reviewed commit to `main`; Railway is the production deployment authority and its GitHub trigger is configured to wait for CI.
+5. Confirm Railway service `apex-backend` reports a successful deployment for that commit (GitHub status `APEX - apex-backend`).
+6. Verify `/health.build.sha` equals the released commit and `taskQueue.verdict` is healthy.
+7. Smoke-test the changed production path.
+8. Record anything that remains unverified.
 
-A successful build is not a successful deployment. A Ready revision is not a successful deployment until production traffic is serving the intended SHA.
+A successful build or merge is not a successful deployment. Production is released only when Railway reports success and the live health endpoint is serving the intended SHA.
 
 ## Secrets and database management
 

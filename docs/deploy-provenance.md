@@ -1,112 +1,90 @@
 # Knowing what is actually running
 
-APEX production is the Railway service `apex-backend` mapped to
-`https://apex.donmatthews.live`. Google Cloud Run is the gated rollback path
-only. The GitHub `Vercel` status is the dashboard project `don-matthews/apex`
-(`vercel.json` builds `@workspace/dashboard` only) and is not production
-provenance.
+APEX production is the Railway service `apex-backend` in project `APEX`, mapped to
+`https://apex.donmatthews.live`. Google Cloud Run is a retired, gated
+migration-back path only. The GitHub `Vercel` status is the dashboard project
+`don-matthews/apex` (`vercel.json` builds `@workspace/dashboard` only) and is
+not production provenance.
 
 A deployment is not considered successful merely because a build completed, a
-Railway deploy reported Success, or Cloud Run created a revision. The code
-answering production traffic must be the exact reviewed Git commit and its task
-queue must remain healthy.
+commit reached `main`, or Railway reported Success. The code answering
+production traffic must be the exact reviewed Git commit and its task queue must
+remain healthy.
+
+## Current Railway provenance chain
+
+The ordinary production chain is:
+
+1. review the exact commit intended for release;
+2. require GitHub Actions `production-checks` to be green;
+3. merge/push that commit to `main`;
+4. Railway's configured Wait-for-CI trigger builds the repository `Dockerfile`
+   and deploys service `apex-backend`;
+5. confirm Railway reports Success for that same commit;
+6. verify `https://apex.donmatthews.live/health` reports the expected build SHA
+   and a healthy `taskQueue.verdict`;
+7. smoke-test the changed production path.
+
+`railway.toml` fixes the build to the repository `Dockerfile` and the health
+check to `/health`. Railway injects `RAILWAY_GIT_COMMIT_SHA`; current
+`packages/core/src/runtime-health.ts` reports `APEX_BUILD_SHA` when explicitly
+provided, otherwise that Railway commit SHA, otherwise `unknown`.
 
 ## What `/health` proves
+
+Important fields include:
+
+- `build.sha` — the source commit reported by the running service; on Railway
+  this falls back to `RAILWAY_GIT_COMMIT_SHA`;
+- `build.startedAt` / `build.uptimeSeconds` — evidence that a running instance
+  actually started;
+- `taskQueue.verdict` — must remain healthy after rollout;
+- `llmCapacity.state` — operational LLM-capacity signal, separate from
+  application health.
+
+A health response is runtime evidence, not a substitute for the CI and Railway
+deployment records. Conversely, a successful Railway deployment is not enough
+if the public health endpoint is serving a different SHA.
+
+## Current release verification
 
 ```bash
 curl -s https://apex.donmatthews.live/health | jq
 ```
 
-Important fields:
+Record the reviewed SHA, the `production-checks` result, the Railway
+`apex-backend` deployment result, the live health SHA/task-queue verdict, and
+the production smoke test. Never invent or infer a missing service ID, token,
+secret, or deployment result.
 
-- `build.sha` — exact source commit baked into the image by
-  `cloudbuild.apex.yaml`.
-- `build.builtAt` — image build time.
-- `build.startedAt` / `build.uptimeSeconds` — confirms a new instance actually
-  started.
-- `taskQueue.verdict` — must be `ok` after rollout. Repeated dequeue failures
-  deliberately make the health endpoint fail rather than allowing a broken
-  workforce to look healthy.
-- `llmCapacity.state` — operational LLM-capacity signal; provider exhaustion is
-  reported separately from application health.
+## Retired Cloud Run migration-back path
 
-## Immutable Cloud Build image
+`cloudbuild.apex.yaml` and
+`packages/cicd-automation/src/cloud-run-deployer.ts` remain in the repository as
+an emergency migration-back implementation. The former GitHub Cloud Run deploy
+workflow has been removed. This path is not the current production release
+mechanism and must not be enabled while its documented prerequisites, including
+GCP billing, are absent.
 
-`cloudbuild.apex.yaml` builds the production Dockerfile and requires three
-substitutions from the deployer:
+If an operator explicitly decides to migrate back to Cloud Run, the retained
+deployer is fail-closed: it requires explicit existing project/region/service
+configuration and `APEX_DEPLOY_ENABLED`, builds an immutable commit-tagged image,
+updates only the configured existing service, waits for readiness, and verifies
+health. It must never create a substitute service because the intended target
+cannot be accessed.
 
-- `_IMAGE` — the existing Cloud Run image repository with `:<commit-sha>` tag.
-- `_APEX_BUILD_SHA` — the exact clean Git commit being built.
-- `_APEX_BUILD_TIME` — UTC build timestamp.
-
-The Dockerfile bakes the latter two into the image. The deployer does **not**
-forge `APEX_BUILD_SHA` as a runtime environment override; `/health` therefore
-reports what the image was actually built from.
-
-## Existing-service-only rule
-
-APEX must never create a second Cloud Run service during an ordinary release.
-The deployer first runs `gcloud run services describe` against the explicitly
-configured project, region, and service. If that exact service cannot be read,
-it stops.
-
-After Cloud Build publishes the immutable image, deployment uses:
+The required GCP configuration names for that retired path are:
 
 ```text
-gcloud run services update <existing-service> --image <immutable-image>
+APEX_DEPLOY_ENABLED
+APEX_GCP_PROJECT_ID
+APEX_CLOUD_RUN_REGION
+APEX_CLOUD_RUN_SERVICE
+APEX_CLOUD_BUILD_REGION        # optional
+APEX_DEPLOY_HEALTH_URL         # optional
+APEX_DEPLOY_SOURCE_DIR         # optional
 ```
 
-Using `services update` rather than `run deploy` is intentional. It updates the
-existing service and preserves configuration that should not be reconstructed
-from this repository: environment variables, Secret Manager references, runtime
-service account, scaling, CPU/memory, ingress, domain mapping, and related
-Google-managed settings.
-
-## Required deployment configuration
-
-The operator or CI environment must have an authenticated `gcloud` identity and
-set:
-
-```text
-APEX_DEPLOY_ENABLED=production
-APEX_GCP_PROJECT_ID=<the existing APEX Google Cloud project>
-APEX_CLOUD_RUN_REGION=<the existing service region>
-APEX_CLOUD_RUN_SERVICE=<the existing service name>
-```
-
-Optional:
-
-```text
-APEX_CLOUD_BUILD_REGION=<regional Cloud Build location, if used>
-APEX_DEPLOY_HEALTH_URL=https://apex.donmatthews.live
-APEX_DEPLOY_SOURCE_DIR=<clean APEX checkout; defaults to current directory>
-```
-
-Do not put service-account JSON keys in the repository. Use an authenticated
-human `gcloud` session for an operator release or Google Workload Identity for
-CI/automation.
-
-## Production deploy
-
-From a clean checkout whose `HEAD` is the reviewed release:
-
-```bash
-export APEX_DEPLOY_ENABLED=production
-export APEX_GCP_PROJECT_ID=...
-export APEX_CLOUD_RUN_REGION=...
-export APEX_CLOUD_RUN_SERVICE=...
-./scripts/deploy-from-shell.sh
-```
-
-The wrapper passes the exact `git rev-parse HEAD` to
-`packages/cicd-automation/scripts/deploy.mts`. The deployment fails if the tree
-is dirty, if the requested SHA differs from the checkout, if Google Cloud Build
-fails, if the existing service cannot be found, if the new revision does not
-become Ready, if `/health` is non-200, or if `/health.build.sha` does not match
-the requested commit.
-
-## Rollback
-
-Rollback routes 100% traffic to the previous Cloud Run revision and then checks
-`/health`. It does not rebuild an old mutable image and does not declare success
-until the production health endpoint responds successfully.
+Do not put service-account JSON keys in the repository. Any future reactivation
+requires an explicit operator decision, a reviewed security/deployment plan,
+and live verification after cutover.

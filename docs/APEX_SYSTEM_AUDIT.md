@@ -1,5 +1,8 @@
 # APEX System Audit
 
+> **HISTORICAL AUDIT NOTICE — 2026-09-24:** This audit records the repository state as inspected on 2026-09-05. Its hosting/deployment statements predate the Railway cutover. Current APEX production is Railway project `APEX`, service `apex-backend`; Cloud Run is retired and gated for migration-back only. Use `AGENTS.md`, ADR-015, `docs/PRODUCTION_OPERATIONS.md`, and live evidence for current operations.
+
+
 _Compiled 2026-09-05 by direct repository inspection (local clones, git history, baseline builds/tests) across all three repositories. Every claim below is either read directly from source/docs/git history or explicitly marked as unverified. Nothing here is inferred from repository names or assumed from the original three-way "control plane / stream / agent" framing — that framing turned out not to match reality (see §21)._
 
 **Scope:** `patriotnewsactivism/apex` (`Apex`), `patriotnewsactivism/apex-agent` (`Apex-Agent`), `patriotnewsactivism/apex-stream` (`Apex-Stream`). See `docs/APEX_ARCHITECTURE.md` for the resulting design and `docs/APEX_CAPABILITY_MATRIX.md` for the capability-by-capability breakdown.
@@ -10,7 +13,7 @@ _Compiled 2026-09-05 by direct repository inspection (local clones, git history,
 
 ### Apex — the live system
 
-A pnpm/TypeScript monorepo (Node 22, 18 packages) implementing a persistent, hierarchical, 13-agent autonomous workforce ("APEX CEO → CTO/COO → specialists, plus an independent QA role") for one operator's technology/media portfolio (BuildMyBot.app, CaseBuddy.live, and others). Production runs on **Google Cloud Run** at `https://apex.donmatthews.live`.
+A pnpm/TypeScript monorepo (Node 22, 18 packages) implementing a persistent, hierarchical, 13-agent autonomous workforce ("APEX CEO → CTO/COO → specialists, plus an independent QA role") for one operator's technology/media portfolio (BuildMyBot.app, CaseBuddy.live, and others). At the time of this 2026-09-05 audit, production ran on **Google Cloud Run** at `https://apex.donmatthews.live`; this was superseded by the Railway cutover recorded in ADR-015.
 
 This is not a lightly-maintained side project: **612 commits**, dozens of active feature/fix branches, a daily-or-more commit cadence through the day this audit was written, 13 ADRs recording durable architecture decisions, an `AGENTS.md` truth-hierarchy contract, and 17 deterministic `verify-*.ts` guards wired into CI (provider routing/backpressure, budget pauses, approval-state integrity, task-timeout quarantine, durable-worker-runtime, deploy provenance, non-completion detection, and more). A very large fraction of what a from-scratch "build durable autonomous orchestration" project would need to invent **already exists here, tested, and documented** — see §21 for what that changes about this audit's own recommendations.
 
@@ -22,7 +25,7 @@ Apex owns: the goal/task/approval data model, the 13-agent workforce, the tool r
 
 - 15 commits total, spanning 2026-06-20 → 2026-07-12 (22 days), zero commits since — **~8 weeks of silence** as of this audit.
 - Its **last commit's own message** documents that the deployed Railway instance had been crash-looping continuously since 2026-07-12 06:59 and had **never once completed initialization**. No later commit confirms the fix worked in production. The project went dark immediately after admitting it was down.
-- Deploys to **Railway**, which Apex's own ADR-001 explicitly lists as a retired APEX hosting path.
+- At the time of this audit it deployed to **Railway**, which the then-current ADR-001 listed as a retired APEX hosting path. ADR-015 later made Railway the APEX production host.
 - Zero tests, zero CI (`.github/workflows` does not exist in this repo).
 - Internally inconsistent, half-migrated documentation: `.replit` still declares a Replit `autoscale` target that was abandoned 21 days before the repo went dark; `GEMINI.md` is an untouched day-one snapshot describing an org chart and env-var scheme (`OPENAI_API_KEY`, `APEX_LLM_PROVIDER`) that don't exist in the actual code (which is OpenRouter-only); `replit.md` was half-updated on the last day (org chart yes, env vars no).
 - `packages/frontend` is dead code (no `package.json`, not in the pnpm workspace, duplicates a component that already existed in `packages/dashboard`).
@@ -124,7 +127,7 @@ Apex: structured logging conventions, a `HealthMonitor` running 8 read-only chec
 
 ## 16. Existing deployment mechanisms
 
-Apex: Google Cloud Build (`cloudbuild.apex.yaml`) → immutable SHA-tagged image → `gcloud run services update` on an existing, never-created, never-substituted Cloud Run service, gated by an explicit `APEX_DEPLOY_ENABLED` variable and verified post-deploy against `/health.build.sha`. This is implemented twice — once for real (`packages/cicd-automation`, wired into the live tool registry) and once as an unused, non-production Convex-worker path (`packages/cicd-worker`) that always throws rather than attempting a deploy. Apex-Agent: Railway, retired, last known to be crash-looping. Apex-Stream: the orchestrator only, via a guarded GitHub Actions workflow with real fail-closed checks (service-name collision guard, existing-service verification, SHA-pinned image, post-deploy `/health.version` verification) — the five agents have no deploy path at all right now.
+At the time of this audit, Apex used Google Cloud Build (`cloudbuild.apex.yaml`) → immutable SHA-tagged image → `gcloud run services update` on an existing, never-created, never-substituted Cloud Run service, gated by an explicit `APEX_DEPLOY_ENABLED` variable and verified post-deploy against `/health.build.sha`. This is implemented twice — once for real (`packages/cicd-automation`, wired into the live tool registry) and once as an unused, non-production Convex-worker path (`packages/cicd-worker`) that always throws rather than attempting a deploy. Apex-Agent: Railway, retired, last known to be crash-looping. Apex-Stream: the orchestrator only, via a guarded GitHub Actions workflow with real fail-closed checks (service-name collision guard, existing-service verification, SHA-pinned image, post-deploy `/health.version` verification) — the five agents have no deploy path at all right now.
 
 ## 17. Duplicate functionality
 

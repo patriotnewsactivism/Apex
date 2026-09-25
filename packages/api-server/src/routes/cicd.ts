@@ -60,8 +60,10 @@ export function createCicdRouter(): Router {
     }
   });
 
-  // APEX itself has one production deployment platform: the existing Cloud Run
-  // service. `expectSha` lets an approved operator require exact provenance.
+  // Legacy migration-back endpoint: current APEX production is Railway and
+  // ordinarily deploys from main after CI. This route reaches only the gated
+  // Cloud Run fallback manager. `expectSha` requires exact provenance when an
+  // operator intentionally reactivates that path.
   router.post('/deploy', async (req, res) => {
     try {
       const { environment, platform, expectSha } = req.body as {

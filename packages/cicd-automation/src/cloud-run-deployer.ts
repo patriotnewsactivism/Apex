@@ -1,6 +1,8 @@
-// ─── CloudRunDeployer — APEX production deployment path ─────────────────────
+// ─── CloudRunDeployer — retired APEX Cloud Run migration-back path ──────────
 //
-// APEX production runs on Google Cloud Run. This deployer is deliberately
+// APEX production runs on Railway. This deployer is retained only as the
+// explicitly gated Cloud Run migration-back/rollback path and must not be
+// described as the ordinary production release mechanism. It is deliberately
 // conservative:
 //   1. It requires an authenticated gcloud session and explicit project,
 //      region, and EXISTING service name.

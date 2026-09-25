@@ -13,27 +13,16 @@
 // complete, and nobody learned that nothing shipped -- to a platform Apex
 // isn't even hosted on.
 //
-// CORRECTED 2026-09-05: the paragraph below originally claimed Apex
-// production was AWS Lightsail. That was already stale when written and was
-// never caught, because scripts/verify-retired-hosting-instructions.ts only
-// scans a fixed list of .md files, not packages/**/src/*.ts -- this file was
-// an un-caught blind spot for exactly the class of bug that guard exists to
-// catch. Per ADR-001 in docs/ARCHITECTURE_DECISIONS.md, Apex production is
-// the existing **Google Cloud Run** service behind
-// https://apex.donmatthews.live. AWS Lightsail/CodeBuild and Railway are
-// retired hosting paths. Vercel, Railway, Render, and similar platforms may
-// still appear elsewhere in this repo as deploy targets for CLIENT projects
-// the CI/CD tooling manages -- that is not where Apex itself runs.
+// CURRENT STATUS: this package is part of the unfinished Convex migration and
+// is excluded from the production typecheck. APEX production runs on Railway
+// (project APEX, service apex-backend) and normally deploys automatically from
+// main after green CI. The Cloud Run implementation elsewhere in this repository
+// is retained only as an explicitly gated migration-back path.
 //
-// This worker intentionally does NOT perform a real deploy: cicd-worker is
-// part of the unfinished Convex migration (see apexplan.md), depends only on
-// @workspace/convex-backend, and is not the process running in production.
-// Real Apex deploys go through packages/cicd-automation/src/cloud-run-deployer.ts,
-// invoked via the api-server tool `deploy_to_environment` / POST
-// /api/cicd/deploy -- see docs/PRODUCTION_OPERATIONS.md for the exact
-// sequence. These handlers keep throwing, and point there, so a job routed
-// here fails loudly rather than silently no-op'ing or reporting a fabricated
-// success against infrastructure Apex doesn't run on.
+// This worker intentionally does NOT perform a real deployment. Its handlers
+// fail loudly so an autonomous task cannot confuse a queued worker job with a
+// production release. Use the Railway deployment status plus the live /health
+// build SHA for ordinary production evidence.
 //
 // Behavior difference from the original (forced, not a choice): the old
 // rollback() first looked up the deployment row in Postgres and THREW if it
@@ -41,7 +30,7 @@
 // mutation exposed to this worker over the convex/cicd.ts contract (only
 // claimNextJob/reportJobResult) -- there is nothing for this worker to query
 // against -- so existence-checking is simply dropped and rollback always
-// reports success for whatever deploymentId it's given.
+// also fails loudly rather than fabricating rollback success for an arbitrary deploymentId.
 import crypto from 'crypto';
 
 export interface DeployPayload {
@@ -57,23 +46,12 @@ export interface DeployResult {
 }
 
 export const CLOUD_RUN_DEPLOY_RUNBOOK =
-  'Deploys are implemented in the api-server process, not this worker: use the ' +
-  '`deploy_to_environment` tool or POST /api/cicd/deploy (requires ' +
-  'APEX_DEPLOY_ENABLED plus an authenticated gcloud identity or Workload ' +
-  'Identity). Apex production runs on the existing Google Cloud Run service ' +
-  'behind https://apex.donmatthews.live -- see docs/PRODUCTION_OPERATIONS.md. ' +
-  'Deploying requires, in order: (1) Google Cloud Build from cloudbuild.apex.yaml ' +
-  'against the exact reviewed commit, producing an immutable :<sha>-tagged ' +
-  'image, (2) wait for the build to succeed, (3) `gcloud run services update` ' +
-  '(never `deploy`/`create`) on the existing configured service, (4) poll the ' +
-  'new revision to Ready and verify /health.build.sha matches. No gcloud ' +
-  'credentials or platform API are wired into this worker, so this job ' +
-  'cannot perform that sequence — escalate to a human instead of reporting ' +
-  'a deploy as done.';
+  'APEX production runs on Railway and this experimental worker cannot deploy or roll it back. ' +
+  'Ordinary releases come from main after green CI and must be verified from Railway deployment ' +
+  'status plus the live /health build SHA. The Cloud Run code elsewhere is a retired, gated ' +
+  'migration-back path only; never report this worker as having changed production.';
 
-/** @deprecated Renamed to {@link CLOUD_RUN_DEPLOY_RUNBOOK} -- Apex production
- * is Google Cloud Run, not AWS Lightsail. Kept as an alias only in case an
- * external caller still imports the old name; do not add new references. */
+/** @deprecated Historical alias retained only for compatibility. */
 export const LIGHTSAIL_DEPLOY_RUNBOOK = CLOUD_RUN_DEPLOY_RUNBOOK;
 
 export async function handleDeploy(payload: DeployPayload): Promise<DeployResult> {
@@ -99,7 +77,6 @@ export async function handleRollback(payload: RollbackPayload): Promise<Rollback
   // the agent's mind while production is still broken.
   throw new Error(
     `Automated rollback is not implemented (deployment ${payload.deploymentId}). ` +
-      `${CLOUD_RUN_DEPLOY_RUNBOOK} Roll back by deploying the previous image ` +
-      `tag to apex-service.`,
+      `${CLOUD_RUN_DEPLOY_RUNBOOK}`,
   );
 }

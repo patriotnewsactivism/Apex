@@ -4,7 +4,7 @@ This file records durable architecture decisions that should not change accident
 
 A decision may be superseded, but it must be superseded explicitly: update the implementation, this file, `AGENTS.md`, and any affected operational documentation in the same change set.
 
-## ADR-001 — APEX production host is Google Cloud Run
+## ADR-001 — Historical: APEX production host was Google Cloud Run
 
 **Status:** Superseded 2026-09-15 by ADR-015  
 **Last confirmed:** 2026-08-28 (historical)
@@ -17,15 +17,15 @@ AWS Lightsail/CodeBuild remains a retired APEX hosting path. Vercel, Render, and
 
 - Do not restore AWS Lightsail or CodeBuild as an APEX production fallback.
 - Do not move APEX to another host as an incidental fix for a deployment issue.
-- Deployment and production documentation must describe Google Cloud Run.
+- Historical documentation from this ADR era may describe Google Cloud Run, but current deployment and production documentation must describe Railway per ADR-015.
 - Historical references may remain only when clearly labeled historical.
 
 ## ADR-002 — Production releases update the existing Cloud Run service only
 
-**Status:** Accepted  
-**Last confirmed:** 2026-08-28
+**Status:** Superseded 2026-09-15 by ADR-015  
+**Last confirmed:** 2026-08-28 (historical)
 
-Ordinary APEX releases must update the exact existing Cloud Run service. The release path uses `gcloud run services update --image ...` after first describing the configured service.
+This records the former Cloud Run release rule. Ordinary APEX releases now go through Railway per ADR-015. If the retired Cloud Run migration-back path is explicitly reactivated, it must update the exact existing Cloud Run service via `gcloud run services update --image ...` after first describing the configured service.
 
 It intentionally does not use `gcloud run deploy` as a fallback.
 
@@ -51,7 +51,7 @@ If the exact configured service cannot be found or accessed, deployment stops. A
 **Status:** Accepted  
 **Last confirmed:** 2026-08-28
 
-`cloudbuild.apex.yaml` builds and pushes an immutable image derived from the exact reviewed Git commit. `APEX_BUILD_SHA` and build time are baked into the image.
+Commit-SHA provenance remains the release invariant. On current Railway production, `packages/core/src/runtime-health.ts` reports explicit `APEX_BUILD_SHA` first and Railway's injected `RAILWAY_GIT_COMMIT_SHA` as the production fallback. The retired Cloud Run migration-back path still uses `cloudbuild.apex.yaml` to bake `APEX_BUILD_SHA` into an immutable image.
 
 Production is considered released only when the public health endpoint reports the expected SHA.
 
@@ -332,7 +332,7 @@ Autonomy-mode approval policy (`projects.autoapproveTools`) allows a bounded cla
 - Heavy work executes with minutes-scale budgets and real isolation without touching the control-plane service or its approval paths.
 - Cron growth is governed by ceilings/floors with deterministic guards in CI; the governor only pauses, never creates.
 - New GCP resources require real operator configuration (bucket name, job name); unset means fail-closed tool errors / no-op dispatch, never invented values.
-- Deploy hooks are registrable webhooks (Vercel-style) for hosted client deliverables; hook URLs are secret-ref style (`env:VAR_NAME`) and never logged. APEX's own hosting remains Cloud Run only.
+- Deploy hooks are registrable webhooks (Vercel-style) for hosted client deliverables; hook URLs are secret-ref style (`env:VAR_NAME`) and never logged. The original Cloud Run-only hosting consequence was superseded by ADR-015; APEX's control plane now runs on Railway.
 
 ## ADR-014 — Task execution is checkpointed and resumable; approval waits yield instead of blocking
 

@@ -48,20 +48,20 @@ Authentication or authorization changes require focused tests and production smo
 
 ## Production deployment security
 
-APEX production is the existing Google Cloud Run service behind `https://apex.donmatthews.live`.
+APEX production is the existing Railway project `APEX`, service `apex-backend`, behind `https://apex.donmatthews.live`.
 
 Production releases must:
 
-- use an authenticated Google identity or Workload Identity rather than committed service-account JSON keys;
-- build an immutable image from the exact reviewed Git SHA;
-- update only the exact existing Cloud Run service;
-- preserve existing Secret Manager references, service account, ingress, scaling, resources, and environment configuration unless a separately reviewed change intentionally modifies them;
+- come from the exact reviewed Git SHA on `main` after green production CI;
+- use Railway's configured Wait-for-CI GitHub deployment path rather than an ad-hoc substitute host;
+- preserve the existing Railway service, environment, volumes, secrets, domains, scaling, and runtime configuration unless a separately reviewed change intentionally modifies them;
+- verify Railway reports a successful deployment for that commit;
 - verify the live `/health.build.sha` after rollout;
 - keep deploy and rollback approval-gated.
 
-Never create a substitute Cloud Run service because the intended service cannot be found or accessed. Missing access is a failed precondition, not permission to invent infrastructure.
+Never create or substitute another production service because the intended Railway service cannot be found or accessed. Missing access is a failed precondition, not permission to invent infrastructure.
 
-The retired AWS Lightsail/CodeBuild deployment path must not be restored as a fallback.
+Google Cloud Run is a retired migration-back/rollback path only. Its workflow remains gated behind `APEX_DEPLOY_ENABLED` and must not be reactivated while its documented preconditions (including GCP billing) are absent. The retired AWS Lightsail/CodeBuild deployment path must not be restored as a fallback.
 
 ## Database and Supabase safety
 

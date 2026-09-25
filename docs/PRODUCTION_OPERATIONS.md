@@ -6,7 +6,7 @@ APEX production is **Railway** — project `APEX`, service `apex-backend` — be
 
 `https://apex.donmatthews.live`
 
-Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled) and kept only as the gated rollback path in `.github/workflows/deploy.yml`. See `docs/HOSTING_MIGRATION.md` and ADR-015. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
+Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled); the old GitHub deploy workflow is removed, while the Cloud Run deployer/build file remain only as a gated migration-back path. See `docs/HOSTING_MIGRATION.md` and ADR-015. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
 
 ## Operating principles
 
@@ -543,7 +543,7 @@ The autonomous-execution scheduler adds three operator-configured GCP-scoped res
 - `APEX_ARTIFACT_BUCKET` — GCS bucket in the existing project/region, created once:
   `gcloud storage buckets create gs://<name> --location=<region>`.
   Artifact/workspace tools fail closed when unset. Give the runtime service account `roles/storage.objectUser` on the bucket (Workload Identity on Cloud Run authenticates the control plane; the executor job uses the same image and can use its own job service account with the same role).
-- `APEX_EXECUTOR_JOB` — Cloud Run Jobs resource name (e.g. `apex-executor`). Until set, the 30-second dispatch loop is a no-op and `executor_dispatch` cron fires report "no-op". Create once with the same project/region, image = the same immutable SHA image, task timeout ≤ 60 min, no HTTP (jobs API), args = task id (dispatch passes `--args=<taskId>` via `gcloud run jobs execute`). This is a new GCP resource — it is NOT the control-plane service, so ADR-001/002 release rules are unchanged: APEX's own deploy still goes through `gcloud run services update` on the existing service.
+- `APEX_EXECUTOR_JOB` — optional Cloud Run Jobs resource name (e.g. `apex-executor`) for the legacy external-executor mode. On current Railway production the documented default is `APEX_EXECUTOR_MODE=inprocess`, so unset `APEX_EXECUTOR_JOB` is expected. If the external GCP executor is intentionally reactivated, configure its project/region/image explicitly; it is never the APEX control-plane host and does not change ADR-015's Railway release path.
 - `GITHUB_TOKEN_4` (existing) needs `repo` create scope for `create_github_repo`; `APEX_GITHUB_ORG` defaults to `patriotnewsactivism`.
 
 Autonomy mode: a project (`projects`) with `autonomyLevel` in the autonomy modes and a non-empty `autoapproveTools` list may auto-approve only the bounded eligible set (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated tools are never auto-approvable regardless of the list.
@@ -560,13 +560,12 @@ For material production releases, retain a concise record containing:
 
 ```text
 Release SHA:
-CI result:
-Cloud Build result:
-Cloud Run revision:
+CI production-checks result:
+Railway apex-backend deployment result:
 Live /health SHA:
 Task queue verdict:
 Smoke test performed:
-Rollback target:
+Railway rollback target (if needed):
 Known follow-ups / unverified items:
 ```
 

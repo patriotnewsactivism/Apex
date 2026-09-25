@@ -121,7 +121,7 @@ say whether it does.
 
 1. **Lead-research credentials.** `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, and `TAVILY_API_KEY` are on Railway. `GOOGLE_PLACES_API_KEY` and `YELP_API_KEY` are still absent (not in local env either — do not invent values).
 2. **`OPENROUTER_API_KEY_4` bought no capacity.** It is a second key on an account APEX already holds. A third *account* is what raises the free cap.
-3. **The Cloud Run deploy still fires on every green CI run** unless `APEX_DEPLOY_ENABLED` is not `production`/`all`. Keep it off while billing is disabled.
+3. **Cloud Run automatic deploy is retired.** The old deploy workflow has been removed. Keep `APEX_DEPLOY_ENABLED` off while billing is disabled; the retained deployer/build file is migration-back only.
 4. **Railway Wait for CI is on** (`checkSuites=true` on the `main` GitHub trigger). A red `production-checks` run is skipped. The GitHub `Vercel` status is the dashboard static build and is not this gate.
 5. **One replica** (`ams`). Websocket tickets now persist in Postgres so a second replica is no longer blocked on in-memory tickets. Scale only after a live two-process ticket round-trip is proven.
 6. **Artifacts / executor.** `APEX_ARTIFACT_DIR=/data/artifacts` on volume `apex-artifacts`. Leave `APEX_EXECUTOR_JOB` unset on Railway; `APEX_EXECUTOR_MODE=inprocess` is set.

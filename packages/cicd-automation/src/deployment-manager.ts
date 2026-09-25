@@ -1,23 +1,23 @@
 // ─── DeploymentManager ──────────────────────────────────────────────────────
 //
-// Records and executes APEX deployment attempts. Production deployments remain
-// approval-gated by the tool layer. APEX itself runs on Google Cloud Run.
-// Client projects may still use other deployment platforms elsewhere in the
-// broader CI/CD tooling; that is separate from where the APEX control plane is
-// hosted.
+// Records and executes the retired APEX Cloud Run migration-back path.
+// APEX production itself runs on Railway and normally deploys automatically
+// from `main` after CI. This manager remains approval-gated and must be used only
+// when an operator intentionally reactivates the documented Cloud Run fallback.
 //
-// The manager never fabricates success. It records the attempt as `deploying`,
-// calls the real Cloud Run deployment path, verifies the live health endpoint,
+// The manager never fabricates success. For an explicitly reactivated Cloud Run
+// path it records the attempt as `deploying`, verifies the target and live health,
 // and only then records `healthy`. Missing Google auth/configuration is recorded
-// as `blocked`, not as a failed release, because nothing was shipped.
+// as `blocked`, because nothing was shipped.
 
 import { db, deployments, type NewDeploymentRow } from '@workspace/db';
 import { deployToCloudRun, rollbackCloudRun, DeployNotConfiguredError } from './cloud-run-deployer.js';
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
 
-/** Where APEX itself runs. `cloud-run` is the production target; `local` is a
- * developer environment with no remote deployment target. */
+/** Targets supported by this legacy manager. `cloud-run` is the gated
+ * migration-back target; current Railway production is intentionally not driven
+ * by this manager. `local` has no remote deployment target. */
 export type ApexDeployPlatform = 'cloud-run' | 'local';
 
 export interface DeploymentConfig {
@@ -29,14 +29,12 @@ export interface DeploymentConfig {
 }
 
 export const CLOUD_RUN_DEPLOY_RUNBOOK =
-  'APEX production runs on the existing Google Cloud Run service mapped to ' +
-  '`https://apex.donmatthews.live`. Deployment requires an authenticated gcloud ' +
-  'environment plus APEX_GCP_PROJECT_ID, APEX_CLOUD_RUN_REGION, and ' +
-  'APEX_CLOUD_RUN_SERVICE. The deployer first describes that exact existing ' +
-  'service, builds a clean Git commit through Google Cloud Build using ' +
-  'cloudbuild.apex.yaml, tags the image with the commit SHA, updates the existing ' +
-  'service image with `gcloud run services update`, waits for Ready, and verifies ' +
-  '/health. It never creates a new Cloud Run service or reconstructs its env/secrets.';
+  'APEX production runs on Railway (project APEX, service apex-backend) and ordinarily ' +
+  'deploys from main after CI. This manager is the retired, approval-gated Cloud Run ' +
+  'migration-back path only. Do not enable it unless an operator explicitly restores ' +
+  'the documented GCP preconditions. When intentionally reactivated it requires an ' +
+  'authenticated gcloud environment plus APEX_GCP_PROJECT_ID, APEX_CLOUD_RUN_REGION, ' +
+  'and APEX_CLOUD_RUN_SERVICE; it updates only that existing service and verifies /health.';
 
 export class DeploymentManager {
   async deploy(config: DeploymentConfig): Promise<{

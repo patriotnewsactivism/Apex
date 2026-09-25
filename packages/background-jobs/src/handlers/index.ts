@@ -425,7 +425,7 @@ export class GoalReviewJob implements JobHandler {
       '1. If there are active goals, take the highest-priority one and delegate concrete initiatives to your CTO/COO via sendMessage (or dispatchSwarm for multi-perspective work).',
       '2. If a component is degraded/critical, delegate investigation and a fix to the CTO.',
       '3. If a recent insight signals a recurring problem, act on it.',
-      '4. BuildMyBot2 (managed revenue flagship): if snapshot.buildmybot2 shows open errors (especially critical), flagged/escalated shifts, or leads stalling without reply, delegate to the COO (apex-coo-001) — it owns buildmybot_status / buildmybot_send_briefing / buildmybot_dispatch_engineering. Have it send a corrective briefing or dispatch an engineering fix as warranted.',
+      '4. BuildMyBot2 (managed revenue flagship): snapshot.buildmybot2 is the public health contract, not detailed AI-team/error/lead telemetry. If it shows current service degradation, delegate to the COO (apex-coo-001) for a health check and, when an engineering defect is established, a repo-scoped buildmybot_dispatch_engineering ticket. Do not infer unavailable shift/error/lead details or claim a corrective briefing was sent.',
       '5. WORK SCHEDULE (you own scheduling/HR): review snapshot.cronSchedule. If the lead-gen cadence is too slow for the #1 priority, create a more frequent sweep or a second sweep targeting a different industry with schedule_task. If a recurring function is missing (outreach follow-ups, content cadence), create it. If a cron is stale or redundant, cancel it with cancel_scheduled_task. The baseline crons are a starting roster — adjust them as priorities shift.',
       '6. GOAL HYGIENE (you own the goal list): call list_goals to see real per-goal progress, not just titles. A goal showing "work_finished_awaiting_closeout" must be verified with get_delegation_status and then CLOSED with update_goal_status — goals do not close themselves, and every goal left open makes the next review reason over stale state. A goal showing "no_work_created" is one you accepted and never decomposed: decompose it now. A goal showing "stalled_all_failed" means your approach does not work — change it or escalate_to_human.',
       '7. RESTRAINT: do NOT create busywork. If the system is healthy and nothing needs doing, record a one-line note to memory and create no tasks.',
@@ -1329,8 +1329,7 @@ export class BranchReviewJob implements JobHandler {
       '7. APPROVAL IS PER TOOL, never a global switch. Human approval is independently required before',
       '   each use of: runShell, deploy_to_environment, rollback_deployment, push_to_remote,',
       '   create_pull_request, register_application, delegate_to_application, make_outbound_call,',
-      '   buildmybot_send_briefing, buildmybot_run_workforce, buildmybot_resolve_error,',
-      '   buildmybot_deploy, and casebuddy_deploy_firm.',
+      '   buildmybot_run_workforce, buildmybot_deploy, and casebuddy_deploy_firm.',
       '   Irreversible actions (deploys, external sends, schema changes, financial) also stay',
       '   human-approved — propose and queue them; do not execute.',
     ].join('\n');

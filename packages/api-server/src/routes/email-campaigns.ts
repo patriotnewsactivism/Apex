@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db, emailCampaigns, emailSends } from '@workspace/db';
 
 // ─── Email Campaigns — human-facing surface ──────────────────────────────────
@@ -100,6 +100,39 @@ export function createEmailCampaignsRouter() {
     }
 
     res.json({ campaigns: campaigns.map((c) => summarizeEmailCampaign(c, byCampaign.get(c.id) ?? {})) });
+  });
+
+  // GET /api/email-campaigns/sends — recent outbound email activity across
+  // campaigns AND one-off sends. This route intentionally comes before /:id so
+  // Express never mistakes the literal path segment "sends" for a campaign id.
+  //
+  // scope=all (default) | campaign | one-off
+  // status=<email_sends.status> narrows the activity feed without changing the
+  // underlying delivery ledger. Read-only and admin-authenticated by the
+  // blanket /api gate in index.ts.
+  router.get('/sends', async (req, res) => {
+    const limitParam = Number(req.query.limit);
+    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 500) : 100;
+    const scope = req.query.scope === 'campaign' || req.query.scope === 'one-off'
+      ? req.query.scope
+      : 'all';
+    const status = typeof req.query.status === 'string' && req.query.status.trim()
+      ? req.query.status.trim()
+      : null;
+
+    const scopeCondition = scope === 'campaign'
+      ? isNotNull(emailSends.campaignId)
+      : scope === 'one-off'
+        ? isNull(emailSends.campaignId)
+        : undefined;
+    const statusCondition = status ? eq(emailSends.status, status) : undefined;
+    const where = and(scopeCondition, statusCondition);
+
+    const sends = where
+      ? await db.select().from(emailSends).where(where).orderBy(desc(emailSends.createdAt)).limit(limit)
+      : await db.select().from(emailSends).orderBy(desc(emailSends.createdAt)).limit(limit);
+
+    res.json({ sends });
   });
 
   // GET /api/email-campaigns/:id — breakdown plus recent individual sends

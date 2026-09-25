@@ -445,19 +445,17 @@ Do not guarantee revenue or closed customers unless actual contract/performance 
 
 APEX and BuildMyBot are separate products with a strategic bridge.
 
-APEX has been designed to:
+APEX has a strategic BuildMyBot bridge, but the current implementation is split between working service-control tools and a deliberately disabled direct data plane.
 
-- read BuildMyBot workforce/product telemetry;
-- issue briefings;
-- trigger workers;
-- dispatch engineering work;
-- push researched leads;
+Currently exposed by `packages/core/src/buildmybot-connector.ts`:
+- trigger BuildMyBot workers;
+- dispatch engineering work with BuildMyBot repository context;
 - perform health checks;
-- coordinate BuildMyBot as a portfolio application.
+- run the approval-gated Railway redeploy/recovery path.
 
-BuildMyBot provides customer-engagement surfaces such as chat, knowledge/RAG, voice, SMS, CRM/leads, billing, automation, and agency/reseller workflows.
+Currently **not exposed at runtime**: `buildmybot_status`, `buildmybot_send_briefing`, `buildmybot_open_errors`, `buildmybot_resolve_error`, `buildmybot_push_leads`, and `buildmybot_recent_leads`. Those legacy direct-data tools are filtered out until their query layer is genuinely Neon-backed (or equivalent management API operations exist). Product visitor/session analytics are likewise not implemented by this connector.
 
-APEX must not assume BuildMyBot marketing claims equal production capability. Verify current `patriotnewsactivism/buildmybot2` source/live system before promising a feature.
+BuildMyBot provides customer-engagement surfaces such as chat, knowledge/RAG, voice, SMS, CRM/leads, billing, automation, and agency/reseller workflows, but APEX must not assume those product claims equal current production capability. Verify the current `patriotnewsactivism/buildmybot2` source/live system before promising or operating a feature.
 
 ---
 

@@ -2687,23 +2687,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── CI/CD: Deploy to environment ───────────────────────────────────
     {
       name: 'deploy_to_environment',
-      // CORRECTED 2026-09-05: this description and schema previously named
-      // AWS Lightsail/CodeBuild long after packages/cicd-automation/src/
-      // deployment-manager.ts was rewritten against the real Cloud Run
-      // deployer (cloud-run-deployer.ts) -- the tool worked (deploy-manager
-      // calls deployToCloudRun() unconditionally whenever platform isn't
-      // 'local'), but it recorded a false 'lightsail' platform value on every
-      // deployments row and told the calling agent it had shipped to
-      // infrastructure Apex hasn't run on since ADR-001. Per
-      // docs/ARCHITECTURE_DECISIONS.md, Apex production is the existing
-      // Google Cloud Run service. Requires APEX_DEPLOY_ENABLED plus an
-      // authenticated gcloud identity or Workload Identity; without either it
-      // fails with actionable instructions instead of faking success.
+      // APEX production is Railway and normally deploys automatically from
+      // main after green CI. This legacy tool controls only the explicitly
+      // gated Cloud Run migration-back path retained for disaster recovery.
+      // It must never be presented as the ordinary Railway release mechanism.
       description:
-        'Deploy Apex to Google Cloud Run for real: builds the exact reviewed commit via Google Cloud Build (cloudbuild.apex.yaml), tags an immutable image, updates the existing configured Cloud Run service with `gcloud run services update`, waits for the new revision to become Ready, then verifies /health.build.sha matches and returns the real service URL. Takes several minutes. Throws with actionable instructions if deploys are disabled (APEX_DEPLOY_ENABLED) or gcloud credentials/config are missing — a throw means NOTHING shipped, so never report a release as done unless this returns successfully. Requires human approval.',
+        'Emergency migration-back only: APEX production normally runs on Railway and deploys from main after green CI. This tool can update the retired Cloud Run service only when an operator has explicitly restored the documented GCP preconditions and enabled APEX_DEPLOY_ENABLED. A successful call proves only the Cloud Run fallback path; it does not prove Railway production changed. Requires human approval.',
       schema: z.object({
         environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
-        platform: z.enum(['cloud-run', 'local']).optional().describe('Deployment platform — use "cloud-run" (the existing Google Cloud Run service) for a real deploy; "local" has no deploy target and is rejected. Apex is NOT hosted on Vercel, Railway, or AWS Lightsail.'),
+        platform: z.enum(['cloud-run', 'local']).optional().describe('Legacy migration-back target. "cloud-run" is the retired fallback path; current APEX production is Railway and is not deployed by this tool. "local" has no remote target.'),
       }),
       requiresApproval: true,
       async execute({ environment, platform }) {
@@ -2721,7 +2713,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     {
       name: 'rollback_deployment',
       description:
-        'Roll the live Google Cloud Run service back to its previous known-good revision and verify /health before reporting success. Requires approval.',
+        'Rollback an explicitly reactivated Cloud Run migration-back deployment to its previous Cloud Run revision and verify /health. This does not roll back current Railway production. Requires approval.',
       schema: z.object({
         deploymentId: z.string().describe('Deployment ID to roll back'),
       }),

@@ -216,7 +216,7 @@ When asked to "check APEX," "fix APEX," "run APEX," or similar broad language, d
 ### Minimum health pass
 
 1. Read current `AGENTS.md`.
-2. Resolve the current production URL from `AGENTS.md` / `docs/PRODUCTION_OPERATIONS.md` and the configured Cloud Run service; the documented APEX domain (`https://apex.donmatthews.live`) is the expected value, not a guess to be replaced by history.
+2. Resolve the current production URL from `AGENTS.md` / `docs/PRODUCTION_OPERATIONS.md` and the configured Railway `apex-backend` service; the documented APEX domain (`https://apex.donmatthews.live`) is the expected value, not a guess to be replaced by history.
 3. Call `/health`.
 4. Compare returned `build.sha` with the expected deployed/source commit.
 5. Inspect task queue liveness and recent failure pattern.

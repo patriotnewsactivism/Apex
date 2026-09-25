@@ -42,6 +42,23 @@ function formatWhen(iso: string | null): string {
   return `${Math.round(ms / 86_400_000)}d ago`;
 }
 
+/** Render stored email HTML in a sandboxed document instead of injecting it
+ * into the dashboard DOM. Email copy can be LLM-generated and may contain
+ * merge-field/customer content, so treating it as "our own HTML" is not a safe
+ * XSS boundary. The CSP also blocks remote tracking pixels while previewing. */
+function emailPreviewSrcDoc(body: string): string {
+  const csp = [
+    "default-src 'none'",
+    "img-src data: cid:",
+    "style-src 'unsafe-inline'",
+    "font-src data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-src 'none'",
+  ].join('; ');
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"></head><body>${body}</body></html>`;
+}
+
 function FunnelBar({ campaign }: { campaign: EmailCampaignProgress }) {
   const total = campaign.totalTargets || 1;
   return (
@@ -66,7 +83,7 @@ function FunnelBar({ campaign }: { campaign: EmailCampaignProgress }) {
  *  operator's window into what a campaign actually says, in place of a CC on
  *  every send (which would put a personal address in every recipient's
  *  headers and doesn't give a historical record for sends already delivered). */
-function SendRow({ send }: { send: EmailSendRow }) {
+function SendRow({ send, contextLabel }: { send: EmailSendRow; contextLabel?: string }) {
   const [open, setOpen] = useState(false);
   const hasBody = Boolean(send.body);
 
@@ -94,6 +111,8 @@ function SendRow({ send }: { send: EmailSendRow }) {
           {hasBody && (open ? <ChevronDown size={11} /> : <Eye size={11} style={{ opacity: 0.6 }} />)}
           <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {send.toName ? `${send.toName} <${send.toEmail}>` : send.toEmail}
+            {contextLabel ? ` · ${contextLabel}` : ''}
+            {` · ${formatWhen(send.createdAt)}`}
           </span>
         </span>
         <span style={{ flex: 'none', color: STATUS_COLOR[send.status] ?? 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
@@ -103,11 +122,11 @@ function SendRow({ send }: { send: EmailSendRow }) {
       {open && hasBody && (
         <div style={{ margin: '2px 0 10px', padding: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6 }}>
           <div style={{ fontSize: 11, color: 'var(--color-apex-text)', fontWeight: 600, marginBottom: 6 }}>{send.subject}</div>
-          <div
-            style={{ fontSize: 11, color: 'var(--color-apex-muted)', lineHeight: 1.5, maxHeight: 260, overflowY: 'auto' }}
-            // Content is APEX's own resolved template output, not third-party
-            // HTML — this is exactly what Resend was sent.
-            dangerouslySetInnerHTML={{ __html: send.body ?? '' }}
+          <iframe
+            title={`Email preview to ${send.toEmail}`}
+            sandbox=""
+            srcDoc={emailPreviewSrcDoc(send.body ?? '')}
+            style={{ width: '100%', minHeight: 220, maxHeight: 320, border: 0, borderRadius: 4, background: '#fff' }}
           />
           {send.errorMessage && (
             <div style={{ fontSize: 10, color: '#c45c66', marginTop: 6 }}>{send.errorMessage}</div>
@@ -236,14 +255,43 @@ export function EmailCampaignsPanel() {
     queryFn: () => api.emailCampaigns.list(),
     refetchInterval: 5000,
   });
+  const { data: recentSends = [] } = useQuery({
+    queryKey: ['email-sends', 'recent'],
+    queryFn: () => api.emailCampaigns.sends({ limit: 100, scope: 'all' }),
+    refetchInterval: 5000,
+  });
 
   const live = campaigns.filter((c) => c.status === 'draft' || c.status === 'running' || c.status === 'paused');
   const finished = campaigns.filter((c) => c.status === 'completed' || c.status === 'cancelled');
+  const campaignNameById = new Map<string, string>(campaigns.map((c) => [c.campaignId, c.name] as const));
+  const oneOffCount = recentSends.filter((s) => !s.campaignId).length;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontSize: 13, color: 'var(--color-apex-muted)' }}>
-        {live.length} active · {finished.length} finished
+        {live.length} active · {finished.length} finished · {recentSends.length} recent sends · {oneOffCount} one-off
+      </div>
+
+      <div className="glass-card" style={{ padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Mail size={15} />
+          <strong style={{ fontSize: 13, color: 'var(--color-apex-text)' }}>Recent email activity</strong>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginBottom: 10 }}>
+          Campaign and one-off emails share this feed. Expand any row to audit the exact stored subject/body and current delivery state.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {recentSends.slice(0, 50).map((send) => (
+            <SendRow
+              key={send.id}
+              send={send}
+              contextLabel={send.campaignId ? (campaignNameById.get(send.campaignId) ?? 'Campaign') : 'One-off'}
+            />
+          ))}
+          {recentSends.length === 0 && (
+            <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>No outbound email activity recorded yet.</div>
+          )}
+        </div>
       </div>
 
       {campaigns.length === 0 && (

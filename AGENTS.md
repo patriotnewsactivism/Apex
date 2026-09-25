@@ -26,7 +26,7 @@ APEX itself runs on **Railway** — project `APEX`, service `apex-backend` — b
 
 The cutover from Google Cloud Run happened on 2026-09-14/15 and is described in `docs/HOSTING_MIGRATION.md`. Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/health`, and deploys itself from `main`; there is no deployment workflow in front of it.
 
-Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. `.github/workflows/deploy.yml` still describes that path and is kept as the tested way back, but it is gated behind the `APEX_DEPLOY_ENABLED` repository variable and must not be re-enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own (`don-matthews/apex`); none of them is the APEX control-plane host. That Vercel project posts the GitHub commit status named `Vercel`. `vercel.json` must build `@workspace/dashboard` only — never root `pnpm run build` / `typecheck:production`. Railway Wait for CI gates on GitHub Actions `production-checks`, not the Vercel status.
+Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. The old GitHub deploy workflow has been removed; `packages/cicd-automation/src/cloud-run-deployer.ts` and `cloudbuild.apex.yaml` remain only as a deliberately gated migration-back implementation behind `APEX_DEPLOY_ENABLED`, and must not be enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own (`don-matthews/apex`); none of them is the APEX control-plane host. That Vercel project posts the GitHub commit status named `Vercel`. `vercel.json` must build `@workspace/dashboard` only — never root `pnpm run build` / `typecheck:production`. Railway Wait for CI gates on GitHub Actions `production-checks`, not the Vercel status.
 
 A production release is complete only after all of these are true:
 
@@ -38,7 +38,7 @@ A production release is complete only after all of these are true:
 
 Railway Wait for CI is enabled (`checkSuites=true` on the `main` GitHub trigger). A red `production-checks` run is skipped. Treat a red CI run after a live SHA as an incident. The GitHub `Vercel` status is the dashboard static build and is not a Railway gate.
 
-The retired Cloud Run path (`packages/cicd-automation/src/cloud-run-deployer.ts`, `cloudbuild.apex.yaml`, `.github/workflows/deploy.yml`) remains the tested rollback route. It is gated behind `APEX_DEPLOY_ENABLED` and must not be re-enabled while billing is off on project `apex-503709`.
+The retired Cloud Run migration-back code (`packages/cicd-automation/src/cloud-run-deployer.ts` and `cloudbuild.apex.yaml`) remains in the repository, but the old GitHub deploy workflow is gone. It is gated behind `APEX_DEPLOY_ENABLED` and must not be re-enabled while billing is off on project `apex-503709`.
 
 `deploy_to_environment` and rollback remain hard-gated. See `docs/PRODUCTION_OPERATIONS.md`, `docs/HOSTING_MIGRATION.md`, and `docs/deploy-provenance.md`.
 
@@ -232,20 +232,21 @@ Token capacity is not the same as a spending allowance. OpenRouter account billi
 
 APEX production deployment is **existing-service-only**.
 
-`cloudbuild.apex.yaml` builds an immutable `:<sha>` image and bakes `APEX_BUILD_SHA` / `APEX_BUILD_TIME` into the image. The deployment path first describes the configured Cloud Run service and refuses to continue if it cannot find that exact target. It then uses `gcloud run services update --image ...`.
+Railway is the ordinary APEX production deployment authority. A reviewed commit reaches service `apex-backend` from `main` only after the configured Wait-for-CI gate; release verification must then prove that the live `/health.build.sha` matches the intended commit.
+
+The old Cloud Run files (`cloudbuild.apex.yaml` and the Cloud Run deployer) are migration-back artifacts only; the former GitHub deploy workflow has been removed. They must remain gated behind `APEX_DEPLOY_ENABLED` and must not be treated as the ordinary release procedure while GCP billing is disabled.
 
 Never:
 
-- create a new Cloud Run service as a fallback when the configured service cannot be found;
-- substitute a different Google Cloud project/region/service because access to the intended target is missing;
-- replace all service environment variables during an image update;
-- expose Secret Manager values in logs;
+- create or substitute a different production service because access to the intended Railway service is missing;
+- replace all service environment variables during a deployment;
+- expose secret values in logs;
 - fake `APEX_BUILD_SHA` as a runtime override merely to make health verification pass;
 - report a release successful before `/health.build.sha` matches the requested commit;
 - revive the removed AWS Lightsail/CodeBuild production path;
 - claim a deploy occurred when only a build or commit occurred.
 
-Rollback routes production traffic to the prior Cloud Run revision and verifies `/health`.
+Normal rollback uses Railway's existing service/revision history and must be followed by `/health` verification. The Cloud Run path is an emergency migration-back route only after its documented preconditions (including GCP billing and `APEX_DEPLOY_ENABLED`) are intentionally restored.
 
 ## Approval and security rules
 
@@ -276,7 +277,7 @@ See `SECURITY.md` for the repository-wide security contract.
 - **Sandbox executor**: heavy tasks (`context.runtime='job'`) dispatch to Cloud Run Jobs when `APEX_EXECUTOR_JOB` is set. On Railway the default is `APEX_EXECUTOR_MODE=inprocess`, which demotes those tasks to the ordinary worker loop instead of waiting forever for gcloud. Set `APEX_EXECUTOR_MODE=off` to keep the fail-closed no-op.
 - **Cron governance**: agent-created crons (`schedule_task`) are marked `dynamic:true`, capped at `APEX_MAX_DYNAMIC_JOBS` (default 25), per-workstream 3, floor 15 min — enforced at insert and hourly by `cron_governor` (pauses only, never creates). `work_generation` (every 10 min) plans deduplicated tasks from open goals, accepted opportunities, and due workstreams; `create_workstream` registers durable deliverable units.
 - **Autonomy mode**: `projects.autoapproveTools` (non-empty) + `autonomyLevel` of `full_autonomous` or `autonomous` lets a bounded eligible set skip human approval. The control-plane project `apex` is seeded `full_autonomous` with `create_github_repo`, `push_to_remote`, `create_pull_request`, `create_workstream`, `publish_artifact`. Hard-gated forever: `deploy_to_environment`, `rollback_deployment`, `make_outbound_call`, `send_email`, `send_email_campaign_batch`, `runShell`, `register_deploy_hook`, `register_application`, `delegate_to_application`, inbound-number tools, and BuildMyBot/CaseBuddy connector sends — never auto-approvable (`scripts/verify-approval-policy.ts`). Settings → Project autonomy allowlist is the operator UI. Unscoped tasks fall back to the `apex` project policy.
-- **Deploy hooks**: third-party hosting deploys for client deliverables go through registrable webhooks only (`register_deploy_hook` / `deploy_via_hook`); hook URLs are stored as `env:VAR_NAME` secret references, never logged. They do not change APEX's own hosting (ADR-001 — Cloud Run only).
+- **Deploy hooks**: third-party hosting deploys for client deliverables go through registrable webhooks only (`register_deploy_hook` / `deploy_via_hook`); hook URLs are stored as `env:VAR_NAME` secret references, never logged. They do not change APEX's own hosting (ADR-015 — Railway; Cloud Run is rollback-only).
 
 ## Checkpoint/resume, approval yield, and shared worker bootstrap (ADR-014)
 
@@ -300,12 +301,12 @@ For any real code fix or feature:
 4. Run deterministic guards relevant to the change; LLM changes require routing/backpressure/model-intelligence guards, deployment changes require the provenance guard.
 5. Build the dashboard and verify real output.
 6. Require green CI before ordinary merge/release.
-7. For production behavior, build an immutable Cloud Run image from the exact reviewed SHA and update the existing service.
-8. Verify `https://apex.donmatthews.live/health` reports that SHA and a healthy queue.
+7. Merge/push the exact reviewed SHA to `main`; Railway's Wait-for-CI gate must allow service `apex-backend` to deploy it.
+8. Confirm Railway reports Success for that commit and verify `https://apex.donmatthews.live/health` reports that SHA and a healthy queue.
 9. Smoke-test the actual changed feature against production.
 10. Record what was verified and what remains unverified.
 
-A successful build is not a successful deployment. A Ready Cloud Run revision is not a successful deployment until the expected commit is answering the production health endpoint.
+A successful build or merge is not a successful deployment. Production is released only when Railway reports success and the expected commit is answering the production health endpoint.
 
 ## CI contract
 
@@ -389,7 +390,7 @@ When documentation conflicts with current runtime evidence, state the conflict, 
 
 ## Base44 sandbox dev environment
 
-`docker-compose.base44.yml` runs the repo warm for the Base44 preview (dev only — production still goes through Cloud Build/Cloud Run per the provenance contract):
+`docker-compose.base44.yml` runs the repo warm for the Base44 preview (dev only — production runs on Railway per ADR-015; the old Cloud Run path is rollback-only):
 
 - Two services: `db` (postgres:16-alpine) and `app` (node:22-slim). Only host port 3000 is public.
 - Single-origin wiring: the `app` container runs `pnpm run dev` (concurrently `tsx watch` API on :5000 + Vite dashboard on :3000). The Vite dev server proxies `/api` and `/ws` to `localhost:5000` inside the container — do not "fix" the proxy target to a service name; both processes share the container on purpose.

@@ -38,6 +38,36 @@ check(
   /healthcheckPath\s*=\s*"\/health"/.test(railwayToml),
 );
 
+
+const deploymentToolSource = fs.readFileSync(
+  path.join(root, 'packages/core/src/tool-registry.ts'),
+  'utf8',
+);
+const deploymentManagerSource = fs.readFileSync(
+  path.join(root, 'packages/cicd-automation/src/deployment-manager.ts'),
+  'utf8',
+);
+const cloudRunDeployerSource = fs.readFileSync(
+  path.join(root, 'packages/cicd-automation/src/cloud-run-deployer.ts'),
+  'utf8',
+);
+check(
+  'agent-facing deploy tool names Railway as current and Cloud Run as migration-back only',
+  /APEX production normally runs on Railway/.test(deploymentToolSource) &&
+    /retired Cloud Run service/.test(deploymentToolSource) &&
+    /does not roll back current Railway production/.test(deploymentToolSource),
+);
+check(
+  'legacy deployment manager is explicitly migration-back, not ordinary production',
+  /APEX production itself runs on Railway/.test(deploymentManagerSource) &&
+    /Cloud Run migration-back path/.test(deploymentManagerSource),
+);
+check(
+  'Cloud Run deployer source labels itself as the retired migration-back path',
+  /APEX production runs on Railway/.test(cloudRunDeployerSource) &&
+    /migration-back\/rollback path/.test(cloudRunDeployerSource),
+);
+
 const runtimeHealth = fs.readFileSync(
   path.join(root, 'packages/core/src/runtime-health.ts'),
   'utf8',

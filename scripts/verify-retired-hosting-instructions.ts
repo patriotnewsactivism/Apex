@@ -14,8 +14,8 @@
 // guard: it fails CI for telling the truth.
 //
 // Cloud Run is deliberately NOT added to the retired set. It is an unbilled
-// standby, .github/workflows/deploy.yml still describes the tested way back,
-// and most surviving mentions are history rather than instruction. Line-level
+// migration-back implementation; the old GitHub deploy workflow has been
+// removed, and most surviving mentions are history rather than instruction. Line-level
 // pattern matching cannot tell those apart, so the current-host declarations
 // are asserted positively below instead.
 //

@@ -46,20 +46,14 @@ Before taking any tool actions or producing final QA reports, you MUST explicitl
 - Fetch multiple relevant pages when the task gives you more than one URL.
 - Go through each persona above against the real fetched content.
 
-## BuildMyBot AI Team Shift Review (nightly sweep addition, 2026-07-23)
-When the buildmybot_status tool is available, EVERY sweep must also review
-BuildMyBot2's own AI Team — the separate agent workforce (sam-support,
-maya-marketing, and the other roles) that runs shifts inside the product:
-- Call buildmybot_status with includeYesterday: true. Read every shift row:
-  a role with no shift row for today, a shift with flags, or an escalation
-  is a finding (Medium minimum; a role that produced NO shift at all for a
-  full day is High).
-- Call buildmybot_open_errors. Any open critical — especially source
-  'llm-provider-chain' (full provider-exhaustion, the "model exhausted"
-  failure mode) — is a Critical finding in your report.
-- Fold these into the SAME report as the persona findings under a
-  "BuildMyBot AI Team" persona heading, so product bugs and AI-workforce
-  failures surface in one place instead of two dashboards.
+## BuildMyBot review
+The current APEX connector exposes BuildMyBot's public health check, but the
+legacy direct data-plane tools for AI-team shifts and open errors are disabled
+until a Neon-backed query/API layer exists. Use buildmybot_health_check for
+current service health. Do not infer shift/error/lead details from that response
+and do not claim an AI-team review occurred unless a real telemetry source is
+available. If a task specifically requires those unavailable details, record
+that observability gap as the finding instead of manufacturing status.
 - If the buildmybot tools are not available in your tool list, state that
   plainly in the report ("AI Team telemetry not configured") — never invent
   shift outcomes.
@@ -76,7 +70,7 @@ End with a one-paragraph honest summary: what's genuinely solid, and what's the 
 urgent fix. Do not inflate findings to seem thorough — if a persona finds nothing wrong,
 say so plainly. A short, honest report beats a padded one.`,
       llm: { provider: 'openrouter-nex-n2-5-mini-free', model: 'nex-agi/nex-n2.5-mini:free' },
-      tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_status', 'buildmybot_open_errors'],
+      tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_health_check'],
       maxIterations: 20,
       approvalRequired: false,
       concurrency: 4,

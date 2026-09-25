@@ -43,11 +43,23 @@ async function main(): Promise<void> {
   const dashboardApi = read('packages/dashboard/src/lib/api.ts');
   const appTsx = read('packages/dashboard/src/App.tsx');
   const salesOpsPanel = read('packages/dashboard/src/components/SalesOperationsPanel.tsx');
+  const emailPanel = read('packages/dashboard/src/components/EmailCampaignsPanel.tsx');
 
   // ── The route exists and covers the full lifecycle ───────────────────────
   check('lists every campaign', /router\.get\('\/', async/.test(route));
   check('reads one campaign with its individual sends', /router\.get\('\/:id', async/.test(route));
   check('exposes pause, resume, and cancel', ['pause', 'resume', 'cancel'].every((a) => route.includes(`action: '${a}'`)));
+  check(
+    'lists recent sends across campaigns and one-off email',
+    /router\.get\('\/sends', async/.test(route) &&
+      /scope === 'one-off'/.test(route) &&
+      /isNull\(emailSends\.campaignId\)/.test(route),
+  );
+  check(
+    'the literal /sends route is registered before /:id so Express cannot shadow it',
+    route.indexOf("router.get('/sends'") > -1 &&
+      route.indexOf("router.get('/sends'") < route.indexOf("router.get('/:id'"),
+  );
 
   // ── Transitions match the states the tool chain actually uses ────────────
   // draft | running | paused | completed | cancelled (lib/db/src/schema.ts).
@@ -109,9 +121,11 @@ async function main(): Promise<void> {
 
   // ── Dashboard: client, panel, and navigation all exist ────────────────────
   check(
-    'the dashboard API client can list/get/control email campaigns',
+    'the dashboard API client can list/get/control email campaigns and read all sends',
     /emailCampaigns: \{/.test(dashboardApi) &&
       /list: \(\) => apiFetch<\{ campaigns: EmailCampaignProgress\[\] \}>\('\/email-campaigns'\)/.test(dashboardApi) &&
+      /sends: \(params\?:/.test(dashboardApi) &&
+      /\/email-campaigns\/sends/.test(dashboardApi) &&
       /control: \(id: string, action: 'pause' \| 'resume' \| 'cancel'\)/.test(dashboardApi),
   );
   // Sales Operations consolidated Campaigns/Automation/Email Campaigns into
@@ -127,6 +141,20 @@ async function main(): Promise<void> {
     'Revenue Operations has a real nav entry and page title, so the panel is actually reachable',
     /\{ id: 'sales-ops', label: 'Revenue Operations'/.test(appTsx) &&
       /'sales-ops': \{ title: 'Revenue Operations', kicker: 'Revenue' \}/.test(appTsx),
+  );
+
+  check(
+    'Email panel exposes a recent activity feed that includes one-off sends',
+    /Recent email activity/.test(emailPanel) &&
+      /api\.emailCampaigns\.sends\(\{ limit: 100, scope: 'all' \}\)/.test(emailPanel) &&
+      /'One-off'/.test(emailPanel),
+  );
+  check(
+    'stored email HTML is sandboxed instead of injected into the dashboard DOM',
+    /<iframe/.test(emailPanel) &&
+      /sandbox=""/.test(emailPanel) &&
+      /Content-Security-Policy/.test(emailPanel) &&
+      !/dangerouslySetInnerHTML/.test(emailPanel),
   );
 
   // ── The one piece of real logic: run it, don't just read it ──────────────
