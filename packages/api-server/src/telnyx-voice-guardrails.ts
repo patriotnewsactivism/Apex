@@ -384,17 +384,61 @@ async function executeTransferToOwner(
     }
   }
 
-  // Fallback: notify-only path when env vars are missing or transfer failed.
+  // Fallback: live transfer wasn't possible (env vars missing, or the
+  // attempt above failed/timed out). This used to be notify-ONLY in name
+  // alone -- it logged a line nobody watches in real time and then told the
+  // caller "the owner will call you back within the hour" regardless,
+  // a promise nothing behind this function actually kept. Best-effort SMS
+  // to the owner via the same Telnyx Messaging call executeSendCheckoutLink
+  // already uses a few dozen lines up, so the message the caller hears is
+  // only ever as confident as what actually reached the owner's phone.
   console.info(
     `[Voice Guardrails] Transfer fallback for call ${callControlId}. Reason: ${reason}`,
   );
 
+  let ownerNotified = false;
+  const messagingKey = process.env.TELNYX_API_KEY;
+  const messagingFrom = process.env.TELNYX_MESSAGING_NUMBER;
+  if (ownerNumber && messagingKey && messagingFrom) {
+    try {
+      const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${messagingKey}`,
+        },
+        body: JSON.stringify({
+          from: messagingFrom,
+          to: ownerNumber,
+          text: `BuildMyBot: a caller needs you (live transfer unavailable). Reason: ${reason}. Call ${callControlId}.`,
+        }),
+      });
+      ownerNotified = smsRes.ok;
+      if (!smsRes.ok) {
+        const errText = await smsRes.text().catch(() => '');
+        console.warn(
+          `[Voice Guardrails] Owner notification SMS failed (${smsRes.status}): ${errText.slice(0, 200)}`,
+        );
+      }
+    } catch (smsErr) {
+      console.warn(
+        '[Voice Guardrails] Owner notification SMS error:',
+        smsErr instanceof Error ? smsErr.message : String(smsErr),
+      );
+    }
+  } else {
+    console.warn(
+      '[Voice Guardrails] TELNYX_OWNER_NUMBER, TELNYX_API_KEY, or TELNYX_MESSAGING_NUMBER not set; owner notification skipped.',
+    );
+  }
+
   return {
     ok: true,
     transferred: false,
+    ownerNotified,
     reason,
-    message:
-      "I wasn't able to connect you directly right now, but I've flagged this as urgent. " +
-      'The owner will give you a call back within the hour.',
+    message: ownerNotified
+      ? "I wasn't able to connect you directly right now, but I've texted the owner to call you back as soon as they can."
+      : "I wasn't able to connect you directly right now. Please try calling back shortly, or I can take a message for the owner.",
   };
 }
