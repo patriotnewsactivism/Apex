@@ -4,10 +4,10 @@
 // typing "Dallas TX, Houston TX, Austin TX, ..." by hand does not scale past a
 // handful of metros. This gives callers (the dashboard form and
 // start_lead_campaign) a "by state" or "national" shorthand that expands to a
-// concrete city list before it ever reaches createCampaign — the existing
-// MAX_SEGMENTS=200 ceiling and its "split this into several campaigns" error
-// still apply unchanged, so a national x multi-industry request is rejected
-// with the same honest message rather than silently truncated.
+// concrete city list before it ever reaches createCampaign. The campaign
+// runner supports national multi-industry searches as one consolidated
+// campaign, bounded by a 5,000-segment safety ceiling; it stops early once the
+// campaign's requested lead target has been reached.
 //
 // Three cities per state/DC, chosen for name-recognition and real business
 // density rather than strict census rank, since these seed directory-search
