@@ -383,6 +383,11 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
 
           case 'SettingsApplied':
             agentReady = true;
+            // A fresh session (first connect or a successful reconnect) means
+            // whatever caused the previous drop is over. Reset this immediately
+            // so every later drop gets the full retry budget.
+            reconnectAttempt = 0;
+            lastFailureReason = undefined;
 
             // Preserve speech that arrived while Deepgram was negotiating
             // SettingsApplied (or reconnecting). The old implementation simply
@@ -402,12 +407,6 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               pendingDeepgramContext = null;
             }
 
-            // A fresh session (first connect or a successful reconnect) means
-            // whatever caused the previous drop, if any, is over — a LATER
-            // drop should get the full retry budget again, not be penalized
-            // by one that already recovered.
-            reconnectAttempt = 0;
-            lastFailureReason = undefined;
             safeSendClient({ type: 'ready', provider: 'deepgram-fallback', model: GROQ_THINK_MODEL });
             stopKeepAlive();
             keepAliveTimer = setInterval(() => safeSendDeepgram({ type: 'KeepAlive' }), KEEPALIVE_INTERVAL_MS);
