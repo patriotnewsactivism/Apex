@@ -31,6 +31,19 @@ import {
 
 const DEEPGRAM_AGENT_URL = 'wss://agent.deepgram.com/v1/agent/converse';
 
+// ElevenLabs replaces Deepgram's own bundled Aura voice for this Front Desk
+// agent when ELEVENLABS_API_KEY is configured (2026-09-25) — Aura is
+// functional but noticeably less realistic, and Matthew holds an upgraded
+// ElevenLabs plan specifically to close that gap on every AI voice, not just
+// the ones already using it (Vapi's outbound/inbound calls). Turbo 2.5 is
+// pinned rather than a higher-realism tier because it's the specific model
+// Deepgram's own docs confirm as supported for their real-time agent speak
+// relay; see packages/api-server/src/live-voice.ts (the browser live-voice
+// chat, on the identical Deepgram Voice Agent integration) for the full
+// citation trail on why the other tiers don't fit here.
+const ELEVENLABS_TTS_MODEL = 'eleven_turbo_v2_5';
+const DEFAULT_ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+
 /** Drop oldest buffered audio once we exceed this to bound memory per session. */
 const MAX_PENDING_AUDIO_BYTES = 64_000;
 
@@ -373,13 +386,27 @@ export class DeepgramVoiceSession {
             ].join(' '),
             functions,
           },
-          speak: {
-            provider: {
-              type: 'deepgram',
-              version: 'v1',
-              model: 'aura-2-asteria-en',
-            },
-          },
+          speak: (() => {
+            const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
+            if (!elevenLabsKey) {
+              // Falls back to Deepgram's bundled Aura voice (still
+              // functional) rather than breaking inbound calls entirely over
+              // a missing quality enhancement.
+              return { provider: { type: 'deepgram', version: 'v1', model: 'aura-2-asteria-en' } };
+            }
+            const voiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_ELEVENLABS_VOICE_ID;
+            return {
+              provider: { type: 'eleven_labs', model_id: ELEVENLABS_TTS_MODEL, language_code: 'en' },
+              // endpoint MUST be a sibling of provider, not nested inside it —
+              // nesting it there is a documented, real integration failure
+              // (UNPARSABLE_CLIENT_MESSAGE -> FAILED_TO_SPEAK,
+              // github.com/orgs/deepgram/discussions/1243).
+              endpoint: {
+                url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+                headers: { 'xi-api-key': elevenLabsKey, 'Content-Type': 'application/json' },
+              },
+            };
+          })(),
         },
       }),
     );

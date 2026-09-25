@@ -19,7 +19,7 @@ import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-clie
 import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProfile, listSpecialistDepartments, listSpecialists } from './specialists/index.js';
 import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
-import { db, messages } from '@workspace/db';
+import { db, messages, callOutcomes } from '@workspace/db';
 import { eq, isNull } from 'drizzle-orm';
 
 const execAsync = promisify(exec);
@@ -2963,7 +2963,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         firstMessage: z.string().describe('The exact words the AI says when the call connects (e.g. "Hi, is this {{customerName}}? I\'m Alex from BuildMyBot.app...")'),
       }),
       requiresApproval: true, // Makes a real phone call to a real person — externally visible, costs money, irreversible.
-      async execute({ customerNumber, customerName, assistantPrompt, firstMessage }) {
+      async execute({ customerNumber, customerName, assistantPrompt, firstMessage }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
         await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, purpose: 'make_outbound_call' });
         // Phase 2.3: budget guard — check mission budget before placing call
@@ -3026,77 +3026,89 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               ],
               temperature: 0.7,
               maxTokens: 250,
+              // Vapi's Create Call schema rejects a `tools` property directly on
+              // `assistant` ("assistant.property tools should not exist") --
+              // tools belong to the LLM config, nested under assistant.model.
+              // This lived one level too shallow and made EVERY outbound call
+              // fail before it ever dialed.
+              tools: [
+                {
+                  type: 'function',
+                  function: {
+                    name: 'send_checkout_link',
+                    description: 'Send a Stripe checkout link to the prospect so they can sign up for BuildMyBot.app right now. Call this when the prospect agrees to sign up. Ask for their email first if you don\'t have it.',
+                    parameters: {
+                      type: 'object',
+                      properties: {
+                        plan: {
+                          type: 'string',
+                          enum: ['starter', 'professional', 'executive', 'enterprise'],
+                          description: 'Which plan the prospect wants. Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
+                        },
+                        email: {
+                          type: 'string',
+                          description: "The prospect's email address to send the checkout link to",
+                        },
+                      },
+                      required: ['plan', 'email'],
+                    },
+                  },
+                },
+                {
+                  type: 'function',
+                  function: {
+                    name: 'record_meeting_outcome',
+                    description: "Call this exactly once, as soon as the outcome of the call is known -- right after the prospect commits to a meeting, declines, or asks for a callback, or in the last moment before you hang up either way. This is the ONLY way the outcome is saved: a meeting only counts as booked if you call this with disposition 'appointment_booked'. Do not just say it out loud and skip calling this.",
+                    parameters: {
+                      type: 'object',
+                      properties: {
+                        disposition: {
+                          type: 'string',
+                          enum: ['appointment_booked', 'callback_requested', 'not_interested', 'no_decision'],
+                          description: 'appointment_booked = a specific day AND time was agreed. callback_requested = they want to be contacted again but gave no specific time. not_interested = they declined. no_decision = the call ended without a clear outcome either way.',
+                        },
+                        appointmentDate: {
+                          type: 'string',
+                          description: "Required when disposition is appointment_booked, omit otherwise. The meeting date in strict YYYY-MM-DD format -- resolve any relative date (\"next Tuesday\") against today's date, given above, into the real calendar date.",
+                        },
+                        appointmentTime: {
+                          type: 'string',
+                          description: "Required when disposition is appointment_booked, omit otherwise. The meeting time in strict 24-hour HH:MM format (e.g. '14:00' for 2 PM).",
+                        },
+                        appointmentTimezone: {
+                          type: 'string',
+                          enum: ['Eastern', 'Central', 'Mountain', 'Pacific'],
+                          description: 'Required when disposition is appointment_booked, omit otherwise. The US timezone the prospect meant. If they did not say, use your best judgment from area code or context.',
+                        },
+                        contactEmail: {
+                          type: 'string',
+                          description: "The prospect's email address, if you collected one for a meeting invitation or follow-up. Omit if none was given.",
+                        },
+                        objection: {
+                          type: 'string',
+                          description: 'The main reason given, in their own words, if they declined or hesitated rather than booking. Omit if none was given.',
+                        },
+                        nextAction: {
+                          type: 'string',
+                          description: 'One sentence on what should happen next (e.g. "Call back Thursday afternoon", "Send the one-pager to this email").',
+                        },
+                      },
+                      required: ['disposition'],
+                    },
+                  },
+                },
+              ],
             },
-            tools: [
-              {
-                type: 'function',
-                function: {
-                  name: 'send_checkout_link',
-                  description: 'Send a Stripe checkout link to the prospect so they can sign up for BuildMyBot.app right now. Call this when the prospect agrees to sign up. Ask for their email first if you don\'t have it.',
-                  parameters: {
-                    type: 'object',
-                    properties: {
-                      plan: {
-                        type: 'string',
-                        enum: ['starter', 'professional', 'executive', 'enterprise'],
-                        description: 'Which plan the prospect wants. Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
-                      },
-                      email: {
-                        type: 'string',
-                        description: "The prospect's email address to send the checkout link to",
-                      },
-                    },
-                    required: ['plan', 'email'],
-                  },
-                },
-              },
-              {
-                type: 'function',
-                function: {
-                  name: 'record_meeting_outcome',
-                  description: "Call this exactly once, as soon as the outcome of the call is known -- right after the prospect commits to a meeting, declines, or asks for a callback, or in the last moment before you hang up either way. This is the ONLY way the outcome is saved: a meeting only counts as booked if you call this with disposition 'appointment_booked'. Do not just say it out loud and skip calling this.",
-                  parameters: {
-                    type: 'object',
-                    properties: {
-                      disposition: {
-                        type: 'string',
-                        enum: ['appointment_booked', 'callback_requested', 'not_interested', 'no_decision'],
-                        description: 'appointment_booked = a specific day AND time was agreed. callback_requested = they want to be contacted again but gave no specific time. not_interested = they declined. no_decision = the call ended without a clear outcome either way.',
-                      },
-                      appointmentDate: {
-                        type: 'string',
-                        description: "Required when disposition is appointment_booked, omit otherwise. The meeting date in strict YYYY-MM-DD format -- resolve any relative date (\"next Tuesday\") against today's date, given above, into the real calendar date.",
-                      },
-                      appointmentTime: {
-                        type: 'string',
-                        description: "Required when disposition is appointment_booked, omit otherwise. The meeting time in strict 24-hour HH:MM format (e.g. '14:00' for 2 PM).",
-                      },
-                      appointmentTimezone: {
-                        type: 'string',
-                        enum: ['Eastern', 'Central', 'Mountain', 'Pacific'],
-                        description: 'Required when disposition is appointment_booked, omit otherwise. The US timezone the prospect meant. If they did not say, use your best judgment from area code or context.',
-                      },
-                      contactEmail: {
-                        type: 'string',
-                        description: "The prospect's email address, if you collected one for a meeting invitation or follow-up. Omit if none was given.",
-                      },
-                      objection: {
-                        type: 'string',
-                        description: 'The main reason given, in their own words, if they declined or hesitated rather than booking. Omit if none was given.',
-                      },
-                      nextAction: {
-                        type: 'string',
-                        description: 'One sentence on what should happen next (e.g. "Call back Thursday afternoon", "Send the one-pager to this email").',
-                      },
-                    },
-                    required: ['disposition'],
-                  },
-                },
-              },
-            ],
             voice: {
               provider: '11labs',
-              voiceId: '21m00Tcm4TlvDq8ikWAM',
+              voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
+              // eleven_v3: ElevenLabs' newest, most expressive/realistic model.
+              // Vapi lists it as a supported real-time voice.model (one of
+              // exactly four accepted values), so its own infrastructure
+              // handles the streaming side — unlike Deepgram's Voice Agent
+              // (live-voice.ts, telnyx-deepgram-agent.ts), which is pinned to
+              // Turbo 2.5 because v3 doesn't fit its streaming integration.
+              model: 'eleven_v3',
               stability: 0.5,
               similarityBoost: 0.75,
               speed: 1.0,
@@ -3132,13 +3144,64 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
         if (!res.ok) {
           const errText = await res.text().catch(() => '');
-          return {
-            success: false,
-            error: `Vapi call failed (${res.status}): ${errText.slice(0, 500)}`,
-          };
+          const errorMsg = `Vapi call failed (${res.status}): ${errText.slice(0, 500)}`;
+          // A call Vapi rejects outright never rings, so no webhook will ever
+          // arrive to create a call_outcomes row for it. Without this insert
+          // the attempt existed nowhere durable -- only in agent tool-call
+          // reasoning that isn't guaranteed to survive log rate-limiting --
+          // so the dashboard's Calls tab had zero record that APEX even
+          // tried. Written synchronously, right here, so it appears
+          // immediately regardless of whether Vapi ever hears from us again.
+          try {
+            await db.insert(callOutcomes).values({
+              id: randomUUID(),
+              callId: `failed_${randomUUID()}`,
+              customerNumber,
+              customerName: customerName ?? null,
+              disposition: 'failed_to_dial',
+              endedReason: errorMsg.slice(0, 500),
+              createdByAgentId: ctx.agentId,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+          } catch (logErr) {
+            console.error('[make_outbound_call] failed to persist failed_to_dial outcome:', logErr instanceof Error ? logErr.message : String(logErr));
+          }
+          return { success: false, error: errorMsg };
         }
 
         const data = await res.json() as { id: string; status: string; startedAt?: string };
+
+        // Mirror row, written the instant Vapi accepts the call rather than
+        // waiting on its webhook -- so a call that's ringing right now is
+        // already visible in the dashboard, not just ones that have already
+        // ended. The end-of-call-report / record_meeting_outcome webhook
+        // (packages/api-server/src/routes/vapi.ts) owns this same callId and
+        // will fill in the real disposition/transcript/cost once the call
+        // actually happens; onConflictDoUpdate here only touches fields that
+        // are safe to refresh so a late-arriving webhook update is never
+        // clobbered by this racing back in after it.
+        try {
+          await db
+            .insert(callOutcomes)
+            .values({
+              id: randomUUID(),
+              callId: data.id,
+              customerNumber,
+              customerName: customerName ?? null,
+              disposition: 'no_decision',
+              createdByAgentId: ctx.agentId,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .onConflictDoUpdate({
+              target: callOutcomes.callId,
+              set: { updatedAt: new Date() },
+            });
+        } catch (logErr) {
+          console.error('[make_outbound_call] failed to persist dialing outcome:', logErr instanceof Error ? logErr.message : String(logErr));
+        }
+
         return {
           success: true,
           callId: data.id,
@@ -3532,29 +3595,40 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             messages: [{ role: 'system', content: systemPrompt }],
             temperature: 0.7,
             maxTokens: 250,
-          },
-          tools: [
-            {
-              type: 'function',
-              function: {
-                name: 'send_checkout_link',
-                description: "Send a Stripe checkout link to the caller so they can sign up for BuildMyBot.app right now. Call this when they agree to sign up. Ask for their email first if you don't have it.",
-                parameters: {
-                  type: 'object',
-                  properties: {
-                    plan: {
-                      type: 'string',
-                      enum: ['starter', 'professional', 'executive', 'enterprise'],
-                      description: 'Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
+            // Same fix as make_outbound_call: Vapi's Assistant schema rejects
+            // `tools` living directly on the assistant object -- it belongs
+            // under model, since it's part of the LLM config.
+            tools: [
+              {
+                type: 'function',
+                function: {
+                  name: 'send_checkout_link',
+                  description: "Send a Stripe checkout link to the caller so they can sign up for BuildMyBot.app right now. Call this when they agree to sign up. Ask for their email first if you don't have it.",
+                  parameters: {
+                    type: 'object',
+                    properties: {
+                      plan: {
+                        type: 'string',
+                        enum: ['starter', 'professional', 'executive', 'enterprise'],
+                        description: 'Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
+                      },
+                      email: { type: 'string', description: "The caller's email address" },
                     },
-                    email: { type: 'string', description: "The caller's email address" },
+                    required: ['plan', 'email'],
                   },
-                  required: ['plan', 'email'],
                 },
               },
-            },
-          ],
-          voice: { provider: '11labs', voiceId: '21m00Tcm4TlvDq8ikWAM', stability: 0.5, similarityBoost: 0.75, speed: 1.0 },
+            ],
+          },
+          // eleven_v3 for the same realism reason as make_outbound_call above.
+          voice: {
+            provider: '11labs',
+            voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
+            model: 'eleven_v3',
+            stability: 0.5,
+            similarityBoost: 0.75,
+            speed: 1.0,
+          },
           transcriber: { provider: 'deepgram', model: 'nova-2-phonecall', language: 'en-US', smartFormat: true },
           server: { url: webhookUrl },
           silenceTimeoutSeconds: 30,

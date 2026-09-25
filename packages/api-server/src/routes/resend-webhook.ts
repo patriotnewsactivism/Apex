@@ -25,9 +25,9 @@ import crypto from 'crypto';
 // for an id we don't recognize (sent before this route existed, or sent
 // through a different Resend account/key) is logged and ignored, not errored.
 
-const SVIX_TOLERANCE_SECONDS = 5 * 60; // reject events signed more than 5 minutes off "now" — replay protection
+export const SVIX_TOLERANCE_SECONDS = 5 * 60; // reject events signed more than 5 minutes off "now" — replay protection
 
-function verifySvixSignature(
+export function verifySvixSignature(
   secretHeaderValue: string,
   svixId: string,
   svixTimestamp: string,
@@ -51,7 +51,14 @@ function verifySvixSignature(
 
   const signedContent = `${svixId}.${svixTimestamp}.${rawBody.toString('utf8')}`;
   const expected = crypto.createHmac('sha256', secretBytes).update(signedContent).digest('base64');
-  const expectedBuf = Buffer.from(expected);
+  // digest('base64') returns the base64 STRING; Buffer.from(expected) alone
+  // would default to utf8 and re-encode that string's characters (44 bytes
+  // for a 32-byte SHA-256 digest) instead of decoding it back to raw HMAC
+  // bytes. That made every real Resend webhook fail the length check below
+  // and get rejected as an "Invalid webhook signature" — never a security
+  // hole (fail-closed), but a total observability blackout: no delivery,
+  // bounce, complaint, open, or click event has ever actually been recorded.
+  const expectedBuf = Buffer.from(expected, 'base64');
 
   // svix-signature can carry multiple space-separated "v1,<sig>" values
   // (e.g. during a secret rotation); any valid v1 match is accepted.
