@@ -671,6 +671,7 @@ export function ChatPanel({
 
   // ── Live voice call (Deepgram Voice Agent + Groq + ElevenLabs, real-time, same tools as text chat) ──
   const [liveActivity, setLiveActivity] = useState<string | null>(null);
+  const [liveLatency, setLiveLatency] = useState<Record<string, number>>({});
   // Tracks the id of the currently-open voice caption bubble so streaming
   // transcript fragments merge INTO it instead of each fragment becoming
   // its own message (Deepgram's ConversationText captions arrive in tiny
@@ -722,6 +723,9 @@ export function ChatPanel({
       qc.invalidateQueries({ queryKey: ['approvals'] });
     },
     onToolActivity: (name) => setLiveActivity(name.replace(/_/g, ' ')),
+    onLatency: ({ stage, ms }) => {
+      setLiveLatency((prev) => ({ ...prev, [stage]: Math.round(ms) }));
+    },
     onError: (message) => {
       setMessages((prev) => [
         ...prev,
@@ -977,8 +981,32 @@ export function ChatPanel({
                   : liveVoice.status === 'live'
                     ? liveActivity
                       ? `On the call — ${liveActivity}...`
-                      : 'On the call — speak naturally'
+                      : 'On the call — full duplex / interrupt anytime'
                     : 'Call error'}
+              {liveVoice.status === 'live' && Object.keys(liveLatency).length > 0 && (
+                <span
+                  title="Live Talk latency chain"
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 9,
+                    fontFamily: 'var(--font-mono)',
+                    color: 'var(--color-apex-muted)',
+                    opacity: 0.85,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {[
+                    ['VAD', liveLatency.speech_vad],
+                    ['stop', liveLatency.barge_in_playback_stop],
+                    ['tool', liveLatency.tool_dispatch],
+                    ['tool done', liveLatency.tool_complete],
+                    ['audio', liveLatency.first_audio],
+                  ]
+                    .filter(([, value]) => typeof value === 'number')
+                    .map(([label, value]) => `${label} ${value}ms`)
+                    .join(' · ')}
+                </span>
+              )}
             </div>
             {liveVoice.status === 'live' || liveVoice.status === 'connecting' ? (
               <motion.button
