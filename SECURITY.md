@@ -44,6 +44,8 @@ All `/api/*` routes except `/api/auth/login` and `/health` are expected to remai
 
 `APEX_ADMIN_PASSWORD` and `APEX_ADMIN_TOKEN` are deployment secrets. There is deliberately no hardcoded source fallback. Missing auth configuration must fail closed rather than activating a credential stored in the repository.
 
+`POST /api/auth/login` compares the password with SHA-256 digests and `crypto.timingSafeEqual`, so a length or prefix difference is not a timing oracle. The route also applies an in-memory per-IP limit, a global limit, and a temporary lockout with backoff after repeated failures. Those counters are per process. Failed attempts are logged with client IP and timestamp only — never the password. A lockout emits a warn-level `login lockout triggered` line. Optional `APEX_LOGIN_*` and `APEX_TRUST_PROXY_HOPS` overrides exist; invalid values keep the safe defaults. `trust proxy` must stay a small hop count (default 1, Railway's edge) so a caller cannot choose the rate-limit key through `X-Forwarded-For`.
+
 Authentication or authorization changes require focused tests and production smoke verification.
 
 ## Production deployment security

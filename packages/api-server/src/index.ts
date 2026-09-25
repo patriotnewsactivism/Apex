@@ -34,6 +34,7 @@ import { createLogsRouter } from './routes/logs.js';
 import { createApprovalsRouter, sweepStaleEscalations } from './routes/approvals.js';
 import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
+import { resolveTrustProxyHops } from './login-guard.js';
 import { createAuthRouter } from './routes/auth.js';
 import { createHealthRouter } from './routes/health.js';
 import { createDiagnosticsRouter } from './routes/diagnostics.js';
@@ -168,6 +169,10 @@ async function main() {
   const ceo = workforce.get('apex-ceo-001') as ApexCEO;
 
   const app = express();
+  // Railway's edge is one trusted hop. A caller-supplied X-Forwarded-For
+  // prefix must not become the login rate-limit key. Override only when a
+  // real extra proxy is inserted in front (APEX_TRUST_PROXY_HOPS).
+  app.set('trust proxy', resolveTrustProxyHops());
   const server = createServer(app);
 
   // The agent-facing health_check tool lives in @workspace/core and cannot

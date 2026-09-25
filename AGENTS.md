@@ -252,6 +252,7 @@ Normal rollback uses Railway's existing service/revision history and must be fol
 
 - All `/api/*` routes except `/api/auth/login` and `/health` remain behind `requireAdminAuth`.
 - `APEX_ADMIN_PASSWORD` and `APEX_ADMIN_TOKEN` are deployment secrets; there is no source-code fallback.
+- `POST /api/auth/login` compares that password with SHA-256 digests and `crypto.timingSafeEqual`, and applies an in-memory per-IP limit, a global limit, and a failure lockout with backoff (`packages/api-server/src/login-guard.ts`). Limits are per process. Optional `APEX_LOGIN_*` / `APEX_TRUST_PROXY_HOPS` overrides must keep safe defaults; `trust proxy` stays a hop count (default 1) so `X-Forwarded-For` cannot choose the client key. Log the IP and timestamp on failure, and a warn-level `login lockout triggered` line — never the password.
 - Secrets are referenced by environment-variable name only in logs, reports, commits, issues, PR descriptions, and documentation. Never log or commit secret values.
 - Human approval is per tool. Do not create a global bypass.
 - Production deploy/rollback, protected remote writes, outbound calls, externally sent communications, financial actions, schema/destructive database operations, and other irreversible effects remain approval-gated unless governance is explicitly changed.
@@ -328,6 +329,7 @@ Production CI currently includes:
 - approval-state-integrity guard;
 - hard-timeout quarantine guard (includes the task-ownership-transition behaviour checks);
 - durable-worker-runtime guard;
+- login brute-force guard (constant-time password compare, per-IP and global limits, failure lockout, proxy-hop client IP);
 - OpenRouter model-routing-policy guard;
 - evidence-driven model-intelligence guard;
 - retired-hosting-instructions guard;

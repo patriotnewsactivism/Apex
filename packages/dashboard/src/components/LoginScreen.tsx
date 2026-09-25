@@ -25,7 +25,18 @@ export function LoginScreen({ onLogin, onBack }: LoginScreenProps) {
       });
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({ error: 'Incorrect credentials' }));
+        const data = (await res.json().catch(() => ({ error: 'Incorrect credentials' }))) as {
+          error?: string;
+          retryAfterSeconds?: number;
+        };
+        if (res.status === 429) {
+          const wait = typeof data.retryAfterSeconds === 'number' ? data.retryAfterSeconds : null;
+          throw new Error(
+            wait === null
+              ? data.error || 'Too many login attempts'
+              : `Too many login attempts. Try again in ${wait}s.`,
+          );
+        }
         throw new Error(data.error || 'Login failed');
       }
 
@@ -34,7 +45,11 @@ export function LoginScreen({ onLogin, onBack }: LoginScreenProps) {
       onLogin();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Authentication failed';
-      setError(message);
+      setError(
+        message.startsWith('Too many login attempts')
+          ? message
+          : `${message}. Check the password and try again.`,
+      );
     } finally {
       setLoading(false);
     }
@@ -225,7 +240,7 @@ export function LoginScreen({ onLogin, onBack }: LoginScreenProps) {
                 lineHeight: 1.4,
               }}
             >
-              {error}. Check the password and try again.
+              {error}
             </div>
           )}
 

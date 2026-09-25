@@ -1,5 +1,13 @@
+import type { Response } from 'express';
 import { Router } from 'express';
 import { z } from 'zod';
+import {
+  LoginAttemptGuard,
+  clientAddress,
+  loadLoginGuardConfig,
+  passwordsMatch,
+  type LoginAdmission,
+} from '../login-guard.js';
 import { validateAdminToken } from '../middleware/auth.js';
 import { issueWebSocketTicket } from '../websocket-auth.js';
 
@@ -12,12 +20,26 @@ import { issueWebSocketTicket } from '../websocket-auth.js';
  * or token fallback in source. Missing secrets fail authentication closed while
  * allowing the server and /health to start, so a configuration mistake is
  * observable without reviving a credential committed to source.
+ *
+ * The password check hashes both values and uses timingSafeEqual so length and
+ * shared prefixes are not a timing signal. Failed attempts are rate-limited
+ * per client IP and globally, then locked out with backoff. Logs carry the IP
+ * and timestamp only — never the password.
  */
-export function createAuthRouter() {
+export function createAuthRouter(options?: { guard?: LoginAttemptGuard }) {
   const router = Router();
+  const guard = options?.guard ?? new LoginAttemptGuard(loadLoginGuardConfig());
 
   router.post('/login', (req, res): void => {
+    const ip = clientAddress(req);
+    const at = new Date().toISOString();
     try {
+      const admission = guard.admit(ip);
+      if (!admission.allowed) {
+        rejectLogin(res, admission, ip, at);
+        return;
+      }
+
       const parsed = z.object({ password: z.string() }).safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: 'Password required' });
@@ -27,16 +49,28 @@ export function createAuthRouter() {
       const configuredPassword = process.env.APEX_ADMIN_PASSWORD;
       const configuredToken = process.env.APEX_ADMIN_TOKEN;
       if (!configuredPassword || !configuredToken) {
-        console.error('[auth] APEX_ADMIN_PASSWORD/APEX_ADMIN_TOKEN are not fully configured');
-        res.status(503).json({ error: 'Admin authentication is not configured' });
+        console.error(
+          '[auth] APEX_ADMIN_PASSWORD/APEX_ADMIN_TOKEN are not fully configured',
+        );
+        res
+          .status(503)
+          .json({ error: 'Admin authentication is not configured' });
         return;
       }
 
-      if (parsed.data.password !== configuredPassword) {
+      if (!passwordsMatch(parsed.data.password, configuredPassword)) {
+        const failure = guard.recordFailure(ip);
+        console.warn(`[auth] login failed ip=${ip} at=${at}`);
+        if (failure.lockoutTriggered) {
+          console.warn(
+            `[auth] login lockout triggered ip=${ip} at=${at} retryAfterSeconds=${failure.retryAfterSeconds} failures=${failure.failures}`,
+          );
+        }
         res.status(401).json({ error: 'Incorrect password' });
         return;
       }
 
+      guard.recordSuccess(ip);
       res.json({ token: configuredToken });
     } catch (err) {
       console.error('[auth] Login error:', err);
@@ -81,4 +115,26 @@ export function createAuthRouter() {
   });
 
   return router;
+}
+
+function rejectLogin(
+  res: Response,
+  admission: Extract<LoginAdmission, { allowed: false }>,
+  ip: string,
+  at: string,
+): void {
+  if (admission.reason === 'lockout') {
+    console.info(
+      `[auth] login rejected ip=${ip} at=${at} reason=lockout retryAfterSeconds=${admission.retryAfterSeconds}`,
+    );
+  } else {
+    console.warn(
+      `[auth] login rate limited ip=${ip} at=${at} scope=${admission.reason} retryAfterSeconds=${admission.retryAfterSeconds}`,
+    );
+  }
+  res.setHeader('Retry-After', String(admission.retryAfterSeconds));
+  res.status(429).json({
+    error: 'Too many login attempts',
+    retryAfterSeconds: admission.retryAfterSeconds,
+  });
 }
