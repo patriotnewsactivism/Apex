@@ -29,6 +29,7 @@ interface LiveVoiceCallbacks {
   onGoalCreated?: (goal: { id: string; title: string }) => void;
   onApprovalResolved?: (id: string, action: string) => void;
   onToolActivity?: (name: string) => void;
+  onLatency?: (sample: { stage: string; ms: number }) => void;
   onError?: (message: string) => void;
 }
 
@@ -109,17 +110,15 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   const playChunkOffsetRef = useRef(0);
   const playProcRef = useRef<ScriptProcessorNode | null>(null);
   const playSilentSrcRef = useRef<AudioBufferSourceNode | null>(null);
-  // True while agent audio is queued/playing. Guards the drain-detector: an
-  // idle playback node fires onaudioprocess continuously with an empty queue,
-  // and without this flag every idle callback would re-arm the echo gate and
-  // keep the mic permanently closed.
+  // True while agent audio is queued/playing. This is intentionally NOT used
+  // to mute microphone input: Live Talk is full duplex, so the caller must be
+  // heard while APEX is speaking. Browser AEC/noise suppression handles echo,
+  // and a small local VAD below flushes playback immediately on real barge-in.
   const wasPlayingRef = useRef(false);
-  // Echo gate: timestamp (performance.now) until which the mic is zeroed
-  // because agent audio is playing through the speaker. The browser's AEC
-  // is unreliable on mobile, so we don't rely on it alone — see the gate in
-  // processor.onaudioprocess.
-  const agentSpeakingUntilRef = useRef(0);
-  const ECHO_TAIL_MS = 250;
+  const localSpeechFramesRef = useRef(0);
+  const localSpeechActiveRef = useRef(false);
+  const LOCAL_BARGE_RMS = 0.035;
+  const LOCAL_BARGE_FRAMES = 2;
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
 
@@ -128,9 +127,6 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     playQueueLenRef.current = 0;
     playChunkOffsetRef.current = 0;
     wasPlayingRef.current = false;
-    // Keep the mic gated for a short tail: speakers/reverb decay for a moment
-    // after playback stops, and an interruption stops audio mid-word.
-    agentSpeakingUntilRef.current = performance.now() + ECHO_TAIL_MS;
   }, []);
 
   const playChunk = useCallback((b64: string) => {
@@ -150,9 +146,6 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       playQueueLenRef.current += atDeviceRate.length;
       wasPlayingRef.current = true;
     }
-    // Extend the echo gate across everything now queued.
-    const queuedMs = (playQueueLenRef.current / ctx.sampleRate) * 1000;
-    agentSpeakingUntilRef.current = Math.max(agentSpeakingUntilRef.current, performance.now() + queuedMs);
   }, []);
 
   const stop = useCallback(() => {
@@ -237,7 +230,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     // Continuous playback: ONE ScriptProcessor drains the ring buffer for the
     // whole call. One long-lived node = no per-chunk scheduling boundaries
     // (the periodic clicking that reads as interference during speech).
-    const playProc = playbackCtx.createScriptProcessor(2048, 1, 1);
+    const playProc = playbackCtx.createScriptProcessor(1024, 1, 1);
     playProcRef.current = playProc;
     playProc.onaudioprocess = (e) => {
       const out = e.outputBuffer.getChannelData(0);
@@ -268,12 +261,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       if (written < out.length) {
         // underrun: silence the rest of this block (network jitter gap)
         out.fill(0, written);
-        // Queue drained AFTER actually playing -> agent audio just stopped
-        // reaching the speakers; hold the echo gate for the decay tail, then
-        // reopen the mic. The wasPlaying guard stops idle callbacks from
-        // re-arming the gate forever.
         if (playQueueLenRef.current === 0 && wasPlayingRef.current) {
-          agentSpeakingUntilRef.current = performance.now() + ECHO_TAIL_MS;
           wasPlayingRef.current = false;
         }
       }
@@ -319,27 +307,52 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
         resumeContext(captureCtx);
         resumeContext(playbackCtx);
         const source = captureCtx.createMediaStreamSource(stream);
-        const processor = captureCtx.createScriptProcessor(4096, 1, 1);
+        // 1024 samples is ~21 ms at 48 kHz (vs ~85 ms at 4096), materially
+        // reducing mic-to-provider latency while keeping ScriptProcessor
+        // compatibility on Safari. AudioWorklet can replace this later.
+        const processor = captureCtx.createScriptProcessor(1024, 1, 1);
         processorRef.current = processor;
         processor.onaudioprocess = (e) => {
           if (ws.readyState !== WebSocket.OPEN) return;
           const input = e.inputBuffer.getChannelData(0);
           const down = resample(input, captureCtx.sampleRate, INPUT_RATE);
-          let pcm16: Int16Array;
-          if (performance.now() < agentSpeakingUntilRef.current) {
-            // ECHO GATE: agent audio is playing out the speaker right now.
-            // The mic WILL pick it up acoustically (phone speakers are next
-            // to the mic and browser AEC is unreliable on mobile), and
-            // Gemini hearing its own voice back as "user input" was the
-            // awful interference sound during agent speech. Send silence
-            // instead — the stream cadence is preserved, the gate reopens
-            // ECHO_TAIL_MS after playback ends, and the user's very next
-            // words go through normally.
-            pcm16 = new Int16Array(down.length);
-          } else {
-            pcm16 = floatTo16BitPCM(down);
-          }
+
+          // TRUE FULL DUPLEX: never zero/mute mic frames while APEX is
+          // speaking. Continuous input is what lets the upstream realtime
+          // voice VAD detect a barge-in and cancel the current response.
+          const pcm16 = floatTo16BitPCM(down);
           ws.send(JSON.stringify({ type: 'audio', data: bufToBase64(pcm16) }));
+
+          // Local barge-in fast path. Provider VAD remains authoritative, but
+          // waiting for its round trip makes playback feel sticky. While APEX
+          // audio is actively queued, detect sustained near-field speech and
+          // flush the local playback queue immediately. Browser AEC is enabled
+          // above, so the agent's own speaker audio should be heavily removed
+          // before this RMS check.
+          let energy = 0;
+          for (let i = 0; i < down.length; i++) energy += down[i] * down[i];
+          const rms = down.length ? Math.sqrt(energy / down.length) : 0;
+          if (rms >= LOCAL_BARGE_RMS) {
+            localSpeechFramesRef.current += 1;
+          } else {
+            localSpeechFramesRef.current = 0;
+            localSpeechActiveRef.current = false;
+          }
+          if (
+            wasPlayingRef.current &&
+            !localSpeechActiveRef.current &&
+            localSpeechFramesRef.current >= LOCAL_BARGE_FRAMES
+          ) {
+            localSpeechActiveRef.current = true;
+            const detectedAt = performance.now();
+            stopPlayback();
+            cbRef.current.onLatency?.({ stage: 'barge_in_playback_stop', ms: Math.max(0, performance.now() - detectedAt) });
+            try {
+              ws.send(JSON.stringify({ type: 'speech_started' }));
+            } catch {
+              // provider-side VAD still receives the continuous audio stream
+            }
+          }
         };
         source.connect(processor);
         // ScriptProcessorNode needs a downstream connection to keep pumping
@@ -385,6 +398,11 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
             break;
           case 'toolActivity':
             cbRef.current.onToolActivity?.(msg.name);
+            break;
+          case 'latency':
+            if (typeof msg.stage === 'string' && typeof msg.ms === 'number') {
+              cbRef.current.onLatency?.({ stage: msg.stage, ms: msg.ms });
+            }
             break;
           case 'error':
             cbRef.current.onError?.(msg.message);
