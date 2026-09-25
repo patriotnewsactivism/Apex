@@ -690,8 +690,8 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
 
     client.on('close', () => {
       if (!deepgramActive) return;
-      console.log('🎙️  Live voice client disconnected');
       intentionallyClosed = true;
+      console.log('🎙️  Live voice client disconnected');
       clearReconnectTimer();
       stopKeepAlive();
       if (deepgram.readyState === WebSocket.OPEN || deepgram.readyState === WebSocket.CONNECTING) {
