@@ -608,6 +608,16 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     activateDeepgramFallback = (handoff?: GeminiLiveFailoverState) => {
       if (deepgramActive || client.readyState !== WebSocket.OPEN) return;
 
+      if (!deepgramKey || !groqKey) {
+        const missing = [!deepgramKey && 'DEEPGRAM_API_KEY', !groqKey && 'GROQ_API_KEY_2 or GROQ_API_KEY'].filter(Boolean).join(' and ');
+        safeSendClient({
+          type: 'error',
+          message: `Gemini became unavailable and ${missing} is not configured for Deepgram failover.`,
+        });
+        client.close(1011, 'Fallback not configured');
+        return;
+      }
+
       if (handoff) {
         deepgramBufferedAudio = handoff.bufferedAudio.slice(-MAX_DEEPGRAM_BUFFERED_AUDIO_FRAMES);
         lastSpeechStartedAt = handoff.lastSpeechStartedAt;
