@@ -166,7 +166,13 @@ export interface AgentConfig {
   tier: number;
   parentId?: string;
   systemPrompt: string;
-  llm: LLMClientConfig;
+  // Optional: omit to run this agent on the role-appropriate default from
+  // getDefaultLLMConfig() (base-agent.ts), which is derived live from the
+  // actual provider chain (Qwen-first per ADR-017, etc.) rather than a
+  // point-in-time literal that goes stale the moment routing policy changes.
+  // Only set this for an agent that genuinely needs to differ from every
+  // other agent's role default.
+  llm?: LLMClientConfig;
   tools: string[]; // tool names this agent is allowed to use
   maxIterations?: number; // safety limit for autonomous loops
   approvalRequired?: boolean; // gate all actions through human approval

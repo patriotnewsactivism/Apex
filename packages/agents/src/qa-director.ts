@@ -69,7 +69,6 @@ Produce ONE structured report as your final task result, in this exact shape per
 End with a one-paragraph honest summary: what's genuinely solid, and what's the single most
 urgent fix. Do not inflate findings to seem thorough — if a persona finds nothing wrong,
 say so plainly. A short, honest report beats a padded one.`,
-      llm: { provider: 'openrouter-nex-n2-5-mini-free', model: 'nex-agi/nex-n2.5-mini:free' },
       tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_health_check'],
       maxIterations: 20,
       approvalRequired: false,

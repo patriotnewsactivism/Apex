@@ -66,7 +66,6 @@ export class CTOAgent extends BaseAgent {
       tier: 1,
       parentId: 'apex-ceo-001',
       systemPrompt: SYSTEM_PROMPT,
-      llm: { provider: 'openrouter-nex-n2-5-mini-free', model: 'nex-agi/nex-n2.5-mini:free' },
       tools: [
         'sendMessage',
         'readFile',
