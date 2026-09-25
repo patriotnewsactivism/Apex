@@ -671,6 +671,7 @@ export function ChatPanel({
 
   // ── Live voice call (Deepgram Voice Agent + Groq + ElevenLabs, real-time, same tools as text chat) ──
   const [liveActivity, setLiveActivity] = useState<string | null>(null);
+  const [liveProvider, setLiveProvider] = useState<{ provider: string; model?: string } | null>(null);
   const [liveLatency, setLiveLatency] = useState<Record<string, number>>({});
   // Tracks the id of the currently-open voice caption bubble so streaming
   // transcript fragments merge INTO it instead of each fragment becoming
@@ -723,6 +724,7 @@ export function ChatPanel({
       qc.invalidateQueries({ queryKey: ['approvals'] });
     },
     onToolActivity: (name) => setLiveActivity(name.replace(/_/g, ' ')),
+    onProvider: (provider, model) => setLiveProvider({ provider, model }),
     onLatency: ({ stage, ms }) => {
       setLiveLatency((prev) => ({ ...prev, [stage]: Math.round(ms) }));
     },
@@ -983,6 +985,23 @@ export function ChatPanel({
                       ? `On the call — ${liveActivity}...`
                       : 'On the call — full duplex / interrupt anytime'
                     : 'Call error'}
+              {liveVoice.status === 'live' && liveProvider && (
+                <span
+                  title={liveProvider.model ? `${liveProvider.provider}: ${liveProvider.model}` : liveProvider.provider}
+                  style={{
+                    marginLeft: 6,
+                    padding: '1px 5px',
+                    borderRadius: 4,
+                    border: '1px solid rgba(90,158,174,0.18)',
+                    fontSize: 9,
+                    fontFamily: 'var(--font-mono)',
+                    color: liveProvider.provider === 'gemini' ? '#6a9f78' : '#c9a84a',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {liveProvider.provider === 'gemini' ? 'Gemini Live' : 'Deepgram fallback'}
+                </span>
+              )}
               {liveVoice.status === 'live' && Object.keys(liveLatency).length > 0 && (
                 <span
                   title="Live Talk latency chain"

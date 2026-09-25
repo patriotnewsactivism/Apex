@@ -1,43 +1,18 @@
 /**
- * Guard: every AI voice agent APEX runs actually uses ElevenLabs at the
- * confirmed-correct realism tier when configured, and the live browser voice
- * chat's transcript is durably persisted rather than existing only in React
- * state until the tab closes.
+ * Guards the current APEX voice architecture:
  *
- * Context (2026-09-25): Don reported the live voice chat as unreliable and
- * non-durable ("doesn't always answer back", "doesn't save the chat"), and
- * asked to standardize on ElevenLabs realism everywhere now that he holds
- * upgraded ElevenLabs and Deepgram plans. Auditing all three voice paths
- * found two of three (the browser live-voice chat and inbound BuildMyBot
- * calls, both on Deepgram's Voice Agent API) were never touching ElevenLabs
- * at all -- running Deepgram's own bundled Aura voice -- and the third
- * (Vapi phone calls) had no explicit model tier set (a silent, likely
- * lowest-tier default).
+ * 1. Browser/admin Live Talk prefers a direct persistent Gemini 3.8 Live
+ *    WebSocket session with full-duplex barge-in, async NON_BLOCKING tools,
+ *    session resumption, audio transcription, context compression, and
+ *    durable transcript persistence.
+ * 2. live-voice.ts retains the proven Deepgram/Groq/ElevenLabs stack only as
+ *    an availability fallback when Gemini cannot reach setupComplete.
+ * 3. Telnyx/Deepgram and Vapi telephone paths keep their explicitly pinned
+ *    ElevenLabs voice configuration.
  *
- * This guard pins three things that are each easy to silently regress:
- *
- *   1. The Deepgram <-> ElevenLabs speak-provider shape. This is a REAL,
- *      previously-reported production failure mode (not a hypothetical):
- *      github.com/orgs/deepgram/discussions/1243 documents Deepgram
- *      returning UNPARSABLE_CLIENT_MESSAGE -> FAILED_TO_SPEAK when `endpoint`
- *      is nested inside `provider` instead of being its sibling -- the exact
- *      same class of "field one level too shallow" bug already found and
- *      fixed in Vapi's `tools` placement in tool-registry.ts. Also pins
- *      model_id to eleven_turbo_v2_5 (the tier Deepgram's own docs confirm
- *      as supported for real-time streaming) and language_code to 'en'
- *      (that same discussion's documented fix -- NOT 'en-US').
- *   2. Vapi's voice.model is explicitly set (eleven_v3, Don's explicit choice
- *      after being shown the realism-vs-latency tradeoff), not left on
- *      whatever Vapi's silent default is.
- *   3. live-voice.ts persists both session and turn rows for durable
- *      history, and both DB paths in the tool-registry.ts Vapi-adjacent
- *      areas are structurally present.
- *
- * Structural source checks are used throughout (the same established
- * technique as verify-call-outcome-capture.ts's webhook-upsert checks)
- * rather than a full WebSocket integration harness: faking a real Deepgram
- * agent peer well enough to exercise setupLiveVoice() end-to-end is
- * disproportionate to what this guard needs to prove.
+ * Structural source checks are used because CI does not carry production
+ * provider credentials. Production verification is completed after deploy
+ * from provider-selection and websocket logs.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -108,38 +83,88 @@ function checkSpeakBlock(label: string, source: string): void {
 function main(): void {
   console.log('Verifying voice-agent realism and live-voice persistence...\n');
 
-  // ── live-voice.ts: browser live-voice chat ────────────────────────────────
+  // ── Browser/admin Live Talk: Gemini primary, Deepgram fallback ─────────────
   const liveVoiceSource = fs.readFileSync(path.join(root, 'packages/api-server/src/live-voice.ts'), 'utf8');
-  checkSpeakBlock('live-voice.ts', liveVoiceSource);
+  const geminiLiveSource = fs.readFileSync(path.join(root, 'packages/api-server/src/gemini-live-session.ts'), 'utf8');
 
   check(
-    'live-voice.ts: ELEVENLABS_API_KEY is read and treated as optional (falls back, not a hard failure like Deepgram/Groq)',
-    /process\.env\.ELEVENLABS_API_KEY/.test(liveVoiceSource),
+    'live-voice.ts attempts the direct Gemini session before the Deepgram fallback',
+    /tryStartGeminiLiveSession/.test(liveVoiceSource) &&
+      liveVoiceSource.indexOf('tryStartGeminiLiveSession') < liveVoiceSource.indexOf('connectToDeepgram();'),
   );
   check(
-    'live-voice.ts: a voice_chat_sessions row is inserted before Deepgram is contacted (so a call that never connects is still visible)',
-    /db\.insert\(voiceChatSessions\)/.test(liveVoiceSource) &&
-      liveVoiceSource.indexOf('db.insert(voiceChatSessions)') < liveVoiceSource.indexOf('connectToDeepgram();'),
+    'live-voice.ts defaults the browser/admin provider to Gemini but permits an explicit Deepgram fallback override',
+    /APEX_LIVE_VOICE_PROVIDER/.test(liveVoiceSource) &&
+      /\|\| 'gemini'/.test(liveVoiceSource) &&
+      /requestedProvider !== 'deepgram'/.test(liveVoiceSource),
+  );
+  checkSpeakBlock('live-voice.ts Deepgram fallback', liveVoiceSource);
+
+  check(
+    'Gemini adapter pins the fast realtime model to gemini-3.8-live (not Extended Thinking in the critical path)',
+    /GEMINI_LIVE_MODEL\s*=\s*'gemini-3\.8-live'/.test(geminiLiveSource) &&
+      !/gemini-3\.8-live-extended-thinking/.test(geminiLiveSource),
   );
   check(
-    'live-voice.ts: a voice_chat_turns row is inserted for real conversation text (not the injected screen-context echo)',
-    /db\.insert\(voiceChatTurns\)/.test(liveVoiceSource) && /persistTurn\(role, text\)/.test(liveVoiceSource),
+    'Gemini adapter uses the raw BidiGenerateContent WebSocket endpoint',
+    /generativelanguage\.googleapis\.com\/ws\/google\.ai\.generativelanguage\.v1beta\.GenerativeService\.BidiGenerateContent/.test(geminiLiveSource),
   );
   check(
-    'live-voice.ts: the session row is closed out (endedAt) when the client disconnects',
-    /db\.update\(voiceChatSessions\)[\s\S]*?endedAt: new Date\(\)/.test(liveVoiceSource),
+    'Gemini setup requests AUDIO output through generationConfig',
+    /generationConfig:\s*\{\s*responseModalities:\s*\['AUDIO'\]\s*\}/.test(geminiLiveSource),
   );
   check(
-    'live-voice.ts: persistence writes are fire-and-forget (.catch, not awaited) so a DB hiccup can never add latency to call setup or fail the call',
-    !/await db\.insert\(voiceChat/.test(liveVoiceSource) && !/await db\.update\(voiceChatSessions\)/.test(liveVoiceSource),
+    'all Live Talk function declarations are explicitly NON_BLOCKING',
+    /behavior:\s*'NON_BLOCKING'/.test(geminiLiveSource),
   );
-  // live-voice.ts legitimately mentions Gemini once, historically ("Switched
-  // from Gemini Live after Google denied...") -- that is accurate and worth
-  // keeping, not stale. What must never come back is a PRESENT-TENSE claim
-  // that Gemini is what live voice currently runs on.
   check(
-    "live-voice.ts: no present-tense claim that live voice currently runs on Gemini",
-    !/is (a )?Gemini|runs on Gemini|via Gemini|the Gemini (session|protocol)/i.test(liveVoiceSource),
+    'server-side activity detection uses start-of-activity interruption for native barge-in',
+    /activityHandling:\s*'START_OF_ACTIVITY_INTERRUPTS'/.test(geminiLiveSource) &&
+      /START_SENSITIVITY_HIGH/.test(geminiLiveSource),
+  );
+  check(
+    'input and output audio transcription are enabled for live captions and latency telemetry',
+    /inputAudioTranscription:\s*\{\}/.test(geminiLiveSource) &&
+      /outputAudioTranscription:\s*\{\}/.test(geminiLiveSource),
+  );
+  check(
+    'session resumption is enabled and the newest resumable handle is retained',
+    /sessionResumption:/.test(geminiLiveSource) &&
+      /sessionResumptionUpdate/.test(geminiLiveSource) &&
+      /newHandle/.test(geminiLiveSource) &&
+      /sessionHandle\s*=\s*update\.newHandle/.test(geminiLiveSource),
+  );
+  check(
+    'context window compression is enabled for long-running operator conversations',
+    /contextWindowCompression:\s*\{[\s\S]{0,120}slidingWindow:\s*\{\}/.test(geminiLiveSource),
+  );
+  check(
+    'realtime PCM input is identified as 16 kHz audio',
+    /mimeType:\s*'audio\/pcm;rate=16000'/.test(geminiLiveSource),
+  );
+  check(
+    'Gemini interruption is relayed to the browser so queued playback is flushed',
+    /serverContent\.interrupted/.test(geminiLiveSource) &&
+      /type:\s*'interrupted'/.test(geminiLiveSource),
+  );
+  check(
+    'Gemini tool execution is detached from the realtime message handler',
+    /void \(async \(\) => \{/.test(geminiLiveSource) &&
+      /executeTool/.test(geminiLiveSource) &&
+      /'WHEN_IDLE'/.test(geminiLiveSource),
+  );
+  check(
+    'Gemini live sessions and turns are durably persisted',
+    /db\.insert\(voiceChatSessions\)/.test(geminiLiveSource) &&
+      /db\.insert\(voiceChatTurns\)/.test(geminiLiveSource) &&
+      /db\.update\(voiceChatSessions\)[\s\S]*?endedAt: new Date\(\)/.test(geminiLiveSource),
+  );
+  check(
+    'provider setup failure returns false so the same browser call can fall back without redialing',
+    /const initialConnected = await connect\(\)/.test(geminiLiveSource) &&
+      /if \(!initialConnected\)/.test(geminiLiveSource) &&
+      /return false;/.test(geminiLiveSource) &&
+      /falling back to Deepgram/.test(liveVoiceSource),
   );
 
   // ── telnyx-deepgram-agent.ts: inbound BuildMyBot calls ────────────────────
@@ -190,8 +215,10 @@ function main(): void {
   const quickChatSource = fs.readFileSync(path.join(root, 'packages/dashboard/src/components/QuickChat.tsx'), 'utf8');
   check('QuickChat.tsx renders a past-voice-calls view wired to the new endpoint', /api\.chat\.voiceSessions/.test(quickChatSource));
   check(
-    "QuickChat.tsx: no stale 'Gemini Live' label remains in the call bar itself",
-    !/Gemini Live/.test(quickChatSource),
+    'QuickChat.tsx surfaces the active provider so Gemini-primary versus Deepgram fallback is visible',
+    /Gemini Live/.test(quickChatSource) &&
+      /Deepgram fallback/.test(quickChatSource) &&
+      /liveProvider\.provider === 'gemini'/.test(quickChatSource),
   );
 
   console.log(

@@ -29,6 +29,7 @@ interface LiveVoiceCallbacks {
   onGoalCreated?: (goal: { id: string; title: string }) => void;
   onApprovalResolved?: (id: string, action: string) => void;
   onToolActivity?: (name: string) => void;
+  onProvider?: (provider: string, model?: string) => void;
   onLatency?: (sample: { stage: string; ms: number }) => void;
   onError?: (message: string) => void;
 }
@@ -382,6 +383,12 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
         switch (msg.type) {
           case 'ready':
             setStatus('live');
+            if (typeof msg.provider === 'string') {
+              cbRef.current.onProvider?.(
+                msg.provider,
+                typeof msg.model === 'string' ? msg.model : undefined,
+              );
+            }
             break;
           case 'audio':
             playChunk(msg.data);

@@ -7,20 +7,19 @@ import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from '
 import { randomUUID } from 'crypto';
 import { db, voiceChatSessions, voiceChatTurns } from '@workspace/db';
 import { eq } from 'drizzle-orm';
+import { tryStartGeminiLiveSession } from './gemini-live-session.js';
 
-// ─── Live voice: real-time conversation with Apex via Deepgram Voice Agent ───
+// ─── Live voice: direct Gemini 3.8 Live, with Deepgram fallback ──────────────
 //
-// Switched from Gemini Live after Google denied the configured project
-// access to the Live/bidiGenerateContent websocket specifically — a
-// documented free-tier restriction on that real-time endpoint, confirmed
-// live via production logs ("Gemini WS closed: 1008 Your project has been
-// denied access. Please contact support."). Deepgram's Voice Agent API
-// (agent.deepgram.com/v1/agent/converse) bundles STT + LLM + TTS over one
-// websocket, matching the shape this file already needs — and this exact
-// provider/protocol is already proven elsewhere in this codebase
-// (telnyx-deepgram-agent.ts, for phone calls), so the wire format here
-// follows that same confirmed pattern rather than guessing at Deepgram's
-// schema from scratch.
+// Browser/admin Live Talk now attempts a direct persistent Gemini 3.8 Live
+// BidiGenerateContent session first. This is the fast voice/orchestration
+// brain: full-duplex audio, native barge-in, non-blocking function calls, and
+// session resumption. Long-running work is dispatched to the APEX swarm.
+//
+// Deepgram Voice Agent + Groq + ElevenLabs remains a compatibility fallback
+// for a deployment whose Gemini project/key still cannot access the Live API.
+// This preserves availability while the old 1008 access-denial condition is
+// retired. Telephone voice is separate and continues through Telnyx.
 //
 // The "think" (LLM) step runs on Groq rather than Deepgram's own OpenAI
 // integration: Groq is one of Deepgram's explicitly documented "bring your
@@ -153,6 +152,26 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     let currentPageNote = startPage
       ? `\n\nDon's current screen: he is looking at the "${startPage}" page.`
       : '';
+
+    // Direct Gemini Live is the preferred browser/admin voice path. Keep the
+    // browser websocket open while we attempt setup; if Gemini cannot reach
+    // setupComplete (for example an account/project access denial), fall back
+    // to the proven Deepgram path below without making the operator redial.
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const requestedProvider = (process.env.APEX_LIVE_VOICE_PROVIDER || 'gemini').toLowerCase();
+    if (geminiKey && requestedProvider !== 'deepgram') {
+      const geminiStarted = await tryStartGeminiLiveSession({
+        client,
+        ceo,
+        apiKey: geminiKey,
+        startPage,
+      });
+      if (geminiStarted) {
+        console.log('🎙️  Live voice client connected via Gemini 3.8 Live');
+        return;
+      }
+      console.warn('[live-voice] Gemini Live setup unavailable; falling back to Deepgram');
+    }
 
     const deepgramKey = process.env.DEEPGRAM_API_KEY;
     // GROQ_API_KEY is an account-level credential reused by other services on
@@ -336,7 +355,7 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
             // by one that already recovered.
             reconnectAttempt = 0;
             lastFailureReason = undefined;
-            safeSendClient({ type: 'ready' });
+            safeSendClient({ type: 'ready', provider: 'deepgram-fallback', model: GROQ_THINK_MODEL });
             stopKeepAlive();
             keepAliveTimer = setInterval(() => safeSendDeepgram({ type: 'KeepAlive' }), KEEPALIVE_INTERVAL_MS);
             console.log('[live-voice] Settings applied');
