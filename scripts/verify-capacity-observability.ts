@@ -5,7 +5,8 @@
  * OpenRouter, Groq and Gemini have independent request pools. Therefore an
  * exhausted OpenRouter pool is not a workspace stop while a configured BYOK
  * pool is still usable. llmCapacityAvailableNow() is the single runtime answer
- * to "can any route accept work?", and /health must report from that answer.
+ * to "can any route accept work?", and authenticated GET /api/health/detail
+ * must report from that answer. Public GET /health stays status + build.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +32,7 @@ function extractCapacityState(source: string): string | null {
 }
 
 function main(): void {
-  console.log('── Multi-pool capacity observability (/health) ──');
+  console.log('── Multi-pool capacity observability (/api/health/detail) ──');
 
   const source = fs.readFileSync(
     path.join(root, 'packages/api-server/src/index.ts'),
@@ -96,10 +97,15 @@ function main(): void {
   );
 
   check(
-    '/health exposes all-provider usage and each direct pool for diagnosis',
+    'authenticated health detail exposes all-provider usage and each direct pool for diagnosis',
     /allProviderUsed: requestLedger\.allProviderRequests/.test(source) &&
       /emergencyCap: requestLedger\.emergencyCap/.test(source) &&
       /directProviders: requestLedger\.directProviders/.test(source),
+  );
+  check(
+    'public /health is the minimal probe, not the capacity snapshot',
+    /app\.get\('\/health', \(_req, res\) => \{\s*sendPublicHealth\(/.test(source) &&
+      !/sendPublicHealth[\s\S]{0,240}llmRequests/.test(source),
   );
 
   if (failures > 0) {

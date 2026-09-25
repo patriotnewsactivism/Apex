@@ -3,6 +3,7 @@ import type { HealthMonitor } from '@workspace/health-monitor';
 import type { AlertManager } from '@workspace/health-monitor';
 import { db, componentHealth, healthMetrics } from '@workspace/db';
 import { desc } from 'drizzle-orm';
+import { registerHealthDetailRoute } from '../public-health.js';
 
 // ─── Health API Routes ────────────────────────────────────────────────────────
 //
@@ -14,8 +15,16 @@ import { desc } from 'drizzle-orm';
 // (api-server/src/index.ts) so they share state with the 60s polling loop
 // and the agent tools.
 
-export function createHealthRouter(monitor: HealthMonitor, alertManager: AlertManager): Router {
+export function createHealthRouter(
+  monitor: HealthMonitor,
+  alertManager: AlertManager,
+  runtimeDetail?: () => Promise<unknown>,
+): Router {
   const router = Router();
+
+  // GET /api/health/detail — operational snapshot previously returned by
+  // public GET /health. Mounted under /api, so requireAdminAuth applies.
+  if (runtimeDetail) registerHealthDetailRoute(router, runtimeDetail);
 
   // GET /api/health — full live health report
   router.get('/', async (_req, res) => {

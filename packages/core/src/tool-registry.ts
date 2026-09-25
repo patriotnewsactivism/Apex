@@ -31,11 +31,16 @@ const execAsync = promisify(exec);
 // source as the dashboard health routes instead of reporting a false degraded
 // state merely because they execute inside an agent tool call.
 let healthWebSocketChecker: WebSocketLivenessChecker | undefined;
+let healthRuntimeDetail: (() => Promise<unknown>) | undefined;
 
 export function configureHealthMonitorRuntimeDeps(deps: {
   wsChecker?: WebSocketLivenessChecker;
+  /** Same payload as authenticated GET /api/health/detail. Injected by the
+   * API process so health_check does not scrape the public /health probe. */
+  runtimeHealthDetail?: () => Promise<unknown>;
 }): void {
-  healthWebSocketChecker = deps.wsChecker;
+  if (deps.wsChecker) healthWebSocketChecker = deps.wsChecker;
+  if (deps.runtimeHealthDetail) healthRuntimeDetail = deps.runtimeHealthDetail;
 }
 
 function createAgentHealthMonitor(): HealthMonitor {
@@ -2090,16 +2095,30 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // primitive exists and is verified.
     {
       name: 'health_check',
-      description: 'Run fast, read-only diagnostics across Apex core components (database, tool registry, configured LLM fallback providers, memory system, task backlog, WebSocket liveness) and return a health summary. No side effects, no live LLM calls -- safe to call anytime.',
+      description: 'Run fast, read-only diagnostics across Apex core components (database, tool registry, configured LLM fallback providers, memory system, task backlog, WebSocket liveness) and return a health summary. When the API process has registered it, `runtime` is the operational snapshot also served at authenticated GET /api/health/detail (capacity, spend, accounts, workers). Public GET /health is only status and build provenance. No side effects, no live LLM calls -- safe to call anytime.',
       schema: z.object({}),
       requiresApproval: false,
       async execute(): Promise<ToolResult> {
         // Thin wrapper: all real check logic lives in @workspace/health-monitor.
-        // Runtime-owned dependencies (currently WebSocket liveness) are
-        // injected by api-server via configureHealthMonitorRuntimeDeps().
+        // Runtime-owned dependencies (WebSocket liveness and the admin health
+        // detail snapshot) are injected by api-server via
+        // configureHealthMonitorRuntimeDeps().
         const monitor = createAgentHealthMonitor();
         const report = await monitor.runAll();
-        return { success: true, data: report };
+        if (!healthRuntimeDetail) return { success: true, data: report };
+        try {
+          const runtime = await healthRuntimeDetail();
+          return { success: true, data: { ...report, runtime } };
+        } catch (err) {
+          return {
+            success: true,
+            data: {
+              ...report,
+              runtime: null,
+              runtimeError: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
       },
     },
 
@@ -2120,12 +2139,24 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // Get alert summary from the shared singleton
         const alertSummary = getSharedAlertManager().getSummary();
 
+        let runtime: unknown = null;
+        let runtimeError: string | null = null;
+        if (healthRuntimeDetail) {
+          try {
+            runtime = await healthRuntimeDetail();
+          } catch (err) {
+            runtimeError = err instanceof Error ? err.message : String(err);
+          }
+        }
+
         return {
           success: true,
           data: {
             live: report,
             storedComponents: components,
             alerts: alertSummary,
+            runtime,
+            runtimeError,
           },
         };
       },

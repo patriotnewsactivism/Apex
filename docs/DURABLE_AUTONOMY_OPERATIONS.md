@@ -122,7 +122,7 @@ Before declaring durable autonomy operational:
 8. Verify no duplicate child task or duplicate external action exists.
 9. Repeat while replacing/terminating a worker during execution.
 10. Verify stale durable claims recover and the work progresses without duplicate side effects.
-11. Verify production `/health` reports the expected `build.sha` and a healthy task-queue verdict.
+11. Verify production `/health` reports the expected `build.sha`, and authenticated `GET /api/health/detail` reports a healthy task-queue verdict.
 
 Do not substitute agent narration for database/tool/provider evidence.
 

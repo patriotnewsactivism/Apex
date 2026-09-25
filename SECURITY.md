@@ -40,7 +40,7 @@ If a credential is exposed, treat it as compromised: revoke/rotate it at the pro
 
 ## Authentication
 
-All `/api/*` routes except `/api/auth/login` and `/health` are expected to remain behind `requireAdminAuth` unless a reviewed design explicitly changes the boundary.
+All `/api/*` routes except `/api/auth/login` are expected to remain behind `requireAdminAuth` unless a reviewed design explicitly changes the boundary. Public `GET /health` is unauthenticated and returns only status plus build provenance so Railway can healthcheck it. Operational health (accounts, spend, caps, workers) is `GET /api/health/detail` and stays behind `requireAdminAuth`.
 
 `APEX_ADMIN_PASSWORD` and `APEX_ADMIN_TOKEN` are deployment secrets. There is deliberately no hardcoded source fallback. Missing auth configuration must fail closed rather than activating a credential stored in the repository.
 

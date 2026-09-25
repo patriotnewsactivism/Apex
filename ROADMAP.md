@@ -17,7 +17,7 @@ For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md` (ADR-015
 - Control plane, 13-agent workforce, dashboard, WebSocket LIVE keepalive, admin auth.
 - Railway Wait for CI (`checkSuites=true`); artifact volume `APEX_ARTIFACT_DIR=/data/artifacts`; `APEX_EXECUTOR_MODE=inprocess`.
 - Vercel GitHub status is a dashboard-only Vite build (`vercel.json`), not a control-plane gate.
-- `/health.tmpUsedMb` is directory contents; stale worker heartbeats prune in 5 minutes; Postgres websocket tickets survive a replica hop.
+- Authenticated `GET /api/health/detail` `memory.tmpUsedMb` is directory contents; stale worker heartbeats prune in 5 minutes; Postgres websocket tickets survive a replica hop. Public `/health` does not include that snapshot.
 - Missions HTTP API and dashboard (live SHA `8cf1418`).
 - Approval yield (ADR-014) observed in production (`approvalYields > 0`).
 - Autonomy policy + Settings allowlist + decision-packet approvals (this change set).

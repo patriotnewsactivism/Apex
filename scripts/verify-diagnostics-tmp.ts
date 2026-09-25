@@ -41,7 +41,8 @@ check(
 );
 check(
   'public /health no longer uses statfsSync for /tmp size',
-  !/statfsSync/.test(healthSource),
+  !/statfsSync/.test(healthSource) &&
+    /sendPublicHealth\(res, \{ broken: isTaskQueueBroken\(\), build: getBuildInfo\(\) \}\)/.test(healthSource),
 );
 check(
   'shared tmp walker measures actual directory contents',
@@ -58,7 +59,7 @@ check(
     /stopAfterBytes = 2 \* 1024 \* 1024 \* 1024/.test(tmpUsageSource),
 );
 check(
-  'diagnostics and /health both use the shared walker',
+  'diagnostics and authenticated health detail both use the shared walker',
   /directoryUsageBytes\('\/tmp'\)/.test(diagnosticsSource) &&
     /directoryUsageBytes\('\/tmp'\)/.test(healthSource),
 );

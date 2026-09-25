@@ -75,11 +75,13 @@ const bootstrapSource = fs.readFileSync(path.join(root, 'packages/api-server/src
 check('the shared bootstrap starts a heartbeat labeled by runtime kind', bootstrapSource.includes('startWorkerHeartbeat(options.kind)'));
 check('the shared bootstrap stops the heartbeat on shutdown', bootstrapSource.includes('heartbeat.stop()'));
 
-console.log('\n── /health exposes durable worker health separately from process-local liveness (source) ──');
+console.log('\n── authenticated /api/health/detail exposes durable worker health separately from process-local liveness (source) ──');
 const indexSource = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
-check('/health reads the durable heartbeat summary', indexSource.includes('getWorkerHeartbeatSummary()'));
-check('/health publishes it under its own field, not merged into `workforce`', indexSource.includes('workerHeartbeats: {'));
-check('/health documents that a healthy web server must not imply healthy autonomous workers',
+check('health detail reads the durable heartbeat summary', indexSource.includes('getWorkerHeartbeatSummary()'));
+check('health detail publishes it under its own field, not merged into `workforce`', indexSource.includes('workerHeartbeats: {'));
+check('public /health does not publish worker heartbeats',
+  /app\.get\('\/health', \(_req, res\) => \{\s*sendPublicHealth\(/.test(indexSource));
+check('health detail documents that a healthy web server must not imply healthy autonomous workers',
   (() => {
     const normalized = indexSource.replace(/\/\//g, ' ').replace(/\s+/g, ' ');
     return normalized.includes('web server being healthy must not imply that') &&

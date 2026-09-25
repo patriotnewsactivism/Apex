@@ -120,7 +120,7 @@ const health = fs.readFileSync(
   'utf8',
 );
 check(
-  'embedding state is served on /health, not only logged',
+  'embedding state is served on authenticated /api/health/detail, not only logged',
   /embeddings: getEmbeddingPipelineState\(\)/.test(health),
 );
 

@@ -2139,8 +2139,9 @@ async function getLocalPipeline() {
   return pipelineLoadPromise;
 }
 
-/** Embedding-pipeline state for /health, so "is semantic recall actually
- *  working" stops being a question only the logs can answer. */
+/** Embedding-pipeline state for authenticated GET /api/health/detail, so
+ *  "is semantic recall actually working" stops being a question only the
+ *  logs can answer. Public GET /health does not include it. */
 export function getEmbeddingPipelineState(): {
   ready: boolean;
   attempts: number;

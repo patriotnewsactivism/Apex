@@ -22,7 +22,7 @@ Canonical production facts:
 - [x] Artifact volume `apex-artifacts` mounted at `/data/artifacts`; `APEX_ARTIFACT_DIR=/data/artifacts`.
 - [x] Lead-research keys present on Railway: `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`.
 - [ ] `GOOGLE_PLACES_API_KEY` and `YELP_API_KEY` are still absent (not in local env either — cannot invent values).
-- [x] Live `/health` reports **3 OpenRouter accounts / 4 inference keys**. Paid credit is exhausted on some accounts; `:free` routing is unaffected. `railway variable list` still only names `OPENROUTER_API_KEY` plus management keys — do not invent additional secrets.
+- [x] Historical (before ADR-018): live public `/health` reported **3 OpenRouter accounts / 4 inference keys**. That account/spend/worker detail now lives on authenticated `GET /api/health/detail`. Public `/health` is status and build only. Paid credit is exhausted on some accounts; `:free` routing is unaffected. `railway variable list` still only names `OPENROUTER_API_KEY` plus management keys — do not invent additional secrets.
 - [x] `APEX_EXECUTOR_MODE=inprocess`.
 - [ ] Verify `/health.build.sha` after every `main` push. Wait-for-CI will skip red commits.
 
