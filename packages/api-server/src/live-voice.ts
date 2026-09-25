@@ -220,6 +220,7 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     // stream continues uninterrupted. Provider VAD and first returned audio
     // are measured from that server receipt so clock domains stay consistent.
     let lastSpeechStartedAt: number | null = null;
+    let lastUserTranscriptAt: number | null = null;
     let firstAudioPending = false;
 
     const safeSendClient = (payload: Record<string, unknown>) => {
@@ -366,6 +367,16 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               break;
             }
             if (text) {
+              if (role === 'user') {
+                lastUserTranscriptAt = Date.now();
+                if (lastSpeechStartedAt !== null) {
+                  safeSendClient({
+                    type: 'latency',
+                    stage: 'transcript_ready',
+                    ms: lastUserTranscriptAt - lastSpeechStartedAt,
+                  });
+                }
+              }
               safeSendClient({ type: 'transcript', role, text });
               persistTurn(role, text);
             }
@@ -385,6 +396,13 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
                 safeSendClient({ type: 'toolActivity', name: fc.name });
                 if (lastSpeechStartedAt !== null) {
                   safeSendClient({ type: 'latency', stage: 'tool_dispatch', ms: dispatchedAt - lastSpeechStartedAt });
+                }
+                if (lastUserTranscriptAt !== null) {
+                  safeSendClient({
+                    type: 'latency',
+                    stage: 'command_classification',
+                    ms: dispatchedAt - lastUserTranscriptAt,
+                  });
                 }
                 let args: Record<string, unknown> = {};
                 let result: Record<string, unknown>;
