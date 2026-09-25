@@ -355,7 +355,7 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
             // by one that already recovered.
             reconnectAttempt = 0;
             lastFailureReason = undefined;
-            safeSendClient({ type: 'ready' });
+            safeSendClient({ type: 'ready', provider: 'deepgram-fallback', model: GROQ_THINK_MODEL });
             stopKeepAlive();
             keepAliveTimer = setInterval(() => safeSendDeepgram({ type: 'KeepAlive' }), KEEPALIVE_INTERVAL_MS);
             console.log('[live-voice] Settings applied');
