@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import type { IncomingMessage } from 'http';
 import { WebSocket } from 'ws';
 import type { ApexCEO } from '@workspace/agents';
 import { db, voiceChatSessions, voiceChatTurns } from '@workspace/db';
@@ -35,7 +34,6 @@ interface GeminiServerContent {
 
 interface GeminiLiveOptions {
   client: WebSocket;
-  request: IncomingMessage;
   ceo: ApexCEO;
   apiKey: string;
   startPage?: string;
@@ -262,7 +260,7 @@ export async function tryStartGeminiLiveSession({
       ws.on('open', () => {
         const setup: Record<string, unknown> = {
           model: 'models/' + GEMINI_LIVE_MODEL,
-          responseModalities: ['AUDIO'],
+          generationConfig: { responseModalities: ['AUDIO'] },
           systemInstruction: {
             parts: [{ text: systemPrompt }],
           },
@@ -513,20 +511,10 @@ export async function tryStartGeminiLiveSession({
 
       if (pendingScreenContext) {
         sendGemini({
-          clientContent: {
-            turns: [
-              {
-                role: 'user',
-                parts: [
-                  {
-                    text:
-                      '[screen context — silent context only, do not read aloud or reply to this note] ' +
-                      pendingScreenContext,
-                  },
-                ],
-              },
-            ],
-            turnComplete: false,
+          realtimeInput: {
+            text:
+              '[screen context — silent context only, do not read aloud or reply to this note] ' +
+              pendingScreenContext,
           },
         });
         pendingScreenContext = null;
