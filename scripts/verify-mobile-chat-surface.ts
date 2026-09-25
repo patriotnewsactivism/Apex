@@ -130,8 +130,21 @@ check(
   /playProc\.connect\(playbackCtx\.destination\)/.test(voice),
 );
 check(
-  'idle drain callbacks cannot re-arm the echo gate forever (wasPlaying guard)',
-  /wasPlayingRef\.current/.test(voice),
+  'Live Talk is true full duplex: agent playback never zeros or gates microphone frames',
+  /TRUE FULL DUPLEX/.test(voice) &&
+    !/agentSpeakingUntilRef/.test(voice) &&
+    !/pcm16\s*=\s*new Int16Array\(down\.length\)/.test(voice),
+);
+check(
+  'capture frames are ~21ms at 48kHz instead of the former ~85ms chunks',
+  /createScriptProcessor\(1024,\s*1,\s*1\)/.test(voice) &&
+    !/createScriptProcessor\(4096,\s*1,\s*1\)/.test(voice),
+);
+check(
+  'local VAD can flush playback immediately while provider VAD remains authoritative',
+  /LOCAL_BARGE_RMS/.test(voice) &&
+    /speech_started/.test(voice) &&
+    /stopPlayback\(\)/.test(voice),
 );
 check(
   'an unavailable microphone API reports a clear cause instead of failing silently',
