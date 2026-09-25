@@ -1,13 +1,24 @@
 import { z } from 'zod';
 import type { ToolDefinition } from './types.js';
 import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-taxonomy.js';
+import {
+  apexLeadExternalId,
+  apexLeadIdFromExternalId,
+  isBuildMyBotLeadIngestConfigured,
+  leadIngestNotConfigured,
+  listBuildMyBotLeads,
+  pushBuildMyBotLeads,
+  type ApexIngestLead,
+} from './buildmybot-lead-client.js';
 
 // ─── BuildMyBot Connector ─────────────────────────────────────────────────────
 //
 // Gives APEX command-and-supervision authority over the BuildMyBot.app AI
 // workforce (the persistent, role-specific agents served by the Railway-hosted
-// Node/Express application, with durable state in Neon/Postgres). APEX is the portfolio-level commander; the
-// BuildMyBot agents are its hands for that product.
+// Node/Express application). BuildMyBot persists product data in Supabase.
+// APEX does not open that database. Lead handoff uses the authenticated
+// ingest API in buildmybot-lead-client.ts. APEX is the portfolio-level
+// commander; the BuildMyBot agents are its hands for that product.
 //
 // Command channel:  manager_briefings — every BuildMyBot role reads the
 //                   latest briefing for today FIRST on its next shift and
@@ -20,10 +31,9 @@ import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-tax
 //
 // Env (all in .env — see .env.example):
 //   BUILDMYBOT_APP_URL               default https://www.buildmybot.app
-//   BUILDMYBOT_DATABASE_URL          Neon/Postgres URL for future direct
-//                                    data-plane tooling only; service health
-//                                    does not require database credentials.
-////   BUILDMYBOT_CRON_SECRET           shared secret protecting BuildMyBot cron routes
+//   BUILDMYBOT_API_BASE_URL          lead-ingest base URL; default https://www.buildmybot.app
+//   BUILDMYBOT_LEAD_INGEST_TOKEN     bearer token for /api/integrations/apex/leads
+//   BUILDMYBOT_CRON_SECRET           shared secret protecting BuildMyBot cron routes
 //   BUILDMYBOT_RAILWAY_TOKEN         Railway API token (approval-gated redeploy tool)
 //   BUILDMYBOT_RAILWAY_SERVICE_ID    defaults to 60b6d260-f5d8-463d-87be-58339545eaaf
 //   BUILDMYBOT_RAILWAY_ENVIRONMENT_ID defaults to 6ce38db0-789b-4fe9-ad02-f068fe6866ae
@@ -39,12 +49,10 @@ import { ICP_INDUSTRIES, isIcpIndustry, normalizeIndustry } from './industry-tax
 // branch-protected PRs; the deploy hook only rebuilds what's merged.
 
 const APP_URL = () => process.env.BUILDMYBOT_APP_URL ?? 'https://www.buildmybot.app';
-const BUILDMYBOT_DATABASE_URL = () => process.env.BUILDMYBOT_DATABASE_URL ?? '';
 
-/** Service-level BuildMyBot integration is available independently of direct
- * database access. BuildMyBot is Neon/Postgres-backed; APEX health/cron/deploy
- * controls communicate with the application and platform APIs, not a legacy
- * database-vendor REST layer.
+/** Service-level BuildMyBot integration is available without database
+ * credentials. Health, cron, and deploy controls talk to the application and
+ * Railway APIs. Lead push and recent-lead reads use the ingest HTTP API.
  */
 export function buildMyBotConfigured(): boolean {
   try {
@@ -52,11 +60,6 @@ export function buildMyBotConfigured(): boolean {
   } catch {
     return false;
   }
-}
-
-function buildMyBotNeonDataPlaneConfigured(): boolean {
-  const url = BUILDMYBOT_DATABASE_URL();
-  return /^postgres(?:ql)?:\/\//i.test(url);
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {
@@ -69,12 +72,9 @@ function buildQuery(params: Record<string, string | number | undefined>): string
   return qs ? `?${qs}` : '';
 }
 
-/** Retired direct-data helper.
- *
- * BuildMyBot's data plane is Neon/Postgres-backed. These legacy tool bodies are
- * filtered out below until they are migrated to a Neon-backed management API
- * or database adapter. Keeping this fail-closed stub prevents accidental
- * execution during that transition.
+/** Fail-closed stub for BuildMyBot tools that still have no API backend.
+ * Status, briefings, and error logs stay filtered out below. Lead push and
+ * recent-lead reads do not use this helper.
  */
 async function sbFetch(
   _table: string,
@@ -82,12 +82,123 @@ async function sbFetch(
   _init?: RequestInit,
 ): Promise<any> {
   throw new Error(
-    'BuildMyBot direct data-plane tool is retired pending Neon-backed implementation.',
+    'BuildMyBot direct data-plane tool is retired: no API backend is available for this operation.',
   );
 }
 
 function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+export interface ApexLeadForHandoff {
+  id: string;
+  companyName: string;
+  website: string | null;
+  industry: string | null;
+  city: string | null;
+  decisionMakerName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  fitReason: string | null;
+  outreachAngle: string | null;
+  researchedByAgentId: string | null;
+  campaignId: string | null;
+}
+
+export interface BuildMyBotPushLoadResult {
+  candidatesScanned: number;
+  leads: ApexLeadForHandoff[];
+}
+
+export interface BuildMyBotPushDeps {
+  loadCandidates: (input: {
+    source: 'campaign' | 'backlog';
+    campaignId?: string;
+    limit: number;
+  }) => Promise<BuildMyBotPushLoadResult>;
+  markPushed: (ids: string[]) => Promise<void>;
+}
+
+let pushDepsOverride: BuildMyBotPushDeps | null = null;
+
+/** Test-only seam. Production calls leave this unset and read APEX's own leads table. */
+export function setBuildMyBotPushDepsForTests(deps: BuildMyBotPushDeps | null): void {
+  pushDepsOverride = deps;
+}
+
+function toIngestLead(lead: ApexLeadForHandoff, source: 'campaign' | 'backlog'): ApexIngestLead {
+  const notes = [lead.fitReason, lead.outreachAngle ? `Angle: ${lead.outreachAngle}` : null]
+    .filter((part): part is string => Boolean(part))
+    .join('\n');
+  const tags = [normalizeIndustry(lead.industry), lead.city].filter((part): part is string => Boolean(part));
+  return {
+    externalId: apexLeadExternalId(lead.id),
+    ...(lead.decisionMakerName ? { name: lead.decisionMakerName } : {}),
+    ...(lead.contactEmail ? { email: lead.contactEmail } : {}),
+    ...(lead.contactPhone ? { phone: lead.contactPhone } : {}),
+    ...(lead.companyName ? { company: lead.companyName } : {}),
+    ...(lead.website ? { website: lead.website } : {}),
+    source: `apex:${source}${lead.campaignId ? `:${lead.campaignId}` : ''}`,
+    ...(notes ? { notes } : {}),
+    ...(tags.length > 0 ? { tags } : {}),
+  };
+}
+
+async function loadApexLeadsForPush(input: {
+  source: 'campaign' | 'backlog';
+  campaignId?: string;
+  limit: number;
+}): Promise<BuildMyBotPushLoadResult> {
+  const { db, researchedLeads } = await import('@workspace/db');
+  const { and, eq, isNull, isNotNull, desc } = await import('drizzle-orm');
+  const cap = input.limit;
+  const candidates = await db
+    .select()
+    .from(researchedLeads)
+    .where(
+      input.source === 'campaign'
+        ? and(eq(researchedLeads.campaignId, input.campaignId!), eq(researchedLeads.status, 'new'))
+        : and(
+            isNull(researchedLeads.campaignId),
+            eq(researchedLeads.status, 'new'),
+            isNotNull(researchedLeads.website),
+          ),
+    )
+    .orderBy(desc(researchedLeads.createdAt))
+    .limit(input.source === 'backlog' ? cap * 20 : cap);
+
+  const eligible = (input.source === 'backlog'
+    ? candidates.filter((lead) => lead.website && isIcpIndustry(lead.industry))
+    : candidates
+  ).slice(0, cap);
+
+  return {
+    candidatesScanned: candidates.length,
+    leads: eligible.map((lead) => ({
+      id: lead.id,
+      companyName: lead.companyName,
+      website: lead.website,
+      industry: lead.industry,
+      city: lead.city,
+      decisionMakerName: lead.decisionMakerName,
+      contactEmail: lead.contactEmail,
+      contactPhone: lead.contactPhone,
+      fitReason: lead.fitReason,
+      outreachAngle: lead.outreachAngle,
+      researchedByAgentId: lead.researchedByAgentId,
+      campaignId: lead.campaignId,
+    })),
+  };
+}
+
+async function markApexLeadsPushed(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const { db, researchedLeads } = await import('@workspace/db');
+  const { inArray } = await import('drizzle-orm');
+  await db
+    .update(researchedLeads)
+    .set({ status: 'pushed_to_buildmybot' })
+    .where(inArray(researchedLeads.id, ids));
 }
 
 export function createBuildMyBotTools(): ToolDefinition[] {
@@ -398,151 +509,103 @@ export function createBuildMyBotTools(): ToolDefinition[] {
 
     // ── Bridge: push Apex-researched leads into BuildMyBot's pipeline ──────
     //
-    // Historical bridge: Apex and BuildMyBot each have a researched_leads
-    // table with different column names. The old cross-database implementation
-    // is retired until this tool is migrated to BuildMyBot's Neon-backed data plane.
-    //
-    //   Apex                     BuildMyBot
-    //   fit_reason               why_good_fit
-    //   outreach_angle           suggested_angle
-    //   researched_by_agent_id   researched_by
-    //   —                        source_query, surfaced_to_sales_at
-    //
-    // api/cron/_sales-outreach.ts (Jordan Blake) is the ONLY thing in either
-    // system that sends a real email or places a real call, and it reads
-    // BuildMyBot's table. So every lead Apex ever researched sat somewhere
-    // that worker cannot see — 4,722 of them, all still status='new', while
-    // BuildMyBot's own copy went stale on 2026-07-21.
-    //
-    // Safety: BuildMyBot's SALES_AUTOMATION_DRY_RUN defaults to TRUE, so
-    // pushing queues leads without sending anything. Turning outbound on is a
-    // separate, deliberate act. This tool is approval-gated and batch-capped
-    // regardless — it is the step where Apex's work becomes contact with real
-    // businesses.
+    // Posts to BuildMyBot's lead ingest API. Each APEX lead keeps a stable
+    // externalId (`apex:<researched_leads.id>`) so a retry is idempotent.
+    // dryRun defaults to true. A live push is hard-gated in approval-policy.ts
+    // and ToolRegistry.execute, the same gate used by other outbound tools.
+    // This tool does not email or call anyone.
     {
       name: 'buildmybot_push_leads',
       description:
-        "Push Apex-researched leads into BuildMyBot's sales pipeline so the outreach agent can work them. Handles the column mapping between the two systems and de-dupes on website. Use source='campaign' with a campaignId to hand off one campaign's output, or source='backlog' for pre-campaign leads (those are filtered to ICP industries with a real website). Nothing is sent to a business by this tool — it queues leads for BuildMyBot's outreach worker, which is itself dry-run gated.",
+        "Push Apex-researched leads into BuildMyBot through POST /api/integrations/apex/leads. dryRun defaults to true and does not write. Set dryRun=false for a real push; that call is approval-gated. Use source='campaign' with a campaignId, or source='backlog' for pre-campaign ICP leads that have a website. Retries reuse a stable externalId per APEX lead. Nothing is emailed or called by this tool. Requires BUILDMYBOT_LEAD_INGEST_TOKEN.",
       schema: z.object({
         source: z
           .enum(['campaign', 'backlog'])
           .describe("'campaign' pushes one campaign's leads; 'backlog' pushes pre-campaign leads that match the ICP."),
         campaignId: z.string().optional().describe("Required when source='campaign'."),
+        orgId: z.string().optional().describe('BuildMyBot organization id, when the ingest API should scope the write.'),
+        ownerEmail: z.string().optional().describe('BuildMyBot owner email, when orgId is not used.'),
         limit: z
           .number()
+          .int()
           .min(1)
-          .max(200)
+          .max(1000)
           .optional()
-          .describe('Max leads this push (default 50). Deliberately capped — outreach deliverability degrades on bulk dumps.'),
+          .describe('Max APEX leads this call (default 50). Requests are chunked at 200 for the ingest API.'),
         dryRun: z
           .boolean()
           .optional()
-          .describe('Preview what WOULD be pushed without writing anything. Use this first on the backlog.'),
+          .describe('Default true. Preview the handoff without writing. Set false for a real, approval-gated push.'),
       }),
-      requiresApproval: true,
-      async execute({ source: source = 'backlog', campaignId: campaignId = '', limit: limit = 50, dryRun: dryRun = false }) {
-        const { db, researchedLeads } = await import('@workspace/db');
-        const { and, eq, isNull, isNotNull, desc } = await import('drizzle-orm');
+      requiresApproval: true, // Hard-gated in approval-policy.ts. ToolRegistry.execute enforces that gate before this body runs.
+      async execute(input: {
+        source?: 'campaign' | 'backlog';
+        campaignId?: string;
+        orgId?: string;
+        ownerEmail?: string;
+        limit?: number;
+        dryRun?: boolean;
+      }) {
+        const source = input.source ?? 'backlog';
+        const campaignId = input.campaignId ?? '';
+        const orgId = input.orgId;
+        const ownerEmail = input.ownerEmail;
+        const limit = input.limit ?? 50;
+        const dryRun = input.dryRun ?? true;
+        const live = dryRun === false;
+        if (!isBuildMyBotLeadIngestConfigured()) return leadIngestNotConfigured(!live);
 
         if (source === 'campaign' && !campaignId) {
           throw new Error("source='campaign' requires a campaignId. Use source='backlog' for pre-campaign leads.");
         }
         const cap = limit ?? 50;
-
-        // Pull a wider slice than the cap for the backlog: ICP filtering runs
-        // in JS (via the taxonomy) so selection does not depend on whether the
-        // stored industry strings have been normalized yet.
-        const candidates = await db
-          .select()
-          .from(researchedLeads)
-          .where(
-            source === 'campaign'
-              ? and(eq(researchedLeads.campaignId, campaignId!), eq(researchedLeads.status, 'new'))
-              : and(
-                  isNull(researchedLeads.campaignId),
-                  eq(researchedLeads.status, 'new'),
-                  isNotNull(researchedLeads.website),
-                ),
-          )
-          .orderBy(desc(researchedLeads.createdAt))
-          .limit(source === 'backlog' ? cap * 20 : cap);
-
-        const eligible = (source === 'backlog'
-          ? candidates.filter((l) => l.website && isIcpIndustry(l.industry))
-          : candidates
-        ).slice(0, cap);
-
-        if (dryRun) {
-          const byIndustry: Record<string, number> = {};
-          for (const l of eligible) {
-            const key = normalizeIndustry(l.industry) ?? 'Unknown';
-            byIndustry[key] = (byIndustry[key] ?? 0) + 1;
-          }
-          return {
-            dryRun: true,
-            source,
-            candidatesScanned: candidates.length,
-            wouldPush: eligible.length,
-            byIndustry,
-            icpFilter: source === 'backlog' ? ICP_INDUSTRIES : 'not applied (campaign leads are already on-ICP)',
-            sample: eligible.slice(0, 5).map((l) => ({
-              companyName: l.companyName,
-              website: l.website,
-              industry: normalizeIndustry(l.industry),
-              city: l.city,
-            })),
-          };
+        const loaded = pushDepsOverride
+          ? await pushDepsOverride.loadCandidates({ source, campaignId, limit: cap })
+          : await loadApexLeadsForPush({ source, campaignId, limit: cap });
+        const leads = loaded.leads.slice(0, cap);
+        const ingestLeads = leads.map((lead) => toIngestLead(lead, source));
+        const byIndustry: Record<string, number> = {};
+        for (const lead of leads) {
+          const key = normalizeIndustry(lead.industry) ?? 'Unknown';
+          byIndustry[key] = (byIndustry[key] ?? 0) + 1;
         }
 
-        let pushed = 0;
-        let skipped = 0;
-        const failures: string[] = [];
+        const apiResult = await pushBuildMyBotLeads({
+          orgId,
+          ownerEmail,
+          dryRun: !live,
+          leads: ingestLeads,
+        });
 
-        for (const lead of eligible) {
-          try {
-            // resolution=ignore-duplicates leans on BuildMyBot's UNIQUE index
-            // on website — Postgres does the de-dup, not a read-then-write
-            // race across two databases.
-            await sbFetch('researched_leads', '', {
-              method: 'POST',
-              headers: { Prefer: 'return=minimal,resolution=ignore-duplicates' },
-              body: JSON.stringify({
-                company_name: lead.companyName,
-                website: lead.website,
-                industry: normalizeIndustry(lead.industry),
-                city: lead.city,
-                why_good_fit: lead.fitReason,
-                suggested_angle: lead.outreachAngle,
-                source_query: `apex:${source}${campaignId ? `:${campaignId}` : ''}`,
-                researched_by: lead.researchedByAgentId,
-                status: 'new',
-              }),
-            });
-
-            await db
-              .update(researchedLeads)
-              .set({ status: 'pushed_to_buildmybot' })
-              .where(eq(researchedLeads.id, lead.id));
-            pushed++;
-          } catch (err) {
-            skipped++;
-            const msg = err instanceof Error ? err.message : String(err);
-            if (failures.length < 5) failures.push(`${lead.companyName}: ${msg.slice(0, 120)}`);
-          }
+        let markedPushed = 0;
+        if (live && apiResult.appliedExternalIds.length > 0) {
+          const ids = apiResult.appliedExternalIds
+            .map((externalId) => apexLeadIdFromExternalId(externalId))
+            .filter((id): id is string => Boolean(id));
+          const mark = pushDepsOverride?.markPushed ?? markApexLeadsPushed;
+          await mark(ids);
+          markedPushed = ids.length;
         }
 
         return {
+          ...apiResult,
           source,
-          campaignId,
-          candidatesScanned: candidates.length,
-          eligible: eligible.length,
-          pushed,
-          skipped,
-          failures: failures.length > 0 ? failures : undefined,
-          note:
-            `${pushed} lead(s) queued in BuildMyBot's researched_leads. The outreach worker ` +
-            `(api/cron/_sales-outreach.ts) picks these up on its next run. Nothing has been sent yet — ` +
-            `SALES_AUTOMATION_DRY_RUN must be explicitly set to false before any real email or call goes out.`,
+          campaignId: campaignId || undefined,
+          candidatesScanned: loaded.candidatesScanned,
+          eligible: leads.length,
+          markedPushed,
+          byIndustry,
+          icpFilter: source === 'backlog' ? ICP_INDUSTRIES : 'not applied (campaign leads are already on-ICP)',
+          sample: leads.slice(0, 5).map((lead) => ({
+            externalId: apexLeadExternalId(lead.id),
+            companyName: lead.companyName,
+            website: lead.website,
+            industry: normalizeIndustry(lead.industry),
+            city: lead.city,
+          })),
+          note: live
+            ? 'Live push sent leads to BuildMyBot. This tool does not email or call anyone.'
+            : 'Dry run only. No leads were written. Set dryRun=false for a real push; that call stays approval-gated.',
         };
       },
     },
@@ -595,49 +658,37 @@ export function createBuildMyBotTools(): ToolDefinition[] {
       },
     },
 
-    // ── Read: lead pipeline detail ─────────────────────────────────────────
+    // ── Read: leads already visible to the ingest API ──────────────────────
     {
       name: 'buildmybot_recent_leads',
       description:
-        'List recent BuildMyBot CRM leads with follow-up state (created, followed-up, replied). Use for pipeline supervision and to ground sales directives.',
+        'List leads from BuildMyBot GET /api/integrations/apex/leads. Pass orgId or ownerEmail, and optional since/limit. Requires BUILDMYBOT_LEAD_INGEST_TOKEN. Returns a not-configured result when the token is unset.',
       schema: z.object({
-        limit: z.number().optional().describe('Max rows (default 20)'),
-        onlyUnreplied: z
-          .boolean()
-          .optional()
-          .describe('Only leads that have not replied yet'),
+        orgId: z.string().optional().describe('BuildMyBot organization id'),
+        ownerEmail: z.string().optional().describe('BuildMyBot owner email, when orgId is not used'),
+        since: z.string().optional().describe('ISO timestamp lower bound'),
+        limit: z.number().int().min(1).max(200).optional().describe('Max rows (default 20)'),
       }),
       requiresApproval: false,
-      async execute({ limit: limit = 20, onlyUnreplied: onlyUnreplied = false }) {
-        const rows = await sbFetch(
-          'leads',
-          buildQuery({
-            order: 'created_at.desc',
-            limit: limit ?? 20,
-            ...(onlyUnreplied ? { replied_at: 'is.null' } : {}),
-            select: 'id,name,email,status,source,created_at,replied_at,follow_up_sent_at,last_ai_action_at',
-          }),
-        );
-        return rows ?? [];
+      async execute(input: { orgId?: string; ownerEmail?: string; since?: string; limit?: number }) {
+        return listBuildMyBotLeads({
+          orgId: input.orgId,
+          ownerEmail: input.ownerEmail,
+          since: input.since,
+          limit: input.limit ?? 20,
+        });
       },
     },
   ].filter((tool) => {
-    const retiredDirectDataTools = new Set([
+    // Status, briefings, and error tools still have no BuildMyBot API.
+    // They stay unregistered. Lead push and recent-lead reads are served
+    // by the ingest client above.
+    const retiredWithoutBackend = new Set([
       'buildmybot_status',
       'buildmybot_send_briefing',
       'buildmybot_open_errors',
       'buildmybot_resolve_error',
-      'buildmybot_push_leads',
-      'buildmybot_recent_leads',
     ]);
-    // The Neon URL is surfaced in Settings now, but these six tools are not
-    // re-enabled until their query layer is genuinely Neon-backed. Failing
-    // closed is safer than silently routing a production action through a
-    // retired data-plane implementation.
-    if (retiredDirectDataTools.has(tool.name)) {
-      void buildMyBotNeonDataPlaneConfigured();
-      return false;
-    }
-    return true;
+    return !retiredWithoutBackend.has(tool.name);
   });
 }

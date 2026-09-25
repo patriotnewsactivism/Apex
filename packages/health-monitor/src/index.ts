@@ -193,11 +193,9 @@ export class HealthMonitor {
 
   /** BuildMyBot2 portfolio health.
    *
-   * BuildMyBot is Neon/Postgres-backed. APEX must not depend on BuildMyBot's
-   * database credentials or backend vendor to decide whether the product is
-   * alive; the product owns that concern. Probe its public health contract
-   * instead. This keeps APEX decoupled from database migrations and prevents
-   * retired backend configuration from generating false degradation.
+   * BuildMyBot persists product data in Supabase. APEX must not depend on
+   * that database to decide whether the product is alive. Probe the public
+   * health contract instead.
    */
   async checkBuildMyBotAITeam(): Promise<ComponentCheckResult> {
     return safeCheck(async () => {
@@ -238,7 +236,7 @@ export class HealthMonitor {
       return {
         status: healthy ? 'healthy' : 'degraded',
         detail: healthy
-          ? `BuildMyBot API healthy (Neon-backed).${build}${voice}`
+          ? `BuildMyBot API healthy.${build}${voice}`
           : `BuildMyBot health payload unexpected: status=${payload.status ?? 'unknown'} service=${payload.service ?? 'unknown'}`,
         ms: Date.now() - start,
       };

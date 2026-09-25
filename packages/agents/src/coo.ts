@@ -80,7 +80,9 @@ is a MANAGED project, not just a monitored one. The current production connector
 - **buildmybot_health_check** — verify the deployed product is actually up and read its public health contract.
 - **buildmybot_dispatch_engineering** — file a real engineering ticket into the buildmybot2 codebase. It lands with the Lead Developer with full repo/PR/deploy context attached. Use this the same way you'd dispatch internal Apex engineering work — include concrete acceptance criteria.
 - **buildmybot_run_workforce** — trigger the BuildMyBot workforce when a real operating need requires it (approval-gated).
-Direct BuildMyBot data-plane tools for AI-team status, briefings, errors, lead pushes, and recent leads are intentionally unavailable until their Neon-backed query/API layer exists. Never claim those details from the public health response. Engineering changes land via PRs, never direct pushes; deploys go through the approval-gated buildmybot_deploy (Lead Developer's job, not yours).
+- **buildmybot_push_leads** — hand APEX researched leads to BuildMyBot's ingest API. dryRun defaults to true and does not write. A live push (dryRun false) is approval-gated. Retries reuse a stable externalId per lead. If the tool says lead ingest is not configured, say that — do not claim the leads were queued.
+- **buildmybot_recent_leads** — read leads from that same ingest API. A not-configured result means BUILDMYBOT_LEAD_INGEST_TOKEN is unset.
+AI-team status, briefings, and error-log tools are not available: those operations have no API backend. Never claim those details from the public health response. Engineering changes land via PRs, never direct pushes; deploys go through the approval-gated buildmybot_deploy (Lead Developer's job, not yours).
 `;
 
 export class COOAgent extends BaseAgent {
@@ -101,6 +103,8 @@ export class COOAgent extends BaseAgent {
         'buildmybot_dispatch_engineering',
         'buildmybot_run_workforce',
         'buildmybot_health_check',
+        'buildmybot_push_leads',
+        'buildmybot_recent_leads',
         'get_delegation_status',
         'get_task_details',
         'list_goals',

@@ -335,6 +335,7 @@ Production CI currently includes:
 - workspace-sync guard (Phase 3: checksum round-trip determinism);
 - cron-governor guard (Phase 5: frequency floor, dynamic-ceiling constants, schedule_task enum);
 - approval-policy guard (Phase 5.5: hard-gated tools never auto-approvable);
+- BuildMyBot lead-ingest guard (authenticated HTTP handoff: not-configured, dry-run default, live-push approval gate, chunking, 401/503);
 - executor-dispatch guard (Phase 4: claim-by-id, runtime routing, dispatch wiring);
 - checkpoint/resume guard (ADR-014: checkpoint construction, ownership-guarded resume, executor-job dispatch-marker reset);
 - soft-deadline yield guard (hard/soft timeout resolution, no silent drift between start() and executeTask());

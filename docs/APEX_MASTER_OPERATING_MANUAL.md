@@ -451,9 +451,12 @@ Currently exposed by `packages/core/src/buildmybot-connector.ts`:
 - trigger BuildMyBot workers;
 - dispatch engineering work with BuildMyBot repository context;
 - perform health checks;
-- run the approval-gated Railway redeploy/recovery path.
+- run the approval-gated Railway redeploy/recovery path;
+- push researched leads and read recent leads through `POST`/`GET /api/integrations/apex/leads`.
 
-Currently **not exposed at runtime**: `buildmybot_status`, `buildmybot_send_briefing`, `buildmybot_open_errors`, `buildmybot_resolve_error`, `buildmybot_push_leads`, and `buildmybot_recent_leads`. Those legacy direct-data tools are filtered out until their query layer is genuinely Neon-backed (or equivalent management API operations exist). Product visitor/session analytics are likewise not implemented by this connector.
+Lead push defaults to `dryRun: true`. A live push is approval-gated. Both lead tools return a not-configured result when `BUILDMYBOT_LEAD_INGEST_TOKEN` is unset. The base URL is `BUILDMYBOT_API_BASE_URL` (empty defaults to `https://www.buildmybot.app`). The token must match BuildMyBot's `APEX_LEAD_INGEST_TOKEN`.
+
+Still **not exposed at runtime**: `buildmybot_status`, `buildmybot_send_briefing`, `buildmybot_open_errors`, and `buildmybot_resolve_error`. Those tools have no BuildMyBot API backend. Product visitor/session analytics are likewise not implemented by this connector.
 
 BuildMyBot provides customer-engagement surfaces such as chat, knowledge/RAG, voice, SMS, CRM/leads, billing, automation, and agency/reseller workflows, but APEX must not assume those product claims equal current production capability. Verify the current `patriotnewsactivism/buildmybot2` source/live system before promising or operating a feature.
 
