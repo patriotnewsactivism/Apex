@@ -1,0 +1,1285 @@
+diff --git a/.agents/skills/apex-autopilot/SKILL.md b/.agents/skills/apex-autopilot/SKILL.md
+index d6dd5eb32866e54d91bd2a8fcbdb9cbfea585b6d..c7e55dc56818d25b505086a47c99332d6ef59be4 100644
+--- a/.agents/skills/apex-autopilot/SKILL.md
++++ b/.agents/skills/apex-autopilot/SKILL.md
+@@ -216,7 +216,7 @@ When asked to "check APEX," "fix APEX," "run APEX," or similar broad language, d
+ ### Minimum health pass
+ 
+ 1. Read current `AGENTS.md`.
+-2. Resolve the current production URL from `AGENTS.md` / `docs/PRODUCTION_OPERATIONS.md` and the configured Cloud Run service; the documented APEX domain (`https://apex.donmatthews.live`) is the expected value, not a guess to be replaced by history.
++2. Resolve the current production URL from `AGENTS.md` / `docs/PRODUCTION_OPERATIONS.md` and the configured Railway `apex-backend` service; the documented APEX domain (`https://apex.donmatthews.live`) is the expected value, not a guess to be replaced by history.
+ 3. Call `/health`.
+ 4. Compare returned `build.sha` with the expected deployed/source commit.
+ 5. Inspect task queue liveness and recent failure pattern.
+diff --git a/.agents/skills/apex-autopilot/references/runtime-contract.md b/.agents/skills/apex-autopilot/references/runtime-contract.md
+index 5221cfb20937fe71278e911b4844d2a9d34c5045..b7955dfed40b32be8edca9fa13ead6295b375210 100644
+--- a/.agents/skills/apex-autopilot/references/runtime-contract.md
++++ b/.agents/skills/apex-autopilot/references/runtime-contract.md
+@@ -1,6 +1,6 @@
+ # APEX Runtime Contract
+ 
+-**Snapshot date:** 2026-08-28
++**Snapshot date:** 2026-09-24 (hosting correction; live state still requires direct verification)
+ 
+ This is a convenience reference for the `apex-autopilot` skill. It is not the canonical source of truth. Re-read the repository's current `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md`, and live runtime before acting.
+ 
+@@ -8,9 +8,9 @@ This is a convenience reference for the `apex-autopilot` skill. It is not the ca
+ 
+ - Repository: `patriotnewsactivism/Apex`.
+ - APEX is a persistent hierarchical 13-agent workforce.
+-- Production hosting: the **existing Google Cloud Run service** behind `https://apex.donmatthews.live`.
+-- Production image build: Google Cloud Build using `cloudbuild.apex.yaml`.
+-- Production release: update the exact existing Cloud Run service image; do not create a substitute service.
++- Production hosting: **Railway** project `APEX`, service `apex-backend`, behind `https://apex.donmatthews.live` (ADR-015).
++- Production image build: Railway builds the repository `Dockerfile` per `railway.toml`.
++- Production release: `main` is gated by GitHub Actions `production-checks` plus Railway Wait for CI; verify the exact live SHA after Railway reports success.
+ - A push/merge to `main` alone does not prove a live deployment.
+ - `/health` exposes the build commit (`build.sha`), uptime, task-queue liveness, and aggregate LLM-capacity state; repeated dequeue failures can make health fail.
+ - Database: Postgres through `DATABASE_URL` using Drizzle. A runtime DB credential is not blanket Supabase/project-management authorization.
+@@ -18,7 +18,7 @@ This is a convenience reference for the `apex-autopilot` skill. It is not the ca
+ - Production inference routes through OpenRouter. Inspect `packages/core/src/llm-client.ts` rather than relying on a historical provider snapshot.
+ - Approval is per tool. Production deployment/rollback, protected git writes, schema/destructive database changes, outbound calls/messages, financial effects, and other high-impact actions remain gated.
+ - Escalations and approvals are distinct concepts. An escalation is not consent.
+-- AWS Lightsail/CodeBuild and Railway are retired APEX hosting paths and are not production fallbacks.
++- AWS Lightsail/CodeBuild is retired. Google Cloud Run is a retired, billing-disabled migration-back path only; it is not the ordinary production release path.
+ 
+ ## Production deployment truth test
+ 
+@@ -26,8 +26,8 @@ For a claimed production release, require all applicable proof:
+ 
+ 1. Intended reviewed commit identified.
+ 2. CI is green for the intended release state.
+-3. Google Cloud Build succeeds for the exact clean source commit and immutable image.
+-4. The exact configured existing Cloud Run service is updated and the new revision becomes Ready.
++3. GitHub Actions `production-checks` is green and Railway Wait for CI accepts the commit.
++4. Railway reports a successful deployment of `apex-backend` for the intended commit.
+ 5. Public `https://apex.donmatthews.live/health` returns the intended `build.sha` and healthy queue state.
+ 6. The changed behavior passes a live smoke test.
+ 
+@@ -35,9 +35,9 @@ Without steps 5-6, report **deployment not yet proven live**.
+ 
+ ## Existing-service-only rule
+ 
+-The exact Google Cloud project ID, region, and Cloud Run service name must come from trusted production configuration or direct Google Cloud evidence. Never infer them from the domain/repository name and never substitute a different target because access is missing.
++The exact Railway project and service must come from trusted production configuration or direct Railway evidence. Never infer them from the domain/repository name and never substitute a different target because access is missing.
+ 
+-Ordinary release tooling uses `gcloud run services update --image ...`, not an infrastructure-creation fallback. Preserve existing Secret Manager references, environment variables, service account, scaling, ingress, CPU/memory, and domain mapping unless a separately reviewed infrastructure change intentionally modifies them.
++Ordinary releases use Railway `apex-backend`. The retained Cloud Run deployer is an emergency migration-back mechanism only and remains gated by `APEX_DEPLOY_ENABLED`; do not use it as the normal release path or as evidence that Railway production changed.
+ 
+ ## Current risk patterns to remember
+ 
+@@ -59,7 +59,7 @@ Do not assume every specialist definition is instantiated in the real workforce.
+ 
+ ### Infrastructure-memory drift
+ 
+-Old repository history may mention Railway, Lightsail, CodeBuild, prior model chains, or abandoned migrations. Historical evidence is useful for diagnosis but does not override current `AGENTS.md`, architecture decisions, current source, or direct production evidence.
++Old repository history may describe Railway as retired, or mention Lightsail, CodeBuild, prior model chains, and abandoned migrations. Historical evidence is useful for diagnosis but does not override current `AGENTS.md`, architecture decisions, current source, or direct production evidence.
+ 
+ ## Canonical files to inspect first
+ 
+@@ -74,7 +74,8 @@ Old repository history may mention Railway, Lightsail, CodeBuild, prior model ch
+ - `packages/api-server/src/routes/health.ts`
+ - `packages/api-server/src/routes/agents.ts`
+ - `packages/api-server/src/routes/approvals.ts`
+-- `packages/cicd-automation/src/cloud-run-deployer.ts`
+-- `cloudbuild.apex.yaml`
++- `railway.toml`
++- `Dockerfile`
++- `packages/cicd-automation/src/cloud-run-deployer.ts` (retired migration-back path only)
+ 
+ Add other files only as the specific incident requires.
+diff --git a/AGENTS.md b/AGENTS.md
+index 773d16e1f2110f8e3ac91794a8c03e1e83c4b3e0..1ddabe2dbc666e7af76bfc6c9a99bba1103a62a6 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -26,7 +26,7 @@ APEX itself runs on **Railway** — project `APEX`, service `apex-backend` — b
+ 
+ The cutover from Google Cloud Run happened on 2026-09-14/15 and is described in `docs/HOSTING_MIGRATION.md`. Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/health`, and deploys itself from `main`; there is no deployment workflow in front of it.
+ 
+-Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. `.github/workflows/deploy.yml` still describes that path and is kept as the tested way back, but it is gated behind the `APEX_DEPLOY_ENABLED` repository variable and must not be re-enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own (`don-matthews/apex`); none of them is the APEX control-plane host. That Vercel project posts the GitHub commit status named `Vercel`. `vercel.json` must build `@workspace/dashboard` only — never root `pnpm run build` / `typecheck:production`. Railway Wait for CI gates on GitHub Actions `production-checks`, not the Vercel status.
++Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. The old GitHub deploy workflow has been removed; `packages/cicd-automation/src/cloud-run-deployer.ts` and `cloudbuild.apex.yaml` remain only as a deliberately gated migration-back implementation behind `APEX_DEPLOY_ENABLED`, and must not be enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own (`don-matthews/apex`); none of them is the APEX control-plane host. That Vercel project posts the GitHub commit status named `Vercel`. `vercel.json` must build `@workspace/dashboard` only — never root `pnpm run build` / `typecheck:production`. Railway Wait for CI gates on GitHub Actions `production-checks`, not the Vercel status.
+ 
+ A production release is complete only after all of these are true:
+ 
+@@ -38,7 +38,7 @@ A production release is complete only after all of these are true:
+ 
+ Railway Wait for CI is enabled (`checkSuites=true` on the `main` GitHub trigger). A red `production-checks` run is skipped. Treat a red CI run after a live SHA as an incident. The GitHub `Vercel` status is the dashboard static build and is not a Railway gate.
+ 
+-The retired Cloud Run path (`packages/cicd-automation/src/cloud-run-deployer.ts`, `cloudbuild.apex.yaml`, `.github/workflows/deploy.yml`) remains the tested rollback route. It is gated behind `APEX_DEPLOY_ENABLED` and must not be re-enabled while billing is off on project `apex-503709`.
++The retired Cloud Run migration-back code (`packages/cicd-automation/src/cloud-run-deployer.ts` and `cloudbuild.apex.yaml`) remains in the repository, but the old GitHub deploy workflow is gone. It is gated behind `APEX_DEPLOY_ENABLED` and must not be re-enabled while billing is off on project `apex-503709`.
+ 
+ `deploy_to_environment` and rollback remain hard-gated. See `docs/PRODUCTION_OPERATIONS.md`, `docs/HOSTING_MIGRATION.md`, and `docs/deploy-provenance.md`.
+ 
+@@ -232,20 +232,21 @@ Token capacity is not the same as a spending allowance. OpenRouter account billi
+ 
+ APEX production deployment is **existing-service-only**.
+ 
+-`cloudbuild.apex.yaml` builds an immutable `:<sha>` image and bakes `APEX_BUILD_SHA` / `APEX_BUILD_TIME` into the image. The deployment path first describes the configured Cloud Run service and refuses to continue if it cannot find that exact target. It then uses `gcloud run services update --image ...`.
++Railway is the ordinary APEX production deployment authority. A reviewed commit reaches service `apex-backend` from `main` only after the configured Wait-for-CI gate; release verification must then prove that the live `/health.build.sha` matches the intended commit.
++
++The old Cloud Run files (`cloudbuild.apex.yaml` and the Cloud Run deployer) are migration-back artifacts only; the former GitHub deploy workflow has been removed. They must remain gated behind `APEX_DEPLOY_ENABLED` and must not be treated as the ordinary release procedure while GCP billing is disabled.
+ 
+ Never:
+ 
+-- create a new Cloud Run service as a fallback when the configured service cannot be found;
+-- substitute a different Google Cloud project/region/service because access to the intended target is missing;
+-- replace all service environment variables during an image update;
+-- expose Secret Manager values in logs;
++- create or substitute a different production service because access to the intended Railway service is missing;
++- replace all service environment variables during a deployment;
++- expose secret values in logs;
+ - fake `APEX_BUILD_SHA` as a runtime override merely to make health verification pass;
+ - report a release successful before `/health.build.sha` matches the requested commit;
+ - revive the removed AWS Lightsail/CodeBuild production path;
+ - claim a deploy occurred when only a build or commit occurred.
+ 
+-Rollback routes production traffic to the prior Cloud Run revision and verifies `/health`.
++Normal rollback uses Railway's existing service/revision history and must be followed by `/health` verification. The Cloud Run path is an emergency migration-back route only after its documented preconditions (including GCP billing and `APEX_DEPLOY_ENABLED`) are intentionally restored.
+ 
+ ## Approval and security rules
+ 
+@@ -276,7 +277,7 @@ See `SECURITY.md` for the repository-wide security contract.
+ - **Sandbox executor**: heavy tasks (`context.runtime='job'`) dispatch to Cloud Run Jobs when `APEX_EXECUTOR_JOB` is set. On Railway the default is `APEX_EXECUTOR_MODE=inprocess`, which demotes those tasks to the ordinary worker loop instead of waiting forever for gcloud. Set `APEX_EXECUTOR_MODE=off` to keep the fail-closed no-op.
+ - **Cron governance**: agent-created crons (`schedule_task`) are marked `dynamic:true`, capped at `APEX_MAX_DYNAMIC_JOBS` (default 25), per-workstream 3, floor 15 min — enforced at insert and hourly by `cron_governor` (pauses only, never creates). `work_generation` (every 10 min) plans deduplicated tasks from open goals, accepted opportunities, and due workstreams; `create_workstream` registers durable deliverable units.
+ - **Autonomy mode**: `projects.autoapproveTools` (non-empty) + `autonomyLevel` of `full_autonomous` or `autonomous` lets a bounded eligible set skip human approval. The control-plane project `apex` is seeded `full_autonomous` with `create_github_repo`, `push_to_remote`, `create_pull_request`, `create_workstream`, `publish_artifact`. Hard-gated forever: `deploy_to_environment`, `rollback_deployment`, `make_outbound_call`, `send_email`, `send_email_campaign_batch`, `runShell`, `register_deploy_hook`, `register_application`, `delegate_to_application`, inbound-number tools, and BuildMyBot/CaseBuddy connector sends — never auto-approvable (`scripts/verify-approval-policy.ts`). Settings → Project autonomy allowlist is the operator UI. Unscoped tasks fall back to the `apex` project policy.
+-- **Deploy hooks**: third-party hosting deploys for client deliverables go through registrable webhooks only (`register_deploy_hook` / `deploy_via_hook`); hook URLs are stored as `env:VAR_NAME` secret references, never logged. They do not change APEX's own hosting (ADR-001 — Cloud Run only).
++- **Deploy hooks**: third-party hosting deploys for client deliverables go through registrable webhooks only (`register_deploy_hook` / `deploy_via_hook`); hook URLs are stored as `env:VAR_NAME` secret references, never logged. They do not change APEX's own hosting (ADR-015 — Railway; Cloud Run is rollback-only).
+ 
+ ## Checkpoint/resume, approval yield, and shared worker bootstrap (ADR-014)
+ 
+@@ -300,12 +301,12 @@ For any real code fix or feature:
+ 4. Run deterministic guards relevant to the change; LLM changes require routing/backpressure/model-intelligence guards, deployment changes require the provenance guard.
+ 5. Build the dashboard and verify real output.
+ 6. Require green CI before ordinary merge/release.
+-7. For production behavior, build an immutable Cloud Run image from the exact reviewed SHA and update the existing service.
+-8. Verify `https://apex.donmatthews.live/health` reports that SHA and a healthy queue.
++7. Merge/push the exact reviewed SHA to `main`; Railway's Wait-for-CI gate must allow service `apex-backend` to deploy it.
++8. Confirm Railway reports Success for that commit and verify `https://apex.donmatthews.live/health` reports that SHA and a healthy queue.
+ 9. Smoke-test the actual changed feature against production.
+ 10. Record what was verified and what remains unverified.
+ 
+-A successful build is not a successful deployment. A Ready Cloud Run revision is not a successful deployment until the expected commit is answering the production health endpoint.
++A successful build or merge is not a successful deployment. Production is released only when Railway reports success and the expected commit is answering the production health endpoint.
+ 
+ ## CI contract
+ 
+@@ -389,7 +390,7 @@ When documentation conflicts with current runtime evidence, state the conflict,
+ 
+ ## Base44 sandbox dev environment
+ 
+-`docker-compose.base44.yml` runs the repo warm for the Base44 preview (dev only — production still goes through Cloud Build/Cloud Run per the provenance contract):
++`docker-compose.base44.yml` runs the repo warm for the Base44 preview (dev only — production runs on Railway per ADR-015; the old Cloud Run path is rollback-only):
+ 
+ - Two services: `db` (postgres:16-alpine) and `app` (node:22-slim). Only host port 3000 is public.
+ - Single-origin wiring: the `app` container runs `pnpm run dev` (concurrently `tsx watch` API on :5000 + Vite dashboard on :3000). The Vite dev server proxies `/api` and `/ws` to `localhost:5000` inside the container — do not "fix" the proxy target to a service name; both processes share the container on purpose.
+diff --git a/README.md b/README.md
+index 515cfa3037ac5b31eda7c072596a04558ceaaedf..43e80de04c2a8dcfee73a95d8980a4f2a597421c 100644
+--- a/README.md
++++ b/README.md
+@@ -14,7 +14,7 @@ Railway builds the repository `Dockerfile` (see `railway.toml`), health-checks `
+ 
+ Google Cloud Run is a retired APEX hosting path: billing is disabled on project `apex-503709`, so it serves nothing. AWS Lightsail/CodeBuild is retired and must not be restored. The React dashboard also has a Vercel project (`don-matthews/apex`) that posts the GitHub `Vercel` status from a Vite-only `vercel.json` build (`pnpm --filter @workspace/dashboard run build`). Vercel, Render, and other platforms may appear in connectors or client-project tooling because APEX can manage software deployed elsewhere. None of them hosts the APEX control plane, and the Vercel GitHub status is not a Railway deploy gate.
+ 
+-Do not redirect APEX production to another platform without an explicit operator instruction. `.github/workflows/deploy.yml` and `cloudbuild.apex.yaml` still describe the Cloud Run path — kept deliberately as the rollback route — and are gated behind the `APEX_DEPLOY_ENABLED` repository variable. Re-enabling them while GCP billing is disabled produces a failed deploy on every merge, not a deployment.
++Do not redirect APEX production to another platform without an explicit operator instruction. The old Cloud Run GitHub deploy workflow has been removed. `cloudbuild.apex.yaml` and the Cloud Run deployer remain only as an explicitly gated migration-back path behind `APEX_DEPLOY_ENABLED`; reactivating that path while GCP billing is disabled cannot deploy anything.
+ 
+ A release is not complete until `https://apex.donmatthews.live/health` reports the exact expected `build.sha` and a healthy task queue.
+ 
+@@ -139,15 +139,13 @@ Before production deployment:
+ 1. Start from current `main` with a clean tree.
+ 2. Require green production CI.
+ 3. Confirm the exact commit intended for release.
+-4. Use the configured Google Cloud project, region, and **existing** Cloud Run service. Never guess these identifiers and never create a substitute service.
+-5. Build an immutable image from the exact commit.
+-6. Update the existing Cloud Run service to that image.
+-7. Wait for the new revision to become Ready.
+-8. Verify `/health.build.sha` equals the released commit and `taskQueue.verdict` is healthy.
+-9. Smoke-test the changed production path.
+-10. Record anything that remains unverified.
+-
+-A successful build is not a successful deployment. A Ready revision is not a successful deployment until production traffic is serving the intended SHA.
++4. Push/merge that exact reviewed commit to `main`; Railway is the production deployment authority and its GitHub trigger is configured to wait for CI.
++5. Confirm Railway service `apex-backend` reports a successful deployment for that commit (GitHub status `APEX - apex-backend`).
++6. Verify `/health.build.sha` equals the released commit and `taskQueue.verdict` is healthy.
++7. Smoke-test the changed production path.
++8. Record anything that remains unverified.
++
++A successful build or merge is not a successful deployment. Production is released only when Railway reports success and the live health endpoint is serving the intended SHA.
+ 
+ ## Secrets and database management
+ 
+diff --git a/SECURITY.md b/SECURITY.md
+index 94fc754547ea462e662e50424f6db6b97ce3cefc..297031ff1888e383e00b70247555a2d816cdb246 100644
+--- a/SECURITY.md
++++ b/SECURITY.md
+@@ -48,20 +48,20 @@ Authentication or authorization changes require focused tests and production smo
+ 
+ ## Production deployment security
+ 
+-APEX production is the existing Google Cloud Run service behind `https://apex.donmatthews.live`.
++APEX production is the existing Railway project `APEX`, service `apex-backend`, behind `https://apex.donmatthews.live`.
+ 
+ Production releases must:
+ 
+-- use an authenticated Google identity or Workload Identity rather than committed service-account JSON keys;
+-- build an immutable image from the exact reviewed Git SHA;
+-- update only the exact existing Cloud Run service;
+-- preserve existing Secret Manager references, service account, ingress, scaling, resources, and environment configuration unless a separately reviewed change intentionally modifies them;
++- come from the exact reviewed Git SHA on `main` after green production CI;
++- use Railway's configured Wait-for-CI GitHub deployment path rather than an ad-hoc substitute host;
++- preserve the existing Railway service, environment, volumes, secrets, domains, scaling, and runtime configuration unless a separately reviewed change intentionally modifies them;
++- verify Railway reports a successful deployment for that commit;
+ - verify the live `/health.build.sha` after rollout;
+ - keep deploy and rollback approval-gated.
+ 
+-Never create a substitute Cloud Run service because the intended service cannot be found or accessed. Missing access is a failed precondition, not permission to invent infrastructure.
++Never create or substitute another production service because the intended Railway service cannot be found or accessed. Missing access is a failed precondition, not permission to invent infrastructure.
+ 
+-The retired AWS Lightsail/CodeBuild deployment path must not be restored as a fallback.
++Google Cloud Run is a retired migration-back/rollback path only. Its workflow remains gated behind `APEX_DEPLOY_ENABLED` and must not be reactivated while its documented preconditions (including GCP billing) are absent. The retired AWS Lightsail/CodeBuild deployment path must not be restored as a fallback.
+ 
+ ## Database and Supabase safety
+ 
+diff --git a/docs/APEX_MASTER_OPERATING_MANUAL.md b/docs/APEX_MASTER_OPERATING_MANUAL.md
+index ff194c6896640c4e06215251aaf5eebf4751e82c..bfe183cceb58d6888cee8a5ff026139a71f12e24 100644
+--- a/docs/APEX_MASTER_OPERATING_MANUAL.md
++++ b/docs/APEX_MASTER_OPERATING_MANUAL.md
+@@ -445,19 +445,17 @@ Do not guarantee revenue or closed customers unless actual contract/performance
+ 
+ APEX and BuildMyBot are separate products with a strategic bridge.
+ 
+-APEX has been designed to:
++APEX has a strategic BuildMyBot bridge, but the current implementation is split between working service-control tools and a deliberately disabled direct data plane.
+ 
+-- read BuildMyBot workforce/product telemetry;
+-- issue briefings;
+-- trigger workers;
+-- dispatch engineering work;
+-- push researched leads;
++Currently exposed by `packages/core/src/buildmybot-connector.ts`:
++- trigger BuildMyBot workers;
++- dispatch engineering work with BuildMyBot repository context;
+ - perform health checks;
+-- coordinate BuildMyBot as a portfolio application.
++- run the approval-gated Railway redeploy/recovery path.
+ 
+-BuildMyBot provides customer-engagement surfaces such as chat, knowledge/RAG, voice, SMS, CRM/leads, billing, automation, and agency/reseller workflows.
++Currently **not exposed at runtime**: `buildmybot_status`, `buildmybot_send_briefing`, `buildmybot_open_errors`, `buildmybot_resolve_error`, `buildmybot_push_leads`, and `buildmybot_recent_leads`. Those legacy direct-data tools are filtered out until their query layer is genuinely Neon-backed (or equivalent management API operations exist). Product visitor/session analytics are likewise not implemented by this connector.
+ 
+-APEX must not assume BuildMyBot marketing claims equal production capability. Verify current `patriotnewsactivism/buildmybot2` source/live system before promising a feature.
++BuildMyBot provides customer-engagement surfaces such as chat, knowledge/RAG, voice, SMS, CRM/leads, billing, automation, and agency/reseller workflows, but APEX must not assume those product claims equal current production capability. Verify the current `patriotnewsactivism/buildmybot2` source/live system before promising or operating a feature.
+ 
+ ---
+ 
+diff --git a/docs/APEX_SYSTEM_AUDIT.md b/docs/APEX_SYSTEM_AUDIT.md
+index 0be0481241d375206f35bf9f6fa821fbcf05dbbf..de1f2ada0c1b1079de77a64c9af058415ad1f712 100644
+--- a/docs/APEX_SYSTEM_AUDIT.md
++++ b/docs/APEX_SYSTEM_AUDIT.md
+@@ -1,5 +1,8 @@
+ # APEX System Audit
+ 
++> **HISTORICAL AUDIT NOTICE — 2026-09-24:** This audit records the repository state as inspected on 2026-09-05. Its hosting/deployment statements predate the Railway cutover. Current APEX production is Railway project `APEX`, service `apex-backend`; Cloud Run is retired and gated for migration-back only. Use `AGENTS.md`, ADR-015, `docs/PRODUCTION_OPERATIONS.md`, and live evidence for current operations.
++
++
+ _Compiled 2026-09-05 by direct repository inspection (local clones, git history, baseline builds/tests) across all three repositories. Every claim below is either read directly from source/docs/git history or explicitly marked as unverified. Nothing here is inferred from repository names or assumed from the original three-way "control plane / stream / agent" framing — that framing turned out not to match reality (see §21)._
+ 
+ **Scope:** `patriotnewsactivism/apex` (`Apex`), `patriotnewsactivism/apex-agent` (`Apex-Agent`), `patriotnewsactivism/apex-stream` (`Apex-Stream`). See `docs/APEX_ARCHITECTURE.md` for the resulting design and `docs/APEX_CAPABILITY_MATRIX.md` for the capability-by-capability breakdown.
+@@ -10,7 +13,7 @@ _Compiled 2026-09-05 by direct repository inspection (local clones, git history,
+ 
+ ### Apex — the live system
+ 
+-A pnpm/TypeScript monorepo (Node 22, 18 packages) implementing a persistent, hierarchical, 13-agent autonomous workforce ("APEX CEO → CTO/COO → specialists, plus an independent QA role") for one operator's technology/media portfolio (BuildMyBot.app, CaseBuddy.live, and others). Production runs on **Google Cloud Run** at `https://apex.donmatthews.live`.
++A pnpm/TypeScript monorepo (Node 22, 18 packages) implementing a persistent, hierarchical, 13-agent autonomous workforce ("APEX CEO → CTO/COO → specialists, plus an independent QA role") for one operator's technology/media portfolio (BuildMyBot.app, CaseBuddy.live, and others). At the time of this 2026-09-05 audit, production ran on **Google Cloud Run** at `https://apex.donmatthews.live`; this was superseded by the Railway cutover recorded in ADR-015.
+ 
+ This is not a lightly-maintained side project: **612 commits**, dozens of active feature/fix branches, a daily-or-more commit cadence through the day this audit was written, 13 ADRs recording durable architecture decisions, an `AGENTS.md` truth-hierarchy contract, and 17 deterministic `verify-*.ts` guards wired into CI (provider routing/backpressure, budget pauses, approval-state integrity, task-timeout quarantine, durable-worker-runtime, deploy provenance, non-completion detection, and more). A very large fraction of what a from-scratch "build durable autonomous orchestration" project would need to invent **already exists here, tested, and documented** — see §21 for what that changes about this audit's own recommendations.
+ 
+@@ -22,7 +25,7 @@ Apex owns: the goal/task/approval data model, the 13-agent workforce, the tool r
+ 
+ - 15 commits total, spanning 2026-06-20 → 2026-07-12 (22 days), zero commits since — **~8 weeks of silence** as of this audit.
+ - Its **last commit's own message** documents that the deployed Railway instance had been crash-looping continuously since 2026-07-12 06:59 and had **never once completed initialization**. No later commit confirms the fix worked in production. The project went dark immediately after admitting it was down.
+-- Deploys to **Railway**, which Apex's own ADR-001 explicitly lists as a retired APEX hosting path.
++- At the time of this audit it deployed to **Railway**, which the then-current ADR-001 listed as a retired APEX hosting path. ADR-015 later made Railway the APEX production host.
+ - Zero tests, zero CI (`.github/workflows` does not exist in this repo).
+ - Internally inconsistent, half-migrated documentation: `.replit` still declares a Replit `autoscale` target that was abandoned 21 days before the repo went dark; `GEMINI.md` is an untouched day-one snapshot describing an org chart and env-var scheme (`OPENAI_API_KEY`, `APEX_LLM_PROVIDER`) that don't exist in the actual code (which is OpenRouter-only); `replit.md` was half-updated on the last day (org chart yes, env vars no).
+ - `packages/frontend` is dead code (no `package.json`, not in the pnpm workspace, duplicates a component that already existed in `packages/dashboard`).
+@@ -124,7 +127,7 @@ Apex: structured logging conventions, a `HealthMonitor` running 8 read-only chec
+ 
+ ## 16. Existing deployment mechanisms
+ 
+-Apex: Google Cloud Build (`cloudbuild.apex.yaml`) → immutable SHA-tagged image → `gcloud run services update` on an existing, never-created, never-substituted Cloud Run service, gated by an explicit `APEX_DEPLOY_ENABLED` variable and verified post-deploy against `/health.build.sha`. This is implemented twice — once for real (`packages/cicd-automation`, wired into the live tool registry) and once as an unused, non-production Convex-worker path (`packages/cicd-worker`) that always throws rather than attempting a deploy. Apex-Agent: Railway, retired, last known to be crash-looping. Apex-Stream: the orchestrator only, via a guarded GitHub Actions workflow with real fail-closed checks (service-name collision guard, existing-service verification, SHA-pinned image, post-deploy `/health.version` verification) — the five agents have no deploy path at all right now.
++At the time of this audit, Apex used Google Cloud Build (`cloudbuild.apex.yaml`) → immutable SHA-tagged image → `gcloud run services update` on an existing, never-created, never-substituted Cloud Run service, gated by an explicit `APEX_DEPLOY_ENABLED` variable and verified post-deploy against `/health.build.sha`. This is implemented twice — once for real (`packages/cicd-automation`, wired into the live tool registry) and once as an unused, non-production Convex-worker path (`packages/cicd-worker`) that always throws rather than attempting a deploy. Apex-Agent: Railway, retired, last known to be crash-looping. Apex-Stream: the orchestrator only, via a guarded GitHub Actions workflow with real fail-closed checks (service-name collision guard, existing-service verification, SHA-pinned image, post-deploy `/health.version` verification) — the five agents have no deploy path at all right now.
+ 
+ ## 17. Duplicate functionality
+ 
+diff --git a/docs/ARCHITECTURE_DECISIONS.md b/docs/ARCHITECTURE_DECISIONS.md
+index 823e8bf0cfce1977bdde351afd6de3526fd6d217..0fb10402eafcb01914c34b7d8008de650efeb5bf 100644
+--- a/docs/ARCHITECTURE_DECISIONS.md
++++ b/docs/ARCHITECTURE_DECISIONS.md
+@@ -4,7 +4,7 @@ This file records durable architecture decisions that should not change accident
+ 
+ A decision may be superseded, but it must be superseded explicitly: update the implementation, this file, `AGENTS.md`, and any affected operational documentation in the same change set.
+ 
+-## ADR-001 — APEX production host is Google Cloud Run
++## ADR-001 — Historical: APEX production host was Google Cloud Run
+ 
+ **Status:** Superseded 2026-09-15 by ADR-015  
+ **Last confirmed:** 2026-08-28 (historical)
+@@ -17,15 +17,15 @@ AWS Lightsail/CodeBuild remains a retired APEX hosting path. Vercel, Render, and
+ 
+ - Do not restore AWS Lightsail or CodeBuild as an APEX production fallback.
+ - Do not move APEX to another host as an incidental fix for a deployment issue.
+-- Deployment and production documentation must describe Google Cloud Run.
++- Historical documentation from this ADR era may describe Google Cloud Run, but current deployment and production documentation must describe Railway per ADR-015.
+ - Historical references may remain only when clearly labeled historical.
+ 
+ ## ADR-002 — Production releases update the existing Cloud Run service only
+ 
+-**Status:** Accepted  
+-**Last confirmed:** 2026-08-28
++**Status:** Superseded 2026-09-15 by ADR-015  
++**Last confirmed:** 2026-08-28 (historical)
+ 
+-Ordinary APEX releases must update the exact existing Cloud Run service. The release path uses `gcloud run services update --image ...` after first describing the configured service.
++This records the former Cloud Run release rule. Ordinary APEX releases now go through Railway per ADR-015. If the retired Cloud Run migration-back path is explicitly reactivated, it must update the exact existing Cloud Run service via `gcloud run services update --image ...` after first describing the configured service.
+ 
+ It intentionally does not use `gcloud run deploy` as a fallback.
+ 
+@@ -51,7 +51,7 @@ If the exact configured service cannot be found or accessed, deployment stops. A
+ **Status:** Accepted  
+ **Last confirmed:** 2026-08-28
+ 
+-`cloudbuild.apex.yaml` builds and pushes an immutable image derived from the exact reviewed Git commit. `APEX_BUILD_SHA` and build time are baked into the image.
++Commit-SHA provenance remains the release invariant. On current Railway production, `packages/core/src/runtime-health.ts` reports explicit `APEX_BUILD_SHA` first and Railway's injected `RAILWAY_GIT_COMMIT_SHA` as the production fallback. The retired Cloud Run migration-back path still uses `cloudbuild.apex.yaml` to bake `APEX_BUILD_SHA` into an immutable image.
+ 
+ Production is considered released only when the public health endpoint reports the expected SHA.
+ 
+@@ -332,7 +332,7 @@ Autonomy-mode approval policy (`projects.autoapproveTools`) allows a bounded cla
+ - Heavy work executes with minutes-scale budgets and real isolation without touching the control-plane service or its approval paths.
+ - Cron growth is governed by ceilings/floors with deterministic guards in CI; the governor only pauses, never creates.
+ - New GCP resources require real operator configuration (bucket name, job name); unset means fail-closed tool errors / no-op dispatch, never invented values.
+-- Deploy hooks are registrable webhooks (Vercel-style) for hosted client deliverables; hook URLs are secret-ref style (`env:VAR_NAME`) and never logged. APEX's own hosting remains Cloud Run only.
++- Deploy hooks are registrable webhooks (Vercel-style) for hosted client deliverables; hook URLs are secret-ref style (`env:VAR_NAME`) and never logged. The original Cloud Run-only hosting consequence was superseded by ADR-015; APEX's control plane now runs on Railway.
+ 
+ ## ADR-014 — Task execution is checkpointed and resumable; approval waits yield instead of blocking
+ 
+diff --git a/docs/BUILDMYBOT_RUNTIME.md b/docs/BUILDMYBOT_RUNTIME.md
+index 6089341bda6ac130c4ea3edad939811bbc51db6b..1ca5e0cd7f4c0aad1febf01bebe7df2d3b14b78d 100644
+--- a/docs/BUILDMYBOT_RUNTIME.md
++++ b/docs/BUILDMYBOT_RUNTIME.md
+@@ -9,7 +9,7 @@
+ - Railway production environment ID: `6ce38db0-789b-4fe9-ad02-f068fe6866ae`
+ - Public domains: `buildmybot.app` and `www.buildmybot.app`
+ - Runtime: Node/Express (`server.ts`), with handlers under `api/*.ts`
+-- Durable application state: Supabase
++- Durable application state (as assumed by current APEX connector/source): Neon/Postgres. Verify against the BuildMyBot2 repository/live configuration before database-level work.
+ 
+ Railway automatically deploys BuildMyBot2 from `main`. APEX's `buildmybot_deploy` tool exists only as an approval-gated manual Railway redeploy/recovery path; it is not required after every normal merge.
+ 
+@@ -17,4 +17,11 @@ Google Cloud Run was the prior BuildMyBot2 production platform before the move t
+ 
+ Vercel is not a BuildMyBot2 deployment, runtime, analytics, preview, or serverless-function target. Do not add Vercel-specific dependencies, deployment hooks, request/response types, config files, or operational instructions to BuildMyBot2.
+ 
+-This is distinct from APEX itself: APEX's control-plane/autonomous workforce runs on Google Cloud Run. Do not infer BuildMyBot2's hosting platform from APEX's hosting platform, or vice versa.
++This is distinct from APEX itself: APEX's control-plane/autonomous workforce also currently runs on Railway (project `APEX`, service `apex-backend`). Do not infer one product's service, environment, database, or deployment state from the other.
++
++## APEX connector data-plane status
++
++APEX currently exposes BuildMyBot service-control capabilities such as health checks, workforce triggers, engineering dispatch, and approval-gated redeploy/recovery. The legacy direct data-plane tools for BuildMyBot status, briefings, errors, lead push, and recent-lead reads are intentionally filtered out in `packages/core/src/buildmybot-connector.ts` until their query layer is genuinely Neon-backed or a BuildMyBot management API exposes those operations.
++
++Therefore, do not treat `buildmybot_status`, `buildmybot_send_briefing`, `buildmybot_open_errors`, `buildmybot_resolve_error`, `buildmybot_push_leads`, or `buildmybot_recent_leads` as available runtime tools. Product-usage/visitor analytics are also not provided by the current APEX connector.
++
+diff --git a/docs/HOSTING_MIGRATION.md b/docs/HOSTING_MIGRATION.md
+index 55051c2a924c5d5ebf4e84068a20bbd9857ecbba..600e00a0dc854d25ca267e4e6f343151213491a4 100644
+--- a/docs/HOSTING_MIGRATION.md
++++ b/docs/HOSTING_MIGRATION.md
+@@ -121,7 +121,7 @@ say whether it does.
+ 
+ 1. **Lead-research credentials.** `BRAVE_SEARCH_API_KEY`, `FIRECRAWL_API_KEY`, and `TAVILY_API_KEY` are on Railway. `GOOGLE_PLACES_API_KEY` and `YELP_API_KEY` are still absent (not in local env either — do not invent values).
+ 2. **`OPENROUTER_API_KEY_4` bought no capacity.** It is a second key on an account APEX already holds. A third *account* is what raises the free cap.
+-3. **The Cloud Run deploy still fires on every green CI run** unless `APEX_DEPLOY_ENABLED` is not `production`/`all`. Keep it off while billing is disabled.
++3. **Cloud Run automatic deploy is retired.** The old deploy workflow has been removed. Keep `APEX_DEPLOY_ENABLED` off while billing is disabled; the retained deployer/build file is migration-back only.
+ 4. **Railway Wait for CI is on** (`checkSuites=true` on the `main` GitHub trigger). A red `production-checks` run is skipped. The GitHub `Vercel` status is the dashboard static build and is not this gate.
+ 5. **One replica** (`ams`). Websocket tickets now persist in Postgres so a second replica is no longer blocked on in-memory tickets. Scale only after a live two-process ticket round-trip is proven.
+ 6. **Artifacts / executor.** `APEX_ARTIFACT_DIR=/data/artifacts` on volume `apex-artifacts`. Leave `APEX_EXECUTOR_JOB` unset on Railway; `APEX_EXECUTOR_MODE=inprocess` is set.
+diff --git a/docs/PRODUCTION_OPERATIONS.md b/docs/PRODUCTION_OPERATIONS.md
+index d34061044c5938a9364c7d982e4dcf89020e4570..1e5031ae2e11e8b810f93310531118a6df03eec6 100644
+--- a/docs/PRODUCTION_OPERATIONS.md
++++ b/docs/PRODUCTION_OPERATIONS.md
+@@ -6,7 +6,7 @@ APEX production is **Railway** — project `APEX`, service `apex-backend` — be
+ 
+ `https://apex.donmatthews.live`
+ 
+-Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled) and kept only as the gated rollback path in `.github/workflows/deploy.yml`. See `docs/HOSTING_MIGRATION.md` and ADR-015. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
++Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google Cloud Run is retired (billing disabled); the old GitHub deploy workflow is removed, while the Cloud Run deployer/build file remain only as a gated migration-back path. See `docs/HOSTING_MIGRATION.md` and ADR-015. Zero-cost OpenRouter policy is documented in `docs/FREE_ONLY_MODEL_POLICY.md`.
+ 
+ ## Operating principles
+ 
+@@ -543,7 +543,7 @@ The autonomous-execution scheduler adds three operator-configured GCP-scoped res
+ - `APEX_ARTIFACT_BUCKET` — GCS bucket in the existing project/region, created once:
+   `gcloud storage buckets create gs://<name> --location=<region>`.
+   Artifact/workspace tools fail closed when unset. Give the runtime service account `roles/storage.objectUser` on the bucket (Workload Identity on Cloud Run authenticates the control plane; the executor job uses the same image and can use its own job service account with the same role).
+-- `APEX_EXECUTOR_JOB` — Cloud Run Jobs resource name (e.g. `apex-executor`). Until set, the 30-second dispatch loop is a no-op and `executor_dispatch` cron fires report "no-op". Create once with the same project/region, image = the same immutable SHA image, task timeout ≤ 60 min, no HTTP (jobs API), args = task id (dispatch passes `--args=<taskId>` via `gcloud run jobs execute`). This is a new GCP resource — it is NOT the control-plane service, so ADR-001/002 release rules are unchanged: APEX's own deploy still goes through `gcloud run services update` on the existing service.
++- `APEX_EXECUTOR_JOB` — optional Cloud Run Jobs resource name (e.g. `apex-executor`) for the legacy external-executor mode. On current Railway production the documented default is `APEX_EXECUTOR_MODE=inprocess`, so unset `APEX_EXECUTOR_JOB` is expected. If the external GCP executor is intentionally reactivated, configure its project/region/image explicitly; it is never the APEX control-plane host and does not change ADR-015's Railway release path.
+ - `GITHUB_TOKEN_4` (existing) needs `repo` create scope for `create_github_repo`; `APEX_GITHUB_ORG` defaults to `patriotnewsactivism`.
+ 
+ Autonomy mode: a project (`projects`) with `autonomyLevel` in the autonomy modes and a non-empty `autoapproveTools` list may auto-approve only the bounded eligible set (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated tools are never auto-approvable regardless of the list.
+@@ -560,13 +560,12 @@ For material production releases, retain a concise record containing:
+ 
+ ```text
+ Release SHA:
+-CI result:
+-Cloud Build result:
+-Cloud Run revision:
++CI production-checks result:
++Railway apex-backend deployment result:
+ Live /health SHA:
+ Task queue verdict:
+ Smoke test performed:
+-Rollback target:
++Railway rollback target (if needed):
+ Known follow-ups / unverified items:
+ ```
+ 
+diff --git a/docs/deploy-provenance.md b/docs/deploy-provenance.md
+index fc65e1ed03f194ed6dca6fe59b56ec04cb0ab867..9b7331621a1d551bd11aade32e84389450303ff7 100644
+--- a/docs/deploy-provenance.md
++++ b/docs/deploy-provenance.md
+@@ -1,112 +1,90 @@
+ # Knowing what is actually running
+ 
+-APEX production is the Railway service `apex-backend` mapped to
+-`https://apex.donmatthews.live`. Google Cloud Run is the gated rollback path
+-only. The GitHub `Vercel` status is the dashboard project `don-matthews/apex`
+-(`vercel.json` builds `@workspace/dashboard` only) and is not production
+-provenance.
++APEX production is the Railway service `apex-backend` in project `APEX`, mapped to
++`https://apex.donmatthews.live`. Google Cloud Run is a retired, gated
++migration-back path only. The GitHub `Vercel` status is the dashboard project
++`don-matthews/apex` (`vercel.json` builds `@workspace/dashboard` only) and is
++not production provenance.
+ 
+ A deployment is not considered successful merely because a build completed, a
+-Railway deploy reported Success, or Cloud Run created a revision. The code
+-answering production traffic must be the exact reviewed Git commit and its task
+-queue must remain healthy.
++commit reached `main`, or Railway reported Success. The code answering
++production traffic must be the exact reviewed Git commit and its task queue must
++remain healthy.
+ 
+-## What `/health` proves
+-
+-```bash
+-curl -s https://apex.donmatthews.live/health | jq
+-```
++## Current Railway provenance chain
+ 
+-Important fields:
++The ordinary production chain is:
+ 
+-- `build.sha` — exact source commit baked into the image by
+-  `cloudbuild.apex.yaml`.
+-- `build.builtAt` — image build time.
+-- `build.startedAt` / `build.uptimeSeconds` — confirms a new instance actually
+-  started.
+-- `taskQueue.verdict` — must be `ok` after rollout. Repeated dequeue failures
+-  deliberately make the health endpoint fail rather than allowing a broken
+-  workforce to look healthy.
+-- `llmCapacity.state` — operational LLM-capacity signal; provider exhaustion is
+-  reported separately from application health.
++1. review the exact commit intended for release;
++2. require GitHub Actions `production-checks` to be green;
++3. merge/push that commit to `main`;
++4. Railway's configured Wait-for-CI trigger builds the repository `Dockerfile`
++   and deploys service `apex-backend`;
++5. confirm Railway reports Success for that same commit;
++6. verify `https://apex.donmatthews.live/health` reports the expected build SHA
++   and a healthy `taskQueue.verdict`;
++7. smoke-test the changed production path.
+ 
+-## Immutable Cloud Build image
++`railway.toml` fixes the build to the repository `Dockerfile` and the health
++check to `/health`. Railway injects `RAILWAY_GIT_COMMIT_SHA`; current
++`packages/core/src/runtime-health.ts` reports `APEX_BUILD_SHA` when explicitly
++provided, otherwise that Railway commit SHA, otherwise `unknown`.
+ 
+-`cloudbuild.apex.yaml` builds the production Dockerfile and requires three
+-substitutions from the deployer:
+-
+-- `_IMAGE` — the existing Cloud Run image repository with `:<commit-sha>` tag.
+-- `_APEX_BUILD_SHA` — the exact clean Git commit being built.
+-- `_APEX_BUILD_TIME` — UTC build timestamp.
++## What `/health` proves
+ 
+-The Dockerfile bakes the latter two into the image. The deployer does **not**
+-forge `APEX_BUILD_SHA` as a runtime environment override; `/health` therefore
+-reports what the image was actually built from.
++Important fields include:
+ 
+-## Existing-service-only rule
++- `build.sha` — the source commit reported by the running service; on Railway
++  this falls back to `RAILWAY_GIT_COMMIT_SHA`;
++- `build.startedAt` / `build.uptimeSeconds` — evidence that a running instance
++  actually started;
++- `taskQueue.verdict` — must remain healthy after rollout;
++- `llmCapacity.state` — operational LLM-capacity signal, separate from
++  application health.
+ 
+-APEX must never create a second Cloud Run service during an ordinary release.
+-The deployer first runs `gcloud run services describe` against the explicitly
+-configured project, region, and service. If that exact service cannot be read,
+-it stops.
++A health response is runtime evidence, not a substitute for the CI and Railway
++deployment records. Conversely, a successful Railway deployment is not enough
++if the public health endpoint is serving a different SHA.
+ 
+-After Cloud Build publishes the immutable image, deployment uses:
++## Current release verification
+ 
+-```text
+-gcloud run services update <existing-service> --image <immutable-image>
++```bash
++curl -s https://apex.donmatthews.live/health | jq
+ ```
+ 
+-Using `services update` rather than `run deploy` is intentional. It updates the
+-existing service and preserves configuration that should not be reconstructed
+-from this repository: environment variables, Secret Manager references, runtime
+-service account, scaling, CPU/memory, ingress, domain mapping, and related
+-Google-managed settings.
++Record the reviewed SHA, the `production-checks` result, the Railway
++`apex-backend` deployment result, the live health SHA/task-queue verdict, and
++the production smoke test. Never invent or infer a missing service ID, token,
++secret, or deployment result.
+ 
+-## Required deployment configuration
++## Retired Cloud Run migration-back path
+ 
+-The operator or CI environment must have an authenticated `gcloud` identity and
+-set:
++`cloudbuild.apex.yaml` and
++`packages/cicd-automation/src/cloud-run-deployer.ts` remain in the repository as
++an emergency migration-back implementation. The former GitHub Cloud Run deploy
++workflow has been removed. This path is not the current production release
++mechanism and must not be enabled while its documented prerequisites, including
++GCP billing, are absent.
+ 
+-```text
+-APEX_DEPLOY_ENABLED=production
+-APEX_GCP_PROJECT_ID=<the existing APEX Google Cloud project>
+-APEX_CLOUD_RUN_REGION=<the existing service region>
+-APEX_CLOUD_RUN_SERVICE=<the existing service name>
+-```
++If an operator explicitly decides to migrate back to Cloud Run, the retained
++deployer is fail-closed: it requires explicit existing project/region/service
++configuration and `APEX_DEPLOY_ENABLED`, builds an immutable commit-tagged image,
++updates only the configured existing service, waits for readiness, and verifies
++health. It must never create a substitute service because the intended target
++cannot be accessed.
+ 
+-Optional:
++The required GCP configuration names for that retired path are:
+ 
+ ```text
+-APEX_CLOUD_BUILD_REGION=<regional Cloud Build location, if used>
+-APEX_DEPLOY_HEALTH_URL=https://apex.donmatthews.live
+-APEX_DEPLOY_SOURCE_DIR=<clean APEX checkout; defaults to current directory>
+-```
+-
+-Do not put service-account JSON keys in the repository. Use an authenticated
+-human `gcloud` session for an operator release or Google Workload Identity for
+-CI/automation.
+-
+-## Production deploy
+-
+-From a clean checkout whose `HEAD` is the reviewed release:
+-
+-```bash
+-export APEX_DEPLOY_ENABLED=production
+-export APEX_GCP_PROJECT_ID=...
+-export APEX_CLOUD_RUN_REGION=...
+-export APEX_CLOUD_RUN_SERVICE=...
+-./scripts/deploy-from-shell.sh
++APEX_DEPLOY_ENABLED
++APEX_GCP_PROJECT_ID
++APEX_CLOUD_RUN_REGION
++APEX_CLOUD_RUN_SERVICE
++APEX_CLOUD_BUILD_REGION        # optional
++APEX_DEPLOY_HEALTH_URL         # optional
++APEX_DEPLOY_SOURCE_DIR         # optional
+ ```
+ 
+-The wrapper passes the exact `git rev-parse HEAD` to
+-`packages/cicd-automation/scripts/deploy.mts`. The deployment fails if the tree
+-is dirty, if the requested SHA differs from the checkout, if Google Cloud Build
+-fails, if the existing service cannot be found, if the new revision does not
+-become Ready, if `/health` is non-200, or if `/health.build.sha` does not match
+-the requested commit.
+-
+-## Rollback
+-
+-Rollback routes 100% traffic to the previous Cloud Run revision and then checks
+-`/health`. It does not rebuild an old mutable image and does not declare success
+-until the production health endpoint responds successfully.
++Do not put service-account JSON keys in the repository. Any future reactivation
++requires an explicit operator decision, a reviewed security/deployment plan,
++and live verification after cutover.
+diff --git a/lib/db/dist/schema.js b/lib/db/dist/schema.js
+index 46735decbb7a5c7038f0af3ca9dda86139e601d7..bdfce0f14c3804aca96fe094d7805f79b50a54fe 100644
+--- a/lib/db/dist/schema.js
++++ b/lib/db/dist/schema.js
+@@ -789,7 +789,7 @@ export const deployments = pgTable('deployments', {
+     id: text('id').primaryKey(),
+     runId: text('run_id'),
+     environment: text('environment').notNull().default('production'), // staging | production
+-    platform: text('platform').notNull().default('local'), // cloud-run | local (Lightsail, Railway, and Vercel are retired APEX hosting paths — see ADR-001)
++    platform: text('platform').notNull().default('local'), // legacy migration-back values: cloud-run | local; current Railway production releases are tracked outside this field
+     deploymentUrl: text('deployment_url'),
+     status: text('status').notNull().default('pending'), // pending | deploying | healthy | degraded | failed | rolled_back
+     rolledBack: boolean('rolled_back').notNull().default(false),
+diff --git a/lib/db/src/schema.ts b/lib/db/src/schema.ts
+index cca2535501c276158df620c5413120cd9d164970..e50f23e761faf3aa810dcca72585bcd509626868 100644
+--- a/lib/db/src/schema.ts
++++ b/lib/db/src/schema.ts
+@@ -857,7 +857,7 @@ export const deployments = pgTable('deployments', {
+   id: text('id').primaryKey(),
+   runId: text('run_id'),
+   environment: text('environment').notNull().default('production'), // staging | production
+-  platform: text('platform').notNull().default('local'), // cloud-run | local (Lightsail, Railway, and Vercel are retired APEX hosting paths — see ADR-001)
++  platform: text('platform').notNull().default('local'), // legacy migration-back values: cloud-run | local; current Railway production releases are tracked outside this field
+   deploymentUrl: text('deployment_url'),
+   status: text('status').notNull().default('pending'), // pending | deploying | healthy | degraded | failed | rolled_back
+   rolledBack: boolean('rolled_back').notNull().default(false),
+diff --git a/packages/agents/src/coo.ts b/packages/agents/src/coo.ts
+index f7c87582e731322deaa9718109ac87f2210f3a20..85cc4afe83988fdc61102c77f29db54421996371 100644
+--- a/packages/agents/src/coo.ts
++++ b/packages/agents/src/coo.ts
+@@ -76,12 +76,11 @@ Report honestly: what shipped, what didn't, and what you're doing about the gap.
+ 
+ ## Managed Project: BuildMyBot2 (revenue flagship)
+ buildmybot2 (github.com/patriotnewsactivism/buildmybot2, live at buildmybot.app)
+-is a MANAGED project, not just a monitored one. You have real operating tools:
+-- **buildmybot_status** — today's AI Team shift outcomes, open errors, lead pipeline. Read this FIRST before any BuildMyBot directive.
++is a MANAGED project, not just a monitored one. The current production connector exposes:
++- **buildmybot_health_check** — verify the deployed product is actually up and read its public health contract.
+ - **buildmybot_dispatch_engineering** — file a real engineering ticket into the buildmybot2 codebase. It lands with the Lead Developer with full repo/PR/deploy context attached. Use this the same way you'd dispatch internal Apex engineering work — include concrete acceptance criteria.
+-- **buildmybot_send_briefing** — steer BuildMyBot's own AI Team (sam-support, maya-marketing, etc.) via the daily briefing channel.
+-- **buildmybot_health_check** — verify the deployed product is actually up after changes.
+-Engineering changes land via PRs, never direct pushes; deploys go through the approval-gated buildmybot_deploy (Lead Developer's job, not yours).
++- **buildmybot_run_workforce** — trigger the BuildMyBot workforce when a real operating need requires it (approval-gated).
++Direct BuildMyBot data-plane tools for AI-team status, briefings, errors, lead pushes, and recent leads are intentionally unavailable until their Neon-backed query/API layer exists. Never claim those details from the public health response. Engineering changes land via PRs, never direct pushes; deploys go through the approval-gated buildmybot_deploy (Lead Developer's job, not yours).
+ `;
+ 
+ export class COOAgent extends BaseAgent {
+@@ -100,9 +99,8 @@ export class COOAgent extends BaseAgent {
+         'listDir',
+         'webSearch',
+         'fetchUrl',
+-        'buildmybot_status',
+         'buildmybot_dispatch_engineering',
+-        'buildmybot_send_briefing',
++        'buildmybot_run_workforce',
+         'buildmybot_health_check',
+         'get_delegation_status',
+         'get_task_details',
+diff --git a/packages/agents/src/qa-director.ts b/packages/agents/src/qa-director.ts
+index c4209fdef1aef9ff4ada5777b9716aee82d1a643..7a746d29be13523273bb017992915bb61cc2d596 100644
+--- a/packages/agents/src/qa-director.ts
++++ b/packages/agents/src/qa-director.ts
+@@ -46,20 +46,14 @@ Before taking any tool actions or producing final QA reports, you MUST explicitl
+ - Fetch multiple relevant pages when the task gives you more than one URL.
+ - Go through each persona above against the real fetched content.
+ 
+-## BuildMyBot AI Team Shift Review (nightly sweep addition, 2026-07-23)
+-When the buildmybot_status tool is available, EVERY sweep must also review
+-BuildMyBot2's own AI Team — the separate agent workforce (sam-support,
+-maya-marketing, and the other roles) that runs shifts inside the product:
+-- Call buildmybot_status with includeYesterday: true. Read every shift row:
+-  a role with no shift row for today, a shift with flags, or an escalation
+-  is a finding (Medium minimum; a role that produced NO shift at all for a
+-  full day is High).
+-- Call buildmybot_open_errors. Any open critical — especially source
+-  'llm-provider-chain' (full provider-exhaustion, the "model exhausted"
+-  failure mode) — is a Critical finding in your report.
+-- Fold these into the SAME report as the persona findings under a
+-  "BuildMyBot AI Team" persona heading, so product bugs and AI-workforce
+-  failures surface in one place instead of two dashboards.
++## BuildMyBot review
++The current APEX connector exposes BuildMyBot's public health check, but the
++legacy direct data-plane tools for AI-team shifts and open errors are disabled
++until a Neon-backed query/API layer exists. Use buildmybot_health_check for
++current service health. Do not infer shift/error/lead details from that response
++and do not claim an AI-team review occurred unless a real telemetry source is
++available. If a task specifically requires those unavailable details, record
++that observability gap as the finding instead of manufacturing status.
+ - If the buildmybot tools are not available in your tool list, state that
+   plainly in the report ("AI Team telemetry not configured") — never invent
+   shift outcomes.
+@@ -76,7 +70,7 @@ End with a one-paragraph honest summary: what's genuinely solid, and what's the
+ urgent fix. Do not inflate findings to seem thorough — if a persona finds nothing wrong,
+ say so plainly. A short, honest report beats a padded one.`,
+       llm: { provider: 'openrouter-nex-n2-5-mini-free', model: 'nex-agi/nex-n2.5-mini:free' },
+-      tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_status', 'buildmybot_open_errors'],
++      tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_health_check'],
+       maxIterations: 20,
+       approvalRequired: false,
+       concurrency: 4,
+diff --git a/packages/api-server/src/bootstrap-jobs.ts b/packages/api-server/src/bootstrap-jobs.ts
+index 59d6c543df8510bc78d82985cc53c86934099eb0..8240db05a59326d591bdcf48e7953d03a07aadfc 100644
+--- a/packages/api-server/src/bootstrap-jobs.ts
++++ b/packages/api-server/src/bootstrap-jobs.ts
+@@ -203,7 +203,7 @@ export async function seedDefaultJobs(): Promise<void> {
+           subordinates: ['apex-lead-research-001', 'apex-sales-001', 'apex-marketing-001', 'apex-success-001'],
+           includeBuildMyBot2: true,
+           focus:
+-            'You run BuildMyBot.App day-to-day operations. Priorities in order: (1) BuildMyBot2 health — if snapshot.buildmybot2 shows current open critical errors, flagged/escalated shifts, or leads stalling without a reply, act: read buildmybot_status, then send a corrective briefing with buildmybot_send_briefing or file one real ticket with buildmybot_dispatch_engineering. Historical provider failures listed as recovered are not current incidents. (2) Pipeline — leads researched but never worked are wasted spend; make sure the Lead Researcher is covering new industries/regions rather than re-covering the same ones, and that Sales is actually reviewing what was found. (3) Content and support cadence. Be honest about what is genuinely not wired yet (real outbound email/SMS and payments are not) — never report outreach that did not happen.',
++            'You run BuildMyBot.App day-to-day operations. Priorities in order: (1) BuildMyBot2 health — snapshot.buildmybot2 is the public health contract only. Act on current health degradation with buildmybot_health_check and, when an engineering defect is established, file one real ticket with buildmybot_dispatch_engineering. Detailed AI-team/error/lead telemetry is not available through the current APEX connector; never infer it from the health response. Historical provider failures listed as recovered are not current incidents. (2) Pipeline — leads researched but never worked are wasted spend; make sure the Lead Researcher is covering new industries/regions rather than re-covering the same ones, and that Sales is actually reviewing what was found. (3) Content and support cadence. Verify current capabilities before claiming a communication/payment path exists, and never report outreach that did not happen.',
+         } as Record<string, unknown>,
+       },
+       {
+diff --git a/packages/api-server/src/routes/cicd.ts b/packages/api-server/src/routes/cicd.ts
+index 466123deb2660599ca89aaf6951ec2039eee8237..1a8ec18298841216f9e3f65fd8aeafa73af6ccac 100644
+--- a/packages/api-server/src/routes/cicd.ts
++++ b/packages/api-server/src/routes/cicd.ts
+@@ -60,8 +60,10 @@ export function createCicdRouter(): Router {
+     }
+   });
+ 
+-  // APEX itself has one production deployment platform: the existing Cloud Run
+-  // service. `expectSha` lets an approved operator require exact provenance.
++  // Legacy migration-back endpoint: current APEX production is Railway and
++  // ordinarily deploys from main after CI. This route reaches only the gated
++  // Cloud Run fallback manager. `expectSha` requires exact provenance when an
++  // operator intentionally reactivates that path.
+   router.post('/deploy', async (req, res) => {
+     try {
+       const { environment, platform, expectSha } = req.body as {
+diff --git a/packages/api-server/src/routes/email-campaigns.ts b/packages/api-server/src/routes/email-campaigns.ts
+index 2f9a3f41e4452ef520edc5a8fe8668b2ab510e28..54496d444096ab5da821efa57dfa738b365afd1a 100644
+--- a/packages/api-server/src/routes/email-campaigns.ts
++++ b/packages/api-server/src/routes/email-campaigns.ts
+@@ -1,5 +1,5 @@
+ import { Router } from 'express';
+-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
++import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+ import { db, emailCampaigns, emailSends } from '@workspace/db';
+ 
+ // ─── Email Campaigns — human-facing surface ──────────────────────────────────
+@@ -102,6 +102,39 @@ export function createEmailCampaignsRouter() {
+     res.json({ campaigns: campaigns.map((c) => summarizeEmailCampaign(c, byCampaign.get(c.id) ?? {})) });
+   });
+ 
++  // GET /api/email-campaigns/sends — recent outbound email activity across
++  // campaigns AND one-off sends. This route intentionally comes before /:id so
++  // Express never mistakes the literal path segment "sends" for a campaign id.
++  //
++  // scope=all (default) | campaign | one-off
++  // status=<email_sends.status> narrows the activity feed without changing the
++  // underlying delivery ledger. Read-only and admin-authenticated by the
++  // blanket /api gate in index.ts.
++  router.get('/sends', async (req, res) => {
++    const limitParam = Number(req.query.limit);
++    const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 500) : 100;
++    const scope = req.query.scope === 'campaign' || req.query.scope === 'one-off'
++      ? req.query.scope
++      : 'all';
++    const status = typeof req.query.status === 'string' && req.query.status.trim()
++      ? req.query.status.trim()
++      : null;
++
++    const scopeCondition = scope === 'campaign'
++      ? isNotNull(emailSends.campaignId)
++      : scope === 'one-off'
++        ? isNull(emailSends.campaignId)
++        : undefined;
++    const statusCondition = status ? eq(emailSends.status, status) : undefined;
++    const where = and(scopeCondition, statusCondition);
++
++    const sends = where
++      ? await db.select().from(emailSends).where(where).orderBy(desc(emailSends.createdAt)).limit(limit)
++      : await db.select().from(emailSends).orderBy(desc(emailSends.createdAt)).limit(limit);
++
++    res.json({ sends });
++  });
++
+   // GET /api/email-campaigns/:id — breakdown plus recent individual sends
+   router.get('/:id', async (req, res) => {
+     const [campaign] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, req.params.id)).limit(1);
+diff --git a/packages/background-jobs/src/handlers/index.ts b/packages/background-jobs/src/handlers/index.ts
+index 79b45ba2b7c1367af4ffd46874938e433def1297..1149faaa37e06bc7c70799344ba8719a49f6efee 100644
+--- a/packages/background-jobs/src/handlers/index.ts
++++ b/packages/background-jobs/src/handlers/index.ts
+@@ -425,7 +425,7 @@ export class GoalReviewJob implements JobHandler {
+       '1. If there are active goals, take the highest-priority one and delegate concrete initiatives to your CTO/COO via sendMessage (or dispatchSwarm for multi-perspective work).',
+       '2. If a component is degraded/critical, delegate investigation and a fix to the CTO.',
+       '3. If a recent insight signals a recurring problem, act on it.',
+-      '4. BuildMyBot2 (managed revenue flagship): if snapshot.buildmybot2 shows open errors (especially critical), flagged/escalated shifts, or leads stalling without reply, delegate to the COO (apex-coo-001) — it owns buildmybot_status / buildmybot_send_briefing / buildmybot_dispatch_engineering. Have it send a corrective briefing or dispatch an engineering fix as warranted.',
++      '4. BuildMyBot2 (managed revenue flagship): snapshot.buildmybot2 is the public health contract, not detailed AI-team/error/lead telemetry. If it shows current service degradation, delegate to the COO (apex-coo-001) for a health check and, when an engineering defect is established, a repo-scoped buildmybot_dispatch_engineering ticket. Do not infer unavailable shift/error/lead details or claim a corrective briefing was sent.',
+       '5. WORK SCHEDULE (you own scheduling/HR): review snapshot.cronSchedule. If the lead-gen cadence is too slow for the #1 priority, create a more frequent sweep or a second sweep targeting a different industry with schedule_task. If a recurring function is missing (outreach follow-ups, content cadence), create it. If a cron is stale or redundant, cancel it with cancel_scheduled_task. The baseline crons are a starting roster — adjust them as priorities shift.',
+       '6. GOAL HYGIENE (you own the goal list): call list_goals to see real per-goal progress, not just titles. A goal showing "work_finished_awaiting_closeout" must be verified with get_delegation_status and then CLOSED with update_goal_status — goals do not close themselves, and every goal left open makes the next review reason over stale state. A goal showing "no_work_created" is one you accepted and never decomposed: decompose it now. A goal showing "stalled_all_failed" means your approach does not work — change it or escalate_to_human.',
+       '7. RESTRAINT: do NOT create busywork. If the system is healthy and nothing needs doing, record a one-line note to memory and create no tasks.',
+@@ -1329,8 +1329,7 @@ export class BranchReviewJob implements JobHandler {
+       '7. APPROVAL IS PER TOOL, never a global switch. Human approval is independently required before',
+       '   each use of: runShell, deploy_to_environment, rollback_deployment, push_to_remote,',
+       '   create_pull_request, register_application, delegate_to_application, make_outbound_call,',
+-      '   buildmybot_send_briefing, buildmybot_run_workforce, buildmybot_resolve_error,',
+-      '   buildmybot_deploy, and casebuddy_deploy_firm.',
++      '   buildmybot_run_workforce, buildmybot_deploy, and casebuddy_deploy_firm.',
+       '   Irreversible actions (deploys, external sends, schema changes, financial) also stay',
+       '   human-approved — propose and queue them; do not execute.',
+     ].join('\n');
+diff --git a/packages/cicd-automation/src/cloud-run-deployer.ts b/packages/cicd-automation/src/cloud-run-deployer.ts
+index a7eda30d9d26f7aff4f66a7c8addb2fc1b523fa5..8057a27fb24f1c0c01d5b5eb4143bdc653b3f00b 100644
+--- a/packages/cicd-automation/src/cloud-run-deployer.ts
++++ b/packages/cicd-automation/src/cloud-run-deployer.ts
+@@ -1,6 +1,8 @@
+-// ─── CloudRunDeployer — APEX production deployment path ─────────────────────
++// ─── CloudRunDeployer — retired APEX Cloud Run migration-back path ──────────
+ //
+-// APEX production runs on Google Cloud Run. This deployer is deliberately
++// APEX production runs on Railway. This deployer is retained only as the
++// explicitly gated Cloud Run migration-back/rollback path and must not be
++// described as the ordinary production release mechanism. It is deliberately
+ // conservative:
+ //   1. It requires an authenticated gcloud session and explicit project,
+ //      region, and EXISTING service name.
+diff --git a/packages/cicd-automation/src/deployment-manager.ts b/packages/cicd-automation/src/deployment-manager.ts
+index 03aa0779712f33c0f905264fce684973b996c911..a289dea80e38e4570cc4b27100039f589227ba02 100644
+--- a/packages/cicd-automation/src/deployment-manager.ts
++++ b/packages/cicd-automation/src/deployment-manager.ts
+@@ -1,23 +1,23 @@
+ // ─── DeploymentManager ──────────────────────────────────────────────────────
+ //
+-// Records and executes APEX deployment attempts. Production deployments remain
+-// approval-gated by the tool layer. APEX itself runs on Google Cloud Run.
+-// Client projects may still use other deployment platforms elsewhere in the
+-// broader CI/CD tooling; that is separate from where the APEX control plane is
+-// hosted.
++// Records and executes the retired APEX Cloud Run migration-back path.
++// APEX production itself runs on Railway and normally deploys automatically
++// from `main` after CI. This manager remains approval-gated and must be used only
++// when an operator intentionally reactivates the documented Cloud Run fallback.
+ //
+-// The manager never fabricates success. It records the attempt as `deploying`,
+-// calls the real Cloud Run deployment path, verifies the live health endpoint,
++// The manager never fabricates success. For an explicitly reactivated Cloud Run
++// path it records the attempt as `deploying`, verifies the target and live health,
+ // and only then records `healthy`. Missing Google auth/configuration is recorded
+-// as `blocked`, not as a failed release, because nothing was shipped.
++// as `blocked`, because nothing was shipped.
+ 
+ import { db, deployments, type NewDeploymentRow } from '@workspace/db';
+ import { deployToCloudRun, rollbackCloudRun, DeployNotConfiguredError } from './cloud-run-deployer.js';
+ import { eq } from 'drizzle-orm';
+ import crypto from 'crypto';
+ 
+-/** Where APEX itself runs. `cloud-run` is the production target; `local` is a
+- * developer environment with no remote deployment target. */
++/** Targets supported by this legacy manager. `cloud-run` is the gated
++ * migration-back target; current Railway production is intentionally not driven
++ * by this manager. `local` has no remote deployment target. */
+ export type ApexDeployPlatform = 'cloud-run' | 'local';
+ 
+ export interface DeploymentConfig {
+@@ -29,14 +29,12 @@ export interface DeploymentConfig {
+ }
+ 
+ export const CLOUD_RUN_DEPLOY_RUNBOOK =
+-  'APEX production runs on the existing Google Cloud Run service mapped to ' +
+-  '`https://apex.donmatthews.live`. Deployment requires an authenticated gcloud ' +
+-  'environment plus APEX_GCP_PROJECT_ID, APEX_CLOUD_RUN_REGION, and ' +
+-  'APEX_CLOUD_RUN_SERVICE. The deployer first describes that exact existing ' +
+-  'service, builds a clean Git commit through Google Cloud Build using ' +
+-  'cloudbuild.apex.yaml, tags the image with the commit SHA, updates the existing ' +
+-  'service image with `gcloud run services update`, waits for Ready, and verifies ' +
+-  '/health. It never creates a new Cloud Run service or reconstructs its env/secrets.';
++  'APEX production runs on Railway (project APEX, service apex-backend) and ordinarily ' +
++  'deploys from main after CI. This manager is the retired, approval-gated Cloud Run ' +
++  'migration-back path only. Do not enable it unless an operator explicitly restores ' +
++  'the documented GCP preconditions. When intentionally reactivated it requires an ' +
++  'authenticated gcloud environment plus APEX_GCP_PROJECT_ID, APEX_CLOUD_RUN_REGION, ' +
++  'and APEX_CLOUD_RUN_SERVICE; it updates only that existing service and verifies /health.';
+ 
+ export class DeploymentManager {
+   async deploy(config: DeploymentConfig): Promise<{
+diff --git a/packages/cicd-worker/src/handlers/deploy.ts b/packages/cicd-worker/src/handlers/deploy.ts
+index a536214956148f2dbec4055669ffb81492a9ee8d..2c684a0ab1ee908e9b1481ad5921d36f51635a93 100644
+--- a/packages/cicd-worker/src/handlers/deploy.ts
++++ b/packages/cicd-worker/src/handlers/deploy.ts
+@@ -13,27 +13,16 @@
+ // complete, and nobody learned that nothing shipped -- to a platform Apex
+ // isn't even hosted on.
+ //
+-// CORRECTED 2026-09-05: the paragraph below originally claimed Apex
+-// production was AWS Lightsail. That was already stale when written and was
+-// never caught, because scripts/verify-retired-hosting-instructions.ts only
+-// scans a fixed list of .md files, not packages/**/src/*.ts -- this file was
+-// an un-caught blind spot for exactly the class of bug that guard exists to
+-// catch. Per ADR-001 in docs/ARCHITECTURE_DECISIONS.md, Apex production is
+-// the existing **Google Cloud Run** service behind
+-// https://apex.donmatthews.live. AWS Lightsail/CodeBuild and Railway are
+-// retired hosting paths. Vercel, Railway, Render, and similar platforms may
+-// still appear elsewhere in this repo as deploy targets for CLIENT projects
+-// the CI/CD tooling manages -- that is not where Apex itself runs.
++// CURRENT STATUS: this package is part of the unfinished Convex migration and
++// is excluded from the production typecheck. APEX production runs on Railway
++// (project APEX, service apex-backend) and normally deploys automatically from
++// main after green CI. The Cloud Run implementation elsewhere in this repository
++// is retained only as an explicitly gated migration-back path.
+ //
+-// This worker intentionally does NOT perform a real deploy: cicd-worker is
+-// part of the unfinished Convex migration (see apexplan.md), depends only on
+-// @workspace/convex-backend, and is not the process running in production.
+-// Real Apex deploys go through packages/cicd-automation/src/cloud-run-deployer.ts,
+-// invoked via the api-server tool `deploy_to_environment` / POST
+-// /api/cicd/deploy -- see docs/PRODUCTION_OPERATIONS.md for the exact
+-// sequence. These handlers keep throwing, and point there, so a job routed
+-// here fails loudly rather than silently no-op'ing or reporting a fabricated
+-// success against infrastructure Apex doesn't run on.
++// This worker intentionally does NOT perform a real deployment. Its handlers
++// fail loudly so an autonomous task cannot confuse a queued worker job with a
++// production release. Use the Railway deployment status plus the live /health
++// build SHA for ordinary production evidence.
+ //
+ // Behavior difference from the original (forced, not a choice): the old
+ // rollback() first looked up the deployment row in Postgres and THREW if it
+@@ -41,7 +30,7 @@
+ // mutation exposed to this worker over the convex/cicd.ts contract (only
+ // claimNextJob/reportJobResult) -- there is nothing for this worker to query
+ // against -- so existence-checking is simply dropped and rollback always
+-// reports success for whatever deploymentId it's given.
++// also fails loudly rather than fabricating rollback success for an arbitrary deploymentId.
+ import crypto from 'crypto';
+ 
+ export interface DeployPayload {
+@@ -57,23 +46,12 @@ export interface DeployResult {
+ }
+ 
+ export const CLOUD_RUN_DEPLOY_RUNBOOK =
+-  'Deploys are implemented in the api-server process, not this worker: use the ' +
+-  '`deploy_to_environment` tool or POST /api/cicd/deploy (requires ' +
+-  'APEX_DEPLOY_ENABLED plus an authenticated gcloud identity or Workload ' +
+-  'Identity). Apex production runs on the existing Google Cloud Run service ' +
+-  'behind https://apex.donmatthews.live -- see docs/PRODUCTION_OPERATIONS.md. ' +
+-  'Deploying requires, in order: (1) Google Cloud Build from cloudbuild.apex.yaml ' +
+-  'against the exact reviewed commit, producing an immutable :<sha>-tagged ' +
+-  'image, (2) wait for the build to succeed, (3) `gcloud run services update` ' +
+-  '(never `deploy`/`create`) on the existing configured service, (4) poll the ' +
+-  'new revision to Ready and verify /health.build.sha matches. No gcloud ' +
+-  'credentials or platform API are wired into this worker, so this job ' +
+-  'cannot perform that sequence — escalate to a human instead of reporting ' +
+-  'a deploy as done.';
++  'APEX production runs on Railway and this experimental worker cannot deploy or roll it back. ' +
++  'Ordinary releases come from main after green CI and must be verified from Railway deployment ' +
++  'status plus the live /health build SHA. The Cloud Run code elsewhere is a retired, gated ' +
++  'migration-back path only; never report this worker as having changed production.';
+ 
+-/** @deprecated Renamed to {@link CLOUD_RUN_DEPLOY_RUNBOOK} -- Apex production
+- * is Google Cloud Run, not AWS Lightsail. Kept as an alias only in case an
+- * external caller still imports the old name; do not add new references. */
++/** @deprecated Historical alias retained only for compatibility. */
+ export const LIGHTSAIL_DEPLOY_RUNBOOK = CLOUD_RUN_DEPLOY_RUNBOOK;
+ 
+ export async function handleDeploy(payload: DeployPayload): Promise<DeployResult> {
+@@ -99,7 +77,6 @@ export async function handleRollback(payload: RollbackPayload): Promise<Rollback
+   // the agent's mind while production is still broken.
+   throw new Error(
+     `Automated rollback is not implemented (deployment ${payload.deploymentId}). ` +
+-      `${CLOUD_RUN_DEPLOY_RUNBOOK} Roll back by deploying the previous image ` +
+-      `tag to apex-service.`,
++      `${CLOUD_RUN_DEPLOY_RUNBOOK}`,
+   );
+ }
+diff --git a/packages/core/src/tool-registry.ts b/packages/core/src/tool-registry.ts
+index f7bfc10eb4116b9ada83dad40df63eb4dbe556cd..1e24a4c90f544c6bd2c27b6c99eccea81eb98431 100644
+--- a/packages/core/src/tool-registry.ts
++++ b/packages/core/src/tool-registry.ts
+@@ -2687,23 +2687,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
+     // ─── CI/CD: Deploy to environment ───────────────────────────────────
+     {
+       name: 'deploy_to_environment',
+-      // CORRECTED 2026-09-05: this description and schema previously named
+-      // AWS Lightsail/CodeBuild long after packages/cicd-automation/src/
+-      // deployment-manager.ts was rewritten against the real Cloud Run
+-      // deployer (cloud-run-deployer.ts) -- the tool worked (deploy-manager
+-      // calls deployToCloudRun() unconditionally whenever platform isn't
+-      // 'local'), but it recorded a false 'lightsail' platform value on every
+-      // deployments row and told the calling agent it had shipped to
+-      // infrastructure Apex hasn't run on since ADR-001. Per
+-      // docs/ARCHITECTURE_DECISIONS.md, Apex production is the existing
+-      // Google Cloud Run service. Requires APEX_DEPLOY_ENABLED plus an
+-      // authenticated gcloud identity or Workload Identity; without either it
+-      // fails with actionable instructions instead of faking success.
++      // APEX production is Railway and normally deploys automatically from
++      // main after green CI. This legacy tool controls only the explicitly
++      // gated Cloud Run migration-back path retained for disaster recovery.
++      // It must never be presented as the ordinary Railway release mechanism.
+       description:
+-        'Deploy Apex to Google Cloud Run for real: builds the exact reviewed commit via Google Cloud Build (cloudbuild.apex.yaml), tags an immutable image, updates the existing configured Cloud Run service with `gcloud run services update`, waits for the new revision to become Ready, then verifies /health.build.sha matches and returns the real service URL. Takes several minutes. Throws with actionable instructions if deploys are disabled (APEX_DEPLOY_ENABLED) or gcloud credentials/config are missing — a throw means NOTHING shipped, so never report a release as done unless this returns successfully. Requires human approval.',
++        'Emergency migration-back only: APEX production normally runs on Railway and deploys from main after green CI. This tool can update the retired Cloud Run service only when an operator has explicitly restored the documented GCP preconditions and enabled APEX_DEPLOY_ENABLED. A successful call proves only the Cloud Run fallback path; it does not prove Railway production changed. Requires human approval.',
+       schema: z.object({
+         environment: z.enum(['staging', 'production']).describe('Target deployment environment'),
+-        platform: z.enum(['cloud-run', 'local']).optional().describe('Deployment platform — use "cloud-run" (the existing Google Cloud Run service) for a real deploy; "local" has no deploy target and is rejected. Apex is NOT hosted on Vercel, Railway, or AWS Lightsail.'),
++        platform: z.enum(['cloud-run', 'local']).optional().describe('Legacy migration-back target. "cloud-run" is the retired fallback path; current APEX production is Railway and is not deployed by this tool. "local" has no remote target.'),
+       }),
+       requiresApproval: true,
+       async execute({ environment, platform }) {
+@@ -2721,7 +2713,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
+     {
+       name: 'rollback_deployment',
+       description:
+-        'Roll the live Google Cloud Run service back to its previous known-good revision and verify /health before reporting success. Requires approval.',
++        'Rollback an explicitly reactivated Cloud Run migration-back deployment to its previous Cloud Run revision and verify /health. This does not roll back current Railway production. Requires approval.',
+       schema: z.object({
+         deploymentId: z.string().describe('Deployment ID to roll back'),
+       }),
+diff --git a/packages/dashboard/src/components/EmailCampaignsPanel.tsx b/packages/dashboard/src/components/EmailCampaignsPanel.tsx
+index 30386dfcd25c0fe2afb4a77826d0d18fce9c4088..fe7e9656f02d4501d378d329e64f9b8f6a10b228 100644
+--- a/packages/dashboard/src/components/EmailCampaignsPanel.tsx
++++ b/packages/dashboard/src/components/EmailCampaignsPanel.tsx
+@@ -42,6 +42,23 @@ function formatWhen(iso: string | null): string {
+   return `${Math.round(ms / 86_400_000)}d ago`;
+ }
+ 
++/** Render stored email HTML in a sandboxed document instead of injecting it
++ * into the dashboard DOM. Email copy can be LLM-generated and may contain
++ * merge-field/customer content, so treating it as "our own HTML" is not a safe
++ * XSS boundary. The CSP also blocks remote tracking pixels while previewing. */
++function emailPreviewSrcDoc(body: string): string {
++  const csp = [
++    "default-src 'none'",
++    "img-src data: cid:",
++    "style-src 'unsafe-inline'",
++    "font-src data:",
++    "base-uri 'none'",
++    "form-action 'none'",
++    "frame-src 'none'",
++  ].join('; ');
++  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"></head><body>${body}</body></html>`;
++}
++
+ function FunnelBar({ campaign }: { campaign: EmailCampaignProgress }) {
+   const total = campaign.totalTargets || 1;
+   return (
+@@ -66,7 +83,7 @@ function FunnelBar({ campaign }: { campaign: EmailCampaignProgress }) {
+  *  operator's window into what a campaign actually says, in place of a CC on
+  *  every send (which would put a personal address in every recipient's
+  *  headers and doesn't give a historical record for sends already delivered). */
+-function SendRow({ send }: { send: EmailSendRow }) {
++function SendRow({ send, contextLabel }: { send: EmailSendRow; contextLabel?: string }) {
+   const [open, setOpen] = useState(false);
+   const hasBody = Boolean(send.body);
+ 
+@@ -94,6 +111,8 @@ function SendRow({ send }: { send: EmailSendRow }) {
+           {hasBody && (open ? <ChevronDown size={11} /> : <Eye size={11} style={{ opacity: 0.6 }} />)}
+           <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+             {send.toName ? `${send.toName} <${send.toEmail}>` : send.toEmail}
++            {contextLabel ? ` · ${contextLabel}` : ''}
++            {` · ${formatWhen(send.createdAt)}`}
+           </span>
+         </span>
+         <span style={{ flex: 'none', color: STATUS_COLOR[send.status] ?? 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
+@@ -103,11 +122,11 @@ function SendRow({ send }: { send: EmailSendRow }) {
+       {open && hasBody && (
+         <div style={{ margin: '2px 0 10px', padding: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6 }}>
+           <div style={{ fontSize: 11, color: 'var(--color-apex-text)', fontWeight: 600, marginBottom: 6 }}>{send.subject}</div>
+-          <div
+-            style={{ fontSize: 11, color: 'var(--color-apex-muted)', lineHeight: 1.5, maxHeight: 260, overflowY: 'auto' }}
+-            // Content is APEX's own resolved template output, not third-party
+-            // HTML — this is exactly what Resend was sent.
+-            dangerouslySetInnerHTML={{ __html: send.body ?? '' }}
++          <iframe
++            title={`Email preview to ${send.toEmail}`}
++            sandbox=""
++            srcDoc={emailPreviewSrcDoc(send.body ?? '')}
++            style={{ width: '100%', minHeight: 220, maxHeight: 320, border: 0, borderRadius: 4, background: '#fff' }}
+           />
+           {send.errorMessage && (
+             <div style={{ fontSize: 10, color: '#c45c66', marginTop: 6 }}>{send.errorMessage}</div>
+@@ -236,14 +255,43 @@ export function EmailCampaignsPanel() {
+     queryFn: () => api.emailCampaigns.list(),
+     refetchInterval: 5000,
+   });
++  const { data: recentSends = [] } = useQuery({
++    queryKey: ['email-sends', 'recent'],
++    queryFn: () => api.emailCampaigns.sends({ limit: 100, scope: 'all' }),
++    refetchInterval: 5000,
++  });
+ 
+   const live = campaigns.filter((c) => c.status === 'draft' || c.status === 'running' || c.status === 'paused');
+   const finished = campaigns.filter((c) => c.status === 'completed' || c.status === 'cancelled');
++  const campaignNameById = new Map<string, string>(campaigns.map((c) => [c.campaignId, c.name] as const));
++  const oneOffCount = recentSends.filter((s) => !s.campaignId).length;
+ 
+   return (
+     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+       <div style={{ fontSize: 13, color: 'var(--color-apex-muted)' }}>
+-        {live.length} active · {finished.length} finished
++        {live.length} active · {finished.length} finished · {recentSends.length} recent sends · {oneOffCount} one-off
++      </div>
++
++      <div className="glass-card" style={{ padding: 18 }}>
++        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
++          <Mail size={15} />
++          <strong style={{ fontSize: 13, color: 'var(--color-apex-text)' }}>Recent email activity</strong>
++        </div>
++        <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginBottom: 10 }}>
++          Campaign and one-off emails share this feed. Expand any row to audit the exact stored subject/body and current delivery state.
++        </div>
++        <div style={{ display: 'flex', flexDirection: 'column' }}>
++          {recentSends.slice(0, 50).map((send) => (
++            <SendRow
++              key={send.id}
++              send={send}
++              contextLabel={send.campaignId ? (campaignNameById.get(send.campaignId) ?? 'Campaign') : 'One-off'}
++            />
++          ))}
++          {recentSends.length === 0 && (
++            <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>No outbound email activity recorded yet.</div>
++          )}
++        </div>
+       </div>
+ 
+       {campaigns.length === 0 && (
+diff --git a/packages/dashboard/src/lib/api.ts b/packages/dashboard/src/lib/api.ts
+index 6cff9980e5ba893b9af2aefadf7b9290efe0934f..1be1320529f040d12a83d25ecb64bbd935b18b63 100644
+--- a/packages/dashboard/src/lib/api.ts
++++ b/packages/dashboard/src/lib/api.ts
+@@ -303,6 +303,14 @@ export const api = {
+ 
+   emailCampaigns: {
+     list: () => apiFetch<{ campaigns: EmailCampaignProgress[] }>('/email-campaigns').then((r) => r.campaigns),
++    sends: (params?: { limit?: number; scope?: 'all' | 'campaign' | 'one-off'; status?: string }) => {
++      const qs = new URLSearchParams();
++      if (params?.limit) qs.set('limit', String(params.limit));
++      if (params?.scope && params.scope !== 'all') qs.set('scope', params.scope);
++      if (params?.status) qs.set('status', params.status);
++      const query = qs.toString();
++      return apiFetch<{ sends: EmailSendRow[] }>(`/email-campaigns/sends${query ? `?${query}` : ''}`).then((r) => r.sends);
++    },
+     get: (id: string) =>
+       apiFetch<{ campaign: EmailCampaignProgress & { subjectTemplate: string; bodyTemplate: string; result: string | null }; sends: EmailSendRow[] }>(
+         `/email-campaigns/${id}`,
+diff --git a/scripts/leads-export.json b/scripts/leads-export.json
+index e69de29bb2d1d6434b8b29ae775ad8c2e48c5391..fe51488c7066f6687ef680d6bfaa4f7768ef205c 100644
+--- a/scripts/leads-export.json
++++ b/scripts/leads-export.json
+@@ -0,0 +1 @@
++[]
+diff --git a/scripts/verify-deploy-provenance.ts b/scripts/verify-deploy-provenance.ts
+index 1ec9367a44796fe3a295661b6eca5a23cd7ebcaf..2666cf734bd4caf62115d77b1c6b9cf86cf16f87 100644
+--- a/scripts/verify-deploy-provenance.ts
++++ b/scripts/verify-deploy-provenance.ts
+@@ -38,6 +38,36 @@ check(
+   /healthcheckPath\s*=\s*"\/health"/.test(railwayToml),
+ );
+ 
++
++const deploymentToolSource = fs.readFileSync(
++  path.join(root, 'packages/core/src/tool-registry.ts'),
++  'utf8',
++);
++const deploymentManagerSource = fs.readFileSync(
++  path.join(root, 'packages/cicd-automation/src/deployment-manager.ts'),
++  'utf8',
++);
++const cloudRunDeployerSource = fs.readFileSync(
++  path.join(root, 'packages/cicd-automation/src/cloud-run-deployer.ts'),
++  'utf8',
++);
++check(
++  'agent-facing deploy tool names Railway as current and Cloud Run as migration-back only',
++  /APEX production normally runs on Railway/.test(deploymentToolSource) &&
++    /retired Cloud Run service/.test(deploymentToolSource) &&
++    /does not roll back current Railway production/.test(deploymentToolSource),
++);
++check(
++  'legacy deployment manager is explicitly migration-back, not ordinary production',
++  /APEX production itself runs on Railway/.test(deploymentManagerSource) &&
++    /Cloud Run migration-back path/.test(deploymentManagerSource),
++);
++check(
++  'Cloud Run deployer source labels itself as the retired migration-back path',
++  /APEX production runs on Railway/.test(cloudRunDeployerSource) &&
++    /migration-back\/rollback path/.test(cloudRunDeployerSource),
++);
++
+ const runtimeHealth = fs.readFileSync(
+   path.join(root, 'packages/core/src/runtime-health.ts'),
+   'utf8',
+diff --git a/scripts/verify-email-campaigns-surface.ts b/scripts/verify-email-campaigns-surface.ts
+index 012d0ac1c3cfe0a3109bf9b64ec2fece9eb6b548..e692f4e967d1051219fc44b9d9d60f9e4df8733f 100644
+--- a/scripts/verify-email-campaigns-surface.ts
++++ b/scripts/verify-email-campaigns-surface.ts
+@@ -43,11 +43,23 @@ async function main(): Promise<void> {
+   const dashboardApi = read('packages/dashboard/src/lib/api.ts');
+   const appTsx = read('packages/dashboard/src/App.tsx');
+   const salesOpsPanel = read('packages/dashboard/src/components/SalesOperationsPanel.tsx');
++  const emailPanel = read('packages/dashboard/src/components/EmailCampaignsPanel.tsx');
+ 
+   // ── The route exists and covers the full lifecycle ───────────────────────
+   check('lists every campaign', /router\.get\('\/', async/.test(route));
+   check('reads one campaign with its individual sends', /router\.get\('\/:id', async/.test(route));
+   check('exposes pause, resume, and cancel', ['pause', 'resume', 'cancel'].every((a) => route.includes(`action: '${a}'`)));
++  check(
++    'lists recent sends across campaigns and one-off email',
++    /router\.get\('\/sends', async/.test(route) &&
++      /scope === 'one-off'/.test(route) &&
++      /isNull\(emailSends\.campaignId\)/.test(route),
++  );
++  check(
++    'the literal /sends route is registered before /:id so Express cannot shadow it',
++    route.indexOf("router.get('/sends'") > -1 &&
++      route.indexOf("router.get('/sends'") < route.indexOf("router.get('/:id'"),
++  );
+ 
+   // ── Transitions match the states the tool chain actually uses ────────────
+   // draft | running | paused | completed | cancelled (lib/db/src/schema.ts).
+@@ -109,9 +121,11 @@ async function main(): Promise<void> {
+ 
+   // ── Dashboard: client, panel, and navigation all exist ────────────────────
+   check(
+-    'the dashboard API client can list/get/control email campaigns',
++    'the dashboard API client can list/get/control email campaigns and read all sends',
+     /emailCampaigns: \{/.test(dashboardApi) &&
+       /list: \(\) => apiFetch<\{ campaigns: EmailCampaignProgress\[\] \}>\('\/email-campaigns'\)/.test(dashboardApi) &&
++      /sends: \(params\?:/.test(dashboardApi) &&
++      /\/email-campaigns\/sends/.test(dashboardApi) &&
+       /control: \(id: string, action: 'pause' \| 'resume' \| 'cancel'\)/.test(dashboardApi),
+   );
+   // Sales Operations consolidated Campaigns/Automation/Email Campaigns into
+@@ -129,6 +143,20 @@ async function main(): Promise<void> {
+       /'sales-ops': \{ title: 'Revenue Operations', kicker: 'Revenue' \}/.test(appTsx),
+   );
+ 
++  check(
++    'Email panel exposes a recent activity feed that includes one-off sends',
++    /Recent email activity/.test(emailPanel) &&
++      /api\.emailCampaigns\.sends\(\{ limit: 100, scope: 'all' \}\)/.test(emailPanel) &&
++      /'One-off'/.test(emailPanel),
++  );
++  check(
++    'stored email HTML is sandboxed instead of injected into the dashboard DOM',
++    /<iframe/.test(emailPanel) &&
++      /sandbox=""/.test(emailPanel) &&
++      /Content-Security-Policy/.test(emailPanel) &&
++      !/dangerouslySetInnerHTML/.test(emailPanel),
++  );
++
+   // ── The one piece of real logic: run it, don't just read it ──────────────
+   const mod = (await import(
+     path.join(root, 'packages/api-server/src/routes/email-campaigns.ts')
+diff --git a/scripts/verify-retired-hosting-instructions.ts b/scripts/verify-retired-hosting-instructions.ts
+index 9702f7d61b9b64ea264b8960184bf4818fb04334..81b9a25a46f30917671167840872ebe07baa255b 100644
+--- a/scripts/verify-retired-hosting-instructions.ts
++++ b/scripts/verify-retired-hosting-instructions.ts
+@@ -14,8 +14,8 @@
+ // guard: it fails CI for telling the truth.
+ //
+ // Cloud Run is deliberately NOT added to the retired set. It is an unbilled
+-// standby, .github/workflows/deploy.yml still describes the tested way back,
+-// and most surviving mentions are history rather than instruction. Line-level
++// migration-back implementation; the old GitHub deploy workflow has been
++// removed, and most surviving mentions are history rather than instruction. Line-level
+ // pattern matching cannot tell those apart, so the current-host declarations
+ // are asserted positively below instead.
+ //
