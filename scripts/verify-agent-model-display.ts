@@ -91,6 +91,41 @@ check(
   !/this\.config\.llm\.(model|provider)/.test(baseAgentSrc),
 );
 
+// Precise check on the onConflictDoUpdate's own `set` object -- a looser
+// whole-file substring match for "model: this.llmConfig.model" would also
+// match the insert-only values() block and miss a regression where an
+// existing agent row (i.e. every agent after the very first boot) never
+// gets its model/provider refreshed on restart, only on that agent's next
+// actual LLM call via persistActualProvider().
+const onConflictIdx = baseAgentSrc.indexOf('onConflictDoUpdate(');
+check('initialize() DB upsert has an onConflictDoUpdate call', onConflictIdx !== -1);
+if (onConflictIdx !== -1) {
+  const setIdx = baseAgentSrc.indexOf('set: {', onConflictIdx);
+  check('onConflictDoUpdate call has a set object', setIdx !== -1);
+  if (setIdx !== -1) {
+    let depth = 0;
+    let end = setIdx;
+    for (let i = setIdx + 'set: {'.length - 1; i < baseAgentSrc.length; i++) {
+      if (baseAgentSrc[i] === '{') depth++;
+      else if (baseAgentSrc[i] === '}') {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    const setBlock = baseAgentSrc.slice(setIdx, end + 1);
+    check(
+      'onConflictDoUpdate refreshes model on an existing agent row, not just status/lastActiveAt',
+      /model:\s*this\.llmConfig\.model/.test(setBlock),
+      setBlock,
+    );
+    check(
+      'onConflictDoUpdate refreshes provider on an existing agent row, not just status/lastActiveAt',
+      /provider:\s*this\.llmConfig\.provider/.test(setBlock),
+      setBlock,
+    );
+  }
+}
+
 // ── 4. Functional merge semantics: default flows through, override wins ──
 console.log('── getDefaultLLMConfig() merge semantics (constructor behavior) ──');
 const representativeRoles = [

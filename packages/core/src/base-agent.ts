@@ -384,6 +384,14 @@ export abstract class BaseAgent {
         target: agents.id,
         set: {
           status: 'idle',
+          // Also refresh model/provider on every restart for an agent row
+          // that already existed: persistActualProvider() only corrects
+          // these after that agent's first real LLM call post-restart, so
+          // without this an agent that stays idle for a while keeps
+          // whatever was last persisted -- possibly long stale -- right
+          // through the restart this fix itself ships in.
+          model: this.llmConfig.model,
+          provider: this.llmConfig.provider,
           lastActiveAt: new Date(),
         },
       });
