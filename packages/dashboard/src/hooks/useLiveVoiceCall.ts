@@ -188,7 +188,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   }, [stopPlayback]);
 
   // Tell the agent what screen Don is looking at mid-call. Relayed server-side
-  // into the Gemini Live session as a silent context note.
+  // into the current persistent realtime voice session as a silent context note.
   const sendContext = useCallback((text: string) => {
     try {
       wsRef.current?.send(JSON.stringify({ type: 'context', text }));
@@ -282,9 +282,9 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       // Explicitly request echo cancellation / noise suppression / AGC.
       // `{ audio: true }` is supposed to default these on, but mobile
       // browsers (especially iOS Safari when the track is consumed through
-      // WebAudio) are unreliable about it. The echo gate above is the
-      // deterministic layer; this maximizes the chance the browser's own AEC
-      // also engages where supported.
+      // WebAudio) are unreliable about it. Full duplex deliberately keeps the
+      // mic open, so native AEC/noise suppression is the first echo-defense
+      // layer while provider VAD remains authoritative for interruption.
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -338,19 +338,24 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
             localSpeechFramesRef.current = 0;
             localSpeechActiveRef.current = false;
           }
-          if (
-            wasPlayingRef.current &&
-            !localSpeechActiveRef.current &&
-            localSpeechFramesRef.current >= LOCAL_BARGE_FRAMES
-          ) {
+          if (!localSpeechActiveRef.current && localSpeechFramesRef.current >= LOCAL_BARGE_FRAMES) {
             localSpeechActiveRef.current = true;
-            const detectedAt = performance.now();
-            stopPlayback();
-            cbRef.current.onLatency?.({ stage: 'barge_in_playback_stop', ms: Math.max(0, performance.now() - detectedAt) });
             try {
+              // Marks every utterance, not only barge-ins, so the server can
+              // measure provider VAD / model / tool / first-audio timing from
+              // one stable server-clock baseline.
               ws.send(JSON.stringify({ type: 'speech_started' }));
             } catch {
               // provider-side VAD still receives the continuous audio stream
+            }
+
+            if (wasPlayingRef.current) {
+              const detectedAt = performance.now();
+              stopPlayback();
+              cbRef.current.onLatency?.({
+                stage: 'barge_in_playback_stop',
+                ms: Math.max(0, performance.now() - detectedAt),
+              });
             }
           }
         };
