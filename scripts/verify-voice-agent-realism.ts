@@ -215,8 +215,10 @@ function main(): void {
   const quickChatSource = fs.readFileSync(path.join(root, 'packages/dashboard/src/components/QuickChat.tsx'), 'utf8');
   check('QuickChat.tsx renders a past-voice-calls view wired to the new endpoint', /api\.chat\.voiceSessions/.test(quickChatSource));
   check(
-    "QuickChat.tsx: no stale 'Gemini Live' label remains in the call bar itself",
-    !/Gemini Live/.test(quickChatSource),
+    'QuickChat.tsx surfaces the active provider so Gemini-primary versus Deepgram fallback is visible',
+    /Gemini Live/.test(quickChatSource) &&
+      /Deepgram fallback/.test(quickChatSource) &&
+      /liveProvider\.provider === 'gemini'/.test(quickChatSource),
   );
 
   console.log(
