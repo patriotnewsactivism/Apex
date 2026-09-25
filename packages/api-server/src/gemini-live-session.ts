@@ -51,6 +51,7 @@ export async function tryStartGeminiLiveSession({
   let pendingScreenContext: string | null = null;
 
   let upstream: WebSocket | null = null;
+  let upstreamReady = false;
   let sessionHandle: string | undefined;
   let intentionallyClosed = false;
   let reconnectAttempts = 0;
@@ -124,7 +125,7 @@ export async function tryStartGeminiLiveSession({
   }));
 
   const sendGemini = (payload: Record<string, unknown>) => {
-    if (upstream?.readyState === WebSocket.OPEN) {
+    if (upstreamReady && upstream?.readyState === WebSocket.OPEN) {
       upstream.send(JSON.stringify(payload));
       return true;
     }
@@ -234,6 +235,7 @@ export async function tryStartGeminiLiveSession({
     const url = GEMINI_LIVE_URL + '?key=' + encodeURIComponent(apiKey);
     const ws = new WebSocket(url);
     upstream = ws;
+    upstreamReady = false;
 
     return await new Promise<boolean>((resolve) => {
       let settled = false;
@@ -303,6 +305,7 @@ export async function tryStartGeminiLiveSession({
 
         if (msg.setupComplete) {
           setupComplete = true;
+          upstreamReady = true;
           reconnectAttempts = 0;
           ensureSessionRow();
           safeSendClient({ type: 'ready', provider: 'gemini', model: GEMINI_LIVE_MODEL });
@@ -400,6 +403,7 @@ export async function tryStartGeminiLiveSession({
       });
 
       ws.on('close', (code, reason) => {
+        upstreamReady = false;
         clearTimeout(setupTimer);
 
         if (!setupComplete) {
@@ -483,7 +487,7 @@ export async function tryStartGeminiLiveSession({
     }
 
     if (msg.type === 'audio' && typeof msg.data === 'string') {
-      if (upstream?.readyState === WebSocket.OPEN) {
+      if (upstreamReady && upstream?.readyState === WebSocket.OPEN) {
         sendGemini({
           realtimeInput: {
             audio: {
