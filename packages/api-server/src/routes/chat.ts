@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { db, goals, approvals, logs, agents as agentsTable, voiceChatSessions, voiceChatTurns } from '@workspace/db';
+import { db, goals, tasks, approvals, logs, agents as agentsTable, voiceChatSessions, voiceChatTurns } from '@workspace/db';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMIntentionalPause } from '@workspace/core';
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
@@ -53,7 +53,7 @@ You are a capable agent in your own right, not a dispatcher. Handle things yours
   repos, anything that outlives this conversation). If a request is simple enough that you can just DO it
   in this reply, do it. If you're on the fence, say what you'd do, do the part you can do now, and ask
   whether he wants it deployed to the swarm as a goal.
-- When you do deploy a goal, tell him what you deployed and why, in your own words.
+- When you do deploy a goal, tell him what you deployed and why, in your own words. If he asks for progress, use get_goal_progress rather than guessing. If he explicitly tells you to stop/cancel a deployed job, use cancel_goal; do not merely say it was cancelled.
 - If there's a backlog of pending approvals or escalations, proactively mention it when relevant — Don has said
   he loses track of when these back up, so don't make him ask.
 - Be honest about uncertainty. If you don't actually know something, say so and offer to look it up rather than
@@ -97,6 +97,31 @@ export const CHAT_TOOLS: LLMTool[] = [
     parameters: {
       type: 'object',
       properties: { limit: { type: 'number', description: 'Max rows, default 15, max 40.' } },
+    },
+  },
+  {
+    name: 'get_goal_progress',
+    description:
+      'Get real progress for one deployed APEX goal, including child-task status counts and recent task detail. Use this when Don asks how a running job is going.',
+    parameters: {
+      type: 'object',
+      properties: {
+        goalId: { type: 'string', description: 'Goal id from create_goal or get_recent_goals.' },
+      },
+      required: ['goalId'],
+    },
+  },
+  {
+    name: 'cancel_goal',
+    description:
+      'Cancel a deployed APEX goal and its still-open child tasks. Only call this when Don explicitly says to cancel/stop that specific running job. If the goal id is not known, call get_recent_goals first.',
+    parameters: {
+      type: 'object',
+      properties: {
+        goalId: { type: 'string', description: 'Goal id to cancel.' },
+        reason: { type: 'string', description: 'Brief operator reason for cancellation.' },
+      },
+      required: ['goalId', 'reason'],
     },
   },
   {
@@ -235,6 +260,129 @@ export async function executeTool(
           agentId: l.agentId,
           timestamp: l.timestamp,
         })),
+      };
+    }
+    case 'get_goal_progress': {
+      const goalId = String(call.args.goalId ?? '');
+      if (!goalId) return { error: 'goalId is required' };
+      const [goal] = await db.select().from(goals).where(eq(goals.id, goalId)).limit(1);
+      if (!goal) return { error: 'Goal not found.' };
+
+      const childTasks = await db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.goalId, goalId))
+        .orderBy(desc(tasks.updatedAt));
+
+      const counts = childTasks.reduce<Record<string, number>>((acc, task) => {
+        acc[task.status] = (acc[task.status] ?? 0) + 1;
+        return acc;
+      }, {});
+
+      return {
+        goal: {
+          id: goal.id,
+          title: goal.title,
+          status: goal.status,
+          priority: goal.priority,
+          result: goal.result?.slice(0, 1000),
+          createdAt: goal.createdAt,
+          completedAt: goal.completedAt,
+        },
+        tasks: {
+          total: childTasks.length,
+          counts,
+          recent: childTasks.slice(0, 12).map((task) => ({
+            id: task.id,
+            title: task.title,
+            status: task.status,
+            assignedAgentId: task.assignedAgentId,
+            result: task.result?.slice(0, 400),
+            updatedAt: task.updatedAt,
+          })),
+        },
+      };
+    }
+    case 'cancel_goal': {
+      const goalId = String(call.args.goalId ?? '');
+      const reason = String(call.args.reason ?? '').trim().slice(0, 500);
+      if (!goalId || reason.length < 3) {
+        return { error: 'goalId and a cancellation reason are required' };
+      }
+
+      const [goal] = await db.select().from(goals).where(eq(goals.id, goalId)).limit(1);
+      if (!goal) return { error: 'Goal not found.' };
+      if (goal.status === 'completed' || goal.status === 'cancelled') {
+        return { error: `Goal is already ${goal.status}.`, goalId, status: goal.status };
+      }
+
+      const openTasks = await db
+        .select({ id: tasks.id })
+        .from(tasks)
+        .where(
+          and(
+            eq(tasks.goalId, goalId),
+            inArray(tasks.status, ['pending', 'in_progress', 'blocked', 'awaiting_approval']),
+          ),
+        );
+      const openTaskIds = openTasks.map((task) => task.id);
+      const now = new Date();
+
+      await db
+        .update(goals)
+        .set({ status: 'cancelled', completedAt: now })
+        .where(eq(goals.id, goalId));
+
+      if (openTaskIds.length > 0) {
+        await db
+          .update(tasks)
+          .set({
+            status: 'cancelled',
+            result: `Cancelled by operator via APEX Live Talk: ${reason}`,
+            completedAt: now,
+            updatedAt: now,
+          })
+          .where(inArray(tasks.id, openTaskIds));
+
+        await db
+          .update(approvals)
+          .set({
+            status: 'rejected',
+            reviewedAt: now,
+            reviewerNote: `Goal cancelled by operator: ${reason}`,
+          })
+          .where(
+            and(
+              inArray(approvals.taskId, openTaskIds),
+              eq(approvals.kind, 'approval'),
+              eq(approvals.status, 'pending'),
+            ),
+          );
+
+        await db
+          .update(approvals)
+          .set({
+            status: 'acknowledged',
+            reviewedAt: now,
+            reviewerNote: `Goal cancelled by operator: ${reason}`,
+          })
+          .where(
+            and(
+              inArray(approvals.taskId, openTaskIds),
+              eq(approvals.kind, 'escalation'),
+              eq(approvals.status, 'pending'),
+            ),
+          );
+      }
+
+      return {
+        cancelled: true,
+        goalId,
+        title: goal.title,
+        cancelledOpenTasks: openTaskIds.length,
+        reason,
+        inFlightCaveat:
+          'The goal and open task records are cancelled immediately. An external side effect already executing outside the task queue may still finish and should be checked if relevant.',
       };
     }
     case 'approve_pending_approval': {
