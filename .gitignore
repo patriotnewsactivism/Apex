@@ -17,3 +17,5 @@ node_modules/
 # build consumes it prebuilt) so it is excluded from the dist rule below.
 *.tsbuildinfo
 packages/*/dist/
+# Local provider credential diagnostics (never commit API keys)
+scripts/test-providers.mjs
