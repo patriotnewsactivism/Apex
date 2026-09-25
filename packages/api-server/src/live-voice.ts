@@ -162,7 +162,6 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     if (geminiKey && requestedProvider !== 'deepgram') {
       const geminiStarted = await tryStartGeminiLiveSession({
         client,
-        request: _req,
         ceo,
         apiKey: geminiKey,
         startPage,
