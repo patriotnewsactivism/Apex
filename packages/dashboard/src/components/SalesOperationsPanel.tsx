@@ -6,6 +6,7 @@ import { LeadCampaignsSection } from './CampaignsPanel.js';
 import { EmailCampaignsPanel } from './EmailCampaignsPanel.js';
 import { SmsPanel } from './SmsPanel.js';
 import { CallBridgePanel } from './CallBridgePanel.js';
+import { CallLogPanel } from './CallLogPanel.js';
 import { Activity, PhoneCall, MessageSquare, Mail, Zap, Crosshair } from 'lucide-react';
 
 // ─── Sales Operations — the one-stop shop ──────────────────────────────────
@@ -128,6 +129,7 @@ export function SalesOperationsPanel() {
               outreach where you never intend to be on the line yourself. */}
           <CallBridgePanel />
           <SingleCallLauncher />
+          <CallLogPanel />
         </div>
       )}
       {tab === 'sms' && <SmsPanel />}

@@ -486,7 +486,11 @@ export const callOutcomes = pgTable('call_outcomes', {
   leadId: text('lead_id'),
   customerNumber: text('customer_number').notNull(),
   customerName: text('customer_name'),
-  // appointment_booked | callback_requested | not_interested | voicemail | no_answer | no_decision
+  // appointment_booked | callback_requested | not_interested | voicemail | no_answer | no_decision | failed_to_dial
+  // failed_to_dial is written by make_outbound_call itself, synchronously, the
+  // moment Vapi rejects the call request (bad payload, auth, config) -- before
+  // any of the other values, which all require the call to have actually
+  // connected to Vapi and either run or been reported on by webhook.
   disposition: text('disposition').notNull().default('no_decision'),
   // Parsed best-effort from the AI's structured date/time/timezone into a real
   // instant (see zonedTimeToUtc in vapi.ts). Null when disposition isn't
