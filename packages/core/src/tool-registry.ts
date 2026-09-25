@@ -3109,7 +3109,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             },
             voice: {
               provider: '11labs',
-              voiceId: '21m00Tcm4TlvDq8ikWAM',
+              voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
+              // eleven_v3: ElevenLabs' newest, most expressive/realistic model.
+              // Vapi lists it as a supported real-time voice.model (one of
+              // exactly four accepted values), so its own infrastructure
+              // handles the streaming side — unlike Deepgram's Voice Agent
+              // (live-voice.ts, telnyx-deepgram-agent.ts), which is pinned to
+              // Turbo 2.5 because v3 doesn't fit its streaming integration.
+              model: 'eleven_v3',
               stability: 0.5,
               similarityBoost: 0.75,
               speed: 1.0,
@@ -3621,7 +3628,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               },
             ],
           },
-          voice: { provider: '11labs', voiceId: '21m00Tcm4TlvDq8ikWAM', stability: 0.5, similarityBoost: 0.75, speed: 1.0 },
+          // eleven_v3 for the same realism reason as make_outbound_call above.
+          voice: {
+            provider: '11labs',
+            voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
+            model: 'eleven_v3',
+            stability: 0.5,
+            similarityBoost: 0.75,
+            speed: 1.0,
+          },
           transcriber: { provider: 'deepgram', model: 'nova-2-phonecall', language: 'en-US', smartFormat: true },
           server: { url: webhookUrl },
           silenceTimeoutSeconds: 30,

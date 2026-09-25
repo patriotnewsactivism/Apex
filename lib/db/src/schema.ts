@@ -514,6 +514,32 @@ export const callOutcomes = pgTable('call_outcomes', {
   callIdUniq: uniqueIndex('call_outcomes_call_id_unique').on(table.callId),
 }));
 
+// ─── Live Voice Chat (browser mic call with Apex, packages/api-server/src/live-voice.ts) ──
+//
+// Before this, the transcript rendered in QuickChat.tsx lived only in React
+// state -- closing the tab or refreshing the page lost the entire
+// conversation, with no way to ever look back at what was said or decided on
+// a call. One session row per browser call; turns are their own rows (rather
+// than one accumulated text blob) so they can be appended one at a time as
+// they arrive without a read-modify-write race, matching how call_outcomes
+// and email_sends are one-row-per-event elsewhere in this schema.
+export const voiceChatSessions = pgTable('voice_chat_sessions', {
+  id: text('id').primaryKey(),
+  startPage: text('start_page'),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
+});
+
+export const voiceChatTurns = pgTable('voice_chat_turns', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  role: text('role').notNull(), // 'user' | 'assistant'
+  text: text('text').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  sessionIdx: index('voice_chat_turns_session_idx').on(table.sessionId, table.createdAt),
+}));
+
 // ─── Health Metrics (time-series) ─────────────────────────────────────────────
 
 export const healthMetrics = pgTable('health_metrics', {

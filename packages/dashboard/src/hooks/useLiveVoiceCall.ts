@@ -1,12 +1,13 @@
 import { useCallback, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 
-// ─── Live voice call: mic capture -> our backend relay -> Gemini Live ────────
+// ─── Live voice call: mic capture -> our backend relay -> Deepgram Voice Agent ──
 //
 // Backend: packages/api-server/src/live-voice.ts (WS at /ws/voice-live).
 // This hook owns ONLY the browser-side audio plumbing (capture, resample,
 // encode, playback, barge-in) and the small client<->server JSON protocol —
-// all the Gemini protocol details and tool execution stay server-side.
+// all the Deepgram/Groq/ElevenLabs protocol details and tool execution stay
+// server-side.
 //
 // Wire format (see live-voice.ts for the authoritative doc):
 //   send:    { type: 'audio', data: base64 }  16kHz PCM16

@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import { z } from 'zod';
-import { db, goals, approvals, logs, agents as agentsTable } from '@workspace/db';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { db, goals, approvals, logs, agents as agentsTable, voiceChatSessions, voiceChatTurns } from '@workspace/db';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMIntentionalPause } from '@workspace/core';
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
@@ -364,6 +364,50 @@ export function createChatRouter(ceo: ApexCEO) {
       }
       console.error('[chat] POST /message error:', err);
       return res.status(500).json({ error: message });
+    }
+  });
+
+  // ── GET /voice-sessions — durable history of live browser voice calls ────
+  //
+  // Everything a live-voice call (live-voice.ts) actually said, as real rows
+  // instead of only living in QuickChat's React state until the tab closes.
+  // Session rows exist even for a call that never connected (written before
+  // Deepgram is contacted — see live-voice.ts), so a run of failed attempts
+  // is visible here too, not just successful ones.
+  router.get('/voice-sessions', async (req, res) => {
+    try {
+      const limitParam = Number(req.query.limit);
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 20;
+
+      const sessions = await db
+        .select()
+        .from(voiceChatSessions)
+        .orderBy(desc(voiceChatSessions.startedAt))
+        .limit(limit);
+
+      if (sessions.length === 0) {
+        return res.json({ sessions: [] });
+      }
+
+      const sessionIds = sessions.map((s) => s.id);
+      const turns = await db
+        .select()
+        .from(voiceChatTurns)
+        .where(inArray(voiceChatTurns.sessionId, sessionIds))
+        .orderBy(voiceChatTurns.createdAt);
+
+      const turnsBySession = new Map<string, typeof turns>();
+      for (const turn of turns) {
+        const existing = turnsBySession.get(turn.sessionId);
+        if (existing) existing.push(turn);
+        else turnsBySession.set(turn.sessionId, [turn]);
+      }
+
+      return res.json({
+        sessions: sessions.map((s) => ({ ...s, turns: turnsBySession.get(s.id) ?? [] })),
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 

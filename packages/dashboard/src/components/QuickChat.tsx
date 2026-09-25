@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useLiveVoiceCall } from '../hooks/useLiveVoiceCall';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
-import type { Goal, Agent, LogEntry } from '../lib/api.js';
+import type { Goal, Agent, LogEntry, VoiceChatSession } from '../lib/api.js';
 import { useWebSocket } from '../hooks/useWebSocket.js';
 import {
   Send,
@@ -26,9 +26,117 @@ import {
   Phone,
   PhoneOff,
   Minus,
+  ChevronDown,
+  History,
 } from 'lucide-react';
 
 import { useIsMobile } from '../hooks/useIsMobile.js';
+
+/* ── Past voice calls ─────────────────────────────────────────────────────────
+ * Durable history of live-voice sessions (packages/api-server/src/
+ * live-voice.ts). Before this, a call's transcript lived only in the
+ * `messages` React state above and vanished the moment this component
+ * unmounted or the page refreshed — there was no way to look back at a past
+ * call. Collapsed by default (voice calls are occasional, not the primary
+ * flow) and only fetches once actually opened. */
+function formatVoiceCallWhen(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return 'just now';
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+function PastVoiceCallRow({ session }: { session: VoiceChatSession }) {
+  const [open, setOpen] = useState(false);
+  const hasTurns = session.turns.length > 0;
+  const failed = session.endedAt && !hasTurns;
+
+  return (
+    <div style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+      <button
+        onClick={() => hasTurns && setOpen(!open)}
+        disabled={!hasTurns}
+        style={{
+          display: 'flex',
+          width: '100%',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 8,
+          fontSize: 11,
+          padding: '5px 0',
+          background: 'none',
+          border: 'none',
+          color: 'var(--color-apex-muted)',
+          cursor: hasTurns ? 'pointer' : 'default',
+          textAlign: 'left',
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+          {hasTurns && <ChevronDown size={11} style={{ transform: open ? 'none' : 'rotate(-90deg)', flex: 'none' }} />}
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {session.startPage ? `From ${session.startPage}` : 'Voice call'}
+            {failed && ' — no answer / connection failed'}
+            {!session.endedAt && !failed && ' — in progress'}
+          </span>
+        </span>
+        <span style={{ flex: 'none', fontFamily: 'var(--font-mono)' }}>{formatVoiceCallWhen(session.startedAt)}</span>
+      </button>
+      {open && hasTurns && (
+        <div style={{ margin: '2px 0 8px', padding: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, maxHeight: 200, overflowY: 'auto' }}>
+          {session.turns.map((t) => (
+            <div key={t.id} style={{ fontSize: 11, marginBottom: 4 }}>
+              <strong style={{ color: t.role === 'user' ? 'var(--color-apex-text)' : '#5a9eae' }}>
+                {t.role === 'user' ? 'Don: ' : 'Apex: '}
+              </strong>
+              <span style={{ color: 'var(--color-apex-muted)' }}>{t.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PastVoiceCalls() {
+  const [open, setOpen] = useState(false);
+  const { data: sessions = [], isLoading } = useQuery({
+    queryKey: ['voice-chat-sessions'],
+    queryFn: () => api.chat.voiceSessions(20),
+    enabled: open,
+  });
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          fontSize: 11,
+          color: 'var(--color-apex-muted)',
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '2px 12px',
+        }}
+      >
+        <History size={12} /> Past calls
+        <ChevronDown size={11} style={{ transform: open ? 'none' : 'rotate(-90deg)' }} />
+      </button>
+      {open && (
+        <div style={{ padding: '4px 12px 0' }}>
+          {isLoading && <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>Loading…</div>}
+          {!isLoading && sessions.length === 0 && (
+            <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>No past calls yet.</div>
+          )}
+          {sessions.map((s) => <PastVoiceCallRow key={s.id} session={s} />)}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /* ── Stat card ─────────────────────────────────────────────────────────────── */
 
@@ -561,13 +669,13 @@ export function ChatPanel({
     setIsRecording(false);
   };
 
-  // ── Live voice call (Gemini Live, real-time, same tools as text chat) ──
+  // ── Live voice call (Deepgram Voice Agent + Groq + ElevenLabs, real-time, same tools as text chat) ──
   const [liveActivity, setLiveActivity] = useState<string | null>(null);
   // Tracks the id of the currently-open voice caption bubble so streaming
   // transcript fragments merge INTO it instead of each fragment becoming
-  // its own message (Gemini Live captions arrive in tiny chunks — without
-  // this, every word of a spoken turn landed in the chat as a separate
-  // bubble). Cleared on turnComplete / role change.
+  // its own message (Deepgram's ConversationText captions arrive in tiny
+  // chunks — without this, every word of a spoken turn landed in the chat as
+  // a separate bubble). Cleared on turnComplete / role change.
   const openVoiceBubbleRef = useRef<{ id: string; role: string } | null>(null);
   const liveVoice = useLiveVoiceCall({
     onTranscript: (role, text) => {
@@ -593,7 +701,7 @@ export function ChatPanel({
       setLiveActivity(null);
     },
     onTurnComplete: () => {
-      // Gemini finished one spoken turn — close the bubble so the next
+      // The agent finished one spoken turn — close the bubble so the next
       // fragment (user or assistant) starts a fresh message.
       openVoiceBubbleRef.current = null;
     },
@@ -630,7 +738,7 @@ export function ChatPanel({
 
   // Screen awareness, part 1: when a live voice call is active and Don
   // navigates to a different Apex page, tell the agent what he is now
-  // looking at. The server relays this into the Gemini Live session as a
+  // looking at. The server relays this into the Deepgram agent session as a
   // silent context note, so he can say "what about this one" while staring
   // at a goal/agent/log and be understood.
   useEffect(() => {
@@ -863,7 +971,7 @@ export function ChatPanel({
                 />
               )}
               {liveVoice.status === 'idle' || liveVoice.status === 'ended'
-                ? 'Live voice call — talk to Apex directly (Gemini Live)'
+                ? 'Live voice call — talk to Apex directly'
                 : liveVoice.status === 'connecting'
                   ? 'Connecting...'
                   : liveVoice.status === 'live'
@@ -914,6 +1022,8 @@ export function ChatPanel({
               </motion.button>
             )}
           </div>
+
+          <PastVoiceCalls />
 
           {/* Input area */}
           <div>

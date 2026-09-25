@@ -4,6 +4,9 @@ import type { IncomingMessage } from 'http';
 import type { Server } from 'http';
 import type { ApexCEO } from '@workspace/agents';
 import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from './routes/chat.js';
+import { randomUUID } from 'crypto';
+import { db, voiceChatSessions, voiceChatTurns } from '@workspace/db';
+import { eq } from 'drizzle-orm';
 
 // ─── Live voice: real-time conversation with Apex via Deepgram Voice Agent ───
 //
@@ -27,6 +30,15 @@ import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from '
 // already runs a working GROQ_API_KEY on other services, and Groq's low
 // latency is a genuine fit for a live spoken conversation specifically,
 // not just the safe fallback.
+//
+// The "speak" (TTS) step is ElevenLabs when ELEVENLABS_API_KEY is configured
+// (2026-09-25) — Deepgram's own bundled Aura voice remained the fallback
+// only, not the target: it is functional but reads as noticeably less
+// realistic than ElevenLabs, and Matthew holds an upgraded ElevenLabs plan
+// specifically to fix that gap. Deepgram's Voice Agent API accepts ElevenLabs
+// as a third-party speak provider the same way Groq is a third-party think
+// provider — see ELEVENLABS_TTS_MODEL below for why the model is pinned to
+// Turbo 2.5 specifically, not ElevenLabs' higher-realism tiers.
 //
 // Architecture unchanged from the Gemini version: server-to-server relay.
 // The browser never sees DEEPGRAM_API_KEY or GROQ_API_KEY — it opens a
@@ -67,6 +79,20 @@ const GROQ_ENDPOINT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 // with confirmed native tool-calling via the standard OpenAI `tools` format,
 // which is what this file's function-call relay depends on.
 const GROQ_THINK_MODEL = 'openai/gpt-oss-120b';
+// Deepgram's own docs specifically confirm Turbo 2.5 as the supported
+// ElevenLabs tier for their real-time agent speak relay ("we support any of
+// ElevenLabs' Turbo 2.5 voices to ensure low latency interactions"), and a
+// live production report (github.com/orgs/deepgram/discussions/1243) shows
+// ElevenLabs v3 does not support the streaming shape this integration needs
+// at all. Higher-realism tiers are used for Vapi phone calls instead (see
+// tool-registry.ts), where Vapi's own infrastructure handles that streaming
+// problem on its side.
+const ELEVENLABS_TTS_MODEL = 'eleven_turbo_v2_5';
+// The same voice id already confirmed live in production for Vapi calls
+// (tool-registry.ts) — reused here by default so Apex sounds like the same
+// person everywhere, and overridable via ELEVENLABS_VOICE_ID once a specific
+// account voice is connected.
+export const DEFAULT_ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 /** Deepgram closes an idle agent session without a periodic nudge. */
 const KEEPALIVE_INTERVAL_MS = 5_000;
 
@@ -140,8 +166,30 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
       client.close(1011, 'Not configured');
       return;
     }
+    // Optional: when absent, speak falls back to Deepgram's bundled Aura
+    // voice (still functional) rather than breaking live voice entirely over
+    // a missing quality enhancement.
+    const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
+    const elevenLabsVoiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_ELEVENLABS_VOICE_ID;
 
     console.log('🎙️  Live voice client connected');
+
+    // Durable transcript record (see schema.ts voiceChatSessions/voiceChatTurns).
+    // Fire-and-forget: never let a DB hiccup add latency to call setup or
+    // silently fail the call itself. Created before Deepgram is even
+    // contacted so a call that never connects is still visible in history,
+    // not just ones that succeeded — the same lesson already applied to
+    // call_outcomes in tool-registry.ts's make_outbound_call.
+    const voiceSessionId = randomUUID();
+    db.insert(voiceChatSessions)
+      .values({ id: voiceSessionId, startPage: startPage ?? null })
+      .catch((err) => console.error('[live-voice] failed to persist session start:', err instanceof Error ? err.message : String(err)));
+    const persistTurn = (role: 'user' | 'assistant', text: string) => {
+      if (!text) return;
+      db.insert(voiceChatTurns)
+        .values({ id: randomUUID(), sessionId: voiceSessionId, role, text })
+        .catch((err) => console.error('[live-voice] failed to persist turn:', err instanceof Error ? err.message : String(err)));
+    };
 
     let agentReady = false;
     let goalCreatedThisSession: { id: string; title: string } | undefined;
@@ -245,7 +293,21 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
                     `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
                   functions: CHAT_TOOLS,
                 },
-                speak: { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
+                speak: elevenLabsKey
+                  ? {
+                      provider: { type: 'eleven_labs', model_id: ELEVENLABS_TTS_MODEL, language_code: 'en' },
+                      // endpoint MUST be a sibling of provider, not nested inside
+                      // it — nesting it there is a documented, real integration
+                      // failure (UNPARSABLE_CLIENT_MESSAGE -> FAILED_TO_SPEAK,
+                      // github.com/orgs/deepgram/discussions/1243), the exact
+                      // same class of "field one level too shallow" bug already
+                      // found and fixed in Vapi's tools placement.
+                      endpoint: {
+                        url: `https://api.elevenlabs.io/v1/text-to-speech/${elevenLabsVoiceId}/stream`,
+                        headers: { 'xi-api-key': elevenLabsKey, 'Content-Type': 'application/json' },
+                      },
+                    }
+                  : { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
               },
             });
             break;
@@ -284,7 +346,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               pendingContextEchoes.delete(text);
               break;
             }
-            if (text) safeSendClient({ type: 'transcript', role, text });
+            if (text) {
+              safeSendClient({ type: 'transcript', role, text });
+              persistTurn(role, text);
+            }
             break;
           }
 
@@ -432,6 +497,10 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
       if (deepgram.readyState === WebSocket.OPEN || deepgram.readyState === WebSocket.CONNECTING) {
         deepgram.close();
       }
+      db.update(voiceChatSessions)
+        .set({ endedAt: new Date() })
+        .where(eq(voiceChatSessions.id, voiceSessionId))
+        .catch((err) => console.error('[live-voice] failed to persist session end:', err instanceof Error ? err.message : String(err)));
     });
 
     client.on('error', (err) => {
