@@ -3048,7 +3048,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             firstMessage,
             model: {
               provider: 'openai',
-              model: 'gpt-4o',
+              model: 'gpt-5.6-luna',
+              serviceTier: 'fast',
               messages: [
                 {
                   role: 'system',
@@ -3133,29 +3134,29 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             voice: {
               provider: '11labs',
               voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
-              // eleven_v3: ElevenLabs' newest, most expressive/realistic model.
-              // Vapi lists it as a supported real-time voice.model (one of
-              // exactly four accepted values), so its own infrastructure
-              // handles the streaming side — unlike Deepgram's Voice Agent
-              // (live-voice.ts, telnyx-deepgram-agent.ts), which is pinned to
-              // Turbo 2.5 because v3 doesn't fit its streaming integration.
-              model: 'eleven_v3',
+              // Flash v2.5 is ElevenLabs' ultra-low-latency conversational model.
+              // The previous eleven_v3 setting prioritized expressiveness over
+              // realtime turn speed and was a poor fit for phone sales calls.
+              model: 'eleven_flash_v2_5',
               stability: 0.5,
               similarityBoost: 0.75,
               speed: 1.0,
+              optimizeStreamingLatency: 4,
             },
             transcriber: {
               provider: 'deepgram',
-              model: 'nova-2-phonecall',
-              language: 'en-US',
-              smartFormat: true,
+              model: 'flux-general-en',
+              language: 'en',
+              eotThreshold: 0.6,
+              eagerEotThreshold: 0.45,
+              eotTimeoutMs: 2000,
             },
             server: {
               url: webhookUrl,
               ...(webhookSecret ? { headers: { 'x-webhook-secret': webhookSecret } } : {}),
             },
             silenceTimeoutSeconds: 30,
-            responseDelaySeconds: 0.4,
+            startSpeakingPlan: { waitSeconds: 0.1 },
           },
           phoneNumberId,
           customer: {
@@ -3622,7 +3623,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           firstMessage,
           model: {
             provider: 'openai',
-            model: 'gpt-4o',
+            model: 'gpt-5.6-luna',
+            serviceTier: 'fast',
             messages: [{ role: 'system', content: systemPrompt }],
             temperature: 0.7,
             maxTokens: 250,
@@ -3651,19 +3653,27 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               },
             ],
           },
-          // eleven_v3 for the same realism reason as make_outbound_call above.
+          // Keep the persistent inbound assistant on the same low-latency stack.
           voice: {
             provider: '11labs',
             voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
-            model: 'eleven_v3',
+            model: 'eleven_flash_v2_5',
             stability: 0.5,
             similarityBoost: 0.75,
             speed: 1.0,
+            optimizeStreamingLatency: 4,
           },
-          transcriber: { provider: 'deepgram', model: 'nova-2-phonecall', language: 'en-US', smartFormat: true },
+          transcriber: {
+            provider: 'deepgram',
+            model: 'flux-general-en',
+            language: 'en',
+            eotThreshold: 0.6,
+            eagerEotThreshold: 0.45,
+            eotTimeoutMs: 2000,
+          },
           server: { url: webhookUrl },
           silenceTimeoutSeconds: 30,
-          responseDelaySeconds: 0.4,
+          startSpeakingPlan: { waitSeconds: 0.1 },
         };
 
         // Find an existing assistant with this name so repeat calls update it
