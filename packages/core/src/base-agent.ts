@@ -83,6 +83,13 @@ const CAPACITY_WAIT_CAP_MS = 60_000;
  * round-trips per agent, which is how the pool ends up exhausted, and it buries
  * real failures under thousands of deferral lines. */
 let sharedCapacityResumeAtMs = 0;
+// Earliest instant at which the shared latch may be re-probed. Without this,
+// releaseCapacityLatchIfRecovered() can immediately clear a freshly floored
+// pause because lastCapacityProbeAtMs starts at 0 and the in-memory provider
+// probe may report momentary availability before pacing reservations settle.
+// Production symptom: different agents claim different tasks every 1-3s and
+// all rediscover the same capacity pause, despite CAPACITY_PAUSE_FLOOR_MS=5s.
+let sharedCapacityProbeNotBeforeMs = 0;
 
 /** Minimum length of a capacity pause, regardless of the resume-at reported.
  *
@@ -134,10 +141,15 @@ export function getCapacityDeferralStats(now: number = Date.now()): {
 }
 
 function noteCapacityPause(resumeAtMs: number): void {
-  recordCapacityDeferral(Date.now());
+  const now = Date.now();
+  recordCapacityDeferral(now);
   if (!Number.isFinite(resumeAtMs)) return;
   // A resume-at in the past or the immediate future is not a usable pause.
-  const flooredResumeAtMs = Math.max(resumeAtMs, Date.now() + CAPACITY_PAUSE_FLOOR_MS);
+  // The hold window is separate from the provider's reported resume-at so the
+  // recovery probe cannot erase this minimum pause on the very next loop.
+  const holdUntil = now + CAPACITY_PAUSE_FLOOR_MS;
+  sharedCapacityProbeNotBeforeMs = Math.max(sharedCapacityProbeNotBeforeMs, holdUntil);
+  const flooredResumeAtMs = Math.max(resumeAtMs, holdUntil);
   if (flooredResumeAtMs > sharedCapacityResumeAtMs) {
     sharedCapacityResumeAtMs = flooredResumeAtMs;
   }
@@ -166,10 +178,14 @@ let lastCapacityProbeAtMs = 0;
 
 function releaseCapacityLatchIfRecovered(now: number): void {
   if (sharedCapacityResumeAtMs <= now) return;
+  // Honour the explicit minimum hold before any early-release probe. This is
+  // what turns the floor into a real workspace-wide pause instead of a comment.
+  if (now < sharedCapacityProbeNotBeforeMs) return;
   if (now - lastCapacityProbeAtMs < CAPACITY_REPROBE_INTERVAL_MS) return;
   lastCapacityProbeAtMs = now;
   if (llmCapacityAvailableNow(now)) {
     sharedCapacityResumeAtMs = 0;
+    sharedCapacityProbeNotBeforeMs = 0;
   }
 }
 
@@ -182,12 +198,14 @@ export function capacityPauseRemainingMs(now: number = Date.now()): number {
 /** Test seam: drop the latch and the probe throttle. */
 export function __resetCapacityLatchForTest(): void {
   sharedCapacityResumeAtMs = 0;
+  sharedCapacityProbeNotBeforeMs = 0;
   lastCapacityProbeAtMs = 0;
 }
 
 /** Test seam: park the workforce until `resumeAtMs`, as a real pause would. */
 export function __setCapacityLatchForTest(resumeAtMs: number): void {
   sharedCapacityResumeAtMs = 0;
+  sharedCapacityProbeNotBeforeMs = 0;
   lastCapacityProbeAtMs = 0;
   noteCapacityPause(resumeAtMs);
 }
