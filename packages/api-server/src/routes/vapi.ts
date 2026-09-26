@@ -337,16 +337,38 @@ export function createVapiWebhookRouter(): Router {
         case 'end-of-call-report': {
           const call = message.call ?? {};
           const analysis = call.analysis ?? {};
-          const transcript = call.artifact?.transcript ?? message.artifact?.transcript ?? '';
+          const artifact = call.artifact ?? message.artifact ?? {};
+          const transcript = artifact.transcript ?? '';
           const endedReason = message.endedReason ?? call.endedReason ?? 'unknown';
           const cost = call.cost ?? 0;
           const callId = call.id;
+          const perf = artifact.performanceMetrics ?? call.performanceMetrics ?? {};
+          const latencyParts = [
+            typeof perf.turnLatencyAverage === 'number'
+              ? `turn=${Math.round(perf.turnLatencyAverage * 1000)}ms`
+              : '',
+            typeof perf.endpointingLatencyAverage === 'number'
+              ? `endpoint=${Math.round(perf.endpointingLatencyAverage * 1000)}ms`
+              : '',
+            typeof perf.modelLatencyAverage === 'number'
+              ? `model=${Math.round(perf.modelLatencyAverage * 1000)}ms`
+              : '',
+            typeof perf.voiceLatencyAverage === 'number'
+              ? `voice=${Math.round(perf.voiceLatencyAverage * 1000)}ms`
+              : '',
+            typeof perf.transcriberLatencyAverage === 'number'
+              ? `transcriber=${Math.round(perf.transcriberLatencyAverage * 1000)}ms`
+              : '',
+          ].filter(Boolean);
+          const latencySummary = latencyParts.length > 0
+            ? ` Latency: ${latencyParts.join(', ')}.`
+            : '';
 
           await db.insert(logs).values({
             agentId: 'apex-sales-001',
             taskId: null,
             level: 'info',
-            message: `📞 Outbound call ended — ${endedReason}. Cost: $${Number(cost).toFixed(2)}. Summary: ${analysis.summary ?? 'N/A'}${transcript ? ` | Transcript: ${transcript.slice(0, 500)}...` : ''}`,
+            message: `📞 Outbound call ended — ${endedReason}. Cost: ${Number(cost).toFixed(2)}.${latencySummary} Summary: ${analysis.summary ?? 'N/A'}${transcript ? ` | Transcript: ${transcript.slice(0, 500)}...` : ''}`,
             timestamp: new Date(),
           });
 
