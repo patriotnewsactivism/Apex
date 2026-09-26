@@ -142,10 +142,12 @@ try {
   check('BACKEND can have a different first-choice model', backendChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nex-agi/nex-n2.5-mini:free');
   check(
-    'custom FREE roster still tries Qwen primary first, then the free-policy gateway, then independent BYOK continuity',
+    'custom FREE roster tries Qwen first, then the selected gateway, then unselected default free fallbacks before BYOK continuity',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
       'qwen-dashscope-byok',
       FREE_POLICY_GATEWAY_NAME,
+      'openrouter-nemotron-3-5-lightning-free',
+      'openrouter-nemotron-ultra',
       'groq-gpt-oss-120b-byok',
       'gemini-3-8-flash-byok',
       PAID_FALLBACK_PROVIDER_NAME,
