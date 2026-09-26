@@ -193,6 +193,10 @@ export const researchedLeads = pgTable('researched_leads', {
   contactResearchedAt: timestamp('contact_researched_at', { withTimezone: true, mode: 'date' }),
   fitReason: text('fit_reason').notNull(), // why it matches the ICP pain point
   outreachAngle: text('outreach_angle'),
+  // Source-preserving enrichment that does not belong in the legacy flat lead columns.
+  // Keeps imported title/address/social/services/coverage/source details available
+  // without splitting the existing campaign contact fields into parallel columns.
+  enrichmentData: jsonb('enrichment_data').$type<Record<string, unknown>>(),
   status: text('status').notNull().default('new'), // new | contacted | qualified | rejected | pushed_to_buildmybot
   researchedByAgentId: text('researched_by_agent_id').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
