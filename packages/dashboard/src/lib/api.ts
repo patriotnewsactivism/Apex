@@ -322,6 +322,28 @@ export const api = {
       apiFetch<{ status: string }>(`/campaigns/${id}/${action}`, { method: 'POST' }),
   },
 
+  territories: {
+    list: (params?: { status?: string; exclusivityType?: string; industry?: string; geography?: string; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.status) qs.set('status', params.status);
+      if (params?.exclusivityType) qs.set('exclusivityType', params.exclusivityType);
+      if (params?.industry) qs.set('industry', params.industry);
+      if (params?.geography) qs.set('geography', params.geography);
+      if (params?.limit) qs.set('limit', String(params.limit));
+      const query = qs.toString();
+      return apiFetch<{ territories: TerritoryExclusivity[]; byStatus: Record<string, number> }>(
+        `/territories${query ? `?${query}` : ''}`,
+      );
+    },
+    create: (body: Partial<TerritoryExclusivity>) =>
+      apiFetch<{ territory: TerritoryExclusivity }>('/territories', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: Partial<TerritoryExclusivity>) =>
+      apiFetch<{ territory: TerritoryExclusivity }>(`/territories/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+  },
+
   emailCampaigns: {
     list: () => apiFetch<{ campaigns: EmailCampaignProgress[] }>('/email-campaigns').then((r) => r.campaigns),
     sends: (params?: { limit?: number; scope?: 'all' | 'campaign' | 'one-off'; status?: string }) => {
@@ -458,9 +480,10 @@ export const api = {
   },
 
   leads: {
-    list: (params?: { status?: string; industry?: string; city?: string; limit?: number }) => {
+    list: (params?: { status?: string; pipelineState?: string; industry?: string; city?: string; limit?: number }) => {
       const qs = new URLSearchParams();
       if (params?.status) qs.set('status', params.status);
+      if (params?.pipelineState) qs.set('pipelineState', params.pipelineState);
       if (params?.industry) qs.set('industry', params.industry);
       if (params?.city) qs.set('city', params.city);
       if (params?.limit) qs.set('limit', String(params.limit));
@@ -1229,6 +1252,17 @@ export interface ResearchedLead {
   fitReason: string;
   outreachAngle: string | null;
   status: string;
+  pipelineState: 'DISCOVERED' | 'BASIC_ENRICHMENT' | 'CONTACT_FOUND' | 'QUALIFIED' | 'DEEP_RESEARCH' | 'CAMPAIGN_READY';
+  pipelineStateChangedAt: string | null;
+  discoveredAt: string | null;
+  basicEnrichedAt: string | null;
+  contactFoundAt: string | null;
+  qualifiedAt: string | null;
+  deepResearchedAt: string | null;
+  campaignReadyAt: string | null;
+  qualificationScore: number | null;
+  campaignDraft: Record<string, unknown> | null;
+  pipelineMetadata: Record<string, unknown> | null;
   researchedByAgentId: string;
   createdAt: string;
 }
@@ -1236,7 +1270,28 @@ export interface ResearchedLead {
 export interface LeadStats {
   total: number;
   byStatus: { new: number; contacted: number; qualified: number; rejected: number };
+  byPipelineState: Record<string, number>;
   byIndustry: Record<string, number>;
+}
+
+export interface TerritoryExclusivity {
+  id: string;
+  name: string;
+  exclusivityType: 'industry' | 'territory';
+  industry: string | null;
+  geographyType: 'zip' | 'county' | 'metro' | 'dma' | 'radius' | 'custom';
+  geographyValue: string;
+  geographyDefinition: Record<string, unknown>;
+  status: 'available' | 'reserved' | 'sold' | 'released';
+  reservedForCompany: string | null;
+  reservedByLeadId: string | null;
+  soldToCompany: string | null;
+  ownerContact: string | null;
+  effectiveAt: string | null;
+  expiresAt: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SuggestionRow {
