@@ -50,13 +50,13 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'qwen-byok',
     name: 'QwenCloud Token Plan — Primary BYOK',
-    description: 'Operator-funded QwenCloud (qwencloud.com) Token Plan subscription — a different product from Alibaba Cloud DashScope, with its own key format (sk-sp-...) and base URL. Tried before the free OpenRouter chain on every call; governed by its own capped/paced request pool, not an unrestricted spend route.',
+    description: 'Operator-funded QwenCloud (qwencloud.com) Token Plan. Tried first on every call, on QWEN_API_KEY, so usage lands on that plan. An exhausted OpenRouter or workspace budget does not block it. Its own daily cap, rate, and pacing still do.',
     category: 'ai',
     docsUrl: 'https://docs.qwencloud.com',
     envVars: [
       { key: 'APEX_QWEN_BYOK_ENABLED', label: 'Routing Enabled', placeholder: 'true or false' },
-      { key: 'APEX_QWEN_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '2500' },
-      { key: 'APEX_QWEN_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '25' },
+      { key: 'APEX_QWEN_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '50000' },
+      { key: 'APEX_QWEN_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '60' },
       { key: 'QWEN_BASE_URL', label: 'Base URL', placeholder: 'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1' },
       {
         key: 'QWEN_API_KEY',

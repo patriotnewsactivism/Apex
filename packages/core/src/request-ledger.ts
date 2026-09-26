@@ -522,7 +522,10 @@ const DIRECT_POOL_DEFAULTS: Record<DirectRequestPool, { cap: number; ratePerMinu
   // deliberately conservative placeholder, not a verified quota. Confirm the
   // real plan limits in the QwenCloud console and set APEX_QWEN_REQUEST_CAP /
   // APEX_QWEN_REQUEST_RATE_PER_MIN / APEX_QWEN_REQUEST_PACING_BURST to match.
-  qwen: { cap: 2_500, ratePerMinute: 25, burst: 50 },
+  // Upgraded QwenCloud Token Plan (operator, 2026-09-26): the plan's own
+  // quota is the real ceiling. This APEX cap only stops a runaway loop.
+  // APEX_QWEN_REQUEST_CAP still overrides it when set.
+  qwen: { cap: 50_000, ratePerMinute: 60, burst: 200 },
 };
 
 const directRecentRequests: Record<DirectRequestPool, number[]> = {

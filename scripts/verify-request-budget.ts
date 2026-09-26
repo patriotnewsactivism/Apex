@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.GITHUB_WORKSPACE ?? path.resolve(here, '..');
@@ -93,7 +93,9 @@ async function main(): Promise<void> {
     /name: 'qwen-dashscope-byok'/.test(client) &&
       /model: 'qwen3\.8-flash'/.test(client) &&
       /requestPool: 'qwen'/.test(client) &&
-      !/name: 'qwen-dashscope-byok'[\s\S]{0,600}unrestricted: true/.test(client),
+      !/name: 'qwen-dashscope-byok'[\s\S]{0,600}unrestricted: true/.test(client) &&
+      /function independentPlanRoute\(provider: ProviderSpec\): boolean \{\s*return provider\.unrestricted === true \|\| provider\.requestPool === 'qwen';/.test(client) &&
+      /!independentPlanRoute\(provider\) && globalCapacityBlocks\.length > 0/.test(client),
   );
   check(
     'BYOK pools have explicit runtime activation switches',
@@ -139,12 +141,12 @@ async function main(): Promise<void> {
   );
   check(
     'a fresh pool check occurs before every reservation and emergency caps skip unrestricted FlashX',
-    /const emergencyAttemptWindow = provider\.unrestricted[\s\S]{0,120}\? null[\s\S]{0,120}: emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
+    /const emergencyAttemptWindow = independentPlanRoute\(provider\)[\s\S]{0,80}\? null[\s\S]{0,80}: emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
       /const freshProviderWindow = requestWindowForProvider/.test(credentialLoop),
   );
   check(
     'oversize retries recheck restricted quotas and always make their own reservation',
-    /const allWindow = provider\.unrestricted[\s\S]{0,120}\? null[\s\S]{0,120}: emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
+    /const allWindow = independentPlanRoute\(provider\)[\s\S]{0,80}\? null[\s\S]{0,80}: emergencyRequestCapacityWindow\(Date\.now\(\)\)/.test(credentialLoop) &&
       /reserveProviderAttempt\(provider, credential\.key\);[\s\S]{0,700}?const result = await callProvider/.test(
         credentialLoop.slice(credentialLoop.indexOf('if (isRequestTooLargeError')),
       ),
@@ -217,7 +219,7 @@ async function main(): Promise<void> {
   process.env.APEX_REQUEST_RATE_PER_MIN = '0';
 
   const ledgerModule = (await import(
-    path.join(root, 'packages/core/src/request-ledger.ts')
+    pathToFileURL(path.join(root, 'packages/core/src/request-ledger.ts')).href
   )) as typeof import('../packages/core/src/request-ledger.js');
 
   const {

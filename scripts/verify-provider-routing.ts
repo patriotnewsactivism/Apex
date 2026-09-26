@@ -148,9 +148,10 @@ check(
     /const providerRequestWindow = requestWindowForProvider/.test(clientSource),
 );
 check(
-  'the emergency free/BYOK ceiling cannot veto unrestricted FlashX',
-  /!provider\.unrestricted[\s\S]{0,180}!emergencyAllowed/.test(clientSource) &&
-    /const emergencyAttemptWindow = provider\.unrestricted[\s\S]{0,120}\? null[\s\S]{0,120}: emergencyRequestCapacityWindow/.test(clientSource),
+  'the emergency free/BYOK ceiling cannot veto unrestricted FlashX or the QwenCloud plan',
+  /function independentPlanRoute\(provider: ProviderSpec\): boolean \{\s*return provider\.unrestricted === true \|\| provider\.requestPool === 'qwen';/.test(clientSource) &&
+    /!independentPlanRoute\(provider\)[\s\S]{0,180}!emergencyAllowed/.test(clientSource) &&
+    /const emergencyAttemptWindow = independentPlanRoute\(provider\)[\s\S]{0,80}\? null[\s\S]{0,80}: emergencyRequestCapacityWindow/.test(clientSource),
 );
 check(
   'FlashX is marked unrestricted from APEX token/request/spend governors',

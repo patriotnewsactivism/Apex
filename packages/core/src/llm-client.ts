@@ -61,9 +61,12 @@ import {
 // otherwise) and were deliberately left as-is once corrected, rather than
 // renamed, to avoid unnecessary churn -- see ADR-017 for the full history.
 // QwenCloud is governed like Groq/Gemini — its own capped/paced request
-// pool, its own activation switch — and is explicitly NOT unrestricted like
-// FlashX: every APEX workspace/emergency/pacing governor still applies to
-// it. If QwenCloud is unconfigured, disabled, or fails, routing falls
+// pool and its own activation switch — and is explicitly NOT unrestricted
+// like FlashX. OpenRouter free-pool exhaustion, the emergency all-provider
+// request ceiling, and the workspace token cap must not stop a call from
+// landing on the QwenCloud Token Plan. Qwen still obeys APEX_QWEN_REQUEST_CAP,
+// rate, and pacing, plus credential cooldowns. If QwenCloud is unconfigured,
+// disabled, or fails, routing falls
 // through to OpenRouter `:free` models (plus the special `openrouter/free`
 // router), then independent Groq/Gemini BYOK capacity, with the
 // operator-approved paid GLM 5.3 FlashX continuity route last. FlashX alone
@@ -233,9 +236,9 @@ const PROVIDERS: readonly ProviderSpec[] = [
       'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1',
     apiKeyEnvs: ['QWEN_API_KEY', 'QWEN_API_KEY_2'],
     // Real money from a purchased token plan, so spend is recorded like any
-    // paid route — but deliberately NOT `unrestricted`. This is a governed
-    // primary route on its own capped/paced pool, not a FlashX-style bypass
-    // of APEX's workspace/emergency/pacing governors.
+    // paid route — but deliberately NOT `unrestricted`. OpenRouter and
+    // workspace governors must not veto it (see independentPlanRoute). Its
+    // own request cap, rate, and pacing still do.
     paid: true,
     requestPool: 'qwen',
     protocol: 'openai-compatible',
@@ -889,6 +892,14 @@ function isOpenRouterProvider(provider: ProviderSpec): boolean {
   return (provider.requestPool ?? 'openrouter') === 'openrouter';
 }
 
+/** FlashX bypasses APEX governors entirely. QwenCloud does not, but its
+ *  upgraded Token Plan quota is not the OpenRouter free pool or the workspace
+ *  token ledger. Those must not keep the plan idle while the workforce is
+ *  parked. Qwen's own request cap, rate, and pacing still apply. */
+function independentPlanRoute(provider: ProviderSpec): boolean {
+  return provider.unrestricted === true || provider.requestPool === 'qwen';
+}
+
 function requestWindowForProvider(
   provider: ProviderSpec,
   at: number,
@@ -968,9 +979,10 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     if (!providerBaseURL(provider)) continue;
 
     // Workspace token and emergency request governors apply to free/BYOK
-    // capacity, but never veto an explicitly unrestricted paid continuity route.
+    // capacity. They do not veto FlashX, and they do not veto QwenCloud —
+    // that plan has its own quota and the calls have to land there.
     if (
-      !provider.unrestricted &&
+      !independentPlanRoute(provider) &&
       (totalDailyCapReached || !emergencyAllowed || !totalTokenPacingAllowed)
     ) {
       continue;
@@ -1589,7 +1601,7 @@ class MultiProviderClient {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
 
-          if (!provider.unrestricted && globalCapacityBlocks.length > 0) {
+          if (!independentPlanRoute(provider) && globalCapacityBlocks.length > 0) {
             skipReasons.push(
               `${provider.name}: workspace/free-provider capacity governor active`,
             );
@@ -1730,7 +1742,7 @@ class MultiProviderClient {
               // Re-check immediately before reservation. There is deliberately
               // no await between these checks and reserveProviderAttempt(), so
               // concurrent agent turns cannot all consume the same final slot.
-              const emergencyAttemptWindow = provider.unrestricted
+              const emergencyAttemptWindow = independentPlanRoute(provider)
                 ? null
                 : emergencyRequestCapacityWindow(Date.now());
               if (emergencyAttemptWindow && !emergencyAttemptWindow.allowed) {
@@ -1908,7 +1920,7 @@ class MultiProviderClient {
 
                 if (isRequestTooLargeError(status, message)) {
                   try {
-                    const allWindow = provider.unrestricted
+                    const allWindow = independentPlanRoute(provider)
                       ? null
                       : emergencyRequestCapacityWindow(Date.now());
                     const poolWindow = requestWindowForProvider(
