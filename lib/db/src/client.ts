@@ -269,6 +269,7 @@ export async function migrate() {
   await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_source_url text`;
   await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_research_status text NOT NULL DEFAULT 'pending'`;
   await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_researched_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS enrichment_data jsonb`;
   await client`
     CREATE INDEX IF NOT EXISTS researched_leads_campaign_idx
     ON researched_leads (campaign_id, status)
