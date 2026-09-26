@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { api, type ResearchedLead } from '../lib/api.js';
-import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter, Mail, Phone } from 'lucide-react';
+import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter, Mail, Phone, Upload } from 'lucide-react';
+import { useApexEvent } from '../hooks/useWebSocket.js';
 
 const STATUS_COLORS: Record<string, string> = {
   new: '#5a9eae',
@@ -18,17 +19,51 @@ const STATUS_BG: Record<string, string> = {
   rejected: 'rgba(196,92,102,0.1)',
 };
 
+const PIPELINE_LABELS: Record<string, string> = {
+  DISCOVERED: 'Discovered',
+  BASIC_ENRICHMENT: 'Basic',
+  CONTACT_FOUND: 'Contact',
+  QUALIFIED: 'Qualified',
+  DEEP_RESEARCH: 'Research',
+  CAMPAIGN_READY: 'Campaign',
+};
+
+const PIPELINE_COLORS: Record<string, string> = {
+  DISCOVERED: '#5a9eae',
+  BASIC_ENRICHMENT: '#7b8ab8',
+  CONTACT_FOUND: '#c9a84a',
+  QUALIFIED: '#6a9f78',
+  DEEP_RESEARCH: '#b77f5f',
+  CAMPAIGN_READY: '#d7b66a',
+};
+
 export function LeadsPanel() {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [pipelineFilter, setPipelineFilter] = useState<string>('');
   const [industryFilter, setIndustryFilter] = useState<string>('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [provider, setProvider] = useState('apollo');
+  const [overwrite, setOverwrite] = useState(false);
+  const importPreview = useMutation({
+    mutationFn: () => api.leads.importPreview({ csv: importText, provider, overwrite }),
+  });
+  const importCommit = useMutation({
+    mutationFn: () => api.leads.importCommit({ csv: importText, provider, overwrite }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['leadStats'] });
+    },
+  });
 
   const { data: leads = [], isLoading, refetch } = useQuery({
-    queryKey: ['leads', statusFilter, industryFilter],
+    queryKey: ['leads', statusFilter, pipelineFilter, industryFilter],
     queryFn: () => api.leads.list({
       ...(statusFilter ? { status: statusFilter } : {}),
+      ...(pipelineFilter ? { pipelineState: pipelineFilter } : {}),
       ...(industryFilter ? { industry: industryFilter } : {}),
       limit: 500,
     }),
@@ -47,6 +82,16 @@ export function LeadsPanel() {
       queryClient.invalidateQueries({ queryKey: ['leads'] });
       queryClient.invalidateQueries({ queryKey: ['leadStats'] });
     },
+  });
+
+  useApexEvent('lead:discovered', () => {
+    queryClient.invalidateQueries({ queryKey: ['leads'] });
+    queryClient.invalidateQueries({ queryKey: ['leadStats'] });
+  });
+
+  useApexEvent('lead:state', () => {
+    queryClient.invalidateQueries({ queryKey: ['leads'] });
+    queryClient.invalidateQueries({ queryKey: ['leadStats'] });
   });
 
   const handleExport = async () => {
@@ -83,7 +128,7 @@ export function LeadsPanel() {
         </div>
         {stats && (
           <>
-            {Object.entries(stats.byStatus).map(([status, count]) => (
+            {Object.entries(stats.byPipelineState ?? {}).map(([status, count]) => (
               <div
                 key={status}
                 style={{
@@ -92,19 +137,36 @@ export function LeadsPanel() {
                   gap: 6,
                   padding: '4px 10px',
                   borderRadius: 6,
-                  background: STATUS_BG[status] ?? 'rgba(255,255,255,0.05)',
-                  border: `1px solid ${STATUS_COLORS[status] ?? '#666'}33`,
+                  background: `${PIPELINE_COLORS[status] ?? '#666'}18`,
+                  border: `1px solid ${PIPELINE_COLORS[status] ?? '#666'}33`,
                 }}
               >
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: STATUS_COLORS[status] ?? '#666' }} />
-                <span style={{ fontSize: 11, color: STATUS_COLORS[status] ?? '#999', fontWeight: 600, textTransform: 'uppercase' }}>
-                  {status}: {count}
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: PIPELINE_COLORS[status] ?? '#666' }} />
+                <span style={{ fontSize: 11, color: PIPELINE_COLORS[status] ?? '#999', fontWeight: 600, textTransform: 'uppercase' }}>
+                  {PIPELINE_LABELS[status] ?? status}: {count}
                 </span>
               </div>
             ))}
           </>
         )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            onClick={() => setImportOpen((open) => !open)}
+            style={{
+              background: 'transparent',
+              border: '1px solid rgba(90,158,174,0.15)',
+              borderRadius: 6,
+              padding: '6px 12px',
+              color: 'var(--color-apex-muted)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 12,
+            }}
+          >
+            <Upload size={13} /> Import
+          </button>
           <button
             onClick={() => setShowFilters(!showFilters)}
             style={{
@@ -160,6 +222,48 @@ export function LeadsPanel() {
         </div>
       </div>
 
+      {importOpen && (
+        <div className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 13 }}>Import a CSV you already enriched. Extra columns are kept. Nothing is emailed or called.</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              value={provider}
+              onChange={(event) => setProvider(event.target.value)}
+              placeholder="Provider name, for example apollo"
+              style={{ flex: '1 1 160px', minWidth: 0, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-apex-line)', background: 'rgba(0,0,0,0.28)', color: 'var(--color-apex-text)' }}
+            />
+            <label style={{ fontSize: 12, color: 'var(--color-apex-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={overwrite} onChange={(event) => setOverwrite(event.target.checked)} />
+              Overwrite existing angles
+            </label>
+          </div>
+          <textarea
+            value={importText}
+            onChange={(event) => setImportText(event.target.value)}
+            placeholder={'Company Name,Email,Phone,Decision Maker,Title\nNorthside Dental,ada@northside.example,+17135550100,Ada Lopez,Owner'}
+            rows={6}
+            style={{ width: '100%', boxSizing: 'border-box', padding: 10, borderRadius: 6, border: '1px solid var(--color-apex-line)', background: 'rgba(0,0,0,0.28)', color: 'var(--color-apex-text)', fontFamily: 'var(--font-mono)', fontSize: 12 }}
+          />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn-secondary" onClick={() => importPreview.mutate()} disabled={!importText.trim() || importPreview.isPending}>Preview</button>
+            <button className="btn-primary" onClick={() => importCommit.mutate()} disabled={!importPreview.data || importCommit.isPending}>Import</button>
+          </div>
+          {importPreview.data && (
+            <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>
+              {importPreview.data.counts.created} new · {importPreview.data.counts.updated} updates · {importPreview.data.counts.skipped} skipped
+              {importCommit.data?.committed ? ` · wrote ${importCommit.data.written}` : ''}
+            </div>
+          )}
+          {(importPreview.isError || importCommit.isError) && (
+            <div style={{ fontSize: 12, color: 'var(--color-apex-red)' }}>
+              {(importPreview.error ?? importCommit.error) instanceof Error
+                ? ((importPreview.error ?? importCommit.error) as Error).message
+                : 'Import failed'}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Filter bar */}
       {showFilters && (
         <motion.div
@@ -189,6 +293,24 @@ export function LeadsPanel() {
             <option value="rejected">Rejected</option>
           </select>
           <select
+            value={pipelineFilter}
+            onChange={(e) => setPipelineFilter(e.target.value)}
+            style={{
+              background: 'rgba(13,17,23,0.8)',
+              border: '1px solid rgba(90,158,174,0.15)',
+              borderRadius: 6,
+              padding: '6px 10px',
+              color: 'var(--color-apex-text)',
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            <option value="">All Pipeline States</option>
+            {Object.entries(PIPELINE_LABELS).map(([state, label]) => (
+              <option key={state} value={state}>{label}</option>
+            ))}
+          </select>
+          <select
             value={industryFilter}
             onChange={(e) => setIndustryFilter(e.target.value)}
             style={{
@@ -206,9 +328,9 @@ export function LeadsPanel() {
               <option key={ind} value={ind}>{ind}</option>
             ))}
           </select>
-          {(statusFilter || industryFilter) && (
+          {(statusFilter || pipelineFilter || industryFilter) && (
             <button
-              onClick={() => { setStatusFilter(''); setIndustryFilter(''); }}
+              onClick={() => { setStatusFilter(''); setPipelineFilter(''); setIndustryFilter(''); }}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -243,6 +365,7 @@ export function LeadsPanel() {
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Industry</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>City</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Contact</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Pipeline</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Status</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Outreach Angle</th>
                 </tr>
@@ -297,6 +420,27 @@ export function LeadsPanel() {
                           {!lead.contactEmail && !lead.contactPhone && <span style={{ fontSize: 10, textTransform: 'uppercase' }}>{lead.contactResearchStatus}</span>}
                         </td>
                         <td style={{ padding: '8px 12px' }}>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              padding: '3px 7px',
+                              borderRadius: 4,
+                              background: `${PIPELINE_COLORS[lead.pipelineState] ?? '#666'}18`,
+                              border: `1px solid ${PIPELINE_COLORS[lead.pipelineState] ?? '#666'}44`,
+                              color: PIPELINE_COLORS[lead.pipelineState] ?? '#999',
+                              fontSize: 10,
+                              fontWeight: 700,
+                              textTransform: 'uppercase',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: PIPELINE_COLORS[lead.pipelineState] ?? '#666' }} />
+                            {PIPELINE_LABELS[lead.pipelineState] ?? lead.pipelineState}
+                          </span>
+                        </td>
+                        <td style={{ padding: '8px 12px' }}>
                           <select
                             value={lead.status}
                             onClick={(e) => e.stopPropagation()}
@@ -335,7 +479,7 @@ export function LeadsPanel() {
                       </motion.tr>
                       {isExpanded && (
                         <tr key={`${lead.id}-detail`}>
-                          <td colSpan={7} style={{ padding: '12px 24px', background: 'rgba(0,0,0,0.2)' }}>
+                          <td colSpan={8} style={{ padding: '12px 24px', background: 'rgba(0,0,0,0.2)' }}>
                             <div className="apex-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                               <div>
                                 <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 4 }}>
@@ -355,6 +499,9 @@ export function LeadsPanel() {
                               </div>
                             </div>
                             <div style={{ marginTop: 8, fontSize: 10, color: 'var(--color-apex-muted)' }}>
+                              Pipeline: {PIPELINE_LABELS[lead.pipelineState] ?? lead.pipelineState}
+                              {lead.qualificationScore != null ? ` · Score: ${lead.qualificationScore}` : ''}
+                              {' · '}
                               Researched: {new Date(lead.createdAt).toLocaleString()} · ID: {lead.id.slice(0, 8)}
                             </div>
                           </td>

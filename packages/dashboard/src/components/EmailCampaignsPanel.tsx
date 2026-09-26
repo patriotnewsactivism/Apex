@@ -233,7 +233,15 @@ function EmailCampaignCard({ campaign }: { campaign: EmailCampaignProgress }) {
             <>
               <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginBottom: 10 }}>
                 <strong style={{ color: 'var(--color-apex-text)' }}>Subject:</strong> {detail.campaign.subjectTemplate}
+                <div>Delivery events: {detail.campaign.lastDeliveryEventAt ? new Date(detail.campaign.lastDeliveryEventAt).toLocaleString() : 'none yet — Resend webhooks are not updating this campaign'}</div>
               </div>
+              {detail.campaign.failureGroups && detail.campaign.failureGroups.length > 0 && (
+                <div style={{ fontSize: 12, color: 'var(--color-apex-red)', marginBottom: 8 }}>
+                  {detail.campaign.failureGroups.map((group) => (
+                    <div key={group.reason}>{group.count} failed: {group.reason}</div>
+                  ))}
+                </div>
+              )}
               <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', marginBottom: 6, opacity: 0.8 }}>
                 Click a recipient to preview the exact email it received.
               </div>
@@ -246,6 +254,29 @@ function EmailCampaignCard({ campaign }: { campaign: EmailCampaignProgress }) {
         </div>
       )}
     </motion.div>
+  );
+}
+
+function DesignedCampaign() {
+  const queryClient = useQueryClient();
+  const playbooks = useQuery({ queryKey: ['sales-playbooks'], queryFn: () => api.salesFloor.playbooks() });
+  const start = useMutation({
+    mutationFn: (id: string) => api.emailCampaigns.fromPlaybook(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['email-campaigns'] }),
+  });
+  const playbook = playbooks.data?.playbooks[0];
+  if (!playbook) return null;
+  return (
+    <div className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div className="apex-display" style={{ fontSize: 15 }}>{playbook.name}</div>
+      <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>{playbook.summary}</div>
+      <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{playbook.text}</div>
+      <button className="btn-primary" disabled={start.isPending} onClick={() => start.mutate(playbook.id)}>
+        {start.isPending ? 'Creating draft…' : 'Enroll leads with email into this draft'}
+      </button>
+      {start.data && <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>{start.data.message} {start.data.totalTargets} targets.</div>}
+      {start.isError && <div style={{ fontSize: 12, color: 'var(--color-apex-red)' }}>{start.error instanceof Error ? start.error.message : 'Could not create the draft'}</div>}
+    </div>
   );
 }
 
@@ -268,6 +299,7 @@ export function EmailCampaignsPanel() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <DesignedCampaign />
       <div style={{ fontSize: 13, color: 'var(--color-apex-muted)' }}>
         {live.length} active · {finished.length} finished · {recentSends.length} recent sends · {oneOffCount} one-off
       </div>

@@ -16,7 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.GITHUB_WORKSPACE ?? path.resolve(here, '..');
@@ -51,6 +51,12 @@ async function main(): Promise<void> {
   check('POST /:id/end exists', /router\.post\('\/:id\/end', async/.test(route));
   check('GET /:id exists', /router\.get\('\/:id', async/.test(route));
   check('POST /call-bridge-webhook exists', /router\.post\('\/call-bridge-webhook', async/.test(route));
+  check('POST /ai-first exists', /router\.post\('\/ai-first', async/.test(route));
+  check('POST /:id/join exists', /router\.post\('\/:id\/join', async/.test(route));
+  check(
+    'a supervisor leg cannot end the conference',
+    /end_conference_on_exit: params\.supervisorRole \? false : params\.endConferenceOnExit/.test(route),
+  );
 
   // ── Mounting: control endpoints behind auth, webhook before it ──────────────
   check('call-bridge.ts is imported in index.ts', /import \{ createCallBridgeRouter, createCallBridgeWebhookRouter \} from '\.\/routes\/call-bridge\.js';/.test(index));
@@ -165,7 +171,7 @@ async function main(): Promise<void> {
 
   // ── Pure helpers: run them, don't just read them ────────────────────────────
   const mod = (await import(
-    path.join(root, 'packages/api-server/src/routes/call-bridge.ts')
+    pathToFileURL(path.join(root, 'packages/api-server/src/routes/call-bridge.ts')).href
   )) as typeof import('../packages/api-server/src/routes/call-bridge.js');
   const { encodeClientState, decodeClientState, verifyCallBridgeKey, dialBridgeLeg } = mod;
 
@@ -175,6 +181,8 @@ async function main(): Promise<void> {
   check('decodeClientState round-trips what encodeClientState produced', JSON.stringify(decodeClientState(encoded)) === JSON.stringify(state));
   check('decodeClientState rejects garbage rather than throwing', decodeClientState('not-valid-base64-json!!!') === null);
   check('decodeClientState rejects a payload with an unknown role', decodeClientState(Buffer.from(JSON.stringify({ sessionId: 'x', role: 'supervisor' })).toString('base64')) === null);
+  const monitor = { sessionId: 'sess-123', role: 'monitor' as const };
+  check('decodeClientState accepts a listen-in leg', JSON.stringify(decodeClientState(encodeClientState(monitor))) === JSON.stringify(monitor));
   check('decodeClientState rejects undefined/non-string input', decodeClientState(undefined) === null && decodeClientState(42) === null);
 
   const savedSecret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET;

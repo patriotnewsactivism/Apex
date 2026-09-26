@@ -21,6 +21,9 @@ import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
 import { db, messages, callOutcomes } from '@workspace/db';
 import { eq, isNull } from 'drizzle-orm';
+import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
+import { getSalesPlaybook } from './sales-playbooks.js';
+import { isFromDomainError } from './outbound-policy.js';
 
 const execAsync = promisify(exec);
 
@@ -106,18 +109,35 @@ class ToolRegistry {
     // second, independently-maintained flag agreeing with it -- so this now
     // checks HARD_GATED_TOOLS directly, first, unconditionally.
     const { HARD_GATED_TOOLS, operatorAutoApproveAllEnabled } = await import('./approval-policy.js');
+    let salesAuto: { rehearsal: boolean; reason: string; mode: string } | null = null;
     if (operatorAutoApproveAllEnabled()) {
       // Standing operator authorization: all approval-gated tools proceed
       // without yielding. Set APEX_OPERATOR_AUTO_APPROVE_ALL=false to restore
-      // the ordinary hard-gate + per-project autonomy policy immediately.
+      // the ordinary hard-gate, then the outbound policy below.
     } else if (HARD_GATED_TOOLS.has(name)) {
-      const approved = await context.requestApproval(
-        name,
-        rawArgs,
-        `Agent requests to execute hard-gated tool: ${name}. Hard-gated tools always require explicit human approval, regardless of any other policy or metadata.`,
-      );
-      if (!approved) {
-        return { success: false, error: 'Action rejected by user' };
+      // APEX_SALES_OUTBOUND_GATE=closed is for the approval guard only. Do not
+      // set it in production: it forces every sales send back through a human.
+      if (process.env.APEX_SALES_OUTBOUND_GATE !== 'closed') {
+        try {
+          const { decideToolOutbound, loadOutboundPolicy } = await import('./outbound-policy-store.js');
+          const decision = await decideToolOutbound(name, parsed.data as Record<string, unknown>);
+          if (decision.autoApprove) {
+            const policy = await loadOutboundPolicy();
+            salesAuto = { rehearsal: decision.rehearsal, reason: decision.reason, mode: policy?.mode ?? 'off' };
+          }
+        } catch {
+          salesAuto = null;
+        }
+      }
+      if (!salesAuto) {
+        const approved = await context.requestApproval(
+          name,
+          rawArgs,
+          `Agent requests to execute hard-gated tool: ${name}. Hard-gated tools require explicit human approval unless the outbound policy allows this destination.`,
+        );
+        if (!approved) {
+          return { success: false, error: 'Action rejected by user' };
+        }
       }
     } else if (tool.requiresApproval) {
       // Approval gate for non-hard-gated tools: consults the autonomy
@@ -140,6 +160,23 @@ class ToolRegistry {
 
     try {
       const result = await tool.execute(parsed.data, context);
+      if (salesAuto) {
+        const data = result as { success?: boolean; providerId?: string; callId?: string; emailSendId?: string; sent?: number };
+        const delivered = data.success !== false && (data.sent === undefined || data.sent > 0);
+        if (delivered) {
+          const args = parsed.data as { toEmail?: string; customerNumber?: string; leadId?: string };
+          const { recordOutboundAudit } = await import('./outbound-policy-store.js');
+          await recordOutboundAudit({
+            toolName: name,
+            destination: args.toEmail ?? args.customerNumber ?? null,
+            leadId: args.leadId ?? null,
+            policyMode: salesAuto.mode,
+            providerId: data.providerId ?? data.callId ?? data.emailSendId ?? null,
+            rehearsal: salesAuto.rehearsal,
+            detail: salesAuto.reason,
+          });
+        }
+      }
       return { success: true, data: result };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -193,129 +230,12 @@ function zodTypeToJson(t: z.ZodTypeAny): Record<string, unknown> {
 //   RESEND_WEBHOOK_SECRET  Svix signing secret for /api/resend/webhook (see
 //                       routes/resend-webhook.ts) — delivery/open/click/
 //                       bounce/complaint events land there, not here.
-
 /** Used to spell out the weekday in the outbound-call system prompt (e.g.
  *  "2026-09-23 (Wednesday)") -- getUTCDay() alone is a bare 0-6 index the
  *  model would have to know how to decode. */
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-const RESEND_API_URL = 'https://api.resend.com/emails';
-
-function resendFromAddress(): string {
-  const name = process.env.RESEND_FROM_NAME || 'BuildMyBot Sales';
-  const email = process.env.RESEND_FROM_EMAIL || 'sales@buildmybot.app';
-  return `${name} <${email}>`;
-}
-
-/** Deliberately dumb {{field}} substitution: case-sensitive, and a field with
- * no value is left as the literal "{{field}}" rather than blanked out, so a
- * typo'd merge field is obvious in a preview instead of silently vanishing. */
-function resolveMergeFields(template: string, fields: Record<string, string | null | undefined>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) => {
-    const val = fields[key];
-    return val === undefined || val === null || val === '' ? match : val;
-  });
-}
-
-async function isEmailSuppressed(email: string): Promise<boolean> {
-  const { db, emailSuppressions } = await import('@workspace/db');
-  const { eq } = await import('drizzle-orm');
-  const rows = await db.select().from(emailSuppressions).where(eq(emailSuppressions.email, email)).limit(1);
-  return rows.length > 0;
-}
-
-/** Inserts a 'queued' email_sends row. Split from delivery (below) so
- * start_email_campaign can enqueue hundreds of rows up front — visible,
- * pausable, cancellable — without sending anything until a batch tool runs. */
-async function createQueuedEmailSend(args: {
-  id: string;
-  campaignId?: string | null;
-  leadId?: string | null;
-  toEmail: string;
-  toName?: string | null;
-  subject: string;
-  body?: string | null;
-  createdByAgentId: string;
-}): Promise<void> {
-  const { db, emailSends } = await import('@workspace/db');
-  await db.insert(emailSends).values({
-    id: args.id,
-    campaignId: args.campaignId ?? null,
-    leadId: args.leadId ?? null,
-    toEmail: args.toEmail.trim().toLowerCase(),
-    toName: args.toName ?? null,
-    subject: args.subject,
-    body: args.body ?? null,
-    status: 'queued',
-    createdByAgentId: args.createdByAgentId,
-    createdAt: new Date(),
-  });
-}
-
-/** Delivers an already-queued email_sends row via Resend and updates its
- * status. Shared by send_email (create-then-deliver in one call) and
- * send_email_campaign_batch (deliver rows start_email_campaign already
- * queued) so both paths get identical suppression-checking, DB bookkeeping,
- * and error handling. */
-async function deliverQueuedEmailSend(
-  sendId: string,
-  toEmail: string,
-  subject: string,
-  html: string,
-): Promise<{ success: boolean; status: string; providerId?: string; error?: string }> {
-  const { db, emailSends } = await import('@workspace/db');
-  const { eq } = await import('drizzle-orm');
-  const email = toEmail.trim().toLowerCase();
-
-  if (await isEmailSuppressed(email)) {
-    await db.update(emailSends)
-      .set({ status: 'suppressed', errorMessage: 'Recipient is on the suppression list' })
-      .where(eq(emailSends.id, sendId));
-    return { success: false, status: 'suppressed', error: 'Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).' };
-  }
-
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    await db.update(emailSends)
-      .set({ status: 'failed', errorMessage: 'RESEND_API_KEY not configured' })
-      .where(eq(emailSends.id, sendId));
-    return { success: false, status: 'failed', error: 'Resend is not configured. Set RESEND_API_KEY (and RESEND_FROM_EMAIL) in Settings. Sign up at https://resend.com.' };
-  }
-
-  try {
-    const res = await fetch(RESEND_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        from: resendFromAddress(),
-        to: [email],
-        subject,
-        html,
-        tags: [{ name: 'apex_send_id', value: sendId }],
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      await db.update(emailSends)
-        .set({ status: 'failed', errorMessage: errText.slice(0, 500) })
-        .where(eq(emailSends.id, sendId));
-      return { success: false, status: 'failed', error: `Resend ${res.status}: ${errText.slice(0, 300)}` };
-    }
-
-    const data = await res.json() as { id: string };
-    await db.update(emailSends)
-      .set({ status: 'sent', providerId: data.id, sentAt: new Date() })
-      .where(eq(emailSends.id, sendId));
-    return { success: true, status: 'sent', providerId: data.id };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await db.update(emailSends)
-      .set({ status: 'failed', errorMessage: msg.slice(0, 500) })
-      .where(eq(emailSends.id, sendId));
-    return { success: false, status: 'failed', error: msg };
-  }
-}
+// Delivery itself lives in email-delivery.ts so rehearsal and campaigns share
+// one Resend call, one suppression check, and one unresolved-merge refusal.
 
 // ─── Built-in Tool Definitions ────────────────────────────────────────────────
 
@@ -1302,6 +1222,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       async execute({ query }) {
         const yelpKey = process.env.YELP_API_KEY;
         const googleKey = process.env.GOOGLE_PLACES_API_KEY;
+        const directoryTimeoutMs = process.env.LIVE_DEMO_MODE === 'true' || process.env.LIVE_DEMO_MODE === '1' ? 4_000 : 10_000;
 
         // ── Provider 1: Yelp Fusion API (free, no credit card, 50 results/call) ──
         if (yelpKey) {
@@ -1325,7 +1246,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             const yelpUrl = `https://api.yelp.com/v3/businesses/search?term=${encodeURIComponent(term)}&location=${encodeURIComponent(location)}&limit=20`;
             const yelpRes = await fetch(yelpUrl, {
               headers: { Authorization: `Bearer ${yelpKey}` },
-              signal: AbortSignal.timeout(10_000),
+              signal: AbortSignal.timeout(directoryTimeoutMs),
             });
             if (yelpRes.ok) {
               const yelpData = await yelpRes.json() as {
@@ -1399,7 +1320,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                     pageSize: 20,
                     ...(pageToken ? { pageToken } : {}),
                   }),
-                  signal: AbortSignal.timeout(10_000),
+                  signal: AbortSignal.timeout(directoryTimeoutMs),
                 },
               );
 
@@ -1681,6 +1602,18 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               fitReason: lead.fitReason,
               outreachAngle: lead.outreachAngle,
               status: 'new',
+              pipelineState: 'CAMPAIGN_READY',
+              pipelineStateChangedAt: new Date(),
+              discoveredAt: new Date(),
+              basicEnrichedAt: new Date(),
+              contactFoundAt: new Date(),
+              qualifiedAt: new Date(),
+              deepResearchedAt: new Date(),
+              campaignReadyAt: new Date(),
+              campaignDraft: {
+                firstTouch: lead.outreachAngle,
+                nextBestAction: lead.contactEmail ? 'email' : lead.contactPhone ? 'call' : 'research_contact',
+              },
               researchedByAgentId: ctx.agentId,
               campaignId,
               createdAt: new Date(),
@@ -3332,7 +3265,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           body: html,
           createdByAgentId: ctx.agentId,
         });
-        const result = await deliverQueuedEmailSend(id, toEmail, subject, html);
+        const { loadOutboundPolicy } = await import('./outbound-policy-store.js');
+        const { sameEmail } = await import('./outbound-policy.js');
+        const policy = await loadOutboundPolicy();
+        const rehearsal = Boolean(policy && sameEmail(toEmail, policy.rehearsalEmail));
+        const result = await deliverQueuedEmailSend(id, toEmail, subject, html, {
+          requireCompliance: !rehearsal && policy?.mode === 'capped_live',
+          postalAddress: policy?.postalAddress,
+          unsubscribeEmail: policy?.unsubscribeEmail,
+        });
         return {
           emailSendId: id,
           ...result,
@@ -3370,11 +3311,18 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         bodyTemplate: z.string().min(1).max(20000).describe('Simple HTML or plain text, with optional {{mergeField}} placeholders'),
         leadCampaignId: z.string().optional().describe('Pull targets from every lead this lead-research campaign produced that has an email on file'),
         leadIds: z.array(z.string()).optional().describe('Explicit researched_leads ids to target, in addition to or instead of leadCampaignId'),
+        playbookId: z.string().optional().describe('Designed playbook id, usually buildmybot-intro. When set, its subject and body replace anything you write.'),
         maxTargets: z.number().int().min(1).max(2000).optional().describe('Safety cap on how many leads to enqueue at once (default 500)'),
         goalId: z.string().optional(),
       }),
       requiresApproval: false, // Only enqueues rows in APEX's own DB; nothing reaches a real inbox until send_email_campaign_batch.
-      async execute({ name, subjectTemplate, bodyTemplate, leadCampaignId, leadIds, maxTargets, goalId }, ctx) {
+      async execute({ name, subjectTemplate, bodyTemplate, leadCampaignId, leadIds, playbookId, maxTargets, goalId }, ctx) {
+        const playbook = playbookId ? getSalesPlaybook(playbookId) : null;
+        if (playbookId && !playbook) throw new Error(`Unknown playbook "${playbookId}". Use buildmybot-intro.`);
+        if (playbook) {
+          subjectTemplate = playbook.openEmail.subject;
+          bodyTemplate = playbook.openEmail.html;
+        }
         const { randomUUID } = await import('crypto');
         const { db, emailCampaigns, emailSends, researchedLeads } = await import('@workspace/db');
         const { eq, inArray, or } = await import('drizzle-orm');
@@ -3416,9 +3364,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         });
 
         for (const lead of targets) {
+          const buyerName = lead.decisionMakerName?.trim() || lead.companyName;
           const fields = {
             companyName: lead.companyName,
-            toName: lead.companyName,
+            buyerName,
+            toName: buyerName,
             outreachAngle: lead.outreachAngle ?? '',
             fitReason: lead.fitReason,
             industry: lead.industry ?? '',
@@ -3429,7 +3379,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             campaignId,
             leadId: lead.id,
             toEmail: lead.contactEmail as string,
-            toName: lead.companyName,
+            toName: buyerName,
             subject: resolveMergeFields(subjectTemplate, fields),
             // Resolved now, not at send time, so the operator can preview the
             // exact per-recipient email in the dashboard before ever approving
@@ -3499,27 +3449,45 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const leads = leadIds.length > 0 ? await db.select().from(researchedLeads).where(inArray(researchedLeads.id, leadIds)) : [];
         const leadById = new Map(leads.map((l) => [l.id, l]));
 
+        const { loadOutboundPolicy } = await import('./outbound-policy-store.js');
+        const { sameEmail } = await import('./outbound-policy.js');
+        const policy = await loadOutboundPolicy();
         let sent = 0;
         let failed = 0;
         let suppressed = 0;
+        let domainAbort: string | null = null;
         for (const row of queued) {
+          if (domainAbort) {
+            await db.update(emailSends)
+              .set({ status: 'failed', errorMessage: domainAbort.slice(0, 500) })
+              .where(eq(emailSends.id, row.id));
+            failed++;
+            continue;
+          }
           const lead = row.leadId ? leadById.get(row.leadId) : undefined;
+          const buyerName = lead?.decisionMakerName?.trim() || row.toName || lead?.companyName || '';
           const fields = {
             companyName: lead?.companyName ?? row.toName ?? '',
-            toName: row.toName ?? lead?.companyName ?? '',
+            buyerName,
+            toName: buyerName,
             outreachAngle: lead?.outreachAngle ?? '',
             fitReason: lead?.fitReason ?? '',
             industry: lead?.industry ?? '',
             city: lead?.city ?? '',
           };
-          // Rows queued by start_email_campaign already carry their resolved
-          // body; only re-resolve here for rows queued before that column
-          // existed, so replaying a pre-existing queue does not break.
           const html = row.body ?? resolveMergeFields(campaign.bodyTemplate, fields);
-          const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html);
+          const rehearsal = Boolean(policy && sameEmail(row.toEmail, policy.rehearsalEmail));
+          const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html, {
+            requireCompliance: !rehearsal && policy?.mode === 'capped_live',
+            postalAddress: policy?.postalAddress,
+            unsubscribeEmail: policy?.unsubscribeEmail,
+          });
           if (result.success) sent++;
           else if (result.status === 'suppressed') suppressed++;
-          else failed++;
+          else {
+            failed++;
+            if (isFromDomainError(result.error)) domainAbort = result.error ?? 'From domain rejected';
+          }
         }
 
         const newSentCount = campaign.sentCount + sent;

@@ -26,6 +26,10 @@
 // unconfigured -- silently defeating the whole point of setting them. Using
 // dynamic import() below (inside main(), after these lines have already run)
 // avoids that: dynamic import() is a runtime expression, not hoisted.
+// Keeps this guard deterministic even when a developer database has a live
+// outbound policy. Production must not set this; it forces sales sends back
+// through a human.
+process.env.APEX_SALES_OUTBOUND_GATE = 'closed';
 process.env.BUILDMYBOT_APP_URL ||= 'https://www.buildmybot.app';
 process.env.CASEBUDDY_SUPABASE_URL ||= 'https://guard-script-dummy.supabase.co';
 process.env.CASEBUDDY_SUPABASE_SERVICE_KEY ||= 'guard-script-dummy-key';

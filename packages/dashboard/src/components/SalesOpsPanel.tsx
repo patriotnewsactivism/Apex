@@ -579,8 +579,8 @@ export function AutomationLauncher({ overview }: { overview: SalesOpsOverview })
     <div className="glass-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
       <SectionTitle
         icon={<Zap size={18} />}
-        title="Designate for full automation"
-        hint="Sets workforce autonomy and hands the Sales org a goal to work the target end-to-end."
+        title="Hand the sales org a goal"
+        hint="This changes how often goals are reviewed. It does not let email or calls skip approval. That switch is on the Sales floor."
       />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
@@ -601,7 +601,7 @@ export function AutomationLauncher({ overview }: { overview: SalesOpsOverview })
         </div>
 
         <div>
-          <label style={labelStyle}>Autonomy level</label>
+          <label style={labelStyle}>Goal review cadence</label>
           <select style={selectStyle} value={autonomy} onChange={(e) => setAutonomy(e.target.value)}>
             {overview.autonomyPresets.map((p) => (
               <option key={p.id} value={p.id}>

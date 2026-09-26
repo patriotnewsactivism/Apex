@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import { CostAndMonitoring, SingleCallLauncher, AutomationLauncher, UpcomingAppointments } from './SalesOpsPanel.js';
+import { SalesFloor } from './SalesFloor.js';
 import { LeadCampaignsSection } from './CampaignsPanel.js';
 import { EmailCampaignsPanel } from './EmailCampaignsPanel.js';
 import { SmsPanel } from './SmsPanel.js';
@@ -115,6 +116,7 @@ export function SalesOperationsPanel() {
         </div>
       )}
 
+      {tab === 'overview' && <SalesFloor />}
       {tab === 'overview' && overview && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <UpcomingAppointments />

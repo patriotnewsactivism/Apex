@@ -40,9 +40,13 @@ import { normalizeE164 } from './sales-ops.js';
 // same reasoning as telnyx-assistant.ts: the secret lives in the URL
 // registered with Telnyx, not in a header Telnyx may or may not forward.
 
+export type BridgeLegRole = 'operator' | 'customer' | 'ai' | 'monitor' | 'whisper' | 'barge';
+
+const BRIDGE_ROLES = new Set<BridgeLegRole>(['operator', 'customer', 'ai', 'monitor', 'whisper', 'barge']);
+
 interface ClientState {
   sessionId: string;
-  role: 'operator' | 'customer' | 'ai';
+  role: BridgeLegRole;
 }
 
 /** Timing-safe query-string secret check. Exported for direct guard testing. */
@@ -79,9 +83,7 @@ export function decodeClientState(raw: unknown): ClientState | null {
       parsed &&
       typeof parsed === 'object' &&
       typeof (parsed as Record<string, unknown>).sessionId === 'string' &&
-      ((parsed as Record<string, unknown>).role === 'operator' ||
-        (parsed as Record<string, unknown>).role === 'customer' ||
-        (parsed as Record<string, unknown>).role === 'ai')
+      BRIDGE_ROLES.has((parsed as Record<string, unknown>).role as BridgeLegRole)
     ) {
       return parsed as unknown as ClientState;
     }
@@ -89,6 +91,15 @@ export function decodeClientState(raw: unknown): ClientState | null {
     // Not ours — fall through to null.
   }
   return null;
+}
+
+function extractTranscript(payload: Record<string, unknown>): string {
+  const nested = payload.transcription_data as Record<string, unknown> | undefined;
+  const candidates = [payload.transcript, nested?.transcript, nested?.text, payload.text];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return '';
 }
 
 function errorMessage(err: unknown): string {
@@ -114,6 +125,8 @@ export async function dialBridgeLeg(params: {
   role: ClientState['role'];
   sessionId: string;
   endConferenceOnExit: boolean;
+  supervisorRole?: 'monitor' | 'whisper' | 'barge';
+  whisperCallControlIds?: string[];
 }): Promise<{ callControlId: string } | { error: string }> {
   const apiKey = process.env.TELNYX_API_KEY;
   const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
@@ -135,7 +148,12 @@ export async function dialBridgeLeg(params: {
         conference_config: {
           conference_name: params.sessionId,
           early_media: false,
-          end_conference_on_exit: params.endConferenceOnExit,
+          // A supervisor hanging up must not tear down the buyer's call.
+          end_conference_on_exit: params.supervisorRole ? false : params.endConferenceOnExit,
+          ...(params.supervisorRole ? { supervisor_role: params.supervisorRole } : {}),
+          ...(params.supervisorRole === 'whisper' && params.whisperCallControlIds?.length
+            ? { whisper_call_control_ids: params.whisperCallControlIds }
+            : {}),
         },
       }),
     });
@@ -169,6 +187,188 @@ async function hangupBridgeLeg(callControlId: string): Promise<void> {
     });
   } catch (err) {
     console.warn('[Call Bridge] hangup failed:', callControlId, err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function telnyxCommand(callControlId: string, action: string, body: Record<string, unknown>): Promise<string | null> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return 'TELNYX_API_KEY is not configured.';
+  try {
+    const res = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/${action}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const json = (await res.json().catch(() => null)) as { errors?: Array<{ detail?: string }> } | null;
+      return json?.errors?.[0]?.detail ?? `Telnyx ${action} returned ${res.status}`;
+    }
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Dial the buyer first and attach the sales assistant when they answer.
+ *  The operator is not on the call until they join to listen, whisper, or talk. */
+export async function startAiFirstSession(input: {
+  customerNumber: string;
+  operatorNumber: string;
+  buyerName?: string;
+  playbookId?: string;
+  leadId?: string;
+}): Promise<{ id: string } | { error: string }> {
+  const id = crypto.randomUUID();
+  await db.insert(callBridgeSessions).values({
+    id,
+    status: 'dialing_customer',
+    operatorNumber: input.operatorNumber,
+    customerNumber: input.customerNumber,
+    conferenceName: id,
+    sessionMode: 'ai_first',
+    buyerName: input.buyerName ?? null,
+    playbookId: input.playbookId ?? null,
+    leadId: input.leadId ?? null,
+    createdByAgentId: 'operator',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+  const result = await dialBridgeLeg({
+    to: input.customerNumber,
+    role: 'customer',
+    sessionId: id,
+    endConferenceOnExit: true,
+  });
+  if ('error' in result) {
+    await db.update(callBridgeSessions)
+      .set({ status: 'failed', lastError: result.error, updatedAt: new Date() })
+      .where(eq(callBridgeSessions.id, id));
+    return { error: result.error };
+  }
+  await db.update(callBridgeSessions)
+    .set({ customerCallControlId: result.callControlId, updatedAt: new Date() })
+    .where(eq(callBridgeSessions.id, id));
+  return { id };
+}
+
+async function attachSalesAi(sessionId: string): Promise<void> {
+  const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
+  if (!session?.customerCallControlId) return;
+  const { getSalesPlaybook, renderPlaybookTemplate, rehearsalPersonaFields, loadOutboundPolicy } = await import('@workspace/core');
+  const { researchedLeads } = await import('@workspace/db');
+  const policy = await loadOutboundPolicy();
+  let fields = rehearsalPersonaFields({
+    buyerName: session.buyerName || policy?.personaName || 'there',
+    companyName: policy?.personaCompany || 'the company',
+    industry: policy?.personaIndustry || 'local service',
+    city: policy?.personaCity || 'your area',
+  });
+  if (session.leadId) {
+    const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, session.leadId)).limit(1);
+    if (lead) {
+      fields = {
+        buyerName: lead.decisionMakerName?.trim() || lead.companyName,
+        companyName: lead.companyName,
+        industry: lead.industry || 'local service',
+        city: lead.city || 'your area',
+        outreachAngle: lead.outreachAngle,
+      };
+    }
+  }
+  const playbook = session.playbookId ? getSalesPlaybook(session.playbookId) : getSalesPlaybook('buildmybot-intro');
+  const greeting = playbook ? renderPlaybookTemplate(playbook.call.firstMessage, fields).text : 'Hi, this is Alex with BuildMyBot. Do you have a minute?';
+  const instructions = playbook ? renderPlaybookTemplate(playbook.call.assistantPrompt, fields).text : greeting;
+  const assistantId = process.env.TELNYX_AI_ASSISTANT_ID;
+  if (assistantId) {
+    const error = await telnyxCommand(session.customerCallControlId, 'ai_assistant_start', {
+      assistant: { id: assistantId, instructions },
+      greeting,
+    });
+    await db.update(callBridgeSessions).set({
+      status: error ? 'active' : 'ai_joined',
+      lastError: error,
+      updatedAt: new Date(),
+    }).where(eq(callBridgeSessions.id, session.id));
+  } else {
+    const frontDeskNumber = process.env.APEX_FRONT_DESK_NUMBER;
+    if (!frontDeskNumber) {
+      await db.update(callBridgeSessions).set({
+        status: 'active',
+        lastError: 'Set TELNYX_AI_ASSISTANT_ID or APEX_FRONT_DESK_NUMBER to put an AI on this call.',
+        updatedAt: new Date(),
+      }).where(eq(callBridgeSessions.id, session.id));
+      return;
+    }
+    const result = await dialBridgeLeg({
+      to: frontDeskNumber,
+      role: 'ai',
+      sessionId: session.id,
+      endConferenceOnExit: false,
+    });
+    await db.update(callBridgeSessions).set({
+      status: 'error' in result ? 'active' : 'ai_dialing',
+      aiCallControlId: 'error' in result ? null : result.callControlId,
+      lastError: 'error' in result ? result.error : null,
+      updatedAt: new Date(),
+    }).where(eq(callBridgeSessions.id, session.id));
+  }
+  await telnyxCommand(session.customerCallControlId, 'transcription_start', { language: 'en' });
+}
+
+async function maybeSendRehearsalFollowUp(sessionId: string): Promise<void> {
+  const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
+  if (!session || session.followUpSent || session.sessionMode !== 'ai_first') return;
+  const {
+    loadOutboundPolicy,
+    samePhone,
+    getSalesPlaybook,
+    renderPlaybookTemplate,
+    rehearsalPersonaFields,
+    createQueuedEmailSend,
+    deliverQueuedEmailSend,
+    recordOutboundAudit,
+  } = await import('@workspace/core');
+  const policy = await loadOutboundPolicy();
+  if (!policy?.rehearsalEmail || !samePhone(session.customerNumber, policy.rehearsalPhone)) return;
+  const playbook = getSalesPlaybook(session.playbookId || 'buildmybot-intro');
+  if (!playbook) return;
+  const fields = rehearsalPersonaFields({
+    buyerName: session.buyerName || policy.personaName || 'there',
+    companyName: policy.personaCompany || 'the company',
+    industry: policy.personaIndustry || 'local service',
+    city: policy.personaCity || 'your area',
+  });
+  if (session.transcriptTail) fields.transcriptSnippet = session.transcriptTail.slice(0, 400);
+  const rendered = renderPlaybookTemplate(playbook.followUpEmail.html, fields);
+  const subject = renderPlaybookTemplate(playbook.followUpEmail.subject, fields);
+  const text = renderPlaybookTemplate(playbook.followUpEmail.text, fields);
+  if (rendered.missing.length || subject.missing.length) return;
+  const { randomUUID } = await import('crypto');
+  const sendId = randomUUID();
+  await createQueuedEmailSend({
+    id: sendId,
+    leadId: session.leadId,
+    toEmail: policy.rehearsalEmail,
+    toName: fields.buyerName ?? null,
+    subject: subject.text,
+    createdByAgentId: 'operator',
+  });
+  const result = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, subject.text, rendered.text, { text: text.text });
+  await db.update(callBridgeSessions).set({
+    followUpSent: result.success,
+    lastError: result.success ? session.lastError : result.error ?? session.lastError,
+    updatedAt: new Date(),
+  }).where(eq(callBridgeSessions.id, session.id));
+  if (result.success) {
+    await recordOutboundAudit({
+      toolName: 'send_email',
+      destination: policy.rehearsalEmail,
+      leadId: session.leadId,
+      policyMode: policy.mode,
+      providerId: result.providerId ?? null,
+      rehearsal: true,
+      detail: 'playbook follow-up after rehearsal call',
+    });
   }
 }
 
@@ -293,6 +493,109 @@ export function createCallBridgeRouter(): Router {
     }
   });
 
+  // ── POST /ai-first — the AI calls the buyer; you join afterwards ───────────
+  router.post('/ai-first', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as {
+        customerNumber?: string;
+        operatorNumber?: string;
+        buyerName?: string;
+        playbookId?: string;
+        leadId?: string;
+      };
+      const customerNumber = normalizeE164(body.customerNumber);
+      const operatorNumber = normalizeE164(body.operatorNumber);
+      if (!customerNumber || !operatorNumber) {
+        res.status(400).json({ error: 'A valid operatorNumber and customerNumber in E.164 format are required.' });
+        return;
+      }
+      const started = await startAiFirstSession({
+        customerNumber,
+        operatorNumber,
+        buyerName: body.buyerName,
+        playbookId: body.playbookId,
+        leadId: body.leadId,
+      });
+      if ('error' in started) {
+        res.status(502).json(started);
+        return;
+      }
+      res.status(201).json({ id: started.id, status: 'dialing_customer' });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /:id/join — dial the operator in as monitor, whisper, or barge ────
+  router.post('/:id/join', async (req, res) => {
+    try {
+      const role = (req.body ?? {}).role as string;
+      if (role !== 'monitor' && role !== 'whisper' && role !== 'barge') {
+        res.status(400).json({ error: 'role must be monitor, whisper, or barge.' });
+        return;
+      }
+      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, req.params.id)).limit(1);
+      if (!session) {
+        res.status(404).json({ error: 'Call bridge session not found.' });
+        return;
+      }
+      if (session.status === 'ended' || session.status === 'failed') {
+        res.status(409).json({ error: `This call is already ${session.status}.` });
+        return;
+      }
+      if (session.operatorNumber === session.customerNumber) {
+        res.status(409).json({ error: 'You are already the buyer on this call. A second join would ring the same phone.' });
+        return;
+      }
+      if (role === 'whisper' && !session.aiCallControlId) {
+        res.status(409).json({ error: 'Whisper needs a separate AI leg. Use Listen or Talk on this call.' });
+        return;
+      }
+      const result = await dialBridgeLeg({
+        to: session.operatorNumber,
+        role,
+        sessionId: session.id,
+        endConferenceOnExit: false,
+        supervisorRole: role,
+        whisperCallControlIds: session.aiCallControlId ? [session.aiCallControlId] : undefined,
+      });
+      if ('error' in result) {
+        res.status(502).json({ error: result.error });
+        return;
+      }
+      await db.update(callBridgeSessions).set({
+        operatorCallControlId: result.callControlId,
+        operatorJoinRole: role,
+        updatedAt: new Date(),
+      }).where(eq(callBridgeSessions.id, session.id));
+      res.status(200).json({ ok: true, role });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /:id/coach — store a note for the operator. Does not email anyone.
+  router.post('/:id/coach', async (req, res) => {
+    try {
+      const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 1000) : '';
+      if (!note) {
+        res.status(400).json({ error: 'A coach note is required.' });
+        return;
+      }
+      const [updated] = await db.update(callBridgeSessions)
+        .set({ coachNote: note, updatedAt: new Date() })
+        .where(eq(callBridgeSessions.id, req.params.id))
+        .returning({ id: callBridgeSessions.id });
+      if (!updated) {
+        res.status(404).json({ error: 'Call bridge session not found.' });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
   return router;
 }
 
@@ -349,12 +652,30 @@ export function createCallBridgeWebhookRouter(): Router {
           }
         } else if (state.role === 'customer') {
           await db.update(callBridgeSessions).set({ status: 'active', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+          if ((session.sessionMode ?? 'operator_first') === 'ai_first') {
+            await attachSalesAi(session.id);
+          }
         } else if (state.role === 'ai') {
           await db.update(callBridgeSessions).set({ status: 'ai_joined', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+        } else if (state.role === 'monitor' || state.role === 'whisper' || state.role === 'barge') {
+          await db.update(callBridgeSessions).set({ operatorJoinRole: state.role, updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+        }
+      } else if (eventType === 'call.transcription' || eventType === 'call.speak.ended') {
+        const transcript = extractTranscript(payload);
+        if (transcript) {
+          const prior = session.transcriptTail ?? '';
+          const next = `${prior} ${transcript}`.trim().slice(-800);
+          await db.update(callBridgeSessions).set({ transcriptTail: next, updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
         }
       } else if (eventType === 'call.hangup') {
         const cause = typeof payload.hangup_cause === 'string' ? payload.hangup_cause : 'unknown';
-        if (state.role === 'ai') {
+        if (state.role === 'monitor' || state.role === 'whisper' || state.role === 'barge') {
+          await db.update(callBridgeSessions).set({
+            operatorJoinRole: null,
+            operatorCallControlId: null,
+            updatedAt: new Date(),
+          }).where(eq(callBridgeSessions.id, session.id));
+        } else if (state.role === 'ai') {
           // The AI leaving never ends the operator/customer call — its leg
           // deliberately does not set end_conference_on_exit.
           await db
@@ -373,6 +694,9 @@ export function createCallBridgeWebhookRouter(): Router {
           // end_conference_on_exit on both their legs already told Telnyx to
           // hang up whichever other legs remain — this just reflects that.
           await db.update(callBridgeSessions).set({ status: 'ended', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+          if ((session.sessionMode ?? 'operator_first') === 'ai_first') {
+            await maybeSendRehearsalFollowUp(session.id);
+          }
         }
       }
 

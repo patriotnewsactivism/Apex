@@ -355,11 +355,16 @@ export const api = {
       return apiFetch<{ sends: EmailSendRow[] }>(`/email-campaigns/sends${query ? `?${query}` : ''}`).then((r) => r.sends);
     },
     get: (id: string) =>
-      apiFetch<{ campaign: EmailCampaignProgress & { subjectTemplate: string; bodyTemplate: string; result: string | null }; sends: EmailSendRow[] }>(
+      apiFetch<{ campaign: EmailCampaignProgress & { subjectTemplate: string; bodyTemplate: string; result: string | null; failureGroups?: Array<{ reason: string; count: number }>; lastDeliveryEventAt?: string | null }; sends: EmailSendRow[] }>(
         `/email-campaigns/${id}`,
       ),
     control: (id: string, action: 'pause' | 'resume' | 'cancel') =>
       apiFetch<{ status: string }>(`/email-campaigns/${id}/${action}`, { method: 'POST' }),
+    fromPlaybook: (playbookId: string) =>
+      apiFetch<{ campaignId: string; totalTargets: number; message: string }>('/email-campaigns/from-playbook', {
+        method: 'POST',
+        body: JSON.stringify({ playbookId }),
+      }),
   },
 
   tools: {
@@ -499,6 +504,10 @@ export const api = {
     },
     updateStatus: (id: string, status: string) =>
       apiFetch(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+    importPreview: (body: { csv?: string; rows?: Array<Record<string, string>>; provider?: string; overwrite?: boolean }) =>
+      apiFetch<LeadImportResult>('/leads/import', { method: 'POST', body: JSON.stringify({ ...body, commit: false }) }),
+    importCommit: (body: { csv?: string; rows?: Array<Record<string, string>>; provider?: string; overwrite?: boolean }) =>
+      apiFetch<LeadImportResult>('/leads/import', { method: 'POST', body: JSON.stringify({ ...body, commit: true }) }),
   },
 
   suggestions: {
@@ -547,6 +556,19 @@ export const api = {
       apiFetch<SmsSendResult>('/sales-ops/sms/send', { method: 'POST', body: JSON.stringify(body) }),
   },
 
+  salesFloor: {
+    floor: () => apiFetch<SalesFloorSnapshot>('/sales-ops/floor'),
+    playbooks: () => apiFetch<{ playbooks: SalesPlaybookSummary[] }>('/sales-ops/playbooks'),
+    preview: () => apiFetch<RehearsalPreview>('/sales-ops/rehearsal/preview'),
+    rehearse: () => apiFetch<RehearsalResult>('/sales-ops/rehearsal', { method: 'POST' }),
+    savePolicy: (body: OutboundPolicyInput) =>
+      apiFetch<{ policy: OutboundPolicyView }>('/sales-ops/outbound-policy', { method: 'PUT', body: JSON.stringify(body) }),
+    killSwitch: (on: boolean) =>
+      apiFetch<{ killSwitch: boolean }>('/sales-ops/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
+    dismissSuggestion: (fingerprint: string) =>
+      apiFetch<{ ok: boolean }>('/sales-ops/suggestions/dismiss', { method: 'POST', body: JSON.stringify({ fingerprint }) }),
+  },
+
   callBridge: {
     /** Dial the operator; the customer is dialed once they answer. */
     start: (body: { operatorNumber: string; customerNumber: string }) =>
@@ -559,6 +581,16 @@ export const api = {
     /** Dial the Apex Front Desk AI assistant into an already-active call. */
     bringInAi: (id: string) =>
       apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/bring-in-ai`, { method: 'POST' }),
+    join: (id: string, role: 'monitor' | 'whisper' | 'barge') =>
+      apiFetch<{ ok: boolean; role: string; error?: string }>(`/call-bridge/${encodeURIComponent(id)}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ role }),
+      }),
+    coach: (id: string, note: string) =>
+      apiFetch<{ ok: boolean }>(`/call-bridge/${encodeURIComponent(id)}/coach`, {
+        method: 'POST',
+        body: JSON.stringify({ note }),
+      }),
     /** Hang up every leg of the session. */
     end: (id: string) => apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/end`, { method: 'POST' }),
   },
@@ -769,8 +801,101 @@ export interface CallBridgeSession {
   customerCallControlId: string | null;
   aiCallControlId: string | null;
   lastError: string | null;
+  sessionMode?: string;
+  buyerName?: string | null;
+  transcriptTail?: string | null;
+  coachNote?: string | null;
+  operatorJoinRole?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OutboundPolicyView {
+  mode: 'off' | 'rehearsal_only' | 'capped_live';
+  killSwitch: boolean;
+  rehearsalEmail: string | null;
+  rehearsalPhone: string | null;
+  personaName: string | null;
+  personaCompany: string | null;
+  personaIndustry: string | null;
+  personaCity: string | null;
+  dailyEmailCap: number;
+  dailyCallCap: number;
+  sendWindowStartHour: number;
+  sendWindowEndHour: number;
+  timezone: string;
+  postalAddress: string | null;
+  unsubscribeEmail: string | null;
+}
+
+export type OutboundPolicyInput = Partial<OutboundPolicyView>;
+
+export interface SalesPlaybookSummary {
+  id: string;
+  version: number;
+  name: string;
+  summary: string;
+  subject: string;
+  text: string;
+}
+
+export interface RehearsalPreview {
+  playbookId: string;
+  version: number;
+  subject: string;
+  body: string;
+  firstMessage: string;
+  missing: string[];
+  profileComplete: boolean;
+}
+
+export interface RehearsalResult {
+  email: { success: boolean; status: string; error?: string; providerId?: string };
+  call: { id?: string; error?: string };
+  playbookId: string;
+  version: number;
+}
+
+export interface SalesFloorSuggestion {
+  fingerprint: string;
+  title: string;
+  detail: string;
+  action: 'sell-to-me' | 'open-email' | 'listen' | 'resume-outbound' | 'review-imported';
+  actionRef?: string;
+}
+
+export interface SalesFloorSnapshot {
+  policy: OutboundPolicyView;
+  worker: { status: string; ageMs: number | null; stale: boolean };
+  calls: Array<{
+    id: string;
+    status: string;
+    sessionMode: string;
+    buyerName: string | null;
+    customerNumber: string;
+    operatorJoinRole: string | null;
+    transcriptTail: string | null;
+    coachNote: string | null;
+    lastError: string | null;
+    updatedAt: string;
+    joinable: boolean;
+  }>;
+  emails: Array<{
+    id: string;
+    toEmail: string;
+    subject: string;
+    status: string;
+    errorMessage: string | null;
+    createdAt: string;
+  }>;
+  suggestions: SalesFloorSuggestion[];
+}
+
+export interface LeadImportResult {
+  preview: Array<{ action: string; reason: string; lead: { companyName: string; contactEmail: string | null; contactPhone: string | null } }>;
+  counts: { created: number; updated: number; skipped: number };
+  committed: boolean;
+  written?: number;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
+import { TerritoryAvailabilityPanel } from './components/TerritoryAvailabilityPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
 import { SuggestionsPanel } from './components/SuggestionsPanel.js';
 import { ArtifactsPanel } from './components/ArtifactsPanel.js';
@@ -51,6 +52,7 @@ import {
   CalendarClock,
   CircleDollarSign,
   ChevronDown,
+  MapPinned,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -240,6 +242,7 @@ function Sidebar({
       items: [
         { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
         { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
+        { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
       ],
     },
     {
@@ -671,6 +674,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     tasks: <TaskBoard />,
     'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
+    territories: <TerritoryAvailabilityPanel />,
     control: <ControlRoom />,
     artifacts: <ArtifactsPanel />,
     scheduled: <ScheduledJobsPanel />,
@@ -704,6 +708,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     tasks: { title: 'Task Board', kicker: 'Workforce' },
     'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
     leads: { title: 'Prospects', kicker: 'Revenue' },
+    territories: { title: 'Territory Availability', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
     scheduled: { title: 'Cron Registry', kicker: 'Systems' },

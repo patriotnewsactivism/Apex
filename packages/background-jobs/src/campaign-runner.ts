@@ -16,6 +16,14 @@ import {
   type ToolContext,
 } from '@workspace/core';
 import { citiesForStates, allStateCodes } from './us-geo.js';
+import {
+  dedupeDiscoveredBusinesses,
+  generateSearchShards,
+  getKnownLeadDomains,
+  getLeadPipelineConfig,
+  insertDiscoveredLead,
+  processLeadPipelineBacklog,
+} from './lead-pipeline.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
 //
@@ -204,13 +212,14 @@ export async function createCampaign(input: CreateCampaignInput): Promise<{
     throw new Error('At least one city, state, or national=true is required.');
   }
 
-  const cells: Array<{ industry: string; city: string }> = [];
-  for (const industry of industries) {
-    for (const city of cities) cells.push({ industry, city });
-  }
+  const config = getLeadPipelineConfig();
+  const cells = generateSearchShards(industries, cities, {
+    liveDemoMode: config.liveDemoMode,
+    shardsPerCell: config.shardsPerCell,
+  });
   if (cells.length > MAX_CAMPAIGN_SEGMENTS) {
     throw new Error(
-      `That territory is ${cells.length} segments (${industries.length} industries x ${cities.length} cities); ` +
+      `That territory is ${cells.length} query shards (${industries.length} industries x ${cities.length} cities); ` +
         `the safety ceiling is ${MAX_CAMPAIGN_SEGMENTS}. Narrow the territory or split it into multiple campaigns.`,
     );
   }
@@ -241,6 +250,9 @@ export async function createCampaign(input: CreateCampaignInput): Promise<{
         campaignId,
         industry: cell.industry,
         city: cell.city,
+        subcategory: cell.subcategory,
+        searchIntent: cell.searchIntent,
+        query: cell.query,
         status: 'pending',
         createdAt: now,
       })),
@@ -285,10 +297,6 @@ export function readBusiness(b: DirectoryBusiness): DirectoryLead | null {
     website,
     industry: (b.industry ?? b.i ?? '').trim() || undefined,
     city: (b.city ?? b.c ?? '').trim() || undefined,
-    // Was parsed off the provider response and then dropped on the floor.
-    // TomTom and Google both return the business's own number, and a lead
-    // with a phone is one Sales can actually work; without it the row is
-    // a name and a URL.
     phone: (b.phone ?? b.p ?? '').trim() || undefined,
   };
 }
@@ -385,7 +393,7 @@ export class CampaignRunner {
   private running = false;
   private readonly toolContext: ToolContext;
 
-  constructor(private readonly intervalMs = 30_000) {
+  constructor(private readonly intervalMs = getLeadPipelineConfig().liveDemoMode ? 3_000 : 30_000) {
     this.toolContext = {
       agentId: 'apex-campaign-runner',
       workspaceRoot: process.cwd(),
@@ -405,6 +413,13 @@ export class CampaignRunner {
       );
     }, this.intervalMs);
     console.log(`[campaigns] Runner started (every ${Math.round(this.intervalMs / 1000)}s)`);
+    if (getLeadPipelineConfig().liveDemoMode) {
+      setTimeout(() => {
+        this.tick().catch((err) =>
+          console.error('[campaigns] live demo prewarm tick failed:', err instanceof Error ? err.message : String(err)),
+        );
+      }, 500).unref?.();
+    }
   }
 
   stop(): void {
@@ -412,20 +427,28 @@ export class CampaignRunner {
     this.timer = null;
   }
 
-  /** One pass: recover expired leases, then work a single segment. Single
-   *  segment per tick deliberately — it bounds directory API burst and keeps
-   *  each tick's failure blast radius to one cell. */
+  /** One pass: recover expired leases, discover across query shards, then
+   *  advance asynchronous enrichment/contact/qualification/research stages. */
   async tick(): Promise<void> {
     if (this.running) return; // never overlap ticks
     this.running = true;
     try {
+      const config = getLeadPipelineConfig();
       await this.recoverExpiredLeases();
-      const claimed = await this.claimSegment();
-      if (!claimed) {
+      const claimed = await this.claimSegments(config.segmentBatchSize);
+      if (claimed.length === 0) {
+        await processLeadPipelineBacklog({
+          stageConcurrency: config.stageConcurrency,
+          leaseMs: config.leaseMs,
+        });
         await this.closeFinishedCampaigns();
         return;
       }
-      await this.runSegment(claimed.campaign, claimed.segment);
+      await Promise.allSettled(claimed.map((item) => this.runSegment(item.campaign, item.segment)));
+      await processLeadPipelineBacklog({
+        stageConcurrency: config.stageConcurrency,
+        leaseMs: config.leaseMs,
+      });
       await this.closeFinishedCampaigns();
     } finally {
       this.running = false;
@@ -454,40 +477,46 @@ export class CampaignRunner {
   /** Atomically claim the next pending segment of a running campaign.
    *  The conditional UPDATE is the claim: two runners racing cannot both
    *  match status='pending' on the same row. */
-  private async claimSegment(): Promise<{
+  private async claimSegments(limit: number): Promise<Array<{
     campaign: typeof leadCampaigns.$inferSelect;
     segment: typeof campaignSegments.$inferSelect;
-  } | null> {
+  }>> {
     const [campaign] = await db
       .select()
       .from(leadCampaigns)
       .where(eq(leadCampaigns.status, 'running'))
       .orderBy(asc(leadCampaigns.createdAt))
       .limit(1);
-    if (!campaign) return null;
+    if (!campaign) return [];
 
-    const [next] = await db
+    const nextSegments = await db
       .select()
       .from(campaignSegments)
       .where(and(eq(campaignSegments.campaignId, campaign.id), eq(campaignSegments.status, 'pending')))
       .orderBy(asc(campaignSegments.createdAt))
-      .limit(1);
-    if (!next) return null;
+      .limit(limit);
+    if (nextSegments.length === 0) return [];
 
     const now = new Date();
-    const [claimed] = await db
-      .update(campaignSegments)
-      .set({
-        status: 'in_progress',
-        leasedAt: now,
-        startedAt: next.startedAt ?? now,
-        attempts: (next.attempts ?? 0) + 1,
-      })
-      .where(and(eq(campaignSegments.id, next.id), eq(campaignSegments.status, 'pending')))
-      .returning();
-    if (!claimed) return null; // lost the race — another runner took it
+    const claimed: Array<{
+      campaign: typeof leadCampaigns.$inferSelect;
+      segment: typeof campaignSegments.$inferSelect;
+    }> = [];
+    for (const next of nextSegments) {
+      const [row] = await db
+        .update(campaignSegments)
+        .set({
+          status: 'in_progress',
+          leasedAt: now,
+          startedAt: next.startedAt ?? now,
+          attempts: (next.attempts ?? 0) + 1,
+        })
+        .where(and(eq(campaignSegments.id, next.id), eq(campaignSegments.status, 'pending')))
+        .returning();
+      if (row) claimed.push({ campaign, segment: row });
+    }
 
-    return { campaign, segment: claimed };
+    return claimed;
   }
 
   private async runSegment(
@@ -497,34 +526,41 @@ export class CampaignRunner {
     const label = `${segment.industry} / ${segment.city}`;
     try {
       const registry = getToolRegistry();
-      const query = `${segment.industry} ${segment.city}`;
+      const config = getLeadPipelineConfig();
+      const query = segment.query ?? `${segment.searchIntent} ${segment.subcategory} ${segment.city}`;
 
       const result = await registry.execute('searchBusinessDirectory', { query }, this.toolContext);
       if (!result.success) throw new Error(result.error ?? 'searchBusinessDirectory failed');
 
       const payload = result.data as { businesses?: DirectoryBusiness[]; provider?: string };
-      const raw = (payload.businesses ?? []).slice(0, MAX_PER_SEGMENT);
+      const raw = (payload.businesses ?? []).slice(0, Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard));
       const found = raw.map(readBusiness).filter((b): b is NonNullable<typeof b> => b !== null);
 
-      // Drop companies already on file before spending a model call on them.
-      const known = await this.knownDomains();
-      const fresh = found.filter((b) => {
-        const d = domainOf(b.website);
-        return d === null ? true : !known.has(d);
-      });
-      const duplicates = found.length - fresh.length;
+      // Drop companies already on file before spending enrichment or model
+      // work on them. Fresh businesses are inserted immediately as DISCOVERED.
+      const known = await getKnownLeadDomains();
+      const { fresh, duplicates } = dedupeDiscoveredBusinesses(found, known);
 
       let saved = 0;
-      if (fresh.length > 0) {
-        const qualified = await this.qualifyBatch(campaign, segment, fresh);
-        const save = await registry.execute(
-          'saveResearchedLeadsBatch',
-          { leads: qualified, campaignId: campaign.id },
-          this.toolContext,
-        );
-        if (!save.success) throw new Error(save.error ?? 'saveResearchedLeadsBatch failed');
-        const stats = save.data as { saved?: number; duplicates?: number };
-        saved = stats.saved ?? 0;
+      for (const business of fresh) {
+        await insertDiscoveredLead({
+          companyName: business.companyName,
+          website: business.website,
+          industry: segment.industry,
+          city: business.city || segment.city,
+          phone: business.phone,
+          source: payload.provider ?? 'directory',
+          campaignId: campaign.id,
+          campaignSegmentId: segment.id,
+          researchedByAgentId: this.toolContext.agentId,
+          metadata: {
+            subcategory: segment.subcategory,
+            searchIntent: segment.searchIntent,
+            query,
+            liveDemoMode: config.liveDemoMode,
+          },
+        });
+        saved++;
       }
 
       const now = new Date();
@@ -550,7 +586,7 @@ export class CampaignRunner {
         .where(eq(leadCampaigns.id, campaign.id));
 
       console.log(
-        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} saved, ${duplicates} known (${payload.provider ?? 'unknown'})`,
+        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${payload.provider ?? 'unknown'})`,
       );
       emitApexEvent({
         type: 'campaign:segment',

@@ -18,7 +18,21 @@ export type ApexEvent =
   | { type: 'campaign:started'; campaignId: string; name: string; targetLeads: number; segments: number }
   | { type: 'campaign:progress'; campaignId: string; leadsSaved: number; targetLeads: number; segmentsDone: number; segmentsTotal: number }
   | { type: 'campaign:segment'; campaignId: string; segmentId: string; industry: string; city: string; status: string; saved: number; found: number }
-  | { type: 'campaign:completed'; campaignId: string; status: string; leadsSaved: number; targetLeads: number };
+  | { type: 'campaign:completed'; campaignId: string; status: string; leadsSaved: number; targetLeads: number }
+  | {
+      type: 'lead:discovered';
+      leadId: string;
+      campaignId: string | null;
+      companyName: string;
+      website: string | null;
+      industry: string | null;
+      city: string | null;
+      pipelineState: string;
+      cacheHit: boolean;
+      timestamp: string;
+    }
+  | { type: 'lead:state'; leadId: string; campaignId: string | null; pipelineState: string; timestamp: string }
+  | { type: 'lead:pipeline:metrics'; campaignId: string | null; advanced: number; byState: Record<string, number>; timestamp: string };
 
 // ─── WebSocket Context ───────────────────────────────────────────────────────
 

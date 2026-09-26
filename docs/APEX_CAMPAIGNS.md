@@ -2,6 +2,10 @@
 
 _Describes the sales/lead-campaign engine as it actually exists in Apex (`packages/background-jobs/src/campaign-runner.ts`, `leadCampaigns`/`campaignSegments` tables, `/api/campaigns`, `/api/leads`). Verified from source; end-to-end live behavior (does a campaign actually reach a real prospect and record a real response) was **not** re-verified in this audit — that requires live provider credentials and business-policy decisions (spend limits, consent lists) this audit does not have. Apex's own `ROADMAP.md` (P4) already tracks this as open; this document does not duplicate that tracking, only the technical shape._
 
+## Designed outreach (2026-09-26)
+
+The agent no longer has to invent a campaign at send time. `buildmybot-intro` in `packages/core/src/sales-playbooks.ts` is the seeded email, call, and follow-up. Sales Operations → Overview is the live floor: rehearsal ("Sell to me" emails and calls the operator as the buyer), recent sends with the provider error, and Telnyx conference join (Listen / Whisper / Talk) for AI-first calls. Vapi one-shot calls stay status-only. `POST /api/leads/import` accepts a CSV or JSON export, including columns from a third-party enrichment file; unknown columns are stored on `researched_leads.enrichment` and nothing is sent as part of import. Unresolved `{{merge}}` tokens fail the send instead of going out. A From-domain rejection stops the rest of that batch. Live unattended sends require the outbound policy described in `AGENTS.md`. The revenue-ops sequence runner still stops at `awaiting_approval` and is not this sender.
+
 ## What exists today
 
 - **Campaign persistence**: `leadCampaigns` and `campaignSegments` tables (Postgres), with a unique-per-cell index on segments and stall detection (`lastProgressAt` + `STALL_AFTER_MS`) so a campaign that stops making progress is detectable rather than silently stuck.

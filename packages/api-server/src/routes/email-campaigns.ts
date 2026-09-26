@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
-import { db, emailCampaigns, emailSends } from '@workspace/db';
+import { db, emailCampaigns, emailSends, researchedLeads } from '@workspace/db';
+import { getSalesPlaybook } from '@workspace/core';
 
 // ─── Email Campaigns — human-facing surface ──────────────────────────────────
 //
@@ -135,6 +137,63 @@ export function createEmailCampaignsRouter() {
     res.json({ sends });
   });
 
+  // POST /from-playbook — copy a designed sequence onto a draft campaign.
+  // This does not send. Sending stays on the agent batch tool.
+  router.post('/from-playbook', async (req, res) => {
+    try {
+      const playbookId = typeof req.body?.playbookId === 'string' ? req.body.playbookId : 'buildmybot-intro';
+      const playbook = getSalesPlaybook(playbookId);
+      if (!playbook) {
+        res.status(404).json({ error: `Unknown playbook ${playbookId}` });
+        return;
+      }
+      const leads = await db.select().from(researchedLeads).limit(500);
+      const targets = leads.filter((lead) => lead.contactEmail && lead.id !== 'rehearsal-operator' && lead.source !== 'rehearsal').slice(0, 100);
+      const campaignId = crypto.randomUUID();
+      await db.insert(emailCampaigns).values({
+        id: campaignId,
+        name: playbook.name,
+        subjectTemplate: playbook.openEmail.subject,
+        bodyTemplate: playbook.openEmail.html,
+        status: 'draft',
+        totalTargets: targets.length,
+        createdByAgentId: 'operator',
+        createdAt: new Date(),
+      });
+      for (const lead of targets) {
+        const buyerName = lead.decisionMakerName?.trim() || lead.companyName;
+        const fields: Record<string, string> = {
+          companyName: lead.companyName,
+          buyerName,
+          toName: buyerName,
+          outreachAngle: lead.outreachAngle ?? '',
+          fitReason: lead.fitReason,
+          industry: lead.industry ?? '',
+          city: lead.city ?? '',
+        };
+        const subject = playbook.openEmail.subject.replace(/\{\{(\w+)\}\}/g, (match, key: string) => fields[key] || match);
+        await db.insert(emailSends).values({
+          id: crypto.randomUUID(),
+          campaignId,
+          leadId: lead.id,
+          toEmail: lead.contactEmail as string,
+          toName: buyerName,
+          subject,
+          status: 'queued',
+          createdByAgentId: 'operator',
+          createdAt: new Date(),
+        });
+      }
+      res.status(201).json({
+        campaignId,
+        totalTargets: targets.length,
+        message: 'Draft created from the playbook. Nothing has been sent.',
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // GET /api/email-campaigns/:id — breakdown plus recent individual sends
   router.get('/:id', async (req, res) => {
     const [campaign] = await db.select().from(emailCampaigns).where(eq(emailCampaigns.id, req.params.id)).limit(1);
@@ -159,12 +218,32 @@ export function createEmailCampaignsRouter() {
     const bucket: EmailSendCounts = {};
     for (const row of counts) bucket[row.status] = row.n;
 
+    const failureGroups = new Map<string, { reason: string; count: number }>();
+    for (const send of sends) {
+      if (send.status !== 'failed' && send.status !== 'suppressed') continue;
+      const reason = (send.errorMessage ?? send.status).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]').slice(0, 180);
+      const current = failureGroups.get(reason);
+      if (current) current.count += 1;
+      else failureGroups.set(reason, { reason, count: 1 });
+    }
+    const lastEventAt = sends.reduce<string | null>((latest, send) => {
+      const stamps = [send.deliveredAt, send.openedAt, send.clickedAt, send.bouncedAt, send.complainedAt];
+      for (const stamp of stamps) {
+        if (!stamp) continue;
+        const iso = stamp.toISOString();
+        if (!latest || iso > latest) latest = iso;
+      }
+      return latest;
+    }, null);
+
     res.json({
       campaign: {
         ...summarizeEmailCampaign(campaign, bucket),
         subjectTemplate: campaign.subjectTemplate,
         bodyTemplate: campaign.bodyTemplate,
         result: campaign.result,
+        failureGroups: [...failureGroups.values()],
+        lastDeliveryEventAt: lastEventAt,
       },
       sends,
     });

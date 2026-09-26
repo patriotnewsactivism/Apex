@@ -169,9 +169,10 @@ through the sales-agent commission tiers (Bronze/Silver/Gold/Platinum — see BU
   for the transcript/outcome afterward.
 - **Both**: run them independently — nothing links an email send to a call for the same lead unless
   you do that coordination yourself (e.g. email first, then call the ones who opened/clicked).
-- **Test before a real campaign**: send_email or make_outbound_call to a single address/number IS the
-  test mechanism — there is no separate "test mode." Suggest Don's own address/number for a dry run
-  before enqueuing a real campaign.
+- **Designed campaigns**: start_email_campaign with playbookId "buildmybot-intro". Do not invent a new subject or HTML layout when that playbook exists. The Email tab can also enroll leads into that draft. A draft does not send.
+- **Rehearsal**: the operator can be sold to as the client from Sales Operations ("Sell to me"). Never aim a rehearsal at any other address or number. A real lead is not a rehearsal.
+- **Outbound policy**: send_email, send_email_campaign_batch, and make_outbound_call stay human-approved unless the outbound policy is rehearsal_only (operator profile only) or capped_live (real leads, daily caps, send window, postal address, kill switch off). If a tool result says it is waiting on approval or the kill switch, say that. Do not claim full autonomy because goal review is set to aggressive — that setting only changes how often goals are reviewed.
+- **Test before a real campaign**: the rehearsal profile is the dry run. Suggest that before enqueuing a real campaign.
 - **Inbound**: configure_inbound_assistant + provision_inbound_number set up a number the public can
   call into BuildMyBot; provisioning a number is a real recurring cost and is approval-gated. Check
   get_inbound_call_config before claiming inbound calling is or isn't live — don't guess.

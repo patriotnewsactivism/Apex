@@ -1,5 +1,8 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import { eq, desc, and, ilike, sql } from 'drizzle-orm';
+import { broadcast } from '../websocket.js';
+import { mapImportRows, planLeadImport, recordsFromCsv, type ImportedLead } from '@workspace/core';
 
 export function createLeadsRouter(): Router {
   const router = Router();
@@ -188,6 +191,7 @@ export function createLeadsRouter(): Router {
 
     const conditions = [];
     if (req.query.status) conditions.push(eq(researchedLeads.status, String(req.query.status)));
+    if (req.query.pipelineState) conditions.push(eq(researchedLeads.pipelineState, String(req.query.pipelineState)));
     if (req.query.industry) conditions.push(ilike(researchedLeads.industry, `%${String(req.query.industry)}%`));
     if (req.query.city) conditions.push(ilike(researchedLeads.city, `%${String(req.query.city)}%`));
 
@@ -262,32 +266,173 @@ export function createLeadsRouter(): Router {
       qualified: all.filter((l) => l.status === 'qualified').length,
       rejected: all.filter((l) => l.status === 'rejected').length,
     };
+    const byPipelineState: Record<string, number> = {};
     const byIndustry: Record<string, number> = {};
     for (const l of all) {
       const key = l.industry || 'Unknown';
       byIndustry[key] = (byIndustry[key] ?? 0) + 1;
+      byPipelineState[l.pipelineState ?? 'DISCOVERED'] = (byPipelineState[l.pipelineState ?? 'DISCOVERED'] ?? 0) + 1;
     }
 
-    res.json({ total: all.length, byStatus, byIndustry });
+    res.json({ total: all.length, byStatus, byPipelineState, byIndustry });
+  });
+
+  // ─── POST /api/leads/import — CSV or JSON, preview unless commit=true ────
+  router.post('/import', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as {
+        csv?: string;
+        rows?: Array<Record<string, string>>;
+        provider?: string;
+        overwrite?: boolean;
+        commit?: boolean;
+      };
+      const provider = typeof body.provider === 'string' && body.provider.trim() ? body.provider.trim().slice(0, 40) : 'import';
+      const records = typeof body.csv === 'string'
+        ? recordsFromCsv(body.csv)
+        : Array.isArray(body.rows) ? body.rows : [];
+      if (records.length === 0) {
+        res.status(400).json({ error: 'Provide csv text or a rows array.' });
+        return;
+      }
+      if (records.length > 5000) {
+        res.status(400).json({ error: 'Import at most 5000 rows at a time.' });
+        return;
+      }
+      const mapped = mapImportRows(records, provider);
+      const { db, researchedLeads } = await import('@workspace/db');
+      const existing = await db.select({
+        id: researchedLeads.id,
+        contactEmail: researchedLeads.contactEmail,
+        website: researchedLeads.website,
+        decisionMakerName: researchedLeads.decisionMakerName,
+        contactPhone: researchedLeads.contactPhone,
+        title: researchedLeads.title,
+        linkedinUrl: researchedLeads.linkedinUrl,
+        employeeCount: researchedLeads.employeeCount,
+        outreachAngle: researchedLeads.outreachAngle,
+        enrichment: researchedLeads.enrichment,
+      }).from(researchedLeads);
+      const plan = planLeadImport({
+        leads: mapped.leads,
+        existing: existing.map((row) => ({
+          ...row,
+          enrichment: row.enrichment && typeof row.enrichment === 'object' ? row.enrichment as Record<string, unknown> : null,
+        })),
+        overwrite: Boolean(body.overwrite),
+        parseSkips: mapped.skipped,
+      });
+      if (!body.commit) {
+        res.json({
+          preview: plan.preview,
+          counts: plan.counts,
+          committed: false,
+        });
+        return;
+      }
+      let written = 0;
+      for (const row of plan.rows) {
+        if (row.action === 'skip' || !row.lead.companyName) continue;
+        if (row.action === 'new') {
+          await db.insert(researchedLeads).values(leadInsert(row.lead, provider));
+          written++;
+        } else if (row.action === 'update' && row.existingId) {
+          await db.update(researchedLeads).set({
+            decisionMakerName: row.lead.decisionMakerName,
+            contactPhone: row.lead.contactPhone,
+            contactEmail: row.lead.contactEmail,
+            title: row.lead.title,
+            linkedinUrl: row.lead.linkedinUrl,
+            employeeCount: row.lead.employeeCount,
+            outreachAngle: row.lead.outreachAngle,
+            source: provider,
+            enrichment: row.lead.enrichment,
+            contactResearchStatus: 'imported',
+          }).where(eq(researchedLeads.id, row.existingId));
+          written++;
+        }
+      }
+      res.json({ preview: plan.preview, counts: plan.counts, committed: true, written });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ─── PATCH /api/leads/:id — update status ────────────────────────────────
   router.patch('/:id', async (req, res) => {
     const { db, researchedLeads } = await import('@workspace/db');
-    const { status } = req.body as { status?: string };
+    const { status, pipelineState } = req.body as { status?: string; pipelineState?: string };
     const validStatuses = ['new', 'contacted', 'qualified', 'rejected'];
-    if (!status || !validStatuses.includes(status)) {
+    const validPipelineStates = ['DISCOVERED', 'BASIC_ENRICHMENT', 'CONTACT_FOUND', 'QUALIFIED', 'DEEP_RESEARCH', 'CAMPAIGN_READY'];
+    if (status && !validStatuses.includes(status)) {
       res.status(400).json({ error: 'status must be one of: new, contacted, qualified, rejected' });
+      return;
+    }
+    if (pipelineState && !validPipelineStates.includes(pipelineState)) {
+      res.status(400).json({ error: `pipelineState must be one of: ${validPipelineStates.join(', ')}` });
+      return;
+    }
+    if (!status && !pipelineState) {
+      res.status(400).json({ error: 'status or pipelineState is required' });
       return;
     }
 
     await db
       .update(researchedLeads)
-      .set({ status })
+      .set({
+        ...(status ? { status } : {}),
+        ...(pipelineState ? { pipelineState, pipelineStateChangedAt: new Date(), pipelineLeaseExpiresAt: null } : {}),
+      })
       .where(eq(researchedLeads.id, String(req.params.id)));
 
-    res.json({ success: true, id: req.params.id, status });
+    if (pipelineState) {
+      broadcast({
+        type: 'lead:state',
+        leadId: String(req.params.id),
+        campaignId: null,
+        pipelineState,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    res.json({ success: true, id: req.params.id, status, pipelineState });
   });
 
   return router;
+}
+
+function leadInsert(lead: ImportedLead, provider: string) {
+  return {
+    id: crypto.randomUUID(),
+    companyName: lead.companyName,
+    website: lead.website,
+    industry: lead.industry,
+    city: lead.city,
+    decisionMakerName: lead.decisionMakerName,
+    title: lead.title,
+    contactEmail: lead.contactEmail,
+    contactPhone: lead.contactPhone,
+    linkedinUrl: lead.linkedinUrl,
+    employeeCount: lead.employeeCount,
+    contactResearchStatus: 'imported',
+    fitReason: lead.fitReason,
+    outreachAngle: lead.outreachAngle,
+    status: 'new',
+    pipelineState: 'CAMPAIGN_READY',
+    pipelineStateChangedAt: new Date(),
+    discoveredAt: new Date(),
+    basicEnrichedAt: new Date(),
+    contactFoundAt: new Date(),
+    qualifiedAt: new Date(),
+    deepResearchedAt: new Date(),
+    campaignReadyAt: new Date(),
+    campaignDraft: {
+      firstTouch: lead.outreachAngle,
+      nextBestAction: lead.contactEmail ? 'email' : lead.contactPhone ? 'call' : 'research_contact',
+    },
+    source: provider,
+    enrichment: lead.enrichment,
+    researchedByAgentId: 'operator-import',
+    createdAt: new Date(),
+  };
 }

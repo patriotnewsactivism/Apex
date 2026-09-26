@@ -45,7 +45,7 @@ For operating rules, read `AGENTS.md`, `docs/ARCHITECTURE_DECISIONS.md` (ADR-015
 ## P3 — Business operations
 
 - Revenue-ops sales pipeline uses `sales_opportunities`, not the APEX ideas `opportunities` table.
-- Do not auto-approve `send_email`, `make_outbound_call`, or connector sends.
+- Do not auto-approve connector sends. `send_email` and `make_outbound_call` auto-approve only under the outbound policy in `AGENTS.md` (rehearsal profile, or capped live with the kill switch off). They are not on the project autoapproveTools list.
 - Re-verify BuildMyBot live pricing/features before customer-facing claims.
 
 ## Completion standard

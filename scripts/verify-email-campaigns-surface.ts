@@ -14,7 +14,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.GITHUB_WORKSPACE ?? path.resolve(here, '..');
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
 
   // ── The one piece of real logic: run it, don't just read it ──────────────
   const mod = (await import(
-    path.join(root, 'packages/api-server/src/routes/email-campaigns.ts')
+    pathToFileURL(path.join(root, 'packages/api-server/src/routes/email-campaigns.ts')).href
   )) as typeof import('../packages/api-server/src/routes/email-campaigns.js');
   const { summarizeEmailCampaign } = mod;
 
