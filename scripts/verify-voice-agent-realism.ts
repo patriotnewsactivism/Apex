@@ -214,12 +214,24 @@ function main(): void {
     const mocBody = registrySource.slice(mocStart, mocEnd);
     const ciaBody = registrySource.slice(ciaStart, ciaEnd);
     check(
-      "make_outbound_call: voice.model is explicitly set to eleven_v3 (Don's explicit choice), not left on Vapi's silent default",
-      /voice:\s*\{[\s\S]*?model:\s*'eleven_v3'/.test(mocBody),
+      'make_outbound_call: OpenAI Realtime 2 is the default so telephone turns do not serialize STT -> LLM -> TTS',
+      /model:\s*'gpt-realtime-2'/.test(mocBody) &&
+        /voice:\s*\{[\s\S]*?provider:\s*'openai'/.test(mocBody),
     );
     check(
-      'make_outbound_call: voiceId is configurable via ELEVENLABS_VOICE_ID rather than hard-coded only',
-      /voiceId:\s*process\.env\.ELEVENLABS_VOICE_ID/.test(mocBody),
+      'make_outbound_call: realtime voice is configurable and defaults to cedar',
+      /voiceId:\s*process\.env\.VAPI_REALTIME_VOICE_ID\s*\|\|\s*'cedar'/.test(mocBody),
+    );
+    check(
+      'make_outbound_call: there is no separate transcriber in the outbound assistant',
+      !/transcriber:\s*\{/.test(mocBody),
+    );
+    check(
+      'make_outbound_call: turn taking is explicitly tuned for low latency and VAD barge-in',
+      /startSpeakingPlan:\s*\{[\s\S]*?waitSeconds:\s*0\.1/.test(mocBody) &&
+        /provider:\s*'livekit'/.test(mocBody) &&
+        /stopSpeakingPlan:\s*\{[\s\S]*?numWords:\s*0/.test(mocBody) &&
+        /voiceSeconds:\s*0\.15/.test(mocBody),
     );
     check(
       'configure_inbound_assistant: voice.model is explicitly set to eleven_v3, matching make_outbound_call',
