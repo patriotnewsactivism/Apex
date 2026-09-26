@@ -82,7 +82,10 @@ function fullHistoryInput(messages: LLMMessage[]): unknown[] {
   for (const message of messages) {
     if (message.role === 'system') continue;
     if (message.role === 'user') {
-      out.push({ type: 'user_input', content: message.content });
+      out.push({
+        type: 'user_input',
+        content: [{ type: 'text', text: message.content }],
+      });
       continue;
     }
     if (message.role === 'assistant') {
@@ -135,7 +138,10 @@ function continuationInput(messages: LLMMessage[]): unknown[] {
         result: [{ type: 'text', text: message.content }],
       });
     } else if (message.role === 'user') {
-      input.push({ type: 'user_input', content: message.content });
+      input.push({
+        type: 'user_input',
+        content: [{ type: 'text', text: message.content }],
+      });
     }
   }
   // A stateful continuation should normally be function results. If the
@@ -143,7 +149,12 @@ function continuationInput(messages: LLMMessage[]): unknown[] {
   // empty interaction body.
   if (input.length === 0) {
     const latestUser = [...messages].reverse().find((message) => message.role === 'user');
-    if (latestUser) input.push({ type: 'user_input', content: latestUser.content });
+    if (latestUser) {
+      input.push({
+        type: 'user_input',
+        content: [{ type: 'text', text: latestUser.content }],
+      });
+    }
   }
   return input;
 }
@@ -210,9 +221,10 @@ export async function callGeminiInteractions(input: {
       tools: toolDeclarations(input.tools),
       system_instruction: systemInstruction(input.messages),
       generation_config: {
-        temperature: input.config.temperature ?? 0.7,
         max_output_tokens: input.config.maxTokens ?? 2048,
-        // APEX optimizes autonomous throughput. Low thinking preserves strong
+        // Gemini 3.8 Interactions rejects legacy sampling knobs on some
+        // requests. Keep the supported thinking-level control and output cap.
+        // APEX optimizes autonomous throughput, so low thinking preserves
         // reasoning while reducing latency/token burn for routine tool turns.
         thinking_level: 'low',
       },
