@@ -374,14 +374,32 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   'gemini-3-8-flash-byok',
 ];
 
-function activeProviderOrder(_role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
+function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
   const freeOrder: ApexProviderName[] = hasCustomOpenRouterModelPolicy()
-    ? [
-        'qwen-dashscope-byok',
-        FREE_POLICY_GATEWAY_NAME,
-        'groq-gpt-oss-120b-byok',
-        'gemini-3-8-flash-byok',
-      ]
+    ? (() => {
+        // A saved free-model policy is a preference, not a single point of
+        // failure. Production logs on 2026-09-26 showed a policy pinned to a
+        // now-404 Nex route suppressing every other OpenRouter free fallback.
+        // Try the operator-selected gateway first, then only the default free
+        // providers that are NOT already present in the selected policy.
+        const selected = new Set(getOpenRouterModelChainForRole(role));
+        const defaultFreeFallbacks = PROVIDER_ORDER.filter((name) => {
+          const provider = PROVIDER_BY_NAME.get(name);
+          return Boolean(
+            provider &&
+            provider.requestPool === 'openrouter' &&
+            provider.paid !== true &&
+            !selected.has(provider.model),
+          );
+        });
+        return [
+          'qwen-dashscope-byok',
+          FREE_POLICY_GATEWAY_NAME,
+          ...defaultFreeFallbacks,
+          'groq-gpt-oss-120b-byok',
+          'gemini-3-8-flash-byok',
+        ];
+      })()
     : [...PROVIDER_ORDER];
   // Paid FlashX continuity is part of the route by default when its credential
   // is configured. APEX imposes no spend ceiling, request cap, or pacing gate
@@ -718,11 +736,21 @@ function credentialCooldown(id: string): CredentialCooldown | null {
 }
 
 export function shouldCooldownCredential(status: number | undefined, message: string): boolean {
-  if (status === 400) return false;
-  // A timeout/abort is endpoint latency, not evidence that an otherwise valid
-  // credential is bad. Do not create a fleet-wide key cooldown from it.
-  if (status === undefined && /request timed out|aborted/i.test(message)) return false;
-  return true;
+  // Cool a credential only when the failure actually says something about the
+  // credential/account itself. Model 404s, malformed request bodies, oversized
+  // payloads, upstream 5xx responses and empty/malformed completions are route-
+  // or request-specific failures; poisoning the key for those turns one bad
+  // model response into a fleet-wide outage.
+  if (status === 401 || status === 403 || status === 402 || status === 429) return true;
+  if (
+    status === undefined &&
+    /invalid (?:api )?key|authentication failed|unauthori[sz]ed|forbidden|payment required|insufficient credits|quota exhausted/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function setCredentialCooldown(
@@ -1646,7 +1674,10 @@ class MultiProviderClient {
               const credentialId = `${provider.name}:${credential.env}`;
               const activeCooldown = credentialCooldown(credentialId);
               if (activeCooldown) {
-                skipReasons.push(`${credentialId}: credential in cooldown`);
+                const remainingMs = Math.max(0, activeCooldown.until - Date.now());
+                skipReasons.push(
+                  `${credentialId}: credential in cooldown (${Math.ceil(remainingMs / 1000)}s; ${activeCooldown.reason})`,
+                );
                 if (activeCooldown.capacityPause) {
                   capacityBlocks.push({
                     source: credentialId,
