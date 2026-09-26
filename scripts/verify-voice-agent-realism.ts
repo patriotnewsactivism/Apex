@@ -214,20 +214,41 @@ function main(): void {
     const mocBody = registrySource.slice(mocStart, mocEnd);
     const ciaBody = registrySource.slice(ciaStart, ciaEnd);
     check(
-      "make_outbound_call: voice.model is explicitly set to eleven_v3 (Don's explicit choice), not left on Vapi's silent default",
-      /voice:\s*\{[\s\S]*?model:\s*'eleven_v3'/.test(mocBody),
+      'make_outbound_call: voice.model uses Eleven Flash v2.5 for low-latency phone conversation',
+      /voice:\s*\{[\s\S]*?model:\s*'eleven_flash_v2_5'/.test(mocBody),
     );
     check(
       'make_outbound_call: voiceId is configurable via ELEVENLABS_VOICE_ID rather than hard-coded only',
       /voiceId:\s*process\.env\.ELEVENLABS_VOICE_ID/.test(mocBody),
     );
     check(
-      'configure_inbound_assistant: voice.model is explicitly set to eleven_v3, matching make_outbound_call',
-      /voice:\s*\{[\s\S]*?model:\s*'eleven_v3'/.test(ciaBody),
+      'configure_inbound_assistant: voice.model uses Eleven Flash v2.5, matching make_outbound_call',
+      /voice:\s*\{[\s\S]*?model:\s*'eleven_flash_v2_5'/.test(ciaBody),
     );
     check(
       'configure_inbound_assistant: voiceId is configurable via ELEVENLABS_VOICE_ID',
       /voiceId:\s*process\.env\.ELEVENLABS_VOICE_ID/.test(ciaBody),
+    );
+    check(
+      'Vapi phone assistants use GPT-5.6 Luna fast tier on the latency-critical path',
+      /model:\s*'gpt-5\.6-luna'/.test(mocBody) &&
+        /serviceTier:\s*'fast'/.test(mocBody) &&
+        /model:\s*'gpt-5\.6-luna'/.test(ciaBody) &&
+        /serviceTier:\s*'fast'/.test(ciaBody),
+    );
+    check(
+      'Vapi phone assistants use Deepgram Flux with aggressive bounded end-of-turn detection',
+      /model:\s*'flux-general-en'/.test(mocBody) &&
+        /eotThreshold:\s*0\.6/.test(mocBody) &&
+        /eagerEotThreshold:\s*0\.45/.test(mocBody) &&
+        /eotTimeoutMs:\s*2000/.test(mocBody) &&
+        /model:\s*'flux-general-en'/.test(ciaBody) &&
+        /eotTimeoutMs:\s*2000/.test(ciaBody),
+    );
+    check(
+      'Vapi phone assistants add only 100ms final wait before speaking',
+      /startSpeakingPlan:\s*\{\s*waitSeconds:\s*0\.1\s*\}/.test(mocBody) &&
+        /startSpeakingPlan:\s*\{\s*waitSeconds:\s*0\.1\s*\}/.test(ciaBody),
     );
   }
 
