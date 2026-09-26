@@ -3632,7 +3632,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           firstMessage,
           model: {
             provider: 'openai',
-            model: 'gpt-4o',
+            model: 'gpt-5.6-luna',
+            serviceTier: 'fast',
             messages: [{ role: 'system', content: systemPrompt }],
             temperature: 0.7,
             maxTokens: 250,
@@ -3661,19 +3662,34 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               },
             ],
           },
-          // eleven_v3 for the same realism reason as make_outbound_call above.
+          // The 832-975-7665 inbound/control line was measurably slower on
+          // Eleven v3 + Nova 2 phonecall. Keep the persistent assistant on
+          // Vapi's low-latency conversational stack.
           voice: {
             provider: '11labs',
             voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
-            model: 'eleven_v3',
+            model: 'eleven_flash_v2_5',
             stability: 0.5,
             similarityBoost: 0.75,
             speed: 1.0,
+            optimizeStreamingLatency: 4,
           },
-          transcriber: { provider: 'deepgram', model: 'nova-2-phonecall', language: 'en-US', smartFormat: true },
+          transcriber: {
+            provider: 'deepgram',
+            model: 'flux-general-en',
+            language: 'en',
+            eotThreshold: 0.6,
+            eagerEotThreshold: 0.45,
+            eotTimeoutMs: 2000,
+          },
           server: { url: webhookUrl },
           silenceTimeoutSeconds: 30,
-          responseDelaySeconds: 0.4,
+          startSpeakingPlan: { waitSeconds: 0.1 },
+          stopSpeakingPlan: {
+            numWords: 0,
+            voiceSeconds: 0.15,
+            backoffSeconds: 0.5,
+          },
         };
 
         // Find an existing assistant with this name so repeat calls update it

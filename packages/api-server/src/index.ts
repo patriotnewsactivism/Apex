@@ -59,6 +59,7 @@ import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
+import { reconcileVapiInboundLatency } from './vapi-inbound-latency.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
 const __filename = fileURLToPath(import.meta.url);
@@ -713,6 +714,19 @@ async function main() {
     console.log(`✅ WebSocket ready at ws://0.0.0.0:${PORT}/ws`);
     console.log(`🤖 Approval mode: ${mode === 'strict' ? 'HUMAN APPROVAL REQUIRED (strict)' : mode === 'off' ? 'FULLY AUTONOMOUS' : 'PER-ROLE DEFAULT'}`);
   });
+
+  // Vapi persists inbound assistant configuration outside this repository.
+  // A code deploy alone therefore cannot fix the already-live 832-975-7665
+  // assistant. Reconcile it once after startup so the deployed code and the
+  // persistent Vapi assistant cannot drift back to the slow legacy stack.
+  setTimeout(() => {
+    reconcileVapiInboundLatency().catch((err) =>
+      console.warn(
+        '⚠️  Vapi inbound latency reconciliation failed:',
+        err instanceof Error ? err.message : String(err),
+      ),
+    );
+  }, 1_500);
 
   // 60s Background Health Monitoring Loop
   const runHealthPoll = async () => {

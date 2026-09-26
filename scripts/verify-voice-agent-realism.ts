@@ -205,6 +205,8 @@ function main(): void {
 
   // ── tool-registry.ts: Vapi phone calls ────────────────────────────────────
   const registrySource = fs.readFileSync(path.join(root, 'packages/core/src/tool-registry.ts'), 'utf8');
+  const apiIndexSource = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
+  const inboundReconcileSource = fs.readFileSync(path.join(root, 'packages/api-server/src/vapi-inbound-latency.ts'), 'utf8');
   const mocStart = registrySource.indexOf("name: 'make_outbound_call'");
   const mocEnd = registrySource.indexOf("name: 'get_call_status'");
   const ciaStart = registrySource.indexOf("name: 'configure_inbound_assistant'");
@@ -234,14 +236,46 @@ function main(): void {
         /voiceSeconds:\s*0\.15/.test(mocBody),
     );
     check(
-      'configure_inbound_assistant: voice.model is explicitly set to eleven_v3, matching make_outbound_call',
-      /voice:\s*\{[\s\S]*?model:\s*'eleven_v3'/.test(ciaBody),
+      'configure_inbound_assistant: uses GPT-5.6 Luna fast tier for lower model latency',
+      /model:\s*'gpt-5\.6-luna'/.test(ciaBody) &&
+        /serviceTier:\s*'fast'/.test(ciaBody),
     );
     check(
-      'configure_inbound_assistant: voiceId is configurable via ELEVENLABS_VOICE_ID',
+      'configure_inbound_assistant: uses Eleven Flash v2.5 with maximum streaming optimization',
+      /voice:\s*\{[\s\S]*?model:\s*'eleven_flash_v2_5'/.test(ciaBody) &&
+        /optimizeStreamingLatency:\s*4/.test(ciaBody),
+    );
+    check(
+      'configure_inbound_assistant: voiceId remains configurable via ELEVENLABS_VOICE_ID',
       /voiceId:\s*process\.env\.ELEVENLABS_VOICE_ID/.test(ciaBody),
     );
+    check(
+      'configure_inbound_assistant: Deepgram Flux owns end-of-turn detection with a 2s hard ceiling',
+      /model:\s*'flux-general-en'/.test(ciaBody) &&
+        /eotThreshold:\s*0\.6/.test(ciaBody) &&
+        /eagerEotThreshold:\s*0\.45/.test(ciaBody) &&
+        /eotTimeoutMs:\s*2000/.test(ciaBody),
+    );
+    check(
+      'configure_inbound_assistant: starts quickly and supports VAD barge-in',
+      /startSpeakingPlan:\s*\{\s*waitSeconds:\s*0\.1\s*\}/.test(ciaBody) &&
+        /stopSpeakingPlan:\s*\{[\s\S]*?numWords:\s*0/.test(ciaBody) &&
+        /voiceSeconds:\s*0\.15/.test(ciaBody),
+    );
   }
+
+  check(
+    'api-server startup reconciles the already-persisted Vapi inbound assistant, not only future tool calls',
+    /reconcileVapiInboundLatency/.test(apiIndexSource) &&
+      /reconcileVapiInboundLatency\(\)/.test(apiIndexSource),
+  );
+  check(
+    'startup reconciler preserves the existing prompt/tools while applying the low-latency phone stack',
+    /\.\.\.currentModel/.test(inboundReconcileSource) &&
+      /model:\s*'gpt-5\.6-luna'/.test(inboundReconcileSource) &&
+      /model:\s*'eleven_flash_v2_5'/.test(inboundReconcileSource) &&
+      /model:\s*'flux-general-en'/.test(inboundReconcileSource),
+  );
 
   // ── Schema and idempotent-migration DDL stay in lockstep ─────────────────
   const schemaSource = fs.readFileSync(path.join(root, 'lib/db/src/schema.ts'), 'utf8');
