@@ -19,6 +19,7 @@ import crypto from 'crypto';
 const configuredToken = requireEnv('APEX_ADMIN_TOKEN');
 const configuredOutcomeIngestToken = process.env.APEX_OUTCOME_INGEST_TOKEN?.trim() || null;
 const configuredVapiSmsToken = process.env.APEX_VAPI_SMS_TOKEN?.trim() || null;
+const configuredLeadImportToken = process.env.APEX_LEAD_IMPORT_TOKEN?.trim() || null;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -54,6 +55,10 @@ export function validateVapiSmsToken(authHeader: string | undefined): boolean {
   return constantTimeTokenMatch(bearerToken(authHeader), configuredVapiSmsToken);
 }
 
+export function validateLeadImportToken(authHeader: string | undefined): boolean {
+  return constantTimeTokenMatch(bearerToken(authHeader), configuredLeadImportToken);
+}
+
 function isOutcomeIngestRoute(req: Request): boolean {
   const path = req.originalUrl.split('?')[0];
   return req.method === 'POST' && path === '/api/learning/outcome-ledger/events';
@@ -62,6 +67,11 @@ function isOutcomeIngestRoute(req: Request): boolean {
 function isVapiSmsRoute(req: Request): boolean {
   const path = req.originalUrl.split('?')[0];
   return req.method === 'POST' && path === '/api/sales-ops/sms/send';
+}
+
+function isLeadImportRoute(req: Request): boolean {
+  const path = req.originalUrl.split('?')[0];
+  return req.method === 'POST' && path === '/api/leads/import-enrichment';
 }
 
 export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
@@ -74,6 +84,10 @@ export function requireAdminAuth(req: Request, res: Response, next: NextFunction
     return;
   }
   if (isVapiSmsRoute(req) && validateVapiSmsToken(req.headers.authorization)) {
+    next();
+    return;
+  }
+  if (isLeadImportRoute(req) && validateLeadImportToken(req.headers.authorization)) {
     next();
     return;
   }
