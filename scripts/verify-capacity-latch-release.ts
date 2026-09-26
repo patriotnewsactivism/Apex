@@ -83,21 +83,29 @@ async function main(): Promise<void> {
   // out and latches the whole workforce. With a usable provider configured, the
   // loop must release immediately instead of sleeping until the UTC rollover.
   const usable = llm.llmCapacityAvailableNow(Date.now());
-  const twentyTwoHours = Date.now() + 22 * 60 * 60 * 1000;
+  const setAt = Date.now();
+  const twentyTwoHours = setAt + 22 * 60 * 60 * 1000;
   __setCapacityLatchForTest(twentyTwoHours);
+
+  check(
+    'a fresh capacity pause cannot be re-probed away before the 5s workspace floor',
+    capacityPauseRemainingMs(setAt + 1_000) > 4_000,
+    capacityPauseRemainingMs(setAt + 1_000),
+  );
+
   if (usable) {
     check(
-      'a 22h latch is released as soon as a provider can take work again',
-      capacityPauseRemainingMs() === 0,
-      capacityPauseRemainingMs(),
+      'a long latch releases after the minimum hold once a provider can take work again',
+      capacityPauseRemainingMs(setAt + 5_100) === 0,
+      capacityPauseRemainingMs(setAt + 5_100),
     );
   } else {
     // No provider is usable here, so the latch must be HONOURED -- the release
     // path must not degrade into "always resume".
     check(
-      'the latch is honoured while no provider can take work',
-      capacityPauseRemainingMs() > 21 * 60 * 60 * 1000,
-      capacityPauseRemainingMs(),
+      'the latch is honoured after the floor while no provider can take work',
+      capacityPauseRemainingMs(setAt + 5_100) > 21 * 60 * 60 * 1000,
+      capacityPauseRemainingMs(setAt + 5_100),
     );
   }
   __resetCapacityLatchForTest();
@@ -133,6 +141,11 @@ async function main(): Promise<void> {
     'the re-probe is throttled so 13 agents cannot make it a hot path',
     agentSrc.includes('CAPACITY_REPROBE_INTERVAL_MS') &&
       agentSrc.includes('lastCapacityProbeAtMs'),
+  );
+  check(
+    'the 5s minimum pause is enforced before the recovery probe may clear the latch',
+    agentSrc.includes('sharedCapacityProbeNotBeforeMs') &&
+      /if \(now < sharedCapacityProbeNotBeforeMs\) return;/.test(agentSrc),
   );
   check(
     'the probe reserves nothing (safe to call every poll cycle)',
