@@ -167,6 +167,51 @@ function defaultFirstMessage(name: string | undefined): string {
     : `Hi there, I'm Alex from BuildMyBot.app — do you have a quick minute?`;
 }
 
+/** Build a blind sales-audit prompt from a real recently-sourced lead.
+ *
+ * The destination is always the operator's own configured owner number. The
+ * person answering has explicitly asked to role-play the selected business
+ * owner, so this exercises the real outbound stack without dialing the actual
+ * prospect. Do not announce the audit or reveal the selected row before the
+ * conversation naturally identifies the business.
+ */
+function blindAuditPrompt(lead: {
+  companyName: string;
+  website: string | null;
+  industry: string | null;
+  city: string | null;
+  decisionMakerName: string | null;
+  fitReason: string;
+  outreachAngle: string | null;
+}): string {
+  const context = [
+    `Business: ${lead.companyName}`,
+    lead.industry ? `Industry: ${lead.industry}` : '',
+    lead.city ? `Market: ${lead.city}` : '',
+    lead.website ? `Website: ${lead.website}` : '',
+    lead.decisionMakerName ? `Decision maker on file: ${lead.decisionMakerName}` : '',
+    lead.fitReason ? `Why APEX sourced this lead: ${lead.fitReason}` : '',
+    lead.outreachAngle ? `Researched outreach angle: ${lead.outreachAngle}` : '',
+  ].filter(Boolean).join(' | ');
+
+  return [
+    `You are Alex, a sharp but natural outbound SDR for BuildMyBot.app and APEX Work Solutions. You are calling a REALISTIC BLIND SALES AUDIT: the person who answers is the operator intentionally role-playing the owner/decision-maker of the business below. Treat the conversation exactly as you would a real cold prospect. Never say this is an audit, a simulation, a test, or that the destination number differs from the lead record.`,
+    `Your private lead brief is: ${context}.`,
+    `Open naturally and earn permission for a short conversation. Do not dump features. Ask one or two discovery questions that fit this specific business and the researched pain hypothesis, listen to the answers, then connect the pain to a concrete result: faster response, fewer missed leads, automated qualification/follow-up, or booked appointments. Mention AI phone, website chat, SMS follow-up, or APEX autonomous prospecting only when relevant to what they tell you.`,
+    `Your primary objective is NOT to close a subscription on this call. Your objective is to sell a next-step appointment: a 15-minute walkthrough/demo with the owner of APEX/BuildMyBot. Ask for a specific day and time. If they agree, confirm the date, time, and timezone and immediately call record_meeting_outcome with disposition appointment_booked. If they decline, ask for a callback, or the call ends without a decision, record the accurate disposition before hanging up.`,
+    `Handle objections conversationally. If they say they are busy, ask for a better 15-minute slot. If they say they already have a system, ask what happens when it misses a call or lead. If they say send information, ask one concise question to determine whether a demo would actually be useful. If they say no twice, respect it and end warmly. Do not invent pricing, integrations, customers, ROI numbers, or capabilities. Keep the call focused and preferably under three minutes.`,
+  ].join(' ');
+}
+
+function blindAuditFirstMessage(lead: {
+  companyName: string;
+  decisionMakerName: string | null;
+}): string {
+  return lead.decisionMakerName
+    ? `Hi, is this ${lead.decisionMakerName}? I'm Alex with BuildMyBot and APEX — did I catch you with a quick minute?`
+    : `Hi, is this the owner at ${lead.companyName}? I'm Alex with BuildMyBot and APEX — did I catch you with a quick minute?`;
+}
+
 /** Create the authenticated router for sales monitoring and operator actions. */
 export function createSalesOpsRouter(ceo: ApexCEO): Router {
   const router = Router();
@@ -415,6 +460,116 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       });
 
       res.status(success ? 200 : 502).json(success ? callResult : { ...callResult, success: false });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /audit-call — blind self-call against a random fresh lead ──────────
+  //
+  // This deliberately NEVER calls the lead's phone number. It selects a real
+  // row sourced in the preceding 24 hours, uses that row only for the private
+  // sales brief, and dials TELNYX_OWNER_NUMBER so the operator can role-play
+  // the business owner and audit the sales process without advance disclosure.
+  router.post('/audit-call', async (req, res) => {
+    try {
+      const ownerNumber = normalizeE164(process.env.TELNYX_OWNER_NUMBER);
+      if (!ownerNumber) {
+        res.status(503).json({
+          error: 'TELNYX_OWNER_NUMBER must be configured to run a blind self-call audit.',
+        });
+        return;
+      }
+
+      const rawExclusions = Array.isArray(req.body?.excludeLeadIds)
+        ? req.body.excludeLeadIds
+        : [];
+      const excluded = new Set(
+        rawExclusions
+          .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+          .slice(0, 25),
+      );
+
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      // Pull a randomized candidate window and choose the first not already
+      // audited in this operator session. fitReason is NOT NULL in the schema,
+      // so every selected row has at least a grounded ICP reason.
+      const candidates = await db
+        .select()
+        .from(researchedLeads)
+        .where(gte(researchedLeads.createdAt, since))
+        .orderBy(sql`random()`)
+        .limit(50);
+      const lead = candidates.find((candidate) => !excluded.has(candidate.id));
+
+      if (!lead) {
+        res.status(404).json({
+          error: 'No additional researched lead from the last 24 hours is available for this audit.',
+        });
+        return;
+      }
+
+      const assistantPrompt = blindAuditPrompt(lead);
+      const firstMessage = blindAuditFirstMessage(lead);
+      const customerName = lead.decisionMakerName ?? lead.companyName;
+
+      const { getToolRegistry } = await import('@workspace/core');
+      const workspaceRoot = process.env.WORKSPACE_ROOT ?? process.cwd();
+      const registry = getToolRegistry(workspaceRoot);
+      const result = await registry.execute(
+        'make_outbound_call',
+        {
+          customerNumber: ownerNumber,
+          customerName,
+          assistantPrompt,
+          firstMessage,
+        },
+        {
+          agentId: SALES_AGENT_ID,
+          workspaceRoot,
+          // This endpoint is behind admin auth and can only dial the configured
+          // owner number. The operator's POST is the explicit per-call approval.
+          requestApproval: async () => true,
+        },
+      );
+
+      type AuditCallResult = {
+        success?: boolean;
+        error?: string;
+        callId?: string;
+        status?: string;
+        startedAt?: string;
+        [key: string]: unknown;
+      };
+      const callResult: AuditCallResult =
+        result.success && result.data && typeof result.data === 'object'
+          ? (result.data as AuditCallResult)
+          : { success: false, error: result.error ?? 'Blind audit call failed before reaching Vapi.' };
+      const success = result.success && callResult.success !== false;
+
+      await db.insert(logs).values({
+        agentId: SALES_AGENT_ID,
+        taskId: null,
+        level: success ? 'acting' : 'error',
+        message: success
+          ? `Blind lead audit call initiated. leadId=${lead.id} callId=${callResult.callId ?? 'unknown'} (destination=configured owner number).`
+          : `Blind lead audit call failed. leadId=${lead.id}: ${callResult.error ?? result.error ?? 'unknown error'}`,
+        timestamp: new Date(),
+      });
+
+      // Keep the audit blind: return only the opaque row id required to avoid
+      // repeats. The company, industry and sales angle stay server-side.
+      res.status(success ? 200 : 502).json(
+        success
+          ? {
+              success: true,
+              auditLeadId: lead.id,
+              callId: callResult.callId,
+              status: callResult.status,
+              startedAt: callResult.startedAt,
+            }
+          : { ...callResult, success: false, auditLeadId: lead.id },
+      );
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }
