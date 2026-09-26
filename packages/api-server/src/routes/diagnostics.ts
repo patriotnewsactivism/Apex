@@ -7,6 +7,7 @@ import {
   getTokenLedgerSnapshot,
   getProviderBackpressureSnapshot,
   getConfiguredProviders,
+  msUntilDailyReset,
 } from '@workspace/core';
 import type { BaseAgent } from '@workspace/core';
 import { directoryUsageBytes } from '../tmp-usage.js';
@@ -104,13 +105,25 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
     }
 
     // ── Parked workforce ───────────────────────────────────────────────────
+    // The latch is only still set when llmCapacityAvailableNow() just returned
+    // false (getCapacityDeferralStats probes before reporting). A park that
+    // lands on the UTC rollover is the free/BYOK daily budget, not one
+    // provider's pacing window. The paid continuity route releases this latch
+    // by itself when it is enabled and credentialed.
     if (deferrals.parkedForMs > 5 * 60_000) {
+      const untilDailyResetMs = msUntilDailyReset(now);
+      const dailyReset = Math.abs(deferrals.parkedForMs - untilDailyResetMs) < 90_000;
+      const resumeAt = new Date(now + deferrals.parkedForMs).toISOString();
       findings.push({
         severity: 'critical',
         code: 'workforce_parked',
         title: 'Workforce is parked and not claiming work',
-        detail: `Every agent is waiting ${Math.round(deferrals.parkedForMs / 60_000)} more minutes for LLM capacity. This is indistinguishable from idle in agentStatusCounts.`,
-        action: 'Check llmCapacity.pausedProviders. A single paced provider must not gate the workspace — see llmCapacityAvailableNow().',
+        detail: dailyReset
+          ? `Every agent is waiting until the UTC daily reset (${resumeAt}). Free and BYOK capacity is exhausted. Idle agent counts look the same, but no provider can take a call before then.`
+          : `Every agent is waiting ${Math.round(deferrals.parkedForMs / 60_000)} more minutes, until ${resumeAt}. No configured provider can take a call. This is indistinguishable from idle in agentStatusCounts.`,
+        action: dailyReset
+          ? 'Wait for 00:00 UTC, or turn paid continuity back on (APEX_PAID_FALLBACK_ENABLED must not be false, and the funded OpenRouter key must be set). Restarting the process will not clear a daily budget. POST /api/tokens/reset only if this spend was wasted.'
+          : 'Read llmCapacity on GET /api/health/detail. pausedProviders names who is resting. A park this long means every route is blocked, not one paced provider: llmCapacityAvailableNow() would have released the latch otherwise.',
       });
     }
 
@@ -235,7 +248,7 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
         `APEX diagnostics — ${payload.generatedAt}`,
         `sha ${build.sha?.slice(0, 8) ?? '?'}  up ${Math.floor(build.uptimeSeconds / 60)}m  agents ${workforce.size} ${JSON.stringify(statuses)}`,
         `queue ${queue.successes}/${queue.attempts} (${queue.failures} failures)  rss ${payload.memory.rssMb}MB  tmp ${tmpUsedMb ?? '?'}MB`,
-        `capacity deferrals: ${deferrals.lastMinute}/min, ${deferrals.last15Minutes}/15m  parked ${Math.round(deferrals.parkedForMs / 1000)}s`,
+        `capacity deferrals: ${deferrals.lastMinute}/min, ${deferrals.last15Minutes}/15m  parked ${Math.round(deferrals.parkedForMs / 1000)}s${deferrals.parkedForMs > 0 ? ` until ${new Date(now + deferrals.parkedForMs).toISOString()}` : ''}`,
         '',
         ...findings.flatMap((f) => [
           `${icon[f.severity]} ${f.title}`,
