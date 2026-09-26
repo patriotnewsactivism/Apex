@@ -392,6 +392,34 @@ async function main(): Promise<void> {
       /gte\(callOutcomes\.appointmentAt, new Date\(\)\)/.test(salesOpsSource),
   );
 
+  // ── Blind audit calls use real fresh leads but dial only the operator ────────
+  check(
+    'sales-ops.ts registers POST /audit-call',
+    /router\.post\('\/audit-call'/.test(salesOpsSource),
+  );
+  check(
+    'audit selection is random and limited to rows sourced in the preceding 24 hours',
+    /Date\.now\(\) - 24 \* 60 \* 60 \* 1000/.test(salesOpsSource) &&
+      /orderBy\(sql`random\(\)`\)/.test(salesOpsSource),
+  );
+  check(
+    'audit calls dial only TELNYX_OWNER_NUMBER, never the researched lead phone',
+    /normalizeE164\(process\.env\.TELNYX_OWNER_NUMBER\)/.test(salesOpsSource) &&
+      /customerNumber: ownerNumber/.test(salesOpsSource) &&
+      !/audit-call[\s\S]{0,9000}customerNumber:\s*lead\.contactPhone/.test(salesOpsSource),
+  );
+  check(
+    'audit response remains blind while returning an opaque lead id for no-repeat tracking',
+    /Keep the audit blind/.test(salesOpsSource) &&
+      /auditLeadId: lead\.id/.test(salesOpsSource),
+  );
+  check(
+    'blind audit prompt sells a 15-minute appointment and requires structured outcome capture',
+    /15-minute walkthrough\/demo/.test(salesOpsSource) &&
+      /record_meeting_outcome/.test(salesOpsSource) &&
+      /primary objective is NOT to close a subscription/.test(salesOpsSource),
+  );
+
   console.log(
     failures === 0
       ? '\n✅ Call outcome capture verified.\n'
