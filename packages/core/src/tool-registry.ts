@@ -3046,9 +3046,13 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           assistant: {
             name: 'APEX Outbound SDR',
             firstMessage,
+            // Native speech-to-speech removes the serial
+            // STT -> LLM -> TTS pipeline that made outbound calls feel like
+            // a walkie-talkie. Vapi supports function tools unchanged on
+            // OpenAI Realtime, so checkout + meeting capture still work.
             model: {
               provider: 'openai',
-              model: 'gpt-4o',
+              model: 'gpt-realtime-2',
               messages: [
                 {
                   role: 'system',
@@ -3130,32 +3134,38 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 },
               ],
             },
+            // Realtime models consume and emit audio natively. A separate
+            // transcriber and TTS provider would reintroduce the exact serial
+            // latency we are removing, so there is intentionally no
+            // `transcriber` block on outbound calls.
             voice: {
-              provider: '11labs',
-              voiceId: process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
-              // eleven_v3: ElevenLabs' newest, most expressive/realistic model.
-              // Vapi lists it as a supported real-time voice.model (one of
-              // exactly four accepted values), so its own infrastructure
-              // handles the streaming side — unlike Deepgram's Voice Agent
-              // (live-voice.ts, telnyx-deepgram-agent.ts), which is pinned to
-              // Turbo 2.5 because v3 doesn't fit its streaming integration.
-              model: 'eleven_v3',
-              stability: 0.5,
-              similarityBoost: 0.75,
-              speed: 1.0,
-            },
-            transcriber: {
-              provider: 'deepgram',
-              model: 'nova-2-phonecall',
-              language: 'en-US',
-              smartFormat: true,
+              provider: 'openai',
+              voiceId: process.env.VAPI_REALTIME_VOICE_ID || 'cedar',
             },
             server: {
               url: webhookUrl,
               ...(webhookSecret ? { headers: { 'x-webhook-secret': webhookSecret } } : {}),
             },
             silenceTimeoutSeconds: 30,
-            responseDelaySeconds: 0.4,
+            // Explicit low-latency turn taking. The old responseDelaySeconds
+            // setting only added delay and did not solve endpointing. LiveKit
+            // smart endpointing decides when the caller is actually finished;
+            // the 100 ms wait keeps the agent responsive without making every
+            // breath sound like the end of a turn.
+            startSpeakingPlan: {
+              waitSeconds: 0.1,
+              smartEndpointingPlan: {
+                provider: 'livekit',
+                waitFunction: '800 / (1 + exp(-10 * (x - 0.5)))',
+              },
+            },
+            // VAD-based barge-in: stop speaking after ~150 ms of real caller
+            // speech instead of waiting for a transcript.
+            stopSpeakingPlan: {
+              numWords: 0,
+              voiceSeconds: 0.15,
+              backoffSeconds: 0.5,
+            },
           },
           phoneNumberId,
           customer: {
