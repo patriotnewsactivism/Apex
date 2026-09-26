@@ -29,6 +29,11 @@ check(
 check('timeouts never cooldown a valid credential', shouldCooldownCredential(undefined, 'request timed out') === false);
 check('aborts never cooldown a valid credential', shouldCooldownCredential(undefined, 'request aborted') === false);
 check('HTTP 429 still cools a credential', shouldCooldownCredential(429, 'rate limited') === true);
+check('HTTP 401 still cools a rejected credential', shouldCooldownCredential(401, 'invalid API key') === true);
+check('HTTP 404 does not poison a valid credential', shouldCooldownCredential(404, 'model not found') === false);
+check('HTTP 413 does not poison a valid credential', shouldCooldownCredential(413, 'request too large') === false);
+check('HTTP 503 does not poison a valid credential', shouldCooldownCredential(503, 'upstream unavailable') === false);
+check('malformed/empty provider output does not poison a valid credential', shouldCooldownCredential(undefined, 'provider returned no completion choice') === false);
 check('HTTP 402 is a capacity pause, not a paid-model trigger', isCapacityFailure(402, 'Payment required') === true);
 check('HTTP 429 is an account-quota failure', isAccountQuotaFailure(429, 'free-models-per-day-high-balance') === true);
 check('HTTP 402 is an account-quota failure', isAccountQuotaFailure(402, 'Payment required') === true);
