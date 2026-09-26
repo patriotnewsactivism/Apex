@@ -183,6 +183,15 @@ check(
   /provider\.protocol === 'gemini-interactions'/.test(clientSource) &&
     /callGeminiInteractions/.test(clientSource),
 );
+const geminiSource = fs.readFileSync(path.join(root, 'packages/core/src/gemini-interactions.ts'), 'utf8');
+check(
+  'Gemini Interactions uses typed text content blocks for user_input history',
+  /type: 'user_input',[\s\S]{0,100}content: \[\{ type: 'text', text: message\.content \}\]/.test(geminiSource),
+);
+check(
+  'Gemini 3.8 request no longer sends legacy temperature sampling config',
+  !/generation_config:\s*\{[\s\S]{0,180}temperature:/.test(geminiSource),
+);
 check(
   'OpenRouter-only metadata is not sent to direct BYOK APIs',
   /isOpenRouterProvider\(provider\) \? \{ usage: \{ include: true \} \}/.test(clientSource) &&
@@ -264,9 +273,18 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   explorationRate: 0,
 });
 check(
-  'a custom FREE OpenRouter policy keeps Qwen primary and independent BYOK fallbacks behind it',
+  'a custom FREE OpenRouter policy keeps Qwen primary, then selected policy, then unselected default free fallbacks, then BYOK continuity',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
-    JSON.stringify([primaryPaidBYOKProvider, FREE_POLICY_GATEWAY_NAME, ...byokProviders, PAID_FALLBACK_PROVIDER_NAME]),
+    JSON.stringify([
+      primaryPaidBYOKProvider,
+      FREE_POLICY_GATEWAY_NAME,
+      'openrouter-nex-n2-5-pro-free',
+      'openrouter-nemotron-super',
+      'openrouter-nemotron-3-5-lightning-free',
+      'openrouter-nemotron-ultra',
+      ...byokProviders,
+      PAID_FALLBACK_PROVIDER_NAME,
+    ]),
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
