@@ -89,6 +89,13 @@ export async function diagnoseCartesiaRuntime(): Promise<void> {
       `sales-tools=${presentSalesTools.length}/${EXPECTED_SALES_TOOLS.length}; event-webhook=${eventWebhook ? 'present' : 'missing'}`,
     );
 
+    if (agents.length > 0) {
+      console.log(
+        '[cartesia] Agent inventory:',
+        agents.map((agent) => `${agent.name ?? 'unnamed'} (${agent.id ?? 'no-id'})`).join(', '),
+      );
+    }
+
     if (salesAgents.length > 0) {
       console.log(
         '[cartesia] Matching sales agents:',
