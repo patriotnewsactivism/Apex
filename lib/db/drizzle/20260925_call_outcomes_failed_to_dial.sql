@@ -1,7 +1,7 @@
 -- call_outcomes.disposition gains a new documented value: 'failed_to_dial'.
 -- No DDL is required -- disposition has always been an untyped `text` column
 -- (no CHECK constraint), so this is a pure application-level convention
--- change, added so make_outbound_call can record a call Vapi rejected before
+-- change, added so make_outbound_call can record a call provider rejected before
 -- it ever rang (previously such an attempt wrote nothing anywhere durable --
 -- see packages/core/src/tool-registry.ts and
 -- packages/dashboard/src/components/CallLogPanel.tsx for the write/read

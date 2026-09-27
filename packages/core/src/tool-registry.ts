@@ -3646,7 +3646,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           phoneNumberId: data.id,
           number: data.number,
           assistantId,
-          message: `Inbound number provisioned: ${data.number ?? '(pending)'} (id: ${data.id}), assigned to assistant ${assistantId}. Billed by Vapi monthly — see https://dashboard.vapi.ai for pricing. This is a separate inbound-only line unless you also set VAPI_PHONE_NUMBER_ID to this id to make make_outbound_call place OUTBOUND calls from it too.`,
+          message: `Inbound number provisioned: ${data.number ?? '(pending)'} (id: ${data.id}), assigned to assistant ${assistantId}. Billed by Vapi monthly — see https://dashboard.vapi.ai for pricing. New outbound calls are placed through Telnyx Call Bridge, not this Vapi number.`,
         };
       },
     },

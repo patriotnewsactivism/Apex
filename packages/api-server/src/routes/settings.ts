@@ -139,11 +139,24 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
-    id: 'vapi', name: 'Vapi', description: 'Outbound AND inbound AI phone calls for the Sales agent (make_outbound_call / configure_inbound_assistant + provision_inbound_number).', category: 'voice',
+    id: 'telnyx-call-bridge',
+    name: 'Telnyx Call Bridge',
+    description: 'Outbound AI phone calls for the Sales agent (make_outbound_call, Sales Ops self-pitch, and campaign dials). APEX requires APEX_FRONT_DESK_NUMBER to be +18329757665.',
+    category: 'voice',
+    docsUrl: 'https://portal.telnyx.com/',
+    envVars: [
+      { key: 'TELNYX_API_KEY', label: 'API Key', placeholder: 'KEY...', secret: true },
+      { key: 'TELNYX_CALL_BRIDGE_CONNECTION_ID', label: 'Call Control Connection ID', placeholder: 'Telnyx Call Control Application ID' },
+      { key: 'TELNYX_CALL_BRIDGE_WEBHOOK_SECRET', label: 'Call Bridge Webhook Secret', placeholder: 'long random secret', secret: true },
+      { key: 'APEX_FRONT_DESK_NUMBER', label: 'Approved Caller ID', placeholder: '+18329757665' },
+      { key: 'TELNYX_OWNER_NUMBER', label: 'Owner/Test Pitch Destination', placeholder: '+1xxxxxxxxxx' },
+    ],
+  },
+  {
+    id: 'vapi', name: 'Vapi', description: 'Legacy inbound AI phone compatibility and historical call-status fallback. New outbound calls route through Telnyx Call Bridge.', category: 'voice',
     docsUrl: 'https://dashboard.vapi.ai',
     envVars: [
       { key: 'VAPI_API_KEY', label: 'Private API Key', placeholder: 'Vapi private key', secret: true },
-      { key: 'VAPI_PHONE_NUMBER_ID', label: 'Outbound Phone Number ID', placeholder: 'Vapi phone number ID used for make_outbound_call' },
       { key: 'VAPI_WEBHOOK_SECRET', label: 'Webhook Secret', placeholder: 'Optional webhook secret', secret: true },
     ],
   },

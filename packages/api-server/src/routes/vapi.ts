@@ -3,10 +3,12 @@ import crypto from 'crypto';
 
 // ─── Vapi Webhook Route ──────────────────────────────────────────────────────
 //
-// Receives server events from Vapi.ai when an outbound AI call is in progress
-// or completes. Mounted BEFORE requireAdminAuth because Vapi's server can't
-// send a Bearer token — it's a server-to-server webhook. Optionally protected
-// by a shared-secret header (VAPI_WEBHOOK_SECRET) if configured.
+// Receives server events from legacy Vapi.ai calls. New outbound calls route
+// through Telnyx Call Bridge; this remains for historical call-status/outcome
+// compatibility and any still-configured inbound Vapi surface. Mounted BEFORE
+// requireAdminAuth because Vapi's server can't send a Bearer token — it's a
+// server-to-server webhook. Optionally protected by a shared-secret header
+// (VAPI_WEBHOOK_SECRET) if configured.
 //
 // Handles:
 // 1. function-call — AI called send_checkout_link during the call → create

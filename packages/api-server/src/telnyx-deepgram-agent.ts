@@ -34,13 +34,12 @@ const DEEPGRAM_AGENT_URL = 'wss://agent.deepgram.com/v1/agent/converse';
 // ElevenLabs replaces Deepgram's own bundled Aura voice for this Front Desk
 // agent when ELEVENLABS_API_KEY is configured (2026-09-25) — Aura is
 // functional but noticeably less realistic, and Matthew holds an upgraded
-// ElevenLabs plan specifically to close that gap on every AI voice, not just
-// the ones already using it (Vapi's outbound/inbound calls). Turbo 2.5 is
-// pinned rather than a higher-realism tier because it's the specific model
-// Deepgram's own docs confirm as supported for their real-time agent speak
-// relay; see packages/api-server/src/live-voice.ts (the browser live-voice
-// chat, on the identical Deepgram Voice Agent integration) for the full
-// citation trail on why the other tiers don't fit here.
+// ElevenLabs plan specifically to close that gap on AI voice surfaces. Turbo
+// 2.5 is pinned rather than a higher-realism tier because it's the specific
+// model Deepgram's own docs confirm as supported for their real-time agent
+// speak relay; see packages/api-server/src/live-voice.ts (the browser
+// live-voice chat, on the identical Deepgram Voice Agent integration) for the
+// full citation trail on why the other tiers don't fit here.
 const ELEVENLABS_TTS_MODEL = 'eleven_turbo_v2_5';
 const DEFAULT_ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
