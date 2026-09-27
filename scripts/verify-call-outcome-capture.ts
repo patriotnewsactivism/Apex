@@ -17,14 +17,10 @@
  *      hang-up before the AI could report an outcome must never be recorded
  *      as if nothing happened; they still get a row, conservatively.
  *
- *   3. The transient Vapi assistant config make_outbound_call actually
- *      builds: it must carry the record_meeting_outcome function (with
- *      disposition required and the four-region timezone enum) AND a
- *      server-injected "today's date" line in the system prompt — the AI has
- *      no other way to resolve "next Tuesday" into a real calendar date.
- *      Exercised through the tool's real execute() with a stubbed fetch (the
- *      established pattern in verify-lead-source-tools.ts), not by reading
- *      source for the string "record_meeting_outcome".
+ *   3. The Telnyx outbound path make_outbound_call actually builds: it must
+ *      create an AI-first call bridge session, store the exact first message
+ *      and server-prefixed prompt, dial through Telnyx Call Control, and never
+ *      fall back to Vapi for newly placed outbound calls.
  *
  * DST correctness is checked against the US rule in effect since 2007
  * (2nd Sunday of March to 1st Sunday of November) using dates on both sides
@@ -33,7 +29,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.GITHUB_WORKSPACE ?? path.resolve(here, '..');
@@ -53,7 +49,7 @@ async function main(): Promise<void> {
   console.log('Verifying outbound call outcomes are captured as structured data...\n');
 
   const vapiMod = (await import(
-    path.join(root, 'packages/api-server/src/routes/vapi.ts')
+    pathToFileURL(path.join(root, 'packages/api-server/src/routes/vapi.ts')).href
   )) as typeof import('../packages/api-server/src/routes/vapi.js');
   const { zonedTimeToUtc, fallbackDispositionFromEndedReason } = vapiMod;
 
@@ -136,141 +132,40 @@ async function main(): Promise<void> {
     fallbackDispositionFromEndedReason('some-new-reason-vapi-adds-later') === 'no_decision',
   );
 
-  // ── The real assistant config make_outbound_call sends to Vapi ───────────
-  //
-  // execute() returns early (before building callBody) unless VAPI_API_KEY
-  // and VAPI_PHONE_NUMBER_ID are set, so both are set here and fetch is
-  // stubbed to capture the outbound POST body instead of hitting the real
-  // API — the same technique verify-lead-source-tools.ts uses for TomTom.
   const registryMod = (await import(
-    path.join(root, 'packages/core/src/tool-registry.ts')
+    pathToFileURL(path.join(root, 'packages/core/src/tool-registry.ts')).href
   )) as typeof import('../packages/core/src/tool-registry.js');
   const tools = registryMod.createBuiltinTools(root);
   const makeCall = tools.find((t) => t.name === 'make_outbound_call');
   check('make_outbound_call is registered', Boolean(makeCall));
 
-  if (makeCall) {
-    const savedApiKey = process.env.VAPI_API_KEY;
-    const savedPhoneId = process.env.VAPI_PHONE_NUMBER_ID;
-    process.env.VAPI_API_KEY = 'guard-script-test-key';
-    process.env.VAPI_PHONE_NUMBER_ID = 'guard-script-test-phone-id';
-
-    const realFetch = globalThis.fetch;
-    let capturedBody: any = null;
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input);
-      if (url === 'https://api.vapi.ai/call') {
-        capturedBody = init?.body ? JSON.parse(String(init.body)) : null;
-        return new Response(JSON.stringify({ id: 'guard-call-id', status: 'queued' }), { status: 200 });
-      }
-      throw new Error(`Unexpected fetch in guard: ${url}`);
-    }) as typeof fetch;
-
-    try {
-      const ctx = { agentId: 'guard', workspaceRoot: root, requestApproval: async () => true } as never;
-      await makeCall.execute(
-        {
-          customerNumber: '+18582264822',
-          customerName: 'Guard Prospect',
-          assistantPrompt: 'You are a test assistant.',
-          firstMessage: 'Hi, is this a test?',
-        },
-        ctx,
-      );
-
-      check('make_outbound_call actually reached the fetch stub (a real callBody was captured)', capturedBody !== null);
-
-      const systemContent: string | undefined = capturedBody?.assistant?.model?.messages?.[0]?.content;
-      check(
-        "the system prompt is server-prefixed with today's date, not left to whoever wrote assistantPrompt to include it",
-        typeof systemContent === 'string' &&
-          /^Today's date is \d{4}-\d{2}-\d{2} \(\w+\)\./.test(systemContent) &&
-          systemContent.includes('You are a test assistant.'),
-        systemContent,
-      );
-
-      // Regression pin for the exact production bug reported 2026-09-25:
-      // Vapi's Create Call schema rejects `tools` living directly on
-      // `assistant` ("assistant.property tools should not exist") because it
-      // belongs to the LLM config, nested under assistant.model. This one
-      // property being one level too shallow made EVERY outbound call fail
-      // with a 400 before it ever dialed.
-      check(
-        'assistant.tools does NOT exist at the top level (the exact shape Vapi rejects)',
-        capturedBody?.assistant?.tools === undefined,
-        capturedBody?.assistant?.tools,
-      );
-      const fns: Array<{ type: string; function: { name: string; parameters: any } }> =
-        capturedBody?.assistant?.model?.tools ?? [];
-      check('assistant.model.tools exists and is non-empty (tools correctly nested under model)', fns.length > 0);
-      const recordFn = fns.find((f) => f.function?.name === 'record_meeting_outcome');
-      check('record_meeting_outcome is one of the functions offered to the AI', Boolean(recordFn));
-      check(
-        'send_checkout_link is still offered too — the new function did not replace it',
-        fns.some((f) => f.function?.name === 'send_checkout_link'),
-      );
-
-      if (recordFn) {
-        const params = recordFn.function.parameters;
-        check('record_meeting_outcome requires disposition', params?.required?.includes('disposition'));
-        check(
-          'record_meeting_outcome does NOT require appointment fields unconditionally (a decline call has none to give)',
-          !params?.required?.includes('appointmentDate') && !params?.required?.includes('appointmentTime'),
-        );
-        const dispositionEnum: string[] | undefined = params?.properties?.disposition?.enum;
-        check(
-          'disposition enum matches exactly what the webhook handler and callOutcomes.disposition accept',
-          Array.isArray(dispositionEnum) &&
-            JSON.stringify([...dispositionEnum].sort()) ===
-              JSON.stringify(['appointment_booked', 'callback_requested', 'no_decision', 'not_interested'].sort()),
-          dispositionEnum,
-        );
-        const timezoneEnum: string[] | undefined = params?.properties?.appointmentTimezone?.enum;
-        check(
-          'appointmentTimezone enum matches exactly the four regions zonedTimeToUtc knows how to resolve',
-          Array.isArray(timezoneEnum) &&
-            JSON.stringify([...timezoneEnum].sort()) ===
-              JSON.stringify(['Central', 'Eastern', 'Mountain', 'Pacific'].sort()),
-          timezoneEnum,
-        );
-      }
-
-      // ── A call Vapi rejects must still return a clear error to the caller ──
-      // (whether that rejection is durably logged is checked structurally
-      // below, since this guard has no live DB to assert an actual insert
-      // against).
-      globalThis.fetch = (async (input: string | URL | Request) => {
-        const url = String(input);
-        if (url === 'https://api.vapi.ai/call') {
-          return new Response(
-            JSON.stringify({ message: ['assistant.property tools should not exist'], error: 'Bad Request', statusCode: 400 }),
-            { status: 400 },
-          );
-        }
-        throw new Error(`Unexpected fetch in guard: ${url}`);
-      }) as typeof fetch;
-
-      const rejected = await makeCall.execute(
-        {
-          customerNumber: '+18582264822',
-          customerName: 'Guard Prospect',
-          assistantPrompt: 'You are a test assistant.',
-          firstMessage: 'Hi, is this a test?',
-        },
-        ctx,
-      );
-      check(
-        'a Vapi-rejected call returns success: false with the status and body surfaced',
-        (rejected as any)?.success === false && /Vapi call failed \(400\)/.test((rejected as any)?.error ?? ''),
-        rejected,
-      );
-    } finally {
-      globalThis.fetch = realFetch;
-      if (savedApiKey === undefined) delete process.env.VAPI_API_KEY;
-      else process.env.VAPI_API_KEY = savedApiKey;
-      if (savedPhoneId === undefined) delete process.env.VAPI_PHONE_NUMBER_ID;
-      else process.env.VAPI_PHONE_NUMBER_ID = savedPhoneId;
-    }
+  const registrySource = fs.readFileSync(path.join(root, 'packages/core/src/tool-registry.ts'), 'utf8');
+  const mocStart = registrySource.indexOf("name: 'make_outbound_call'");
+  const mocEnd = registrySource.indexOf("name: 'get_call_status'");
+  check('found the make_outbound_call tool body to inspect', mocStart > -1 && mocEnd > mocStart);
+  const mocBody = mocStart > -1 && mocEnd > mocStart ? registrySource.slice(mocStart, mocEnd) : '';
+  if (mocBody) {
+    check('make_outbound_call dials through Telnyx Call Control', mocBody.includes("fetch('https://api.telnyx.com/v2/calls'"));
+    check('make_outbound_call does not create new Vapi calls', !mocBody.includes('api.vapi.ai/call'));
+    check('make_outbound_call requires the approved APEX caller ID helper', /const from = configuredTelnyxOutboundNumber\(\)/.test(mocBody));
+    check(
+      'make_outbound_call creates an AI-first call bridge session before dialing',
+      /db\.insert\(callBridgeSessions\)\.values\(\{[\s\S]*?sessionMode: 'ai_first'/.test(mocBody),
+    );
+    check('make_outbound_call stores the exact first message as assistantGreeting', /assistantGreeting: firstMessage/.test(mocBody));
+    check(
+      "make_outbound_call stores a server-prefixed prompt with today's date before the caller's script",
+      /assistantInstructions: `\$\{todayContext\}\\n\\n\$\{assistantPrompt\}`/.test(mocBody),
+    );
+    check('make_outbound_call sends the Telnyx bridge webhook URL', /webhook_url: callBridgeWebhookUrl\(\)/.test(mocBody));
+    check(
+      'make_outbound_call encodes the customer leg client_state for the bridge webhook',
+      /client_state: encodeCallBridgeClientState\(sessionId, 'customer'\)/.test(mocBody),
+    );
+    check(
+      'make_outbound_call returns the call bridge session id, not a provider id, as callId',
+      /callId: sessionId/.test(mocBody) && /providerCallControlId: data\.data\.call_control_id/.test(mocBody),
+    );
   }
 
   // ── Schema and idempotent-migration DDL stay in lockstep ─────────────────
@@ -289,7 +184,7 @@ async function main(): Promise<void> {
     /CREATE UNIQUE INDEX IF NOT EXISTS call_outcomes_call_id_unique\s*\n\s*ON call_outcomes \(call_id\)/.test(clientSource),
   );
   check(
-    "schema.ts documents the failed_to_dial disposition (added 2026-09-25 so a call Vapi rejects pre-flight is distinguishable from one that connected and reached no_decision)",
+    "schema.ts documents the failed_to_dial disposition (added 2026-09-25 so a call provider rejects pre-flight is distinguishable from one that connected and reached no_decision)",
     /failed_to_dial/.test(schemaSource),
   );
 
@@ -297,27 +192,22 @@ async function main(): Promise<void> {
   //
   // Structural rather than executed-against-a-live-DB: this guard has no
   // database, and the tool's own DB write is deliberately try/caught so a
-  // logging failure can never mask the real Vapi result -- which also means
+  // logging failure can never mask the real Telnyx result -- which also means
   // executing it here would prove nothing about whether the insert call is
   // even present. Pinning the source shape is the same technique already
   // used above for vapi.ts's webhook upserts.
-  const registrySource = fs.readFileSync(path.join(root, 'packages/core/src/tool-registry.ts'), 'utf8');
-  const mocStart = registrySource.indexOf("name: 'make_outbound_call'");
-  const mocEnd = registrySource.indexOf("name: 'get_call_status'");
-  check('found the make_outbound_call tool body to inspect', mocStart > -1 && mocEnd > mocStart);
-  if (mocStart > -1 && mocEnd > mocStart) {
-    const mocBody = registrySource.slice(mocStart, mocEnd);
+  if (mocBody) {
     check(
-      'a Vapi rejection (!res.ok) writes a call_outcomes row with disposition failed_to_dial',
-      /if \(!res\.ok\)[\s\S]*?disposition: 'failed_to_dial'/.test(mocBody),
+      'a Telnyx rejection (!res.ok or missing call_control_id) writes a call_outcomes row with disposition failed_to_dial',
+      /if \(!res\.ok \|\| !data\?\.data\?\.call_control_id\)[\s\S]*?disposition: 'failed_to_dial'/.test(mocBody),
     );
     check(
-      "the failed_to_dial row keys on a synthetic id, never a real Vapi call id (Vapi never issued one for a rejected request)",
+      "the failed_to_dial row keys on a synthetic id, never a provider call id (Telnyx may not have issued one for a rejected request)",
       /callId: `failed_\$\{randomUUID\(\)\}`/.test(mocBody),
     );
     check(
-      'a successfully accepted call writes a call_outcomes row immediately (visible before the webhook ever fires), keyed on the real Vapi call id',
-      /callId: data\.id/.test(mocBody) && /disposition: 'no_decision'/.test(mocBody),
+      'a successfully accepted Telnyx call writes a call_outcomes row immediately (visible before the webhook ever fires), keyed on the real Telnyx call control id',
+      /callId: `telnyx_\$\{data\.data\.call_control_id\}`/.test(mocBody) && /disposition: 'no_decision'/.test(mocBody),
     );
     check(
       'the success-path insert upserts rather than risking a duplicate-key throw if the webhook already raced ahead of it',
@@ -326,6 +216,12 @@ async function main(): Promise<void> {
     check(
       'both call_outcomes writes are wrapped so a logging failure can never mask or throw over the real tool result',
       (mocBody.match(/catch \(logErr\)/g) ?? []).length >= 2,
+    );
+    check(
+      'get_call_status checks callBridgeSessions before the historical Vapi fallback',
+      registrySource.indexOf('const [session] = await db.select().from(callBridgeSessions)') > mocEnd &&
+        registrySource.indexOf('const apiKey = process.env.VAPI_API_KEY;', mocEnd) >
+          registrySource.indexOf('const [session] = await db.select().from(callBridgeSessions)', mocEnd),
     );
   }
 
@@ -392,32 +288,38 @@ async function main(): Promise<void> {
       /gte\(callOutcomes\.appointmentAt, new Date\(\)\)/.test(salesOpsSource),
   );
 
-  // ── Blind audit calls use real fresh leads but dial only the operator ────────
+  // ── Self-pitch calls use Telnyx only and never reuse a lead persona ────────
   check(
     'sales-ops.ts registers POST /audit-call',
     /router\.post\('\/audit-call'/.test(salesOpsSource),
   );
   check(
-    'audit selection is random and limited to rows sourced in the preceding 24 hours',
-    /Date\.now\(\) - 24 \* 60 \* 60 \* 1000/.test(salesOpsSource) &&
-      /orderBy\(sql`random\(\)`\)/.test(salesOpsSource),
+    'self-pitch calls start an AI-first Telnyx bridge session',
+    /startAiFirstSession/.test(salesOpsSource) &&
+      /provider: 'telnyx'/.test(salesOpsSource),
   );
   check(
-    'audit calls dial only TELNYX_OWNER_NUMBER, never the researched lead phone',
+    'self-pitch calls dial only TELNYX_OWNER_NUMBER as both customer and operator',
     /normalizeE164\(process\.env\.TELNYX_OWNER_NUMBER\)/.test(salesOpsSource) &&
       /customerNumber: ownerNumber/.test(salesOpsSource) &&
+      /operatorNumber: ownerNumber/.test(salesOpsSource) &&
       !/audit-call[\s\S]{0,9000}customerNumber:\s*lead\.contactPhone/.test(salesOpsSource),
   );
   check(
-    'audit response remains blind while returning an opaque lead id for no-repeat tracking',
-    /Keep the audit blind/.test(salesOpsSource) &&
-      /auditLeadId: lead\.id/.test(salesOpsSource),
+    'self-pitch calls do not invoke make_outbound_call or the legacy Vapi path',
+    !/audit-call[\s\S]{0,6000}getToolRegistry/.test(salesOpsSource) &&
+      !/audit-call[\s\S]{0,6000}make_outbound_call/.test(salesOpsSource),
   );
   check(
-    'blind audit prompt sells a 15-minute appointment and requires structured outcome capture',
-    /15-minute walkthrough\/demo/.test(salesOpsSource) &&
-      /record_meeting_outcome/.test(salesOpsSource) &&
-      /primary objective is NOT to close a subscription/.test(salesOpsSource),
+    'self-pitch instructions name Matthew and forbid the Sam/prospect inversion',
+    /Matthew Reardon/.test(salesOpsSource) &&
+      /Do not call him Sam/.test(salesOpsSource) &&
+      /Do not pretend he called you first/.test(salesOpsSource) &&
+      /requested internal test pitch/.test(salesOpsSource),
+  );
+  check(
+    'self-pitch greeting says Matthew asked for a test pitch',
+    /Hi Matthew, this is Alex from BuildMyBot and APEX\. You asked me to test pitch you/.test(salesOpsSource),
   );
 
   console.log(

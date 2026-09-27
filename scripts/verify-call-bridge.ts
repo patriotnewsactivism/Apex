@@ -151,10 +151,14 @@ async function main(): Promise<void> {
 
   // ── Schema + bootstrap DDL agree on the call_bridge_sessions table ──────────
   check('schema.ts declares callBridgeSessions', /export const callBridgeSessions = pgTable\('call_bridge_sessions'/.test(schema));
+  check('schema.ts stores per-session assistant greetings', /assistantGreeting: text\('assistant_greeting'\)/.test(schema));
+  check('schema.ts stores per-session assistant instructions', /assistantInstructions: text\('assistant_instructions'\)/.test(schema));
   check(
     'client.ts bootstrap DDL creates call_bridge_sessions (fresh databases must not 42P01 on first boot)',
     /CREATE TABLE IF NOT EXISTS call_bridge_sessions/.test(client),
   );
+  check('client.ts bootstrap DDL adds assistant_greeting for upgraded databases', /ADD COLUMN IF NOT EXISTS assistant_greeting text/.test(client));
+  check('client.ts bootstrap DDL adds assistant_instructions for upgraded databases', /ADD COLUMN IF NOT EXISTS assistant_instructions text/.test(client));
 
   // ── Frontend + env docs ─────────────────────────────────────────────────────
   const apiClient = read('packages/dashboard/src/lib/api.ts');
@@ -168,12 +172,24 @@ async function main(): Promise<void> {
     '.env.example documents the new connection id and webhook secret',
     /TELNYX_CALL_BRIDGE_CONNECTION_ID=/.test(env) && /TELNYX_CALL_BRIDGE_WEBHOOK_SECRET=/.test(env),
   );
+  check(
+    '.env.example documents the approved APEX outbound caller ID',
+    /APEX_FRONT_DESK_NUMBER=\+18329757665/.test(env),
+  );
+
+  // ── Approved caller ID guard ───────────────────────────────────────────────
+  check('call-bridge exports the approved APEX outbound number', /APPROVED_APEX_OUTBOUND_NUMBER = '\+18329757665'/.test(route));
+  check('dialBridgeLeg uses configuredApexOutboundNumber for the from number', /const from = configuredApexOutboundNumber\(\)/.test(route));
+  check(
+    'dialBridgeLeg config error names the exact required APEX_FRONT_DESK_NUMBER',
+    /APEX_FRONT_DESK_NUMBER=\$\{APPROVED_APEX_OUTBOUND_NUMBER\}/.test(route),
+  );
 
   // ── Pure helpers: run them, don't just read them ────────────────────────────
   const mod = (await import(
     pathToFileURL(path.join(root, 'packages/api-server/src/routes/call-bridge.ts')).href
   )) as typeof import('../packages/api-server/src/routes/call-bridge.js');
-  const { encodeClientState, decodeClientState, verifyCallBridgeKey, dialBridgeLeg } = mod;
+  const { encodeClientState, decodeClientState, verifyCallBridgeKey, dialBridgeLeg, configuredApexOutboundNumber } = mod;
 
   const state = { sessionId: 'sess-123', role: 'operator' as const };
   const encoded = encodeClientState(state);
@@ -196,6 +212,19 @@ async function main(): Promise<void> {
   } finally {
     if (savedSecret === undefined) delete process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET;
     else process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET = savedSecret;
+  }
+
+  const savedApprovedFrom = process.env.APEX_FRONT_DESK_NUMBER;
+  try {
+    process.env.APEX_FRONT_DESK_NUMBER = '+1 (832) 975-7665';
+    check('configuredApexOutboundNumber accepts only the approved caller ID, normalized', configuredApexOutboundNumber() === '+18329757665');
+    process.env.APEX_FRONT_DESK_NUMBER = '+11234567890';
+    check('configuredApexOutboundNumber rejects the old placeholder/1234-style caller ID', configuredApexOutboundNumber() === null);
+    delete process.env.APEX_FRONT_DESK_NUMBER;
+    check('configuredApexOutboundNumber fails closed when no caller ID is configured', configuredApexOutboundNumber() === null);
+  } finally {
+    if (savedApprovedFrom === undefined) delete process.env.APEX_FRONT_DESK_NUMBER;
+    else process.env.APEX_FRONT_DESK_NUMBER = savedApprovedFrom;
   }
 
   // dialBridgeLeg must fail closed on missing config WITHOUT making a network
