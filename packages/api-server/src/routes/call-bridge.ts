@@ -43,6 +43,7 @@ import { normalizeE164 } from './sales-ops.js';
 export type BridgeLegRole = 'operator' | 'customer' | 'ai' | 'monitor' | 'whisper' | 'barge';
 
 const BRIDGE_ROLES = new Set<BridgeLegRole>(['operator', 'customer', 'ai', 'monitor', 'whisper', 'barge']);
+export const APPROVED_APEX_OUTBOUND_NUMBER = '+18329757665';
 
 interface ClientState {
   sessionId: string;
@@ -111,6 +112,11 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
+export function configuredApexOutboundNumber(): string | null {
+  const normalized = normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
+  return normalized === APPROVED_APEX_OUTBOUND_NUMBER ? normalized : null;
+}
+
 function callBridgeWebhookUrl(): string {
   const publicUrl = process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live';
   const secret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET ?? '';
@@ -130,9 +136,9 @@ export async function dialBridgeLeg(params: {
 }): Promise<{ callControlId: string } | { error: string }> {
   const apiKey = process.env.TELNYX_API_KEY;
   const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
-  const from = process.env.APEX_FRONT_DESK_NUMBER;
+  const from = configuredApexOutboundNumber();
   if (!apiKey || !connectionId || !from) {
-    return { error: 'TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, or APEX_FRONT_DESK_NUMBER is not configured.' };
+    return { error: `TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER} are required for outbound Telnyx calls.` };
   }
   try {
     const res = await fetch('https://api.telnyx.com/v2/calls', {
@@ -217,6 +223,9 @@ export async function startAiFirstSession(input: {
   buyerName?: string;
   playbookId?: string;
   leadId?: string;
+  assistantGreeting?: string;
+  assistantInstructions?: string;
+  createdByAgentId?: string;
 }): Promise<{ id: string } | { error: string }> {
   const id = crypto.randomUUID();
   await db.insert(callBridgeSessions).values({
@@ -229,7 +238,9 @@ export async function startAiFirstSession(input: {
     buyerName: input.buyerName ?? null,
     playbookId: input.playbookId ?? null,
     leadId: input.leadId ?? null,
-    createdByAgentId: 'operator',
+    assistantGreeting: input.assistantGreeting ?? null,
+    assistantInstructions: input.assistantInstructions ?? null,
+    createdByAgentId: input.createdByAgentId ?? 'operator',
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -254,30 +265,34 @@ export async function startAiFirstSession(input: {
 async function attachSalesAi(sessionId: string): Promise<void> {
   const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
   if (!session?.customerCallControlId) return;
-  const { getSalesPlaybook, renderPlaybookTemplate, rehearsalPersonaFields, loadOutboundPolicy } = await import('@workspace/core');
-  const { researchedLeads } = await import('@workspace/db');
-  const policy = await loadOutboundPolicy();
-  let fields = rehearsalPersonaFields({
-    buyerName: session.buyerName || policy?.personaName || 'there',
-    companyName: policy?.personaCompany || 'the company',
-    industry: policy?.personaIndustry || 'local service',
-    city: policy?.personaCity || 'your area',
-  });
-  if (session.leadId) {
-    const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, session.leadId)).limit(1);
-    if (lead) {
-      fields = {
-        buyerName: lead.decisionMakerName?.trim() || lead.companyName,
-        companyName: lead.companyName,
-        industry: lead.industry || 'local service',
-        city: lead.city || 'your area',
-        outreachAngle: lead.outreachAngle,
-      };
+  let greeting = session.assistantGreeting?.trim() || '';
+  let instructions = session.assistantInstructions?.trim() || '';
+  if (!greeting || !instructions) {
+    const { getSalesPlaybook, renderPlaybookTemplate, rehearsalPersonaFields, loadOutboundPolicy } = await import('@workspace/core');
+    const { researchedLeads } = await import('@workspace/db');
+    const policy = await loadOutboundPolicy();
+    let fields = rehearsalPersonaFields({
+      buyerName: session.buyerName || policy?.personaName || 'there',
+      companyName: policy?.personaCompany || 'the company',
+      industry: policy?.personaIndustry || 'local service',
+      city: policy?.personaCity || 'your area',
+    });
+    if (session.leadId) {
+      const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, session.leadId)).limit(1);
+      if (lead) {
+        fields = {
+          buyerName: lead.decisionMakerName?.trim() || lead.companyName,
+          companyName: lead.companyName,
+          industry: lead.industry || 'local service',
+          city: lead.city || 'your area',
+          outreachAngle: lead.outreachAngle,
+        };
+      }
     }
+    const playbook = session.playbookId ? getSalesPlaybook(session.playbookId) : getSalesPlaybook('buildmybot-intro');
+    greeting = playbook ? renderPlaybookTemplate(playbook.call.firstMessage, fields).text : 'Hi, this is Alex with BuildMyBot. Do you have a minute?';
+    instructions = playbook ? renderPlaybookTemplate(playbook.call.assistantPrompt, fields).text : greeting;
   }
-  const playbook = session.playbookId ? getSalesPlaybook(session.playbookId) : getSalesPlaybook('buildmybot-intro');
-  const greeting = playbook ? renderPlaybookTemplate(playbook.call.firstMessage, fields).text : 'Hi, this is Alex with BuildMyBot. Do you have a minute?';
-  const instructions = playbook ? renderPlaybookTemplate(playbook.call.assistantPrompt, fields).text : greeting;
   const assistantId = process.env.TELNYX_AI_ASSISTANT_ID;
   if (assistantId) {
     const error = await telnyxCommand(session.customerCallControlId, 'ai_assistant_start', {

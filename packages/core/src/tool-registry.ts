@@ -19,13 +19,36 @@ import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-clie
 import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProfile, listSpecialistDepartments, listSpecialists } from './specialists/index.js';
 import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
-import { db, messages, callOutcomes } from '@workspace/db';
+import { db, messages, callOutcomes, callBridgeSessions } from '@workspace/db';
 import { eq, isNull } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
 
 const execAsync = promisify(exec);
+const APPROVED_APEX_OUTBOUND_NUMBER = '+18329757665';
+
+function normalizeE164ForOutbound(raw: unknown): string | null {
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  const normalized = trimmed.replace(/[\s()-]/g, '');
+  if (!/^\+?[0-9]{7,15}$/.test(normalized)) return null;
+  return normalized.startsWith('+') ? normalized : `+${normalized}`;
+}
+
+function configuredTelnyxOutboundNumber(): string | null {
+  const normalized = normalizeE164ForOutbound(process.env.APEX_FRONT_DESK_NUMBER);
+  return normalized === APPROVED_APEX_OUTBOUND_NUMBER ? normalized : null;
+}
+
+function callBridgeWebhookUrl(): string {
+  const publicUrl = process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live';
+  const secret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET ?? '';
+  return `${publicUrl}/api/telnyx-assistant/call-bridge-webhook?key=${encodeURIComponent(secret)}`;
+}
+
+function encodeCallBridgeClientState(sessionId: string, role: 'customer'): string {
+  return Buffer.from(JSON.stringify({ sessionId, role }), 'utf8').toString('base64');
+}
 
 // Runtime-only dependencies owned by the API process. The tool registry lives
 // in @workspace/core and cannot import api-server without creating a cycle, so
@@ -2916,10 +2939,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
-    // ─── Vapi: Make outbound AI phone call ────────────────────────────────
+    // ─── Telnyx: Make outbound AI phone call ──────────────────────────────
     {
       name: 'make_outbound_call',
-      description: 'Make an outbound AI phone call to a prospect/customer. The AI voice agent will use the provided script as its system prompt and conduct the conversation. Returns a call ID. Costs ~$0.05-0.30/min (Vapi platform + provider pass-through). Requires VAPI_API_KEY and VAPI_PHONE_NUMBER_ID to be configured.',
+      description: 'Make an outbound AI phone call to a prospect/customer through the Telnyx call bridge. The AI voice agent will use the provided script as its system prompt and conduct the conversation. Returns a call bridge session ID. Requires TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, TELNYX_CALL_BRIDGE_WEBHOOK_SECRET, and APEX_FRONT_DESK_NUMBER=+18329757665.',
       schema: z.object({
         customerNumber: z.string().describe('Destination phone number in E.164 format (e.g. "+18328804970")'),
         customerName: z.string().optional().describe('Name of the person being called (for personalization)'),
@@ -2945,169 +2968,54 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           // Budget module may not be available in all runtimes; fail open
           console.warn('[budget] check skipped:', e);
         }
-        const apiKey = process.env.VAPI_API_KEY;
-        const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
-
-        if (!apiKey || !phoneNumberId) {
+        const apiKey = process.env.TELNYX_API_KEY;
+        const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
+        const from = configuredTelnyxOutboundNumber();
+        const webhookSecret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET;
+        const normalizedCustomerNumber = normalizeE164ForOutbound(customerNumber);
+        if (!normalizedCustomerNumber) {
+          return { success: false, error: 'Destination phone number must be E.164-compatible.' };
+        }
+        if (!apiKey || !connectionId || !from || !webhookSecret) {
           return {
             success: false,
-            error: 'Vapi is not configured. Set VAPI_API_KEY and VAPI_PHONE_NUMBER_ID env vars. Sign up at https://dashboard.vapi.ai to get started.',
+            error: `Telnyx outbound is not configured. Set TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, TELNYX_CALL_BRIDGE_WEBHOOK_SECRET, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER}.`,
           };
         }
 
-        // Build the webhook URL for receiving call results (end-of-call-report)
-        const webhookUrl = process.env.VAPI_WEBHOOK_URL ?? `${process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live'}/api/vapi/webhook`;
-        const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
-
-        // Create a transient (inline) assistant — no need to pre-create one via POST /assistant.
-        // The assistant config includes the cold call script as the system prompt,
-        // a natural voice (ElevenLabs), Deepgram for STT, and a send_checkout_link
-        // function the AI can call during the call to create a Stripe checkout
-        // session for the prospect. The Vapi webhook handler at the server URL
-        // receives the function call, creates the Stripe session, and returns
-        // the checkout URL — the AI then tells the prospect "I've sent you a link."
-        // The AI resolves relative dates ("next Tuesday") against whatever it
-        // believes today is, and it has no other source for that than this
-        // prompt. Prepended server-side -- not left to whoever wrote
-        // assistantPrompt to remember -- so every caller (agent, Sales Ops
-        // console, or a manually pasted script) gets correct date resolution
-        // for record_meeting_outcome, not just the ones that thought to
-        // include it.
         const todayContext = `Today's date is ${new Date().toISOString().slice(0, 10)} (${DAY_NAMES[new Date().getUTCDay()]}). Use this to resolve any relative date the prospect gives you (e.g. "next Tuesday", "tomorrow") into an exact calendar date.`;
+        const sessionId = randomUUID();
+
+        await db.insert(callBridgeSessions).values({
+          id: sessionId,
+          status: 'dialing_customer',
+          operatorNumber: normalizeE164ForOutbound(process.env.TELNYX_OWNER_NUMBER) ?? from,
+          customerNumber: normalizedCustomerNumber,
+          conferenceName: sessionId,
+          sessionMode: 'ai_first',
+          buyerName: customerName ?? null,
+          assistantGreeting: firstMessage,
+          assistantInstructions: `${todayContext}\n\n${assistantPrompt}`,
+          createdByAgentId: ctx.agentId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
 
         const callBody = {
-          assistant: {
-            name: 'APEX Outbound SDR',
-            firstMessage,
-            // Native speech-to-speech removes the serial
-            // STT -> LLM -> TTS pipeline that made outbound calls feel like
-            // a walkie-talkie. Vapi supports function tools unchanged on
-            // OpenAI Realtime, so checkout + meeting capture still work.
-            model: {
-              provider: 'openai',
-              model: 'gpt-realtime-2',
-              messages: [
-                {
-                  role: 'system',
-                  content: `${todayContext}\n\n${assistantPrompt}`,
-                },
-              ],
-              temperature: 0.7,
-              maxTokens: 250,
-              // Vapi's Create Call schema rejects a `tools` property directly on
-              // `assistant` ("assistant.property tools should not exist") --
-              // tools belong to the LLM config, nested under assistant.model.
-              // This lived one level too shallow and made EVERY outbound call
-              // fail before it ever dialed.
-              tools: [
-                {
-                  type: 'function',
-                  function: {
-                    name: 'send_checkout_link',
-                    description: 'Send a Stripe checkout link to the prospect so they can sign up for BuildMyBot.app right now. Call this when the prospect agrees to sign up. Ask for their email first if you don\'t have it.',
-                    parameters: {
-                      type: 'object',
-                      properties: {
-                        plan: {
-                          type: 'string',
-                          enum: ['starter', 'professional', 'executive', 'enterprise'],
-                          description: 'Which plan the prospect wants. Starter=$29/mo, Professional=$99/mo, Executive=$199/mo, Enterprise=$499/mo',
-                        },
-                        email: {
-                          type: 'string',
-                          description: "The prospect's email address to send the checkout link to",
-                        },
-                      },
-                      required: ['plan', 'email'],
-                    },
-                  },
-                },
-                {
-                  type: 'function',
-                  function: {
-                    name: 'record_meeting_outcome',
-                    description: "Call this exactly once, as soon as the outcome of the call is known -- right after the prospect commits to a meeting, declines, or asks for a callback, or in the last moment before you hang up either way. This is the ONLY way the outcome is saved: a meeting only counts as booked if you call this with disposition 'appointment_booked'. Do not just say it out loud and skip calling this.",
-                    parameters: {
-                      type: 'object',
-                      properties: {
-                        disposition: {
-                          type: 'string',
-                          enum: ['appointment_booked', 'callback_requested', 'not_interested', 'no_decision'],
-                          description: 'appointment_booked = a specific day AND time was agreed. callback_requested = they want to be contacted again but gave no specific time. not_interested = they declined. no_decision = the call ended without a clear outcome either way.',
-                        },
-                        appointmentDate: {
-                          type: 'string',
-                          description: "Required when disposition is appointment_booked, omit otherwise. The meeting date in strict YYYY-MM-DD format -- resolve any relative date (\"next Tuesday\") against today's date, given above, into the real calendar date.",
-                        },
-                        appointmentTime: {
-                          type: 'string',
-                          description: "Required when disposition is appointment_booked, omit otherwise. The meeting time in strict 24-hour HH:MM format (e.g. '14:00' for 2 PM).",
-                        },
-                        appointmentTimezone: {
-                          type: 'string',
-                          enum: ['Eastern', 'Central', 'Mountain', 'Pacific'],
-                          description: 'Required when disposition is appointment_booked, omit otherwise. The US timezone the prospect meant. If they did not say, use your best judgment from area code or context.',
-                        },
-                        contactEmail: {
-                          type: 'string',
-                          description: "The prospect's email address, if you collected one for a meeting invitation or follow-up. Omit if none was given.",
-                        },
-                        objection: {
-                          type: 'string',
-                          description: 'The main reason given, in their own words, if they declined or hesitated rather than booking. Omit if none was given.',
-                        },
-                        nextAction: {
-                          type: 'string',
-                          description: 'One sentence on what should happen next (e.g. "Call back Thursday afternoon", "Send the one-pager to this email").',
-                        },
-                      },
-                      required: ['disposition'],
-                    },
-                  },
-                },
-              ],
-            },
-            // Realtime models consume and emit audio natively. A separate
-            // transcriber and TTS provider would reintroduce the exact serial
-            // latency we are removing, so there is intentionally no
-            // `transcriber` block on outbound calls.
-            voice: {
-              provider: 'openai',
-              voiceId: process.env.VAPI_REALTIME_VOICE_ID || 'cedar',
-            },
-            server: {
-              url: webhookUrl,
-              ...(webhookSecret ? { headers: { 'x-webhook-secret': webhookSecret } } : {}),
-            },
-            silenceTimeoutSeconds: 30,
-            // Explicit low-latency turn taking. The old responseDelaySeconds
-            // setting only added delay and did not solve endpointing. LiveKit
-            // smart endpointing decides when the caller is actually finished;
-            // the 100 ms wait keeps the agent responsive without making every
-            // breath sound like the end of a turn.
-            startSpeakingPlan: {
-              waitSeconds: 0.1,
-              smartEndpointingPlan: {
-                provider: 'livekit',
-                waitFunction: '800 / (1 + exp(-10 * (x - 0.5)))',
-              },
-            },
-            // VAD-based barge-in: stop speaking after ~150 ms of real caller
-            // speech instead of waiting for a transcript.
-            stopSpeakingPlan: {
-              numWords: 0,
-              voiceSeconds: 0.15,
-              backoffSeconds: 0.5,
-            },
-          },
-          phoneNumberId,
-          customer: {
-            number: customerNumber,
-            name: customerName,
+          connection_id: connectionId,
+          from,
+          to: normalizedCustomerNumber,
+          webhook_url: callBridgeWebhookUrl(),
+          client_state: encodeCallBridgeClientState(sessionId, 'customer'),
+          timeout_secs: 30,
+          conference_config: {
+            conference_name: sessionId,
+            early_media: false,
+            end_conference_on_exit: true,
           },
         };
 
-        const res = await fetch('https://api.vapi.ai/call', {
+        const res = await fetch('https://api.telnyx.com/v2/calls', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -3116,21 +3024,20 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           body: JSON.stringify(callBody),
         });
 
-        if (!res.ok) {
-          const errText = await res.text().catch(() => '');
-          const errorMsg = `Vapi call failed (${res.status}): ${errText.slice(0, 500)}`;
-          // A call Vapi rejects outright never rings, so no webhook will ever
-          // arrive to create a call_outcomes row for it. Without this insert
-          // the attempt existed nowhere durable -- only in agent tool-call
-          // reasoning that isn't guaranteed to survive log rate-limiting --
-          // so the dashboard's Calls tab had zero record that APEX even
-          // tried. Written synchronously, right here, so it appears
-          // immediately regardless of whether Vapi ever hears from us again.
+        const data = (await res.json().catch(() => null)) as
+          | { data?: { call_control_id?: string }; errors?: Array<{ detail?: string }> }
+          | null;
+        if (!res.ok || !data?.data?.call_control_id) {
+          const errorMsg = data?.errors?.[0]?.detail ?? `Telnyx call failed (${res.status})`;
+          await db
+            .update(callBridgeSessions)
+            .set({ status: 'failed', lastError: errorMsg, updatedAt: new Date() })
+            .where(eq(callBridgeSessions.id, sessionId));
           try {
             await db.insert(callOutcomes).values({
               id: randomUUID(),
               callId: `failed_${randomUUID()}`,
-              customerNumber,
+              customerNumber: normalizedCustomerNumber,
               customerName: customerName ?? null,
               disposition: 'failed_to_dial',
               endedReason: errorMsg.slice(0, 500),
@@ -3144,24 +3051,17 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           return { success: false, error: errorMsg };
         }
 
-        const data = await res.json() as { id: string; status: string; startedAt?: string };
-
-        // Mirror row, written the instant Vapi accepts the call rather than
-        // waiting on its webhook -- so a call that's ringing right now is
-        // already visible in the dashboard, not just ones that have already
-        // ended. The end-of-call-report / record_meeting_outcome webhook
-        // (packages/api-server/src/routes/vapi.ts) owns this same callId and
-        // will fill in the real disposition/transcript/cost once the call
-        // actually happens; onConflictDoUpdate here only touches fields that
-        // are safe to refresh so a late-arriving webhook update is never
-        // clobbered by this racing back in after it.
+        await db
+          .update(callBridgeSessions)
+          .set({ customerCallControlId: data.data.call_control_id, updatedAt: new Date() })
+          .where(eq(callBridgeSessions.id, sessionId));
         try {
           await db
             .insert(callOutcomes)
             .values({
               id: randomUUID(),
-              callId: data.id,
-              customerNumber,
+              callId: `telnyx_${data.data.call_control_id}`,
+              customerNumber: normalizedCustomerNumber,
               customerName: customerName ?? null,
               disposition: 'no_decision',
               createdByAgentId: ctx.agentId,
@@ -3178,26 +3078,44 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
         return {
           success: true,
-          callId: data.id,
-          status: data.status,
-          startedAt: data.startedAt,
-          message: `Outbound call initiated to ${customerNumber}${customerName ? ` (${customerName})` : ''}. Call ID: ${data.id}. The AI agent will use your script and conduct the conversation. Results will be logged via webhook.`,
+          callId: sessionId,
+          providerCallControlId: data.data.call_control_id,
+          provider: 'telnyx',
+          status: 'dialing_customer',
+          message: `Outbound Telnyx call initiated to ${normalizedCustomerNumber}${customerName ? ` (${customerName})` : ''}. Session ID: ${sessionId}.`,
         };
       },
     },
 
-    // ─── Vapi: Get call status + transcript ───────────────────────────────
+    // ─── Get outbound call status + transcript ────────────────────────────
     {
       name: 'get_call_status',
-      description: 'Check the status of an outbound call — includes current status (ringing/in-progress/ended), transcript, AI analysis summary, success evaluation, recording URLs, and cost breakdown. Poll this after making a call to get results.',
+      description: 'Check the status of an outbound call. New calls are Telnyx call-bridge sessions; historical Vapi call IDs are read as a compatibility fallback.',
       schema: z.object({
-        callId: z.string().describe('The Vapi call ID returned from make_outbound_call'),
+        callId: z.string().describe('The call bridge session ID returned from make_outbound_call'),
       }),
       requiresApproval: false, // Read-only — just checks status, no side effects.
       async execute({ callId }) {
+        const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, callId)).limit(1);
+        if (session) {
+          return {
+            success: true,
+            provider: 'telnyx',
+            callId: session.id,
+            providerCallControlId: session.customerCallControlId,
+            status: session.status,
+            customerNumber: session.customerNumber,
+            customerName: session.buyerName,
+            transcript: session.transcriptTail ?? null,
+            error: session.lastError ?? null,
+            startedAt: session.createdAt,
+            updatedAt: session.updatedAt,
+          };
+        }
+
         const apiKey = process.env.VAPI_API_KEY;
         if (!apiKey) {
-          return { success: false, error: 'VAPI_API_KEY not configured' };
+          return { success: false, error: 'Call bridge session not found. Historical Vapi lookup unavailable because VAPI_API_KEY is not configured.' };
         }
 
         const res = await fetch(`https://api.vapi.ai/call/${callId}`, {
