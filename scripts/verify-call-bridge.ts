@@ -184,6 +184,21 @@ async function main(): Promise<void> {
     'dialBridgeLeg config error names the exact required APEX_FRONT_DESK_NUMBER',
     /APEX_FRONT_DESK_NUMBER=\$\{APPROVED_APEX_OUTBOUND_NUMBER\}/.test(route),
   );
+  check(
+    'assistant copy replaces FIRST NAME and {{first_name}} before Telnyx receives it',
+    /function sanitizeAssistantCopy/.test(route) &&
+      /replace\(\/\\\{\\\{\\s\*first_\?name/.test(route) &&
+      /replace\(\/\\bFIRST\\s\+NAME\\b/.test(route),
+  );
+  check(
+    'Telnyx receives explicit session dynamic variables',
+    /dynamic_variables: dynamicVariables/.test(route) && /function assistantDynamicVariablesForSession/.test(route),
+  );
+  check(
+    'transcription setup begins before the AI-start request completes',
+    /const transcriptionPromise = telnyxCommand\(session\.customerCallControlId, 'transcription_start'/.test(route) &&
+      route.indexOf('const transcriptionPromise = telnyxCommand') < route.indexOf("const assistantId = process.env.TELNYX_AI_ASSISTANT_ID"),
+  );
 
   // ── Pure helpers: run them, don't just read them ────────────────────────────
   const mod = (await import(

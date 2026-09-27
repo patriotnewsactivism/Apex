@@ -138,6 +138,14 @@ async function main(): Promise<void> {
     '.env.example documents the new secret and the front-desk number',
     /TELNYX_ASSISTANT_WEBHOOK_SECRET=/.test(env) && /APEX_FRONT_DESK_NUMBER=/.test(env),
   );
+  check(
+    'dynamic variables are serialized as strings for Telnyx',
+    /\): Record<string, string>/.test(route) && /is_known_caller: String\(input\.knownCaller\)/.test(route),
+  );
+  check(
+    'the literal FIRST NAME placeholder is normalized to a safe fallback',
+    /if \(!trimmed \|\| \/\^first\\s\+name\$\/i\.test\(trimmed\)\) return 'there'/.test(route),
+  );
 
   // ── Pure helpers: run them, don't just read them ──────────────────────────
   const mod = (await import(
