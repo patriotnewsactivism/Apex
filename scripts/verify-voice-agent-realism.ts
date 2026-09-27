@@ -203,10 +203,11 @@ function main(): void {
   const telnyxAgentSource = fs.readFileSync(path.join(root, 'packages/api-server/src/telnyx-deepgram-agent.ts'), 'utf8');
   checkSpeakBlock('telnyx-deepgram-agent.ts', telnyxAgentSource);
 
-  // ── tool-registry.ts: Vapi phone calls ────────────────────────────────────
+  // ── Telnyx outbound calls and Vapi inbound assistant ─────────────────────
   const registrySource = fs.readFileSync(path.join(root, 'packages/core/src/tool-registry.ts'), 'utf8');
   const apiIndexSource = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
   const inboundReconcileSource = fs.readFileSync(path.join(root, 'packages/api-server/src/vapi-inbound-latency.ts'), 'utf8');
+  const callBridgeSource = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/call-bridge.ts'), 'utf8');
   const mocStart = registrySource.indexOf("name: 'make_outbound_call'");
   const mocEnd = registrySource.indexOf("name: 'get_call_status'");
   const ciaStart = registrySource.indexOf("name: 'configure_inbound_assistant'");
@@ -216,24 +217,27 @@ function main(): void {
     const mocBody = registrySource.slice(mocStart, mocEnd);
     const ciaBody = registrySource.slice(ciaStart, ciaEnd);
     check(
-      'make_outbound_call: OpenAI Realtime 2 is the default so telephone turns do not serialize STT -> LLM -> TTS',
-      /model:\s*'gpt-realtime-2'/.test(mocBody) &&
-        /voice:\s*\{[\s\S]*?provider:\s*'openai'/.test(mocBody),
+      'make_outbound_call: uses the approved Telnyx caller ID and call bridge transport',
+      /const from = configuredTelnyxOutboundNumber\(\)/.test(mocBody) &&
+        /fetch\('https:\/\/api\.telnyx\.com\/v2\/calls'/.test(mocBody) &&
+        /webhook_url: callBridgeWebhookUrl\(\)/.test(mocBody),
     );
     check(
-      'make_outbound_call: realtime voice is configurable and defaults to cedar',
-      /voiceId:\s*process\.env\.VAPI_REALTIME_VOICE_ID\s*\|\|\s*'cedar'/.test(mocBody),
+      'make_outbound_call: requires approval and checks number-level suppression',
+      /requiresApproval:\s*true/.test(mocBody) &&
+        /assertOutboundAllowed\(\{\s*channel:\s*'phone'/.test(mocBody),
     );
     check(
-      'make_outbound_call: there is no separate transcriber in the outbound assistant',
-      !/transcriber:\s*\{/.test(mocBody),
+      'make_outbound_call: persists the AI-first script, greeting, and owner destination',
+      /sessionMode:\s*'ai_first'/.test(mocBody) &&
+        /assistantGreeting:\s*firstMessage/.test(mocBody) &&
+        /assistantInstructions:/.test(mocBody) &&
+        /operatorNumber:\s*normalizeE164ForOutbound\(process\.env\.TELNYX_OWNER_NUMBER\)/.test(mocBody),
     );
     check(
-      'make_outbound_call: turn taking is explicitly tuned for low latency and VAD barge-in',
-      /startSpeakingPlan:\s*\{[\s\S]*?waitSeconds:\s*0\.1/.test(mocBody) &&
-        /provider:\s*'livekit'/.test(mocBody) &&
-        /stopSpeakingPlan:\s*\{[\s\S]*?numWords:\s*0/.test(mocBody) &&
-        /voiceSeconds:\s*0\.15/.test(mocBody),
+      'call bridge attaches the Telnyx AI assistant after the customer answers',
+      /state\.role === 'customer'[\s\S]{0,250}sessionMode[^\n]*'ai_first'[\s\S]{0,100}attachSalesAi\(session\.id\)/.test(callBridgeSource) &&
+        /telnyxCommand\(session\.customerCallControlId, 'ai_assistant_start'/.test(callBridgeSource),
     );
     check(
       'configure_inbound_assistant: uses GPT-5.6 Luna fast tier for lower model latency',

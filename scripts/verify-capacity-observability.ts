@@ -82,12 +82,12 @@ function main(): void {
   const probe = client.slice(probeStart, probeEnd + 3);
   check(
     'capacity probe applies emergency caps to restricted routes without vetoing unrestricted continuity',
-    /!provider\.unrestricted[\s\S]{0,220}!emergencyAllowed/.test(probe),
+    /!independentPlanRoute\(provider\)[\s\S]{0,220}!emergencyAllowed/.test(probe),
     probe,
   );
   check(
     'capacity probe applies token pacing to restricted routes without vetoing unrestricted continuity',
-    /!provider\.unrestricted[\s\S]{0,260}!totalTokenPacingAllowed/.test(probe),
+    /!independentPlanRoute\(provider\)[\s\S]{0,260}!totalTokenPacingAllowed/.test(probe),
     probe,
   );
   check(
