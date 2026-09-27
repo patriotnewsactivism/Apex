@@ -139,9 +139,23 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
+    id: 'cartesia-sales',
+    name: 'Cartesia Canonical Sales Agent',
+    description: 'The ONE outbound AI sales agent used by make_outbound_call, Sales Ops calls, self-pitch/rehearsal, and APEX calling campaigns. APEX resolves the exact agent name and exact approved caller ID +18329757665 and fails closed instead of choosing another agent or number.',
+    category: 'voice',
+    docsUrl: 'https://play.cartesia.ai/agents',
+    envVars: [
+      { key: 'CARTESIA_API_KEY', label: 'API Key', placeholder: 'sk_car_...', secret: true },
+      { key: 'CARTESIA_TOOL_SECRET', label: 'APEX Tool Bearer Secret', placeholder: 'long random secret', secret: true },
+      { key: 'CARTESIA_WEBHOOK_SECRET', label: 'Call Event Webhook Secret', placeholder: 'long random secret', secret: true },
+      { key: 'CARTESIA_SALES_MODEL_ID', label: 'Sales Agent Model', placeholder: 'gpt-5.4-mini' },
+      { key: 'CARTESIA_SALES_VOICE_ID', label: 'Sales Agent Voice ID', placeholder: 'Cartesia voice UUID' },
+    ],
+  },
+  {
     id: 'telnyx-call-bridge',
     name: 'Telnyx Call Bridge',
-    description: 'Outbound AI phone calls for the Sales agent (make_outbound_call, Sales Ops self-pitch, and campaign dials). APEX requires APEX_FRONT_DESK_NUMBER to be +18329757665.',
+    description: 'Legacy/operator conference bridge plus Telnyx carrier and SMS infrastructure. Canonical APEX sales/campaign AI calls now route through the dedicated Cartesia sales agent.',
     category: 'voice',
     docsUrl: 'https://portal.telnyx.com/',
     envVars: [
@@ -153,7 +167,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
-    id: 'vapi', name: 'Vapi', description: 'Legacy inbound AI phone compatibility and historical call-status fallback. New outbound calls route through Telnyx Call Bridge.', category: 'voice',
+    id: 'vapi', name: 'Vapi', description: 'Legacy inbound AI phone compatibility and historical call-status fallback. Canonical outbound sales calls route through Cartesia.', category: 'voice',
     docsUrl: 'https://dashboard.vapi.ai',
     envVars: [
       { key: 'VAPI_API_KEY', label: 'Private API Key', placeholder: 'Vapi private key', secret: true },
