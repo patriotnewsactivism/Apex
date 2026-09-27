@@ -18,7 +18,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.GITHUB_WORKSPACE ?? path.resolve(here, '..');
@@ -141,7 +141,7 @@ async function main(): Promise<void> {
 
   // ── Pure helpers: run them, don't just read them ──────────────────────────
   const mod = (await import(
-    path.join(root, 'packages/api-server/src/routes/telnyx-assistant.ts')
+    pathToFileURL(path.join(root, 'packages/api-server/src/routes/telnyx-assistant.ts')).href
   )) as typeof import('../packages/api-server/src/routes/telnyx-assistant.js');
   const { normalizePhone, extractCallerNumber } = mod;
 
@@ -159,6 +159,16 @@ async function main(): Promise<void> {
   check(
     'extractCallerNumber finds the number under the primary expected field name',
     extractCallerNumber({ telnyx_end_user_target: '+18328804970' }) === '+18328804970',
+  );
+  check(
+    "extractCallerNumber finds Telnyx's documented assistant.initialization nested target",
+    extractCallerNumber({
+      data: {
+        payload: {
+          telnyx_end_user_target: '+18329757665',
+        },
+      },
+    }) === '+18329757665',
   );
   check(
     'extractCallerNumber falls back through alternate field names in order',

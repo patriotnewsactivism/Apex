@@ -112,6 +112,37 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
+function firstNameFromDisplayName(name: string | null | undefined): string {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed || /^first\s+name$/i.test(trimmed)) return 'there';
+  return trimmed.split(/\s+/)[0] || 'there';
+}
+
+function sanitizeAssistantCopy(text: string, firstName: string): string {
+  return text
+    .replace(/\{\{\s*first_?name\s*\}\}/gi, firstName)
+    .replace(/\bFIRST\s+NAME\b/g, firstName)
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function assistantDynamicVariablesForSession(session: typeof callBridgeSessions.$inferSelect): Record<string, string> {
+  const fullName = session.buyerName?.trim() || 'there';
+  const firstName = firstNameFromDisplayName(fullName);
+  const selfTest = session.operatorNumber === session.customerNumber;
+  return {
+    first_name: firstName,
+    customer_name: firstName,
+    full_name: fullName,
+    caller_name: fullName,
+    company_name: selfTest ? 'BuildMyBot / APEX' : '',
+    call_context: selfTest
+      ? 'Owner-requested internal self-pitch test. Do not call the person FIRST NAME or Sam. Do not pretend they called you first.'
+      : 'Outbound BuildMyBot sales call.',
+    requested_first_message: sanitizeAssistantCopy(session.assistantGreeting ?? '', firstName),
+  };
+}
+
 export function configuredApexOutboundNumber(): string | null {
   const normalized = normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
   return normalized === APPROVED_APEX_OUTBOUND_NUMBER ? normalized : null;
@@ -293,11 +324,22 @@ async function attachSalesAi(sessionId: string): Promise<void> {
     greeting = playbook ? renderPlaybookTemplate(playbook.call.firstMessage, fields).text : 'Hi, this is Alex with BuildMyBot. Do you have a minute?';
     instructions = playbook ? renderPlaybookTemplate(playbook.call.assistantPrompt, fields).text : greeting;
   }
+  const firstName = firstNameFromDisplayName(session.buyerName);
+  greeting = sanitizeAssistantCopy(greeting, firstName);
+  instructions = sanitizeAssistantCopy(instructions, firstName);
+  const dynamicVariables = assistantDynamicVariablesForSession(session);
   const assistantId = process.env.TELNYX_AI_ASSISTANT_ID;
   if (assistantId) {
+    const startedAt = Date.now();
     const error = await telnyxCommand(session.customerCallControlId, 'ai_assistant_start', {
-      assistant: { id: assistantId, instructions },
+      assistant: { id: assistantId, instructions, dynamic_variables: dynamicVariables },
       greeting,
+    });
+    console.info('[Call Bridge] ai_assistant_start completed', {
+      sessionId: session.id,
+      elapsedMs: Date.now() - startedAt,
+      ok: !error,
+      error: error ?? undefined,
     });
     await db.update(callBridgeSessions).set({
       status: error ? 'active' : 'ai_joined',
@@ -314,11 +356,18 @@ async function attachSalesAi(sessionId: string): Promise<void> {
       }).where(eq(callBridgeSessions.id, session.id));
       return;
     }
+    const startedAt = Date.now();
     const result = await dialBridgeLeg({
       to: frontDeskNumber,
       role: 'ai',
       sessionId: session.id,
       endConferenceOnExit: false,
+    });
+    console.info('[Call Bridge] front-desk AI leg dial completed', {
+      sessionId: session.id,
+      elapsedMs: Date.now() - startedAt,
+      ok: !('error' in result),
+      error: 'error' in result ? result.error : undefined,
     });
     await db.update(callBridgeSessions).set({
       status: 'error' in result ? 'active' : 'ai_dialing',
@@ -327,7 +376,14 @@ async function attachSalesAi(sessionId: string): Promise<void> {
       updatedAt: new Date(),
     }).where(eq(callBridgeSessions.id, session.id));
   }
-  await telnyxCommand(session.customerCallControlId, 'transcription_start', { language: 'en' });
+  const transcriptionStartedAt = Date.now();
+  const transcriptionError = await telnyxCommand(session.customerCallControlId, 'transcription_start', { language: 'en' });
+  console.info('[Call Bridge] transcription_start completed', {
+    sessionId: session.id,
+    elapsedMs: Date.now() - transcriptionStartedAt,
+    ok: !transcriptionError,
+    error: transcriptionError ?? undefined,
+  });
 }
 
 async function maybeSendRehearsalFollowUp(sessionId: string): Promise<void> {

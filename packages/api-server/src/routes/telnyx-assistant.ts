@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { db, researchedLeads, logs, smsMessages } from '@workspace/db';
+import { db, researchedLeads, logs, smsMessages, callBridgeSessions } from '@workspace/db';
 import { eq, or, desc } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
 
@@ -87,18 +87,68 @@ export function normalizePhone(raw: unknown): string {
  *  could plausibly arrive under (see NOTE ON PAYLOAD SHAPES above). Exported
  *  for direct guard testing. */
 export function extractCallerNumber(body: Record<string, unknown>): string {
+  const data = body.data as Record<string, unknown> | undefined;
+  const dataPayload = data?.payload as Record<string, unknown> | undefined;
+  const payload = body.payload as Record<string, unknown> | undefined;
+  const call = body.call as Record<string, unknown> | undefined;
   const candidates = [
+    dataPayload?.telnyx_end_user_target,
+    dataPayload?.end_user_target,
+    dataPayload?.from,
+    dataPayload?.caller_number,
+    payload?.telnyx_end_user_target,
+    payload?.end_user_target,
     body.telnyx_end_user_target,
     body.end_user_target,
     body.from,
     body.caller_number,
-    (body.call as Record<string, unknown> | undefined)?.from,
-    (body.payload as Record<string, unknown> | undefined)?.from,
+    call?.from,
+    payload?.from,
   ];
   for (const c of candidates) {
     if (typeof c === 'string' && c.trim()) return c.trim();
   }
   return '';
+}
+
+function extractCallControlId(body: Record<string, unknown>): string {
+  const data = body.data as Record<string, unknown> | undefined;
+  const dataPayload = data?.payload as Record<string, unknown> | undefined;
+  const payload = body.payload as Record<string, unknown> | undefined;
+  const candidates = [
+    dataPayload?.call_control_id,
+    payload?.call_control_id,
+    body.call_control_id,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+  return '';
+}
+
+function firstNameFrom(fullName: string): string {
+  return fullName.trim().split(/\s+/)[0] || fullName.trim();
+}
+
+function dynamicVariablesForPerson(input: {
+  fullName: string;
+  callerNumber: string;
+  company?: string | null;
+  context?: string | null;
+  knownCaller: boolean;
+}): Record<string, string | boolean> {
+  const fullName = input.fullName.trim();
+  const firstName = firstNameFrom(fullName);
+  return {
+    caller_number: input.callerNumber || 'unknown',
+    is_known_caller: input.knownCaller,
+    first_name: firstName,
+    customer_name: firstName,
+    full_name: fullName,
+    caller_name: fullName,
+    caller_company: input.company ?? '',
+    caller_context: input.context ?? '',
+  };
 }
 
 /** Telnyx wraps a function-call's arguments per the OpenAI-aligned assistant
@@ -132,19 +182,84 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const callerNumber = extractCallerNumber(body);
+      const callControlId = extractCallControlId(body);
+      const ownerNumber = process.env.TELNYX_OWNER_NUMBER ?? '';
+      if (callerNumber && ownerNumber && normalizePhone(callerNumber) === normalizePhone(ownerNumber)) {
+        console.log('[Telnyx Assistant] dynamic-variables request', {
+          callerNumber,
+          callControlId: callControlId || null,
+          knownCaller: true,
+          ownerSelfTest: true,
+        });
+        return res.json({
+          dynamic_variables: dynamicVariablesForPerson({
+            fullName: 'Matthew Reardon',
+            callerNumber,
+            company: 'BuildMyBot / APEX',
+            context: 'Owner-requested internal self-pitch test. Do not call him FIRST NAME or Sam.',
+            knownCaller: true,
+          }),
+        });
+      }
+
+      if (callControlId) {
+        const [bridgeSession] = await db
+          .select()
+          .from(callBridgeSessions)
+          .where(or(eq(callBridgeSessions.customerCallControlId, callControlId), eq(callBridgeSessions.aiCallControlId, callControlId)))
+          .limit(1);
+        if (bridgeSession?.buyerName) {
+          console.log('[Telnyx Assistant] dynamic-variables request', {
+            callerNumber: callerNumber || '(none found in payload)',
+            callControlId,
+            knownCaller: true,
+            callBridgeSession: bridgeSession.id,
+          });
+          return res.json({
+            dynamic_variables: dynamicVariablesForPerson({
+              fullName: bridgeSession.buyerName,
+              callerNumber: callerNumber || bridgeSession.customerNumber,
+              company: bridgeSession.operatorNumber === bridgeSession.customerNumber ? 'BuildMyBot / APEX' : '',
+              context: bridgeSession.operatorNumber === bridgeSession.customerNumber
+                ? 'Owner-requested internal self-pitch test. Do not call him FIRST NAME or Sam.'
+                : '',
+              knownCaller: true,
+            }),
+          });
+        }
+      }
+
       const lead = await findKnownCaller(callerNumber);
 
       console.log('[Telnyx Assistant] dynamic-variables request', {
         callerNumber: callerNumber || '(none found in payload)',
+        callControlId: callControlId || null,
         knownCaller: Boolean(lead),
       });
+
+      if (lead) {
+        const name = lead.decisionMakerName?.trim() || lead.companyName || 'there';
+        return res.json({
+          dynamic_variables: dynamicVariablesForPerson({
+            fullName: name,
+            callerNumber,
+            company: lead.companyName,
+            context: lead.outreachAngle,
+            knownCaller: true,
+          }),
+        });
+      }
 
       return res.json({
         dynamic_variables: {
           caller_number: callerNumber || 'unknown',
-          is_known_caller: Boolean(lead),
-          caller_company: lead?.companyName ?? '',
-          caller_context: lead?.outreachAngle ?? '',
+          is_known_caller: false,
+          first_name: 'there',
+          customer_name: 'there',
+          full_name: 'there',
+          caller_name: 'there',
+          caller_company: '',
+          caller_context: '',
         },
       });
     } catch (err) {
