@@ -63,6 +63,7 @@ const BOTTOM = [
 const DRAWER = [
   { id: 'chat', label: 'Talk to APEX' },
   { id: 'sales-ops', label: 'Revenue Operations' },
+  { id: 'territories', label: 'Territories' },
   { id: 'mission', label: 'Mission Control' },
   { id: 'tasks', label: 'Work Queue' },
   { id: 'logs', label: 'Activity Log' },
@@ -89,7 +90,7 @@ const DRAWER = [
 const NAV_ID_TO_LABEL = {
   command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals',
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
-  'sales-ops': 'Revenue Operations', leads: 'Prospects', suggestions: 'Suggestions',
+  'sales-ops': 'Revenue Operations', leads: 'Prospects', territories: 'Territories', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',

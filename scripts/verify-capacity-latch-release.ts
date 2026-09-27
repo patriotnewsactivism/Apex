@@ -159,7 +159,8 @@ async function main(): Promise<void> {
   check(
     'workspace caps still park capped providers without vetoing unrestricted continuity',
     /const totalDailyCapReached = isTotalDailyCapReached\(\)/.test(clientSrc) &&
-      /!provider\.unrestricted[\s\S]{0,220}totalDailyCapReached/.test(clientSrc),
+      /!independentPlanRoute\(provider\)[\s\S]{0,220}totalDailyCapReached/.test(clientSrc) &&
+      /function independentPlanRoute\(provider: ProviderSpec\)[\s\S]{0,180}provider\.unrestricted === true/.test(clientSrc),
   );
   check(
     'one paced or capped provider does not veto capacity when another route can take work',
