@@ -127,7 +127,9 @@ function extractCallControlId(body: Record<string, unknown>): string {
 }
 
 function firstNameFrom(fullName: string): string {
-  return fullName.trim().split(/\s+/)[0] || fullName.trim();
+  const trimmed = fullName.trim();
+  if (!trimmed || /^first\s+name$/i.test(trimmed)) return 'there';
+  return trimmed.split(/\s+/)[0] || 'there';
 }
 
 function dynamicVariablesForPerson(input: {
@@ -136,12 +138,13 @@ function dynamicVariablesForPerson(input: {
   company?: string | null;
   context?: string | null;
   knownCaller: boolean;
-}): Record<string, string | boolean> {
-  const fullName = input.fullName.trim();
+}): Record<string, string> {
+  const rawName = input.fullName.trim();
+  const fullName = !rawName || /^first\s+name$/i.test(rawName) ? 'there' : rawName;
   const firstName = firstNameFrom(fullName);
   return {
     caller_number: input.callerNumber || 'unknown',
-    is_known_caller: input.knownCaller,
+    is_known_caller: String(input.knownCaller),
     first_name: firstName,
     customer_name: firstName,
     full_name: fullName,
@@ -253,7 +256,7 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
       return res.json({
         dynamic_variables: {
           caller_number: callerNumber || 'unknown',
-          is_known_caller: false,
+          is_known_caller: 'false',
           first_name: 'there',
           customer_name: 'there',
           full_name: 'there',
@@ -265,7 +268,7 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
     } catch (err) {
       console.error('[Telnyx Assistant] dynamic-variables error:', err instanceof Error ? err.message : String(err));
       // A blank variable set beats failing conversation start entirely.
-      return res.json({ dynamic_variables: { caller_number: '', is_known_caller: false } });
+      return res.json({ dynamic_variables: { caller_number: '', is_known_caller: 'false' } });
     }
   });
 

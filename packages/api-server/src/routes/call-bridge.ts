@@ -122,12 +122,13 @@ function sanitizeAssistantCopy(text: string, firstName: string): string {
   return text
     .replace(/\{\{\s*first_?name\s*\}\}/gi, firstName)
     .replace(/\bFIRST\s+NAME\b/g, firstName)
-    .replace(/\s{2,}/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
 
 function assistantDynamicVariablesForSession(session: typeof callBridgeSessions.$inferSelect): Record<string, string> {
-  const fullName = session.buyerName?.trim() || 'there';
+  const rawName = session.buyerName?.trim() || '';
+  const fullName = !rawName || /^first\s+name$/i.test(rawName) ? 'there' : rawName;
   const firstName = firstNameFromDisplayName(fullName);
   const selfTest = session.operatorNumber === session.customerNumber;
   return {
@@ -275,11 +276,18 @@ export async function startAiFirstSession(input: {
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  const dialStartedAt = Date.now();
   const result = await dialBridgeLeg({
     to: input.customerNumber,
     role: 'customer',
     sessionId: id,
     endConferenceOnExit: true,
+  });
+  console.info('[Call Bridge] ai-first customer dial completed', {
+    sessionId: id,
+    elapsedMs: Date.now() - dialStartedAt,
+    ok: !('error' in result),
+    error: 'error' in result ? result.error : undefined,
   });
   if ('error' in result) {
     await db.update(callBridgeSessions)
@@ -328,6 +336,17 @@ async function attachSalesAi(sessionId: string): Promise<void> {
   greeting = sanitizeAssistantCopy(greeting, firstName);
   instructions = sanitizeAssistantCopy(instructions, firstName);
   const dynamicVariables = assistantDynamicVariablesForSession(session);
+  const transcriptionStartedAt = Date.now();
+  const transcriptionPromise = telnyxCommand(session.customerCallControlId, 'transcription_start', { language: 'en' })
+    .then((transcriptionError) => {
+      console.info('[Call Bridge] transcription_start completed', {
+        sessionId: session.id,
+        elapsedMs: Date.now() - transcriptionStartedAt,
+        ok: !transcriptionError,
+        error: transcriptionError ?? undefined,
+      });
+      return transcriptionError;
+    });
   const assistantId = process.env.TELNYX_AI_ASSISTANT_ID;
   if (assistantId) {
     const startedAt = Date.now();
@@ -376,14 +395,7 @@ async function attachSalesAi(sessionId: string): Promise<void> {
       updatedAt: new Date(),
     }).where(eq(callBridgeSessions.id, session.id));
   }
-  const transcriptionStartedAt = Date.now();
-  const transcriptionError = await telnyxCommand(session.customerCallControlId, 'transcription_start', { language: 'en' });
-  console.info('[Call Bridge] transcription_start completed', {
-    sessionId: session.id,
-    elapsedMs: Date.now() - transcriptionStartedAt,
-    ok: !transcriptionError,
-    error: transcriptionError ?? undefined,
-  });
+  await transcriptionPromise;
 }
 
 async function maybeSendRehearsalFollowUp(sessionId: string): Promise<void> {
@@ -699,6 +711,12 @@ export function createCallBridgeWebhookRouter(): Router {
       }
 
       if (eventType === 'call.answered') {
+        console.info('[Call Bridge] call answered', {
+          sessionId: session.id,
+          role: state.role,
+          callControlId: typeof payload.call_control_id === 'string' ? payload.call_control_id : undefined,
+          receivedAt: new Date().toISOString(),
+        });
         if (state.role === 'operator') {
           await db
             .update(callBridgeSessions)
