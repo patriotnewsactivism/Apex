@@ -199,7 +199,7 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
             fullName: 'Matthew Reardon',
             callerNumber,
             company: 'BuildMyBot / APEX',
-            context: 'Owner-requested internal self-pitch test. Do not call him FIRST NAME or Sam.',
+            context: 'Owner-requested internal self-pitch test. Use the name Matthew Reardon. Never use Sam.',
             knownCaller: true,
           }),
         });
@@ -224,7 +224,7 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
               callerNumber: callerNumber || bridgeSession.customerNumber,
               company: bridgeSession.operatorNumber === bridgeSession.customerNumber ? 'BuildMyBot / APEX' : '',
               context: bridgeSession.operatorNumber === bridgeSession.customerNumber
-                ? 'Owner-requested internal self-pitch test. Do not call him FIRST NAME or Sam.'
+                ? 'Owner-requested internal self-pitch test. Use the saved buyer name. Never use Sam.'
                 : '',
               knownCaller: true,
             }),

@@ -138,7 +138,7 @@ function assistantDynamicVariablesForSession(session: typeof callBridgeSessions.
     caller_name: fullName,
     company_name: selfTest ? 'BuildMyBot / APEX' : '',
     call_context: selfTest
-      ? 'Owner-requested internal self-pitch test. Do not call the person FIRST NAME or Sam. Do not pretend they called you first.'
+      ? 'Owner-requested internal self-pitch test. Use the saved buyer name. Never use Sam. Do not pretend they called you first.'
       : 'Outbound BuildMyBot sales call.',
     requested_first_message: sanitizeAssistantCopy(session.assistantGreeting ?? '', firstName),
   };
