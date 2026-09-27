@@ -35,6 +35,7 @@ export * from './artifact-store.js';
 export * from './workspace-sync.js';
 export * from './approval-policy.js';
 export * from './sales-playbooks.js';
+export * from './cartesia-sales-client.js';
 export * from './outbound-policy.js';
 export * from './outbound-policy-store.js';
 export * from './lead-import.js';
