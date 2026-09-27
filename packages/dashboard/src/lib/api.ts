@@ -674,7 +674,7 @@ export interface CallOutcome {
   leadId: string | null;
   customerNumber: string;
   customerName: string | null;
-  disposition: 'appointment_booked' | 'callback_requested' | 'not_interested' | 'voicemail' | 'no_answer' | 'no_decision' | 'failed_to_dial';
+  disposition: 'appointment_booked' | 'qualified' | 'callback_requested' | 'not_interested' | 'dnc' | 'voicemail' | 'no_answer' | 'no_decision' | 'failed_to_dial';
   appointmentAt: string | null;
   appointmentDateRaw: string | null;
   appointmentTimeRaw: string | null;

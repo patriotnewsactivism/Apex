@@ -4,9 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { api, type CallOutcome } from '../lib/api.js';
 import { Phone, ChevronDown, ChevronRight, PhoneOff } from 'lucide-react';
 
-// Every make_outbound_call attempt now writes a call_outcomes row the instant
-// Vapi either accepts or rejects the request (see tool-registry.ts), instead
-// of only existing once a webhook eventually reports the call as finished.
+// APEX call attempts and provider call outcomes share call_outcomes. Cartesia
+// call-event webhooks also append transcript and summary after the call.
 // This is the one place that full history -- including calls that failed to
 // dial at all -- is visible to a human rather than only living in agent
 // reasoning/logs. UpcomingAppointments (SalesOpsPanel.tsx) shows the same
@@ -14,7 +13,9 @@ import { Phone, ChevronDown, ChevronRight, PhoneOff } from 'lucide-react';
 
 const DISPOSITION_COLOR: Record<CallOutcome['disposition'], string> = {
   appointment_booked: '#6a9f78',
+  qualified: '#6a9f78',
   callback_requested: '#c9a84a',
+  dnc: '#c45c66',
   not_interested: '#7d8a91',
   voicemail: '#7d8a91',
   no_answer: '#7d8a91',
@@ -24,7 +25,9 @@ const DISPOSITION_COLOR: Record<CallOutcome['disposition'], string> = {
 
 const DISPOSITION_LABEL: Record<CallOutcome['disposition'], string> = {
   appointment_booked: 'Appointment booked',
+  qualified: 'Qualified',
   callback_requested: 'Callback requested',
+  dnc: 'Do not contact',
   not_interested: 'Not interested',
   voicemail: 'Voicemail',
   no_answer: 'No answer',
@@ -145,8 +148,8 @@ function CallRow({ call }: { call: CallOutcome }) {
   );
 }
 
-/** Full outbound call history -- every attempt APEX has made, including ones
- *  Vapi rejected before ever dialing. Complements UpcomingAppointments, which
+/** Call history, including outbound attempts rejected before dialing and
+ *  Cartesia calls. Complements UpcomingAppointments, which
  *  only shows booked meetings; this is the "what has it actually done" view. */
 export function CallLogPanel() {
   const { data, isLoading, isError, error } = useQuery({
@@ -176,7 +179,7 @@ export function CallLogPanel() {
         </div>
       )}
       {!isLoading && !isError && calls.length === 0 && (
-        <div style={{ color: 'var(--color-apex-muted)', fontSize: 13 }}>No outbound calls yet.</div>
+        <div style={{ color: 'var(--color-apex-muted)', fontSize: 13 }}>No calls recorded yet.</div>
       )}
 
       {calls.length > 0 && (

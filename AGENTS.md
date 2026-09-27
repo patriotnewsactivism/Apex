@@ -55,6 +55,8 @@ QA Director -- independent quality/oversight role
 
 The production workforce is 13 agents. Generic specialist classes may exist in source but are not part of the instantiated production organization unless the workforce definition changes explicitly.
 
+An optional Cartesia sales-agent webhook surface lives at `/api/cartesia` (implementation and configuration in `docs/CARTESIA_SALES_TOOLS.md`). It is separate from APEX's Telnyx outbound transport; exposing its routes does not mean the Cartesia agent, tools, calendar, or phone transfer has been configured or tested in production. The Cartesia tool bearer secret and call-event webhook secret are independent and required. APEX outbound caller ID remains `+18329757665`; owner escalation destination is `+18328804970` when configured.
+
 ### Virtual specialist departments
 
 APEX also has a **virtual specialist layer** in `packages/core/src/specialists/`. These specialists are not additional always-on workers and do not change the 13-agent production organization. They are named, department-scoped execution profiles routed through an existing standing role using task context (`specialistId`).
@@ -250,7 +252,7 @@ Normal rollback uses Railway's existing service/revision history and must be fol
 
 ## Approval and security rules
 
-- All `/api/*` routes except `/api/auth/login` remain behind `requireAdminAuth`. Public `GET /health` is unauthenticated and minimal so Railway can healthcheck it. `GET /api/health/detail` is behind `requireAdminAuth`.
+- Operator `/api/*` routes remain behind `requireAdminAuth`; external provider webhooks (Vapi, Telnyx, Resend, and optional Cartesia) are mounted before that middleware and verify provider-specific secrets or signatures. Public `GET /health` is unauthenticated and minimal so Railway can healthcheck it. `GET /api/health/detail` is behind `requireAdminAuth`.
 - `APEX_ADMIN_PASSWORD` and `APEX_ADMIN_TOKEN` are deployment secrets; there is no source-code fallback.
 - `POST /api/auth/login` compares that password with SHA-256 digests and `crypto.timingSafeEqual`, and applies an in-memory per-IP limit, a global limit, and a failure lockout with backoff (`packages/api-server/src/login-guard.ts`). Limits are per process. Optional `APEX_LOGIN_*` / `APEX_TRUST_PROXY_HOPS` overrides must keep safe defaults; `trust proxy` stays a hop count (default 1) so `X-Forwarded-For` cannot choose the client key. Log the IP and timestamp on failure, and a warn-level `login lockout triggered` line — never the password.
 - Secrets are referenced by environment-variable name only in logs, reports, commits, issues, PR descriptions, and documentation. Never log or commit secret values.

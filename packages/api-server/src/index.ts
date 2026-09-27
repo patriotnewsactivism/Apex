@@ -45,6 +45,7 @@ import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
+import { createCartesiaSalesRouter } from './routes/cartesia-sales.js';
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
@@ -493,6 +494,9 @@ async function main() {
   // from Telnyx, verified by a query-string key instead of a Bearer token.
   // Must be mounted BEFORE requireAdminAuth for the same reason as the above.
   app.use('/api/telnyx-assistant', createTelnyxAssistantRouter(ceo));
+
+  // Cartesia custom sales tools and call events verify independent secrets.
+  app.use('/api/cartesia', createCartesiaSalesRouter());
 
   // Call Bridge webhook — Telnyx Call Control events for operator-bridged
   // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
