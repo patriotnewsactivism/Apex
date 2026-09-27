@@ -63,6 +63,7 @@ import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
 import { reconcileVapiInboundLatency } from './vapi-inbound-latency.js';
+import { diagnoseCartesiaRuntime } from './cartesia-runtime-diagnostic.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
 const __filename = fileURLToPath(import.meta.url);
@@ -735,6 +736,13 @@ async function main() {
       ),
     );
   }, 1_500);
+
+  // Cartesia secrets live only inside the deployed Railway service. Run a
+  // read-only startup probe there so deploy logs prove whether the stored key
+  // authenticates and whether the expected sales tools/webhook already exist.
+  setTimeout(() => {
+    void diagnoseCartesiaRuntime();
+  }, 2_500);
 
   // 60s Background Health Monitoring Loop
   const runHealthPoll = async () => {
