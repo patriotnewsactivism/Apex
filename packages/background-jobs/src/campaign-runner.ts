@@ -847,6 +847,7 @@ export class CampaignRunner {
       console.log(
         `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${provider})`,
       );
+      await this.pruneSaturatedCell(campaign, segment);
       emitApexEvent({
         type: 'campaign:segment',
         campaignId: campaign.id,
@@ -889,6 +890,71 @@ export class CampaignRunner {
               : ' — will retry'),
       );
     }
+  }
+
+  /**
+   * Once several searches in the same industry/city are mostly returning
+   * businesses already on file, stop spending the remaining query variants.
+   * This is deliberately conservative so a single weak search never prunes a
+   * city: require 4 completed shards, 8+ saved leads, and duplicate-heavy
+   * results in at least two of the latest three shards.
+   */
+  private async pruneSaturatedCell(
+    campaign: typeof leadCampaigns.$inferSelect,
+    segment: typeof campaignSegments.$inferSelect,
+  ): Promise<number> {
+    const worked = await db
+      .select()
+      .from(campaignSegments)
+      .where(
+        and(
+          eq(campaignSegments.campaignId, campaign.id),
+          eq(campaignSegments.industry, segment.industry),
+          eq(campaignSegments.city, segment.city),
+          or(eq(campaignSegments.status, 'done'), eq(campaignSegments.status, 'exhausted')),
+        ),
+      );
+
+    if (worked.length < 4) return 0;
+    const totalSaved = worked.reduce((sum, row) => sum + (row.saved ?? 0), 0);
+    if (totalSaved < 8) return 0;
+
+    const recent = [...worked]
+      .sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0))
+      .slice(0, 3);
+    if (recent.length < 3) return 0;
+
+    const duplicateHeavy = recent.filter((row) =>
+      (row.found ?? 0) >= 5 && (row.duplicates ?? 0) / Math.max(1, row.found ?? 0) >= 0.65,
+    ).length;
+    const zeroNew = recent.filter((row) => (row.saved ?? 0) === 0).length;
+    if (duplicateHeavy < 2 || zeroNew < 1) return 0;
+
+    const now = new Date();
+    const pruned = await db
+      .update(campaignSegments)
+      .set({
+        status: 'exhausted',
+        leasedAt: null,
+        completedAt: now,
+        lastError: `Pruned after city saturation: ${totalSaved} leads already saved and recent searches were mostly duplicates.`,
+      })
+      .where(
+        and(
+          eq(campaignSegments.campaignId, campaign.id),
+          eq(campaignSegments.industry, segment.industry),
+          eq(campaignSegments.city, segment.city),
+          eq(campaignSegments.status, 'pending'),
+        ),
+      )
+      .returning({ id: campaignSegments.id });
+
+    if (pruned.length > 0) {
+      console.log(
+        `[campaigns] ${campaign.name} · ${segment.industry} / ${segment.city}: pruned ${pruned.length} saturated shard(s) after ${totalSaved} unique leads`,
+      );
+    }
+    return pruned.length;
   }
 
   /** Every website already on file, as bare domains. Read per segment rather
