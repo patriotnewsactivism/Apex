@@ -498,6 +498,7 @@ export class CampaignRunner {
   private knownDomainsRefreshedAt = 0;
   private knownDomainsLoad: Promise<Set<string>> | null = null;
   private contactSearchRunning = false;
+  private contactSearchLastRunAt = 0;
   private readonly repairedCampaignIds = new Set<string>();
 
   constructor(
@@ -579,6 +580,9 @@ export class CampaignRunner {
    */
   private async enrichVerifiedContactsFromSearch(limit: number): Promise<void> {
     if (this.contactSearchRunning) return;
+    const intervalMs = Math.max(15_000, Number(process.env.LEAD_CONTACT_SEARCH_INTERVAL_MS ?? 60_000));
+    if (Date.now() - this.contactSearchLastRunAt < intervalMs) return;
+    this.contactSearchLastRunAt = Date.now();
     this.contactSearchRunning = true;
     try {
       const batchSize = Math.max(1, Math.min(20, Math.trunc(limit)));
@@ -614,6 +618,7 @@ export class CampaignRunner {
             query: `site:${domain} "${lead.companyName}" contact owner phone email`,
             maxResults: 6,
             fast: true,
+            freeOnly: true,
           },
           this.toolContext,
         );
