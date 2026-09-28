@@ -173,11 +173,7 @@ export async function countUsableCampaignLeads(campaignId: string): Promise<numb
         eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
         eq(researchedLeads.status, 'qualified'),
         sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-        sql`(
-          ${researchedLeads.source} IS NULL
-          OR ${researchedLeads.source} NOT LIKE '%web:%'
-          OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
-        )`,
+        sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
       ),
     );
   return Number(row?.count ?? 0);
