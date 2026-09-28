@@ -1394,6 +1394,10 @@ export interface ResearchedLead {
 
 export interface LeadStats {
   total: number;
+  contactReady: number;
+  rawCandidates: number;
+  pendingOrUnverified: number;
+  rejected: number;
   byStatus: { new: number; contacted: number; qualified: number; rejected: number };
   byPipelineState: Record<string, number>;
   byIndustry: Record<string, number>;
