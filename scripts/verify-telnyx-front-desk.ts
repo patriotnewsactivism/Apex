@@ -42,6 +42,7 @@ async function main(): Promise<void> {
   console.log('Verifying the Apex Front Desk Telnyx-assistant surface...\n');
 
   const route = read('packages/api-server/src/routes/telnyx-assistant.ts');
+  const telnyxWebhook = read('packages/api-server/src/routes/telnyx-webhook.ts');
   const index = read('packages/api-server/src/index.ts');
   const env = read('.env.example');
 
@@ -192,6 +193,12 @@ async function main(): Promise<void> {
     'post-call enrichment requests Telnyx transcript and conversation insights',
     /ai\/conversations\/\$\{encodeURIComponent\(input\.conversationId\)\}\/messages/.test(route) &&
       /conversations-insights/.test(route),
+  );
+  check(
+    'the standard Telnyx connection webhook also forwards AI conversation lifecycle events into callback persistence',
+    /processTelnyxAssistantLifecycleEvent/.test(telnyxWebhook) &&
+      /case 'call\.conversation\.ended'/.test(telnyxWebhook) &&
+      /case 'call\.conversation_insights\.generated'/.test(telnyxWebhook),
   );
   check(
     'the literal FIRST NAME placeholder is normalized to a safe fallback',
