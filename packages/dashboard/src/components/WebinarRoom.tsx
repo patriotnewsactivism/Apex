@@ -367,11 +367,11 @@ export function WebinarRoom({ slug }: { slug: string }) {
 
   if (!attendeeId) {
     return (
-      <div style={{ minHeight: '100vh', background: 'radial-gradient(circle at 25% 0%, #242017 0%, #0d0f13 44%)', color: '#f4eee4', padding: 'clamp(20px, 5vw, 64px)' }}>
+      <div className="webinar-room-join" style={{ minHeight: '100vh', background: 'radial-gradient(circle at 25% 0%, #242017 0%, #0d0f13 44%)', color: '#f4eee4', padding: isMobile ? '20px 14px 32px' : 'clamp(20px, 5vw, 64px)', width: '100%', maxWidth: '100%' }}>
         <div style={{ maxWidth: 980, margin: '0 auto' }}>
           <div style={{ fontSize: 12, letterSpacing: '0.18em', textTransform: 'uppercase', color: '#c9a66b', marginBottom: 18 }}>APEX × BuildMyBot.app</div>
-          <h1 style={{ fontSize: 'clamp(38px, 7vw, 76px)', lineHeight: 0.98, margin: 0, maxWidth: 850, letterSpacing: '-0.045em' }}>{snapshot.session.title}</h1>
-          <p style={{ fontSize: 18, lineHeight: 1.6, color: '#a9a7a2', maxWidth: 760, margin: '24px 0 34px' }}>{snapshot.session.description}</p>
+          <h1 style={{ fontSize: isMobile ? 34 : 'clamp(38px, 7vw, 76px)', lineHeight: isMobile ? 1.02 : 0.98, margin: 0, maxWidth: 850, letterSpacing: '-0.045em', overflowWrap: 'anywhere' }}>{snapshot.session.title}</h1>
+          <p style={{ fontSize: isMobile ? 15 : 18, lineHeight: 1.6, color: '#a9a7a2', maxWidth: 760, margin: isMobile ? '18px 0 22px' : '24px 0 34px' }}>{snapshot.session.description}</p>
           <div style={{ ...card, padding: 'clamp(20px, 4vw, 34px)', maxWidth: 680 }}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 22 }}>
               <Sparkles size={18} color="#c9a66b" />
@@ -396,14 +396,14 @@ export function WebinarRoom({ slug }: { slug: string }) {
   const live = snapshot.session.status === 'live';
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0d0f13', color: '#f4eee4', paddingBottom: 40 }}>
-      <header style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', padding: '16px clamp(16px, 4vw, 52px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, position: 'sticky', top: 0, zIndex: 10, background: 'rgba(13,15,19,0.94)', backdropFilter: 'blur(14px)' }}>
-        <div>
-          <div style={{ fontSize: 11, letterSpacing: '0.16em', color: '#c9a66b', textTransform: 'uppercase' }}>APEX × BuildMyBot.app</div>
-          <div style={{ fontSize: 14, marginTop: 4, color: '#d6d2ca' }}>{snapshot.session.title}</div>
+    <div className="webinar-room-live" style={{ minHeight: '100vh', background: '#0d0f13', color: '#f4eee4', paddingBottom: isMobile ? 24 : 40, width: '100%', maxWidth: '100%', overflowX: 'hidden' }}>
+      <header className="webinar-room-header" style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', padding: isMobile ? '10px 12px' : '16px clamp(16px, 4vw, 52px)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: isMobile ? 8 : 16, position: 'sticky', top: 0, zIndex: 10, background: 'rgba(13,15,19,0.94)', backdropFilter: 'blur(14px)', minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: isMobile ? 9 : 11, letterSpacing: '0.16em', color: '#c9a66b', textTransform: 'uppercase' }}>APEX × BuildMyBot.app</div>
+          <div style={{ fontSize: isMobile ? 12 : 14, marginTop: 4, color: '#d6d2ca', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{snapshot.session.title}</div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9b9da4', fontSize: 12 }}><Users size={14} /> {snapshot.attendeeCount} live</div>
+        <div className="webinar-room-header-actions" style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 7 : 12, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#9b9da4', fontSize: isMobile ? 10 : 12, whiteSpace: 'nowrap' }}><Users size={isMobile ? 12 : 14} /> {snapshot.attendeeCount}{isMobile ? '' : ' live'}</div>
           <button onClick={() => {
             if (!startedAudio) {
               setStartedAudio(true);
@@ -425,28 +425,28 @@ export function WebinarRoom({ slug }: { slug: string }) {
 
       <div style={{ height: 3, background: '#252830' }}><div style={{ height: '100%', width: `${progress}%`, background: '#c9a66b', transition: 'width 0.5s ease' }} /></div>
 
-      <main style={{ maxWidth: 1180, margin: '0 auto', padding: 'clamp(22px, 4vw, 52px) clamp(16px, 3vw, 30px)', display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1.7fr) minmax(280px, 0.7fr)', gap: 24 }}>
-        <section style={{ ...card, minHeight: 520, padding: 'clamp(26px, 5vw, 58px)', position: 'relative', overflow: 'hidden' }}>
+      <main className="webinar-room-main" style={{ maxWidth: 1180, width: '100%', margin: '0 auto', padding: isMobile ? '14px 12px 22px' : 'clamp(22px, 4vw, 52px) clamp(16px, 3vw, 30px)', display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1.7fr) minmax(280px, 0.7fr)', gap: isMobile ? 12 : 24, minWidth: 0 }}>
+        <section className="webinar-room-stage" style={{ ...card, minHeight: isMobile ? 0 : 520, padding: isMobile ? '22px 16px 48px' : 'clamp(26px, 5vw, 58px)', position: 'relative', overflow: 'hidden', minWidth: 0 }}>
           <div style={{ position: 'absolute', inset: '0 auto auto 0', width: 180, height: 4, background: '#c9a66b' }} />
           <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#c9a66b' }}>{segment.kicker}</div>
-          <h2 style={{ fontSize: 'clamp(34px, 5vw, 60px)', lineHeight: 1.02, margin: '20px 0 30px', letterSpacing: '-0.04em' }}>{segment.title}</h2>
+          <h2 style={{ fontSize: isMobile ? 30 : 'clamp(34px, 5vw, 60px)', lineHeight: isMobile ? 1.07 : 1.02, margin: isMobile ? '14px 0 20px' : '20px 0 30px', letterSpacing: '-0.04em', overflowWrap: 'anywhere' }}>{segment.title}</h2>
           <div style={{ display: 'grid', gap: 15, maxWidth: 780 }}>
             {segment.bullets.map((bullet) => (
-              <div key={bullet} style={{ display: 'flex', gap: 14, alignItems: 'flex-start', color: '#d6d2ca', fontSize: 18, lineHeight: 1.5 }}>
+              <div key={bullet} style={{ display: 'flex', gap: isMobile ? 10 : 14, alignItems: 'flex-start', color: '#d6d2ca', fontSize: isMobile ? 15 : 18, lineHeight: 1.5, minWidth: 0 }}>
                 <span style={{ color: '#c9a66b', marginTop: 1 }}>→</span><span>{bullet}</span>
               </div>
             ))}
           </div>
           {segment.demoCue && (
-            <div style={{ marginTop: 34, padding: 16, borderRadius: 10, background: 'rgba(201,166,107,0.09)', color: '#c9a66b', fontSize: 13 }}>{segment.demoCue}</div>
+            <div style={{ marginTop: isMobile ? 22 : 34, padding: isMobile ? 12 : 16, borderRadius: 10, background: 'rgba(201,166,107,0.09)', color: '#c9a66b', fontSize: 13, overflowWrap: 'anywhere' }}>{segment.demoCue}</div>
           )}
           {segment.id === 'roi' && (
-            <div style={{ marginTop: 30, padding: 20, borderRadius: 12, border: '1px solid rgba(201,166,107,0.22)', background: 'rgba(0,0,0,0.18)' }}>
+            <div style={{ marginTop: isMobile ? 22 : 30, padding: isMobile ? 14 : 20, borderRadius: 12, border: '1px solid rgba(201,166,107,0.22)', background: 'rgba(0,0,0,0.18)', minWidth: 0 }}>
               <div style={{ color: '#c9a66b', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Live ROI worksheet</div>
               <div style={{ color: '#8d9099', fontSize: 12, marginTop: 7, lineHeight: 1.5 }}>
                 These are editable scenario inputs, not a performance guarantee. Use your own numbers.
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10, marginTop: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))', gap: 10, marginTop: 14, minWidth: 0 }}>
                 <RoiInput label="Missed opportunities / month" value={roiMissedOpportunities} onChange={setRoiMissedOpportunities} />
                 <RoiInput label="Average customer value ($)" value={roiAverageValue} onChange={setRoiAverageValue} />
                 <RoiInput label="Close rate (%)" value={roiCloseRate} onChange={setRoiCloseRate} />
@@ -455,21 +455,21 @@ export function WebinarRoom({ slug }: { slug: string }) {
               <div style={{ display: 'flex', alignItems: 'end', justifyContent: 'space-between', gap: 16, marginTop: 16, flexWrap: 'wrap' }}>
                 <div>
                   <div style={{ color: '#777b85', fontSize: 11 }}>Scenario monthly recovered revenue</div>
-                  <div style={{ fontSize: 30, fontWeight: 800, marginTop: 3 }}>
+                  <div style={{ fontSize: isMobile ? 26 : 30, fontWeight: 800, marginTop: 3, overflowWrap: 'anywhere' }}>
                     {roiEstimate.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}
                   </div>
                 </div>
-                <button onClick={trackRoi} style={{ ...buttonStyle, opacity: roiTracked ? 0.75 : 1 }}>
+                <button onClick={trackRoi} style={{ ...buttonStyle, opacity: roiTracked ? 0.75 : 1, width: isMobile ? '100%' : undefined }}>
                   {roiTracked ? 'Scenario saved' : 'Use this scenario'}
                 </button>
               </div>
             </div>
           )}
-          <div style={{ position: 'absolute', right: 28, bottom: 24, fontSize: 12, color: '#656871' }}>{snapshot.session.currentSegment + 1} / {snapshot.segments.length}</div>
+          <div style={{ position: 'absolute', right: isMobile ? 16 : 28, bottom: isMobile ? 14 : 24, fontSize: 12, color: '#656871' }}>{snapshot.session.currentSegment + 1} / {snapshot.segments.length}</div>
         </section>
 
-        <aside style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <div style={{ ...card, padding: 20 }}>
+        <aside className="webinar-room-sidebar" style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 12 : 18, minWidth: 0 }}>
+          <div style={{ ...card, padding: isMobile ? 15 : 20, minWidth: 0 }}>
             <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#777b85', marginBottom: 10 }}>Host status</div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ width: 9, height: 9, borderRadius: '50%', background: live ? '#78b58c' : snapshot.session.status === 'paused' ? '#d6a15c' : '#777b85', boxShadow: live ? '0 0 0 5px rgba(120,181,140,0.12)' : 'none' }} />
@@ -488,15 +488,15 @@ export function WebinarRoom({ slug }: { slug: string }) {
             </form>
           </div>
 
-          <button onClick={clickCta} style={{ ...buttonStyle, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <button onClick={clickCta} style={{ ...buttonStyle, padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%' }}>
             {snapshot.session.ctaLabel} <ExternalLink size={16} />
           </button>
         </aside>
       </main>
 
       {snapshot.questions.length > 0 && (
-        <section style={{ maxWidth: 1180, margin: '0 auto', padding: '0 clamp(16px, 3vw, 30px) 40px' }}>
-          <div style={{ ...card, padding: 22 }}>
+        <section style={{ maxWidth: 1180, margin: '0 auto', padding: isMobile ? '0 12px 24px' : '0 clamp(16px, 3vw, 30px) 40px' }}>
+          <div style={{ ...card, padding: isMobile ? 15 : 22, minWidth: 0 }}>
             <div style={{ fontSize: 12, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#c9a66b', marginBottom: 16 }}>Recent Q&A</div>
             <div style={{ display: 'grid', gap: 14 }}>
               {snapshot.questions.slice(0, 5).map((item) => (
@@ -543,7 +543,7 @@ const inputStyle: React.CSSProperties = {
   borderRadius: 8,
   padding: '12px 13px',
   outline: 'none',
-  fontSize: 14,
+  fontSize: 16,
 };
 
 const buttonStyle: React.CSSProperties = {
