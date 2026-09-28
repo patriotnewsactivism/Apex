@@ -139,6 +139,147 @@ export function normalizeLeadDomain(url: string | null | undefined): string | nu
   }
 }
 
+export function canonicalHomepageUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url.includes('://') ? url : `https://${url}`);
+    return `${parsed.protocol}//${parsed.host}/`;
+  } catch {
+    return null;
+  }
+}
+
+export function companyNameFromDomain(url: string | null | undefined): string | null {
+  const domain = normalizeLeadDomain(url);
+  if (!domain) return null;
+  const label = domain.split('.')[0] ?? '';
+  if (!label) return null;
+  return label
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b(co|llc|inc|corp)\b/gi, (m) => m.toUpperCase())
+    .replace(/\b\w/g, (m) => m.toUpperCase())
+    .trim();
+}
+
+export function isSeoLikeCompanyName(name: string, city?: string | null): boolean {
+  const value = name.trim().toLowerCase();
+  if (!value) return true;
+  const cityName = (city ?? '').split(',')[0]?.trim().toLowerCase() ?? '';
+  const generic = /(?:^|\b)(?:#?1|top|best|near me|official|trusted|premier|quality|affordable|professional|local|emergency|residential|commercial|services?|roof repair|roof replacement|roofing company|roofing contractor|installation|financing|reviews?|free estimate)(?:\b|$)/i;
+  if (generic.test(value)) return true;
+  if (cityName.length >= 4 && value.includes(cityName)) return true;
+  return value.length > 70 || value.split(/\s+/).length > 9;
+}
+
+function decodeHtmlText(value: string): string {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&ndash;|&mdash;/gi, '–')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function companyNameFromSearchResultTitle(title: string, website: string, city?: string | null): string {
+  const candidates: string[] = [];
+  for (const match of title.matchAll(/\(([^()]{3,80})\)/g)) {
+    candidates.push(decodeHtmlText(match[1] ?? ''));
+  }
+  candidates.push(...title.split(/\s+(?:\||–|—|-)\s+/).map(decodeHtmlText).filter(Boolean));
+  const usable = candidates.filter((name) => !isSeoLikeCompanyName(name, city));
+  return usable[usable.length - 1] ?? companyNameFromDomain(website) ?? title.trim();
+}
+
+function jsonLdBusinessName(html: string): string | null {
+  const scripts = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) ?? [];
+  const businessType = /organization|localbusiness|corporation|professionalservice|homeandconstructionbusiness|roofingcontractor|legalservice|dentist|locksmith|plumber/i;
+  const walk = (value: unknown): string | null => {
+    if (Array.isArray(value)) {
+      for (const item of value) { const found = walk(item); if (found) return found; }
+      return null;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const row = value as Record<string, unknown>;
+    const rawType = row['@type'];
+    const types = Array.isArray(rawType) ? rawType.join(' ') : String(rawType ?? '');
+    if (businessType.test(types) && typeof row.name === 'string' && row.name.trim()) return row.name.trim();
+    if (row['@graph']) return walk(row['@graph']);
+    return null;
+  };
+  for (const script of scripts) {
+    const body = script.replace(/^<script[^>]*>/i, '').replace(/<\/script>$/i, '').trim();
+    try { const found = walk(JSON.parse(body)); if (found) return decodeHtmlText(found); } catch {}
+  }
+  return null;
+}
+
+function metaContent(html: string, key: string): string | null {
+  const safeKey = key.replace(/[^a-z0-9:_-]/gi, '');
+  const patterns = [
+    new RegExp(`<meta[^>]+(?:property|name)=["']${safeKey}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${safeKey}["'][^>]*>`, 'i'),
+  ];
+  for (const pattern of patterns) { const match = html.match(pattern); if (match?.[1]) return decodeHtmlText(match[1]); }
+  return null;
+}
+
+function industryAffinity(industry: string | null | undefined, text: string): boolean {
+  const normalized = (normalizeIndustry(industry ?? '') ?? industry ?? '').toLowerCase();
+  if (!normalized) return true;
+  const haystack = text.toLowerCase();
+  const checks: Array<[RegExp, RegExp]> = [
+    [/roof/, /\broof(?:ing|er|ers| repair| replacement)?\b/],
+    [/bail/, /\bbail\b|bondsman/],
+    [/locksmith/, /\blocksmith\b|lock repair|lockout/],
+    [/hvac/, /\bhvac\b|air condition|heating|furnace/],
+    [/plumb/, /\bplumb(?:er|ing)?\b|water heater|drain/],
+    [/dental|dentist/, /\bdent(?:al|ist|istry)\b|orthodont/],
+    [/medspa|medical spa/, /med(?:ical)? spa|botox|aesthetic|laser hair/],
+    [/legal|law|attorney/, /\blaw\b|lawyer|attorney|legal/],
+  ];
+  for (const [industryPattern, contentPattern] of checks) if (industryPattern.test(normalized)) return contentPattern.test(haystack);
+  const meaningful = normalized.split(/\s+/).filter((token) => token.length >= 4 && !['business','company','service','services','emergency'].includes(token));
+  return meaningful.length === 0 || meaningful.some((token) => haystack.includes(token));
+}
+
+export interface BusinessWebsiteIdentity {
+  status: 'verified' | 'mismatch' | 'unverified';
+  canonicalName: string | null;
+  homepage: string | null;
+  checkedAt: string;
+  reason: string;
+}
+
+export async function verifyBusinessWebsiteIdentity(input: {
+  website?: string | null;
+  industry?: string | null;
+  city?: string | null;
+  currentName?: string | null;
+}): Promise<BusinessWebsiteIdentity> {
+  const homepage = canonicalHomepageUrl(input.website);
+  const checkedAt = new Date().toISOString();
+  if (!homepage) return { status: 'unverified', canonicalName: input.currentName?.trim() || null, homepage: null, checkedAt, reason: 'missing_or_invalid_website' };
+  try {
+    const response = await fetch(homepage, {
+      redirect: 'follow',
+      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'APEX-LeadVerifier/1.0 (+https://apex.donmatthews.live)' },
+      signal: AbortSignal.timeout(Number(process.env.LEAD_WEBSITE_VERIFY_TIMEOUT_MS ?? 3500)),
+    });
+    if (!response.ok) return { status: 'unverified', canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null, homepage, checkedAt, reason: `http_${response.status}` };
+    const raw = (await response.text()).slice(0, 350000);
+    const title = decodeHtmlText(raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '');
+    const canonicalName = jsonLdBusinessName(raw) || metaContent(raw, 'og:site_name') || metaContent(raw, 'application-name') || companyNameFromSearchResultTitle(title, homepage, input.city) || companyNameFromDomain(homepage) || input.currentName?.trim() || null;
+    const visible = decodeHtmlText(raw.slice(0, 150000));
+    if (!industryAffinity(input.industry, `${title} ${visible}`)) return { status: 'mismatch', canonicalName, homepage, checkedAt, reason: 'homepage_does_not_match_target_industry' };
+    return { status: 'verified', canonicalName, homepage, checkedAt, reason: 'homepage_and_industry_verified' };
+  } catch (err) {
+    return { status: 'unverified', canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null, homepage, checkedAt, reason: err instanceof Error ? err.message.slice(0, 180) : 'website_fetch_failed' };
+  }
+}
+
 export function makeResearchCacheKey(input: {
   companyName: string;
   website?: string | null;
