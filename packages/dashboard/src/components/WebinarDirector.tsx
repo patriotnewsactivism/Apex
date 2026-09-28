@@ -122,7 +122,7 @@ export function WebinarDirector() {
 
   if (!session && sessions.length === 0) {
     return (
-      <div style={{ ...card, padding: 32, maxWidth: 760 }}>
+      <div className="webinar-director-empty" style={{ ...card, padding: isMobile ? 18 : 32, maxWidth: 760, minWidth: 0 }}>
         <div className="apex-eyebrow" style={{ marginBottom: 10 }}>Revenue · Live events</div>
         <h2 className="apex-display" style={{ margin: 0, fontSize: 28 }}>Build today’s autonomous webinar room</h2>
         <p style={{ color: 'var(--color-apex-muted)', lineHeight: 1.65, maxWidth: 620 }}>
@@ -138,33 +138,34 @@ export function WebinarDirector() {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 18 }}>
-      <div style={{ ...card, padding: 18 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+    <div className="webinar-director" style={{ display: 'grid', gap: isMobile ? 12 : 18, minWidth: 0, width: '100%', maxWidth: '100%' }}>
+      <div className="webinar-director-header" style={{ ...card, padding: isMobile ? 14 : 18, minWidth: 0 }}>
+        <div className="webinar-director-titlebar" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: isMobile ? 10 : 16, minWidth: 0 }}>
           <div>
             <div className="apex-eyebrow" style={{ marginBottom: 6 }}>Webinar Director</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
-              <h2 className="apex-display" style={{ margin: 0, fontSize: 24 }}>{session?.title}</h2>
+              <h2 className="apex-display webinar-director-title" style={{ margin: 0, fontSize: isMobile ? 18 : 24, lineHeight: 1.15, overflowWrap: 'anywhere' }}>{session?.title}</h2>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: statusTone, border: `1px solid ${statusTone}`, padding: '4px 7px', borderRadius: 999 }}>
                 {session?.status}
               </span>
             </div>
           </div>
-          <button onClick={() => void createToday()} style={secondaryButton}><Plus size={15} /> New room</button>
+          <button className="webinar-director-new-room" onClick={() => void createToday()} style={secondaryButton}><Plus size={15} /> New room</button>
         </div>
 
         {sessions.length > 1 && (
           <select
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
-            style={{ marginTop: 14, background: 'var(--color-apex-bg)', color: 'var(--color-apex-text)', border: '1px solid var(--color-apex-line)', borderRadius: 6, padding: '9px 10px', minWidth: 280 }}
+            className="webinar-session-select"
+            style={{ marginTop: 14, background: 'var(--color-apex-bg)', color: 'var(--color-apex-text)', border: '1px solid var(--color-apex-line)', borderRadius: 6, padding: '10px', width: isMobile ? '100%' : undefined, maxWidth: '100%', minWidth: isMobile ? 0 : 280, fontSize: isMobile ? 16 : 13 }}
           >
             {sessions.map((item) => <option key={item.id} value={item.id}>{item.title} · {item.status}</option>)}
           </select>
         )}
 
         {publicUrl && (
-          <div style={{ marginTop: 16, padding: 12, borderRadius: 7, background: 'rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div className="webinar-room-link" style={{ marginTop: 16, padding: isMobile ? 10 : 12, borderRadius: 7, background: 'rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <Radio size={15} color="var(--color-apex-brass)" />
             <code style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--color-apex-muted)', fontSize: 11 }}>{publicUrl}</code>
             <button onClick={() => void copyRoom()} style={iconButton} title="Copy attendee link"><Copy size={15} /></button>
@@ -174,21 +175,21 @@ export function WebinarDirector() {
         {copied && <div style={{ color: 'var(--color-apex-green)', fontSize: 11, marginTop: 6 }}>Attendee link copied.</div>}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1.35fr) minmax(290px, 0.65fr)', gap: 18 }}>
-        <section style={{ display: 'grid', gap: 18 }}>
-          <div style={{ ...card, padding: 20 }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+      <div className="webinar-director-grid" style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1.35fr) minmax(290px, 0.65fr)', gap: isMobile ? 12 : 18, minWidth: 0 }}>
+        <section className="webinar-director-main" style={{ display: 'grid', gap: isMobile ? 12 : 18, minWidth: 0 }}>
+          <div className="webinar-control-card" style={{ ...card, padding: isMobile ? 14 : 20, minWidth: 0 }}>
+            <div className="webinar-control-actions" style={{ display: isMobile ? 'grid' : 'flex', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : undefined, flexWrap: 'wrap', gap: 10, alignItems: 'stretch' }}>
               {session?.status === 'draft' && (
-                <button onClick={() => void run('start', () => api.webinars.start(session.id))} disabled={Boolean(busy)} style={primaryButton}><Play size={16} /> Go live now</button>
+                <button className="webinar-control-action" onClick={() => void run('start', () => api.webinars.start(session.id))} disabled={Boolean(busy)} style={primaryButton}><Play size={16} /> Go live now</button>
               )}
               {session?.status === 'live' && (
-                <button onClick={() => void run('pause', () => api.webinars.pause(session.id))} disabled={Boolean(busy)} style={warningButton}><Pause size={16} /> Take the floor</button>
+                <button className="webinar-control-action" onClick={() => void run('pause', () => api.webinars.pause(session.id))} disabled={Boolean(busy)} style={warningButton}><Pause size={16} /> Take the floor</button>
               )}
               {session?.status === 'paused' && (
-                <button onClick={() => void run('resume', () => api.webinars.resume(session.id))} disabled={Boolean(busy)} style={primaryButton}><Play size={16} /> Return to AI host</button>
+                <button className="webinar-control-action" onClick={() => void run('resume', () => api.webinars.resume(session.id))} disabled={Boolean(busy)} style={primaryButton}><Play size={16} /> Return to AI host</button>
               )}
               {session && session.status !== 'ended' && (
-                <button onClick={() => void run('end', () => api.webinars.end(session.id))} disabled={Boolean(busy)} style={dangerButton}><Square size={15} /> End webinar</button>
+                <button className="webinar-control-action" onClick={() => void run('end', () => api.webinars.end(session.id))} disabled={Boolean(busy)} style={dangerButton}><Square size={15} /> End webinar</button>
               )}
               {session && hotAttendees > 0 && (
                 <button
@@ -197,6 +198,7 @@ export function WebinarDirector() {
                     setFollowupResult(result);
                   })}
                   disabled={Boolean(busy)}
+                  className="webinar-control-action"
                   style={secondaryButton}
                 >
                   <Users size={15} /> Deploy APEX follow-up
@@ -206,6 +208,7 @@ export function WebinarDirector() {
                 <button
                   onClick={() => void run('mode', () => api.webinars.mode(session.id, !session.autonomous))}
                   disabled={Boolean(busy)}
+                  className="webinar-control-action"
                   style={secondaryButton}
                 >
                   <Bot size={15} /> {session.autonomous ? 'Autonomous on' : 'Cohost mode'}
@@ -213,7 +216,7 @@ export function WebinarDirector() {
               )}
             </div>
 
-            <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+            <div className="webinar-metrics" style={{ marginTop: isMobile ? 14 : 20, display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))', gap: 8, minWidth: 0 }}>
               <Metric label="Live" value={liveAttendees} />
               <Metric label="Registered" value={dashboard?.attendees.length ?? session?.attendee_count ?? 0} />
               <Metric label="Questions" value={dashboard?.questions.length ?? session?.question_count ?? 0} />
@@ -226,11 +229,11 @@ export function WebinarDirector() {
             )}
           </div>
 
-          <div style={{ ...card, padding: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 16 }}>
-              <div>
+          <div className="webinar-now-presenting" style={{ ...card, padding: isMobile ? 14 : 20, minWidth: 0 }}>
+            <div className="webinar-presenting-titlebar" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: isMobile ? 'flex-start' : 'center', marginBottom: 16, minWidth: 0 }}>
+              <div style={{ minWidth: 0 }}>
                 <div className="apex-eyebrow">Now presenting</div>
-                <h3 style={{ margin: '6px 0 0', fontSize: 20 }}>
+                <h3 style={{ margin: '6px 0 0', fontSize: isMobile ? 17 : 20, lineHeight: 1.25, overflowWrap: 'anywhere' }}>
                   {segments[segmentIndex]?.title ?? 'Preparing room'}
                 </h3>
               </div>
@@ -263,7 +266,7 @@ export function WebinarDirector() {
 
           <div style={{ ...card, padding: 20 }}>
             <div className="apex-eyebrow" style={{ marginBottom: 10 }}>Say something to the room</div>
-            <div style={{ display: 'flex', gap: 9 }}>
+            <div className="webinar-broadcast-row" style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 9, minWidth: 0 }}>
               <input
                 value={hostMessage}
                 onChange={(e) => setHostMessage(e.target.value)}
@@ -271,9 +274,9 @@ export function WebinarDirector() {
                   if (e.key === 'Enter' && hostMessage.trim()) void sendHostMessage();
                 }}
                 placeholder="Example: I’m pulling up the live APEX lead screen now…"
-                style={{ flex: 1, background: 'var(--color-apex-bg)', color: 'var(--color-apex-text)', border: '1px solid var(--color-apex-line)', borderRadius: 6, padding: '10px 12px' }}
+                style={{ flex: 1, minWidth: 0, width: '100%', background: 'var(--color-apex-bg)', color: 'var(--color-apex-text)', border: '1px solid var(--color-apex-line)', borderRadius: 6, padding: '11px 12px', fontSize: isMobile ? 16 : 13 }}
               />
-              <button onClick={() => void sendHostMessage()} disabled={!hostMessage.trim() || Boolean(busy)} style={primaryButton}><MessageSquare size={15} /> Broadcast</button>
+              <button className="webinar-broadcast-button" onClick={() => void sendHostMessage()} disabled={!hostMessage.trim() || Boolean(busy)} style={primaryButton}><MessageSquare size={15} /> Broadcast</button>
             </div>
           </div>
 
@@ -296,8 +299,27 @@ export function WebinarDirector() {
           <div style={{ ...card, padding: 20 }}>
             <div className="apex-eyebrow" style={{ marginBottom: 12 }}>Lead capture</div>
             {dashboard?.attendees.length ? (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              isMobile ? (
+                <div className="webinar-attendee-cards" style={{ display: 'grid', gap: 8 }}>
+                  {dashboard.attendees.slice(0, 20).map((a) => (
+                    <div key={a.id} style={{ padding: 11, border: '1px solid var(--color-apex-line)', borderRadius: 7, background: 'rgba(0,0,0,0.14)', minWidth: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <strong style={{ display: 'block', overflowWrap: 'anywhere' }}>{a.name}</strong>
+                          <div style={{ color: 'var(--color-apex-muted)', fontSize: 11, marginTop: 2, overflowWrap: 'anywhere' }}>{a.company || 'No company listed'}</div>
+                        </div>
+                        <span style={{ color: a.engagement_score >= 25 ? 'var(--color-apex-green)' : 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>{a.engagement_score}</span>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                        <div>{a.email}</div>
+                        {a.phone && <div style={{ color: 'var(--color-apex-muted)' }}>{a.phone}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+              <div className="apex-scroll-x" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', minWidth: 560, borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead><tr style={{ textAlign: 'left', color: 'var(--color-apex-muted)' }}>
                     <th style={th}>Attendee</th><th style={th}>Company</th><th style={th}>Contact</th><th style={th}>Score</th>
                   </tr></thead>
@@ -313,13 +335,14 @@ export function WebinarDirector() {
                   </tbody>
                 </table>
               </div>
+              )
             ) : (
               <div style={{ color: 'var(--color-apex-muted)', fontSize: 13 }}>Registrations will appear here live.</div>
             )}
           </div>
         </section>
 
-        <aside style={{ display: 'grid', gap: 14, alignSelf: 'start', position: isMobile ? 'static' : 'sticky', top: isMobile ? undefined : 82 }}>
+        <aside className="webinar-director-sidebar" style={{ display: 'grid', gap: isMobile ? 12 : 14, alignSelf: 'start', position: isMobile ? 'static' : 'sticky', top: isMobile ? undefined : 82, minWidth: 0 }}>
           <div style={{ ...card, padding: 16 }}>
             <div className="apex-eyebrow" style={{ marginBottom: 10 }}>AI Producer</div>
             <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--color-apex-text)' }}>
@@ -344,7 +367,7 @@ export function WebinarDirector() {
 
           <div style={{ ...card, padding: 16 }}>
           <div className="apex-eyebrow" style={{ margin: '4px 6px 10px' }}>Run of show</div>
-          <div style={{ display: 'grid', gap: 4 }}>
+          <div className="webinar-run-of-show" style={{ display: isMobile ? 'flex' : 'grid', gap: 6, overflowX: isMobile ? 'auto' : undefined, paddingBottom: isMobile ? 4 : undefined, WebkitOverflowScrolling: isMobile ? 'touch' : undefined }}>
             {segments.map((segment, index) => {
               const active = index === segmentIndex;
               return (
@@ -352,8 +375,10 @@ export function WebinarDirector() {
                   key={segment.id}
                   disabled={!session || Boolean(busy)}
                   onClick={() => session && void run('segment', () => api.webinars.segment(session.id, index))}
+                  className="webinar-run-segment"
                   style={{
                     textAlign: 'left',
+                    flex: isMobile ? '0 0 190px' : undefined,
                     border: 0,
                     borderLeft: active ? '3px solid var(--color-apex-brass)' : '3px solid transparent',
                     background: active ? 'var(--color-apex-brass-soft)' : 'transparent',
