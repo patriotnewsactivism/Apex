@@ -270,15 +270,23 @@ export function createLeadsRouter(): Router {
       qualified: all.filter((l) => l.status === 'qualified').length,
       rejected: all.filter((l) => l.status === 'rejected').length,
     };
+    const visible = all.filter((lead) => lead.status !== 'rejected');
     const byPipelineState: Record<string, number> = {};
     const byIndustry: Record<string, number> = {};
-    for (const l of all) {
+    for (const l of visible) {
       const key = l.industry || 'Unknown';
       byIndustry[key] = (byIndustry[key] ?? 0) + 1;
       byPipelineState[l.pipelineState ?? 'DISCOVERED'] = (byPipelineState[l.pipelineState ?? 'DISCOVERED'] ?? 0) + 1;
     }
 
-    res.json({ total: all.length, byStatus, byPipelineState, byIndustry });
+    res.json({
+      total: visible.length,
+      rawCandidates: all.length,
+      rejected: byStatus.rejected,
+      byStatus,
+      byPipelineState,
+      byIndustry,
+    });
   });
 
   // ─── POST /api/leads/import — CSV or JSON, preview unless commit=true ────
