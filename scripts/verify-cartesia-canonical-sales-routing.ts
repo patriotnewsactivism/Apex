@@ -112,6 +112,21 @@ check(
     /\.\.\.\(modelRequired\.length \? \{ required: modelRequired \} : \{\}\)/.test(reconciler),
 );
 check(
+  'reconciler imports the approved Telnyx number and binds it to the canonical agent',
+  /resolveOrCreateTelnyxProvider/.test(reconciler) &&
+    /\/providers/.test(reconciler) &&
+    /\/phone-numbers\/import/.test(reconciler) &&
+    /provider_id: providerId/.test(reconciler) &&
+    /number: APEX_CARTESIA_CALLER_NUMBER/.test(reconciler) &&
+    /body: JSON\.stringify\(\{ agent_id: agentId \}\)/.test(reconciler),
+);
+check(
+  'Telnyx provider creation uses existing secure runtime credentials and fails closed on ambiguity',
+  /process\.env\.TELNYX_API_KEY/.test(reconciler) &&
+    /TELNYX_CALL_BRIDGE_CONNECTION_ID/.test(reconciler) &&
+    /Multiple Cartesia Telnyx providers exist/.test(reconciler),
+);
+check(
   'reconciler never targets the pre-existing Receptionist/Telnyx agent by name or id',
   !/Cartesia Receptionist \(Telnyx\)/.test(reconciler) &&
     !/agent_4Pr3KQCk39EeDx43s7ArAZ/.test(reconciler),
