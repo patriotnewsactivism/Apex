@@ -513,7 +513,15 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
   } | null;
 
   const cachedCampaignDraft = cached?.campaignDraft as Record<string, unknown> | null;
-  const readyFromCache = Boolean(cachedCampaignDraft);
+  const cachedBasic = cached?.basicEnrichment as Record<string, unknown> | null;
+  const cachedVerification = cachedBasic?.['businessVerification'] as { status?: string } | undefined;
+  const cachedHasContact = Boolean(cachedContact?.contactEmail || cachedContact?.contactPhone || input.phone);
+  const webSource = /^(?:cache:)?web:/i.test(input.source ?? '');
+  const readyFromCache = Boolean(
+    cachedCampaignDraft &&
+    cachedHasContact &&
+    (!webSource || cachedVerification?.status === 'verified'),
+  );
   const state: LeadPipelineState = readyFromCache ? 'CAMPAIGN_READY' : 'DISCOVERED';
 
   const [lead] = await db
@@ -627,8 +635,22 @@ async function claimLeadsForState(
   const now = new Date();
   const conditions = [
     eq(researchedLeads.pipelineState, state),
+    sql`${researchedLeads.status} <> 'rejected'`,
     or(isNull(researchedLeads.pipelineLeaseExpiresAt), lt(researchedLeads.pipelineLeaseExpiresAt, now)),
   ];
+  if (state === 'CONTACT_FOUND') {
+    // Do not manufacture "qualified" prospects that have no reachable public
+    // contact path. They remain parked for the enrichment backlog.
+    conditions.push(
+      or(
+        sql`${researchedLeads.contactEmail} IS NOT NULL`,
+        sql`${researchedLeads.contactPhone} IS NOT NULL`,
+      ),
+    );
+  }
+  if (state === 'QUALIFIED' || state === 'DEEP_RESEARCH') {
+    conditions.push(eq(researchedLeads.status, 'qualified'));
+  }
   if (options.campaignId) conditions.push(eq(researchedLeads.campaignId, options.campaignId));
 
   const candidates = await db
