@@ -35,6 +35,8 @@ async function main(): Promise<void> {
 
   const source = read('packages/api-server/src/live-voice.ts');
   const geminiSource = read('packages/api-server/src/gemini-live-session.ts');
+  const clientHook = read('packages/dashboard/src/hooks/useLiveVoiceCall.ts');
+  const quickChat = read('packages/dashboard/src/components/QuickChat.tsx');
 
   // ── Pure helper: run it, don't just read it ──────────────────────────────
   const mod = (await import(
@@ -137,6 +139,39 @@ async function main(): Promise<void> {
   check(
     'the client-close handler cancels any pending reconnect timer',
     /client\.on\('close', \(\) => \{[\s\S]{0,200}clearReconnectTimer\(\);/.test(source),
+  );
+
+  // ── Browser hang-up is authoritative, even while start() is still async ──
+  check(
+    'the browser hook uses a monotonic lifecycle token to cancel stale async starts',
+    /const lifecycleRef = useRef\(0\);/.test(clientHook) &&
+      /lifecycleRef\.current \+= 1;/.test(clientHook) &&
+      /const lifecycle = lifecycleRef\.current \+ 1;/.test(clientHook),
+  );
+  check(
+    'a hang-up during microphone permission cannot later resurrect the call',
+    /const stream = await navigator\.mediaDevices\.getUserMedia[\s\S]{0,700}if \(lifecycle !== lifecycleRef\.current\) \{[\s\S]{0,220}stream\.getTracks\(\)\.forEach/.test(clientHook),
+  );
+  check(
+    'a hang-up during websocket-ticket fetch cannot later create a replacement socket',
+    /const \{ ticket \} = await api\.auth\.websocketTicket\(\);[\s\S]{0,500}if \(lifecycle !== lifecycleRef\.current\)/.test(clientHook) &&
+      /const ws = new WebSocket[\s\S]{0,300}if \(lifecycle !== lifecycleRef\.current\) \{[\s\S]{0,160}ws\.close\(1000, 'cancelled before connect'\)/.test(clientHook),
+  );
+  check(
+    'stale websocket callbacks cannot flip an ended call back to live or error',
+    /ws\.onopen = \(\) => \{[\s\S]{0,180}if \(lifecycle !== lifecycleRef\.current\)/.test(clientHook) &&
+      /ws\.onmessage = \(event\) => \{\s*if \(lifecycle !== lifecycleRef\.current\) return;/.test(clientHook) &&
+      /ws\.onerror = \(\) => \{\s*if \(lifecycle !== lifecycleRef\.current\) return;/.test(clientHook),
+  );
+  check(
+    'Hang up closes the socket with an operator-hangup reason and marks UI ended immediately',
+    /ws\?\.close\(1000, 'operator hangup'\)/.test(clientHook) &&
+      /setStatus\('ended'\);/.test(clientHook),
+  );
+  check(
+    'QuickChat refreshes durable voice history when the call ends so stale in-progress rows disappear',
+    /liveVoice\.status !== 'ended'/.test(quickChat) &&
+      /invalidateQueries\(\{ queryKey: \['voice-chat-sessions'\] \}\)/.test(quickChat),
   );
 
   // ── Reconnects stay context-aware instead of forgetting where Don is ─────
