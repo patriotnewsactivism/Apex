@@ -546,7 +546,8 @@ export class CampaignRunner {
     this.running = true;
     try {
       const config = getLeadPipelineConfig();
-      void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16));
+      void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16))
+        .catch((err) => console.warn('[lead-identity] background repair failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();
       const claimed = await this.claimSegments(config.segmentBatchSize);
       if (claimed.length === 0) {
