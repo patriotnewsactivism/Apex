@@ -517,7 +517,40 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
   });
   const domain = normalizeLeadDomain(lead.website);
   const [cached] = await db.select().from(leadResearchCache).where(eq(leadResearchCache.cacheKey, cacheKey)).limit(1);
-  const update = buildStageUpdate(next, lead, cached);
+
+  let identity: BusinessWebsiteIdentity | null = null;
+  let stageLead = lead;
+  if (
+    next === 'BASIC_ENRICHMENT' &&
+    lead.website &&
+    /^(?:cache:)?web:/i.test(lead.source ?? '')
+  ) {
+    identity = await verifyBusinessWebsiteIdentity({
+      website: lead.website,
+      industry: lead.industry,
+      city: lead.city,
+      currentName: lead.companyName,
+    });
+    const betterName = identity.canonicalName?.trim();
+    stageLead = {
+      ...lead,
+      companyName: betterName && (identity.status === 'verified' || isSeoLikeCompanyName(lead.companyName, lead.city))
+        ? betterName
+        : lead.companyName,
+      website: identity.homepage ?? lead.website,
+    };
+  }
+
+  const update = buildStageUpdate(next, stageLead, cached);
+  if (identity) {
+    update.companyName = stageLead.companyName;
+    update.website = stageLead.website;
+    update.enrichment = {
+      ...((update.enrichment as Record<string, unknown> | null) ?? {}),
+      businessVerification: identity,
+      summary: `${stageLead.companyName} is a ${stageLead.industry ?? 'local'} business in ${stageLead.city ?? 'its market'}.`,
+    };
+  }
   const timestampColumn = STATE_TIMESTAMP[next];
 
   await db
@@ -706,7 +739,12 @@ export function makeShortOutreachAngle(companyName: string, industry?: string | 
 }
 
 function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
-  let score = 45;
+  const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
+    | { status?: string }
+    | undefined;
+  if (verification?.status === 'mismatch') return 0;
+
+  let score = verification?.status === 'verified' ? 55 : 35;
   if (lead.website) score += 15;
   if (lead.contactEmail || lead.contactPhone) score += 15;
   if (lead.industry) score += 10;
