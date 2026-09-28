@@ -178,11 +178,12 @@ try {
 
   // ── AC1/AC3: the tool drives the same validated path, metadata only ────────
   const toolId = await seed();
+  const toolNote = 'qualified through ICP review, no outreach performed';
   const toolRes = (await callTool('updateLeadStatus', {
     leadId: toolId,
     status: 'qualified',
     sourceUrl,
-    note: 'qualified through ICP review, no outreach performed',
+    note: toolNote,
   })) as Record<string, unknown>;
   assert.equal(toolRes.updated, true, `tool reports the validated response (got ${JSON.stringify(toolRes)})`);
   assert.equal(toolRes.status, 'qualified');
@@ -192,7 +193,7 @@ try {
   assert.ok(Array.isArray(audit) && audit.length > 0, 'audit trail recorded in existing jsonb column');
   assert.equal(audit?.[audit.length - 1]?.to, 'qualified');
   assert.equal(audit?.[audit.length - 1]?.sourceUrl, sourceUrl, 'evidence URL recorded');
-  assert.equal(audit?.[audit.length - 1]?.note, note, 'rationale recorded');
+  assert.equal(audit?.[audit.length - 1]?.note, toolNote, 'rationale recorded');
 
   const [sends] = await db
     .select({ count: sql<number>`count(*)::int` })
