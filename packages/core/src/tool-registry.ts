@@ -250,6 +250,29 @@ async function writeLeadSearchCache(spec: LeadSearchCacheSpec, value: unknown): 
   }
 }
 
+const webSearchProviderCooldowns = new Map<string, number>();
+
+function webSearchProviderReady(provider: string): boolean {
+  return (webSearchProviderCooldowns.get(provider) ?? 0) <= Date.now();
+}
+
+function tripWebSearchProvider(provider: string, status: number, detail: string): void {
+  let cooldownMs = 0;
+  if (status === 402 || status === 401 || status === 403) cooldownMs = 30 * 60 * 1000;
+  else if (status === 429) cooldownMs = 60 * 1000;
+  else if (status >= 500) cooldownMs = 30 * 1000;
+  if (cooldownMs <= 0) return;
+
+  const until = Date.now() + cooldownMs;
+  const current = webSearchProviderCooldowns.get(provider) ?? 0;
+  if (until > current) {
+    webSearchProviderCooldowns.set(provider, until);
+    console.warn(
+      `[webSearch] circuit open for ${provider} for ${Math.round(cooldownMs / 1000)}s after HTTP ${status}: ${detail.slice(0, 140)}`,
+    );
+  }
+}
+
 // ─── Tool Registry ────────────────────────────────────────────────────────────
 
 class ToolRegistry {
@@ -876,7 +899,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // ── Strategy 0: Tavily Search API (best quality, AI-optimized) ──
         const tavilyKey = process.env.TAVILY_API_KEY;
         if (!tavilyKey) diagnostics.push('tavily: TAVILY_API_KEY not set');
-        if (tavilyKey) {
+        if (tavilyKey && !webSearchProviderReady('tavily')) {
+          diagnostics.push('tavily: temporarily skipped by provider circuit breaker');
+        }
+        if (tavilyKey && webSearchProviderReady('tavily')) {
           try {
             const tavilyRes = await fetch('https://api.tavily.com/search', {
               method: 'POST',
@@ -899,6 +925,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               const body = await tavilyRes.text().catch(() => '');
               const detail = `tavily: HTTP ${tavilyRes.status} ${body.slice(0, 200)}`.trim();
               diagnostics.push(detail);
+              tripWebSearchProvider('tavily', tavilyRes.status, body);
               console.warn(`[webSearch] ${detail} for "${query}"`);
             }
             if (tavilyRes.ok) {
@@ -925,7 +952,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
         const braveKey = process.env.BRAVE_SEARCH_API_KEY;
         if (!braveKey) diagnostics.push('brave: BRAVE_SEARCH_API_KEY not set');
-        if (braveKey) {
+        if (braveKey && !webSearchProviderReady('brave')) {
+          diagnostics.push('brave: temporarily skipped by provider circuit breaker');
+        }
+        if (braveKey && webSearchProviderReady('brave')) {
           try {
             const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
             const braveRes = await fetch(braveUrl, {
@@ -936,6 +966,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               const body = await braveRes.text().catch(() => '');
               const detail = `brave: HTTP ${braveRes.status} ${body.slice(0, 200)}`.trim();
               diagnostics.push(detail);
+              tripWebSearchProvider('brave', braveRes.status, body);
               console.warn(`[webSearch] ${detail} for "${query}"`);
             }
             if (braveRes.ok) {
