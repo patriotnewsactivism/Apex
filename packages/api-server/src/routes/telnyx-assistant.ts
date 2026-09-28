@@ -669,7 +669,7 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
           agentId: handlingAgentId,
           taskId: null,
           level: 'acting',
-          message: `📞 Inbound callback completed from ${name ?? callerNumber || 'unknown caller'}${duration != null ? ` (${duration}s)` : ''}. Post-call transcript/insight enrichment queued.`,
+          message: `📞 Inbound callback completed from ${(name ?? callerNumber) || 'unknown caller'}${duration != null ? ` (${duration}s)` : ''}. Post-call transcript/insight enrichment queued.`,
           timestamp: new Date(),
         });
 
