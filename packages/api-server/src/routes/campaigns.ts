@@ -62,7 +62,8 @@ export function createCampaignsRouter() {
       .where(
         and(
           inArray(researchedLeads.campaignId, campaigns.map((campaign) => campaign.id)),
-          sql`${researchedLeads.status} <> 'rejected'`,
+          eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
+          eq(researchedLeads.status, 'qualified'),
           sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
           sql`(
             ${researchedLeads.source} IS NULL
@@ -122,7 +123,8 @@ export function createCampaignsRouter() {
       .where(
         and(
           eq(researchedLeads.campaignId, req.params.id),
-          sql`${researchedLeads.status} <> 'rejected'`,
+          eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
+          eq(researchedLeads.status, 'qualified'),
           sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
           sql`(
             ${researchedLeads.source} IS NULL
