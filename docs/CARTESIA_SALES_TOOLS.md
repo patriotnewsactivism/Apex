@@ -6,6 +6,8 @@ The APEX API exposes seven Cartesia endpoints at `https://apex.donmatthews.live/
 
 Set `CARTESIA_TOOL_SECRET` and `CARTESIA_WEBHOOK_SECRET` to different random values in the APEX backend environment. In Cartesia's webhook tools, set bearer authentication to the tool secret. In the agent's call event webhook configuration, set the event secret. APEX rejects requests when the matching secret is absent.
 
+The canonical sales agent selects the active, organization-owned Cartesia voice named **Don Matthews**. If multiple owned voices share that name, set `CARTESIA_SALES_VOICE_ID` to the exact Don Matthews voice ID. A generic fallback voice is prohibited: reconciliation and new APEX sales calls fail closed if the voice is missing or the agent still points at a different voice. The opening is supplied as Cartesia's `initial_message` and plays when the outbound call connects; it does not wait for a CRM lookup or an LLM turn. A live phone test is needed to measure answer-to-first-audio latency.
+
 The booking tools need `APEX_CAL_API_KEY` and numeric `APEX_CAL_EVENT_TYPE_ID` for an actual Cal.com consultation event type. Without them, the tools return 503 and the agent must offer a callback. No appointment is reported as booked merely because a prospect mentions a time. SMS needs the existing `TELNYX_API_KEY` and `APEX_FRONT_DESK_NUMBER`.
 
 ## Cartesia webhook tools
