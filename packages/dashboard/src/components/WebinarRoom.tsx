@@ -80,12 +80,18 @@ export function WebinarRoom({ slug }: { slug: string }) {
   const [lastSpokenSegment, setLastSpokenSegment] = useState<number | null>(null);
   const seenQuestionIds = useRef(new Set<string>());
   const seenEventIds = useRef(new Set<string>());
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioQueueRef = useRef<Array<{ url: string; fallbackText: string }>>([]);
+  const [roiMissedOpportunities, setRoiMissedOpportunities] = useState(25);
+  const [roiAverageValue, setRoiAverageValue] = useState(500);
+  const [roiCloseRate, setRoiCloseRate] = useState(30);
+  const [roiRecoveryRate, setRoiRecoveryRate] = useState(50);
+  const [roiTracked, setRoiTracked] = useState(false);
   const attendeeRef = useRef(attendeeId);
   attendeeRef.current = attendeeId;
 
-  const speak = useCallback((text: string, interrupt = false) => {
+  const fallbackSpeak = useCallback((text: string) => {
     if (!voiceOn || !startedAudio || !('speechSynthesis' in window) || !text.trim()) return;
-    if (interrupt) window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.voice = naturalVoice() ?? null;
     utterance.rate = 1.02;
@@ -93,6 +99,57 @@ export function WebinarRoom({ slug }: { slug: string }) {
     utterance.volume = 1;
     window.speechSynthesis.speak(utterance);
   }, [startedAudio, voiceOn]);
+
+  const stopVoice = useCallback(() => {
+    audioQueueRef.current = [];
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  }, []);
+
+  const playVoice = useCallback((url: string, fallbackText: string, interrupt = false) => {
+    if (!voiceOn || !startedAudio || !fallbackText.trim()) return;
+    if (interrupt) stopVoice();
+
+    const start = (item: { url: string; fallbackText: string }) => {
+      const audio = new Audio(item.url);
+      audio.preload = 'auto';
+      audioRef.current = audio;
+      const next = () => {
+        audioRef.current = null;
+        const queued = audioQueueRef.current.shift();
+        if (queued) start(queued);
+      };
+      audio.onended = next;
+      audio.onerror = () => {
+        audioRef.current = null;
+        fallbackSpeak(item.fallbackText);
+        const queued = audioQueueRef.current.shift();
+        if (queued) window.setTimeout(() => start(queued), 100);
+      };
+      void audio.play().catch(() => {
+        audioRef.current = null;
+        fallbackSpeak(item.fallbackText);
+        const queued = audioQueueRef.current.shift();
+        if (queued) window.setTimeout(() => start(queued), 100);
+      });
+    };
+
+    const item = { url, fallbackText };
+    if (audioRef.current && !audioRef.current.ended && !audioRef.current.paused) {
+      audioQueueRef.current.push(item);
+      return;
+    }
+    start(item);
+  }, [fallbackSpeak, startedAudio, stopVoice, voiceOn]);
+
+  const speakFallback = useCallback((text: string, interrupt = false) => {
+    if (interrupt) stopVoice();
+    fallbackSpeak(text);
+  }, [fallbackSpeak, stopVoice]);
 
   const fetchSnapshot = useCallback(async () => {
     const res = await fetch(`/api/webinar/public/${encodeURIComponent(slug)}`);
@@ -130,9 +187,13 @@ export function WebinarRoom({ slug }: { slug: string }) {
     if (lastSpokenSegment === index) return;
     setLastSpokenSegment(index);
     if (snapshot.currentSegment.narration) {
-      speak(snapshot.currentSegment.narration, true);
+      playVoice(
+        `/api/webinar/public/${encodeURIComponent(slug)}/audio/segment/${encodeURIComponent(snapshot.currentSegment.id)}`,
+        snapshot.currentSegment.narration,
+        true,
+      );
     }
-  }, [snapshot, attendeeId, lastSpokenSegment, speak]);
+  }, [snapshot, attendeeId, lastSpokenSegment, playVoice, slug]);
 
   useEffect(() => {
     if (!snapshot || !attendeeId) return;
@@ -141,27 +202,44 @@ export function WebinarRoom({ slug }: { slug: string }) {
       if (!id || seenEventIds.current.has(id)) continue;
       seenEventIds.current.add(id);
       if (event.type === 'host_message' && event.payload?.message) {
-        speak(event.payload.message);
+        playVoice(
+          `/api/webinar/public/${encodeURIComponent(slug)}/audio/event/${encodeURIComponent(id)}`,
+          event.payload.message,
+        );
       }
       if (event.type === 'human_takeover') {
-        speak('Matthew has taken the floor. Autonomous narration is paused.');
+        speakFallback('Matthew has taken the floor. Autonomous narration is paused.', true);
       }
       if (event.type === 'human_release') {
         const narration = snapshot.currentSegment.narration ?? '';
         setLastSpokenSegment(snapshot.session.currentSegment);
-        speak(narration || 'The AI co-host is back on the floor.', true);
+        if (narration) {
+          playVoice(
+            `/api/webinar/public/${encodeURIComponent(slug)}/audio/segment/${encodeURIComponent(snapshot.currentSegment.id)}`,
+            narration,
+            true,
+          );
+        } else {
+          speakFallback('The AI co-host is back on the floor.', true);
+        }
       }
     }
-  }, [snapshot, attendeeId, speak]);
+  }, [snapshot, attendeeId, playVoice, slug, speakFallback]);
 
   useEffect(() => {
     if (!snapshot || !attendeeId) return;
     for (const item of [...snapshot.questions].reverse()) {
       if (seenQuestionIds.current.has(item.id)) continue;
       seenQuestionIds.current.add(item.id);
-      if (item.answer) speak(`Audience question: ${item.question}. ${item.answer}`);
+      if (item.answer) {
+        const text = `Audience question: ${item.question}. ${item.answer}`;
+        playVoice(
+          `/api/webinar/public/${encodeURIComponent(slug)}/audio/question/${encodeURIComponent(item.id)}`,
+          text,
+        );
+      }
     }
-  }, [snapshot, attendeeId, speak]);
+  }, [snapshot, attendeeId, playVoice, slug]);
 
   const join = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -190,7 +268,13 @@ export function WebinarRoom({ slug }: { slug: string }) {
       for (const e of room.events ?? []) if (e.id) seenEventIds.current.add(String(e.id));
       if (room.session.status === 'live' && room.currentSegment.narration) {
         setLastSpokenSegment(room.session.currentSegment);
-        window.setTimeout(() => speak(room.currentSegment.narration ?? '', true), 250);
+        window.setTimeout(() => {
+          playVoice(
+            `/api/webinar/public/${encodeURIComponent(slug)}/audio/segment/${encodeURIComponent(room.currentSegment.id)}`,
+            room.currentSegment.narration ?? '',
+            true,
+          );
+        }, 250);
       }
     } catch (error) {
       setJoinError(error instanceof Error ? error.message : String(error));
@@ -212,7 +296,12 @@ export function WebinarRoom({ slug }: { slug: string }) {
       const data = await res.json();
       if (!res.ok) throw new Error('The question could not be sent.');
       if (data.id) seenQuestionIds.current.add(String(data.id));
-      if (data.answer) speak(`Your question: ${current}. ${String(data.answer)}`);
+      if (data.answer && data.id) {
+        playVoice(
+          `/api/webinar/public/${encodeURIComponent(slug)}/audio/question/${encodeURIComponent(String(data.id))}`,
+          `Your question: ${current}. ${String(data.answer)}`,
+        );
+      }
       await fetchSnapshot();
     } finally {
       setAnswering(false);
@@ -227,6 +316,32 @@ export function WebinarRoom({ slug }: { slug: string }) {
       body: JSON.stringify({ attendeeId, type: 'cta_click' }),
     }).catch(() => {});
     window.open(snapshot.session.ctaUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const roiEstimate = useMemo(() => {
+    const missed = Math.max(0, roiMissedOpportunities);
+    const value = Math.max(0, roiAverageValue);
+    const close = Math.min(100, Math.max(0, roiCloseRate)) / 100;
+    const recovery = Math.min(100, Math.max(0, roiRecoveryRate)) / 100;
+    return missed * value * close * recovery;
+  }, [roiAverageValue, roiCloseRate, roiMissedOpportunities, roiRecoveryRate]);
+
+  const trackRoi = () => {
+    if (!snapshot || !attendeeId) return;
+    setRoiTracked(true);
+    void fetch(`/api/webinar/public/${encodeURIComponent(slug)}/engagement`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        attendeeId,
+        type: 'roi_calculated',
+        missedOpportunities: roiMissedOpportunities,
+        averageValue: roiAverageValue,
+        closeRate: roiCloseRate,
+        recoveryRate: roiRecoveryRate,
+        estimate: roiEstimate,
+      }),
+    }).catch(() => {});
   };
 
   const progress = useMemo(() => {
@@ -298,7 +413,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
             }
             setVoiceOn((value) => {
               const next = !value;
-              if (!next && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+              if (!next) stopVoice();
               if (next) setLastSpokenSegment(null);
               return next;
             });
@@ -324,6 +439,31 @@ export function WebinarRoom({ slug }: { slug: string }) {
           </div>
           {segment.demoCue && (
             <div style={{ marginTop: 34, padding: 16, borderRadius: 10, background: 'rgba(201,166,107,0.09)', color: '#c9a66b', fontSize: 13 }}>{segment.demoCue}</div>
+          )}
+          {segment.id === 'roi' && (
+            <div style={{ marginTop: 30, padding: 20, borderRadius: 12, border: '1px solid rgba(201,166,107,0.22)', background: 'rgba(0,0,0,0.18)' }}>
+              <div style={{ color: '#c9a66b', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Live ROI worksheet</div>
+              <div style={{ color: '#8d9099', fontSize: 12, marginTop: 7, lineHeight: 1.5 }}>
+                These are editable scenario inputs, not a performance guarantee. Use your own numbers.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10, marginTop: 14 }}>
+                <RoiInput label="Missed opportunities / month" value={roiMissedOpportunities} onChange={setRoiMissedOpportunities} />
+                <RoiInput label="Average customer value ($)" value={roiAverageValue} onChange={setRoiAverageValue} />
+                <RoiInput label="Close rate (%)" value={roiCloseRate} onChange={setRoiCloseRate} />
+                <RoiInput label="Recoverable share (%)" value={roiRecoveryRate} onChange={setRoiRecoveryRate} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'end', justifyContent: 'space-between', gap: 16, marginTop: 16, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ color: '#777b85', fontSize: 11 }}>Scenario monthly recovered revenue</div>
+                  <div style={{ fontSize: 30, fontWeight: 800, marginTop: 3 }}>
+                    {roiEstimate.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}
+                  </div>
+                </div>
+                <button onClick={trackRoi} style={{ ...buttonStyle, opacity: roiTracked ? 0.75 : 1 }}>
+                  {roiTracked ? 'Scenario saved' : 'Use this scenario'}
+                </button>
+              </div>
+            </div>
           )}
           <div style={{ position: 'absolute', right: 28, bottom: 24, fontSize: 12, color: '#656871' }}>{snapshot.session.currentSegment + 1} / {snapshot.segments.length}</div>
         </section>
@@ -370,6 +510,29 @@ export function WebinarRoom({ slug }: { slug: string }) {
         </section>
       )}
     </div>
+  );
+}
+
+function RoiInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label style={{ display: 'grid', gap: 6, color: '#8d9099', fontSize: 11 }}>
+      {label}
+      <input
+        type="number"
+        min={0}
+        value={value}
+        onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))}
+        style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }}
+      />
+    </label>
   );
 }
 
