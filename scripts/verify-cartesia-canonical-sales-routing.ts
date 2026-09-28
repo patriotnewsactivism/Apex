@@ -55,9 +55,16 @@ check(
 );
 
 check(
-  'Cartesia outbound payload puts caller ID and ringing timeout on each outbound call entry',
-  /outbound_calls:\s*\[\{[\s\S]{0,280}to_number:\s*toNumber[\s\S]{0,280}from_number_id:\s*fromNumberId[\s\S]{0,280}ringing_timeout_seconds:/.test(client) &&
-    !/JSON\.stringify\(\{\s*from_number_id:\s*fromNumberId/.test(client),
+  'Cartesia outbound payload preserves the live account-compatible request-level telephony controls',
+  /JSON\.stringify\(\{[\s\S]{0,220}from_number_id:\s*fromNumberId[\s\S]{0,220}ringing_timeout_seconds:/.test(client) &&
+    /outbound_calls:\s*\[\{[\s\S]{0,180}to_number:\s*toNumber[\s\S]{0,180}dynamic_variables:\s*dynamicVariables/.test(client),
+);
+check(
+  'Cartesia outbound failures preserve provider HTTP status and response detail',
+  /rawBody = await response\.text\(\)/.test(client) &&
+    /Cartesia outbound call request failed \(HTTP/.test(client) &&
+    /body\.detail/.test(client) &&
+    /body\.error/.test(client),
 );
 
 const makeStart = registry.indexOf("name: 'make_outbound_call'");
