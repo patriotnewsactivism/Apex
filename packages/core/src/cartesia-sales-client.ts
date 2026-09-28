@@ -231,11 +231,11 @@ export async function startCartesiaSalesCall(
       Accept: 'application/json',
     },
     body: JSON.stringify({
-      from_number_id: fromNumberId,
       agent_id: agentId,
-      ringing_timeout_seconds: Math.max(5, Math.min(80, Math.round(input.ringingTimeoutSeconds ?? 30))),
       outbound_calls: [{
         to_number: toNumber,
+        from_number_id: fromNumberId,
+        ringing_timeout_seconds: Math.max(5, Math.min(80, Math.round(input.ringingTimeoutSeconds ?? 30))),
         dynamic_variables: dynamicVariables,
       }],
     }),
