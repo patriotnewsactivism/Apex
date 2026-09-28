@@ -752,6 +752,13 @@ export function ChatPanel({
     setLiveProvider(null);
     setLiveLatency({});
     void qc.invalidateQueries({ queryKey: ['voice-chat-sessions'] });
+    // The UI ends immediately, while the server may still be committing
+    // endedAt. Refresh once more after the hangup grace window so Past calls
+    // cannot preserve a stale "in progress" row.
+    const refreshTimer = setTimeout(() => {
+      void qc.invalidateQueries({ queryKey: ['voice-chat-sessions'] });
+    }, 1200);
+    return () => clearTimeout(refreshTimer);
   }, [liveVoice.status, qc]);
 
   // Screen awareness, part 1: when a live voice call is active and Don

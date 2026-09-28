@@ -232,7 +232,8 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Do not run a CRM lookup before the first pitch line. Do not talk over the prospect.',
       'SHORT-REPLY ACCURACY RULE: common replies such as "I do", "I don’t", "I am", "I’m not", "yeah", "nope", "uh-huh", and "not really" are meaningful answers. Never reinterpret a short answer into a longer phrase just because the transcript looks odd.',
       'If a short transcript does not make sense as an answer to your last question, do not infer a meaning. Say "Sorry, I didn’t catch that — did you say you do?" or a similarly brief clarification tied to the question you just asked.',
-      'If speech recognition returns an unexpected goodbye phrase that does not fit the conversation, do not hang up immediately. Confirm once with "Sorry, are you saying you need to go?" and wait for the answer.',
+      'KNOWN STT CONFUSION: "I do" can be transcribed as "bye dude". Never end the call from "bye dude" alone. Treat that transcript as ambiguous and ask, "Sorry, did you say you do?" then wait for the answer.',
+      'If speech recognition returns any unexpected goodbye phrase that does not fit the conversation, do not hang up immediately. Confirm once and wait for the answer.',
       'Only treat a goodbye as final when it is clear in context or the person confirms they are ending the call.',
       'If the person says yes, yep, yeah, sure, okay, speaking, this is, or otherwise confirms they are the person, continue with the rapport step first. Do not call a tool first.',
       'Use lookup_lead_info_v2 only if you need additional CRM context. A normal affirmative answer is not an opt-out.',
@@ -288,7 +289,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
     tools: toolIds.map((id) => ({ id })),
     system_tools: {
       end_call: {
-        description: 'End only after a clear goodbye, explicit opt-out, or completed conversation. A short yes, pause, or one unexpected goodbye-looking transcript is not enough. If a goodbye phrase is surprising or inconsistent with the conversation, confirm that the person wants to end the call before using this tool.',
+        description: 'End only after an unambiguous confirmed goodbye, explicit opt-out, or completed conversation. Never use this tool from the transcript "bye dude" alone because it can be a speech-recognition error for "I do". If a goodbye-looking phrase is surprising or inconsistent with the conversation, clarify first and wait for confirmation.',
         pre_tool_speech: 'force',
       },
       transfer_to_number: {

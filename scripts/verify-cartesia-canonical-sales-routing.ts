@@ -166,9 +166,11 @@ check(
   /SHORT-REPLY ACCURACY RULE/.test(reconciler) &&
     /I do/.test(reconciler) &&
     /If a short transcript does not make sense as an answer/.test(reconciler) &&
+    /KNOWN STT CONFUSION/.test(reconciler) &&
+    /"I do" can be transcribed as "bye dude"/.test(reconciler) &&
+    /did you say you do/.test(reconciler) &&
     /unexpected goodbye phrase/.test(reconciler) &&
-    /are you saying you need to go/.test(reconciler) &&
-    /one unexpected goodbye-looking transcript is not enough/.test(reconciler),
+    /Never use this tool from the transcript "bye dude" alone/.test(reconciler),
 );
 check(
   'Cartesia STT keyterms bias common short sales-call replies and vocabulary',
