@@ -142,6 +142,18 @@ suite('lead status transition (PATCH /api/leads/:id)', () => {
     return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
   };
 
+  const readBack = async (
+    leadId: string,
+    authorization = `Bearer ${ADMIN_TOKEN}`,
+    extraHeaders: Record<string, string> = {},
+  ) => {
+    const res = await fetch(`${base}/${leadId}`, {
+      method: 'GET',
+      headers: { authorization, ...extraHeaders },
+    });
+    return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+  };
+
   it('AC2a persists status=qualified and listResearchedLeads(status=qualified) returns it', async () => {
     const leadId = await seedLead();
     const sourceUrl = 'https://lead-evidence.example.com/about';
@@ -159,6 +171,18 @@ suite('lead status transition (PATCH /api/leads/:id)', () => {
       status: 'qualified',
       previousStatus: 'new',
       persistedStatus: 'qualified',
+    });
+
+    // Independent request-boundary verification: a second authenticated GET
+    // must observe the persisted state rather than trusting the PATCH response.
+    const independent = await readBack(leadId, `Bearer ${ADMIN_TOKEN}`, {
+      'x-apex-actor': 'buildmybot:test-admin',
+    });
+    expect(independent.status).toBe(200);
+    expect(independent.json).toMatchObject({
+      success: true,
+      id: leadId,
+      status: 'qualified',
     });
 
     // Proof of persistence: read the row straight out of the database.
@@ -202,6 +226,10 @@ suite('lead status transition (PATCH /api/leads/:id)', () => {
     const response = await patch(missing, { status: 'qualified', sourceUrl: 'https://x.example.com/a', note: 'no such lead' });
     expect(response.status).toBe(404);
     expect(response.json.error).toContain(missing);
+
+    const readResponse = await readBack(missing);
+    expect(readResponse.status).toBe(404);
+    expect(readResponse.json).toMatchObject({ success: false, error: 'lead_not_found' });
   });
 
   it('AC2d requires at least one of status / pipelineState', async () => {
