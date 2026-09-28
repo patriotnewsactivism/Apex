@@ -204,7 +204,7 @@ export function LogStream() {
   }, [visible, mode]);
 
   return (
-    <div style={{ height: '100%', maxWidth: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ height: '100%', maxWidth: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
       <div
         className="apex-toolbar"
         style={{
