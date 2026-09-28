@@ -168,8 +168,8 @@ export function WebinarDirector() {
           <div className="webinar-room-link" style={{ marginTop: 16, padding: isMobile ? 10 : 12, borderRadius: 7, background: 'rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <Radio size={15} color="var(--color-apex-brass)" />
             <code style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--color-apex-muted)', fontSize: 11 }}>{publicUrl}</code>
-            <button onClick={() => void copyRoom()} style={iconButton} title="Copy attendee link"><Copy size={15} /></button>
-            <button onClick={() => window.open(publicUrl, '_blank', 'noopener,noreferrer')} style={iconButton} title="Open attendee room"><ExternalLink size={15} /></button>
+            <button className="apex-icon-btn" onClick={() => void copyRoom()} style={iconButton} title="Copy attendee link"><Copy size={15} /></button>
+            <button className="apex-icon-btn" onClick={() => window.open(publicUrl, '_blank', 'noopener,noreferrer')} style={iconButton} title="Open attendee room"><ExternalLink size={15} /></button>
           </div>
         )}
         {copied && <div style={{ color: 'var(--color-apex-green)', fontSize: 11, marginTop: 6 }}>Attendee link copied.</div>}
@@ -241,11 +241,13 @@ export function WebinarDirector() {
                 <button
                   disabled={!session || segmentIndex <= 0 || Boolean(busy)}
                   onClick={() => session && void run('segment', () => api.webinars.segment(session.id, segmentIndex - 1))}
+                  className="apex-icon-btn"
                   style={iconButton}
                 ><SkipBack size={16} /></button>
                 <button
                   disabled={!session || segmentIndex >= segments.length - 1 || Boolean(busy)}
                   onClick={() => session && void run('segment', () => api.webinars.segment(session.id, segmentIndex + 1))}
+                  className="apex-icon-btn"
                   style={iconButton}
                 ><SkipForward size={16} /></button>
               </div>
