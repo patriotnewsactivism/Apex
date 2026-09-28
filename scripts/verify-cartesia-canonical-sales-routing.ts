@@ -27,6 +27,7 @@ const registry = read('packages/core/src/tool-registry.ts');
 const salesOps = read('packages/api-server/src/routes/sales-ops.ts');
 const salesFloor = read('packages/api-server/src/routes/sales-floor.ts');
 const reconciler = read('packages/api-server/src/cartesia-sales-reconciler.ts');
+const playbooks = read('packages/core/src/sales-playbooks.ts');
 const index = read('packages/api-server/src/index.ts');
 
 check(
@@ -142,14 +143,21 @@ check(
 );
 
 check(
-  'outbound sales waits for the callee before speaking and preserves the campaign opener as first response',
-  /initial_message:\s*''/.test(reconciler) &&
-    /Wait until the person who answered finishes their first audible greeting or acknowledgement/.test(reconciler) &&
-    /Your exact opening line for this call is: \{\{campaign_first_message\}\}/.test(reconciler),
+  'outbound sales name-checks first, retries after three seconds, and pitches only after a response',
+  /initial_message:\s*'Hi, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
+    /inactivity_check_in_secs:\s*3/.test(reconciler) &&
+    /repeat exactly once: "Hi, is this \{\{customer_name\}\}\?"/.test(reconciler) &&
+    /Do not begin the pitch before the person responds/.test(reconciler) &&
+    /exact first pitch line: \{\{campaign_first_message\}\}/.test(reconciler),
 );
 check(
   'Cartesia sales voice cadence is slightly slowed to reduce PSTN\/SIP clipping',
   /voice_id:\s*voiceId[\s\S]{0,120}speed:\s*0\.96/.test(reconciler),
+);
+check(
+  'BuildMyBot sales pitch identifies the caller as Don after identity confirmation',
+  /firstMessage:\s*'My name is Don, and I’m calling with BuildMyBot\./.test(playbooks) &&
+    /You are Don, a BuildMyBot sales rep/.test(playbooks),
 );
 
 
