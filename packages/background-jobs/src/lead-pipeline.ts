@@ -245,12 +245,81 @@ function industryAffinity(industry: string | null | undefined, text: string): bo
   return meaningful.length === 0 || meaningful.some((token) => haystack.includes(token));
 }
 
+function normalizeBusinessEmail(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const email = value.trim().toLowerCase().replace(/^mailto:/i, '').split('?')[0] ?? '';
+  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) return null;
+  if (/(?:example\.com|example\.org|domain\.com|yourdomain|sentry|wixpress|cloudflare)/i.test(email)) return null;
+  if (/^(?:noreply|no-reply|donotreply|do-not-reply)@/i.test(email)) return null;
+  return email;
+}
+
+function normalizeUsBusinessPhone(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const raw = value.trim().replace(/^tel:/i, '').split(/[;,?]/)[0] ?? '';
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (digits.length >= 8 && digits.length <= 15 && raw.startsWith('+')) return `+${digits}`;
+  return null;
+}
+
+function publicContactsFromHtml(html: string): { email: string | null; phone: string | null } {
+  const emails = [
+    ...Array.from(html.matchAll(/href=["']mailto:([^"'?#\s>]+)/gi), (m) => m[1] ?? ''),
+    ...Array.from(decodeHtmlText(html).matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi), (m) => m[0] ?? ''),
+  ];
+  const phones = [
+    ...Array.from(html.matchAll(/href=["']tel:([^"'?#>]+)/gi), (m) => m[1] ?? ''),
+    ...Array.from(decodeHtmlText(html).matchAll(/(?:\+?1[\s.()-]*)?(?:\d{3}[\s.()-]*){2}\d{4}/g), (m) => m[0] ?? ''),
+  ];
+  return {
+    email: emails.map(normalizeBusinessEmail).find((value): value is string => Boolean(value)) ?? null,
+    phone: phones.map(normalizeUsBusinessPhone).find((value): value is string => Boolean(value)) ?? null,
+  };
+}
+
+function sameOriginContactLinks(html: string, homepage: string): string[] {
+  const base = new URL(homepage);
+  const candidates: string[] = [];
+  for (const match of html.matchAll(/href=["']([^"'#]+)["']/gi)) {
+    const href = match[1]?.trim();
+    if (!href || !/(?:contact|about|team|staff|leadership)/i.test(href)) continue;
+    try {
+      const url = new URL(href, base);
+      if (url.origin !== base.origin || !/^https?:$/.test(url.protocol)) continue;
+      url.hash = '';
+      candidates.push(url.toString());
+    } catch {}
+  }
+  return [...new Set(candidates)].slice(0, 2);
+}
+
+async function fetchContactPage(url: string): Promise<{ url: string; email: string | null; phone: string | null } | null> {
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow',
+      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'APEX-LeadVerifier/1.0 (+https://apex.donmatthews.live)' },
+      signal: AbortSignal.timeout(Number(process.env.LEAD_CONTACT_PAGE_TIMEOUT_MS ?? 2500)),
+    });
+    if (!response.ok) return null;
+    const html = (await response.text()).slice(0, 250000);
+    const contacts = publicContactsFromHtml(html);
+    return { url: response.url || url, ...contacts };
+  } catch {
+    return null;
+  }
+}
+
 export interface BusinessWebsiteIdentity {
   status: 'verified' | 'mismatch' | 'unverified';
   canonicalName: string | null;
   homepage: string | null;
   checkedAt: string;
   reason: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  contactSourceUrl: string | null;
 }
 
 export async function verifyBusinessWebsiteIdentity(input: {
