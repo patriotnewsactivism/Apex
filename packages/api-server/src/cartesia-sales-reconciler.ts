@@ -286,13 +286,15 @@ function agentConfig(toolIds: string[], voiceId: string) {
       },
       output: {
         voice_id: voiceId,
-        // Slightly slower pacing reduces clipped consonants on the PSTN/SIP leg.
-        speed: 0.86,
+        // Keep Cartesia at its native speaking rate. The previous 0.86 time-stretch
+        // could sound smeared/choppy after 8 kHz SIP transcoding; pacing is handled
+        // by the prompt instead of DSP speed manipulation.
+        speed: 1.0,
       },
     },
     turn: {
       inactivity_end_call_secs: 120,
-      inactivity_check_in_secs: 4,
+      inactivity_check_in_secs: 5,
     },
     tools: toolIds.map((id) => ({ id })),
     system_tools: {
