@@ -401,13 +401,15 @@ async function resolveTelnyxSipTrunkProvider(): Promise<string> {
   const configuredId = process.env.CARTESIA_SIP_TRUNK_PROVIDER_ID?.trim();
   const matches = providers.filter(
     (provider) => provider.type === 'sip_trunk' && provider.id &&
-      (configuredId ? provider.id === configuredId : /telnyx/i.test(provider.label ?? '')),
+      (!configuredId || provider.id === configuredId),
   );
   if (matches.length !== 1) {
     throw new Error(
       configuredId
         ? `Configured Cartesia SIP trunk provider ${configuredId} is missing or ambiguous`
-        : 'Connect the Telnyx outbound SIP trunk in Cartesia and set CARTESIA_SIP_TRUNK_PROVIDER_ID; caller ID import is pending',
+        : matches.length === 0
+          ? 'No SIP trunk provider is connected in Cartesia; configure Telnyx outbound SIP routing before importing the APEX caller ID'
+          : 'Multiple Cartesia SIP trunk providers exist; set CARTESIA_SIP_TRUNK_PROVIDER_ID to the Telnyx trunk',
     );
   }
   return matches[0]!.id!;
