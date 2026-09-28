@@ -205,8 +205,15 @@ export async function startCartesiaSalesCall(
     resolveCartesiaOutboundNumberId(),
   ]);
 
+  const customerName = input.customerName?.trim() || 'there';
+  const customerFirstName =
+    customerName === 'there'
+      ? 'there'
+      : customerName.replace(/^(mr|mrs|ms|miss|dr)\.?\s+/i, '').split(/\s+/)[0] || customerName;
+
   const dynamicVariables: Record<string, string> = {
-    customer_name: input.customerName?.trim() || 'there',
+    customer_name: customerName,
+    customer_first_name: customerFirstName,
     campaign_prompt: assistantPrompt,
     campaign_first_message: firstMessage,
   };
