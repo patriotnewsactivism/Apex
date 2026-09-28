@@ -29,6 +29,19 @@ check('pending leads can be queried', tools.includes('needsContactResearch'));
 check('agent is forbidden to guess contact data', agent.includes('Never guess'));
 check('agent receives the contact update tool', agent.includes("'updateLeadContactInfo'"));
 check('an autonomous backlog sweep is scheduled', scheduler.includes("id: 'system-lead-contact-enrichment'"));
+check('contact enrichment runs every 10 minutes', scheduler.includes("cronExpression: '*/10 * * * *'"));
+check('contact enrichment uses cached fast web search for missing fields', scheduler.includes('fast=true') && scheduler.includes('persistently cached'));
+check('first-party verification probes common contact pages', tools.includes("searchBusinessDirectory") && readFileSync('packages/background-jobs/src/lead-pipeline.ts', 'utf8').includes("'/contact-us'"));
+check('campaign qualification requires a verified business and a real email or phone', (() => {
+  const pipeline = readFileSync('packages/background-jobs/src/lead-pipeline.ts', 'utf8');
+  return pipeline.includes("verification?.status !== 'verified'") &&
+    pipeline.includes("!lead.contactEmail && !lead.contactPhone");
+})());
+check('structured first-party decision makers are retained when explicitly sourced', (() => {
+  const pipeline = readFileSync('packages/background-jobs/src/lead-pipeline.ts', 'utf8');
+  return pipeline.includes('structuredDecisionMakerFromHtml') &&
+    pipeline.includes('decisionMakerSourceUrl');
+})());
 check('CSV export contains contact details', csv.includes("'Decision Maker', 'Email', 'Phone', 'Contact Source'"));
 
 console.log('Lead contact enrichment contract verified.');
