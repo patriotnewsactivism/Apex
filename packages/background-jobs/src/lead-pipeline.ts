@@ -668,11 +668,7 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
 
   let identity: BusinessWebsiteIdentity | null = null;
   let stageLead = lead;
-  if (
-    next === 'BASIC_ENRICHMENT' &&
-    lead.website &&
-    /^(?:cache:)?web:/i.test(lead.source ?? '')
-  ) {
+  if (next === 'BASIC_ENRICHMENT' && lead.website) {
     identity = await verifyBusinessWebsiteIdentity({
       website: lead.website,
       industry: lead.industry,
@@ -686,6 +682,13 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
         ? betterName
         : lead.companyName,
       website: identity.homepage ?? lead.website,
+      contactEmail: lead.contactEmail ?? identity.contactEmail,
+      contactPhone: lead.contactPhone ?? identity.contactPhone,
+      contactSourceUrl: lead.contactSourceUrl ?? identity.contactSourceUrl,
+      contactResearchStatus:
+        lead.contactEmail || lead.contactPhone || identity.contactEmail || identity.contactPhone
+          ? 'partial'
+          : lead.contactResearchStatus,
     };
   }
 
@@ -693,11 +696,20 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
   if (identity) {
     update.companyName = stageLead.companyName;
     update.website = stageLead.website;
+    update.contactEmail = stageLead.contactEmail;
+    update.contactPhone = stageLead.contactPhone;
+    update.contactSourceUrl = stageLead.contactSourceUrl;
+    update.contactResearchStatus = stageLead.contactResearchStatus;
+    update.contactResearchedAt = identity.contactEmail || identity.contactPhone ? now : lead.contactResearchedAt;
     update.enrichment = {
       ...((update.enrichment as Record<string, unknown> | null) ?? {}),
       businessVerification: identity,
       summary: `${stageLead.companyName} is a ${stageLead.industry ?? 'local'} business in ${stageLead.city ?? 'its market'}.`,
     };
+    if (identity.status === 'mismatch') {
+      update.status = 'rejected';
+      update.qualificationScore = 0;
+    }
   }
   const timestampColumn = STATE_TIMESTAMP[next];
 
@@ -754,8 +766,8 @@ function buildStageUpdate(
       contactEmail: lead.contactEmail ?? cachedContact?.contactEmail,
       contactPhone: lead.contactPhone ?? cachedContact?.contactPhone,
       contactSourceUrl: lead.contactSourceUrl ?? cachedContact?.contactSourceUrl,
-      contactResearchStatus: cachedContact?.contactResearchStatus ?? (hasContact ? 'partial' : 'unavailable'),
-      contactResearchedAt: new Date(),
+      contactResearchStatus: cachedContact?.contactResearchStatus ?? (hasContact ? 'partial' : 'pending'),
+      contactResearchedAt: hasContact ? new Date() : lead.contactResearchedAt,
     };
   }
 
@@ -891,6 +903,8 @@ function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
     | { status?: string }
     | undefined;
   if (verification?.status === 'mismatch') return 0;
+  if (!lead.contactEmail && !lead.contactPhone) return 0;
+  if (/^(?:cache:)?web:/i.test(lead.source ?? '') && verification?.status !== 'verified') return 0;
 
   let score = verification?.status === 'verified' ? 55 : 35;
   if (lead.website) score += 15;
