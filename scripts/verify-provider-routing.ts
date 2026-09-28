@@ -42,7 +42,7 @@ const byokProviders = [
 // from the unrestricted FlashX continuity route, which stays last.
 const primaryPaidBYOKProvider = 'qwen-dashscope-byok' as const;
 const automaticProviders = [primaryPaidBYOKProvider, ...openRouterProviders, ...byokProviders];
-const runtimeProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
+const runtimeProviders = [...automaticProviders];
 
 const catalog = getProviderCatalog();
 const primaryCatalogEntry = catalog[0];
@@ -218,12 +218,12 @@ console.log('\n── Paid FlashX continuity policy ──');
 const previousPaidFlag = process.env.APEX_PAID_FALLBACK_ENABLED;
 delete process.env.APEX_PAID_FALLBACK_ENABLED;
 check(
-  'paid FlashX inference needs no APEX activation flag — an unset variable leaves it on',
-  paidLLMFallbackEnabled(undefined) === true,
+  'paid FlashX is fail-closed by default when the activation flag is unset',
+  paidLLMFallbackEnabled(undefined) === false,
 );
 check(
-  'paid FlashX continuity route remains last after all free/BYOK capacity',
-  getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
+  'unset paid flag leaves only Qwen + free/BYOK routes',
+  JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(automaticProviders),
   getProviderOrderForRole('CEO'),
 );
 check(
@@ -284,7 +284,6 @@ check(
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
       ...byokProviders,
-      PAID_FALLBACK_PROVIDER_NAME,
     ]),
   getProviderOrderForRole('CEO'),
 );
@@ -300,7 +299,7 @@ for (const role of [
 ]) {
   const order = getProviderOrderForRole(role);
   check(
-    `${role} uses free/BYOK first with unrestricted FlashX continuity last`,
+    `${role} uses Qwen first and free/BYOK fallback with no paid FlashX by default`,
     JSON.stringify(order) === JSON.stringify(runtimeProviders),
     order,
   );
