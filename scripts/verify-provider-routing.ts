@@ -42,7 +42,7 @@ const byokProviders = [
 // from the unrestricted FlashX continuity route, which stays last.
 const primaryPaidBYOKProvider = 'qwen-dashscope-byok' as const;
 const automaticProviders = [primaryPaidBYOKProvider, ...openRouterProviders, ...byokProviders];
-const runtimeProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
+const explicitPaidProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
 
 const catalog = getProviderCatalog();
 const primaryCatalogEntry = catalog[0];
@@ -218,12 +218,12 @@ console.log('\n── Paid FlashX continuity policy ──');
 const previousPaidFlag = process.env.APEX_PAID_FALLBACK_ENABLED;
 delete process.env.APEX_PAID_FALLBACK_ENABLED;
 check(
-  'paid FlashX inference needs no APEX activation flag — an unset variable leaves it on',
-  paidLLMFallbackEnabled(undefined) === true,
+  'paid FlashX is fail-closed by default when APEX_PAID_FALLBACK_ENABLED is unset',
+  paidLLMFallbackEnabled(undefined) === false,
 );
 check(
-  'paid FlashX continuity route remains last after all free/BYOK capacity',
-  getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
+  'an unset paid-fallback flag leaves only Qwen/free/BYOK routes',
+  JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(automaticProviders),
   getProviderOrderForRole('CEO'),
 );
 check(
@@ -255,8 +255,8 @@ check(
 );
 process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
 check(
-  'APEX_PAID_FALLBACK_ENABLED=true puts the paid route back, still last',
-  getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
+  'APEX_PAID_FALLBACK_ENABLED=true explicitly restores the paid route, still last',
+  JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(explicitPaidProviders),
   getProviderOrderForRole('CEO'),
 );
 if (previousPaidFlag === undefined) delete process.env.APEX_PAID_FALLBACK_ENABLED;
@@ -284,7 +284,6 @@ check(
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
       ...byokProviders,
-      PAID_FALLBACK_PROVIDER_NAME,
     ]),
   getProviderOrderForRole('CEO'),
 );
@@ -300,8 +299,8 @@ for (const role of [
 ]) {
   const order = getProviderOrderForRole(role);
   check(
-    `${role} uses free/BYOK first with unrestricted FlashX continuity last`,
-    JSON.stringify(order) === JSON.stringify(runtimeProviders),
+    `${role} defaults to Qwen/free/BYOK only unless paid continuity is explicitly enabled`,
+    JSON.stringify(order) === JSON.stringify(automaticProviders),
     order,
   );
   const config = getDefaultLLMConfig(role);

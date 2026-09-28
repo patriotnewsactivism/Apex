@@ -24,21 +24,32 @@ const check = (label: string, condition: boolean, detail?: unknown) => {
 };
 
 const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
+const previousPaidFlag = process.env.APEX_PAID_FALLBACK_ENABLED;
 
 try {
   delete process.env[OPENROUTER_MODEL_POLICY_ENV];
-  console.log('── Free-first runtime + FlashX continuity ──');
+  delete process.env.APEX_PAID_FALLBACK_ENABLED;
+  console.log('── Qwen/free/BYOK runtime + explicit FlashX continuity ──');
   check(
     'no policy preserves the guarded free model chain',
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
   check(
-    'runtime order is the free/BYOK catalog plus the dedicated FlashX continuity route',
+    'runtime order defaults to the Qwen/free/BYOK catalog with paid continuity absent',
+    JSON.stringify(getProviderOrderForRole('CEO')) ===
+      JSON.stringify(getProviderCatalog().map((provider) => provider.name)) &&
+      !getProviderOrderForRole('CEO').includes(PAID_FALLBACK_PROVIDER_NAME),
+    getProviderOrderForRole('CEO'),
+  );
+  process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
+  check(
+    'FlashX continuity is appended only after explicit operator opt-in',
     getProviderOrderForRole('CEO').length === getProviderCatalog().length + 1 &&
       getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
     getProviderOrderForRole('CEO'),
   );
+  delete process.env.APEX_PAID_FALLBACK_ENABLED;
   check(
     'automatic default chain is the exact six-route free order',
     JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN) === JSON.stringify([
@@ -150,7 +161,6 @@ try {
       'openrouter-nemotron-ultra',
       'groq-gpt-oss-120b-byok',
       'gemini-3-8-flash-byok',
-      PAID_FALLBACK_PROVIDER_NAME,
     ]),
     getProviderOrderForRole('CEO'),
   );
@@ -189,6 +199,8 @@ try {
 } finally {
   if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
   else process.env[OPENROUTER_MODEL_POLICY_ENV] = previousPolicy;
+  if (previousPaidFlag === undefined) delete process.env.APEX_PAID_FALLBACK_ENABLED;
+  else process.env.APEX_PAID_FALLBACK_ENABLED = previousPaidFlag;
 }
 
 console.log(`\n${failures === 0 ? '✅ MODEL ROUTING POLICY GUARDS PASSED' : `❌ ${failures} MODEL ROUTING POLICY GUARD(S) FAILED`}`);
