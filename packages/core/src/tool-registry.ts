@@ -112,6 +112,7 @@ function leadSearchCacheSpec(name: string, args: Record<string, unknown>): LeadS
     requestFingerprint = {
       version: LEAD_SEARCH_CACHE_VERSION,
       fast: true,
+      freeOnly: args.freeOnly === true,
       maxResults: typeof args.maxResults === 'number' ? args.maxResults : 10,
     };
     ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
@@ -884,10 +885,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         query: z.string().describe('Search query — be specific for best results'),
         maxResults: z.number().optional().describe('Maximum results to return (default 10)'),
         fast: z.boolean().optional().describe('Use the lowest-latency search mode. Ideal for lead discovery where URLs matter more than an AI-written answer.'),
+        freeOnly: z.boolean().optional().describe('Use only free/keyless search providers. Useful for large cleanup/enrichment jobs where cost avoidance matters more than maximum recall.'),
         refresh: z.boolean().optional().describe('Bypass the persistent lead-search cache and refresh this query from providers.'),
       }),
       requiresApproval: false,
-      async execute({ query, maxResults, fast }) {
+      async execute({ query, maxResults, fast, freeOnly }) {
         const n = maxResults ?? 10;
         const results: Array<{ title: string; url: string; snippet: string }> = [];
         // Why each provider produced nothing. A non-ok HTTP response used to
@@ -899,10 +901,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // ── Strategy 0: Tavily Search API (best quality, AI-optimized) ──
         const tavilyKey = process.env.TAVILY_API_KEY;
         if (!tavilyKey) diagnostics.push('tavily: TAVILY_API_KEY not set');
-        if (tavilyKey && !webSearchProviderReady('tavily')) {
+        if (freeOnly && tavilyKey) diagnostics.push('tavily: skipped by freeOnly mode');
+        if (!freeOnly && tavilyKey && !webSearchProviderReady('tavily')) {
           diagnostics.push('tavily: temporarily skipped by provider circuit breaker');
         }
-        if (tavilyKey && webSearchProviderReady('tavily')) {
+        if (!freeOnly && tavilyKey && webSearchProviderReady('tavily')) {
           try {
             const tavilyRes = await fetch('https://api.tavily.com/search', {
               method: 'POST',
@@ -952,10 +955,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
         const braveKey = process.env.BRAVE_SEARCH_API_KEY;
         if (!braveKey) diagnostics.push('brave: BRAVE_SEARCH_API_KEY not set');
-        if (braveKey && !webSearchProviderReady('brave')) {
+        if (freeOnly && braveKey) diagnostics.push('brave: skipped by freeOnly mode');
+        if (!freeOnly && braveKey && !webSearchProviderReady('brave')) {
           diagnostics.push('brave: temporarily skipped by provider circuit breaker');
         }
-        if (braveKey && webSearchProviderReady('brave')) {
+        if (!freeOnly && braveKey && webSearchProviderReady('brave')) {
           try {
             const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
             const braveRes = await fetch(braveUrl, {
