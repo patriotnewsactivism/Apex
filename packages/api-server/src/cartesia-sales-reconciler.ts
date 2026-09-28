@@ -290,20 +290,12 @@ async function reconcileTools(toolSecret: string): Promise<string[]> {
       throw new Error(`Multiple Cartesia tools are named ${desired.name}; refusing to guess`);
     }
     if (matches.length === 1) {
-      const id = matches[0]!.id!;
-
-      // Cartesia accepts secret_value when a webhook tool is created, but the
-      // existing secret is write-only and must not be re-submitted on PATCH.
-      // Preserve the stored authentication block by omitting it from updates.
-      const { authentication: _storedAuthentication, ...updateApiSchema } = desired.api_schema;
-      await request(`/v1/agents/tools/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          ...desired,
-          api_schema: updateApiSchema,
-        }),
-      });
-      ids.push(id);
+      // Cartesia currently rejects PATCH for these already-created webhook
+      // tools even when write-only authentication is omitted. Treat an exact
+      // unique tool name as immutable/reusable at startup. Tool-schema changes
+      // must be shipped as an explicit migration/versioned tool name rather
+      // than blocking every process restart on a provider PATCH limitation.
+      ids.push(matches[0]!.id!);
       continue;
     }
     const created = await request<{ id?: string }>('/v1/agents/tools', {
