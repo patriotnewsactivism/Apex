@@ -291,9 +291,17 @@ async function reconcileTools(toolSecret: string): Promise<string[]> {
     }
     if (matches.length === 1) {
       const id = matches[0]!.id!;
+
+      // Cartesia accepts secret_value when a webhook tool is created, but the
+      // existing secret is write-only and must not be re-submitted on PATCH.
+      // Preserve the stored authentication block by omitting it from updates.
+      const { authentication: _storedAuthentication, ...updateApiSchema } = desired.api_schema;
       await request(`/v1/agents/tools/${encodeURIComponent(id)}`, {
         method: 'PATCH',
-        body: JSON.stringify(desired),
+        body: JSON.stringify({
+          ...desired,
+          api_schema: updateApiSchema,
+        }),
       });
       ids.push(id);
       continue;
