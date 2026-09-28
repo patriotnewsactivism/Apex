@@ -16,6 +16,7 @@ import { api } from '../lib/api.js';
 //   receive: { type: 'audio', data: base64 }  24kHz PCM16
 //   receive: { type: 'transcript', role, text }  (streaming FRAGMENTS — merge, don't split)
 //   receive: { type: 'turnComplete' }  (end of one spoken turn — close the bubble)
+//   receive: { type: 'ended', reason }  server-authoritative call teardown
 //   receive: { type: 'goalCreated', id, title }
 //   receive: { type: 'approvalResolved', id, action }
 //   receive: { type: 'toolActivity', name }
@@ -492,6 +493,11 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
               cbRef.current.onLatency?.({ stage: msg.stage, ms: msg.ms });
             }
             break;
+          case 'ended':
+            // Server-authoritative teardown (spoken hang-up or provider-side
+            // end). Reuse the same hard cleanup as the Hang up button.
+            stop();
+            break;
           case 'error':
             cbRef.current.onError?.(msg.message);
             setStatus('error');
@@ -522,7 +528,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       cbRef.current.onError?.(err instanceof Error ? err.message : 'Microphone access failed.');
       setStatus('error');
     }
-  }, [playChunk, stopPlayback]);
+  }, [playChunk, stop, stopPlayback]);
 
   return { status, start, stop, sendContext };
 }
