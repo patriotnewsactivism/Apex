@@ -72,7 +72,7 @@ say so plainly. A short, honest report beats a padded one.`,
       tools: ['fetchUrl', 'browserCheck', 'sendMessage', 'buildmybot_health_check'],
       maxIterations: 20,
       approvalRequired: false,
-      concurrency: 4,
+      concurrency: 1,
       ...overrides,
     });
   }
