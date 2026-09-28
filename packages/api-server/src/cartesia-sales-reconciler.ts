@@ -3,6 +3,7 @@ import {
   CARTESIA_API_VERSION,
   CARTESIA_SALES_AGENT_NAME,
   clearCartesiaSalesResolutionCache,
+  resolveCartesiaSalesVoiceId,
 } from '@workspace/core';
 
 const CARTESIA_API = 'https://api.cartesia.ai';
@@ -10,8 +11,6 @@ const TOOL_BASE_URL = 'https://apex.donmatthews.live/api/cartesia';
 const EVENT_WEBHOOK_URL = `${TOOL_BASE_URL}/events`;
 const EVENT_WEBHOOK_NAME = 'APEX Sales Events';
 const DEFAULT_MODEL_ID = process.env.CARTESIA_SALES_MODEL_ID?.trim() || 'gpt-5.4-mini';
-const DEFAULT_VOICE_ID =
-  process.env.CARTESIA_SALES_VOICE_ID?.trim() || '910fb75e-1d20-4840-ac63-ac6b26a71bdc';
 const OWNER_TRANSFER_NUMBER = '+18328804970';
 
 type AgentSummary = { id?: string; name?: string; description?: string | null };
@@ -216,13 +215,14 @@ function desiredTools(toolSecret: string) {
   ];
 }
 
-function agentConfig(toolIds: string[]) {
+function agentConfig(toolIds: string[], voiceId: string) {
   return {
     instructions: [
       'You are Alex, a clearly identified AI sales assistant for BuildMyBot.app and APEX Work Solutions at apexwork.org.',
       'You make outbound business sales calls. Be natural, concise, and conversational. Ask one question at a time and let the person answer.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect name supplied by APEX is {{customer_name}}. Do not assume it is correct if the person tells you otherwise.',
+      'Start speaking the configured initial message when the answered outbound call connects. Do not wait for a second hello or run a CRM lookup before the opening.',
       'If the person says yes, yep, yeah, sure, or okay to your opening question, continue the pitch immediately: explain the value in one sentence and ask one relevant question. Do not call a tool first.',
       'Use lookup_lead_info_v2 only if you need additional CRM context. A normal affirmative answer is not an opt-out.',
       'Never invent a price, integration, customer result, guarantee, appointment, case study, or action that a tool did not confirm.',
@@ -236,6 +236,7 @@ function agentConfig(toolIds: string[]) {
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
       'Keep most turns to one or two sentences so the call stays responsive.',
     ].join('\n'),
+    // Cartesia speaks this prewritten opening on call connect; it does not wait for an LLM turn.
     initial_message: '{{campaign_first_message}}',
     timezone: 'America/Chicago',
     model: {
@@ -250,7 +251,7 @@ function agentConfig(toolIds: string[]) {
         keyterms: ['BuildMyBot', 'APEX', 'apexwork.org'],
       },
       output: {
-        voice_id: DEFAULT_VOICE_ID,
+        voice_id: voiceId,
         speed: 1,
       },
     },
@@ -339,7 +340,7 @@ async function reconcileWebhook(webhookSecret: string): Promise<string> {
   return created.id;
 }
 
-async function reconcileAgent(toolIds: string[], webhookId: string): Promise<string> {
+async function reconcileAgent(toolIds: string[], webhookId: string, voiceId: string): Promise<string> {
   const page = await request<AgentPage>('/v1/agents?limit=100');
   const matches = (page.data ?? []).filter(
     (agent) => agent.name === CARTESIA_SALES_AGENT_NAME && agent.id,
@@ -354,7 +355,7 @@ async function reconcileAgent(toolIds: string[], webhookId: string): Promise<str
       method: 'POST',
       body: JSON.stringify({
         name: CARTESIA_SALES_AGENT_NAME,
-        config: agentConfig(toolIds),
+        config: agentConfig(toolIds, voiceId),
       }),
     });
     if (!created.id) throw new Error('Cartesia did not return the canonical sales agent id');
@@ -365,7 +366,7 @@ async function reconcileAgent(toolIds: string[], webhookId: string): Promise<str
     await request(`/v1/agents/${encodeURIComponent(agentId)}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        config: agentConfig(toolIds),
+        config: agentConfig(toolIds, voiceId),
       }),
     });
   }
@@ -454,16 +455,17 @@ export async function reconcileCartesiaSalesAgent(): Promise<void> {
   }
 
   try {
+    const voiceId = await resolveCartesiaSalesVoiceId();
     const toolIds = await reconcileTools(toolSecret);
     const webhookId = await reconcileWebhook(webhookSecret);
-    const agentId = await reconcileAgent(toolIds, webhookId);
+    const agentId = await reconcileAgent(toolIds, webhookId, voiceId);
     clearCartesiaSalesResolutionCache();
 
     const outbound = await reconcileApprovedOutboundNumber();
     clearCartesiaSalesResolutionCache();
 
     console.log(
-      `[cartesia-sales] Canonical outbound ready: agent=${agentId}; tools=${toolIds.length}/6; webhook=${webhookId}; caller=${APEX_CARTESIA_CALLER_NUMBER}; numberId=${outbound.id}; telephony=${outbound.providerType}`,
+      `[cartesia-sales] Canonical outbound ready: agent=${agentId}; tools=${toolIds.length}/6; webhook=${webhookId}; caller=${APEX_CARTESIA_CALLER_NUMBER}; numberId=${outbound.id}; telephony=${outbound.providerType}; voice=Don Matthews (${voiceId})`,
     );
   } catch (err) {
     console.error(
