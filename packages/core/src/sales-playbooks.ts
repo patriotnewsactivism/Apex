@@ -34,7 +34,7 @@ const OPTIONAL_FIELDS = new Set(['outreachAngle', 'transcriptSnippet', 'industry
 
 export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
   id: 'buildmybot-intro',
-  version: 4,
+  version: 5,
   name: 'BuildMyBot intro',
   summary: 'One cold email, one sales call, and one follow-up. The buyer is treated as the owner of a local business that misses calls.',
   openEmail: {
@@ -79,11 +79,11 @@ export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
     ].join('\n'),
   },
   call: {
-    firstMessage: 'Gotcha. I’ll keep it quick — the reason I called is we help businesses like {{companyName}} catch the calls that usually turn into missed jobs. What do you normally do with calls that come in when nobody can pick up?',
+    firstMessage: 'Gotcha — appreciate it. The reason I called is pretty simple. We help businesses like {{companyName}} catch missed calls before they turn into lost jobs. What do you normally do when a call comes in and nobody can answer?',
     assistantPrompt: [
       'You are Don, a BuildMyBot sales rep on a live phone call. The person who answered is {{buyerName}}, the buyer at {{companyName}}, a {{industry}} business in {{city}}.',
       'Goal: have a real conversation and earn a ten-minute follow-up. Do not quote a price. Do not say they can subscribe or pay today. Do not invent product features. BuildMyBot answers calls and messages the business would otherwise miss, captures the lead, and helps book the next step.',
-      'Sound like a person, not a script. Build brief rapport before the pitch, acknowledge what they actually say, and ask one question at a time. If they are busy, offer to call back and end the call. If they object, acknowledge it in one sentence and ask what they do with after-hours calls today.',
+      'Sound like a person, not a script. Speak English only. Build brief rapport before the pitch, acknowledge what they actually say, and ask one question at a time. Use complete sentences at a relaxed pace. If they are busy, offer to call back and end the call. If they object, acknowledge it briefly and ask what they do with after-hours calls today.',
       'Opening angle, if you have one: {{outreachAngle}}',
       'Never claim you already sent a checkout link. Never claim a feature you were not told about in this prompt.',
     ].join('\n'),
