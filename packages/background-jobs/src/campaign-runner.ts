@@ -31,6 +31,7 @@ import {
   repairWebLeadIdentityBatch,
   inspectFirstPartyContactUrl,
 } from './lead-pipeline.js';
+import { recordOperatorActivity } from './operator-activity.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
 //
@@ -608,6 +609,12 @@ export class CampaignRunner {
 
       if (candidates.length === 0) return;
       const registry = getToolRegistry();
+      let emailsAdded = 0;
+      let phonesAdded = 0;
+      let decisionMakersAdded = 0;
+      let fullyReachable = 0;
+      let stillIncomplete = 0;
+      let cacheHits = 0;
 
       await Promise.all(candidates.map(async (lead) => {
         const domain = normalizeLeadDomain(lead.website);
@@ -667,6 +674,13 @@ export class CampaignRunner {
           }
         }
 
+        if (!lead.contactEmail && contactEmail) emailsAdded++;
+        if (!lead.contactPhone && contactPhone) phonesAdded++;
+        if (!lead.decisionMakerName && decisionMakerName) decisionMakersAdded++;
+        if (contactEmail && contactPhone) fullyReachable++;
+        else stillIncomplete++;
+        if (payload?.cacheHit) cacheHits++;
+
         const now = new Date();
         const foundAny = Boolean(contactEmail || contactPhone);
         const enrichment = {
@@ -718,6 +732,26 @@ export class CampaignRunner {
           `[lead-contact-search] ${lead.companyName}: pages=${urls.length} email=${Boolean(contactEmail)} phone=${Boolean(contactPhone)} decisionMaker=${Boolean(decisionMakerName)} provider=${payload?.cacheHit ? 'cache:' : ''}${payload?.provider ?? 'none'}`,
         );
       }));
+
+      await recordOperatorActivity({
+        category: 'contact_recovery',
+        agentId: 'apex-campaign-runner',
+        message:
+          `Contact recovery checked ${candidates.length} verified business${candidates.length === 1 ? '' : 'es'}: ` +
+          `${emailsAdded} new email${emailsAdded === 1 ? '' : 's'}, ${phonesAdded} new phone number${phonesAdded === 1 ? '' : 's'}, ` +
+          `${decisionMakersAdded} sourced decision maker${decisionMakersAdded === 1 ? '' : 's'}; ` +
+          `${fullyReachable} now have both email and phone, ${stillIncomplete} still need more contact research.`,
+        data: {
+          checked: candidates.length,
+          emailsAdded,
+          phonesAdded,
+          decisionMakersAdded,
+          fullyReachable,
+          stillIncomplete,
+          cacheHits,
+          lane: 'free_cached_web_plus_first_party',
+        },
+      });
     } finally {
       this.contactSearchRunning = false;
     }
@@ -768,6 +802,13 @@ export class CampaignRunner {
       .returning({ id: campaignSegments.id });
     if (stale.length > 0) {
       console.warn(`[campaigns] Recovered ${stale.length} segment(s) from an expired lease`);
+      void recordOperatorActivity({
+        category: 'campaign',
+        level: 'warn',
+        agentId: 'apex-campaign-runner',
+        message: `Recovered ${stale.length} campaign search segment${stale.length === 1 ? '' : 's'} that had been left stuck after a restart or timeout. They were put back in line to run again.`,
+        data: { recoveredSegments: stale.length },
+      });
     }
   }
 
@@ -1094,9 +1135,29 @@ export class CampaignRunner {
         .set({ lastProgressAt: now })
         .where(eq(leadCampaigns.id, campaign.id));
 
+      const segmentMs = Date.now() - segmentStartedAt;
       console.log(
-        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${provider}) in ${Date.now() - segmentStartedAt}ms`,
+        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${provider}) in ${segmentMs}ms`,
       );
+      await recordOperatorActivity({
+        category: 'lead_search',
+        agentId: 'apex-campaign-runner',
+        message:
+          saved > 0
+            ? `Searched ${segment.industry} in ${segment.city}. Found ${found.length} candidate${found.length === 1 ? '' : 's'}, saved ${saved} new one${saved === 1 ? '' : 's'} for verification, and skipped ${duplicates} already-known result${duplicates === 1 ? '' : 's'}.`
+            : `Searched ${segment.industry} in ${segment.city}. Found ${found.length} candidate${found.length === 1 ? '' : 's'}, but none were new enough to save; ${duplicates} were already known or duplicates.`,
+        data: {
+          campaignId: campaign.id,
+          segmentId: segment.id,
+          industry: segment.industry,
+          city: segment.city,
+          found: found.length,
+          saved,
+          duplicates,
+          provider,
+          durationMs: segmentMs,
+        },
+      });
       await this.pruneSaturatedCell(campaign, segment);
       emitApexEvent({
         type: 'campaign:segment',
@@ -1139,6 +1200,15 @@ export class CampaignRunner {
               ? ' — retries exhausted, segment marked failed'
               : ' — will retry'),
       );
+      await recordOperatorActivity({
+        category: 'lead_search',
+        level: 'warn',
+        agentId: 'apex-campaign-runner',
+        message: exhaustedRetries
+          ? `Search for ${segment.industry} in ${segment.city} failed after ${attempts} attempt${attempts === 1 ? '' : 's'} and has been closed for this campaign. Reason: ${message.slice(0, 220)}`
+          : `Search for ${segment.industry} in ${segment.city} hit a temporary problem on attempt ${attempts}. APEX will retry it. Reason: ${message.slice(0, 220)}`,
+        data: { campaignId: campaign.id, segmentId: segment.id, attempts, exhaustedRetries, error: message.slice(0, 500) },
+      });
     }
   }
 
@@ -1318,6 +1388,21 @@ export class CampaignRunner {
       }
 
       console.log(`[campaigns] ${campaign.name} -> ${status}. ${result}`);
+      await recordOperatorActivity({
+        category: 'campaign',
+        agentId: 'apex-campaign-runner',
+        message: hitTarget
+          ? `Campaign "${campaign.name}" reached its target with ${progress.leadsSaved} verified, contact-ready prospect${progress.leadsSaved === 1 ? '' : 's'}.`
+          : `Campaign "${campaign.name}" finished the available territory with ${progress.leadsSaved} verified, contact-ready prospect${progress.leadsSaved === 1 ? '' : 's'} out of the ${campaign.targetLeads} requested. The remaining search area did not produce enough usable businesses.`,
+        data: {
+          campaignId: campaign.id,
+          status,
+          leadsSaved: progress.leadsSaved,
+          targetLeads: campaign.targetLeads,
+          segmentsDone: progress.segmentsDone,
+          segmentsTotal: progress.segmentsTotal,
+        },
+      });
       emitApexEvent({
         type: 'campaign:completed',
         campaignId: campaign.id,
