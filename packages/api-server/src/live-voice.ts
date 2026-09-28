@@ -11,6 +11,7 @@ import {
   tryStartGeminiLiveSession,
   type GeminiLiveFailoverState,
 } from './gemini-live-session.js';
+import { isExplicitLiveVoiceHangup } from './live-voice-control.js';
 
 // ─── Live voice: direct Gemini 3.8 Live, with Deepgram fallback ──────────────
 //
@@ -481,6 +482,12 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               }
               safeSendClient({ type: 'transcript', role, text });
               persistTurn(role, text);
+              if (role === 'user' && isExplicitLiveVoiceHangup(text)) {
+                intentionallyClosed = true;
+                safeSendClient({ type: 'ended', reason: 'spoken_hangup' });
+                client.close(1000, 'spoken hangup');
+                break;
+              }
             }
             break;
           }
@@ -684,7 +691,9 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
           pendingDeepgramContext = msg.text;
         }
       } else if (msg.type === 'end') {
-        client.close();
+        intentionallyClosed = true;
+        safeSendClient({ type: 'ended', reason: 'operator_hangup' });
+        client.close(1000, 'operator hangup');
       }
     });
 
