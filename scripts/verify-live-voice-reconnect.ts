@@ -167,21 +167,26 @@ async function main(): Promise<void> {
       /ws\.onerror = \(\) => \{\s*if \(lifecycle !== lifecycleRef\.current\) return;/.test(clientHook),
   );
   check(
-    'Hang up closes the socket with an operator-hangup reason and marks UI ended immediately',
-    /ws\?\.close\(1000, 'operator hangup'\)/.test(clientHook) &&
+    'Hang up ends local audio immediately but gives the server a bounded persistence grace window',
+    /HANGUP_SERVER_GRACE_MS\s*=\s*900/.test(clientHook) &&
+      /ws\.send\(JSON\.stringify\(\{ type: 'end' \}\)\)/.test(clientHook) &&
+      /operator hangup timeout/.test(clientHook) &&
       /setStatus\('ended'\);/.test(clientHook),
   );
   check(
-    'QuickChat refreshes durable voice history when the call ends so stale in-progress rows disappear',
+    'QuickChat refreshes durable voice history twice so endedAt persistence wins over stale cache',
     /liveVoice\.status !== 'ended'/.test(quickChat) &&
-      /invalidateQueries\(\{ queryKey: \['voice-chat-sessions'\] \}\)/.test(quickChat),
+      /invalidateQueries\(\{ queryKey: \['voice-chat-sessions'\] \}\)/.test(quickChat) &&
+      /setTimeout\(\(\) => \{[\s\S]{0,160}voice-chat-sessions[\s\S]{0,80}\}, 1200\)/.test(quickChat),
   );
   check(
     'explicit spoken hang-up phrases are transport controls, not model interpretation',
     control.isExplicitLiveVoiceHangup('hang up') &&
       control.isExplicitLiveVoiceHangup('end the call') &&
       control.isExplicitLiveVoiceHangup('stop live talk') &&
-      control.isExplicitLiveVoiceHangup('goodbye') &&
+      !control.isExplicitLiveVoiceHangup('goodbye') &&
+      !control.isExplicitLiveVoiceHangup('bye dude') &&
+      !control.isExplicitLiveVoiceHangup('I do') &&
       !control.isExplicitLiveVoiceHangup('stop that task') &&
       !control.isExplicitLiveVoiceHangup('the customer said goodbye yesterday'),
   );
@@ -198,8 +203,8 @@ async function main(): Promise<void> {
     /client\.on\('close', handleClientClose\);[\s\S]{0,160}const initialConnected = await connect\(\);/.test(geminiSource),
   );
   check(
-    'server-authoritative ended events reuse the browser hard-stop cleanup',
-    /case 'ended':[\s\S]{0,180}stop\(\);/.test(clientHook),
+    'server-authoritative ended events clean local state without sending a second hang-up',
+    /case 'ended':[\s\S]{0,220}stop\(false\);/.test(clientHook),
   );
 
   // ── Reconnects stay context-aware instead of forgetting where Don is ─────
