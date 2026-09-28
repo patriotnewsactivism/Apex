@@ -344,4 +344,104 @@ body {
   button.apex-icon-btn {
     min-width: 44px;
   }
+
+  /* Webinar Director is an active broadcast console, so the phone layout has
+     to prioritize controls, current segment, and room messaging without
+     horizontal drift or tiny tap targets. */
+  .webinar-director,
+  .webinar-director > *,
+  .webinar-director-grid,
+  .webinar-director-main,
+  .webinar-director-sidebar {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .webinar-director-titlebar > div:first-child {
+    min-width: 0;
+    flex: 1 1 220px;
+  }
+
+  .webinar-director-new-room,
+  .webinar-broadcast-button,
+  .webinar-control-action {
+    justify-content: center !important;
+    text-align: center;
+  }
+
+  .webinar-control-action {
+    width: 100%;
+    min-width: 0;
+    padding: 11px 9px !important;
+    font-size: 12px;
+    line-height: 1.2;
+  }
+
+  .webinar-room-link > svg,
+  .webinar-room-link > button {
+    flex: 0 0 auto;
+  }
+
+  .webinar-room-link code {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .webinar-run-of-show {
+    scroll-snap-type: x proximity;
+    overscroll-behavior-x: contain;
+  }
+
+  .webinar-run-segment {
+    scroll-snap-align: start;
+    min-height: 64px;
+  }
+
+  /* Public attendee room: compact broadcast header, comfortable readable
+     stage, and no iOS form zoom. */
+  .webinar-room-live,
+  .webinar-room-live > *,
+  .webinar-room-main,
+  .webinar-room-stage,
+  .webinar-room-sidebar {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .webinar-room-header {
+    padding-top: max(10px, env(safe-area-inset-top)) !important;
+  }
+
+  .webinar-room-header-actions button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .webinar-room-join input,
+  .webinar-room-live input,
+  .webinar-room-live textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (max-width: 430px) {
+  .webinar-director-new-room {
+    width: 100%;
+  }
+
+  .webinar-control-actions {
+    grid-template-columns: 1fr !important;
+  }
+
+  .webinar-broadcast-row {
+    flex-direction: column !important;
+  }
+
+  .webinar-broadcast-button {
+    width: 100%;
+  }
+
+  .webinar-room-link {
+    gap: 6px !important;
+  }
 }
