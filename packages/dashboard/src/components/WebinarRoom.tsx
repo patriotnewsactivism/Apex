@@ -417,7 +417,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
               if (next) setLastSpokenSegment(null);
               return next;
             });
-          }} style={iconButtonStyle} title={voiceOn && startedAudio ? 'Mute AI host' : 'Unmute AI host'}>
+          }} className="apex-icon-btn" style={iconButtonStyle} title={voiceOn && startedAudio ? 'Mute AI host' : 'Unmute AI host'}>
             {voiceOn && startedAudio ? <Volume2 size={17} /> : <VolumeX size={17} />}
           </button>
         </div>
@@ -478,7 +478,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
             <div style={{ marginTop: 10, color: '#8d9099', fontSize: 13, lineHeight: 1.5 }}>Host: {snapshot.session.hostName} · {snapshot.session.mode}</div>
           </div>
 
-          <div style={{ ...card, padding: 20 }}>
+          <div style={{ ...card, padding: isMobile ? 15 : 20, minWidth: 0 }}>
             <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#777b85', marginBottom: 12 }}>Ask a question</div>
             <form onSubmit={ask}>
               <textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about APEX, BuildMyBot, automation, voice, campaigns…" rows={5} style={{ ...inputStyle, width: '100%', resize: 'vertical', boxSizing: 'border-box' }} />
