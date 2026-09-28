@@ -484,8 +484,21 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               persistTurn(role, text);
               if (role === 'user' && isExplicitLiveVoiceHangup(text)) {
                 intentionallyClosed = true;
-                safeSendClient({ type: 'ended', reason: 'spoken_hangup' });
-                client.close(1000, 'spoken hangup');
+                void (async () => {
+                  if (voiceSessionId) {
+                    const endingId = voiceSessionId;
+                    voiceSessionId = null;
+                    try {
+                      await db.update(voiceChatSessions)
+                        .set({ endedAt: new Date() })
+                        .where(eq(voiceChatSessions.id, endingId));
+                    } catch (err) {
+                      console.error('[live-voice] failed to persist spoken hangup:', err instanceof Error ? err.message : String(err));
+                    }
+                  }
+                  safeSendClient({ type: 'ended', reason: 'spoken_hangup' });
+                  client.close(1000, 'spoken hangup');
+                })();
                 break;
               }
             }
@@ -692,8 +705,21 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         }
       } else if (msg.type === 'end') {
         intentionallyClosed = true;
-        safeSendClient({ type: 'ended', reason: 'operator_hangup' });
-        client.close(1000, 'operator hangup');
+        void (async () => {
+          if (voiceSessionId) {
+            const endingId = voiceSessionId;
+            voiceSessionId = null;
+            try {
+              await db.update(voiceChatSessions)
+                .set({ endedAt: new Date() })
+                .where(eq(voiceChatSessions.id, endingId));
+            } catch (err) {
+              console.error('[live-voice] failed to persist operator hangup:', err instanceof Error ? err.message : String(err));
+            }
+          }
+          safeSendClient({ type: 'ended', reason: 'operator_hangup' });
+          client.close(1000, 'operator hangup');
+        })();
       }
     });
 
