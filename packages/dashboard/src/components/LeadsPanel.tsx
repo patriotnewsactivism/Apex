@@ -123,8 +123,15 @@ export function LeadsPanel() {
           alignItems: 'center',
         }}
       >
-        <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-          {stats?.total ?? leads.length} Leads
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-apex-text)' }}>
+            {stats?.contactReady ?? stats?.total ?? leads.length} Contact-ready prospects
+          </div>
+          {stats && (
+            <div style={{ marginTop: 3, fontSize: 10, color: 'var(--color-apex-muted)' }}>
+              {stats.rawCandidates.toLocaleString()} raw candidates · {stats.pendingOrUnverified.toLocaleString()} pending verification/contact · {stats.rejected.toLocaleString()} rejected
+            </div>
+          )}
         </div>
         {stats && (
           <>
