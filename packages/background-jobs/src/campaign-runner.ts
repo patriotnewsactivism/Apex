@@ -469,6 +469,7 @@ export class CampaignRunner {
   private readonly toolContext: ToolContext;
   private knownDomainsCache: Set<string> | null = null;
   private knownDomainsRefreshedAt = 0;
+  private readonly repairedCampaignIds = new Set<string>();
 
   constructor(
     private readonly intervalMs = Number(
@@ -577,6 +578,8 @@ export class CampaignRunner {
    * the query the runner will actually execute.
    */
   private async repairLegacyGenericSegments(campaignId: string): Promise<void> {
+    if (this.repairedCampaignIds.has(campaignId)) return;
+
     const candidates = await db
       .select()
       .from(campaignSegments)
@@ -618,6 +621,7 @@ export class CampaignRunner {
         `[campaigns] Repaired ${repaired} legacy generic segment(s) for campaign ${campaignId}; requeued ${requeued} false exhaustion(s)`,
       );
     }
+    this.repairedCampaignIds.add(campaignId);
   }
 
   /** Atomically claim the next pending segment of a running campaign.
