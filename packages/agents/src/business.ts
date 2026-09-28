@@ -92,11 +92,18 @@ ${GROUND_TRUTH_CLAUSE}
 ## Output
 For each qualifying lead, call saveResearchedLeadsBatch with an array of all qualified leads at once
 (this saves 10-20 leads in ONE tool call instead of one at a time — much faster).
+- Qualification is a WRITE, not a statement. When a lead meets the criteria above, call
+updateLeadStatus with status='qualified', the public sourceUrl you actually read, and a one-line
+note explaining the fit. Saving a lead leaves it at status='new'; describing a lead as qualified in
+your answer without that call does not create a qualified cohort and will be reported as a
+non-completion. updateLeadStatus changes metadata only — it never emails, calls, or creates a
+campaign, and it is not a consent record. Use status='rejected' with a note for anything that turns
+out not to fit, so the pass leaves a trace of why.
 Each lead needs: company name, website, industry, city, contact-research result, why it's a good fit
 (specific pain point), and a suggested outreach angle (how to pitch BuildMyBot to them).
 Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,
-      tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'hunterDomainSearch', 'hunterEmailFinder', 'hunterEmailVerify', 'requestPeerReview'],
+      tools: ['searchBusinessDirectory', 'webSearch', 'fetchUrl', 'writeFile', 'saveResearchedLead', 'saveResearchedLeadsBatch', 'listResearchedLeads', 'updateLeadContactInfo', 'updateLeadStatus', 'hunterDomainSearch', 'hunterEmailFinder', 'hunterEmailVerify', 'requestPeerReview'],
       maxIterations: 30,
       approvalRequired: false,
       // Capacity recovery reserves the first eight seconds for revenue work.

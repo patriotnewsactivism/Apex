@@ -1463,6 +1463,91 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+        // ── Lead status transition: the sanctioned qualification write path ──────
+    // The Lead Researcher could save and enrich leads but had no way to move
+    // one from 'new' to 'qualified', so every source-verified candidate stayed
+    // at status=new and a qualified cohort could never be produced. This closes
+    // that gap WITHOUT inventing a second mutation path: it calls the existing
+    // PATCH /api/leads/:id, so the endpoint's validation and response contract
+    // remain the single source of truth. (updateLeadContactInfo deliberately
+    // does not accept a status — a status field there was silently ignored.)
+    //
+    // Fail-closed by construction: a status change is metadata only. It sends
+    // no email, places no call, creates no campaign, contacts no lead, and
+    // records no consent — the note explains why the lead fits the ICP, not
+    // that anyone agreed to be contacted.
+    {
+      name: 'updateLeadStatus',
+      description:
+        "Change a researched lead's sales status through the validated API: new | contacted | qualified | rejected. This is the ONLY sanctioned status-transition path — updateLeadContactInfo does not set status. Requires the lead id, the target status, the public source URL that evidences the decision, and a one-line rationale. Qualifying a lead records why it fits; it does NOT contact the lead, send email, place a call, create a campaign, or record consent. Read the row back with getResearchedLeadById to confirm.",
+      schema: z.object({
+        leadId: z.string().describe('researched_leads.id, from saveResearchedLead or listResearchedLeads.'),
+        status: z.enum(['new', 'contacted', 'qualified', 'rejected']).describe("Target status. 'qualified' = passed the ICP checks in this task's criteria; 'rejected' = does not fit (say why in note)."),
+        sourceUrl: z.string().url().describe('Public URL evidencing this decision — the company page you actually read. Never invented, never a directory listing.'),
+        note: z.string().min(8).max(500).describe('One-line audit rationale, e.g. "Owner named on /contact; HVAC with after-hours voicemail gap".'),
+        pipelineState: z.enum(['DISCOVERED', 'BASIC_ENRICHMENT', 'CONTACT_FOUND', 'QUALIFIED', 'DEEP_RESEARCH', 'CAMPAIGN_READY']).optional().describe('Optional acquisition-lifecycle state to move in the same call.'),
+      }),
+      requiresApproval: false,
+      async execute({ leadId, status, sourceUrl, note, pipelineState }, ctx) {
+        const base = (process.env.APEX_API_BASE_URL?.trim()
+          || `http://127.0.0.1:${process.env.PORT ?? '5000'}`).replace(/\/+$/, '');
+        const token = process.env.APEX_ADMIN_TOKEN?.trim();
+        if (!token) {
+          // Fail closed. Do not fall back to a direct database write.
+          return {
+            updated: false,
+            leadId,
+            error: 'APEX_ADMIN_TOKEN is not set, so the sanctioned PATCH /api/leads/:id path is unavailable. Report this as a blocker; do not work around it with a direct database mutation.',
+          };
+        }
+
+        let response: Response;
+        try {
+          response = await fetch(`${base}/api/leads/${encodeURIComponent(leadId)}`, {
+            method: 'PATCH',
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${token}`,
+              'x-apex-actor': ctx?.agentId ?? 'unknown-agent',
+            },
+            body: JSON.stringify({ status, sourceUrl, note, ...(pipelineState ? { pipelineState } : {}) }),
+            signal: AbortSignal.timeout(15_000),
+          });
+        } catch (err) {
+          return {
+            updated: false,
+            leadId,
+            error: `PATCH /api/leads/:id could not reach ${base}: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+
+        const raw = await response.text().catch(() => '');
+        let parsed: Record<string, unknown> = {};
+        try { parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}; } catch { parsed = { raw: raw.slice(0, 300) }; }
+
+        if (!response.ok) {
+          return {
+            updated: false,
+            leadId,
+            requestedStatus: status,
+            httpStatus: response.status,
+            error: typeof parsed.error === 'string' ? parsed.error : `HTTP ${response.status}`,
+          };
+        }
+
+        return {
+          updated: true,
+          leadId,
+          status: parsed.persistedStatus ?? status,
+          previousStatus: parsed.previousStatus ?? null,
+          pipelineState: parsed.persistedPipelineState ?? pipelineState ?? null,
+          sourceUrl,
+          note,
+          auditRecorded: true,
+        };
+      },
+    },
+
     // Read the researched leads pipeline (for Sales/BizDev review, status reporting)
     {
       name: 'listResearchedLeads',
@@ -1470,13 +1555,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         'List researched/qualified outbound leads from the researched_leads table, most recent first. Use to review pipeline status honestly instead of guessing counts.',
       schema: z.object({
         status: z.string().optional().describe('Filter by status: new | contacted | qualified | rejected'),
+        ids: z.array(z.string()).max(100).optional().describe('Return exactly these researched_leads ids. Lets a known lead id be read back instead of hunted through a truncated list.'),
         needsContactResearch: z.boolean().optional().describe('Return only leads whose contact research is pending'),
         limit: z.number().optional().describe('Max rows (default 25)'),
       }),
       requiresApproval: false,
-      async execute({ status, needsContactResearch, limit }) {
+      async execute({ status, needsContactResearch, ids, limit }) {
         const { db, researchedLeads } = await import('@workspace/db');
-        const { and, eq, desc, isNull, lt, or, sql } = await import('drizzle-orm');
+        const { and, eq, desc, inArray, isNull, lt, or, sql } = await import('drizzle-orm');
 
         const query = db.select().from(researchedLeads);
         const conditions = [
@@ -1500,6 +1586,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               ]
             : []),
         ];
+        if (ids?.length) conditions.push(inArray(researchedLeads.id, ids));
+
         const rows = conditions.length
           ? await query.where(and(...conditions)).orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25)
           : await query.orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25);
