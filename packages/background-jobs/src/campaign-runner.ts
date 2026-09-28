@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { and, asc, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import {
   db,
   campaignSegments,
@@ -104,10 +104,12 @@ export function computeCampaignProgress(
   campaign: typeof leadCampaigns.$inferSelect,
   segments: Array<typeof campaignSegments.$inferSelect>,
   now: number = Date.now(),
+  usableLeadCount?: number,
 ): CampaignProgress {
   const done = segments.filter((s) => s.status === 'done' || s.status === 'exhausted');
   const failed = segments.filter((s) => s.status === 'failed');
-  const leadsSaved = segments.reduce((n, s) => n + (s.saved ?? 0), 0);
+  const rawLeadsSaved = segments.reduce((n, s) => n + (s.saved ?? 0), 0);
+  const leadsSaved = usableLeadCount ?? rawLeadsSaved;
   const duplicates = segments.reduce((n, s) => n + (s.duplicates ?? 0), 0);
   const remaining = segments.length - done.length - failed.length;
 
@@ -157,6 +159,26 @@ export function computeCampaignProgress(
     startedAt: campaign.startedAt?.toISOString() ?? null,
     completedAt: campaign.completedAt?.toISOString() ?? null,
   };
+}
+
+export async function countUsableCampaignLeads(campaignId: string): Promise<number> {
+  const [row] = await db
+    .select({
+      count: sql<number>`count(*)::int`,
+    })
+    .from(researchedLeads)
+    .where(
+      and(
+        eq(researchedLeads.campaignId, campaignId),
+        sql`${researchedLeads.status} <> 'rejected'`,
+        sql`(
+          ${researchedLeads.source} IS NULL
+          OR ${researchedLeads.source} NOT LIKE '%web:%'
+          OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
+        )`,
+      ),
+    );
+  return Number(row?.count ?? 0);
 }
 
 export interface CreateCampaignInput {
@@ -1127,7 +1149,8 @@ export class CampaignRunner {
         .from(campaignSegments)
         .where(eq(campaignSegments.campaignId, campaign.id));
 
-      const progress = computeCampaignProgress(campaign, segments);
+      const usableLeadCount = await countUsableCampaignLeads(campaign.id);
+      const progress = computeCampaignProgress(campaign, segments, Date.now(), usableLeadCount);
       const hitTarget = progress.leadsSaved >= campaign.targetLeads;
       const territoryWorked = progress.segmentsRemaining === 0;
       if (!hitTarget && !territoryWorked) continue;
@@ -1168,7 +1191,8 @@ export class CampaignRunner {
     const [campaign] = await db.select().from(leadCampaigns).where(eq(leadCampaigns.id, campaignId)).limit(1);
     if (!campaign) return;
     const segments = await db.select().from(campaignSegments).where(eq(campaignSegments.campaignId, campaignId));
-    const progress = computeCampaignProgress(campaign, segments);
+    const usableLeadCount = await countUsableCampaignLeads(campaignId);
+    const progress = computeCampaignProgress(campaign, segments, Date.now(), usableLeadCount);
     emitApexEvent({
       type: 'campaign:progress',
       campaignId,
