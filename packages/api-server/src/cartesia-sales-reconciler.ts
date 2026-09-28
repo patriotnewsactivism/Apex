@@ -222,7 +222,9 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'You make outbound business sales calls. Be natural, concise, and conversational. Ask one question at a time and let the person answer.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect name supplied by APEX is {{customer_name}}. Do not assume it is correct if the person tells you otherwise.',
-      'Start speaking the configured initial message when the answered outbound call connects. Do not wait for a second hello or run a CRM lookup before the opening.',
+      'For outbound calls, do not speak on the raw connection event. Wait until the person who answered finishes their first audible greeting or acknowledgement, then respond promptly.',
+      'Your exact opening line for this call is: {{campaign_first_message}}',
+      'Say that opening line once after the callee finishes their first greeting. Do not talk over pickup audio and do not run a CRM lookup before the opening.',
       'If the person says yes, yep, yeah, sure, or okay to your opening question, continue the pitch immediately: explain the value in one sentence and ask one relevant question. Do not call a tool first.',
       'Use lookup_lead_info_v2 only if you need additional CRM context. A normal affirmative answer is not an opt-out.',
       'Never invent a price, integration, customer result, guarantee, appointment, case study, or action that a tool did not confirm.',
@@ -236,8 +238,10 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
       'Keep most turns to one or two sentences so the call stays responsive.',
     ].join('\n'),
-    // Cartesia speaks this prewritten opening on call connect; it does not wait for an LLM turn.
-    initial_message: '{{campaign_first_message}}',
+    // Outbound calls wait for the callee's first greeting instead of racing
+    // the handset pickup event. The exact campaign opener remains in the
+    // instructions above and is spoken as the first response.
+    initial_message: '',
     timezone: 'America/Chicago',
     model: {
       id: DEFAULT_MODEL_ID,
@@ -252,7 +256,8 @@ function agentConfig(toolIds: string[], voiceId: string) {
       },
       output: {
         voice_id: voiceId,
-        speed: 1,
+        // Slightly slower pacing reduces clipped consonants on the PSTN/SIP leg.
+        speed: 0.96,
       },
     },
     turn: {
