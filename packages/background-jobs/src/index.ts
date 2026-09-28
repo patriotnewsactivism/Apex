@@ -33,7 +33,7 @@ export {
   PER_WORKSTREAM_JOB_CAP,
 } from './cron-governor-job.js';
 
-export { CampaignRunner, createCampaign, computeCampaignProgress, STALL_AFTER_MS } from './campaign-runner.js';
+export { CampaignRunner, createCampaign, computeCampaignProgress, countUsableCampaignLeads, STALL_AFTER_MS } from './campaign-runner.js';
 export type { CampaignProgress, CreateCampaignInput } from './campaign-runner.js';
 export { US_STATES, STATE_CITIES, citiesForStates, allStateCodes } from './us-geo.js';
 export {
