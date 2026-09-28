@@ -192,6 +192,37 @@ async function main(): Promise<void> {
     !runnerMod.isDeterministicFailure('All LLM providers failed: free pool exhausted'),
   );
 
+  // ── Legacy campaign search repair ───────────────────────────────────────
+  const legacyBail = runnerMod.effectiveSegmentSearch({
+    industry: 'Bail Bonds',
+    city: 'Birmingham, AL',
+    subcategory: 'company',
+    searchIntent: 'directory',
+    query: 'company Birmingham, AL',
+  } as any);
+  check(
+    'legacy Bail Bonds generic shards are repaired to an actual bail-bonds query',
+    legacyBail.repairedLegacyGeneric &&
+      /bail/i.test(legacyBail.subcategory) &&
+      /bail/i.test(legacyBail.query) &&
+      /Birmingham, AL/i.test(legacyBail.query),
+    legacyBail,
+  );
+
+  const roofingSpecific = runnerMod.effectiveSegmentSearch({
+    industry: 'Roofing',
+    city: 'Dallas, TX',
+    subcategory: 'roof repair',
+    searchIntent: 'directory',
+    query: 'roof repair Dallas, TX',
+  } as any);
+  check(
+    'already-specific campaign shards are left unchanged',
+    !roofingSpecific.repairedLegacyGeneric &&
+      roofingSpecific.query === 'roof repair Dallas, TX',
+    roofingSpecific,
+  );
+
   console.log(
     failures === 0
       ? '\n✅ Campaign runner lead payload verified.\n'
