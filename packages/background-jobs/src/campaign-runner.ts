@@ -388,6 +388,48 @@ function domainOf(url: string | undefined): string | null {
   }
 }
 
+const SEARCH_DIRECTORY_HOSTS = [
+  'yelp.com',
+  'facebook.com',
+  'instagram.com',
+  'linkedin.com',
+  'yellowpages.com',
+  'mapquest.com',
+  'bbb.org',
+  'chamberofcommerce.com',
+  'manta.com',
+] as const;
+
+function businessFromWebResult(result: { title?: string; url?: string; snippet?: string }, city: string): DirectoryBusiness | null {
+  const url = result.url?.trim();
+  if (!url || !/^https?:\/\//i.test(url)) return null;
+  let host = '';
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!host || SEARCH_DIRECTORY_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`))) {
+    return null;
+  }
+
+  const rawTitle = result.title?.trim() ?? '';
+  const title = rawTitle
+    .split(/\s+[|–—]\s+/)[0]
+    .replace(/\s+-\s+(?:home|official site|website)$/i, '')
+    .trim();
+  const name = title && !/^tavily ai summary$/i.test(title)
+    ? title
+    : host.split('.')[0].replace(/[-_]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+
+  if (!name) return null;
+  return {
+    name,
+    website: url,
+    city,
+  };
+}
+
 export class CampaignRunner {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -532,8 +574,59 @@ export class CampaignRunner {
       const result = await registry.execute('searchBusinessDirectory', { query }, this.toolContext);
       if (!result.success) throw new Error(result.error ?? 'searchBusinessDirectory failed');
 
-      const payload = result.data as { businesses?: DirectoryBusiness[]; provider?: string };
-      const raw = (payload.businesses ?? []).slice(0, Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard));
+      const payload = result.data as {
+        businesses?: DirectoryBusiness[];
+        provider?: string;
+        attempts?: string[];
+        error?: string;
+      };
+      let provider = payload.provider ?? 'unknown';
+      let raw = (payload.businesses ?? []).slice(0, Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard));
+      let webDiagnostics: string[] = [];
+
+      // A directory outage must not silently burn a campaign segment as
+      // "exhausted." We already have Tavily + Brave configured in production,
+      // so use the normal web-search stack as a discovery fallback and let the
+      // downstream enrichment pipeline verify phone/email/decision-maker data.
+      if (raw.length === 0 && provider === 'none') {
+        const webResult = await registry.execute(
+          'webSearch',
+          {
+            query: `${segment.subcategory} ${segment.city} official business website`,
+            maxResults: Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard),
+          },
+          this.toolContext,
+        );
+
+        if (webResult.success) {
+          const webPayload = webResult.data as {
+            provider?: string;
+            results?: Array<{ title?: string; url?: string; snippet?: string }>;
+            diagnostics?: string[];
+            suggestion?: string;
+          };
+          webDiagnostics = webPayload.diagnostics ?? [];
+          const webBusinesses = (webPayload.results ?? [])
+            .map((item) => businessFromWebResult(item, segment.city))
+            .filter((item): item is DirectoryBusiness => item !== null);
+          if (webBusinesses.length > 0) {
+            raw = webBusinesses.slice(0, Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard));
+            provider = `web:${webPayload.provider ?? 'search'}`;
+          }
+        }
+
+        if (raw.length === 0) {
+          const reasons = [
+            ...(payload.attempts ?? []),
+            ...(payload.error ? [payload.error] : []),
+            ...webDiagnostics,
+          ].filter(Boolean);
+          throw new Error(
+            `All lead discovery sources returned zero for "${query}". ${reasons.slice(0, 8).join(' | ') || 'No provider diagnostics were returned.'}`,
+          );
+        }
+      }
+
       const found = raw.map(readBusiness).filter((b): b is NonNullable<typeof b> => b !== null);
 
       // Drop companies already on file before spending enrichment or model
@@ -549,7 +642,7 @@ export class CampaignRunner {
           industry: segment.industry,
           city: business.city || segment.city,
           phone: business.phone,
-          source: payload.provider ?? 'directory',
+          source: provider,
           campaignId: campaign.id,
           campaignSegmentId: segment.id,
           researchedByAgentId: this.toolContext.agentId,
@@ -586,7 +679,7 @@ export class CampaignRunner {
         .where(eq(leadCampaigns.id, campaign.id));
 
       console.log(
-        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${payload.provider ?? 'unknown'})`,
+        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${provider})`,
       );
       emitApexEvent({
         type: 'campaign:segment',
