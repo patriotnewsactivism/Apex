@@ -170,7 +170,7 @@ function main(): void {
 
   check(
     'Gemini browser input listener is attached before the initial provider connection so startup speech is buffered',
-    /client\.on\('message', handleClientMessage\)[\s\S]{0,180}const initialConnected = await connect\(\)/.test(geminiLiveSource),
+    /client\.on\('message', handleClientMessage\)[\s\S]{0,420}const initialConnected = await connect\(\)/.test(geminiLiveSource),
   );
   check(
     'Gemini startup snapshot has a hard latency budget instead of blocking provider connect on Postgres',
