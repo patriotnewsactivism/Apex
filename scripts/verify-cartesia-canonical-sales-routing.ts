@@ -143,10 +143,10 @@ check(
 );
 
 check(
-  'outbound sales name-checks first, retries after three seconds, and pitches only after a response',
-  /initial_message:\s*'Hi, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
-    /inactivity_check_in_secs:\s*3/.test(reconciler) &&
-    /repeat exactly once: "Hi, is this \{\{customer_name\}\}\?"/.test(reconciler) &&
+  'outbound sales name-checks first, retries once after a three-second Sonic break, and pitches only after a response',
+  /initial_message:\s*'Hi, is this \{\{customer_name\}\}\?<break time="3s"\/>Hi, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
+    /inactivity_check_in_secs:\s*5/.test(reconciler) &&
+    /three seconds to answer, and if they stay silent repeats that exact question once/.test(reconciler) &&
     /Do not begin the pitch before the person responds/.test(reconciler) &&
     /exact first pitch line: \{\{campaign_first_message\}\}/.test(reconciler),
 );
