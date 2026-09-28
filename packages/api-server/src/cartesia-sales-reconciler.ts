@@ -222,9 +222,9 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'You make outbound business sales calls. Be natural, concise, and conversational. Ask one question at a time and let the person answer.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect name supplied by APEX is {{customer_name}}. Do not assume it is correct if the person tells you otherwise.',
-      'The call starts with exactly: "Hi, is this {{customer_name}}?" Then stop and wait for a response.',
-      'If there is no audible response after the 3-second inactivity check-in, repeat exactly once: "Hi, is this {{customer_name}}?" Then wait again. Do not begin the pitch before the person responds.',
-      'If there is still no response after the repeated name check, end the call rather than looping the greeting.',
+      'The initial audio asks exactly: "Hi, is this {{customer_name}}?" then gives the person three seconds to answer, and if they stay silent repeats that exact question once.',
+      'If the person speaks during the three-second pause, stop the remaining initial audio and listen. Do not repeat the name check after they have answered.',
+      'Do not begin the pitch before the person responds. If there is still no response after the repeated name check, end the call rather than looping the greeting.',
       'As soon as the person answers or acknowledges the name check, transition into the pitch using this exact first pitch line: {{campaign_first_message}}',
       'Do not run a CRM lookup before that first pitch line. Do not talk over the prospect.',
       'If the person says yes, yep, yeah, sure, okay, speaking, this is, or otherwise confirms they are the person, deliver the first pitch line immediately and continue naturally. Do not call a tool first.',
@@ -240,10 +240,10 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
       'Keep most turns to one or two sentences so the call stays responsive.',
     ].join('\n'),
-    // First turn is identity confirmation only. The pitch begins after the
-    // callee answers. Cartesia's inactivity check-in below provides the
-    // three-second retry window.
-    initial_message: 'Hi, is this {{customer_name}}?',
+    // Identity confirmation only. Cartesia Sonic supports explicit break tags;
+    // this gives the callee three seconds to answer before one automatic repeat.
+    // Barge-in during the break interrupts the remainder of this initial audio.
+    initial_message: 'Hi, is this {{customer_name}}?<break time="3s"/>Hi, is this {{customer_name}}?',
     timezone: 'America/Chicago',
     model: {
       id: DEFAULT_MODEL_ID,
@@ -264,7 +264,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
     },
     turn: {
       inactivity_end_call_secs: 120,
-      inactivity_check_in_secs: 3,
+      inactivity_check_in_secs: 5,
     },
     tools: toolIds.map((id) => ({ id })),
     system_tools: {
