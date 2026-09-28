@@ -194,6 +194,12 @@ export function createLeadsRouter(): Router {
       conditions.push(eq(researchedLeads.status, String(req.query.status)));
     } else {
       conditions.push(sql`${researchedLeads.status} <> 'rejected'`);
+      conditions.push(sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`);
+      conditions.push(sql`(
+        ${researchedLeads.source} IS NULL
+        OR ${researchedLeads.source} NOT LIKE '%web:%'
+        OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
+      )`);
     }
     if (req.query.pipelineState) conditions.push(eq(researchedLeads.pipelineState, String(req.query.pipelineState)));
     if (req.query.industry) conditions.push(ilike(researchedLeads.industry, `%${String(req.query.industry)}%`));
@@ -219,7 +225,15 @@ export function createLeadsRouter(): Router {
     const leads = await db
       .select()
       .from(researchedLeads)
-      .where(sql`${researchedLeads.status} <> 'rejected'`)
+      .where(and(
+        sql`${researchedLeads.status} <> 'rejected'`,
+        sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
+        sql`(
+          ${researchedLeads.source} IS NULL
+          OR ${researchedLeads.source} NOT LIKE '%web:%'
+          OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
+        )`,
+      ))
       .orderBy(desc(researchedLeads.createdAt))
       .limit(10000);
 
@@ -271,7 +285,16 @@ export function createLeadsRouter(): Router {
       qualified: all.filter((l) => l.status === 'qualified').length,
       rejected: all.filter((l) => l.status === 'rejected').length,
     };
-    const visible = all.filter((lead) => lead.status !== 'rejected');
+    const visible = all.filter((lead) => {
+      if (lead.status === 'rejected') return false;
+      if (!lead.contactEmail && !lead.contactPhone) return false;
+      const isWeb = /^(?:cache:)?web:/i.test(lead.source ?? '');
+      if (!isWeb) return true;
+      const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
+        | { status?: string }
+        | undefined;
+      return verification?.status === 'verified';
+    });
     const byPipelineState: Record<string, number> = {};
     const byIndustry: Record<string, number> = {};
     for (const l of visible) {
@@ -282,7 +305,9 @@ export function createLeadsRouter(): Router {
 
     res.json({
       total: visible.length,
+      contactReady: visible.length,
       rawCandidates: all.length,
+      pendingOrUnverified: Math.max(0, all.length - visible.length - byStatus.rejected),
       rejected: byStatus.rejected,
       byStatus,
       byPipelineState,
