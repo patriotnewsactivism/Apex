@@ -386,6 +386,33 @@ export function createLeadsRouter(): Router {
     }
   });
 
+  // GET /api/leads/:id — independent persisted-state read-back.
+  router.get('/:id', async (req, res) => {
+    const { db, researchedLeads } = await import('@workspace/db');
+    const leadId = String(req.params.id);
+    const [lead] = await db
+      .select({
+        id: researchedLeads.id,
+        status: researchedLeads.status,
+        pipelineState: researchedLeads.pipelineState,
+      })
+      .from(researchedLeads)
+      .where(eq(researchedLeads.id, leadId))
+      .limit(1);
+
+    if (!lead) {
+      res.status(404).json({ success: false, error: 'lead_not_found' });
+      return;
+    }
+
+    res.json({
+      success: true,
+      id: lead.id,
+      status: lead.status,
+      pipelineState: lead.pipelineState,
+    });
+  });
+
   // ─── PATCH /api/leads/:id — update status ────────────────────────────────
   // The single sanctioned write path for lead status transitions. The Lead
   // Researcher reaches it through the updateLeadStatus tool rather than
