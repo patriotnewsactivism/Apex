@@ -11,7 +11,7 @@ export type ApexEvent =
   | { type: 'task:updated'; taskId: string; status: string; result?: string }
   | { type: 'goal:created'; goalId: string; title: string }
   | { type: 'goal:updated'; goalId: string; status: string }
-  | { type: 'log'; agentId?: string; taskId?: string; level: string; message: string; timestamp: number }
+  | { type: 'log'; agentId?: string; taskId?: string; level: string; message: string; data?: Record<string, unknown>; timestamp: number }
   | { type: 'approval:requested'; approvalId: string; agentId: string; toolName: string; reason: string }
   | { type: 'approval:resolved'; approvalId: string; status: string }
   | { type: 'memory:updated'; agentId: string; key: string }
@@ -169,10 +169,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           setAgentStatuses((prev) => ({ ...prev, [event.agentId]: event.status }));
         }
 
-        // Keep last 500 events
+        // Keep a longer live tail. Durable operator activity is also loaded
+        // from Postgres, so reconnecting does not erase the human-readable history.
         setEvents((prev) => {
           const next = [...prev, event];
-          return next.length > 500 ? next.slice(-500) : next;
+          return next.length > 2000 ? next.slice(-2000) : next;
         });
       } catch {
         // ignore parse errors
