@@ -20,9 +20,17 @@ type ToolSummary = { id?: string; name?: string };
 type ToolPage = { data?: ToolSummary[] };
 type WebhookSummary = { id?: string; url?: string; display_name?: string | null };
 type WebhookPage = { data?: WebhookSummary[] };
+type ProviderSummary = {
+  id?: string;
+  type?: string;
+};
+type ProviderPage = { data?: ProviderSummary[] };
+
 type PhoneNumberSummary = {
   id?: string;
   number?: string;
+  provider_id?: string | null;
+  agent_id?: string | null;
   label?: string | null;
   provider?: { type?: string; id?: string; label?: string | null } | null;
 };
@@ -373,17 +381,110 @@ async function reconcileAgent(toolIds: string[], webhookId: string): Promise<str
   return agentId;
 }
 
-async function inspectApprovedOutboundNumber(): Promise<{ id: string | null; providerType: string | null }> {
-  const digits = APEX_CARTESIA_CALLER_NUMBER.replace(/\D/g, '');
-  const page = await request<PhoneNumberPage>(
-    `/agents/phone-numbers?q=${encodeURIComponent(digits)}&limit=100`,
+async function listApprovedOutboundNumber(): Promise<PhoneNumberSummary | null> {
+  // The top-level phone-number API is the import/provisioning authority. Using
+  // it here also finds an imported number before it has been assigned to an
+  // agent, which the legacy /agents/phone-numbers view may not show.
+  const page = await request<PhoneNumberPage>('/phone-numbers?limit=100');
+  const matches = (page.data ?? []).filter(
+    (phone) => phone.number === APEX_CARTESIA_CALLER_NUMBER && phone.id,
   );
-  const matches = (page.data ?? []).filter((phone) => phone.number === APEX_CARTESIA_CALLER_NUMBER && phone.id);
-  if (matches.length !== 1) return { id: null, providerType: null };
-  return {
-    id: matches[0]!.id!,
-    providerType: matches[0]!.provider?.type ?? null,
-  };
+  if (matches.length > 1) {
+    throw new Error(
+      `Approved caller ID ${APEX_CARTESIA_CALLER_NUMBER} appears more than once in Cartesia; refusing to guess`,
+    );
+  }
+  return matches[0] ?? null;
+}
+
+async function resolveOrCreateTelnyxProvider(): Promise<string> {
+  const page = await request<ProviderPage>('/providers');
+  const matches = (page.data ?? []).filter(
+    (provider) => provider.type?.toLowerCase() === 'telnyx' && provider.id,
+  );
+  if (matches.length > 1) {
+    throw new Error('Multiple Cartesia Telnyx providers exist; refusing to guess which account owns the approved caller ID');
+  }
+  if (matches.length === 1) return matches[0]!.id!;
+
+  const telnyxApiKey = process.env.TELNYX_API_KEY?.trim();
+  if (!telnyxApiKey) {
+    throw new Error('TELNYX_API_KEY is required to connect the approved APEX caller ID to Cartesia');
+  }
+
+  const connectionId =
+    process.env.CARTESIA_TELNYX_CONNECTION_ID?.trim() ||
+    process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID?.trim();
+
+  const create = async (credentials: Record<string, string>) =>
+    request<{ id?: string }>('/providers', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'telnyx', credentials }),
+    });
+
+  try {
+    const created = await create({
+      api_key: telnyxApiKey,
+      ...(connectionId ? { connection_id: connectionId } : {}),
+    });
+    if (!created.id) throw new Error('Cartesia did not return a Telnyx provider id');
+    console.log(`[cartesia-sales] Connected Telnyx provider ${created.id}`);
+    return created.id;
+  } catch (firstErr) {
+    // Some Cartesia provider revisions only require the Telnyx API key. Re-read
+    // after the first attempt before retrying so a timeout cannot create a
+    // duplicate provider entry.
+    const after = await request<ProviderPage>('/providers');
+    const now = (after.data ?? []).filter(
+      (provider) => provider.type?.toLowerCase() === 'telnyx' && provider.id,
+    );
+    if (now.length === 1) return now[0]!.id!;
+    if (now.length > 1) throw firstErr;
+    if (!connectionId) throw firstErr;
+
+    const created = await create({ api_key: telnyxApiKey });
+    if (!created.id) throw new Error('Cartesia did not return a Telnyx provider id');
+    console.log(`[cartesia-sales] Connected Telnyx provider ${created.id} using API-key-only credentials`);
+    return created.id;
+  }
+}
+
+async function reconcileApprovedOutboundNumber(
+  agentId: string,
+): Promise<{ id: string; providerType: string }> {
+  let phone = await listApprovedOutboundNumber();
+
+  if (!phone) {
+    const providerId = await resolveOrCreateTelnyxProvider();
+    phone = await request<PhoneNumberSummary>('/phone-numbers/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        provider_id: providerId,
+        number: APEX_CARTESIA_CALLER_NUMBER,
+      }),
+    });
+    if (!phone.id) throw new Error('Cartesia imported the approved caller ID but returned no phone-number id');
+    console.log(
+      `[cartesia-sales] Imported approved caller ID ${APEX_CARTESIA_CALLER_NUMBER} as ${phone.id}`,
+    );
+  }
+
+  if (!phone.id) throw new Error('Approved Cartesia phone number has no id');
+  if (phone.agent_id !== agentId) {
+    phone = await request<PhoneNumberSummary>(
+      `/phone-numbers/${encodeURIComponent(phone.id)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ agent_id: agentId }),
+      },
+    );
+    if (!phone.id) throw new Error('Cartesia did not return the assigned phone-number id');
+    console.log(
+      `[cartesia-sales] Assigned ${APEX_CARTESIA_CALLER_NUMBER} to canonical sales agent ${agentId}`,
+    );
+  }
+
+  return { id: phone.id, providerType: 'telnyx' };
 }
 
 export async function reconcileCartesiaSalesAgent(): Promise<void> {
@@ -401,16 +502,12 @@ export async function reconcileCartesiaSalesAgent(): Promise<void> {
     const agentId = await reconcileAgent(toolIds, webhookId);
     clearCartesiaSalesResolutionCache();
 
-    const outbound = await inspectApprovedOutboundNumber();
-    if (!outbound.id) {
-      console.error(
-        `[cartesia-sales] Canonical agent ready (${agentId}), but approved caller ID ${APEX_CARTESIA_CALLER_NUMBER} is not connected to Cartesia. Outbound calls will fail closed.`,
-      );
-    } else {
-      console.log(
-        `[cartesia-sales] Canonical outbound ready: agent=${agentId}; tools=${toolIds.length}/6; webhook=${webhookId}; caller=${APEX_CARTESIA_CALLER_NUMBER}; numberId=${outbound.id}; telephony=${outbound.providerType ?? 'unknown'}`,
-      );
-    }
+    const outbound = await reconcileApprovedOutboundNumber(agentId);
+    clearCartesiaSalesResolutionCache();
+
+    console.log(
+      `[cartesia-sales] Canonical outbound ready: agent=${agentId}; tools=${toolIds.length}/6; webhook=${webhookId}; caller=${APEX_CARTESIA_CALLER_NUMBER}; numberId=${outbound.id}; telephony=${outbound.providerType}`,
+    );
   } catch (err) {
     console.error(
       '[cartesia-sales] Reconciliation failed:',
