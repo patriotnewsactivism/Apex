@@ -372,6 +372,10 @@ export const api = {
   logs: {
     list: (limit?: number) =>
       apiFetch<{ logs: LogEntry[] }>(`/logs${limit ? `?limit=${limit}` : ''}`).then((r) => r.logs),
+    activity: (limit = 2000) =>
+      apiFetch<{ logs: LogEntry[] }>(
+        `/logs?kind=operator_activity&limit=${Math.max(1, Math.min(limit, 5000))}`,
+      ).then((r) => r.logs),
   },
 
   approvals: {
@@ -1055,6 +1059,7 @@ export interface LogEntry {
   taskId: string | null;
   level: string;
   message: string;
+  data?: Record<string, unknown> | null;
   timestamp: string;
 }
 
