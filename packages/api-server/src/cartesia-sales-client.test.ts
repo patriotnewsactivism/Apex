@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearCartesiaSalesResolutionCache,
   resolveCartesiaSalesAgentId,
-} from './cartesia-sales-client.js';
+} from '@workspace/core';
 
 describe('canonical Cartesia sales voice', () => {
   beforeEach(() => {
