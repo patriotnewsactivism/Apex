@@ -296,14 +296,24 @@ export class MaintenanceJob implements JobHandler {
     const { sql } = await import('drizzle-orm');
 
     const now = new Date();
+    const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    // 1. Clean old debug/info logs (keep 7 days)
+    // 1. Clean noisy raw debug/info logs after 7 days, but keep the
+    // operator's truthful plain-English timeline much longer. It is low volume
+    // and specifically exists so a human can understand what actually happened.
     const logResult = await db.delete(logs).where(
       and(
         lt(logs.timestamp, sevenDaysAgo),
         sql`${logs.level} IN ('debug', 'info')`,
+        sql`COALESCE(${logs.data}->>'kind', '') <> 'operator_activity'`,
+      ),
+    );
+    const operatorActivityResult = await db.delete(logs).where(
+      and(
+        lt(logs.timestamp, ninetyDaysAgo),
+        sql`${logs.data}->>'kind' = 'operator_activity'`,
       ),
     );
 
@@ -323,6 +333,7 @@ export class MaintenanceJob implements JobHandler {
     return {
       cleanedAt: now.toISOString(),
       logsRemoved: logResult.count ?? 0,
+      operatorActivityRemovedAfter90Days: operatorActivityResult.count ?? 0,
       expiredMemoriesRemoved: memResult.count ?? 0,
       oldJobLogsRemoved: jobLogResult.count ?? 0,
     };
