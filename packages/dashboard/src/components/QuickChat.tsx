@@ -742,6 +742,18 @@ export function ChatPanel({
     onVoiceStatus?.(liveVoice.status);
   }, [liveVoice.status, onVoiceStatus]);
 
+  // Hang-up is a terminal UI event, not merely a transport state change.
+  // Refresh durable history immediately so a just-ended call cannot stay
+  // labelled "in progress" from a stale React Query cache.
+  useEffect(() => {
+    if (liveVoice.status !== 'ended') return;
+    openVoiceBubbleRef.current = null;
+    setLiveActivity(null);
+    setLiveProvider(null);
+    setLiveLatency({});
+    void qc.invalidateQueries({ queryKey: ['voice-chat-sessions'] });
+  }, [liveVoice.status, qc]);
+
   // Screen awareness, part 1: when a live voice call is active and Don
   // navigates to a different Apex page, tell the agent what he is now
   // looking at. The server relays this into the Deepgram agent session as a

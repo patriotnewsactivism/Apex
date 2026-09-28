@@ -16,6 +16,7 @@ import { api } from '../lib/api.js';
 //   receive: { type: 'audio', data: base64 }  24kHz PCM16
 //   receive: { type: 'transcript', role, text }  (streaming FRAGMENTS — merge, don't split)
 //   receive: { type: 'turnComplete' }  (end of one spoken turn — close the bubble)
+//   receive: { type: 'ended', reason }  server-authoritative call teardown
 //   receive: { type: 'goalCreated', id, title }
 //   receive: { type: 'approvalResolved', id, action }
 //   receive: { type: 'toolActivity', name }
@@ -128,6 +129,10 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   const LOCAL_BARGE_FRAMES = 2;
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
+  // Monotonic lifecycle token. Any stop() invalidates every async continuation
+  // from the current start() so a slow getUserMedia/ticket request cannot
+  // resurrect a call after the operator has already hung up.
+  const lifecycleRef = useRef(0);
 
   const stopPlayback = useCallback(() => {
     playQueueRef.current = [];
@@ -157,13 +162,25 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   }, []);
 
   const stop = useCallback(() => {
+    // Invalidate the active start() immediately, including one that is still
+    // awaiting microphone permission or a websocket ticket.
+    lifecycleRef.current += 1;
+
+    const ws = wsRef.current;
+    wsRef.current = null;
     try {
-      wsRef.current?.send(JSON.stringify({ type: 'end' }));
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'end' }));
+      }
     } catch {
       // socket may already be closed
     }
-    wsRef.current?.close();
-    wsRef.current = null;
+    try {
+      ws?.close(1000, 'operator hangup');
+    } catch {
+      // socket may already be closed
+    }
+
     processorRef.current?.disconnect();
     processorRef.current = null;
     if (captureCtxRef.current) {
@@ -197,7 +214,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       playbackCtxRef.current.close().catch(() => {});
       playbackCtxRef.current = null;
     }
-    setStatus((s) => (s === 'error' ? s : 'ended'));
+    setStatus('ended');
   }, [stopPlayback]);
 
   // Tell the agent what screen Don is looking at mid-call. Relayed server-side
@@ -211,6 +228,8 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   }, []);
 
   const start = useCallback(async (startPage?: string) => {
+    const lifecycle = lifecycleRef.current + 1;
+    lifecycleRef.current = lifecycle;
     setStatus('connecting');
 
     // Everything above the first suspension point still runs inside the click
@@ -305,16 +324,37 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
           autoGainControl: true,
         },
       });
+      if (lifecycle !== lifecycleRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        captureCtx.close().catch(() => {});
+        playbackCtx.close().catch(() => {});
+        return;
+      }
       micStreamRef.current = stream;
 
       const { ticket } = await api.auth.websocketTicket();
+      if (lifecycle !== lifecycleRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        if (micStreamRef.current === stream) micStreamRef.current = null;
+        captureCtx.close().catch(() => {});
+        playbackCtx.close().catch(() => {});
+        return;
+      }
       const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
       const pageQs = startPage ? `&page=${encodeURIComponent(startPage)}` : '';
       const ws = new WebSocket(`${wsProtocol}${window.location.host}/ws/voice-live?ticket=${encodeURIComponent(ticket)}${pageQs}`);
       ws.binaryType = 'arraybuffer';
+      if (lifecycle !== lifecycleRef.current) {
+        ws.close(1000, 'cancelled before connect');
+        return;
+      }
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (lifecycle !== lifecycleRef.current) {
+          ws.close(1000, 'stale voice session');
+          return;
+        }
         // Gesture-created contexts can still be auto-suspended between the
         // click and the socket opening; nudge them once more.
         resumeContext(captureCtx);
@@ -396,6 +436,7 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       };
 
       ws.onmessage = (event) => {
+        if (lifecycle !== lifecycleRef.current) return;
         let msg: any;
         try {
           msg = JSON.parse(event.data);
@@ -452,6 +493,11 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
               cbRef.current.onLatency?.({ stage: msg.stage, ms: msg.ms });
             }
             break;
+          case 'ended':
+            // Server-authoritative teardown (spoken hang-up or provider-side
+            // end). Reuse the same hard cleanup as the Hang up button.
+            stop();
+            break;
           case 'error':
             cbRef.current.onError?.(msg.message);
             setStatus('error');
@@ -460,24 +506,29 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
       };
 
       ws.onerror = () => {
+        if (lifecycle !== lifecycleRef.current) return;
         cbRef.current.onError?.('Voice connection error.');
         setStatus('error');
       };
 
       ws.onclose = () => {
+        if (wsRef.current === ws) wsRef.current = null;
+        if (lifecycle !== lifecycleRef.current) return;
+        lifecycleRef.current += 1;
         setStatus((s) => (s === 'error' ? s : 'ended'));
       };
     } catch (err) {
       captureCtx.close().catch(() => {});
-      captureCtxRef.current = null;
+      if (captureCtxRef.current === captureCtx) captureCtxRef.current = null;
       playbackCtx.close().catch(() => {});
-      playbackCtxRef.current = null;
+      if (playbackCtxRef.current === playbackCtx) playbackCtxRef.current = null;
       micStreamRef.current?.getTracks().forEach((t) => t.stop());
       micStreamRef.current = null;
+      if (lifecycle !== lifecycleRef.current) return;
       cbRef.current.onError?.(err instanceof Error ? err.message : 'Microphone access failed.');
       setStatus('error');
     }
-  }, [playChunk, stopPlayback]);
+  }, [playChunk, stop, stopPlayback]);
 
   return { status, start, stop, sendContext };
 }
