@@ -32,9 +32,26 @@ export interface PlaybookFields {
 
 const OPTIONAL_FIELDS = new Set(['outreachAngle', 'transcriptSnippet', 'industry', 'city']);
 
+export function emailGreetingName(fullName: string | null | undefined): string {
+  const raw = typeof fullName === 'string' ? fullName.trim() : '';
+  if (!raw) return 'there';
+
+  const withoutTitle = raw.replace(/^(mr|mrs|ms|miss|dr|prof)\.?\s+/i, '').trim();
+  if (!withoutTitle) return 'there';
+
+  // Handle "Last, First" as well as the normal "First Last" form.
+  if (withoutTitle.includes(',')) {
+    const [, given = ''] = withoutTitle.split(',', 2);
+    const first = given.trim().split(/\s+/)[0];
+    if (first) return first;
+  }
+
+  return withoutTitle.split(/\s+/)[0] || 'there';
+}
+
 export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
   id: 'buildmybot-intro',
-  version: 6,
+  version: 7,
   name: 'BuildMyBot intro',
   summary: 'One cold email, one sales call, and one follow-up. The buyer is treated as the owner of a local business that misses calls.',
   openEmail: {
@@ -125,7 +142,7 @@ export function rehearsalPersonaFields(input: {
   city: string;
 }): PlaybookFields {
   return {
-    buyerName: input.buyerName.trim(),
+    buyerName: emailGreetingName(input.buyerName),
     companyName: input.companyName.trim(),
     industry: input.industry.trim() || 'local service',
     city: input.city.trim() || 'your area',
