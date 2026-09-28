@@ -279,6 +279,46 @@ function publicContactsFromHtml(html: string): { email: string | null; phone: st
   };
 }
 
+function structuredDecisionMakerFromHtml(html: string): { name: string; title: string } | null {
+  const scripts = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) ?? [];
+  const seniority = /\b(owner|founder|co-founder|president|ceo|chief executive|managing partner|managing member|principal|partner)\b/i;
+
+  const walk = (value: unknown): { name: string; title: string } | null => {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const row = value as Record<string, unknown>;
+    const rawType = row['@type'];
+    const types = Array.isArray(rawType) ? rawType.join(' ') : String(rawType ?? '');
+    const name = typeof row.name === 'string' ? decodeHtmlText(row.name) : '';
+    const title = typeof row.jobTitle === 'string' ? decodeHtmlText(row.jobTitle) : '';
+    if (/\bPerson\b/i.test(types) && name && title && seniority.test(title)) {
+      return { name, title };
+    }
+    for (const child of Object.values(row)) {
+      const found = walk(child);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  for (const script of scripts) {
+    const body = script.replace(/^<script[^>]*>/i, '').replace(/<\/script>$/i, '').trim();
+    try {
+      const found = walk(JSON.parse(body));
+      if (found) return found;
+    } catch {
+      // Ignore malformed third-party JSON-LD.
+    }
+  }
+  return null;
+}
+
 function sameOriginContactLinks(html: string, homepage: string): string[] {
   const base = new URL(homepage);
   const candidates: string[] = [];
@@ -292,10 +332,25 @@ function sameOriginContactLinks(html: string, homepage: string): string[] {
       candidates.push(url.toString());
     } catch {}
   }
-  return [...new Set(candidates)].slice(0, 2);
+
+  // Some sites hide useful contact/team pages behind JS navigation. Probe a
+  // few conventional first-party paths before paying an external enrichment
+  // provider. These direct website requests are cheap and high-provenance.
+  for (const suffix of ['/contact', '/contact-us', '/about', '/about-us', '/team', '/staff']) {
+    try {
+      const url = new URL(suffix, base);
+      candidates.push(url.toString());
+    } catch {}
+  }
+  return [...new Set(candidates)].slice(0, 4);
 }
 
-async function fetchContactPage(url: string): Promise<{ url: string; email: string | null; phone: string | null } | null> {
+async function fetchContactPage(url: string): Promise<{
+  url: string;
+  email: string | null;
+  phone: string | null;
+  decisionMaker: { name: string; title: string } | null;
+} | null> {
   try {
     const response = await fetch(url, {
       redirect: 'follow',
@@ -305,7 +360,11 @@ async function fetchContactPage(url: string): Promise<{ url: string; email: stri
     if (!response.ok) return null;
     const html = (await response.text()).slice(0, 250000);
     const contacts = publicContactsFromHtml(html);
-    return { url: response.url || url, ...contacts };
+    return {
+      url: response.url || url,
+      ...contacts,
+      decisionMaker: structuredDecisionMakerFromHtml(html),
+    };
   } catch {
     return null;
   }
@@ -321,7 +380,10 @@ export interface BusinessWebsiteIdentity {
   contactPhone: string | null;
   contactSourceUrl: string | null;
   contactCheckedAt: string;
-  contactScanVersion: '2026-09-28-v1';
+  contactScanVersion: '2026-09-28-v2';
+  decisionMakerName: string | null;
+  decisionMakerTitle: string | null;
+  decisionMakerSourceUrl: string | null;
 }
 
 export async function verifyBusinessWebsiteIdentity(input: {
@@ -332,7 +394,16 @@ export async function verifyBusinessWebsiteIdentity(input: {
 }): Promise<BusinessWebsiteIdentity> {
   const homepage = canonicalHomepageUrl(input.website);
   const checkedAt = new Date().toISOString();
-  const emptyContacts = { contactEmail: null, contactPhone: null, contactSourceUrl: null, contactCheckedAt: checkedAt, contactScanVersion: '2026-09-28-v1' as const };
+  const emptyContacts = {
+    contactEmail: null,
+    contactPhone: null,
+    contactSourceUrl: null,
+    contactCheckedAt: checkedAt,
+    contactScanVersion: '2026-09-28-v2' as const,
+    decisionMakerName: null,
+    decisionMakerTitle: null,
+    decisionMakerSourceUrl: null,
+  };
   if (!homepage) {
     return {
       status: 'unverified',
