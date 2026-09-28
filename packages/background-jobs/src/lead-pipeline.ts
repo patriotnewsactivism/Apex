@@ -712,9 +712,11 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
       contactPhone: lead.contactPhone ?? identity.contactPhone,
       contactSourceUrl: lead.contactSourceUrl ?? identity.contactSourceUrl,
       contactResearchStatus:
-        lead.contactEmail || lead.contactPhone || identity.contactEmail || identity.contactPhone
-          ? 'partial'
-          : lead.contactResearchStatus,
+        (lead.contactEmail ?? identity.contactEmail) && (lead.contactPhone ?? identity.contactPhone)
+          ? 'complete'
+          : (lead.contactEmail || lead.contactPhone || identity.contactEmail || identity.contactPhone)
+            ? 'partial'
+            : lead.contactResearchStatus,
     };
   }
 
@@ -1019,7 +1021,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         contactEmail,
         contactPhone,
         contactSourceUrl,
-        contactResearchStatus: contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
+        contactResearchStatus: contactEmail && contactPhone ? 'complete' : contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
         contactResearchedAt: contactEmail || contactPhone ? new Date() : lead.contactResearchedAt,
         enrichment: {
           ...(lead.enrichment ?? {}),
@@ -1047,7 +1049,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
             contactEmail,
             contactPhone,
             contactSourceUrl,
-            contactResearchStatus: contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
+            contactResearchStatus: contactEmail && contactPhone ? 'complete' : contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
           },
           updatedAt: new Date(),
         }).where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
