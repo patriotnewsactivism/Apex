@@ -6,6 +6,7 @@ import {
   researchedLeads,
 } from '@workspace/db';
 import { emitApexEvent, normalizeIndustry } from '@workspace/core';
+import { recordOperatorActivity } from './operator-activity.js';
 
 export const LEAD_PIPELINE_STATES = [
   'DISCOVERED',
@@ -707,12 +708,31 @@ export async function processLeadPipelineBacklog(options: {
   }
 
   if (advanced > 0) {
+    const timestamp = new Date().toISOString();
     emitApexEvent({
       type: 'lead:pipeline:metrics',
       campaignId: options.campaignId ?? null,
       advanced,
       byState,
-      timestamp: new Date().toISOString(),
+      timestamp,
+    });
+
+    const labels: Record<string, string> = {
+      DISCOVERED: 'basic business checks',
+      BASIC_ENRICHMENT: 'contact lookup',
+      CONTACT_FOUND: 'qualification',
+      QUALIFIED: 'deeper research',
+      DEEP_RESEARCH: 'campaign-ready',
+    };
+    const detail = Object.entries(byState)
+      .filter(([, count]) => count > 0)
+      .map(([state, count]) => `${count} moved into ${labels[state] ?? state.toLowerCase()}`)
+      .join(', ');
+    void recordOperatorActivity({
+      category: 'pipeline',
+      agentId: 'apex-campaign-runner',
+      message: `Lead pipeline moved ${advanced} prospect${advanced === 1 ? '' : 's'} forward${detail ? `: ${detail}.` : '.'}`,
+      data: { campaignId: options.campaignId ?? null, advanced, byState },
     });
   }
 
@@ -1146,6 +1166,15 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
 
     if (rows.length > 0) {
       console.log(`[lead-identity] checked=${rows.length} renamed=${renamed} mismatched=${mismatched} contactsAdded=${contactsAdded}`);
+      await recordOperatorActivity({
+        category: 'lead_cleanup',
+        agentId: 'apex-campaign-runner',
+        message:
+          `Cleaned ${rows.length} older prospect${rows.length === 1 ? '' : 's'}: ` +
+          `${renamed} company name${renamed === 1 ? '' : 's'} corrected, ` +
+          `contact information added to ${contactsAdded}, and ${mismatched} wrong-match${mismatched === 1 ? '' : 'es'} rejected.`,
+        data: { checked: rows.length, renamed, mismatched, contactsAdded },
+      });
     }
     return { checked: rows.length, renamed, mismatched, contactsAdded };
   } finally {
