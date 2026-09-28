@@ -14,16 +14,16 @@ Create each as a **Webhook** tool, HTTP `POST`, `Content-Type: application/json`
 
 | Tool name | URL suffix | Required model-supplied JSON fields | Other JSON fields |
 | --- | --- | --- | --- |
-| `lookup_lead_info` | `/tools/lookup-lead` | none | `phone_number` from system variable |
+| `lookup_lead_info_v2` | `/tools/lookup-lead` | none | `phone_number` from system variable |
 | `capture_and_qualify_lead` | `/tools/capture-and-qualify-lead` | `business_name`, `interest_track` (`voice_bot`, `chat_agent`, `workflow_automation`, `full_stack`) | `call_id` and `phone_number` from system variables; `prospect_name`, `prospect_email`, `call_or_ticket_volume`, `current_tech_stack`, `qualification_notes` |
 | `check_calendar_availability` | `/tools/check-calendar-availability` | `start_date`, `end_date` (`YYYY-MM-DD`), `timezone` (IANA), `preferred_time_of_day` (`morning`, `afternoon`, `any`) | none |
 | `book_consultation` | `/tools/book-consultation` | `prospect_name`, `prospect_email`, `slot_time` (ISO 8601 with offset), `timezone` (IANA) | `call_id` and `phone_number` from system variables; `scope_summary` |
 | `send_demo_link` | `/tools/send-demo-link` | `demo_type` (`buildmybot_live_demo`, `apex_overview`), `consent_to_text` (`true` only after explicit agreement) | `call_id` and `phone_number` from system variables |
-| `record_call_outcome` | `/tools/record-outcome` | `disposition` (`qualified`, `callback_requested`, `not_interested`, `no_decision`, `dnc`) | `call_id` and `phone_number` from system variables; `prospect_name`, `notes` |
+| `record_call_outcome_v2` | `/tools/record-outcome` | `disposition` (`qualified`, `callback_requested`, `not_interested`, `no_decision`, `dnc`) | `call_id` and `phone_number` from system variables; `prospect_name`, `notes`; `opt_out_quote` required for `dnc` |
 
 For the three model supplied values on `check_calendar_availability`, do not infer a date from “next Thursday” without resolving it in the prospect's time zone. Offer up to three actual returned slots. Call `book_consultation` only after the prospect agrees to one. Treat `booked: true` as a confirmed booking; `booked: false` means the host still needs to confirm it.
 
-`send_demo_link` sends a fixed template to the consented number. The BuildMyBot link opens `https://www.buildmybot.app/`; the APEX link is `https://apexwork.org/`. Confirm that a live interactive demo is available before describing either landing page as one. The model cannot compose arbitrary outbound SMS text. `dnc` creates a number-level suppression checked before future APEX outbound calls.
+`send_demo_link` sends a fixed template to the consented number. The BuildMyBot link opens `https://www.buildmybot.app/`; the APEX link is `https://apexwork.org/`. Confirm that a live interactive demo is available before describing either landing page as one. The model cannot compose arbitrary outbound SMS text. `dnc` requires an explicit spoken opt-out quote and creates a number-level suppression checked before future APEX outbound calls. Version 2 of the lookup and outcome tools is attached to the canonical agent; the old tool definitions are no longer used.
 
 ## Approved Telnyx caller ID in Cartesia
 
@@ -37,7 +37,7 @@ Configure Cartesia's call event webhook URL as `https://apex.donmatthews.live/ap
 
 ## Agent instructions
 
-> You are Alex, a clearly identified AI sales assistant for BuildMyBot.app and APEX Work Solutions (apexwork.org). BuildMyBot helps businesses answer calls and web conversations, qualify inquiries, send follow-ups, and book appointments. APEX helps research prospects, organize individualized outreach, and manage the resulting pipeline. Ask a short question about the business and listen before proposing a relevant next step. Never invent a customer result, integration, guarantee, price, or case study. Use the knowledge base for current product facts. Use the lead lookup at the start, capture confirmed details, and record a real outcome before the call ends. If someone asks not to be contacted, call the outcome tool with `dnc`, acknowledge the request, and end the call. Ask before texting. Offer only calendar slots returned by the tool and say a booking is confirmed only if the booking tool returns `booked: true`. When a tool is slow, briefly say what you are checking and let the caller interrupt. If a tool fails, do not claim the action succeeded. Offer to connect the caller with Matthew when appropriate.
+> You are Alex, a clearly identified AI sales assistant for BuildMyBot.app and APEX Work Solutions (apexwork.org). Ask a short opening question and listen. If the prospect responds with a brief yes, yep, sure, or okay, continue the pitch immediately in one sentence and ask one relevant question. Use `lookup_lead_info_v2` only when CRM details are needed; do not block the first reply on a lookup. Never invent a customer result, integration, guarantee, price, or case study. Capture confirmed details and record the real outcome before a normal call ends. Only a clear request to stop future contact is DNC. Send `record_call_outcome_v2` with `dnc` and the exact spoken `opt_out_quote` only after that request; an ordinary yes, silence, or declining an offer is not DNC. If a lookup reports an existing suppression, end politely without writing a new DNC. Ask before texting. Offer only calendar slots returned by the tool and confirm a booking only if it returns `booked: true`. If a tool is slow, say briefly what you are checking and allow interruption. Offer a transfer to Matthew when appropriate.
 
 Keep Cartesia's attached knowledge base limited to verified BuildMyBot and APEX product details. A knowledge-base answer cannot substitute for an actual calendar booking or SMS delivery response.
 
