@@ -661,60 +661,117 @@ export class CampaignRunner {
       const effectiveSearch = effectiveSegmentSearch(segment);
       const query = effectiveSearch.query;
 
-      const result = await registry.execute('searchBusinessDirectory', { query }, this.toolContext);
-      if (!result.success) throw new Error(result.error ?? 'searchBusinessDirectory failed');
-
-      const payload = result.data as {
-        businesses?: DirectoryBusiness[];
-        provider?: string;
-        attempts?: string[];
-        error?: string;
+      const maxResults = Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard);
+      type DiscoveryCandidate = {
+        source: 'directory' | 'web';
+        provider: string;
+        businesses: DirectoryBusiness[];
+        diagnostics: string[];
       };
-      let provider = payload.provider ?? 'unknown';
-      let raw = (payload.businesses ?? []).slice(0, Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard));
-      let webDiagnostics: string[] = [];
 
-      // A directory outage must not silently burn a campaign segment as
-      // "exhausted." We already have Tavily + Brave configured in production,
-      // so use the normal web-search stack as a discovery fallback and let the
-      // downstream enrichment pipeline verify phone/email/decision-maker data.
-      if (raw.length === 0 && provider === 'none') {
-        const webResult = await registry.execute(
+      const directoryTask: Promise<DiscoveryCandidate> = registry
+        .execute('searchBusinessDirectory', { query }, this.toolContext)
+        .then((result) => {
+          if (!result.success) {
+            return {
+              source: 'directory' as const,
+              provider: 'none',
+              businesses: [],
+              diagnostics: [result.error ?? 'searchBusinessDirectory failed'],
+            };
+          }
+          const payload = result.data as {
+            businesses?: DirectoryBusiness[];
+            provider?: string;
+            attempts?: string[];
+            error?: string;
+          };
+          return {
+            source: 'directory' as const,
+            provider: payload.provider ?? 'unknown',
+            businesses: (payload.businesses ?? []).slice(0, maxResults),
+            diagnostics: [
+              ...(payload.attempts ?? []),
+              ...(payload.error ? [payload.error] : []),
+            ],
+          };
+        })
+        .catch((err) => ({
+          source: 'directory' as const,
+          provider: 'none',
+          businesses: [],
+          diagnostics: [err instanceof Error ? err.message : String(err)],
+        }));
+
+      // Start the fast web path at the SAME TIME as the structured directory
+      // chain. Before this change every zero-result TomTom/OSM attempt had to
+      // finish before Tavily even started, adding tens of seconds per segment.
+      const webTask: Promise<DiscoveryCandidate> = registry
+        .execute(
           'webSearch',
           {
             query: `${effectiveSearch.subcategory} ${segment.city} official business website`,
-            maxResults: Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard),
+            maxResults,
+            fast: true,
           },
           this.toolContext,
-        );
-
-        if (webResult.success) {
-          const webPayload = webResult.data as {
+        )
+        .then((result) => {
+          if (!result.success) {
+            return {
+              source: 'web' as const,
+              provider: 'none',
+              businesses: [],
+              diagnostics: [result.error ?? 'webSearch failed'],
+            };
+          }
+          const payload = result.data as {
             provider?: string;
             results?: Array<{ title?: string; url?: string; snippet?: string }>;
             diagnostics?: string[];
             suggestion?: string;
           };
-          webDiagnostics = webPayload.diagnostics ?? [];
-          const webBusinesses = (webPayload.results ?? [])
+          const businesses = (payload.results ?? [])
             .map((item) => businessFromWebResult(item, segment.city))
-            .filter((item): item is DirectoryBusiness => item !== null);
-          if (webBusinesses.length > 0) {
-            raw = webBusinesses.slice(0, Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard));
-            provider = `web:${webPayload.provider ?? 'search'}`;
-          }
-        }
+            .filter((item): item is DirectoryBusiness => item !== null)
+            .slice(0, maxResults);
+          return {
+            source: 'web' as const,
+            provider: businesses.length > 0 ? `web:${payload.provider ?? 'search'}` : 'none',
+            businesses,
+            diagnostics: [
+              ...(payload.diagnostics ?? []),
+              ...(payload.suggestion ? [payload.suggestion] : []),
+            ],
+          };
+        })
+        .catch((err) => ({
+          source: 'web' as const,
+          provider: 'none',
+          businesses: [],
+          diagnostics: [err instanceof Error ? err.message : String(err)],
+        }));
 
-        if (raw.length === 0) {
-          const reasons = [
-            ...(payload.attempts ?? []),
-            ...(payload.error ? [payload.error] : []),
-            ...webDiagnostics,
-          ].filter(Boolean);
-          throw new Error(
-            `All lead discovery sources returned zero for "${query}". ${reasons.slice(0, 8).join(' | ') || 'No provider diagnostics were returned.'}`,
-          );
-        }
+      const first = await Promise.race([directoryTask, webTask]);
+      let chosen = first;
+      let other: DiscoveryCandidate | null = null;
+
+      // First useful provider wins. Only wait for the slower path when the
+      // faster path was empty; this keeps the segment latency near the fastest
+      // healthy source rather than the slowest failing source.
+      if (chosen.businesses.length === 0) {
+        other = await (chosen.source === 'directory' ? webTask : directoryTask);
+        if (other.businesses.length > 0) chosen = other;
+      }
+
+      const provider = chosen.provider;
+      const raw = chosen.businesses.slice(0, maxResults);
+      if (raw.length === 0) {
+        const second = other ?? await (first.source === 'directory' ? webTask : directoryTask);
+        const reasons = [...first.diagnostics, ...second.diagnostics].filter(Boolean);
+        throw new Error(
+          `All lead discovery sources returned zero for "${query}". ${reasons.slice(0, 10).join(' | ') || 'No provider diagnostics were returned.'}`,
+        );
       }
 
       const found = raw.map(readBusiness).filter((b): b is NonNullable<typeof b> => b !== null);
