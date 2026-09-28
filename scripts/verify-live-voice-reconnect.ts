@@ -191,12 +191,12 @@ async function main(): Promise<void> {
       !control.isExplicitLiveVoiceHangup('the customer said goodbye yesterday'),
   );
   check(
-    'Deepgram closes the browser transport immediately on a recognized spoken hang-up',
-    /isExplicitLiveVoiceHangup\(text\)[\s\S]{0,260}type: 'ended'[\s\S]{0,180}client\.close\(1000, 'spoken hangup'\)/.test(source),
+    'Deepgram persists endedAt before acknowledging a recognized spoken hang-up',
+    /isExplicitLiveVoiceHangup\(text\)[\s\S]{0,700}await db\.update\(voiceChatSessions\)[\s\S]{0,420}type: 'ended'[\s\S]{0,180}client\.close\(1000, 'spoken hangup'\)/.test(source),
   );
   check(
-    'Gemini closes the browser transport immediately on a recognized spoken hang-up',
-    /isExplicitLiveVoiceHangup\(inputText\)[\s\S]{0,420}type: 'ended'[\s\S]{0,260}client\.close\(1000, 'spoken hangup'\)/.test(geminiSource),
+    'Gemini persists endedAt before acknowledging a recognized spoken hang-up',
+    /isExplicitLiveVoiceHangup\(inputText\)[\s\S]{0,700}await endGeminiSessionRow\(\)[\s\S]{0,220}type: 'ended'[\s\S]{0,220}client\.close\(1000, 'spoken hangup'\)/.test(geminiSource),
   );
   check(
     'Gemini installs browser-close cleanup before initial provider setup can finish',
