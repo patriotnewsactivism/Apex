@@ -112,6 +112,11 @@ check(
     /\.\.\.\(modelRequired\.length \? \{ required: modelRequired \} : \{\}\)/.test(reconciler),
 );
 check(
+  'existing Cartesia tools preserve their write-only bearer secret on PATCH',
+  /_storedAuthentication/.test(reconciler) &&
+    /api_schema: updateApiSchema/.test(reconciler),
+);
+check(
   'reconciler imports the approved Telnyx number and binds it to the canonical agent',
   /resolveOrCreateTelnyxProvider/.test(reconciler) &&
     /\/providers/.test(reconciler) &&
