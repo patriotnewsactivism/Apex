@@ -231,22 +231,45 @@ export async function startCartesiaSalesCall(
       Accept: 'application/json',
     },
     body: JSON.stringify({
+      // NOTE: the live APEX Cartesia account currently accepts these telephony
+      // controls at the request level. Moving them into outbound_calls[] caused
+      // the live endpoint to reject rehearsal calls with HTTP 400.
+      from_number_id: fromNumberId,
       agent_id: agentId,
+      ringing_timeout_seconds: Math.max(5, Math.min(80, Math.round(input.ringingTimeoutSeconds ?? 30))),
       outbound_calls: [{
         to_number: toNumber,
-        from_number_id: fromNumberId,
-        ringing_timeout_seconds: Math.max(5, Math.min(80, Math.round(input.ringingTimeoutSeconds ?? 30))),
         dynamic_variables: dynamicVariables,
       }],
     }),
     signal: AbortSignal.timeout(10_000),
   });
-  const body = await response.json().catch(() => ({})) as {
+
+  const rawBody = await response.text();
+  let body: {
     calls?: Array<{ number?: string; agent_call_id?: string; error?: unknown }>;
     message?: string;
-  };
+    detail?: unknown;
+    error?: unknown;
+    errors?: unknown;
+  } = {};
+  try {
+    body = rawBody ? JSON.parse(rawBody) as typeof body : {};
+  } catch {
+    body = {};
+  }
+
   if (!response.ok) {
-    throw new Error(`Cartesia outbound call request failed: ${body.message ?? `HTTP ${response.status}`}`);
+    const providerDetail =
+      body.message ??
+      (typeof body.detail === 'string' ? body.detail : undefined) ??
+      (typeof body.error === 'string' ? body.error : undefined) ??
+      (body.detail ? JSON.stringify(body.detail) : undefined) ??
+      (body.error ? JSON.stringify(body.error) : undefined) ??
+      (body.errors ? JSON.stringify(body.errors) : undefined) ??
+      (rawBody ? rawBody.slice(0, 1000) : undefined) ??
+      `HTTP ${response.status}`;
+    throw new Error(`Cartesia outbound call request failed (HTTP ${response.status}): ${providerDetail}`);
   }
   const call = body.calls?.[0];
   if (!call?.agent_call_id || call.error) {
