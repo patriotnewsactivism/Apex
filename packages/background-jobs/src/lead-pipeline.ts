@@ -330,25 +330,104 @@ export async function verifyBusinessWebsiteIdentity(input: {
 }): Promise<BusinessWebsiteIdentity> {
   const homepage = canonicalHomepageUrl(input.website);
   const checkedAt = new Date().toISOString();
-  if (!homepage) return { status: 'unverified', canonicalName: input.currentName?.trim() || null, homepage: null, checkedAt, reason: 'missing_or_invalid_website' };
+  const emptyContacts = { contactEmail: null, contactPhone: null, contactSourceUrl: null };
+  if (!homepage) {
+    return {
+      status: 'unverified',
+      canonicalName: input.currentName?.trim() || null,
+      homepage: null,
+      checkedAt,
+      reason: 'missing_or_invalid_website',
+      ...emptyContacts,
+    };
+  }
+
   try {
     const response = await fetch(homepage, {
       redirect: 'follow',
       headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'APEX-LeadVerifier/1.0 (+https://apex.donmatthews.live)' },
       signal: AbortSignal.timeout(Number(process.env.LEAD_WEBSITE_VERIFY_TIMEOUT_MS ?? 3500)),
     });
-    if (!response.ok) return { status: 'unverified', canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null, homepage, checkedAt, reason: `http_${response.status}` };
+    if (!response.ok) {
+      return {
+        status: 'unverified',
+        canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null,
+        homepage,
+        checkedAt,
+        reason: `http_${response.status}`,
+        ...emptyContacts,
+      };
+    }
+
+    const finalHomepage = canonicalHomepageUrl(response.url || homepage) ?? homepage;
     const raw = (await response.text()).slice(0, 350000);
     const title = decodeHtmlText(raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '');
-    const canonicalName = jsonLdBusinessName(raw) || metaContent(raw, 'og:site_name') || metaContent(raw, 'application-name') || companyNameFromSearchResultTitle(title, homepage, input.city) || companyNameFromDomain(homepage) || input.currentName?.trim() || null;
+    const canonicalName =
+      jsonLdBusinessName(raw) ||
+      metaContent(raw, 'og:site_name') ||
+      metaContent(raw, 'application-name') ||
+      companyNameFromSearchResultTitle(title, finalHomepage, input.city) ||
+      companyNameFromDomain(finalHomepage) ||
+      input.currentName?.trim() ||
+      null;
+
+    const homepageContacts = publicContactsFromHtml(raw);
+    let contactEmail = homepageContacts.email;
+    let contactPhone = homepageContacts.phone;
+    let contactSourceUrl: string | null = (contactEmail || contactPhone) ? finalHomepage : null;
+
+    if (!contactEmail || !contactPhone) {
+      const contactLinks = sameOriginContactLinks(raw, finalHomepage);
+      const pages = await Promise.all(contactLinks.map(fetchContactPage));
+      for (const page of pages) {
+        if (!page) continue;
+        if (!contactEmail && page.email) {
+          contactEmail = page.email;
+          contactSourceUrl = page.url;
+        }
+        if (!contactPhone && page.phone) {
+          contactPhone = page.phone;
+          contactSourceUrl ??= page.url;
+        }
+        if (contactEmail && contactPhone) break;
+      }
+    }
+
     const visible = decodeHtmlText(raw.slice(0, 150000));
-    if (!industryAffinity(input.industry, `${title} ${visible}`)) return { status: 'mismatch', canonicalName, homepage, checkedAt, reason: 'homepage_does_not_match_target_industry' };
-    return { status: 'verified', canonicalName, homepage, checkedAt, reason: 'homepage_and_industry_verified' };
+    if (!industryAffinity(input.industry, `${title} ${visible}`)) {
+      return {
+        status: 'mismatch',
+        canonicalName,
+        homepage: finalHomepage,
+        checkedAt,
+        reason: 'homepage_does_not_match_target_industry',
+        contactEmail,
+        contactPhone,
+        contactSourceUrl,
+      };
+    }
+
+    return {
+      status: 'verified',
+      canonicalName,
+      homepage: finalHomepage,
+      checkedAt,
+      reason: 'homepage_and_industry_verified',
+      contactEmail,
+      contactPhone,
+      contactSourceUrl,
+    };
   } catch (err) {
-    return { status: 'unverified', canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null, homepage, checkedAt, reason: err instanceof Error ? err.message.slice(0, 180) : 'website_fetch_failed' };
+    return {
+      status: 'unverified',
+      canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null,
+      homepage,
+      checkedAt,
+      reason: err instanceof Error ? err.message.slice(0, 180) : 'website_fetch_failed',
+      ...emptyContacts,
+    };
   }
 }
-
 export function makeResearchCacheKey(input: {
   companyName: string;
   website?: string | null;
