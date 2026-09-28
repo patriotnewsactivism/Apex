@@ -230,6 +230,10 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'If they say this is not {{customer_name}}, apologize briefly and ask whether {{customer_name}} is available. Do not pitch the wrong person.',
       'If the line stays silent long enough to trigger the inactivity check-in, say only "Hello?" once and wait. Do not begin the sales flow until you hear a real response.',
       'Do not run a CRM lookup before the first pitch line. Do not talk over the prospect.',
+      'SHORT-REPLY ACCURACY RULE: common replies such as "I do", "I don’t", "I am", "I’m not", "yeah", "nope", "uh-huh", and "not really" are meaningful answers. Never reinterpret a short answer into a longer phrase just because the transcript looks odd.',
+      'If a short transcript does not make sense as an answer to your last question, do not infer a meaning. Say "Sorry, I didn’t catch that — did you say you do?" or a similarly brief clarification tied to the question you just asked.',
+      'If speech recognition returns an unexpected goodbye phrase that does not fit the conversation, do not hang up immediately. Confirm once with "Sorry, are you saying you need to go?" and wait for the answer.',
+      'Only treat a goodbye as final when it is clear in context or the person confirms they are ending the call.',
       'If the person says yes, yep, yeah, sure, okay, speaking, this is, or otherwise confirms they are the person, continue with the rapport step first. Do not call a tool first.',
       'Use lookup_lead_info_v2 only if you need additional CRM context. A normal affirmative answer is not an opt-out.',
       'Never invent a price, integration, customer result, guarantee, appointment, case study, or action that a tool did not confirm.',
@@ -256,7 +260,20 @@ function agentConfig(toolIds: string[], voiceId: string) {
     audio: {
       input: {
         noise_suppression: 'auto',
-        keyterms: ['BuildMyBot', 'APEX', 'apexwork.org'],
+        keyterms: [
+          'BuildMyBot',
+          'APEX',
+          'apexwork.org',
+          'I do',
+          'I don’t',
+          'I am',
+          'I’m not',
+          'voicemail',
+          'after hours',
+          'call back',
+          'missed calls',
+          'roofing',
+        ],
       },
       output: {
         voice_id: voiceId,
@@ -271,7 +288,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
     tools: toolIds.map((id) => ({ id })),
     system_tools: {
       end_call: {
-        description: 'End only after a clear goodbye, explicit opt-out, or completed conversation. A short yes or pause is not a goodbye.',
+        description: 'End only after a clear goodbye, explicit opt-out, or completed conversation. A short yes, pause, or one unexpected goodbye-looking transcript is not enough. If a goodbye phrase is surprising or inconsistent with the conversation, confirm that the person wants to end the call before using this tool.',
         pre_tool_speech: 'force',
       },
       transfer_to_number: {
