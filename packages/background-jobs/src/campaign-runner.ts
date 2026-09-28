@@ -18,6 +18,8 @@ import {
 import { citiesForStates, allStateCodes } from './us-geo.js';
 import {
   dedupeDiscoveredBusinesses,
+  canonicalHomepageUrl,
+  companyNameFromSearchResultTitle,
   generateSearchShards,
   subcategoriesForIndustry,
   getKnownLeadDomains,
@@ -433,7 +435,7 @@ const SEARCH_DIRECTORY_HOSTS = [
   'manta.com',
 ] as const;
 
-function businessFromWebResult(result: { title?: string; url?: string; snippet?: string }, city: string): DirectoryBusiness | null {
+export function businessFromWebResult(result: { title?: string; url?: string; snippet?: string }, city: string): DirectoryBusiness | null {
   const url = result.url?.trim();
   if (!url || !/^https?:\/\//i.test(url)) return null;
   let host = '';
@@ -446,19 +448,21 @@ function businessFromWebResult(result: { title?: string; url?: string; snippet?:
     return null;
   }
 
-  const rawTitle = result.title?.trim() ?? '';
-  const title = rawTitle
-    .split(/\s+[|–—]\s+/)[0]
-    .replace(/\s+-\s+(?:home|official site|website)$/i, '')
-    .trim();
-  const name = title && !/^tavily ai summary$/i.test(title)
-    ? title
-    : host.split('.')[0].replace(/[-_]+/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+  const homepage = canonicalHomepageUrl(url);
+  if (!homepage) return null;
 
+  // Search engines return PAGE titles, not necessarily company names. That is
+  // why the UI showed things like "#1 Roofing Company In Northeast Ohio".
+  // Pick a brand-looking title segment when one exists; otherwise fall back to
+  // the official site's domain identity. The asynchronous BASIC_ENRICHMENT
+  // stage then verifies the homepage and upgrades this to JSON-LD/OG identity.
+  const rawTitle = result.title?.trim() ?? '';
+  const name = companyNameFromSearchResultTitle(rawTitle, homepage, city);
   if (!name) return null;
+
   return {
     name,
-    website: url,
+    website: homepage,
     city,
   };
 }
