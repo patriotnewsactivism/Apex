@@ -400,15 +400,18 @@ export async function tryStartGeminiLiveSession({
           persistTurn('user', inputText);
           if (isExplicitLiveVoiceHangup(inputText)) {
             intentionallyClosed = true;
-            safeSendClient({ type: 'ended', reason: 'spoken_hangup' });
-            try {
-              if (upstream?.readyState === WebSocket.OPEN || upstream?.readyState === WebSocket.CONNECTING) {
-                upstream.close(1000, 'spoken hangup');
+            void (async () => {
+              try {
+                if (upstream?.readyState === WebSocket.OPEN || upstream?.readyState === WebSocket.CONNECTING) {
+                  upstream.close(1000, 'spoken hangup');
+                }
+              } catch {
+                // ignore shutdown race
               }
-            } catch {
-              // ignore shutdown race
-            }
-            client.close(1000, 'spoken hangup');
+              await endGeminiSessionRow();
+              safeSendClient({ type: 'ended', reason: 'spoken_hangup' });
+              client.close(1000, 'spoken hangup');
+            })();
             return;
           }
         }
@@ -470,19 +473,20 @@ export async function tryStartGeminiLiveSession({
     });
   };
 
-  const endGeminiSessionRow = () => {
+  const endGeminiSessionRow = async (): Promise<void> => {
     if (!voiceSessionId) return;
     const endingId = voiceSessionId;
     voiceSessionId = null;
-    db.update(voiceChatSessions)
-      .set({ endedAt: new Date() })
-      .where(eq(voiceChatSessions.id, endingId))
-      .catch((err) =>
-        console.error(
-          '[gemini-live] failed to persist session end:',
-          err instanceof Error ? err.message : String(err),
-        ),
+    try {
+      await db.update(voiceChatSessions)
+        .set({ endedAt: new Date() })
+        .where(eq(voiceChatSessions.id, endingId));
+    } catch (err) {
+      console.error(
+        '[gemini-live] failed to persist session end:',
+        err instanceof Error ? err.message : String(err),
       );
+    }
   };
 
   const failoverToDeepgram = (reason: string) => {
@@ -506,7 +510,7 @@ export async function tryStartGeminiLiveSession({
       // ignore shutdown race
     }
 
-    endGeminiSessionRow();
+    void endGeminiSessionRow();
     // Clear any Gemini audio already queued in the browser before Deepgram
     // begins speaking, otherwise the two providers can overlap during handoff.
     safeSendClient({ type: 'interrupted' });
@@ -630,8 +634,18 @@ export async function tryStartGeminiLiveSession({
     if (msg.type === 'end') {
       intentionallyClosed = true;
       sendGemini({ realtimeInput: { audioStreamEnd: true } });
-      safeSendClient({ type: 'ended', reason: 'operator_hangup' });
-      client.close(1000, 'operator hangup');
+      void (async () => {
+        try {
+          if (upstream?.readyState === WebSocket.OPEN || upstream?.readyState === WebSocket.CONNECTING) {
+            upstream.close(1000, 'operator hangup');
+          }
+        } catch {
+          // ignore shutdown race
+        }
+        await endGeminiSessionRow();
+        safeSendClient({ type: 'ended', reason: 'operator_hangup' });
+        client.close(1000, 'operator hangup');
+      })();
     }
   };
 
@@ -651,7 +665,7 @@ export async function tryStartGeminiLiveSession({
       // ignore shutdown race
     }
 
-    endGeminiSessionRow();
+    void endGeminiSessionRow();
   };
 
   client.on('message', handleClientMessage);
