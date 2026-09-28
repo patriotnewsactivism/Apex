@@ -1374,6 +1374,8 @@ export interface ResearchedLead {
   contactSourceUrl: string | null;
   contactResearchStatus: 'pending' | 'partial' | 'complete' | 'unavailable';
   contactResearchedAt: string | null;
+  source: string | null;
+  enrichment: Record<string, unknown> | null;
   fitReason: string;
   outreachAngle: string | null;
   status: string;
