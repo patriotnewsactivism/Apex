@@ -386,6 +386,31 @@ export async function migrate() {
     ON lead_research_cache (normalized_domain)
   `;
   await client`
+    CREATE TABLE IF NOT EXISTS lead_search_cache (
+      cache_key text PRIMARY KEY,
+      cache_kind text NOT NULL,
+      normalized_query text NOT NULL,
+      request_fingerprint jsonb NOT NULL DEFAULT '{}'::jsonb,
+      provider text,
+      payload jsonb NOT NULL,
+      result_count integer NOT NULL DEFAULT 0,
+      hit_count integer NOT NULL DEFAULT 0,
+      last_hit_at timestamptz,
+      expires_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS lead_search_cache_query_idx
+    ON lead_search_cache (cache_kind, normalized_query)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS lead_search_cache_expiry_idx
+    ON lead_search_cache (expires_at)
+  `;
+
+  await client`
     CREATE TABLE IF NOT EXISTS territory_exclusivity (
       id text PRIMARY KEY,
       name text NOT NULL,
