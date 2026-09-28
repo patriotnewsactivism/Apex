@@ -130,6 +130,12 @@ check(
     /body: JSON\.stringify\(\{ agent_id: agentId \}\)/.test(reconciler),
 );
 check(
+  'telephony provider/phone-number management is pinned to the API version that defines those endpoints',
+  /CARTESIA_TELEPHONY_MANAGEMENT_VERSION = '2026-03-01'/.test(reconciler) &&
+    /telephonyRequest/.test(reconciler) &&
+    /'Cartesia-Version': CARTESIA_TELEPHONY_MANAGEMENT_VERSION/.test(reconciler),
+);
+check(
   'Telnyx provider creation uses existing secure runtime credentials and fails closed on ambiguity',
   /process\.env\.TELNYX_API_KEY/.test(reconciler) &&
     /TELNYX_CALL_BRIDGE_CONNECTION_ID/.test(reconciler) &&

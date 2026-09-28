@@ -6,6 +6,7 @@ import {
 } from '@workspace/core';
 
 const CARTESIA_API = 'https://api.cartesia.ai';
+const CARTESIA_TELEPHONY_MANAGEMENT_VERSION = '2026-03-01';
 const TOOL_BASE_URL = 'https://apex.donmatthews.live/api/cartesia';
 const EVENT_WEBHOOK_URL = `${TOOL_BASE_URL}/events`;
 const EVENT_WEBHOOK_NAME = 'APEX Sales Events';
@@ -60,6 +61,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(`Cartesia ${path} failed: ${message}`);
   }
   return data as T;
+}
+
+async function telephonyRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return request<T>(path, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      'Cartesia-Version': CARTESIA_TELEPHONY_MANAGEMENT_VERSION,
+    },
+  });
 }
 
 function dynamic(type: 'string' | 'boolean' | 'number', name: string, description?: string) {
@@ -384,7 +395,7 @@ async function listApprovedOutboundNumber(): Promise<PhoneNumberSummary | null> 
   // The top-level phone-number API is the import/provisioning authority. Using
   // it here also finds an imported number before it has been assigned to an
   // agent, which the legacy /agents/phone-numbers view may not show.
-  const page = await request<PhoneNumberPage>('/phone-numbers?limit=100');
+  const page = await telephonyRequest<PhoneNumberPage>('/phone-numbers?limit=100');
   const matches = (page.data ?? []).filter(
     (phone) => phone.number === APEX_CARTESIA_CALLER_NUMBER && phone.id,
   );
@@ -397,7 +408,7 @@ async function listApprovedOutboundNumber(): Promise<PhoneNumberSummary | null> 
 }
 
 async function resolveOrCreateTelnyxProvider(): Promise<string> {
-  const page = await request<ProviderPage>('/providers');
+  const page = await telephonyRequest<ProviderPage>('/providers');
   const matches = (page.data ?? []).filter(
     (provider) => provider.type?.toLowerCase() === 'telnyx' && provider.id,
   );
@@ -416,7 +427,7 @@ async function resolveOrCreateTelnyxProvider(): Promise<string> {
     process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID?.trim();
 
   const create = async (credentials: Record<string, string>) =>
-    request<{ id?: string }>('/providers', {
+    telephonyRequest<{ id?: string }>('/providers', {
       method: 'POST',
       body: JSON.stringify({ type: 'telnyx', credentials }),
     });
@@ -433,7 +444,7 @@ async function resolveOrCreateTelnyxProvider(): Promise<string> {
     // Some Cartesia provider revisions only require the Telnyx API key. Re-read
     // after the first attempt before retrying so a timeout cannot create a
     // duplicate provider entry.
-    const after = await request<ProviderPage>('/providers');
+    const after = await telephonyRequest<ProviderPage>('/providers');
     const now = (after.data ?? []).filter(
       (provider) => provider.type?.toLowerCase() === 'telnyx' && provider.id,
     );
@@ -455,7 +466,7 @@ async function reconcileApprovedOutboundNumber(
 
   if (!phone) {
     const providerId = await resolveOrCreateTelnyxProvider();
-    phone = await request<PhoneNumberSummary>('/phone-numbers/import', {
+    phone = await telephonyRequest<PhoneNumberSummary>('/phone-numbers/import', {
       method: 'POST',
       body: JSON.stringify({
         provider_id: providerId,
@@ -470,7 +481,7 @@ async function reconcileApprovedOutboundNumber(
 
   if (!phone.id) throw new Error('Approved Cartesia phone number has no id');
   if (phone.agent_id !== agentId) {
-    phone = await request<PhoneNumberSummary>(
+    phone = await telephonyRequest<PhoneNumberSummary>(
       `/phone-numbers/${encodeURIComponent(phone.id)}`,
       {
         method: 'PATCH',
