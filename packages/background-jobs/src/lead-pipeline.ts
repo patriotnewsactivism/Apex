@@ -608,7 +608,6 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
   const cachedBasic = cached?.basicEnrichment as Record<string, unknown> | null;
   const cachedVerification = cachedBasic?.['businessVerification'] as { status?: string } | undefined;
   const cachedHasContact = Boolean(cachedContact?.contactEmail || cachedContact?.contactPhone || input.phone);
-  const webSource = /^(?:cache:)?web:/i.test(input.source ?? '');
   const readyFromCache = Boolean(
     cachedCampaignDraft &&
     cachedHasContact &&
@@ -1081,7 +1080,6 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         city: lead.city,
         currentName: lead.companyName,
       });
-      const webSource = /^(?:cache:)?web:/i.test(lead.source ?? '');
       const oldName = lead.companyName;
       const decisionMakerName = lead.decisionMakerName ?? identity.decisionMakerName;
       const contactEmail = lead.contactEmail ?? identity.contactEmail;
