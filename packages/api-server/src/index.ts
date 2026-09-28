@@ -546,7 +546,7 @@ async function main() {
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));
   app.use('/api/sales-ops', createSalesFloorRouter());
   app.use('/api/call-bridge', createCallBridgeRouter());
-  app.use('/api/webinar/admin', createWebinarAdminRouter());
+  app.use('/api/webinar/admin', createWebinarAdminRouter(ceo));
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs
