@@ -964,9 +964,17 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
       .from(researchedLeads)
       .where(
         and(
-          or(like(researchedLeads.source, 'web:%'), like(researchedLeads.source, 'cache:web:%')),
+          sql`${researchedLeads.status} <> 'rejected'`,
           sql`${researchedLeads.website} IS NOT NULL`,
-          sql`(${researchedLeads.enrichment}->'businessVerification'->>'checkedAt') IS NULL`,
+          or(
+            like(researchedLeads.source, 'web:%'),
+            like(researchedLeads.source, 'cache:web:%'),
+            and(
+              sql`${researchedLeads.contactEmail} IS NULL`,
+              sql`${researchedLeads.contactPhone} IS NULL`,
+            ),
+          ),
+          sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v1'`,
         ),
       )
       .orderBy(asc(researchedLeads.createdAt))
@@ -982,6 +990,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         city: lead.city,
         currentName: lead.companyName,
       });
+      const webSource = /^(?:cache:)?web:/i.test(lead.source ?? '');
       const oldName = lead.companyName;
       const contactEmail = lead.contactEmail ?? identity.contactEmail;
       const contactPhone = lead.contactPhone ?? identity.contactPhone;
@@ -1021,7 +1030,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         fitReason: replaceCompanyNameText(lead.fitReason, oldName, newName) ?? lead.fitReason,
         outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
         campaignDraft,
-        ...(identity.status === 'mismatch' ? { status: 'rejected', qualificationScore: 0 } : {}),
+        ...(identity.status === 'mismatch' && webSource ? { status: 'rejected', qualificationScore: 0 } : {}),
         updatedAt: new Date(),
       }).where(eq(researchedLeads.id, lead.id));
 
