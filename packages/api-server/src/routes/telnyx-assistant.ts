@@ -37,6 +37,10 @@ import type { ApexCEO } from '@workspace/agents';
 //                                   number, and it also surfaces recent SMS
 //                                   history dynamic-variables never carries.
 //
+//   POST /events                  — Telnyx AI conversation lifecycle/insight
+//                                   webhook. Persists inbound callback history
+//                                   (summary, transcript, next action, outcome)
+//                                   into call_outcomes for the next contact.
 //   POST /sms-inbound             — Telnyx messaging-profile webhook for the
 //                                   same number: logs an inbound text and
 //                                   opens a followup goal, same as a missed
@@ -257,6 +261,213 @@ async function findRecentCallHistory(phone: string, limit = 5) {
   return rows.filter((row) => normalizePhone(row.customerNumber) === norm).slice(0, limit);
 }
 
+function memoryPhone(phone: string): string {
+  const trimmed = phone.trim();
+  if (/^\+[1-9]\d{7,14}$/.test(trimmed)) return trimmed;
+  const norm = normalizePhone(trimmed);
+  return norm.length === 10 ? `+1${norm}` : trimmed;
+}
+
+function dynamicVariableEnvelope(
+  dynamicVariables: Record<string, string>,
+  callerNumber: string,
+  metadata: Record<string, string> = {},
+) {
+  const e164 = memoryPhone(callerNumber);
+  return {
+    dynamic_variables: dynamicVariables,
+    ...(e164
+      ? {
+          memory: {
+            // Telnyx native conversation memory: automatically bring the last
+            // five calls from this same caller into the next inbound callback.
+            conversation_query: `metadata->telnyx_end_user_target=eq.${e164}&limit=5&order=last_message_at.desc`,
+          },
+          conversation: {
+            metadata: {
+              apex_caller_number: e164,
+              apex_call_direction: 'inbound',
+              ...metadata,
+            },
+          },
+        }
+      : {}),
+  };
+}
+
+function telnyxEventData(body: Record<string, unknown>): Record<string, any> {
+  const data = body.data;
+  if (data && typeof data === 'object') return data as Record<string, any>;
+  return body as Record<string, any>;
+}
+
+function telnyxCallOutcomeId(payload: Record<string, any>): string | null {
+  const raw = payload.call_control_id || payload.call_session_id || payload.conversation_id;
+  return typeof raw === 'string' && raw.trim() ? `telnyx-ai:${raw.trim()}` : null;
+}
+
+function stringifyInsightResult(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (value == null) return '';
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function flattenInsightText(results: unknown): string {
+  if (!Array.isArray(results)) return '';
+  return results
+    .map((item) => {
+      if (!item || typeof item !== 'object') return stringifyInsightResult(item);
+      const result = (item as Record<string, unknown>).result;
+      return stringifyInsightResult(result);
+    })
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 4000);
+}
+
+function extractNamedInsight(results: unknown, keys: RegExp): string | null {
+  if (!Array.isArray(results)) return null;
+  const walk = (value: unknown, depth = 0): string | null => {
+    if (depth > 4 || value == null) return null;
+    if (typeof value === 'string') return null;
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const found = walk(entry, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (typeof value !== 'object') return null;
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (keys.test(key) && (typeof child === 'string' || typeof child === 'number' || typeof child === 'boolean')) {
+        return String(child).trim().slice(0, 2000);
+      }
+      const nested = walk(child, depth + 1);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  return walk(results);
+}
+
+export function inferInboundDisposition(insightText: string, prior: string | null | undefined): string {
+  if (prior && prior !== 'no_decision') return prior;
+  const text = insightText.toLowerCase();
+  if (/appointment.{0,30}(booked|scheduled|confirmed)|meeting.{0,30}(booked|scheduled|confirmed)/.test(text)) return 'appointment_booked';
+  if (/callback requested|call back (?:later|tomorrow|next)|asked (?:us|me) to call back/.test(text)) return 'callback_requested';
+  if (/not interested|declined|no interest|does not want/.test(text)) return 'not_interested';
+  if (/qualified|good fit|strong fit|sales qualified/.test(text)) return 'qualified';
+  return 'no_decision';
+}
+
+function normalizeConversationMessages(payload: unknown): Array<{ role: string; text: string }> {
+  const root = payload as Record<string, any> | null;
+  const candidates = [
+    root?.data,
+    root?.messages,
+    root?.items,
+    root?.data?.messages,
+    root?.data?.items,
+  ];
+  const rows = candidates.find(Array.isArray) as unknown[] | undefined;
+  if (!rows) return [];
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== 'object') return null;
+      const item = row as Record<string, any>;
+      const role = typeof item.role === 'string' ? item.role : typeof item.sender === 'string' ? item.sender : 'unknown';
+      const text = typeof item.content === 'string'
+        ? item.content
+        : typeof item.text === 'string'
+          ? item.text
+          : typeof item.message === 'string'
+            ? item.message
+            : '';
+      return text.trim() ? { role, text: text.trim() } : null;
+    })
+    .filter((row): row is { role: string; text: string } => Boolean(row));
+}
+
+async function telnyxApiGet(path: string): Promise<unknown | null> {
+  const key = process.env.TELNYX_API_KEY?.trim();
+  if (!key) return null;
+  try {
+    const response = await fetch(`https://api.telnyx.com/v2/${path.replace(/^\//, '')}`, {
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      console.warn(`[Telnyx Assistant] GET /${path} returned HTTP ${response.status}`);
+      return null;
+    }
+    return await response.json();
+  } catch (err) {
+    console.warn('[Telnyx Assistant] Telnyx conversation enrichment failed:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+async function enrichInboundConversation(input: {
+  outcomeCallId: string;
+  conversationId?: string | null;
+  results?: unknown;
+}): Promise<void> {
+  try {
+    const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, input.outcomeCallId)).limit(1);
+    if (!existing) return;
+
+    let resultPayload = input.results;
+    let transcript: string | null = existing.transcript ?? null;
+
+    if (input.conversationId) {
+      const [messagesResponse, insightsResponse] = await Promise.all([
+        telnyxApiGet(`ai/conversations/${encodeURIComponent(input.conversationId)}/messages`),
+        telnyxApiGet(`ai/conversations/${encodeURIComponent(input.conversationId)}/conversations-insights`),
+      ]);
+
+      const messages = normalizeConversationMessages(messagesResponse);
+      if (messages.length > 0) {
+        transcript = messages.map((message) => `${message.role}: ${message.text}`).join('\n').slice(0, 50000);
+      }
+
+      if (!resultPayload && insightsResponse) {
+        const root = insightsResponse as Record<string, any>;
+        resultPayload = root?.data ?? root?.results ?? root;
+      }
+    }
+
+    const insightText = flattenInsightText(resultPayload);
+    const explicitSummary = extractNamedInsight(resultPayload, /summary|conversation_summary|call_summary/i);
+    const explicitNextAction = extractNamedInsight(resultPayload, /next.?action|next.?step|follow.?up/i);
+    const explicitOutcome = extractNamedInsight(resultPayload, /disposition|outcome|result|status/i);
+    const summary = (explicitSummary || insightText || existing.summary || 'Inbound callback completed.').slice(0, 2000);
+    const nextAction = (explicitNextAction || existing.nextAction || 'Review the callback and continue from the recorded conversation context.').slice(0, 1000);
+    const disposition = inferInboundDisposition([explicitOutcome, insightText, summary].filter(Boolean).join(' '), existing.disposition);
+
+    await db.update(callOutcomes).set({
+      disposition,
+      transcript,
+      summary,
+      nextAction,
+      updatedAt: new Date(),
+    }).where(eq(callOutcomes.callId, input.outcomeCallId));
+
+    await db.insert(logs).values({
+      agentId: existing.createdByAgentId ?? 'apex-front-desk',
+      taskId: null,
+      level: 'acting',
+      message: `📝 Inbound call history updated for ${existing.customerName ?? existing.customerNumber}: ${dispositionLabel(disposition)} — ${summary.slice(0, 220)}`,
+      timestamp: new Date(),
+    });
+  } catch (err) {
+    console.error('[Telnyx Assistant] inbound post-call enrichment failed:', err instanceof Error ? err.message : String(err));
+  }
+}
+
 export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
   const router = Router();
 
@@ -277,15 +488,17 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
           knownCaller: true,
           ownerSelfTest: true,
         });
-        return res.json({
-          dynamic_variables: dynamicVariablesForPerson({
+        return res.json(dynamicVariableEnvelope(
+          dynamicVariablesForPerson({
             fullName: 'Matthew Reardon',
             callerNumber,
             company: 'BuildMyBot / APEX',
             context: 'Owner-requested internal self-pitch test. Use the name Matthew Reardon. Never use Sam.',
             knownCaller: true,
           }),
-        });
+          callerNumber,
+          { apex_known_caller: 'true', apex_returning_agent: 'Don', apex_owner_self_test: 'true' },
+        ));
       }
 
       if (callControlId) {
@@ -301,17 +514,20 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
             knownCaller: true,
             callBridgeSession: bridgeSession.id,
           });
-          return res.json({
-            dynamic_variables: dynamicVariablesForPerson({
+          const resolvedNumber = callerNumber || bridgeSession.customerNumber;
+          return res.json(dynamicVariableEnvelope(
+            dynamicVariablesForPerson({
               fullName: bridgeSession.buyerName,
-              callerNumber: callerNumber || bridgeSession.customerNumber,
+              callerNumber: resolvedNumber,
               company: bridgeSession.operatorNumber === bridgeSession.customerNumber ? 'BuildMyBot / APEX' : '',
               context: bridgeSession.operatorNumber === bridgeSession.customerNumber
                 ? 'Owner-requested internal self-pitch test. Use the saved buyer name. Never use Sam.'
                 : '',
               knownCaller: true,
             }),
-          });
+            resolvedNumber,
+            { apex_known_caller: 'true', apex_bridge_session_id: bridgeSession.id },
+          ));
         }
       }
 
@@ -340,20 +556,29 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
             timestamp: new Date(),
           });
         }
-        return res.json({
-          dynamic_variables: dynamicVariablesForPerson({
+        const resolvedNumber = callerNumber || previousCall?.customerNumber || '';
+        const returningAgent = previousCall ? agentDisplayName(previousCall.createdByAgentId) : 'Don';
+        return res.json(dynamicVariableEnvelope(
+          dynamicVariablesForPerson({
             fullName: name,
-            callerNumber: callerNumber || previousCall?.customerNumber || '',
+            callerNumber: resolvedNumber,
             company: lead?.companyName ?? null,
             context: lead?.outreachAngle ?? null,
             knownCaller: true,
             previousCall,
           }),
-        });
+          resolvedNumber,
+          {
+            apex_known_caller: 'true',
+            apex_returning_caller: String(Boolean(previousCall)),
+            apex_returning_agent: returningAgent,
+            apex_lead_id: lead?.id ?? previousCall?.leadId ?? '',
+          },
+        ));
       }
 
-      return res.json({
-        dynamic_variables: {
+      return res.json(dynamicVariableEnvelope(
+        {
           caller_number: callerNumber || 'unknown',
           call_direction: 'inbound',
           is_known_caller: 'false',
@@ -371,11 +596,116 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
           previous_call_at: '',
           caller_context: 'This is an inbound call. Greet the caller as an inbound caller and ask how you can help; never use an outbound cold-call opener.',
         },
-      });
+        callerNumber,
+        { apex_known_caller: 'false', apex_returning_caller: 'false', apex_returning_agent: 'Don' },
+      ));
     } catch (err) {
       console.error('[Telnyx Assistant] dynamic-variables error:', err instanceof Error ? err.message : String(err));
       // A blank variable set beats failing conversation start entirely.
       return res.json({ dynamic_variables: { caller_number: '', is_known_caller: 'false' } });
+    }
+  });
+
+  // ── POST /events — inbound conversation lifecycle + insights ───────────
+  router.post('/events', async (req, res) => {
+    if (!verifyAssistantKey(req.query as Record<string, unknown>)) {
+      return res.status(403).json({ error: 'Invalid or missing key' });
+    }
+
+    try {
+      const event = telnyxEventData((req.body ?? {}) as Record<string, unknown>);
+      const eventType = typeof event.event_type === 'string' ? event.event_type : '';
+      const payload = event.payload && typeof event.payload === 'object'
+        ? event.payload as Record<string, any>
+        : ((req.body ?? {}) as Record<string, any>);
+
+      if (!['call.conversation.ended', 'call.conversation_insights.generated'].includes(eventType)) {
+        return res.status(200).json({ received: true, ignored: true, eventType: eventType || null });
+      }
+
+      const callId = telnyxCallOutcomeId(payload);
+      if (!callId) {
+        console.warn('[Telnyx Assistant] post-call event missing call/conversation identifier', { eventType });
+        return res.status(200).json({ received: true, ignored: true, reason: 'missing_call_id' });
+      }
+
+      if (eventType === 'call.conversation.ended') {
+        const callerNumber = typeof payload.from === 'string' ? payload.from : '';
+        const [lead, priorCalls] = await Promise.all([
+          findKnownCaller(callerNumber),
+          findRecentCallHistory(callerNumber, 5),
+        ]);
+        const previousOutbound = priorCalls.find((row) => !row.callId.startsWith('telnyx-ai:')) ?? priorCalls[0] ?? null;
+        const name = lead?.decisionMakerName?.trim() || previousOutbound?.customerName?.trim() || lead?.companyName || null;
+        const handlingAgentId = previousOutbound?.createdByAgentId ?? 'apex-front-desk';
+        const duration = typeof payload.duration_sec === 'number' ? payload.duration_sec : null;
+        const reason = typeof payload.reason === 'string' ? payload.reason : null;
+
+        await db.insert(callOutcomes).values({
+          id: crypto.randomUUID(),
+          callId,
+          leadId: lead?.id ?? previousOutbound?.leadId ?? null,
+          customerNumber: callerNumber || previousOutbound?.customerNumber || 'unknown',
+          customerName: name,
+          disposition: 'no_decision',
+          summary: duration != null ? `Inbound callback completed after ${duration} seconds.` : 'Inbound callback completed.',
+          nextAction: 'Post-call conversation enrichment pending.',
+          endedReason: reason,
+          createdByAgentId: handlingAgentId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).onConflictDoUpdate({
+          target: callOutcomes.callId,
+          set: {
+            leadId: lead?.id ?? previousOutbound?.leadId ?? null,
+            customerNumber: callerNumber || previousOutbound?.customerNumber || 'unknown',
+            customerName: name,
+            endedReason: reason,
+            updatedAt: new Date(),
+          },
+        });
+
+        await db.insert(logs).values({
+          agentId: handlingAgentId,
+          taskId: null,
+          level: 'acting',
+          message: `📞 Inbound callback completed from ${name ?? callerNumber || 'unknown caller'}${duration != null ? ` (${duration}s)` : ''}. Post-call transcript/insight enrichment queued.`,
+          timestamp: new Date(),
+        });
+
+        // ACK Telnyx quickly; conversation transcript/insight retrieval is
+        // non-blocking so webhook delivery is not held open by downstream APIs.
+        void enrichInboundConversation({
+          outcomeCallId: callId,
+          conversationId: typeof payload.conversation_id === 'string' ? payload.conversation_id : null,
+        });
+
+        return res.status(200).json({ received: true, recorded: true, callId });
+      }
+
+      // Insights may arrive after call.conversation.ended. They correlate on
+      // call_control_id and enrich the same durable row idempotently.
+      const results = payload.results;
+      const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, callId)).limit(1);
+      if (!existing) {
+        await db.insert(callOutcomes).values({
+          id: crypto.randomUUID(),
+          callId,
+          customerNumber: 'unknown',
+          disposition: 'no_decision',
+          summary: 'Inbound call insights received.',
+          nextAction: 'Review generated call insights.',
+          createdByAgentId: 'apex-front-desk',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).onConflictDoNothing();
+      }
+      void enrichInboundConversation({ outcomeCallId: callId, results });
+      return res.status(200).json({ received: true, recorded: true, callId });
+    } catch (err) {
+      console.error('[Telnyx Assistant] post-call event error:', err instanceof Error ? err.message : String(err));
+      // Return 200 so an unexpected payload does not create a webhook retry storm.
+      return res.status(200).json({ received: true, recorded: false });
     }
   });
 
