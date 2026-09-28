@@ -1,6 +1,7 @@
 const CARTESIA_API = 'https://api.cartesia.ai';
 export const CARTESIA_API_VERSION = '2026-08-14';
 export const CARTESIA_SALES_AGENT_NAME = 'APEX Sales — BuildMyBot';
+export const CARTESIA_SALES_VOICE_NAME = 'Don Matthews';
 export const APEX_CARTESIA_CALLER_NUMBER = '+18329757665';
 
 const RESOLUTION_TTL_MS = 5 * 60_000;
@@ -8,11 +9,14 @@ const RESOLUTION_TTL_MS = 5 * 60_000;
 type CachedValue = { value: string; expiresAt: number } | null;
 let agentIdCache: CachedValue = null;
 let outboundNumberIdCache: CachedValue = null;
+let salesVoiceIdCache: CachedValue = null;
 
 type CartesiaAgentSummary = {
   id?: string;
   name?: string;
 };
+type CartesiaVoice = { id?: string; name?: string; status?: string; is_owner?: boolean };
+type CartesiaVoicePage = { data?: CartesiaVoice[]; has_more?: boolean };
 
 type CartesiaAgentPage = {
   data?: CartesiaAgentSummary[];
@@ -87,6 +91,32 @@ async function managementRequest<T>(path: string, init: RequestInit = {}): Promi
 export function clearCartesiaSalesResolutionCache(): void {
   agentIdCache = null;
   outboundNumberIdCache = null;
+  salesVoiceIdCache = null;
+}
+
+/** The sales agent must use the operator's owned voice, never a generic fallback. */
+export async function resolveCartesiaSalesVoiceId(): Promise<string> {
+  if (salesVoiceIdCache && salesVoiceIdCache.expiresAt > Date.now()) return salesVoiceIdCache.value;
+
+  const configuredId = process.env.CARTESIA_SALES_VOICE_ID?.trim();
+  const page = configuredId
+    ? { data: [await managementRequest<CartesiaVoice>(`/voices/${encodeURIComponent(configuredId)}`)], has_more: false }
+    : await managementRequest<CartesiaVoicePage>(
+        `/voices?q=${encodeURIComponent(CARTESIA_SALES_VOICE_NAME)}&is_owner=true&limit=100`,
+      );
+  if (page.has_more) throw new Error('Cartesia owned-voice search was truncated; refusing to guess.');
+  const matches = (page.data ?? []).filter((voice) =>
+    voice.id && voice.name?.trim().toLowerCase() === CARTESIA_SALES_VOICE_NAME.toLowerCase() &&
+    voice.status === 'active' && voice.is_owner !== false,
+  );
+  if (matches.length !== 1) {
+    throw new Error(matches.length === 0
+      ? `The active owned Cartesia voice "${CARTESIA_SALES_VOICE_NAME}" is not available; sales dialing is blocked.`
+      : `Multiple active owned Cartesia voices are named "${CARTESIA_SALES_VOICE_NAME}"; set CARTESIA_SALES_VOICE_ID.`);
+  }
+  const value = matches[0]!.id!;
+  salesVoiceIdCache = { value, expiresAt: Date.now() + RESOLUTION_TTL_MS };
+  return value;
 }
 
 export async function resolveCartesiaSalesAgentId(): Promise<string> {
@@ -102,6 +132,15 @@ export async function resolveCartesiaSalesAgentId(): Promise<string> {
     );
   }
   const value = matches[0]!.id!;
+  const [agent, voiceId] = await Promise.all([
+    managementRequest<{ config?: { audio?: { output?: { voice_id?: string } } } }>(
+      `/v1/agents/${encodeURIComponent(value)}`,
+    ),
+    resolveCartesiaSalesVoiceId(),
+  ]);
+  if (agent.config?.audio?.output?.voice_id !== voiceId) {
+    throw new Error(`Canonical Cartesia sales agent is not using the "${CARTESIA_SALES_VOICE_NAME}" voice; dialing is blocked.`);
+  }
   agentIdCache = { value, expiresAt: Date.now() + RESOLUTION_TTL_MS };
   return value;
 }
