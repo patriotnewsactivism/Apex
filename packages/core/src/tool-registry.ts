@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { join, resolve, relative, dirname } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { normalizeIndustry } from './industry-taxonomy.js';
@@ -19,8 +19,8 @@ import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-clie
 import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProfile, listSpecialistDepartments, listSpecialists } from './specialists/index.js';
 import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
-import { db, messages, callOutcomes, callBridgeSessions } from '@workspace/db';
-import { eq, isNull } from 'drizzle-orm';
+import { db, messages, callOutcomes, callBridgeSessions, leadSearchCache } from '@workspace/db';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
@@ -53,6 +53,201 @@ function createAgentHealthMonitor(): HealthMonitor {
     getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
     wsChecker: healthWebSocketChecker,
   });
+}
+
+// ─── Persistent lead-search cache ─────────────────────────────────────────────
+//
+// Lead discovery is one of APEX's easiest places to waste money: the same
+// industry/city/query combination can recur across retries, new campaigns, and
+// future customers. Cache only the two lead-discovery surfaces whose staleness
+// tolerance is explicit: structured business-directory searches and webSearch
+// calls with fast:true. Ordinary/general webSearch remains uncached so current
+// research never silently receives old news.
+type LeadSearchCacheSpec = {
+  cacheKey: string;
+  cacheKind: 'directory' | 'web_fast';
+  normalizedQuery: string;
+  requestFingerprint: Record<string, unknown>;
+  ttlMs: number;
+  refresh: boolean;
+};
+
+const LEAD_SEARCH_CACHE_VERSION = '2026-09-28-v1';
+const leadSearchInFlight = new Map<string, Promise<unknown>>();
+
+function normalizeLeadSearchQuery(query: string): string {
+  return query
+    .trim()
+    .toLowerCase()
+    .replace(/[“”"'’]/g, '')
+    .replace(/[,_]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function positiveDaysFromEnv(name: string, fallback: number): number {
+  const parsed = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(90, Math.max(1, parsed));
+}
+
+function leadSearchCacheSpec(name: string, args: Record<string, unknown>): LeadSearchCacheSpec | null {
+  const enabled = String(process.env.LEAD_SEARCH_CACHE_ENABLED ?? 'true').toLowerCase();
+  if (['0', 'false', 'off', 'no'].includes(enabled)) return null;
+
+  const query = typeof args.query === 'string' ? args.query : '';
+  if (!query.trim()) return null;
+  const normalizedQuery = normalizeLeadSearchQuery(query);
+  const refresh = args.refresh === true;
+
+  let cacheKind: LeadSearchCacheSpec['cacheKind'];
+  let requestFingerprint: Record<string, unknown>;
+  let ttlMs: number;
+
+  if (name === 'searchBusinessDirectory') {
+    cacheKind = 'directory';
+    requestFingerprint = { version: LEAD_SEARCH_CACHE_VERSION };
+    ttlMs = positiveDaysFromEnv('LEAD_DIRECTORY_SEARCH_CACHE_DAYS', 30) * 86_400_000;
+  } else if (name === 'webSearch' && args.fast === true) {
+    cacheKind = 'web_fast';
+    requestFingerprint = {
+      version: LEAD_SEARCH_CACHE_VERSION,
+      fast: true,
+      maxResults: typeof args.maxResults === 'number' ? args.maxResults : 10,
+    };
+    ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
+  } else {
+    return null;
+  }
+
+  const cacheKey = createHash('sha256')
+    .update(`${cacheKind}\n${normalizedQuery}\n${JSON.stringify(requestFingerprint)}`)
+    .digest('hex');
+
+  return { cacheKey, cacheKind, normalizedQuery, requestFingerprint, ttlMs, refresh };
+}
+
+function leadSearchResultCount(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  const row = value as Record<string, unknown>;
+  if (Array.isArray(row.businesses)) return row.businesses.length;
+  if (Array.isArray(row.results)) return row.results.length;
+  if (typeof row.total === 'number' && Number.isFinite(row.total)) return Math.max(0, row.total);
+  return 0;
+}
+
+function leadSearchProvider(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const provider = (value as Record<string, unknown>).provider;
+  return typeof provider === 'string' && provider.trim() ? provider : null;
+}
+
+function annotateLeadSearchCache(
+  value: unknown,
+  metadata: { hit: boolean; coalesced?: boolean; ageMs?: number; expiresAt?: Date | null },
+): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return {
+    ...(value as Record<string, unknown>),
+    cacheHit: metadata.hit,
+    cacheCoalesced: Boolean(metadata.coalesced),
+    ...(metadata.ageMs !== undefined ? { cacheAgeMs: metadata.ageMs } : {}),
+    ...(metadata.expiresAt ? { cacheExpiresAt: metadata.expiresAt.toISOString() } : {}),
+  };
+}
+
+async function bumpLeadSearchCacheHit(cacheKey: string): Promise<void> {
+  const now = new Date();
+  try {
+    await db
+      .update(leadSearchCache)
+      .set({
+        hitCount: sql`${leadSearchCache.hitCount} + 1`,
+        lastHitAt: now,
+      })
+      .where(eq(leadSearchCache.cacheKey, cacheKey));
+  } catch (err) {
+    console.warn('[lead-search-cache] hit counter update failed:', err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function readLeadSearchCache(spec: LeadSearchCacheSpec): Promise<unknown | null> {
+  if (spec.refresh) return null;
+  try {
+    const [row] = await db
+      .select()
+      .from(leadSearchCache)
+      .where(
+        and(
+          eq(leadSearchCache.cacheKey, spec.cacheKey),
+          gt(leadSearchCache.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    if (!row) return null;
+
+    await bumpLeadSearchCacheHit(spec.cacheKey);
+    const ageMs = Math.max(0, Date.now() - row.updatedAt.getTime());
+    console.log(
+      `[lead-search-cache] HIT ${spec.cacheKind} provider=${row.provider ?? 'unknown'} results=${row.resultCount} age=${Math.round(ageMs / 3_600_000)}h hits=${row.hitCount + 1} query="${spec.normalizedQuery}"`,
+    );
+    return annotateLeadSearchCache(row.payload, {
+      hit: true,
+      ageMs,
+      expiresAt: row.expiresAt,
+    });
+  } catch (err) {
+    // Cache failure must never take lead discovery down. Search normally.
+    console.warn('[lead-search-cache] read failed; bypassing cache:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+async function writeLeadSearchCache(spec: LeadSearchCacheSpec, value: unknown): Promise<void> {
+  const resultCount = leadSearchResultCount(value);
+  // Cache only useful positive discovery results. Provider outages, exhausted
+  // keys, and legitimate zero-result searches remain retryable rather than
+  // poisoning future campaigns with a long-lived empty response.
+  if (resultCount <= 0 || !value || typeof value !== 'object' || Array.isArray(value)) return;
+
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + spec.ttlMs);
+  const provider = leadSearchProvider(value);
+  try {
+    await db
+      .insert(leadSearchCache)
+      .values({
+        cacheKey: spec.cacheKey,
+        cacheKind: spec.cacheKind,
+        normalizedQuery: spec.normalizedQuery,
+        requestFingerprint: spec.requestFingerprint,
+        provider,
+        payload: value as Record<string, unknown>,
+        resultCount,
+        hitCount: 0,
+        lastHitAt: null,
+        expiresAt,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: leadSearchCache.cacheKey,
+        set: {
+          cacheKind: spec.cacheKind,
+          normalizedQuery: spec.normalizedQuery,
+          requestFingerprint: spec.requestFingerprint,
+          provider,
+          payload: value as Record<string, unknown>,
+          resultCount,
+          expiresAt,
+          updatedAt: now,
+        },
+      });
+    console.log(
+      `[lead-search-cache] STORE ${spec.cacheKind} provider=${provider ?? 'unknown'} results=${resultCount} ttl=${Math.round(spec.ttlMs / 86_400_000)}d query="${spec.normalizedQuery}"`,
+    );
+  } catch (err) {
+    console.warn('[lead-search-cache] write failed; search result still usable:', err instanceof Error ? err.message : String(err));
+  }
 }
 
 // ─── Tool Registry ────────────────────────────────────────────────────────────
