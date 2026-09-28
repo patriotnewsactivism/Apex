@@ -759,6 +759,96 @@ function trimWords(text: string): string {
   return words.length <= maxWords ? text : `${words.slice(0, maxWords).join(' ')}.`;
 }
 
+let webIdentityRepairRunning = false;
+
+function replaceCompanyNameText(value: string | null | undefined, oldName: string, newName: string): string | null | undefined {
+  if (!value || oldName === newName) return value;
+  return value.split(oldName).join(newName);
+}
+
+export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked: number; renamed: number; mismatched: number }> {
+  if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0 };
+  webIdentityRepairRunning = true;
+  try {
+    const batchSize = Math.max(1, Math.min(50, Math.trunc(limit)));
+    const rows = await db
+      .select()
+      .from(researchedLeads)
+      .where(
+        and(
+          or(like(researchedLeads.source, 'web:%'), like(researchedLeads.source, 'cache:web:%')),
+          sql`${researchedLeads.website} IS NOT NULL`,
+          sql`(${researchedLeads.enrichment}->'businessVerification'->>'checkedAt') IS NULL`,
+        ),
+      )
+      .orderBy(asc(researchedLeads.createdAt))
+      .limit(batchSize);
+
+    let renamed = 0;
+    let mismatched = 0;
+    await runPool(rows, Math.min(8, batchSize), async (lead) => {
+      const identity = await verifyBusinessWebsiteIdentity({
+        website: lead.website,
+        industry: lead.industry,
+        city: lead.city,
+        currentName: lead.companyName,
+      });
+      const oldName = lead.companyName;
+      const candidate = identity.canonicalName?.trim();
+      const newName = candidate && (identity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
+        ? candidate
+        : oldName;
+      if (newName !== oldName) renamed++;
+      if (identity.status === 'mismatch') mismatched++;
+
+      const existingDraft = (lead.campaignDraft ?? {}) as Record<string, unknown>;
+      const campaignDraft = Object.keys(existingDraft).length > 0
+        ? {
+            ...existingDraft,
+            ...(typeof existingDraft.firstTouch === 'string' ? { firstTouch: replaceCompanyNameText(existingDraft.firstTouch, oldName, newName) } : {}),
+            ...(typeof existingDraft.emailSubject === 'string' ? { emailSubject: replaceCompanyNameText(existingDraft.emailSubject, oldName, newName) } : {}),
+            ...(typeof existingDraft.callOpener === 'string' ? { callOpener: replaceCompanyNameText(existingDraft.callOpener, oldName, newName) } : {}),
+          }
+        : lead.campaignDraft;
+
+      await db.update(researchedLeads).set({
+        companyName: newName,
+        website: identity.homepage ?? lead.website,
+        enrichment: {
+          ...(lead.enrichment ?? {}),
+          businessVerification: identity,
+          normalizedDomain: normalizeLeadDomain(identity.homepage ?? lead.website),
+          summary: `${newName} is a ${lead.industry ?? 'local'} business in ${lead.city ?? 'its market'}.`,
+        },
+        fitReason: replaceCompanyNameText(lead.fitReason, oldName, newName) ?? lead.fitReason,
+        outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
+        campaignDraft,
+        ...(identity.status === 'mismatch' ? { status: 'rejected', qualificationScore: 0 } : {}),
+        updatedAt: new Date(),
+      }).where(eq(researchedLeads.id, lead.id));
+
+      if (lead.researchCacheKey) {
+        await db.update(leadResearchCache).set({
+          companyName: newName,
+          website: identity.homepage ?? lead.website,
+          basicEnrichment: {
+            ...((lead.enrichment as Record<string, unknown> | null) ?? {}),
+            businessVerification: identity,
+          },
+          updatedAt: new Date(),
+        }).where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
+      }
+    });
+
+    if (rows.length > 0) {
+      console.log(`[lead-identity] checked=${rows.length} renamed=${renamed} mismatched=${mismatched}`);
+    }
+    return { checked: rows.length, renamed, mismatched };
+  } finally {
+    webIdentityRepairRunning = false;
+  }
+}
+
 export interface PipelineBenchmarkResult {
   totalInput: number;
   uniqueDiscovered: number;
