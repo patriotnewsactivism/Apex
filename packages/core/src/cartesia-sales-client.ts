@@ -119,6 +119,71 @@ export async function resolveCartesiaSalesVoiceId(): Promise<string> {
   return value;
 }
 
+
+export interface CartesiaSpeechResult {
+  audio: Uint8Array;
+  contentType: 'audio/wav';
+  voiceId: string;
+  modelId: string;
+}
+
+/**
+ * Render short webinar/co-host speech with the exact same owned "Don Matthews"
+ * voice used by APEX sales. This intentionally fails closed if the owned voice
+ * cannot be resolved; callers can then choose an explicit UI fallback rather
+ * than silently switching identities.
+ */
+export async function synthesizeCartesiaSalesSpeech(
+  transcriptInput: string,
+): Promise<CartesiaSpeechResult> {
+  const transcript = transcriptInput.trim();
+  if (!transcript) throw new Error('Speech transcript is required.');
+  if (transcript.length > 4000) throw new Error('Speech transcript exceeds the 4,000 character live limit.');
+
+  const voiceId = await resolveCartesiaSalesVoiceId();
+  const modelId = process.env.CARTESIA_WEBINAR_TTS_MODEL?.trim() || 'sonic-3.6';
+  const response = await fetch(`${CARTESIA_API}/tts/bytes`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey()}`,
+      'Cartesia-Version': CARTESIA_API_VERSION,
+      'Content-Type': 'application/json',
+      Accept: 'audio/wav',
+    },
+    body: JSON.stringify({
+      model_id: modelId,
+      transcript,
+      voice: voiceId,
+      language: 'en',
+      normalization: 'auto',
+      output_format: {
+        container: 'wav',
+        encoding: 'pcm_s16le',
+        sample_rate: 44100,
+      },
+      generation_config: {
+        volume: 1,
+        speed: 1,
+      },
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(
+      `Cartesia webinar speech failed (HTTP ${response.status})${body ? `: ${body.slice(0, 240)}` : ''}`,
+    );
+  }
+
+  return {
+    audio: new Uint8Array(await response.arrayBuffer()),
+    contentType: 'audio/wav',
+    voiceId,
+    modelId,
+  };
+}
+
 export async function resolveCartesiaSalesAgentId(): Promise<string> {
   if (agentIdCache && agentIdCache.expiresAt > Date.now()) return agentIdCache.value;
 
