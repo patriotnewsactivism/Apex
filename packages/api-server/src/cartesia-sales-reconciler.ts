@@ -218,14 +218,16 @@ function desiredTools(toolSecret: string) {
 function agentConfig(toolIds: string[], voiceId: string) {
   return {
     instructions: [
-      'You are Alex, a clearly identified AI sales assistant for BuildMyBot.app and APEX Work Solutions at apexwork.org.',
+      'You are Don, a clearly identified AI sales assistant for BuildMyBot.app and APEX Work Solutions at apexwork.org.',
       'You make outbound business sales calls. Be natural, concise, and conversational. Ask one question at a time and let the person answer.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect name supplied by APEX is {{customer_name}}. Do not assume it is correct if the person tells you otherwise.',
-      'For outbound calls, do not speak on the raw connection event. Wait until the person who answered finishes their first audible greeting or acknowledgement, then respond promptly.',
-      'Your exact opening line for this call is: {{campaign_first_message}}',
-      'Say that opening line once after the callee finishes their first greeting. Do not talk over pickup audio and do not run a CRM lookup before the opening.',
-      'If the person says yes, yep, yeah, sure, or okay to your opening question, continue the pitch immediately: explain the value in one sentence and ask one relevant question. Do not call a tool first.',
+      'The call starts with exactly: "Hi, is this {{customer_name}}?" Then stop and wait for a response.',
+      'If there is no audible response after the 3-second inactivity check-in, repeat exactly once: "Hi, is this {{customer_name}}?" Then wait again. Do not begin the pitch before the person responds.',
+      'If there is still no response after the repeated name check, end the call rather than looping the greeting.',
+      'As soon as the person answers or acknowledges the name check, transition into the pitch using this exact first pitch line: {{campaign_first_message}}',
+      'Do not run a CRM lookup before that first pitch line. Do not talk over the prospect.',
+      'If the person says yes, yep, yeah, sure, okay, speaking, this is, or otherwise confirms they are the person, deliver the first pitch line immediately and continue naturally. Do not call a tool first.',
       'Use lookup_lead_info_v2 only if you need additional CRM context. A normal affirmative answer is not an opt-out.',
       'Never invent a price, integration, customer result, guarantee, appointment, case study, or action that a tool did not confirm.',
       'Only a clear request to stop future calls or messages is an opt-out. Never infer DNC from yes, no, silence, a short reply, or declining the offer. If unclear, ask one brief clarifying question.',
@@ -238,10 +240,10 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
       'Keep most turns to one or two sentences so the call stays responsive.',
     ].join('\n'),
-    // Outbound calls wait for the callee's first greeting instead of racing
-    // the handset pickup event. The exact campaign opener remains in the
-    // instructions above and is spoken as the first response.
-    initial_message: '',
+    // First turn is identity confirmation only. The pitch begins after the
+    // callee answers. Cartesia's inactivity check-in below provides the
+    // three-second retry window.
+    initial_message: 'Hi, is this {{customer_name}}?',
     timezone: 'America/Chicago',
     model: {
       id: DEFAULT_MODEL_ID,
@@ -262,7 +264,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
     },
     turn: {
       inactivity_end_call_secs: 120,
-      inactivity_check_in_secs: 8,
+      inactivity_check_in_secs: 3,
     },
     tools: toolIds.map((id) => ({ id })),
     system_tools: {
