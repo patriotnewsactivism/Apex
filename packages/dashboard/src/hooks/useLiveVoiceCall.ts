@@ -133,6 +133,8 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   // from the current start() so a slow getUserMedia/ticket request cannot
   // resurrect a call after the operator has already hung up.
   const lifecycleRef = useRef(0);
+  const hangupCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const HANGUP_SERVER_GRACE_MS = 900;
 
   const stopPlayback = useCallback(() => {
     playQueueRef.current = [];
@@ -161,24 +163,46 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     }
   }, []);
 
-  const stop = useCallback(() => {
+  const stop = useCallback((notifyServer = true) => {
     // Invalidate the active start() immediately, including one that is still
     // awaiting microphone permission or a websocket ticket.
     lifecycleRef.current += 1;
 
     const ws = wsRef.current;
     wsRef.current = null;
-    try {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'end' }));
-      }
-    } catch {
-      // socket may already be closed
+    if (hangupCloseTimerRef.current) {
+      clearTimeout(hangupCloseTimerRef.current);
+      hangupCloseTimerRef.current = null;
     }
-    try {
-      ws?.close(1000, 'operator hangup');
-    } catch {
-      // socket may already be closed
+
+    // Stop local mic/playback immediately so Hang up feels immediate, but
+    // leave an already-open websocket alive briefly after sending {type:end}.
+    // That gives the server time to persist endedAt and close the upstream
+    // provider before the browser tears down the transport.
+    if (notifyServer && ws?.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: 'end' }));
+      } catch {
+        // socket may already be closing
+      }
+      hangupCloseTimerRef.current = setTimeout(() => {
+        hangupCloseTimerRef.current = null;
+        try {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close(1000, 'operator hangup timeout');
+          }
+        } catch {
+          // socket may already be closed
+        }
+      }, HANGUP_SERVER_GRACE_MS);
+    } else {
+      try {
+        if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, notifyServer ? 'operator hangup' : 'server ended');
+        }
+      } catch {
+        // socket may already be closed
+      }
     }
 
     processorRef.current?.disconnect();
@@ -494,9 +518,9 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
             }
             break;
           case 'ended':
-            // Server-authoritative teardown (spoken hang-up or provider-side
-            // end). Reuse the same hard cleanup as the Hang up button.
-            stop();
+            // The server already finalized the session; do not send a second
+            // hang-up message back while cleaning local audio state.
+            stop(false);
             break;
           case 'error':
             cbRef.current.onError?.(msg.message);
