@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { db, researchedLeads, logs, smsMessages, callBridgeSessions } from '@workspace/db';
+import { db, researchedLeads, logs, smsMessages, callBridgeSessions, callOutcomes } from '@workspace/db';
 import { eq, or, desc } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
 
@@ -132,25 +132,93 @@ function firstNameFrom(fullName: string): string {
   return trimmed.split(/\s+/)[0] || 'there';
 }
 
+function agentDisplayName(agentId: string | null | undefined): string {
+  if (!agentId) return 'Don';
+  if (agentId === 'apex-sales-cartesia' || agentId === 'apex-sales-001' || agentId === 'apex-front-desk') return 'Don';
+  return agentId
+    .replace(/^apex-/, '')
+    .replace(/-\d+$/, '')
+    .split('-')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Don';
+}
+
+function dispositionLabel(value: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    appointment_booked: 'appointment booked',
+    qualified: 'qualified opportunity',
+    callback_requested: 'callback requested',
+    dnc: 'do not contact',
+    not_interested: 'not interested',
+    voicemail: 'voicemail left',
+    no_answer: 'no answer',
+    no_decision: 'conversation ended without a final decision',
+    failed_to_dial: 'call did not connect',
+  };
+  return labels[value ?? ''] ?? (value || 'unknown outcome').replace(/_/g, ' ');
+}
+
+function recentCallDiscussion(call: typeof callOutcomes.$inferSelect): string {
+  const summary = call.summary?.trim();
+  if (summary) return summary.slice(0, 900);
+  const transcript = call.transcript?.trim();
+  if (transcript) return transcript.slice(-900);
+  return '';
+}
+
+function returningCallerContext(
+  call: typeof callOutcomes.$inferSelect,
+  firstName: string,
+  company: string | null | undefined,
+): string {
+  const agentName = agentDisplayName(call.createdByAgentId);
+  const discussion = recentCallDiscussion(call);
+  const lastStep = call.nextAction?.trim() || '';
+  const companyPhrase = company ? ` at ${company}` : '';
+  const priorResult = dispositionLabel(call.disposition);
+  return [
+    'RETURNING CALL MODE: this person is calling us inbound after an earlier APEX outreach call.',
+    'Do NOT use the outbound cold-call opener, do NOT ask whether you reached them, and do NOT speak as though you placed this call.',
+    `Answer warmly as ${agentName}: "Hi ${firstName}, this is ${agentName} with BuildMyBot. Thanks for calling me back."`,
+    `You are speaking with ${firstName}${companyPhrase}. The previous call result was: ${priorResult}.`,
+    discussion ? `Previous discussion: ${discussion}` : '',
+    lastStep ? `Last recorded next step: ${lastStep}` : '',
+    call.endedReason ? `Previous call ended because: ${call.endedReason.slice(0, 300)}` : '',
+    'Continue naturally from that context. Briefly remind them why we reached out or what the last step was, then listen to why they called back. Do not restart the original pitch from the top unless they ask.',
+  ].filter(Boolean).join(' ');
+}
+
 function dynamicVariablesForPerson(input: {
   fullName: string;
   callerNumber: string;
   company?: string | null;
   context?: string | null;
   knownCaller: boolean;
+  previousCall?: typeof callOutcomes.$inferSelect | null;
 }): Record<string, string> {
   const rawName = input.fullName.trim();
   const fullName = !rawName || /^first\s+name$/i.test(rawName) ? 'there' : rawName;
   const firstName = firstNameFrom(fullName);
+  const previousCall = input.previousCall ?? null;
+  const callbackContext = previousCall ? returningCallerContext(previousCall, firstName, input.company) : '';
   return {
     caller_number: input.callerNumber || 'unknown',
+    call_direction: 'inbound',
     is_known_caller: String(input.knownCaller),
+    is_returning_caller: String(Boolean(previousCall)),
     first_name: firstName,
     customer_name: firstName,
     full_name: fullName,
     caller_name: fullName,
     caller_company: input.company ?? '',
-    caller_context: input.context ?? '',
+    returning_agent_name: previousCall ? agentDisplayName(previousCall.createdByAgentId) : 'Don',
+    previous_call_disposition: previousCall?.disposition ?? '',
+    previous_call_summary: previousCall ? recentCallDiscussion(previousCall) : '',
+    previous_call_next_action: previousCall?.nextAction ?? '',
+    previous_call_ended_reason: previousCall?.endedReason ?? '',
+    previous_call_at: previousCall?.updatedAt?.toISOString() ?? '',
+    caller_context: [callbackContext, input.context ?? ''].filter(Boolean).join(' '),
   };
 }
 
@@ -166,12 +234,27 @@ async function findKnownCaller(phone: string) {
   if (!phone) return null;
   const norm = normalizePhone(phone);
   if (norm.length < 7) return null;
+  const variants = [...new Set([phone, norm, norm.length === 10 ? `+1${norm}` : '', norm.length === 10 ? `1${norm}` : ''].filter(Boolean))];
   const candidates = await db
     .select()
     .from(researchedLeads)
-    .where(or(eq(researchedLeads.contactPhone, phone), eq(researchedLeads.contactPhone, `+1${norm}`)))
-    .limit(5);
-  return candidates.find((c) => normalizePhone(c.contactPhone) === norm) ?? null;
+    .where(or(...variants.map((value) => eq(researchedLeads.contactPhone, value))))
+    .limit(10);
+  return candidates.find((candidate) => normalizePhone(candidate.contactPhone) === norm) ?? null;
+}
+
+async function findRecentCallHistory(phone: string, limit = 5) {
+  if (!phone) return [];
+  const norm = normalizePhone(phone);
+  if (norm.length < 7) return [];
+  const variants = [...new Set([phone, norm, norm.length === 10 ? `+1${norm}` : '', norm.length === 10 ? `1${norm}` : ''].filter(Boolean))];
+  const rows = await db
+    .select()
+    .from(callOutcomes)
+    .where(or(...variants.map((value) => eq(callOutcomes.customerNumber, value))))
+    .orderBy(desc(callOutcomes.updatedAt))
+    .limit(limit * 3);
+  return rows.filter((row) => normalizePhone(row.customerNumber) === norm).slice(0, limit);
 }
 
 export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
@@ -232,23 +315,39 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
         }
       }
 
-      const lead = await findKnownCaller(callerNumber);
+      const [lead, recentCalls] = await Promise.all([
+        findKnownCaller(callerNumber),
+        findRecentCallHistory(callerNumber, 5),
+      ]);
+      const previousCall = recentCalls[0] ?? null;
 
       console.log('[Telnyx Assistant] dynamic-variables request', {
         callerNumber: callerNumber || '(none found in payload)',
         callControlId: callControlId || null,
-        knownCaller: Boolean(lead),
+        knownCaller: Boolean(lead || previousCall),
+        returningCaller: Boolean(previousCall),
+        previousDisposition: previousCall?.disposition ?? null,
       });
 
-      if (lead) {
-        const name = lead.decisionMakerName?.trim() || lead.companyName || 'there';
+      if (lead || previousCall) {
+        const name = lead?.decisionMakerName?.trim() || previousCall?.customerName?.trim() || lead?.companyName || 'there';
+        if (previousCall) {
+          await db.insert(logs).values({
+            agentId: 'apex-front-desk',
+            taskId: null,
+            level: 'acting',
+            message: `↩️ Inbound callback recognized from ${name} (${callerNumber || previousCall.customerNumber}). Previous result: ${dispositionLabel(previousCall.disposition)}. Resuming with ${agentDisplayName(previousCall.createdByAgentId)}.`,
+            timestamp: new Date(),
+          });
+        }
         return res.json({
           dynamic_variables: dynamicVariablesForPerson({
             fullName: name,
-            callerNumber,
-            company: lead.companyName,
-            context: lead.outreachAngle,
+            callerNumber: callerNumber || previousCall?.customerNumber || '',
+            company: lead?.companyName ?? null,
+            context: lead?.outreachAngle ?? null,
             knownCaller: true,
+            previousCall,
           }),
         });
       }
@@ -256,13 +355,21 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
       return res.json({
         dynamic_variables: {
           caller_number: callerNumber || 'unknown',
+          call_direction: 'inbound',
           is_known_caller: 'false',
+          is_returning_caller: 'false',
           first_name: 'there',
           customer_name: 'there',
           full_name: 'there',
           caller_name: 'there',
           caller_company: '',
-          caller_context: '',
+          returning_agent_name: 'Don',
+          previous_call_disposition: '',
+          previous_call_summary: '',
+          previous_call_next_action: '',
+          previous_call_ended_reason: '',
+          previous_call_at: '',
+          caller_context: 'This is an inbound call. Greet the caller as an inbound caller and ask how you can help; never use an outbound cold-call opener.',
         },
       });
     } catch (err) {
@@ -448,7 +555,7 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
       }
       const e164 = norm.length === 10 ? `+1${norm}` : phone;
 
-      const [lead, recentMessages] = await Promise.all([
+      const [lead, recentMessages, recentCalls] = await Promise.all([
         findKnownCaller(phone),
         db
           .select({ direction: smsMessages.direction, body: smsMessages.body, createdAt: smsMessages.createdAt })
@@ -456,15 +563,32 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
           .where(or(eq(smsMessages.counterpartyNumber, phone), eq(smsMessages.counterpartyNumber, e164)))
           .orderBy(desc(smsMessages.createdAt))
           .limit(5),
+        findRecentCallHistory(phone, 5),
       ]);
 
       return res.json({
         result: {
-          found: Boolean(lead) || recentMessages.length > 0,
+          found: Boolean(lead) || recentMessages.length > 0 || recentCalls.length > 0,
           isKnownLead: Boolean(lead),
+          isReturningCaller: recentCalls.length > 0,
           leadCompany: lead?.companyName ?? null,
           leadContext: lead?.outreachAngle ?? null,
           leadStatus: lead?.status ?? null,
+          callbackContext: recentCalls[0]
+            ? returningCallerContext(
+                recentCalls[0],
+                firstNameFrom(lead?.decisionMakerName?.trim() || recentCalls[0].customerName?.trim() || lead?.companyName || 'there'),
+                lead?.companyName,
+              )
+            : null,
+          recentCalls: recentCalls.map((call) => ({
+            disposition: call.disposition,
+            summary: recentCallDiscussion(call) || null,
+            nextAction: call.nextAction,
+            endedReason: call.endedReason,
+            agentName: agentDisplayName(call.createdByAgentId),
+            when: call.updatedAt.toISOString(),
+          })),
           recentMessages: recentMessages.map((m) => ({
             direction: m.direction,
             body: m.body.slice(0, 300),
