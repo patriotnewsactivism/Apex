@@ -143,12 +143,14 @@ check(
 );
 
 check(
-  'outbound sales greets immediately on answer, confirms identity, builds rapport, then pitches',
+  'outbound sales greets immediately, uses full name only for identity check, then first name and pitch',
   /initial_message:\s*'Hey, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
     /do not wait for the callee to say hello/.test(reconciler) &&
     /opening must never depend on recognizing their first hello/.test(reconciler) &&
-    /How’s your day going\?/.test(reconciler) &&
-    /Only then transition into the reason for the call using this campaign line/.test(reconciler) &&
+    /full name is for the initial identity check only/.test(reconciler) &&
+    /Thanks, \{\{customer_first_name\}\}/.test(reconciler) &&
+    /Never repeat their first and last name after acknowledgement/.test(reconciler) &&
+    /Immediately continue into the reason for the call using this campaign line/.test(reconciler) &&
     /inactivity_check_in_secs:\s*4/.test(reconciler),
 );
 check(
@@ -176,15 +178,23 @@ check(
     /Never use this tool from the transcript "bye dude" alone/.test(reconciler),
 );
 check(
-  'Cartesia STT keyterms bias common short sales-call replies and vocabulary',
-  /keyterms:\s*\[[\s\S]{0,600}'I do'[\s\S]{0,600}'voicemail'[\s\S]{0,600}'after hours'[\s\S]{0,600}'missed calls'/.test(reconciler),
+  'Cartesia STT keyterms bias first greetings plus common short sales-call replies and vocabulary',
+  /keyterms:\s*\[[\s\S]{0,700}'I do'[\s\S]{0,700}'hello'[\s\S]{0,700}'hi'[\s\S]{0,700}'hey'[\s\S]{0,700}'voicemail'[\s\S]{0,700}'after hours'[\s\S]{0,700}'missed calls'/.test(reconciler),
 );
 check(
-  'BuildMyBot sales pitch is conversational and happens after rapport',
-  /firstMessage:\s*'Gotcha — appreciate it\. The reason I called is pretty simple\./.test(playbooks) &&
+  'BuildMyBot sales pitch begins immediately after the first-name acknowledgement',
+  /version:\s*6/.test(playbooks) &&
+    /firstMessage:\s*'The reason I called is pretty simple\./.test(playbooks) &&
+    /After identity is confirmed, acknowledge them by first name once and move directly into the reason for the call/.test(playbooks) &&
     /What do you normally do when a call comes in and nobody can answer\?/.test(playbooks) &&
     /Speak English only/.test(playbooks) &&
     /Use complete sentences at a relaxed pace/.test(playbooks),
+);
+
+check(
+  'Cartesia outbound call variables include a first-name-only value derived from the full CRM name',
+  /customer_first_name:\s*customerFirstName/.test(client) &&
+    /replace\(\/\^\(mr\|mrs\|ms\|miss\|dr\)/.test(client),
 );
 
 
