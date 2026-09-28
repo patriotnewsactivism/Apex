@@ -482,6 +482,57 @@ async function reconcileApprovedOutboundNumber(): Promise<{ id: string; provider
   return { id: phone.id, providerType: 'sip_trunk' };
 }
 
+
+type TelnyxConnectionPage = { data?: Array<Record<string, unknown>> };
+
+function safeAudioFields(value: unknown, depth = 0): unknown {
+  if (depth > 4 || value == null) return value;
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => safeAudioFields(item, depth + 1));
+  if (typeof value !== 'object') return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (/password|secret|token|api.?key|credential|user.?name|webhook|url|uri|fqdn|ip.?address/i.test(key)) continue;
+    if (
+      depth === 0 ||
+      /codec|media|rtp|ptime|anchor|transport|encrypt|srtp|channel|profile|connection|active|record_type|name/i.test(key)
+    ) {
+      const safe = safeAudioFields(child, depth + 1);
+      if (safe !== undefined) out[key] = safe;
+    }
+  }
+  return out;
+}
+
+async function diagnoseTelnyxSipAudio(): Promise<void> {
+  const key = process.env.TELNYX_API_KEY?.trim();
+  if (!key) return;
+
+  const endpoints = [
+    '/v2/credential_connections?page[size]=100',
+    '/v2/ip_connections?page[size]=100',
+    '/v2/fqdn_connections?page[size]=100',
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(`https://api.telnyx.com${endpoint}`, {
+        headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!response.ok) {
+        console.warn(`[cartesia-sales] Telnyx audio diagnostic ${endpoint} returned HTTP ${response.status}`);
+        continue;
+      }
+      const page = await response.json() as TelnyxConnectionPage;
+      const rows = (page.data ?? []).map((row) => safeAudioFields(row));
+      console.log(`[cartesia-sales] Telnyx SIP audio diagnostic ${endpoint}: ${JSON.stringify(rows).slice(0, 12000)}`);
+    } catch (err) {
+      console.warn('[cartesia-sales] Telnyx audio diagnostic failed:', err instanceof Error ? err.message : String(err));
+    }
+  }
+}
+
 export async function reconcileCartesiaSalesAgent(): Promise<void> {
   const key = process.env.CARTESIA_API_KEY?.trim();
   const toolSecret = process.env.CARTESIA_TOOL_SECRET?.trim();
@@ -504,6 +555,7 @@ export async function reconcileCartesiaSalesAgent(): Promise<void> {
     console.log(
       `[cartesia-sales] Canonical outbound ready: agent=${agentId}; tools=${toolIds.length}/6; webhook=${webhookId}; caller=${APEX_CARTESIA_CALLER_NUMBER}; numberId=${outbound.id}; telephony=${outbound.providerType}; voice=Don Matthews (${voiceId})`,
     );
+    await diagnoseTelnyxSipAudio();
   } catch (err) {
     console.error(
       '[cartesia-sales] Reconciliation failed:',
