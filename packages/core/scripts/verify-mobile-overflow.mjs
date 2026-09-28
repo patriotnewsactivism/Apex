@@ -154,6 +154,58 @@ for (const width of WIDTHS) {
   page.on('pageerror', (e) => pageErrors.push(e.message));
   await page.route('**/api/**', (route)=>{ const u=route.request().url();
     const j=(b)=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(b)});
+    const webinarSession = {
+      id:'webinar-mobile-test', slug:'mobile-test',
+      title:'The AI Workforce: APEX + BuildMyBot Live — Deliberately Long Mobile Broadcast Title',
+      description:'A live demonstration with intentionally long content to prove the broadcast screen wraps correctly on narrow phones.',
+      host_name:'Matthew Reardon', hostName:'Matthew Reardon',
+      mode:'autonomous', status:'live', autonomous:true, current_segment:1, currentSegment:1,
+      segment_started_at:new Date().toISOString(), segmentStartedAt:new Date().toISOString(),
+      started_at:new Date().toISOString(), startedAt:new Date().toISOString(),
+      ended_at:null, cta_label:'Explore BuildMyBot.app', ctaLabel:'Explore BuildMyBot.app',
+      cta_url:'https://buildmybot.app', ctaUrl:'https://buildmybot.app',
+      created_at:new Date().toISOString(), updated_at:new Date().toISOString(),
+      attendee_count:24, question_count:7,
+    };
+    const webinarSegments = Array.from({length:6},(_,i)=>({
+      id:i===1?'roi':`segment-${i}`,
+      title:i===1?'Live ROI: Turning Missed Calls Into Recoverable Revenue':'A Long Webinar Segment Title That Must Wrap Cleanly On Mobile',
+      kicker:i===1?'LIVE WORKSHEET':'APEX LIVE DEMO',
+      durationSeconds:480,
+      bullets:[
+        NASTY[0],
+        'Every prospect is verified against the real business website before it is campaign-ready.',
+        'Mobile viewers and operators must be able to reach every control without horizontal page scrolling.',
+      ],
+      narration:'',
+      demoCue:'Open the live APEX lead screen and demonstrate verified business identity, contact recovery, and the campaign-ready funnel.',
+    }));
+    const webinarAttendees = Array.from({length:8},(_,i)=>({
+      id:`attendee-${i}`, name:`Attendee Number ${i} With A Long Name`,
+      email:`very.long.attendee.${i}@example-business-domain.com`,
+      company:'Commercial Roofing & Restoration Company With A Long Name',
+      phone:'+1 832 555 0199', engagement_score:18+i*3,
+      joined_at:new Date().toISOString(), last_seen_at:new Date().toISOString(),
+    }));
+    const webinarQuestions = Array.from({length:5},(_,i)=>({
+      id:`q-${i}`, attendee_id:`attendee-${i}`,
+      question:'How does APEX verify that a company and its contact information are real before starting a campaign?',
+      answer:'APEX checks the first-party business website, contact sources, and pipeline verification state before the prospect becomes campaign-ready.',
+      status:'answered', created_at:new Date().toISOString(), answered_at:new Date().toISOString(),
+    }));
+    if(u.includes('/webinar/admin/sessions')) return j({sessions:[webinarSession]});
+    if(u.includes('/webinar/admin/webinar-mobile-test/dashboard')) return j({
+      session:webinarSession, segments:webinarSegments, attendees:webinarAttendees, questions:webinarQuestions,
+      producer:{timing:'on_track',elapsedSeconds:205,targetSeconds:480,secondsRemaining:275,
+        recommendation:'Stay on this segment while the live lead verification finishes, then move into the call demonstration.',
+        highIntentCount:4,topLeadNames:['Attendee Number 6 With A Long Name','Attendee Number 7 With A Long Name'],questionCount:5},
+    });
+    if(u.includes('/webinar/public/mobile-test')) return j({
+      session:{...webinarSession,currentSegment:1},
+      currentSegment:webinarSegments[1],segments:webinarSegments,attendeeCount:24,
+      questions:webinarQuestions.map(q=>({id:q.id,question:q.question,answer:q.answer,status:q.status,createdAt:q.created_at,answeredAt:q.answered_at})),
+      events:[],
+    });
     if(u.includes('/sales-ops/overview')) return j({
       generatedAt: new Date().toISOString(), autonomyLevel: 'balanced',
       autonomyPresets: [
@@ -271,6 +323,15 @@ for (const width of WIDTHS) {
       }
     }
   }
+
+  // The public attendee room bypasses the dashboard navigation entirely, so
+  // exercise its LIVE stage separately. Seed a joined attendee to render the
+  // actual broadcast view instead of only the registration form.
+  await page.evaluate(() => sessionStorage.setItem('apex-webinar-mobile-test', 'attendee-test'));
+  await page.goto(`http://127.0.0.1:${PORT}/webinar/mobile-test`, {waitUntil:'domcontentloaded'}).catch(()=>{});
+  await page.waitForTimeout(700);
+  await measure('Public Webinar Room');
+
   await ctx.close();
 }
 await browser.close(); server.close();
