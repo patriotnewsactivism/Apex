@@ -39,6 +39,57 @@ function authorized(req: Request, kind: 'tool' | 'event'): boolean {
 
 const outcomeId = (callId: string) => `cartesia:${callId}`;
 
+export function inferCartesiaLifecycleDisposition(
+  eventType: string,
+  call: Record<string, any>,
+  currentDisposition?: string | null,
+): string {
+  if (currentDisposition && currentDisposition !== 'no_decision') return currentDisposition;
+
+  const transcript = Array.isArray(call.transcript)
+    ? call.transcript.map((turn: { role?: string; text?: string }) => turn.text ?? '').join(' ')
+    : '';
+  const combined = [
+    call.end_reason,
+    call.summary,
+    call.status,
+    call.error_message,
+    call.telephony_status,
+    call.answering_machine_detection,
+    transcript,
+  ].filter((value) => typeof value === 'string').join(' ').toLowerCase();
+
+  if (/voicemail|voice mail|answering machine|machine detected|left a message|after the beep/.test(combined)) {
+    return 'voicemail';
+  }
+  if (/no[ _-]?answer|not answered|unanswered|ring(?:ing)?[ _-]?timeout|timed out ringing|busy|declined|recipient unavailable|did not pick up/.test(combined)) {
+    return 'no_answer';
+  }
+  if (eventType === 'call_failed') return 'failed_to_dial';
+  return 'no_decision';
+}
+
+function lifecycleNextAction(disposition: string, currentNextAction?: string | null): string | null {
+  if (currentNextAction?.trim()) return currentNextAction;
+  if (disposition === 'voicemail') return 'Voicemail left; wait for a callback or follow up according to the campaign cadence.';
+  if (disposition === 'no_answer') return 'No answer; retry according to the campaign cadence.';
+  if (disposition === 'failed_to_dial') return 'Dial failed; inspect the provider error before retrying.';
+  return null;
+}
+
+function lifecycleSummary(
+  disposition: string,
+  providerSummary: unknown,
+  currentSummary?: string | null,
+): string | null {
+  if (typeof providerSummary === 'string' && providerSummary.trim()) return providerSummary.trim().slice(0, 2000);
+  if (currentSummary?.trim()) return currentSummary;
+  if (disposition === 'voicemail') return 'Outbound call reached voicemail.';
+  if (disposition === 'no_answer') return 'Outbound call was not answered.';
+  if (disposition === 'failed_to_dial') return 'Outbound call failed before a conversation connected.';
+  return null;
+}
+
 async function findLead(phone: string) {
   const national = phone.startsWith('+1') ? phone.slice(2) : phone.slice(1);
   const [lead] = await db.select().from(researchedLeads)
@@ -290,20 +341,47 @@ export function createCartesiaSalesRouter(): Router {
       if (event.type === 'post_call_analysis') {
         if (typeof event.analysis?.summary === 'string') await db.insert(callOutcomes).values({
           id: crypto.randomUUID(), callId: outcomeId(event.call_id), customerNumber: typeof phone === 'string' ? phone : '',
-          disposition: 'no_decision', summary: event.analysis.summary.slice(0, 2000), createdByAgentId: AGENT_ID,
+          disposition: current?.disposition ?? 'no_decision', summary: event.analysis.summary.slice(0, 2000),
+          nextAction: current?.nextAction ?? null, createdByAgentId: current?.createdByAgentId ?? AGENT_ID,
         }).onConflictDoUpdate({ target: callOutcomes.callId,
           set: { summary: event.analysis.summary.slice(0, 2000), updatedAt: new Date() } });
       } else {
-        // Never overwrite the decision captured by a mid-call tool.
+        // Never overwrite a meaningful decision captured by a mid-call tool.
+        // When no tool could run (voicemail/no-answer/provider failure), infer a
+        // conservative lifecycle disposition so the operator sees what happened
+        // without having to read the raw transcript.
         const transcript = Array.isArray(call.transcript) ? call.transcript
           .map((turn: { role?: string; text?: string }) => `${turn.role ?? 'unknown'}: ${turn.text ?? ''}`).join('\n').slice(0, 50000) : null;
-        await db.insert(callOutcomes).values({ id: crypto.randomUUID(), callId: outcomeId(event.call_id),
-          customerNumber: typeof phone === 'string' ? phone : '', disposition: event.type === 'call_failed' ? 'failed_to_dial' : 'no_decision',
-          transcript, summary: typeof call.summary === 'string' ? call.summary.slice(0, 2000) : current?.summary ?? null,
-          endedReason: typeof call.end_reason === 'string' ? call.end_reason : null, createdByAgentId: AGENT_ID,
-        }).onConflictDoUpdate({ target: callOutcomes.callId, set: { transcript,
-          summary: typeof call.summary === 'string' ? call.summary.slice(0, 2000) : current?.summary ?? null,
-          endedReason: typeof call.end_reason === 'string' ? call.end_reason : null, updatedAt: new Date() } });
+        const disposition = inferCartesiaLifecycleDisposition(event.type, call, current?.disposition);
+        const summary = lifecycleSummary(disposition, call.summary, current?.summary);
+        const nextAction = lifecycleNextAction(disposition, current?.nextAction);
+        const endedReason = typeof call.end_reason === 'string'
+          ? call.end_reason.slice(0, 500)
+          : (typeof call.error_message === 'string' ? call.error_message.slice(0, 500) : current?.endedReason ?? null);
+
+        await db.insert(callOutcomes).values({
+          id: crypto.randomUUID(),
+          callId: outcomeId(event.call_id),
+          leadId: current?.leadId ?? null,
+          customerNumber: typeof phone === 'string' ? phone : current?.customerNumber ?? '',
+          customerName: current?.customerName ?? null,
+          disposition,
+          transcript,
+          summary,
+          nextAction,
+          endedReason,
+          createdByAgentId: current?.createdByAgentId ?? AGENT_ID,
+        }).onConflictDoUpdate({
+          target: callOutcomes.callId,
+          set: {
+            disposition,
+            transcript,
+            summary,
+            nextAction,
+            endedReason,
+            updatedAt: new Date(),
+          },
+        });
       }
       return res.json({ received: true });
     } catch { return res.status(503).json({ error: 'Webhook storage unavailable' }); }
