@@ -152,11 +152,11 @@ check(
     /Never repeat their first and last name after acknowledgement/.test(reconciler) &&
     /Acknowledge their answer briefly and naturally with empathy/.test(reconciler) &&
     /then transition into the reason for the call using this campaign line/.test(reconciler) &&
-    /inactivity_check_in_secs:\s*4/.test(reconciler),
+    /inactivity_check_in_secs:\s*5/.test(reconciler),
 );
 check(
-  'Cartesia sales voice is materially slowed for clear natural telephony speech',
-  /voice_id:\s*voiceId[\s\S]{0,180}speed:\s*0\.86/.test(reconciler),
+  'Cartesia sales voice uses native 1.0 speed to avoid time-stretch artifacts on SIP telephony',
+  /voice_id:\s*voiceId[\s\S]{0,260}speed:\s*1\.0/.test(reconciler),
 );
 check(
   'Cartesia sales responses prioritize stable English and complete natural sentences',
