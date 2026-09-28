@@ -203,7 +203,7 @@ function main(): void {
   const telnyxAgentSource = fs.readFileSync(path.join(root, 'packages/api-server/src/telnyx-deepgram-agent.ts'), 'utf8');
   checkSpeakBlock('telnyx-deepgram-agent.ts', telnyxAgentSource);
 
-  // ── Telnyx outbound calls and Vapi inbound assistant ─────────────────────
+  // ── Canonical Cartesia outbound sales + Vapi inbound assistant ───────────
   const registrySource = fs.readFileSync(path.join(root, 'packages/core/src/tool-registry.ts'), 'utf8');
   const apiIndexSource = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
   const inboundReconcileSource = fs.readFileSync(path.join(root, 'packages/api-server/src/vapi-inbound-latency.ts'), 'utf8');
@@ -217,10 +217,11 @@ function main(): void {
     const mocBody = registrySource.slice(mocStart, mocEnd);
     const ciaBody = registrySource.slice(ciaStart, ciaEnd);
     check(
-      'make_outbound_call: uses the approved Telnyx caller ID and call bridge transport',
-      /const from = configuredTelnyxOutboundNumber\(\)/.test(mocBody) &&
-        /fetch\('https:\/\/api\.telnyx\.com\/v2\/calls'/.test(mocBody) &&
-        /webhook_url: callBridgeWebhookUrl\(\)/.test(mocBody),
+      'make_outbound_call: routes through the canonical Cartesia sales client, not Telnyx or Vapi',
+      /startCartesiaSalesCall\(\{/.test(mocBody) &&
+        /agentName:\s*CARTESIA_SALES_AGENT_NAME/.test(mocBody) &&
+        !/api\.telnyx\.com\/v2\/calls/.test(mocBody) &&
+        !/api\.vapi\.ai\/call/.test(mocBody),
     );
     check(
       'make_outbound_call: requires approval and checks number-level suppression',
@@ -228,16 +229,16 @@ function main(): void {
         /assertOutboundAllowed\(\{\s*channel:\s*'phone'/.test(mocBody),
     );
     check(
-      'make_outbound_call: persists the AI-first script, greeting, and owner destination',
-      /sessionMode:\s*'ai_first'/.test(mocBody) &&
-        /assistantGreeting:\s*firstMessage/.test(mocBody) &&
-        /assistantInstructions:/.test(mocBody) &&
-        /operatorNumber:\s*normalizeE164ForOutbound\(process\.env\.TELNYX_OWNER_NUMBER\)/.test(mocBody),
+      'make_outbound_call: carries lead/campaign/playbook identity into the canonical Cartesia call',
+      /leadId:\s*z\.string\(\)\.optional/.test(mocBody) &&
+        /campaignId:\s*z\.string\(\)\.optional/.test(mocBody) &&
+        /playbookId:\s*z\.string\(\)\.optional/.test(mocBody) &&
+        /leadId:\s*leadId \?\? null/.test(mocBody) &&
+        /campaignId:\s*campaignId \?\? null/.test(mocBody),
     );
     check(
-      'call bridge attaches the Telnyx AI assistant after the customer answers',
-      /state\.role === 'customer'[\s\S]{0,250}sessionMode[^\n]*'ai_first'[\s\S]{0,100}attachSalesAi\(session\.id\)/.test(callBridgeSource) &&
-        /telnyxCommand\(session\.customerCallControlId, 'ai_assistant_start'/.test(callBridgeSource),
+      'historical Telnyx call bridge remains available only as a compatibility/operator surface',
+      /telnyxCommand\(session\.customerCallControlId, 'ai_assistant_start'/.test(callBridgeSource),
     );
     check(
       'configure_inbound_assistant: uses GPT-5.6 Luna fast tier for lower model latency',

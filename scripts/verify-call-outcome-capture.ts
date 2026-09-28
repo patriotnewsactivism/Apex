@@ -145,26 +145,31 @@ async function main(): Promise<void> {
   check('found the make_outbound_call tool body to inspect', mocStart > -1 && mocEnd > mocStart);
   const mocBody = mocStart > -1 && mocEnd > mocStart ? registrySource.slice(mocStart, mocEnd) : '';
   if (mocBody) {
-    check('make_outbound_call dials through Telnyx Call Control', mocBody.includes("fetch('https://api.telnyx.com/v2/calls'"));
-    check('make_outbound_call does not create new Vapi calls', !mocBody.includes('api.vapi.ai/call'));
-    check('make_outbound_call requires the approved APEX caller ID helper', /const from = configuredTelnyxOutboundNumber\(\)/.test(mocBody));
     check(
-      'make_outbound_call creates an AI-first call bridge session before dialing',
-      /db\.insert\(callBridgeSessions\)\.values\(\{[\s\S]*?sessionMode: 'ai_first'/.test(mocBody),
-    );
-    check('make_outbound_call stores the exact first message as assistantGreeting', /assistantGreeting: firstMessage/.test(mocBody));
-    check(
-      "make_outbound_call stores a server-prefixed prompt with today's date before the caller's script",
-      /assistantInstructions: `\$\{todayContext\}\\n\\n\$\{assistantPrompt\}`/.test(mocBody),
-    );
-    check('make_outbound_call sends the Telnyx bridge webhook URL', /webhook_url: callBridgeWebhookUrl\(\)/.test(mocBody));
-    check(
-      'make_outbound_call encodes the customer leg client_state for the bridge webhook',
-      /client_state: encodeCallBridgeClientState\(sessionId, 'customer'\)/.test(mocBody),
+      'make_outbound_call uses the canonical Cartesia sales helper and never creates a new Telnyx/Vapi call',
+      /startCartesiaSalesCall\(\{/.test(mocBody) &&
+        !/api\.telnyx\.com\/v2\/calls/.test(mocBody) &&
+        !/api\.vapi\.ai\/call/.test(mocBody),
     );
     check(
-      'make_outbound_call returns the call bridge session id, not a provider id, as callId',
-      /callId: sessionId/.test(mocBody) && /providerCallControlId: data\.data\.call_control_id/.test(mocBody),
+      'make_outbound_call passes the campaign-specific opening and prompt into the canonical agent call',
+      /firstMessage,/.test(mocBody) &&
+        /assistantPrompt: `\$\{todayContext\}\\n\\n\$\{assistantPrompt\}`/.test(mocBody),
+    );
+    check(
+      'make_outbound_call accepts and forwards lead/campaign/playbook identity',
+      /leadId: z\.string\(\)\.optional/.test(mocBody) &&
+        /campaignId: z\.string\(\)\.optional/.test(mocBody) &&
+        /playbookId: z\.string\(\)\.optional/.test(mocBody) &&
+        /leadId: leadId \?\? null/.test(mocBody) &&
+        /campaignId: campaignId \?\? null/.test(mocBody) &&
+        /playbookId: playbookId \?\? null/.test(mocBody),
+    );
+    check(
+      'make_outbound_call returns the Cartesia call id and explicitly identifies the canonical agent',
+      /callId: call\.callId/.test(mocBody) &&
+        /provider: call\.provider/.test(mocBody) &&
+        /agentName: CARTESIA_SALES_AGENT_NAME/.test(mocBody),
     );
   }
 
@@ -189,39 +194,34 @@ async function main(): Promise<void> {
   );
 
   // ── make_outbound_call itself must never let an attempt go unlogged ──────
-  //
-  // Structural rather than executed-against-a-live-DB: this guard has no
-  // database, and the tool's own DB write is deliberately try/caught so a
-  // logging failure can never mask the real Telnyx result -- which also means
-  // executing it here would prove nothing about whether the insert call is
-  // even present. Pinning the source shape is the same technique already
-  // used above for vapi.ts's webhook upserts.
   if (mocBody) {
     check(
-      'a Telnyx rejection (!res.ok or missing call_control_id) writes a call_outcomes row with disposition failed_to_dial',
-      /if \(!res\.ok \|\| !data\?\.data\?\.call_control_id\)[\s\S]*?disposition: 'failed_to_dial'/.test(mocBody),
+      'a Cartesia pre-flight/provider failure writes a call_outcomes row with disposition failed_to_dial',
+      /catch \(err\)[\s\S]*?disposition: 'failed_to_dial'/.test(mocBody),
     );
     check(
-      "the failed_to_dial row keys on a synthetic id, never a provider call id (Telnyx may not have issued one for a rejected request)",
+      'the failed_to_dial row keys on a synthetic id because Cartesia may not have issued a call id',
       /callId: `failed_\$\{randomUUID\(\)\}`/.test(mocBody),
     );
     check(
-      'a successfully accepted Telnyx call writes a call_outcomes row immediately (visible before the webhook ever fires), keyed on the real Telnyx call control id',
-      /callId: `telnyx_\$\{data\.data\.call_control_id\}`/.test(mocBody) && /disposition: 'no_decision'/.test(mocBody),
+      'an accepted Cartesia call writes a call_outcomes row immediately keyed on the same id the Cartesia webhook later upserts',
+      /callId: `cartesia:\$\{call\.callId\}`/.test(mocBody) &&
+        /disposition: 'no_decision'/.test(mocBody),
     );
     check(
-      'the success-path insert upserts rather than risking a duplicate-key throw if the webhook already raced ahead of it',
+      'the success-path insert upserts rather than racing the Cartesia webhook',
       /\.onConflictDoUpdate\(\{\s*target: callOutcomes\.callId/.test(mocBody),
     );
     check(
-      'both call_outcomes writes are wrapped so a logging failure can never mask or throw over the real tool result',
+      'both call_outcomes writes are wrapped so logging cannot mask the real provider result',
       (mocBody.match(/catch \(logErr\)/g) ?? []).length >= 2,
     );
+    const statusBody = registrySource.slice(mocEnd, registrySource.indexOf("name: 'send_email'", mocEnd));
     check(
-      'get_call_status checks callBridgeSessions before the historical Vapi fallback',
-      registrySource.indexOf('const [session] = await db.select().from(callBridgeSessions)') > mocEnd &&
-        registrySource.indexOf('const apiKey = process.env.VAPI_API_KEY;', mocEnd) >
-          registrySource.indexOf('const [session] = await db.select().from(callBridgeSessions)', mocEnd),
+      'get_call_status checks Cartesia first, then historical callBridgeSessions, then Vapi',
+      statusBody.indexOf('getCartesiaSalesCall') > -1 &&
+        statusBody.indexOf('getCartesiaSalesCall') < statusBody.indexOf('callBridgeSessions') &&
+        statusBody.indexOf('callBridgeSessions') < statusBody.indexOf('VAPI_API_KEY'),
     );
   }
 
@@ -288,34 +288,29 @@ async function main(): Promise<void> {
       /gte\(callOutcomes\.appointmentAt, new Date\(\)\)/.test(salesOpsSource),
   );
 
-  // ── Self-pitch calls use Telnyx only and never reuse a lead persona ────────
+  // ── Self-pitch calls use the SAME canonical Cartesia sales agent ──────────
   check(
     'sales-ops.ts registers POST /audit-call',
     /router\.post\('\/audit-call'/.test(salesOpsSource),
   );
   check(
-    'self-pitch calls start an AI-first Telnyx bridge session',
-    /startAiFirstSession/.test(salesOpsSource) &&
-      /provider: 'telnyx'/.test(salesOpsSource),
+    'self-pitch calls use startCartesiaSalesCall and identify the canonical agent',
+    /startCartesiaSalesCall\(\{/.test(salesOpsSource) &&
+      /agentName: CARTESIA_SALES_AGENT_NAME/.test(salesOpsSource) &&
+      /provider: 'cartesia'/.test(salesOpsSource),
   );
   check(
-    'self-pitch calls dial only TELNYX_OWNER_NUMBER as both customer and operator',
+    'self-pitch calls dial only TELNYX_OWNER_NUMBER as the destination, never a researched lead',
     /normalizeE164\(process\.env\.TELNYX_OWNER_NUMBER\)/.test(salesOpsSource) &&
-      /customerNumber: ownerNumber/.test(salesOpsSource) &&
-      /operatorNumber: ownerNumber/.test(salesOpsSource) &&
-      !/audit-call[\s\S]{0,9000}customerNumber:\s*lead\.contactPhone/.test(salesOpsSource),
-  );
-  check(
-    'self-pitch calls do not invoke make_outbound_call or the legacy Vapi path',
-    !/audit-call[\s\S]{0,6000}getToolRegistry/.test(salesOpsSource) &&
-      !/audit-call[\s\S]{0,6000}make_outbound_call/.test(salesOpsSource),
+      /toNumber: ownerNumber/.test(salesOpsSource) &&
+      !/audit-call[\s\S]{0,9000}toNumber:\s*lead\.contactPhone/.test(salesOpsSource),
   );
   check(
     'self-pitch instructions name Matthew and forbid the Sam/prospect inversion',
     /Matthew Reardon/.test(salesOpsSource) &&
       /Do not call him Sam/.test(salesOpsSource) &&
       /Do not pretend he called you first/.test(salesOpsSource) &&
-      /requested internal test pitch/.test(salesOpsSource),
+      /owner-requested internal self-pitch test/.test(salesOpsSource),
   );
   check(
     'self-pitch greeting says Matthew asked for a test pitch',

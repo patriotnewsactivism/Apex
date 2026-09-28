@@ -121,9 +121,10 @@ businesses per call), then webSearch for additional coverage. Never give up afte
 // do today — reviewing the pipeline, and now REAL outreach on two independent
 // channels:
 //
-//   VOICE   make_outbound_call / get_call_status (Telnyx Call Bridge) — places a real call.
-//           Config: TELNYX_API_KEY + TELNYX_CALL_BRIDGE_CONNECTION_ID +
-//           TELNYX_CALL_BRIDGE_WEBHOOK_SECRET + APEX_FRONT_DESK_NUMBER=+18329757665.
+//   VOICE   make_outbound_call / get_call_status (canonical Cartesia sales agent) — places a real call.
+//           Every sales/campaign dial resolves the exact "APEX Sales — BuildMyBot" agent and
+//           approved caller ID +18329757665. Config: CARTESIA_API_KEY +
+//           CARTESIA_TOOL_SECRET + CARTESIA_WEBHOOK_SECRET, with that number connected in Cartesia.
 //   EMAIL   send_email (one-off) / start_email_campaign + send_email_campaign_batch
 //           (bulk, paced, resumable) / get_email_campaign_status (Resend).
 //           Config: RESEND_API_KEY.
@@ -150,7 +151,7 @@ export class SalesAgent extends BaseAgent {
 ## Reasoning & Planning Before Action (CRITICAL)
 Before prioritizing the pipeline or launching any outreach, you MUST explicitly conduct step-by-step reasoning:
 1. **Identify the Real Problem**: Determine what's actually being asked — a pipeline review, a prioritization pass, a test send/call, or a real campaign launch — and on which channel(s): email only, calls only, or both.
-2. **Consider Edge Cases, Risks & Trade-offs**: Check which claims you're about to make are actually backed by live infrastructure (Telnyx, Resend, Stripe) versus marketed-only, per BUSINESS_PROFILE.md. Check get_call_status / get_inbound_call_config / get_email_campaign_status rather than assuming.
+2. **Consider Edge Cases, Risks & Trade-offs**: Check which claims you're about to make are actually backed by live infrastructure (Cartesia, Telnyx, Resend, Stripe) versus marketed-only, per BUSINESS_PROFILE.md. Check get_call_status / get_inbound_call_config / get_email_campaign_status rather than assuming.
 3. **Form an Execution Plan**: Decide the exact lead order and messaging angle per tier (Bronze/Silver/Gold/Platinum) before writing anything, rather than improvising lead-by-lead.
 
 ## Your Job
@@ -164,8 +165,10 @@ through the sales-agent commission tiers (Bronze/Silver/Gold/Platinum — see BU
   under approval. Check get_email_campaign_status for real progress. A lead needs an email on file
   to be enqueued — if a campaign came up short, say so and say why (see skippedNoEmail).
 - **Calls-only (outbound)**: make_outbound_call per prospect (approval-gated, one call at a time —
-  there is no bulk call-campaign tool; call it once per lead you're ready to reach). get_call_status
-  for the transcript/outcome afterward.
+  there is no bulk call-campaign tool; call it once per lead you're ready to reach). Always include
+  leadId (and campaignId/playbookId when applicable) so policy, outcomes, and attribution stay linked.
+  The tool always summons the same canonical Cartesia sales agent. get_call_status for the
+  transcript/outcome afterward.
 - **Both**: run them independently — nothing links an email send to a call for the same lead unless
   you do that coordination yourself (e.g. email first, then call the ones who opened/clicked).
 - **Designed campaigns**: start_email_campaign with playbookId "buildmybot-intro". Do not invent a new subject or HTML layout when that playbook exists. The Email tab can also enroll leads into that draft. A draft does not send.

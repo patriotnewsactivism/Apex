@@ -264,8 +264,15 @@ export function createCartesiaSalesRouter(): Router {
   router.post('/events', async (req, res) => {
     const event = req.body as Record<string, any>;
     if (!event || typeof event.webhook_request_id !== 'string' || typeof event.call_id !== 'string' ||
-      !['call_completed', 'call_failed', 'post_call_analysis'].includes(event.type))
+      typeof event.type !== 'string')
       return res.status(400).json({ error: 'Invalid event' });
+
+    // One webhook is attached to the canonical Cartesia sales agent, so Cartesia
+    // also sends lifecycle/turn events we do not need to persist. They are valid
+    // authenticated deliveries, not errors: ACK them to prevent pointless retries.
+    if (!['call_completed', 'call_failed', 'post_call_analysis'].includes(event.type))
+      return res.json({ received: true, ignored: true, type: event.type });
+
     try {
       const call = event.call ?? {};
       const params = call.telephony_params ?? {};

@@ -24,32 +24,9 @@ import { eq, isNull } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
+import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 
 const execAsync = promisify(exec);
-const APPROVED_APEX_OUTBOUND_NUMBER = '+18329757665';
-
-function normalizeE164ForOutbound(raw: unknown): string | null {
-  const trimmed = typeof raw === 'string' ? raw.trim() : '';
-  const normalized = trimmed.replace(/[\s()-]/g, '');
-  if (!/^\+?[0-9]{7,15}$/.test(normalized)) return null;
-  return normalized.startsWith('+') ? normalized : `+${normalized}`;
-}
-
-function configuredTelnyxOutboundNumber(): string | null {
-  const normalized = normalizeE164ForOutbound(process.env.APEX_FRONT_DESK_NUMBER);
-  return normalized === APPROVED_APEX_OUTBOUND_NUMBER ? normalized : null;
-}
-
-function callBridgeWebhookUrl(): string {
-  const publicUrl = process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live';
-  const secret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET ?? '';
-  return `${publicUrl}/api/telnyx-assistant/call-bridge-webhook?key=${encodeURIComponent(secret)}`;
-}
-
-function encodeCallBridgeClientState(sessionId: string, role: 'customer'): string {
-  return Buffer.from(JSON.stringify({ sessionId, role }), 'utf8').toString('base64');
-}
-
 // Runtime-only dependencies owned by the API process. The tool registry lives
 // in @workspace/core and cannot import api-server without creating a cycle, so
 // the HTTP entrypoint injects its live WebSocket checker once the server exists.
@@ -2939,105 +2916,96 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
-    // ─── Telnyx: Make outbound AI phone call ──────────────────────────────
+    // ─── Cartesia: canonical outbound AI sales call ────────────────────────
     {
       name: 'make_outbound_call',
-      description: 'Make an outbound AI phone call to a prospect/customer through the Telnyx call bridge. The AI voice agent will use the provided script as its system prompt and conduct the conversation. Returns a call bridge session ID. Requires TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, TELNYX_CALL_BRIDGE_WEBHOOK_SECRET, and APEX_FRONT_DESK_NUMBER=+18329757665.',
+      description: 'Make an outbound AI sales call through the ONE canonical Cartesia agent named "APEX Sales — BuildMyBot". Every APEX sales/calling campaign uses this same agent and the approved caller ID +18329757665. Returns the Cartesia call ID. Requires the canonical Cartesia agent and approved phone number to be provisioned.',
       schema: z.object({
         customerNumber: z.string().describe('Destination phone number in E.164 format (e.g. "+18328804970")'),
         customerName: z.string().optional().describe('Name of the person being called (for personalization)'),
-        assistantPrompt: z.string().describe('System prompt for the AI caller — the cold call script, value proposition, objection handling, and goal of the call. Be specific and conversational.'),
-        firstMessage: z.string().describe('The exact words the AI says when the call connects (e.g. "Hi, is this {{customerName}}? I\'m Alex from BuildMyBot.app...")'),
+        assistantPrompt: z.string().describe('Campaign-specific instructions for this call: discovery angle, value proposition, objections, and goal. The canonical Cartesia sales agent remains the same.'),
+        firstMessage: z.string().describe('The exact opening line for this specific call.'),
+        leadId: z.string().optional().describe('researched_leads.id for the prospect. Include this for live campaign calls so policy/auditing and outcomes stay linked to the lead.'),
+        campaignId: z.string().optional().describe('Campaign identifier for this call, when applicable.'),
+        playbookId: z.string().optional().describe('Sales playbook identifier for traceability, when applicable.'),
       }),
       requiresApproval: true, // Makes a real phone call to a real person — externally visible, costs money, irreversible.
-      async execute({ customerNumber, customerName, assistantPrompt, firstMessage }, ctx) {
+      async execute({ customerNumber, customerName, assistantPrompt, firstMessage, leadId, campaignId, playbookId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
         await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, purpose: 'make_outbound_call' });
-        // Phase 2.3: budget guard — check mission budget before placing call
+
+        // Phase 2.3: budget guard — check mission budget before placing call.
         try {
           const { checkMissionBudget } = await import('./revenue-ops/budget.js');
-          // Derive missionId from context if available; skip budget check if no mission context
           const missionId = (globalThis as any).__apexMissionId;
           if (missionId) {
-            const budget = await checkMissionBudget(missionId, 300); // ~$3 estimated call cost
+            const budget = await checkMissionBudget(missionId, 300);
             if (!budget.allowed) {
               return { success: false, error: `Budget exhausted: ${budget.reason}` };
             }
           }
         } catch (e) {
-          // Budget module may not be available in all runtimes; fail open
           console.warn('[budget] check skipped:', e);
         }
-        const apiKey = process.env.TELNYX_API_KEY;
-        const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
-        const from = configuredTelnyxOutboundNumber();
-        const webhookSecret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET;
-        const normalizedCustomerNumber = normalizeE164ForOutbound(customerNumber);
-        if (!normalizedCustomerNumber) {
-          return { success: false, error: 'Destination phone number must be E.164-compatible.' };
-        }
-        if (!apiKey || !connectionId || !from || !webhookSecret) {
+
+        const todayContext = `Today's date is ${new Date().toISOString().slice(0, 10)} (${DAY_NAMES[new Date().getUTCDay()]}). Resolve relative dates the prospect gives you into exact dates in their stated time zone before using calendar tools.`;
+        try {
+          const call = await startCartesiaSalesCall({
+            toNumber: customerNumber,
+            customerName: customerName ?? null,
+            assistantPrompt: `${todayContext}\n\n${assistantPrompt}`,
+            firstMessage,
+            leadId: leadId ?? null,
+            campaignId: campaignId ?? null,
+            playbookId: playbookId ?? null,
+            createdByAgentId: ctx.agentId,
+          });
+
+          try {
+            await db
+              .insert(callOutcomes)
+              .values({
+                id: randomUUID(),
+                callId: `cartesia:${call.callId}`,
+                leadId: leadId ?? null,
+                customerNumber: call.toNumber,
+                customerName: customerName ?? null,
+                disposition: 'no_decision',
+                createdByAgentId: ctx.agentId,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .onConflictDoUpdate({
+                target: callOutcomes.callId,
+                set: {
+                  leadId: leadId ?? null,
+                  customerNumber: call.toNumber,
+                  customerName: customerName ?? null,
+                  updatedAt: new Date(),
+                },
+              });
+          } catch (logErr) {
+            console.error('[make_outbound_call] failed to persist Cartesia dialing outcome:', logErr instanceof Error ? logErr.message : String(logErr));
+          }
+
           return {
-            success: false,
-            error: `Telnyx outbound is not configured. Set TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, TELNYX_CALL_BRIDGE_WEBHOOK_SECRET, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER}.`,
+            success: true,
+            callId: call.callId,
+            provider: call.provider,
+            agentId: call.agentId,
+            agentName: CARTESIA_SALES_AGENT_NAME,
+            callerId: call.fromNumber,
+            status: 'created',
+            message: `Outbound Cartesia call initiated to ${call.toNumber}${customerName ? ` (${customerName})` : ''} using ${CARTESIA_SALES_AGENT_NAME} from ${APEX_CARTESIA_CALLER_NUMBER}. Call ID: ${call.callId}.`,
           };
-        }
-
-        const todayContext = `Today's date is ${new Date().toISOString().slice(0, 10)} (${DAY_NAMES[new Date().getUTCDay()]}). Use this to resolve any relative date the prospect gives you (e.g. "next Tuesday", "tomorrow") into an exact calendar date.`;
-        const sessionId = randomUUID();
-
-        await db.insert(callBridgeSessions).values({
-          id: sessionId,
-          status: 'dialing_customer',
-          operatorNumber: normalizeE164ForOutbound(process.env.TELNYX_OWNER_NUMBER) ?? from,
-          customerNumber: normalizedCustomerNumber,
-          conferenceName: sessionId,
-          sessionMode: 'ai_first',
-          buyerName: customerName ?? null,
-          assistantGreeting: firstMessage,
-          assistantInstructions: `${todayContext}\n\n${assistantPrompt}`,
-          createdByAgentId: ctx.agentId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-
-        const callBody = {
-          connection_id: connectionId,
-          from,
-          to: normalizedCustomerNumber,
-          webhook_url: callBridgeWebhookUrl(),
-          client_state: encodeCallBridgeClientState(sessionId, 'customer'),
-          timeout_secs: 30,
-          conference_config: {
-            conference_name: sessionId,
-            early_media: false,
-            end_conference_on_exit: true,
-          },
-        };
-
-        const res = await fetch('https://api.telnyx.com/v2/calls', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(callBody),
-        });
-
-        const data = (await res.json().catch(() => null)) as
-          | { data?: { call_control_id?: string }; errors?: Array<{ detail?: string }> }
-          | null;
-        if (!res.ok || !data?.data?.call_control_id) {
-          const errorMsg = data?.errors?.[0]?.detail ?? `Telnyx call failed (${res.status})`;
-          await db
-            .update(callBridgeSessions)
-            .set({ status: 'failed', lastError: errorMsg, updatedAt: new Date() })
-            .where(eq(callBridgeSessions.id, sessionId));
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
           try {
             await db.insert(callOutcomes).values({
               id: randomUUID(),
               callId: `failed_${randomUUID()}`,
-              customerNumber: normalizedCustomerNumber,
+              leadId: leadId ?? null,
+              customerNumber,
               customerName: customerName ?? null,
               disposition: 'failed_to_dial',
               endedReason: errorMsg.slice(0, 500),
@@ -3048,42 +3016,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           } catch (logErr) {
             console.error('[make_outbound_call] failed to persist failed_to_dial outcome:', logErr instanceof Error ? logErr.message : String(logErr));
           }
-          return { success: false, error: errorMsg };
+          return { success: false, error: errorMsg, provider: 'cartesia', agentName: CARTESIA_SALES_AGENT_NAME };
         }
-
-        await db
-          .update(callBridgeSessions)
-          .set({ customerCallControlId: data.data.call_control_id, updatedAt: new Date() })
-          .where(eq(callBridgeSessions.id, sessionId));
-        try {
-          await db
-            .insert(callOutcomes)
-            .values({
-              id: randomUUID(),
-              callId: `telnyx_${data.data.call_control_id}`,
-              customerNumber: normalizedCustomerNumber,
-              customerName: customerName ?? null,
-              disposition: 'no_decision',
-              createdByAgentId: ctx.agentId,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .onConflictDoUpdate({
-              target: callOutcomes.callId,
-              set: { updatedAt: new Date() },
-            });
-        } catch (logErr) {
-          console.error('[make_outbound_call] failed to persist dialing outcome:', logErr instanceof Error ? logErr.message : String(logErr));
-        }
-
-        return {
-          success: true,
-          callId: sessionId,
-          providerCallControlId: data.data.call_control_id,
-          provider: 'telnyx',
-          status: 'dialing_customer',
-          message: `Outbound Telnyx call initiated to ${normalizedCustomerNumber}${customerName ? ` (${customerName})` : ''}. Session ID: ${sessionId}.`,
-        };
       },
     },
 
@@ -3096,6 +3030,33 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       }),
       requiresApproval: false, // Read-only — just checks status, no side effects.
       async execute({ callId }) {
+        if (/^ac_[A-Za-z0-9_-]+$/.test(callId)) {
+          try {
+            const call = await getCartesiaSalesCall(callId);
+            const transcript = Array.isArray(call.transcript)
+              ? call.transcript.map((turn) => `${turn.role ?? 'unknown'}: ${turn.text ?? ''}`).join('\n')
+              : null;
+            return {
+              success: true,
+              provider: 'cartesia',
+              callId: call.id,
+              agentId: call.agent_id ?? null,
+              agentName: call.agent_name ?? CARTESIA_SALES_AGENT_NAME,
+              status: call.status ?? 'unknown',
+              customerNumber: call.telephony_params?.to ?? null,
+              callerId: call.telephony_params?.from ?? APEX_CARTESIA_CALLER_NUMBER,
+              transcript,
+              summary: call.summary ?? null,
+              endedReason: call.end_reason ?? null,
+              error: call.error_message ?? null,
+              startedAt: call.start_time ?? null,
+              endedAt: call.end_time ?? null,
+            };
+          } catch (err) {
+            return { success: false, provider: 'cartesia', callId, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+
         const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, callId)).limit(1);
         if (session) {
           return {
