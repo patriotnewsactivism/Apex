@@ -143,21 +143,29 @@ check(
 );
 
 check(
-  'outbound sales name-checks first, retries after three seconds, and pitches only after a response',
-  /initial_message:\s*'Hi, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
-    /inactivity_check_in_secs:\s*3/.test(reconciler) &&
-    /repeat exactly once: "Hi, is this \{\{customer_name\}\}\?"/.test(reconciler) &&
-    /Do not begin the pitch before the person responds/.test(reconciler) &&
-    /exact first pitch line: \{\{campaign_first_message\}\}/.test(reconciler),
+  'outbound sales stays silent until callee speech, confirms identity, builds rapport, then pitches',
+  /initial_message:\s*''/.test(reconciler) &&
+    /stay completely silent when the phone connection opens/.test(reconciler) &&
+    /After their first audible greeting, say naturally: "Hey, is this \{\{customer_name\}\}\?"/.test(reconciler) &&
+    /How’s your day going\?/.test(reconciler) &&
+    /Only then transition into the reason for the call using this campaign line/.test(reconciler) &&
+    /inactivity_check_in_secs:\s*5/.test(reconciler),
 );
 check(
   'Cartesia sales voice cadence is slightly slowed to reduce PSTN\/SIP clipping',
   /voice_id:\s*voiceId[\s\S]{0,120}speed:\s*0\.96/.test(reconciler),
 );
 check(
-  'BuildMyBot sales pitch identifies the caller as Don after identity confirmation',
-  /firstMessage:\s*'My name is Don, and I’m calling with BuildMyBot\./.test(playbooks) &&
-    /You are Don, a BuildMyBot sales rep/.test(playbooks),
+  'Cartesia sales responses are constrained for lower conversational latency',
+  /temperature:\s*0\.2/.test(reconciler) &&
+    /max_output_tokens:\s*96/.test(reconciler) &&
+    /usually under twelve spoken words/.test(reconciler),
+);
+check(
+  'BuildMyBot sales pitch is conversational and happens after rapport',
+  /firstMessage:\s*'Gotcha\. I’ll keep it quick/.test(playbooks) &&
+    /What do you normally do with calls that come in when nobody can pick up\?/.test(playbooks) &&
+    /Build brief rapport before the pitch/.test(playbooks),
 );
 
 
