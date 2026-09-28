@@ -36,6 +36,7 @@ const STATE_TIMESTAMP: Partial<Record<LeadPipelineState, keyof typeof researched
 };
 
 const SERVICE_SUBCATEGORIES: Record<string, string[]> = {
+  'bail bond': ['bail bonds', 'bail bondsman', '24 hour bail bonds', 'surety bail bonds'],
   roofing: ['roof repair', 'roof replacement', 'storm damage roofing', 'commercial roofing'],
   hvac: ['ac repair', 'hvac contractor', 'furnace repair', 'emergency hvac'],
   plumbing: ['emergency plumber', 'water heater repair', 'drain cleaning', 'plumbing contractor'],
