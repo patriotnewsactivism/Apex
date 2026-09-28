@@ -162,6 +162,19 @@ check(
     /usually under twelve spoken words/.test(reconciler),
 );
 check(
+  'short uncertain transcripts are clarified instead of guessed or used to hang up',
+  /SHORT-REPLY ACCURACY RULE/.test(reconciler) &&
+    /I do/.test(reconciler) &&
+    /If a short transcript does not make sense as an answer/.test(reconciler) &&
+    /unexpected goodbye phrase/.test(reconciler) &&
+    /are you saying you need to go/.test(reconciler) &&
+    /one unexpected goodbye-looking transcript is not enough/.test(reconciler),
+);
+check(
+  'Cartesia STT keyterms bias common short sales-call replies and vocabulary',
+  /keyterms:\s*\[[\s\S]{0,600}'I do'[\s\S]{0,600}'voicemail'[\s\S]{0,600}'after hours'[\s\S]{0,600}'missed calls'/.test(reconciler),
+);
+check(
   'BuildMyBot sales pitch is conversational and happens after rapport',
   /firstMessage:\s*'Gotcha\. I’ll keep it quick/.test(playbooks) &&
     /What do you normally do with calls that come in when nobody can pick up\?/.test(playbooks) &&
