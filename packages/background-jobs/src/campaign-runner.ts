@@ -22,6 +22,7 @@ import {
   subcategoriesForIndustry,
   getKnownLeadDomains,
   getLeadPipelineConfig,
+  normalizeLeadDomain,
   insertDiscoveredLead,
   processLeadPipelineBacklog,
 } from './lead-pipeline.js';
@@ -466,6 +467,8 @@ export class CampaignRunner {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private readonly toolContext: ToolContext;
+  private knownDomainsCache: Set<string> | null = null;
+  private knownDomainsRefreshedAt = 0;
 
   constructor(
     private readonly intervalMs = Number(
@@ -532,6 +535,20 @@ export class CampaignRunner {
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * Loading every known website from Postgres once per segment was O(N×M)
+   * database work during large campaigns. Keep a short-lived shared cache for
+   * the runner and update it as new leads are inserted.
+   */
+  private async knownDomains(): Promise<Set<string>> {
+    const now = Date.now();
+    if (!this.knownDomainsCache || now - this.knownDomainsRefreshedAt > 30_000) {
+      this.knownDomainsCache = await getKnownLeadDomains();
+      this.knownDomainsRefreshedAt = now;
+    }
+    return this.knownDomainsCache;
   }
 
   /** A runner that dies mid-segment leaves it in_progress forever. Same
@@ -778,7 +795,7 @@ export class CampaignRunner {
 
       // Drop companies already on file before spending enrichment or model
       // work on them. Fresh businesses are inserted immediately as DISCOVERED.
-      const known = await getKnownLeadDomains();
+      const known = await this.knownDomains();
       const { fresh, duplicates } = dedupeDiscoveredBusinesses(found, known);
 
       let saved = 0;
@@ -800,6 +817,8 @@ export class CampaignRunner {
             liveDemoMode: config.liveDemoMode,
           },
         });
+        const domain = normalizeLeadDomain(business.website);
+        if (domain) known.add(domain);
         saved++;
       }
 
