@@ -78,21 +78,55 @@ export function WebinarRoom({ slug }: { slug: string }) {
   const [voiceOn, setVoiceOn] = useState(true);
   const [startedAudio, setStartedAudio] = useState(false);
   const [lastSpokenSegment, setLastSpokenSegment] = useState<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const seenQuestionIds = useRef(new Set<string>());
   const seenEventIds = useRef(new Set<string>());
   const attendeeRef = useRef(attendeeId);
   attendeeRef.current = attendeeId;
 
+  const stopNarration = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  }, []);
+
   const speak = useCallback((text: string, interrupt = false) => {
     if (!voiceOn || !startedAudio || !('speechSynthesis' in window) || !text.trim()) return;
-    if (interrupt) window.speechSynthesis.cancel();
+    if (interrupt) stopNarration();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.voice = naturalVoice() ?? null;
     utterance.rate = 1.02;
     utterance.pitch = 0.96;
     utterance.volume = 1;
     window.speechSynthesis.speak(utterance);
-  }, [startedAudio, voiceOn]);
+  }, [startedAudio, stopNarration, voiceOn]);
+
+  const playSegmentNarration = useCallback((segment: Segment, interrupt = true) => {
+    if (!voiceOn || !startedAudio || !segment.id) return;
+    if (interrupt) stopNarration();
+
+    const audio = new Audio(
+      `/api/webinar/public/${encodeURIComponent(slug)}/audio/${encodeURIComponent(segment.id)}`,
+    );
+    audio.preload = 'auto';
+    audioRef.current = audio;
+
+    let usedFallback = false;
+    const fallback = () => {
+      if (usedFallback || audioRef.current !== audio) return;
+      usedFallback = true;
+      audioRef.current = null;
+      if (segment.narration) speak(segment.narration);
+    };
+    audio.addEventListener('error', fallback, { once: true });
+    audio.addEventListener('ended', () => {
+      if (audioRef.current === audio) audioRef.current = null;
+    }, { once: true });
+    void audio.play().catch(fallback);
+  }, [slug, speak, startedAudio, stopNarration, voiceOn]);
 
   const fetchSnapshot = useCallback(async () => {
     const res = await fetch(`/api/webinar/public/${encodeURIComponent(slug)}`);
@@ -130,9 +164,9 @@ export function WebinarRoom({ slug }: { slug: string }) {
     if (lastSpokenSegment === index) return;
     setLastSpokenSegment(index);
     if (snapshot.currentSegment.narration) {
-      speak(snapshot.currentSegment.narration, true);
+      playSegmentNarration(snapshot.currentSegment, true);
     }
-  }, [snapshot, attendeeId, lastSpokenSegment, speak]);
+  }, [snapshot, attendeeId, lastSpokenSegment, playSegmentNarration]);
 
   useEffect(() => {
     if (!snapshot || !attendeeId) return;
@@ -141,18 +175,17 @@ export function WebinarRoom({ slug }: { slug: string }) {
       if (!id || seenEventIds.current.has(id)) continue;
       seenEventIds.current.add(id);
       if (event.type === 'host_message' && event.payload?.message) {
-        speak(event.payload.message);
+        speak(event.payload.message, true);
       }
       if (event.type === 'human_takeover') {
-        speak('Matthew has taken the floor. Autonomous narration is paused.');
+        speak('Matthew has taken the floor. Autonomous narration is paused.', true);
       }
       if (event.type === 'human_release') {
-        const narration = snapshot.currentSegment.narration ?? '';
         setLastSpokenSegment(snapshot.session.currentSegment);
-        speak(narration || 'The AI co-host is back on the floor.', true);
+        playSegmentNarration(snapshot.currentSegment, true);
       }
     }
-  }, [snapshot, attendeeId, speak]);
+  }, [snapshot, attendeeId, playSegmentNarration, speak]);
 
   useEffect(() => {
     if (!snapshot || !attendeeId) return;
@@ -190,7 +223,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
       for (const e of room.events ?? []) if (e.id) seenEventIds.current.add(String(e.id));
       if (room.session.status === 'live' && room.currentSegment.narration) {
         setLastSpokenSegment(room.session.currentSegment);
-        window.setTimeout(() => speak(room.currentSegment.narration ?? '', true), 250);
+        window.setTimeout(() => playSegmentNarration(room.currentSegment, true), 250);
       }
     } catch (error) {
       setJoinError(error instanceof Error ? error.message : String(error));
@@ -270,7 +303,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
               {joinError && <div style={{ gridColumn: '1 / -1', color: '#e58b92', fontSize: 13 }}>{joinError}</div>}
               <button type="submit" style={{ ...buttonStyle, gridColumn: '1 / -1', padding: '14px 18px' }}>Enter webinar</button>
             </form>
-            <div style={{ color: '#777b85', fontSize: 12, marginTop: 14 }}>Entering enables the AI narration in your browser. You can mute it at any time.</div>
+            <div style={{ color: '#777b85', fontSize: 12, marginTop: 14 }}>Entering enables the Don Matthews AI host voice. Browser speech is used only if premium narration is unavailable. You can mute it at any time.</div>
           </div>
         </div>
       </div>
@@ -298,7 +331,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
             }
             setVoiceOn((value) => {
               const next = !value;
-              if (!next && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+              if (!next) stopNarration();
               if (next) setLastSpokenSegment(null);
               return next;
             });
