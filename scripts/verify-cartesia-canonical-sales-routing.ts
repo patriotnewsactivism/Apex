@@ -94,6 +94,10 @@ check(
     index.indexOf('reconcileCartesiaSalesAgent') < index.lastIndexOf('diagnoseCartesiaRuntime'),
 );
 check(
+  'routine Cartesia agent reconciliation never sends a version description for an unchanged config',
+  !/version_description:\s*'Reconcile APEX canonical outbound sales configuration'/.test(reconciler),
+);
+check(
   'reconciler creates/updates six APEX webhook tools and attaches the event webhook',
   /desiredTools/.test(reconciler) &&
     /lookup_lead_info/.test(reconciler) &&
