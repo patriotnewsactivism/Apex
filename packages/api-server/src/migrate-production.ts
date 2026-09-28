@@ -79,6 +79,12 @@ async function main(): Promise<void> {
     new URL('../../../lib/db/drizzle/20260918_outcome_backfill.sql', import.meta.url),
     'Historical task outcomes and researched leads backfilled into the Outcome Ledger',
   );
+
+  await applySqlFile(
+    '20260928_lead_search_cache_v1',
+    new URL('../../../lib/db/drizzle/20260928_lead_search_cache.sql', import.meta.url),
+    'Persistent cache for paid and rate-limited lead discovery searches',
+  );
 }
 
 main()
