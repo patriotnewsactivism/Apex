@@ -53,6 +53,32 @@ async function main(): Promise<void> {
   )) as typeof import('../packages/api-server/src/routes/vapi.js');
   const { zonedTimeToUtc, fallbackDispositionFromEndedReason } = vapiMod;
 
+  const cartesiaMod = (await import(
+    pathToFileURL(path.join(root, 'packages/api-server/src/routes/cartesia-sales.ts')).href
+  )) as typeof import('../packages/api-server/src/routes/cartesia-sales.js');
+  const { inferCartesiaLifecycleDisposition } = cartesiaMod;
+
+  check(
+    'Cartesia lifecycle fallback classifies voicemail when no mid-call disposition was recorded',
+    inferCartesiaLifecycleDisposition('call_completed', {
+      end_reason: 'answering_machine_detected',
+      summary: 'A voicemail greeting played and a message was left.',
+    }, 'no_decision') === 'voicemail',
+  );
+  check(
+    'Cartesia lifecycle fallback classifies ringing timeout as no_answer',
+    inferCartesiaLifecycleDisposition('call_failed', {
+      end_reason: 'ringing_timeout',
+    }, 'no_decision') === 'no_answer',
+  );
+  check(
+    'Cartesia lifecycle fallback preserves a meaningful mid-call disposition',
+    inferCartesiaLifecycleDisposition('call_completed', {
+      end_reason: 'completed',
+      summary: 'The call reached voicemail after the conversation.',
+    }, 'appointment_booked') === 'appointment_booked',
+  );
+
   // ── zonedTimeToUtc: DST-correct resolution, no timezone library ─────────
   //
   // 2026 US DST: begins 2026-03-08 02:00 local, ends 2026-11-01 02:00 local.
@@ -191,6 +217,15 @@ async function main(): Promise<void> {
   check(
     "schema.ts documents the failed_to_dial disposition (added 2026-09-25 so a call provider rejects pre-flight is distinguishable from one that connected and reached no_decision)",
     /failed_to_dial/.test(schemaSource),
+  );
+  const cartesiaRouteSource = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/cartesia-sales.ts'), 'utf8');
+  check(
+    'Cartesia lifecycle webhooks persist fallback disposition, summary, next action, and end reason for voicemail/no-answer calls',
+    /inferCartesiaLifecycleDisposition/.test(cartesiaRouteSource) &&
+      /lifecycleSummary/.test(cartesiaRouteSource) &&
+      /lifecycleNextAction/.test(cartesiaRouteSource) &&
+      /nextAction,/.test(cartesiaRouteSource) &&
+      /endedReason,/.test(cartesiaRouteSource),
   );
 
   // ── make_outbound_call itself must never let an attempt go unlogged ──────
