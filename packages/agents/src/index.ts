@@ -84,15 +84,13 @@ export function createWorkforce(options: WorkforceOptions = {}): Map<string, Bas
       options.approvalRequired !== undefined ? { approvalRequired: options.approvalRequired } : {};
 
     if (AgentClass === LeadResearchAgent) {
-      // The lead researcher is intentionally the one standing role allowed to
-      // fan out broadly. Five concurrent tasks lets APEX cover multiple
-      // industry/market territories in parallel while the global LLM governor
-      // still enforces the platform-wide provider ceiling. Operators can lower
-      // this at runtime with APEX_LEAD_RESEARCH_CONCURRENCY.
-      const configured = Number(process.env.APEX_LEAD_RESEARCH_CONCURRENCY ?? 5);
+      // Serialize costly lead sweeps by default. An operator can allow two
+      // concurrent tasks, but a stale setting cannot restore the five-task
+      // burst that exhausted the shared Qwen capacity.
+      const configured = Number(process.env.APEX_LEAD_RESEARCH_CONCURRENCY ?? 1);
       overrides.concurrency = Number.isFinite(configured)
-        ? Math.min(5, Math.max(1, Math.floor(configured)))
-        : 5;
+        ? Math.min(2, Math.max(1, Math.floor(configured)))
+        : 1;
     }
 
     const agent = new (AgentClass as new (overrides?: Record<string, unknown>) => BaseAgent)(overrides);
