@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import express from 'express';
 import { createServer, type Server } from 'node:http';
-import { createCartesiaSalesRouter, secretMatches } from './cartesia-sales.js';
+import { createCartesiaSalesRouter, isExplicitOptOut, secretMatches } from './cartesia-sales.js';
 
 describe('Cartesia sales webhook boundary', () => {
   let server: Server;
@@ -50,6 +50,21 @@ describe('Cartesia sales webhook boundary', () => {
       const response = await fetch(base + path, { method: 'POST', headers: {
         Authorization: 'Bearer test-tool-secret', 'Content-Type': 'application/json',
       }, body: JSON.stringify(body) });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  it('rejects an inferred DNC before any database write', async () => {
+    expect(isExplicitOptOut('Yep.')).toBe(false);
+    expect(isExplicitOptOut('Yeah.')).toBe(false);
+    expect(isExplicitOptOut('Not interested.')).toBe(false);
+    expect(isExplicitOptOut('Please stop calling me.')).toBe(true);
+    expect(isExplicitOptOut('Remove us from your list.')).toBe(true);
+    for (const quote of [undefined, 'Yep.', 'Not interested.']) {
+      const response = await fetch(base + '/tools/record-outcome', {
+        method: 'POST', headers: { Authorization: 'Bearer test-tool-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ call_id: 'ac_test', phone_number: '+18328804970', disposition: 'dnc', opt_out_quote: quote }),
+      });
       expect(response.status).toBe(400);
     }
   });
