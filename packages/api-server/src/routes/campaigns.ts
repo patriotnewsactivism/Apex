@@ -65,11 +65,7 @@ export function createCampaignsRouter() {
           eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
           eq(researchedLeads.status, 'qualified'),
           sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-          sql`(
-            ${researchedLeads.source} IS NULL
-            OR ${researchedLeads.source} NOT LIKE '%web:%'
-            OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
-          )`,
+          sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
         ),
       )
       .groupBy(researchedLeads.campaignId);
@@ -126,11 +122,7 @@ export function createCampaignsRouter() {
           eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
           eq(researchedLeads.status, 'qualified'),
           sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-          sql`(
-            ${researchedLeads.source} IS NULL
-            OR ${researchedLeads.source} NOT LIKE '%web:%'
-            OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
-          )`,
+          sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
         ),
       )
       .orderBy(desc(researchedLeads.createdAt))
