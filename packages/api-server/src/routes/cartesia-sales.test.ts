@@ -58,6 +58,9 @@ describe('Cartesia sales webhook boundary', () => {
     expect(isExplicitOptOut('Yep.')).toBe(false);
     expect(isExplicitOptOut('Yeah.')).toBe(false);
     expect(isExplicitOptOut('Not interested.')).toBe(false);
+    expect(isExplicitOptOut("Don't stop calling me.")).toBe(false);
+    expect(isExplicitOptOut("Please don't remove me from your list.")).toBe(false);
+    expect(isExplicitOptOut("I don't want any more calls.")).toBe(true);
     expect(isExplicitOptOut('Please stop calling me.')).toBe(true);
     expect(isExplicitOptOut('Remove us from your list.')).toBe(true);
     expect(isExplicitOptOut('Do not call this number.')).toBe(true);
