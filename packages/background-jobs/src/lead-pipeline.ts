@@ -612,7 +612,7 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
   const readyFromCache = Boolean(
     cachedCampaignDraft &&
     cachedHasContact &&
-    (!webSource || cachedVerification?.status === 'verified'),
+    cachedVerification?.status === 'verified',
   );
   const state: LeadPipelineState = readyFromCache ? 'CAMPAIGN_READY' : 'DISCOVERED';
 
@@ -796,9 +796,10 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
         ? betterName
         : lead.companyName,
       website: identity.homepage ?? lead.website,
+      decisionMakerName: lead.decisionMakerName ?? identity.decisionMakerName,
       contactEmail: lead.contactEmail ?? identity.contactEmail,
       contactPhone: lead.contactPhone ?? identity.contactPhone,
-      contactSourceUrl: lead.contactSourceUrl ?? identity.contactSourceUrl,
+      contactSourceUrl: lead.contactSourceUrl ?? identity.contactSourceUrl ?? identity.decisionMakerSourceUrl,
       contactResearchStatus:
         (lead.contactEmail ?? identity.contactEmail) && (lead.contactPhone ?? identity.contactPhone)
           ? 'complete'
@@ -812,6 +813,7 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
   if (identity) {
     update.companyName = stageLead.companyName;
     update.website = stageLead.website;
+    update.decisionMakerName = stageLead.decisionMakerName;
     update.contactEmail = stageLead.contactEmail;
     update.contactPhone = stageLead.contactPhone;
     update.contactSourceUrl = stageLead.contactSourceUrl;
@@ -1018,11 +1020,10 @@ function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
   const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
     | { status?: string }
     | undefined;
-  if (verification?.status === 'mismatch') return 0;
+  if (verification?.status !== 'verified') return 0;
   if (!lead.contactEmail && !lead.contactPhone) return 0;
-  if (/^(?:cache:)?web:/i.test(lead.source ?? '') && verification?.status !== 'verified') return 0;
 
-  let score = verification?.status === 'verified' ? 55 : 35;
+  let score = 55;
   if (lead.website) score += 15;
   if (lead.contactEmail || lead.contactPhone) score += 15;
   if (lead.industry) score += 10;
@@ -1064,7 +1065,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
               sql`${researchedLeads.contactPhone} IS NULL`,
             ),
           ),
-          sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v1'`,
+          sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v2'`,
         ),
       )
       .orderBy(asc(researchedLeads.createdAt))
@@ -1082,9 +1083,10 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
       });
       const webSource = /^(?:cache:)?web:/i.test(lead.source ?? '');
       const oldName = lead.companyName;
+      const decisionMakerName = lead.decisionMakerName ?? identity.decisionMakerName;
       const contactEmail = lead.contactEmail ?? identity.contactEmail;
       const contactPhone = lead.contactPhone ?? identity.contactPhone;
-      const contactSourceUrl = lead.contactSourceUrl ?? identity.contactSourceUrl;
+      const contactSourceUrl = lead.contactSourceUrl ?? identity.contactSourceUrl ?? identity.decisionMakerSourceUrl;
       if ((!lead.contactEmail && contactEmail) || (!lead.contactPhone && contactPhone)) contactsAdded++;
       const candidate = identity.canonicalName?.trim();
       const newName = candidate && (identity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
@@ -1106,6 +1108,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
       await db.update(researchedLeads).set({
         companyName: newName,
         website: identity.homepage ?? lead.website,
+        decisionMakerName,
         contactEmail,
         contactPhone,
         contactSourceUrl,
@@ -1120,7 +1123,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         fitReason: replaceCompanyNameText(lead.fitReason, oldName, newName) ?? lead.fitReason,
         outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
         campaignDraft,
-        ...(identity.status === 'mismatch' && webSource ? { status: 'rejected', qualificationScore: 0 } : {}),
+        ...(identity.status === 'mismatch' ? { status: 'rejected', qualificationScore: 0 } : {}),
         updatedAt: new Date(),
       }).where(eq(researchedLeads.id, lead.id));
 
@@ -1133,7 +1136,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
             businessVerification: identity,
           },
           contactResearch: {
-            decisionMakerName: lead.decisionMakerName,
+            decisionMakerName,
             contactEmail,
             contactPhone,
             contactSourceUrl,
