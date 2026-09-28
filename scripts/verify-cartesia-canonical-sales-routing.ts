@@ -54,6 +54,12 @@ check(
     /appears more than once/.test(client),
 );
 
+check(
+  'Cartesia outbound payload puts caller ID and ringing timeout on each outbound call entry',
+  /outbound_calls:\s*\[\{[\s\S]{0,280}to_number:\s*toNumber[\s\S]{0,280}from_number_id:\s*fromNumberId[\s\S]{0,280}ringing_timeout_seconds:/.test(client) &&
+    !/JSON\.stringify\(\{\s*from_number_id:\s*fromNumberId/.test(client),
+);
+
 const makeStart = registry.indexOf("name: 'make_outbound_call'");
 const makeEnd = registry.indexOf("name: 'get_call_status'", makeStart);
 const makeBody = makeStart >= 0 && makeEnd > makeStart ? registry.slice(makeStart, makeEnd) : '';
