@@ -220,7 +220,7 @@ export type ApexEvent =
   | { type: 'task:updated'; taskId: string; status: TaskStatus; result?: string }
   | { type: 'goal:created'; goalId: string; title: string }
   | { type: 'goal:updated'; goalId: string; status: string }
-  | { type: 'log'; agentId?: string; taskId?: string; level: string; message: string; timestamp: number }
+  | { type: 'log'; agentId?: string; taskId?: string; level: string; message: string; data?: Record<string, unknown>; timestamp: number }
   | { type: 'approval:requested'; approvalId: string; agentId: string; toolName: string; reason: string }
   // 'acknowledged' applies only to kind='escalation': an escalation authorizes
   // no tool call, so approving it would misrepresent what happened. It is a
