@@ -4,6 +4,7 @@ import type { ApexCEO } from '@workspace/agents';
 import { db, voiceChatSessions, voiceChatTurns } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import { CHAT_SYSTEM_PROMPT, CHAT_TOOLS, buildLiveSnapshot, executeTool } from './routes/chat.js';
+import { isExplicitLiveVoiceHangup } from './live-voice-control.js';
 
 const GEMINI_LIVE_URL =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
@@ -397,6 +398,19 @@ export async function tryStartGeminiLiveSession({
           }
           safeSendClient({ type: 'transcript', role: 'user', text: inputText });
           persistTurn('user', inputText);
+          if (isExplicitLiveVoiceHangup(inputText)) {
+            intentionallyClosed = true;
+            safeSendClient({ type: 'ended', reason: 'spoken_hangup' });
+            try {
+              if (upstream?.readyState === WebSocket.OPEN || upstream?.readyState === WebSocket.CONNECTING) {
+                upstream.close(1000, 'spoken hangup');
+              }
+            } catch {
+              // ignore shutdown race
+            }
+            client.close(1000, 'spoken hangup');
+            return;
+          }
         }
 
         const outputText = serverContent.outputTranscription?.text?.trim();
@@ -616,22 +630,12 @@ export async function tryStartGeminiLiveSession({
     if (msg.type === 'end') {
       intentionallyClosed = true;
       sendGemini({ realtimeInput: { audioStreamEnd: true } });
-      client.close();
+      safeSendClient({ type: 'ended', reason: 'operator_hangup' });
+      client.close(1000, 'operator hangup');
     }
   };
 
-  client.on('message', handleClientMessage);
-
-  const initialConnected = await connect();
-  if (!initialConnected) {
-    intentionallyClosed = true;
-    // Hand browser ownership back to live-voice.ts. Its temporary setup
-    // prebuffer observed the same frames and will seed the Deepgram fallback.
-    if (handleClientMessage) client.off('message', handleClientMessage);
-    return false;
-  }
-
-  client.on('close', () => {
+  const handleClientClose = () => {
     intentionallyClosed = true;
 
     if (reconnectTimer) {
@@ -648,7 +652,22 @@ export async function tryStartGeminiLiveSession({
     }
 
     endGeminiSessionRow();
-  });
+  };
+
+  client.on('message', handleClientMessage);
+  // Attach teardown before provider setup. A browser can hang up while Gemini
+  // is still negotiating its initial websocket; cleanup must not miss that
+  // close event and leave an upstream session alive.
+  client.on('close', handleClientClose);
+
+  const initialConnected = await connect();
+  if (!initialConnected) {
+    intentionallyClosed = true;
+    // Hand browser ownership back to live-voice.ts. Its temporary setup
+    // prebuffer observed the same frames and will seed the Deepgram fallback.
+    if (handleClientMessage) client.off('message', handleClientMessage);
+    return false;
+  }
 
   client.on('error', (err) => {
     console.error('[gemini-live] browser websocket error:', err.message);
