@@ -50,10 +50,11 @@ async function main(): Promise<void> {
   check('take-message tool endpoint exists', /router\.post\('\/tools\/take-message', async/.test(route));
   check('send-confirmation tool endpoint exists', /router\.post\('\/tools\/send-confirmation', async/.test(route));
   check('lookup-caller-history tool endpoint exists', /router\.post\('\/tools\/lookup-caller-history', async/.test(route));
+  check('post-call events endpoint exists', /router\.post\('\/events', async/.test(route));
   check('inbound SMS endpoint exists', /router\.post\('\/sms-inbound', async/.test(route));
 
   // ── Auth: every handler checks the key, and does so first ────────────────
-  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/tools/lookup-caller-history', '/sms-inbound'];
+  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/tools/lookup-caller-history', '/events', '/sms-inbound'];
   for (const h of handlers) {
     const idx = route.indexOf(`router.post('${h}', async`);
     const body = route.slice(idx, idx + 400);
@@ -170,6 +171,29 @@ async function main(): Promise<void> {
       /previousDisposition: previousCall\?\.disposition/.test(route),
   );
   check(
+    'dynamic-variable responses enable Telnyx native conversation memory for the same caller',
+    /memory:\s*\{[\s\S]{0,300}conversation_query:/.test(route) &&
+      /metadata->telnyx_end_user_target=eq\./.test(route) &&
+      /limit=5&order=last_message_at\.desc/.test(route),
+  );
+  check(
+    'dynamic-variable responses tag inbound conversations with APEX metadata',
+    /conversation:\s*\{[\s\S]{0,300}apex_caller_number/.test(route) &&
+      /apex_call_direction: 'inbound'/.test(route),
+  );
+  check(
+    'post-call events persist Telnyx conversation end and insights into call_outcomes',
+    /call\.conversation\.ended/.test(route) &&
+      /call\.conversation_insights\.generated/.test(route) &&
+      /db\.insert\(callOutcomes\)/.test(route) &&
+      /enrichInboundConversation/.test(route),
+  );
+  check(
+    'post-call enrichment requests Telnyx transcript and conversation insights',
+    /ai\/conversations\/\$\{encodeURIComponent\(input\.conversationId\)\}\/messages/.test(route) &&
+      /conversations-insights/.test(route),
+  );
+  check(
     'the literal FIRST NAME placeholder is normalized to a safe fallback',
     /if \(!trimmed \|\| \/\^first\\s\+name\$\/i\.test\(trimmed\)\) return 'there'/.test(route),
   );
@@ -178,7 +202,7 @@ async function main(): Promise<void> {
   const mod = (await import(
     pathToFileURL(path.join(root, 'packages/api-server/src/routes/telnyx-assistant.ts')).href
   )) as typeof import('../packages/api-server/src/routes/telnyx-assistant.js');
-  const { normalizePhone, extractCallerNumber } = mod;
+  const { normalizePhone, extractCallerNumber, inferInboundDisposition } = mod;
 
   check(
     'normalizePhone treats +1, bare 10-digit, and spaced/dashed forms as the same number',
@@ -214,6 +238,17 @@ async function main(): Promise<void> {
   check(
     'extractCallerNumber returns empty string rather than throwing on a payload with none of the expected fields',
     extractCallerNumber({ unrelated: 'field' }) === '',
+  );
+  check(
+    'inbound post-call inference recognizes booked meetings without overwriting an existing meaningful disposition',
+    inferInboundDisposition('The appointment was scheduled and confirmed for Tuesday.', 'no_decision') === 'appointment_booked' &&
+      inferInboundDisposition('The customer later mentioned an appointment.', 'not_interested') === 'not_interested',
+  );
+  check(
+    'inbound post-call inference recognizes callback, not-interested, and qualified outcomes conservatively',
+    inferInboundDisposition('They asked us to call back tomorrow.', 'no_decision') === 'callback_requested' &&
+      inferInboundDisposition('The prospect said they are not interested.', 'no_decision') === 'not_interested' &&
+      inferInboundDisposition('This is a qualified opportunity and a good fit.', 'no_decision') === 'qualified',
   );
 
   if (failures > 0) {
