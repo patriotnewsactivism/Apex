@@ -523,6 +523,7 @@ export class CampaignRunner {
     this.running = true;
     try {
       const config = getLeadPipelineConfig();
+      void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16));
       await this.recoverExpiredLeases();
       const claimed = await this.claimSegments(config.segmentBatchSize);
       if (claimed.length === 0) {
