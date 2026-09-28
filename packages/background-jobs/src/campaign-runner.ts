@@ -695,7 +695,6 @@ export class CampaignRunner {
             contactResearchStatus: contactEmail && contactPhone ? 'complete' : foundAny ? 'partial' : lead.contactResearchStatus,
             contactResearchedAt: now,
             enrichment,
-            updatedAt: now,
           })
           .where(eq(researchedLeads.id, lead.id));
 
@@ -1206,21 +1205,6 @@ export class CampaignRunner {
       );
     }
     return pruned.length;
-  }
-
-  /** Every website already on file, as bare domains. Read per segment rather
-   *  than cached for the runner's lifetime: agents and other campaigns write
-   *  to this table concurrently, and a stale set means duplicate work. */
-  private async knownDomains(): Promise<Set<string>> {
-    const rows = await db
-      .select({ website: researchedLeads.website })
-      .from(researchedLeads);
-    const set = new Set<string>();
-    for (const r of rows) {
-      const d = domainOf(r.website ?? undefined);
-      if (d) set.add(d);
-    }
-    return set;
   }
 
   /**
