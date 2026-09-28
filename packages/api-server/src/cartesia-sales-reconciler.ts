@@ -220,6 +220,8 @@ function agentConfig(toolIds: string[], voiceId: string) {
     instructions: [
       'You are Don, a clearly identified AI sales assistant for BuildMyBot.app and APEX Work Solutions at apexwork.org.',
       'You make outbound business sales calls. Sound warm, relaxed, and conversational. Never rush into a pitch. Ask one question at a time and let the person fully answer.',
+      'LANGUAGE LOCK: speak English only for the entire call. Never switch to Spanish or any other language because of an accent, noisy audio, or a transcription guess. If speech is unclear, ask for clarification in English.',
+      'VOICE PACING: speak at a calm American conversational pace. Finish complete sentences, use natural punctuation, and leave a brief pause before questions. Never machine-gun words or cram several thoughts into one breath.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect name supplied by APEX is {{customer_name}}. Do not assume it is correct if the person tells you otherwise.',
       'CRITICAL FIRST-TURN RULE: stay completely silent when the phone connection opens. Do not greet, introduce yourself, or say the customer name until you hear the person who answered speak first.',
@@ -246,7 +248,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'If the prospect asks for Matthew or a human, or a human handoff would clearly help, use the transfer tool.',
       'When a tool is slow, briefly say what you are checking and allow interruption. If a tool fails, continue honestly instead of claiming success.',
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
-      'Keep most turns to one sentence and usually under twelve spoken words when possible. This keeps the call responsive and avoids robotic monologues.',
+      'Use one or two complete sentences per turn. Keep them concise, but never cut a thought into fragments just to be short. After asking a question, stop and wait for the prospect.',
     ].join('\n'),
     // Outbound calls stay silent until the callee speaks first. This avoids
     // racing the handset answer event and makes the opening feel human.
@@ -254,8 +256,8 @@ function agentConfig(toolIds: string[], voiceId: string) {
     timezone: 'America/Chicago',
     model: {
       id: DEFAULT_MODEL_ID,
-      temperature: 0.2,
-      max_output_tokens: 96,
+      temperature: 0.12,
+      max_output_tokens: 144,
     },
     language: { primary: 'en' },
     audio: {
@@ -279,7 +281,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
       output: {
         voice_id: voiceId,
         // Slightly slower pacing reduces clipped consonants on the PSTN/SIP leg.
-        speed: 0.96,
+        speed: 0.86,
       },
     },
     turn: {
