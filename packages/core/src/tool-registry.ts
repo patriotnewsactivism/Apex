@@ -861,6 +861,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         query: z.string().describe('Search query — be specific for best results'),
         maxResults: z.number().optional().describe('Maximum results to return (default 10)'),
         fast: z.boolean().optional().describe('Use the lowest-latency search mode. Ideal for lead discovery where URLs matter more than an AI-written answer.'),
+        refresh: z.boolean().optional().describe('Bypass the persistent lead-search cache and refresh this query from providers.'),
       }),
       requiresApproval: false,
       async execute({ query, maxResults, fast }) {
@@ -1462,6 +1463,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       description: 'Search a structured business directory for real businesses by industry and location. Returns up to 50 businesses per call with company name, address, phone, website, rating, and review count. MUCH faster than webSearch for finding leads — one call replaces 10+ web searches. Use this FIRST before webSearch when looking for businesses in a specific industry/location.',
       schema: z.object({
         query: z.string().describe('Search query combining industry and location, e.g. "HVAC contractor Dallas Texas" or "personal injury lawyer Miami FL"'),
+        refresh: z.boolean().optional().describe('Bypass the persistent lead-search cache and refresh this query from directory providers.'),
       }),
       requiresApproval: false,
       async execute({ query }) {
