@@ -1441,12 +1441,29 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: false,
       async execute({ status, needsContactResearch, limit }) {
         const { db, researchedLeads } = await import('@workspace/db');
-        const { and, eq, desc } = await import('drizzle-orm');
+        const { and, eq, desc, isNull, lt, or, sql } = await import('drizzle-orm');
 
         const query = db.select().from(researchedLeads);
         const conditions = [
-          ...(status ? [eq(researchedLeads.status, status)] : []),
-          ...(needsContactResearch ? [eq(researchedLeads.contactResearchStatus, 'pending')] : []),
+          ...(status ? [eq(researchedLeads.status, status)] : [sql`${researchedLeads.status} <> 'rejected'`]),
+          ...(needsContactResearch
+            ? [
+                and(
+                  sql`(${researchedLeads.contactEmail} IS NULL OR ${researchedLeads.contactPhone} IS NULL OR ${researchedLeads.decisionMakerName} IS NULL)`,
+                  or(
+                    eq(researchedLeads.contactResearchStatus, 'pending'),
+                    eq(researchedLeads.contactResearchStatus, 'partial'),
+                    and(
+                      eq(researchedLeads.contactResearchStatus, 'unavailable'),
+                      or(
+                        isNull(researchedLeads.contactResearchedAt),
+                        lt(researchedLeads.contactResearchedAt, new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)),
+                      ),
+                    ),
+                  ),
+                ),
+              ]
+            : []),
         ];
         const rows = conditions.length
           ? await query.where(and(...conditions)).orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25)
