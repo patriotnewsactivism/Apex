@@ -676,6 +676,7 @@ export class CampaignRunner {
     segment: typeof campaignSegments.$inferSelect,
   ): Promise<void> {
     const label = `${segment.industry} / ${segment.city}`;
+    const segmentStartedAt = Date.now();
     try {
       const registry = getToolRegistry();
       const config = getLeadPipelineConfig();
@@ -889,7 +890,7 @@ export class CampaignRunner {
         .where(eq(leadCampaigns.id, campaign.id));
 
       console.log(
-        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${provider})`,
+        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${provider}) in ${Date.now() - segmentStartedAt}ms`,
       );
       await this.pruneSaturatedCell(campaign, segment);
       emitApexEvent({
