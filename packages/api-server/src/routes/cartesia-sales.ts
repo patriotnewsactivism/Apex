@@ -21,7 +21,7 @@ const optional = (max: number) => short(max).optional();
 // model-inferred disposition from a short acknowledgement such as "yep".
 export function isExplicitOptOut(quote: string | undefined): boolean {
   if (!quote || /\b(?:do\s+not|don't|dont)\s+want\s+(?:you\s+to\s+)?(?:stop|quit)\b/i.test(quote)) return false;
-  return /\b(?:stop|quit)\s+(?:calling|contacting|texting|messaging)\b|\b(?:do\s+not|don't|dont|never)\s+(?:call|contact|text|message)\s+(?:me|us|again)\b|\bremove\s+(?:me|us)\s+from\b|\btake\s+(?:me|us)\s+off\b|\b(?:unsubscribe|opt\s*out)\b|\bput\s+(?:me|us)\s+on\s+(?:the\s+)?do\s+not\s+call\s+list\b/i.test(quote);
+  return /\b(?:stop|quit)\s+(?:calling|contacting|texting|messaging)\b|\b(?:do\s+not|don't|dont|never)\s+(?:call|contact|text|message)\s+(?:me|us|again|this\s+number)\b|\bremove\s+(?:me|us|my\s+number)\s+from\b|\btake\s+(?:me|us|my\s+number)\s+off\b|\b(?:unsubscribe|opt\s*out)\b|\bput\s+(?:me|us)\s+on\s+(?:(?:the|your)\s+)?do\s+not\s+call\s+list\b/i.test(quote);
 }
 
 export function secretMatches(received: unknown, expected: string | undefined): boolean {

@@ -60,6 +60,9 @@ describe('Cartesia sales webhook boundary', () => {
     expect(isExplicitOptOut('Not interested.')).toBe(false);
     expect(isExplicitOptOut('Please stop calling me.')).toBe(true);
     expect(isExplicitOptOut('Remove us from your list.')).toBe(true);
+    expect(isExplicitOptOut('Do not call this number.')).toBe(true);
+    expect(isExplicitOptOut('Take my number off your list.')).toBe(true);
+    expect(isExplicitOptOut('Put me on your do not call list.')).toBe(true);
     for (const quote of [undefined, 'Yep.', 'Not interested.']) {
       const response = await fetch(base + '/tools/record-outcome', {
         method: 'POST', headers: { Authorization: 'Bearer test-tool-secret', 'Content-Type': 'application/json' },
