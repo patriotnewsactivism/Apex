@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { and, asc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
 import {
   db,
   leadResearchCache,
@@ -37,6 +37,7 @@ const STATE_TIMESTAMP: Partial<Record<LeadPipelineState, keyof typeof researched
 
 const SERVICE_SUBCATEGORIES: Record<string, string[]> = {
   'bail bond': ['bail bonds', 'bail bondsman', '24 hour bail bonds', 'surety bail bonds'],
+  locksmith: ['locksmith', 'emergency locksmith', '24 hour locksmith', 'mobile locksmith'],
   roofing: ['roof repair', 'roof replacement', 'storm damage roofing', 'commercial roofing'],
   hvac: ['ac repair', 'hvac contractor', 'furnace repair', 'emergency hvac'],
   plumbing: ['emergency plumber', 'water heater repair', 'drain cleaning', 'plumbing contractor'],
@@ -85,9 +86,17 @@ export function getLeadPipelineConfig(): LeadPipelineConfig {
 export function subcategoriesForIndustry(industry: string): string[] {
   const normalized = normalizeIndustry(industry)?.toLowerCase() ?? industry.toLowerCase();
   for (const [key, values] of Object.entries(SERVICE_SUBCATEGORIES)) {
-    if (normalized.includes(key)) return values;
+    if (key !== 'default' && normalized.includes(key)) return values;
   }
-  return SERVICE_SUBCATEGORIES.default;
+
+  // Unknown industries must still search for that industry. Generic fallback
+  // queries such as "company Dallas" produced unrelated SEO pages.
+  const clean = normalized
+    .replace(/\b(?:business|businesses|company|companies)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return SERVICE_SUBCATEGORIES.default;
+  return [clean, `${clean} company`, `${clean} service`, `local ${clean}`];
 }
 
 export function generateSearchShards(
