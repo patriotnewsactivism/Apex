@@ -1122,7 +1122,6 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
         campaignDraft,
         ...(identity.status === 'mismatch' ? { status: 'rejected', qualificationScore: 0 } : {}),
-        updatedAt: new Date(),
       }).where(eq(researchedLeads.id, lead.id));
 
       if (lead.researchCacheKey) {
