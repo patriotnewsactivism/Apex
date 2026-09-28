@@ -345,7 +345,7 @@ function sameOriginContactLinks(html: string, homepage: string): string[] {
   return [...new Set(candidates)].slice(0, 4);
 }
 
-async function fetchContactPage(url: string): Promise<{
+export async function inspectFirstPartyContactUrl(url: string): Promise<{
   url: string;
   email: string | null;
   phone: string | null;
@@ -455,7 +455,7 @@ export async function verifyBusinessWebsiteIdentity(input: {
 
     if (!contactEmail || !contactPhone || !decisionMakerName) {
       const contactLinks = sameOriginContactLinks(raw, finalHomepage);
-      const pages = await Promise.all(contactLinks.map(fetchContactPage));
+      const pages = await Promise.all(contactLinks.map(inspectFirstPartyContactUrl));
       for (const page of pages) {
         if (!page) continue;
         if (!contactEmail && page.email) {
