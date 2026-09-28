@@ -1222,6 +1222,25 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS webinar_events_session_idx
     ON webinar_events (session_id, created_at)
   `;
+  await client`
+    INSERT INTO webinar_sessions
+      (id, slug, title, description, host_name, mode, status, autonomous, current_segment, cta_label, cta_url)
+    VALUES
+      (
+        'webinar-apex-buildmybot-20260928',
+        'apex-buildmybot-live-2026-09-28',
+        'The AI Workforce: APEX + BuildMyBot Live',
+        'See how APEX and BuildMyBot work together as an AI workforce for prospecting, customer conversations, follow-up, and revenue operations.',
+        'Don',
+        'autonomous',
+        'draft',
+        true,
+        0,
+        'Explore BuildMyBot.app',
+        'https://buildmybot.app'
+      )
+    ON CONFLICT (id) DO NOTHING
+  `;
 
 }
 
