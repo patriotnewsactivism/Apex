@@ -467,7 +467,12 @@ export class CampaignRunner {
   private running = false;
   private readonly toolContext: ToolContext;
 
-  constructor(private readonly intervalMs = getLeadPipelineConfig().liveDemoMode ? 3_000 : 30_000) {
+  constructor(
+    private readonly intervalMs = Number(
+      process.env.LEAD_CAMPAIGN_INTERVAL_MS ??
+      (getLeadPipelineConfig().liveDemoMode ? 2_000 : 5_000),
+    ),
+  ) {
     this.toolContext = {
       agentId: 'apex-campaign-runner',
       workspaceRoot: process.cwd(),
@@ -486,14 +491,14 @@ export class CampaignRunner {
         console.error('[campaigns] tick failed:', err instanceof Error ? err.message : String(err)),
       );
     }, this.intervalMs);
-    console.log(`[campaigns] Runner started (every ${Math.round(this.intervalMs / 1000)}s)`);
-    if (getLeadPipelineConfig().liveDemoMode) {
-      setTimeout(() => {
-        this.tick().catch((err) =>
-          console.error('[campaigns] live demo prewarm tick failed:', err instanceof Error ? err.message : String(err)),
-        );
-      }, 500).unref?.();
-    }
+    console.log(`[campaigns] Runner started (every ${Math.max(0.1, this.intervalMs / 1000).toFixed(1)}s)`);
+    // Do not sit idle for a full interval after boot/deploy. Start one pass
+    // immediately, then the normal interval keeps the runner moving.
+    setTimeout(() => {
+      this.tick().catch((err) =>
+        console.error('[campaigns] prewarm tick failed:', err instanceof Error ? err.message : String(err)),
+      );
+    }, 250).unref?.();
   }
 
   stop(): void {
