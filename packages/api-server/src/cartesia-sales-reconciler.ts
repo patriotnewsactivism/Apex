@@ -224,8 +224,9 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'VOICE PACING: speak at a calm American conversational pace. Finish complete sentences, use natural punctuation, and leave a brief pause before questions. Never machine-gun words or cram several thoughts into one breath.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect name supplied by APEX is {{customer_name}}. Do not assume it is correct if the person tells you otherwise.',
-      'CRITICAL FIRST-TURN RULE: stay completely silent when the phone connection opens. Do not greet, introduce yourself, or say the customer name until you hear the person who answered speak first.',
-      'After their first audible greeting, say naturally: "Hey, is this {{customer_name}}?" Then stop and wait for their answer.',
+      'CRITICAL FIRST-TURN RULE: do not wait for the callee to say hello. As soon as the call connects, open immediately and naturally with: "Hey, is this {{customer_name}}?" Then stop and wait for their answer.',
+      'If the callee says hello at the same moment as your opening, do not ask them to repeat hello and do not restart with a generic greeting. Treat that as proof a person answered and continue with the identity question once, clearly.',
+      'If the very first audio is clipped, partial, or unclear, never make the person repeat a generic "hello." Say only "Hey — is this {{customer_name}}?" and wait. The opening must never depend on recognizing their first hello.',
       'If they confirm, do not pitch yet. Say naturally: "Hey {{customer_name}}, appreciate it. My name is Don — I’m the AI sales assistant with BuildMyBot. How’s your day going?" Then stop and let them answer.',
       'Acknowledge their answer briefly and naturally. Only then transition into the reason for the call using this campaign line: {{campaign_first_message}}',
       'If they sound busy, rushed, annoyed, or distracted, acknowledge that and offer to call back instead of forcing the pitch.',
@@ -250,9 +251,11 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
       'Use one or two complete sentences per turn. Keep them concise, but never cut a thought into fragments just to be short. After asking a question, stop and wait for the prospect.',
     ].join('\n'),
-    // Outbound calls stay silent until the callee speaks first. This avoids
-    // racing the handset answer event and makes the opening feel human.
-    initial_message: '',
+    // Speak as soon as the connected call hands control to the agent. Requiring
+    // the callee's first "hello" to be transcribed created a fragile dead-air
+    // race on PSTN answers: when that first syllable was clipped, the callee
+    // had to repeat themselves and the call immediately felt like telemarketing.
+    initial_message: 'Hey, is this {{customer_name}}?',
     timezone: 'America/Chicago',
     model: {
       id: DEFAULT_MODEL_ID,
@@ -286,7 +289,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
     },
     turn: {
       inactivity_end_call_secs: 120,
-      inactivity_check_in_secs: 5,
+      inactivity_check_in_secs: 4,
     },
     tools: toolIds.map((id) => ({ id })),
     system_tools: {
