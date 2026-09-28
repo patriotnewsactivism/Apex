@@ -6,7 +6,6 @@ import {
 } from '@workspace/core';
 
 const CARTESIA_API = 'https://api.cartesia.ai';
-const CARTESIA_TELEPHONY_MANAGEMENT_VERSION = '2026-03-01';
 const TOOL_BASE_URL = 'https://apex.donmatthews.live/api/cartesia';
 const EVENT_WEBHOOK_URL = `${TOOL_BASE_URL}/events`;
 const EVENT_WEBHOOK_NAME = 'APEX Sales Events';
@@ -21,21 +20,15 @@ type ToolSummary = { id?: string; name?: string };
 type ToolPage = { data?: ToolSummary[] };
 type WebhookSummary = { id?: string; url?: string; display_name?: string | null };
 type WebhookPage = { data?: WebhookSummary[] };
-type ProviderSummary = {
-  id?: string;
-  type?: string;
-};
-type ProviderPage = { data?: ProviderSummary[] };
+type ProviderSummary = { id?: string; type?: string; label?: string | null };
 
 type PhoneNumberSummary = {
   id?: string;
   number?: string;
-  provider_id?: string | null;
-  agent_id?: string | null;
   label?: string | null;
   provider?: { type?: string; id?: string; label?: string | null } | null;
 };
-type PhoneNumberPage = { data?: PhoneNumberSummary[] };
+type PhoneNumberPage = { data?: PhoneNumberSummary[]; has_more?: boolean };
 
 function apiKey(): string {
   const value = process.env.CARTESIA_API_KEY?.trim();
@@ -61,16 +54,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(`Cartesia ${path} failed: ${message}`);
   }
   return data as T;
-}
-
-async function telephonyRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  return request<T>(path, {
-    ...init,
-    headers: {
-      ...(init.headers ?? {}),
-      'Cartesia-Version': CARTESIA_TELEPHONY_MANAGEMENT_VERSION,
-    },
-  });
 }
 
 function dynamic(type: 'string' | 'boolean' | 'number', name: string, description?: string) {
@@ -392,12 +375,15 @@ async function reconcileAgent(toolIds: string[], webhookId: string): Promise<str
 }
 
 async function listApprovedOutboundNumber(): Promise<PhoneNumberSummary | null> {
-  // The top-level phone-number API is the import/provisioning authority. Using
-  // it here also finds an imported number before it has been assigned to an
-  // agent, which the legacy /agents/phone-numbers view may not show.
-  const page = await telephonyRequest<PhoneNumberPage>('/phone-numbers?limit=100');
+  // Cartesia's managed phone-number API is /agents/phone-numbers. Search by
+  // digits so we see an imported number even when no inbound agent is assigned.
+  const digits = APEX_CARTESIA_CALLER_NUMBER.replace(/\D/g, '');
+  const page = await request<PhoneNumberPage>(
+    `/agents/phone-numbers?q=${encodeURIComponent(digits)}&limit=100`,
+  );
+  if (page.has_more) throw new Error('Cartesia phone-number search was truncated; refusing to guess');
   const matches = (page.data ?? []).filter(
-    (phone) => phone.number === APEX_CARTESIA_CALLER_NUMBER && phone.id,
+    (phone) => phone.number?.replace(/\D/g, '') === digits && phone.id,
   );
   if (matches.length > 1) {
     throw new Error(
@@ -407,94 +393,50 @@ async function listApprovedOutboundNumber(): Promise<PhoneNumberSummary | null> 
   return matches[0] ?? null;
 }
 
-async function resolveOrCreateTelnyxProvider(): Promise<string> {
-  const page = await telephonyRequest<ProviderPage>('/providers');
-  const matches = (page.data ?? []).filter(
-    (provider) => provider.type?.toLowerCase() === 'telnyx' && provider.id,
+async function resolveTelnyxSipTrunkProvider(): Promise<string> {
+  // Cartesia accepts Twilio and SIP trunk providers. Telnyx must be connected
+  // as a SIP trunk with outbound routing already configured at both ends;
+  // a Telnyx Call Control API key is not a Cartesia telephony provider.
+  const providers = await request<ProviderSummary[]>('/agents/phone-numbers/providers');
+  const configuredId = process.env.CARTESIA_SIP_TRUNK_PROVIDER_ID?.trim();
+  const matches = providers.filter(
+    (provider) => provider.type === 'sip_trunk' && provider.id &&
+      (configuredId ? provider.id === configuredId : /telnyx/i.test(provider.label ?? '')),
   );
-  if (matches.length > 1) {
-    throw new Error('Multiple Cartesia Telnyx providers exist; refusing to guess which account owns the approved caller ID');
-  }
-  if (matches.length === 1) return matches[0]!.id!;
-
-  const telnyxApiKey = process.env.TELNYX_API_KEY?.trim();
-  if (!telnyxApiKey) {
-    throw new Error('TELNYX_API_KEY is required to connect the approved APEX caller ID to Cartesia');
-  }
-
-  const connectionId =
-    process.env.CARTESIA_TELNYX_CONNECTION_ID?.trim() ||
-    process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID?.trim();
-
-  const create = async (credentials: Record<string, string>) =>
-    telephonyRequest<{ id?: string }>('/providers', {
-      method: 'POST',
-      body: JSON.stringify({ type: 'telnyx', credentials }),
-    });
-
-  try {
-    const created = await create({
-      api_key: telnyxApiKey,
-      ...(connectionId ? { connection_id: connectionId } : {}),
-    });
-    if (!created.id) throw new Error('Cartesia did not return a Telnyx provider id');
-    console.log(`[cartesia-sales] Connected Telnyx provider ${created.id}`);
-    return created.id;
-  } catch (firstErr) {
-    // Some Cartesia provider revisions only require the Telnyx API key. Re-read
-    // after the first attempt before retrying so a timeout cannot create a
-    // duplicate provider entry.
-    const after = await telephonyRequest<ProviderPage>('/providers');
-    const now = (after.data ?? []).filter(
-      (provider) => provider.type?.toLowerCase() === 'telnyx' && provider.id,
+  if (matches.length !== 1) {
+    throw new Error(
+      configuredId
+        ? `Configured Cartesia SIP trunk provider ${configuredId} is missing or ambiguous`
+        : 'Connect the Telnyx outbound SIP trunk in Cartesia and set CARTESIA_SIP_TRUNK_PROVIDER_ID; caller ID import is pending',
     );
-    if (now.length === 1) return now[0]!.id!;
-    if (now.length > 1) throw firstErr;
-    if (!connectionId) throw firstErr;
-
-    const created = await create({ api_key: telnyxApiKey });
-    if (!created.id) throw new Error('Cartesia did not return a Telnyx provider id');
-    console.log(`[cartesia-sales] Connected Telnyx provider ${created.id} using API-key-only credentials`);
-    return created.id;
   }
+  return matches[0]!.id!;
 }
 
-async function reconcileApprovedOutboundNumber(
-  agentId: string,
-): Promise<{ id: string; providerType: string }> {
+async function reconcileApprovedOutboundNumber(): Promise<{ id: string; providerType: string }> {
   let phone = await listApprovedOutboundNumber();
 
   if (!phone) {
-    const providerId = await resolveOrCreateTelnyxProvider();
-    phone = await telephonyRequest<PhoneNumberSummary>('/phone-numbers/import', {
+    const providerId = await resolveTelnyxSipTrunkProvider();
+    phone = await request<PhoneNumberSummary>('/agents/phone-numbers', {
       method: 'POST',
       body: JSON.stringify({
-        provider_id: providerId,
+        label: 'APEX approved outbound caller ID',
         number: APEX_CARTESIA_CALLER_NUMBER,
+        provider: { id: providerId },
       }),
     });
     if (!phone.id) throw new Error('Cartesia imported the approved caller ID but returned no phone-number id');
-    console.log(
-      `[cartesia-sales] Imported approved caller ID ${APEX_CARTESIA_CALLER_NUMBER} as ${phone.id}`,
-    );
+    console.log(`[cartesia-sales] Imported approved caller ID ${APEX_CARTESIA_CALLER_NUMBER} as ${phone.id}`);
   }
 
   if (!phone.id) throw new Error('Approved Cartesia phone number has no id');
-  if (phone.agent_id !== agentId) {
-    phone = await telephonyRequest<PhoneNumberSummary>(
-      `/phone-numbers/${encodeURIComponent(phone.id)}`,
-      {
-        method: 'PATCH',
-        body: JSON.stringify({ agent_id: agentId }),
-      },
-    );
-    if (!phone.id) throw new Error('Cartesia did not return the assigned phone-number id');
-    console.log(
-      `[cartesia-sales] Assigned ${APEX_CARTESIA_CALLER_NUMBER} to canonical sales agent ${agentId}`,
-    );
+  if (phone.provider?.type !== 'sip_trunk') {
+    throw new Error('Approved Cartesia caller ID is not connected through the Telnyx SIP trunk');
   }
-
-  return { id: phone.id, providerType: 'telnyx' };
+  // Outbound calls pass from_number_id. Assigning an agent here would also
+  // redirect inbound calls on this number, which APEX has not requested.
+  return { id: phone.id, providerType: 'sip_trunk' };
 }
 
 export async function reconcileCartesiaSalesAgent(): Promise<void> {
@@ -512,7 +454,7 @@ export async function reconcileCartesiaSalesAgent(): Promise<void> {
     const agentId = await reconcileAgent(toolIds, webhookId);
     clearCartesiaSalesResolutionCache();
 
-    const outbound = await reconcileApprovedOutboundNumber(agentId);
+    const outbound = await reconcileApprovedOutboundNumber();
     clearCartesiaSalesResolutionCache();
 
     console.log(

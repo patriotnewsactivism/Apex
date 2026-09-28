@@ -25,6 +25,10 @@ For the three model supplied values on `check_calendar_availability`, do not inf
 
 `send_demo_link` sends a fixed template to the consented number. The BuildMyBot link opens `https://www.buildmybot.app/`; the APEX link is `https://apexwork.org/`. Confirm that a live interactive demo is available before describing either landing page as one. The model cannot compose arbitrary outbound SMS text. `dnc` creates a number-level suppression checked before future APEX outbound calls.
 
+## Approved Telnyx caller ID in Cartesia
+
+Cartesia's phone-number API lives at `/agents/phone-numbers`. For a Telnyx-owned number, Cartesia requires a SIP trunk provider with outbound routing configured in Telnyx and Cartesia; its provider API does not accept a Telnyx Call Control API key as a provider. Configure that carrier connection first, then set `CARTESIA_SIP_TRUNK_PROVIDER_ID` to the Cartesia SIP provider ID. Startup will import +1 832-975-7665 into Cartesia if it is not already present. It does not assign an inbound agent to the number: outbound calls only need its `from_number_id`, and inbound routing must stay under the existing owner configuration. A number appearing in Cartesia is not proof the Telnyx SIP trunk can originate calls; verify with an approved self-test and check the displayed caller ID.
+
 ## Call controls and call events
 
 Enable Cartesia's built-in **End call** tool. Enable **Transfer call** with a fixed phone destination of `+18328804970` when the prospect requests Matthew, a human handoff is useful, or the conversation becomes frustrated. Cartesia currently requires a Twilio or SIP-trunked phone call for its native transfer; a browser preview cannot validate PSTN transfer.

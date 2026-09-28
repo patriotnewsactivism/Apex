@@ -121,25 +121,19 @@ check(
     /ids\.push\(matches\[0\]!\.id!\)/.test(reconciler),
 );
 check(
-  'reconciler imports the approved Telnyx number and binds it to the canonical agent',
-  /resolveOrCreateTelnyxProvider/.test(reconciler) &&
-    /\/providers/.test(reconciler) &&
-    /\/phone-numbers\/import/.test(reconciler) &&
-    /provider_id: providerId/.test(reconciler) &&
-    /number: APEX_CARTESIA_CALLER_NUMBER/.test(reconciler) &&
-    /body: JSON\.stringify\(\{ agent_id: agentId \}\)/.test(reconciler),
+  'reconciler uses the documented Cartesia phone-number endpoints and SIP import shape',
+  /\/agents\/phone-numbers\?q=/.test(reconciler) &&
+    /\/agents\/phone-numbers\/providers/.test(reconciler) &&
+    /request<PhoneNumberSummary>\('\/agents\/phone-numbers'/.test(reconciler) &&
+    /provider: \{ id: providerId \}/.test(reconciler) &&
+    /number: APEX_CARTESIA_CALLER_NUMBER/.test(reconciler),
 );
 check(
-  'telephony provider/phone-number management is pinned to the API version that defines those endpoints',
-  /CARTESIA_TELEPHONY_MANAGEMENT_VERSION = '2026-03-01'/.test(reconciler) &&
-    /telephonyRequest/.test(reconciler) &&
-    /'Cartesia-Version': CARTESIA_TELEPHONY_MANAGEMENT_VERSION/.test(reconciler),
-);
-check(
-  'Telnyx provider creation uses existing secure runtime credentials and fails closed on ambiguity',
-  /process\.env\.TELNYX_API_KEY/.test(reconciler) &&
-    /TELNYX_CALL_BRIDGE_CONNECTION_ID/.test(reconciler) &&
-    /Multiple Cartesia Telnyx providers exist/.test(reconciler),
+  'Telnyx carrier integration requires an explicit outbound SIP trunk and does not redirect inbound calls',
+  /CARTESIA_SIP_TRUNK_PROVIDER_ID/.test(reconciler) &&
+    /provider\.type === 'sip_trunk'/.test(reconciler) &&
+    !/resolveOrCreateTelnyxProvider/.test(reconciler) &&
+    !/JSON\.stringify\(\{ agent_id: agentId \}\)/.test(reconciler),
 );
 check(
   'reconciler never targets the pre-existing Receptionist/Telnyx agent by name or id',
