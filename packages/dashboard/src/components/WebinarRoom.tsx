@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, Send, Users, Volume2, VolumeX, Sparkles } from 'lucide-react';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 type Segment = {
   id: string;
@@ -64,6 +65,7 @@ function naturalVoice(): SpeechSynthesisVoice | undefined {
 }
 
 export function WebinarRoom({ slug }: { slug: string }) {
+  const isMobile = useIsMobile();
   const [snapshot, setSnapshot] = useState<WebinarSnapshot | null>(null);
   const [attendeeId, setAttendeeId] = useState(() => sessionStorage.getItem(`apex-webinar-${slug}`) ?? '');
   const [name, setName] = useState('');
@@ -145,7 +147,9 @@ export function WebinarRoom({ slug }: { slug: string }) {
         speak('Matthew has taken the floor. Autonomous narration is paused.');
       }
       if (event.type === 'human_release') {
-        speak('The AI co-host is back on the floor.');
+        const narration = snapshot.currentSegment.narration ?? '';
+        setLastSpokenSegment(snapshot.session.currentSegment);
+        speak(narration || 'The AI co-host is back on the floor.', true);
       }
     }
   }, [snapshot, attendeeId, speak]);
@@ -258,7 +262,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
               <Sparkles size={18} color="#c9a66b" />
               <strong>Join the AI-hosted room</strong>
             </div>
-            <form onSubmit={join} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+            <form onSubmit={join} style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
               <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" style={inputStyle} />
               <input required type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" style={inputStyle} />
               <input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Company" style={inputStyle} />
@@ -286,21 +290,27 @@ export function WebinarRoom({ slug }: { slug: string }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9b9da4', fontSize: 12 }}><Users size={14} /> {snapshot.attendeeCount} live</div>
           <button onClick={() => {
-            setStartedAudio(true);
+            if (!startedAudio) {
+              setStartedAudio(true);
+              setVoiceOn(true);
+              setLastSpokenSegment(null);
+              return;
+            }
             setVoiceOn((value) => {
               const next = !value;
               if (!next && 'speechSynthesis' in window) window.speechSynthesis.cancel();
+              if (next) setLastSpokenSegment(null);
               return next;
             });
-          }} style={iconButtonStyle} title={voiceOn ? 'Mute AI host' : 'Unmute AI host'}>
-            {voiceOn ? <Volume2 size={17} /> : <VolumeX size={17} />}
+          }} style={iconButtonStyle} title={voiceOn && startedAudio ? 'Mute AI host' : 'Unmute AI host'}>
+            {voiceOn && startedAudio ? <Volume2 size={17} /> : <VolumeX size={17} />}
           </button>
         </div>
       </header>
 
       <div style={{ height: 3, background: '#252830' }}><div style={{ height: '100%', width: `${progress}%`, background: '#c9a66b', transition: 'width 0.5s ease' }} /></div>
 
-      <main style={{ maxWidth: 1180, margin: '0 auto', padding: 'clamp(22px, 4vw, 52px) clamp(16px, 3vw, 30px)', display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(280px, 0.7fr)', gap: 24 }}>
+      <main style={{ maxWidth: 1180, margin: '0 auto', padding: 'clamp(22px, 4vw, 52px) clamp(16px, 3vw, 30px)', display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1.7fr) minmax(280px, 0.7fr)', gap: 24 }}>
         <section style={{ ...card, minHeight: 520, padding: 'clamp(26px, 5vw, 58px)', position: 'relative', overflow: 'hidden' }}>
           <div style={{ position: 'absolute', inset: '0 auto auto 0', width: 180, height: 4, background: '#c9a66b' }} />
           <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#c9a66b' }}>{segment.kicker}</div>
