@@ -445,11 +445,15 @@ export async function verifyBusinessWebsiteIdentity(input: {
       null;
 
     const homepageContacts = publicContactsFromHtml(raw);
+    const homepageDecisionMaker = structuredDecisionMakerFromHtml(raw);
     let contactEmail = homepageContacts.email;
     let contactPhone = homepageContacts.phone;
     let contactSourceUrl: string | null = (contactEmail || contactPhone) ? finalHomepage : null;
+    let decisionMakerName = homepageDecisionMaker?.name ?? null;
+    let decisionMakerTitle = homepageDecisionMaker?.title ?? null;
+    let decisionMakerSourceUrl: string | null = homepageDecisionMaker ? finalHomepage : null;
 
-    if (!contactEmail || !contactPhone) {
+    if (!contactEmail || !contactPhone || !decisionMakerName) {
       const contactLinks = sameOriginContactLinks(raw, finalHomepage);
       const pages = await Promise.all(contactLinks.map(fetchContactPage));
       for (const page of pages) {
@@ -462,7 +466,12 @@ export async function verifyBusinessWebsiteIdentity(input: {
           contactPhone = page.phone;
           contactSourceUrl ??= page.url;
         }
-        if (contactEmail && contactPhone) break;
+        if (!decisionMakerName && page.decisionMaker) {
+          decisionMakerName = page.decisionMaker.name;
+          decisionMakerTitle = page.decisionMaker.title;
+          decisionMakerSourceUrl = page.url;
+        }
+        if (contactEmail && contactPhone && decisionMakerName) break;
       }
     }
 
@@ -477,6 +486,11 @@ export async function verifyBusinessWebsiteIdentity(input: {
         contactEmail,
         contactPhone,
         contactSourceUrl,
+        contactCheckedAt: checkedAt,
+        contactScanVersion: '2026-09-28-v2',
+        decisionMakerName,
+        decisionMakerTitle,
+        decisionMakerSourceUrl,
       };
     }
 
@@ -490,7 +504,10 @@ export async function verifyBusinessWebsiteIdentity(input: {
       contactPhone,
       contactSourceUrl,
       contactCheckedAt: checkedAt,
-      contactScanVersion: '2026-09-28-v1',
+      contactScanVersion: '2026-09-28-v2',
+      decisionMakerName,
+      decisionMakerTitle,
+      decisionMakerSourceUrl,
     };
   } catch (err) {
     return {
