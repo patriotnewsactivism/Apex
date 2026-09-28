@@ -143,14 +143,15 @@ check(
 );
 
 check(
-  'outbound sales greets immediately, uses full name only for identity check, then first name and pitch',
+  'outbound sales greets immediately, uses full name only for identity check, then first-name rapport before pitch',
   /initial_message:\s*'Hey, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
     /do not wait for the callee to say hello/.test(reconciler) &&
     /opening must never depend on recognizing their first hello/.test(reconciler) &&
     /full name is for the initial identity check only/.test(reconciler) &&
-    /Thanks, \{\{customer_first_name\}\}/.test(reconciler) &&
+    /Thanks, \{\{customer_first_name\}\}\. How’s your day going\?/.test(reconciler) &&
     /Never repeat their first and last name after acknowledgement/.test(reconciler) &&
-    /Immediately continue into the reason for the call using this campaign line/.test(reconciler) &&
+    /Acknowledge their answer briefly and naturally with empathy/.test(reconciler) &&
+    /then transition into the reason for the call using this campaign line/.test(reconciler) &&
     /inactivity_check_in_secs:\s*4/.test(reconciler),
 );
 check(
@@ -182,10 +183,10 @@ check(
   /keyterms:\s*\[[\s\S]{0,700}'I do'[\s\S]{0,700}'hello'[\s\S]{0,700}'hi'[\s\S]{0,700}'hey'[\s\S]{0,700}'voicemail'[\s\S]{0,700}'after hours'[\s\S]{0,700}'missed calls'/.test(reconciler),
 );
 check(
-  'BuildMyBot sales pitch begins immediately after the first-name acknowledgement',
+  'BuildMyBot sales pitch follows a first-name rapport and empathy step',
   /version:\s*6/.test(playbooks) &&
     /firstMessage:\s*'The reason I called is pretty simple\./.test(playbooks) &&
-    /After identity is confirmed, acknowledge them by first name once and move directly into the reason for the call/.test(playbooks) &&
+    /acknowledge them by first name once, ask how their day is going, and give their answer a brief empathetic response/.test(playbooks) &&
     /What do you normally do when a call comes in and nobody can answer\?/.test(playbooks) &&
     /Speak English only/.test(playbooks) &&
     /Use complete sentences at a relaxed pace/.test(playbooks),
