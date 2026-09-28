@@ -213,9 +213,99 @@ export interface DiagnosticsReport {
   findings: DiagnosticFinding[];
 }
 
+
+export interface WebinarAdminSession {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  host_name: string;
+  mode: 'autonomous' | 'cohost';
+  status: 'draft' | 'live' | 'paused' | 'ended';
+  autonomous: boolean;
+  current_segment: number;
+  segment_started_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  cta_label: string;
+  cta_url: string;
+  created_at: string;
+  updated_at: string;
+  attendee_count?: number;
+  question_count?: number;
+}
+
+export interface WebinarAdminDashboard {
+  session: WebinarAdminSession;
+  segments: Array<{
+    id: string;
+    title: string;
+    kicker: string;
+    durationSeconds: number;
+    bullets: string[];
+    narration: string;
+    demoCue?: string;
+  }>;
+  attendees: Array<{
+    id: string;
+    name: string;
+    email: string;
+    company: string | null;
+    phone: string | null;
+    engagement_score: number;
+    joined_at: string;
+    last_seen_at: string;
+  }>;
+  questions: Array<{
+    id: string;
+    attendee_id: string;
+    question: string;
+    answer: string | null;
+    status: string;
+    created_at: string;
+    answered_at: string | null;
+  }>;
+}
+
 export const api = {
   auth: {
     websocketTicket: () => apiFetch<{ ticket: string }>('/auth/websocket-ticket', { method: 'POST' }),
+  },
+
+
+  webinars: {
+    list: () =>
+      apiFetch<{ sessions: WebinarAdminSession[] }>('/webinar/admin/sessions').then((r) => r.sessions),
+    create: (body?: { title?: string; description?: string; mode?: 'autonomous' | 'cohost'; ctaLabel?: string; ctaUrl?: string }) =>
+      apiFetch<{ session: WebinarAdminSession }>('/webinar/admin/sessions', {
+        method: 'POST',
+        body: JSON.stringify(body ?? {}),
+      }).then((r) => r.session),
+    dashboard: (id: string) =>
+      apiFetch<WebinarAdminDashboard>(`/webinar/admin/${encodeURIComponent(id)}/dashboard`),
+    start: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/start`, { method: 'POST' }).then((r) => r.session),
+    pause: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/pause`, { method: 'POST' }).then((r) => r.session),
+    resume: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/resume`, { method: 'POST' }).then((r) => r.session),
+    end: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/end`, { method: 'POST' }).then((r) => r.session),
+    segment: (id: string, segment: number) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/segment`, {
+        method: 'POST',
+        body: JSON.stringify({ segment }),
+      }).then((r) => r.session),
+    mode: (id: string, autonomous: boolean) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/mode`, {
+        method: 'POST',
+        body: JSON.stringify({ autonomous }),
+      }).then((r) => r.session),
+    message: (id: string, message: string) =>
+      apiFetch<{ ok: boolean }>(`/webinar/admin/${encodeURIComponent(id)}/message`, {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      }),
   },
   goals: {
     list: () => apiFetch<{ goals: Goal[] }>('/goals').then((r) => r.goals),

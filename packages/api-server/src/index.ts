@@ -59,6 +59,7 @@ import { createArtifactsRouter } from './routes/artifacts.js';
 import { createAutonomyRouter } from './routes/autonomy.js';
 import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { createSalesFloorRouter } from './routes/sales-floor.js';
+import { createPublicWebinarRouter, createWebinarAdminRouter } from './routes/webinars.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
@@ -507,6 +508,11 @@ async function main() {
   // Telnyx-originated. Must be mounted BEFORE requireAdminAuth.
   app.use('/api/telnyx-assistant', createCallBridgeWebhookRouter());
 
+  // Public webinar attendee surface. Registration, state polling, Q&A, and
+  // engagement are intentionally reachable without the APEX admin bearer token.
+  // Operator controls are mounted only after requireAdminAuth below.
+  app.use('/api/webinar/public', createPublicWebinarRouter());
+
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
 
@@ -540,6 +546,7 @@ async function main() {
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));
   app.use('/api/sales-ops', createSalesFloorRouter());
   app.use('/api/call-bridge', createCallBridgeRouter());
+  app.use('/api/webinar/admin', createWebinarAdminRouter());
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs

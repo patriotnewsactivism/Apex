@@ -29,6 +29,8 @@ import { SpendBurnPanel } from './components/SpendBurnPanel.js';
 import { CommandCenter } from './components/CommandCenter.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { PublicLanding } from './components/PublicLanding.js';
+import { WebinarDirector } from './components/WebinarDirector.js';
+import { WebinarRoom } from './components/WebinarRoom.js';
 import {
   Target,
   Rocket,
@@ -53,6 +55,7 @@ import {
   CircleDollarSign,
   ChevronDown,
   MapPinned,
+  Presentation,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -243,6 +246,7 @@ function Sidebar({
         { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
         { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
         { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
+        { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
       ],
     },
     {
@@ -675,6 +679,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
     territories: <TerritoryAvailabilityPanel />,
+    webinars: <WebinarDirector />,
     control: <ControlRoom />,
     artifacts: <ArtifactsPanel />,
     scheduled: <ScheduledJobsPanel />,
@@ -709,6 +714,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
     leads: { title: 'Prospects', kicker: 'Revenue' },
     territories: { title: 'Territory Availability', kicker: 'Revenue' },
+    webinars: { title: 'Webinar Director', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
     scheduled: { title: 'Cron Registry', kicker: 'Systems' },
@@ -869,6 +875,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 }
 
 export default function App() {
+  const publicWebinarMatch = window.location.pathname.match(/^\/webinar\/([^/?#]+)/);
+  const publicWebinarSlug = publicWebinarMatch?.[1] ? decodeURIComponent(publicWebinarMatch[1]) : null;
   const [authed, setAuthed] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [showLogin, setShowLogin] = useState<boolean>(false);
@@ -931,6 +939,10 @@ export default function App() {
     setAuthed(false);
     setShowLogin(true);
   };
+
+  if (publicWebinarSlug) {
+    return <WebinarRoom slug={publicWebinarSlug} />;
+  }
 
   if (loading) {
     return (
