@@ -27,6 +27,7 @@ import {
   normalizeLeadDomain,
   insertDiscoveredLead,
   processLeadPipelineBacklog,
+  repairWebLeadIdentityBatch,
 } from './lead-pipeline.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
