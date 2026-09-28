@@ -369,7 +369,6 @@ async function reconcileAgent(toolIds: string[], webhookId: string): Promise<str
       method: 'PATCH',
       body: JSON.stringify({
         config: agentConfig(toolIds),
-        version_description: 'Reconcile APEX canonical outbound sales configuration',
       }),
     });
   }
