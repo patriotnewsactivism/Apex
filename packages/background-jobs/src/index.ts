@@ -48,3 +48,5 @@ export {
 export type { LeadPipelineConfig, LeadPipelineState, PipelineBenchmarkResult, SearchShard } from './lead-pipeline.js';
 export { createCampaignTools } from './campaign-tools.js';
 export { RevenueWorkforceRunner } from './revenue-workforce-runner.js';
+
+export * from './operator-activity.js';
