@@ -105,6 +105,13 @@ check(
     /webhook_id: webhookId/.test(reconciler),
 );
 check(
+  'Cartesia-injected dynamic/constant tool fields are never emitted in JSON Schema required',
+  /const modelRequired = required\.filter/.test(reconciler) &&
+    /'dynamic_variable' in record/.test(reconciler) &&
+    /'constant_value' in record/.test(reconciler) &&
+    /\.\.\.\(modelRequired\.length \? \{ required: modelRequired \} : \{\}\)/.test(reconciler),
+);
+check(
   'reconciler never targets the pre-existing Receptionist/Telnyx agent by name or id',
   !/Cartesia Receptionist \(Telnyx\)/.test(reconciler) &&
     !/agent_4Pr3KQCk39EeDx43s7ArAZ/.test(reconciler),

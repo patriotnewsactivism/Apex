@@ -78,6 +78,16 @@ function webhookTool(
   required: string[],
   toolSecret: string,
 ) {
+  // Cartesia injects dynamic_variable/constant_value properties at runtime and
+  // rejects a tool schema if either kind is also listed in JSON Schema
+  // "required". Only LLM-supplied fields belong there.
+  const modelRequired = required.filter((key) => {
+    const property = properties[key];
+    if (!property || typeof property !== 'object') return true;
+    const record = property as Record<string, unknown>;
+    return !('dynamic_variable' in record) && !('constant_value' in record);
+  });
+
   return {
     type: 'webhook',
     name,
@@ -91,7 +101,7 @@ function webhookTool(
       request_body_schema: {
         type: 'object',
         properties,
-        required,
+        ...(modelRequired.length ? { required: modelRequired } : {}),
       },
       authentication: {
         mode: 'bearer',
