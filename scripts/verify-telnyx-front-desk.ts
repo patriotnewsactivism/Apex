@@ -129,6 +129,13 @@ async function main(): Promise<void> {
     /\.limit\(5\)/.test(lookupBody),
   );
   check(
+    'caller history also returns recent voice-call outcomes and the last next action',
+    /findRecentCallHistory\(phone, 5\)/.test(lookupBody) &&
+      /recentCalls: recentCalls\.map/.test(lookupBody) &&
+      /nextAction: call\.nextAction/.test(lookupBody) &&
+      /agentName: agentDisplayName\(call\.createdByAgentId\)/.test(lookupBody),
+  );
+  check(
     'a lookup failure degrades to found:false rather than a 500 the assistant has no way to react to',
     /catch \(err\) \{[\s\S]{0,300}found: false/.test(lookupBody),
   );
@@ -141,6 +148,26 @@ async function main(): Promise<void> {
   check(
     'dynamic variables are serialized as strings for Telnyx',
     /\): Record<string, string>/.test(route) && /is_known_caller: String\(input\.knownCaller\)/.test(route),
+  );
+  check(
+    'known inbound callbacks are matched to call_outcomes by phone and receive previous-call context',
+    /findRecentCallHistory\(callerNumber, 5\)/.test(route) &&
+      /is_returning_caller: String\(Boolean\(previousCall\)\)/.test(route) &&
+      /previous_call_disposition: previousCall\?\.disposition/.test(route) &&
+      /previous_call_summary: previousCall \? recentCallDiscussion\(previousCall\)/.test(route) &&
+      /previous_call_next_action: previousCall\?\.nextAction/.test(route),
+  );
+  check(
+    'returning callers are explicitly handled as inbound callbacks, never restarted with the outbound cold-call opener',
+    /RETURNING CALL MODE/.test(route) &&
+      /Do NOT use the outbound cold-call opener/.test(route) &&
+      /Thanks for calling me back/.test(route) &&
+      /Continue naturally from that context/.test(route),
+  );
+  check(
+    'recognized callbacks are written into the visible APEX log stream',
+    /Inbound callback recognized/.test(route) &&
+      /previousDisposition: previousCall\?\.disposition/.test(route),
   );
   check(
     'the literal FIRST NAME placeholder is normalized to a safe fallback',
