@@ -63,6 +63,7 @@ export function createCampaignsRouter() {
         and(
           inArray(researchedLeads.campaignId, campaigns.map((campaign) => campaign.id)),
           sql`${researchedLeads.status} <> 'rejected'`,
+          sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
           sql`(
             ${researchedLeads.source} IS NULL
             OR ${researchedLeads.source} NOT LIKE '%web:%'
@@ -122,6 +123,7 @@ export function createCampaignsRouter() {
         and(
           eq(researchedLeads.campaignId, req.params.id),
           sql`${researchedLeads.status} <> 'rejected'`,
+          sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
           sql`(
             ${researchedLeads.source} IS NULL
             OR ${researchedLeads.source} NOT LIKE '%web:%'
