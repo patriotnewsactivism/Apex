@@ -75,7 +75,7 @@ export function getLeadPipelineConfig(): LeadPipelineConfig {
     discoveryConcurrency: Number(process.env.LEAD_DISCOVERY_CONCURRENCY ?? (liveDemoMode ? 8 : 3)),
     stageConcurrency: Number(process.env.LEAD_STAGE_CONCURRENCY ?? (liveDemoMode ? 12 : 5)),
     shardsPerCell: Number(process.env.LEAD_SHARDS_PER_CELL ?? (liveDemoMode ? 8 : 12)),
-    segmentBatchSize: Number(process.env.LEAD_SEGMENT_BATCH_SIZE ?? (liveDemoMode ? 8 : 3)),
+    segmentBatchSize: Number(process.env.LEAD_SEGMENT_BATCH_SIZE ?? (liveDemoMode ? 10 : 6)),
     maxDirectoryResultsPerShard: Number(process.env.LEAD_DIRECTORY_RESULTS_PER_SHARD ?? (liveDemoMode ? 12 : 25)),
     leaseMs: Number(process.env.LEAD_PIPELINE_LEASE_MS ?? 2 * 60 * 1000),
     initialQualificationMaxWords: Number(process.env.LEAD_INITIAL_QUALIFICATION_WORDS ?? (liveDemoMode ? 28 : 55)),
