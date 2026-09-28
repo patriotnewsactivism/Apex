@@ -513,7 +513,7 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
     contactEmail?: string;
     contactPhone?: string;
     contactSourceUrl?: string;
-    contactResearchStatus?: 'partial' | 'complete' | 'unavailable';
+    contactResearchStatus?: 'pending' | 'partial' | 'complete' | 'unavailable';
   } | null;
 
   const cachedCampaignDraft = cached?.campaignDraft as Record<string, unknown> | null;
@@ -786,7 +786,7 @@ function buildStageUpdate(
       contactEmail?: string;
       contactPhone?: string;
       contactSourceUrl?: string;
-      contactResearchStatus?: 'partial' | 'complete' | 'unavailable';
+      contactResearchStatus?: 'pending' | 'partial' | 'complete' | 'unavailable';
     } | null;
     const hasContact = Boolean(lead.contactEmail || lead.contactPhone || cachedContact?.contactEmail || cachedContact?.contactPhone);
     return {
