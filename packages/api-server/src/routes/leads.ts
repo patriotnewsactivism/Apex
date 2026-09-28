@@ -219,6 +219,7 @@ export function createLeadsRouter(): Router {
     const leads = await db
       .select()
       .from(researchedLeads)
+      .where(sql`${researchedLeads.status} <> 'rejected'`)
       .orderBy(desc(researchedLeads.createdAt))
       .limit(10000);
 
