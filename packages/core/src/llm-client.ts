@@ -428,10 +428,10 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
 /**
  * Whether the paid FlashX continuity route is part of the chain.
  *
- * On by default, which is the reviewed behavior: an unset variable changes
- * nothing. `APEX_PAID_FALLBACK_ENABLED=false` removes the route, and then
- * APEX is free-only — when the free pool and BYOK capacity are spent the
- * workforce parks until the daily reset rather than spending money.
+ * Off by default. Paid continuity is an explicit opt-in: only
+ * `APEX_PAID_FALLBACK_ENABLED=true` adds FlashX to the route. When the flag is
+ * absent or false, APEX parks after Qwen/free/BYOK capacity is spent instead of
+ * silently starting paid per-token inference.
  *
  * This exists because there was no way to stop paid spend at all. The route
  * was unconditionally appended and the helper unconditionally returned true,
@@ -445,7 +445,7 @@ export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
  */
 export function paidLLMFallbackEnabled(_mode?: string): boolean {
   const raw = process.env.APEX_PAID_FALLBACK_ENABLED;
-  if (raw === undefined || raw.trim() === '') return true;
+  if (raw === undefined || raw.trim() === '') return false;
   return enabled(raw);
 }
 
@@ -1111,13 +1111,13 @@ function configuredCredentials(provider: ProviderSpec): Array<{ env: string; key
 
 // ─── Process-wide call smoothing ─────────────────────────────────────────────
 
-// One slot per current APEX agent by default. The semaphore still bounds
-// pathological task storms, but it no longer leaves 7 of the 13 agents waiting
-// solely because of an old six-call demo-era throttle.
-const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 13);
+// Keep the default below workforce size so one backlog burst cannot fan all
+// 13 agents into provider calls simultaneously. Operators can raise this
+// deliberately, but a missing env var now lands on the reviewed safe default.
+const configuredLLMConcurrency = Number(process.env.APEX_MAX_CONCURRENT_LLM_CALLS ?? 4);
 const MAX_CONCURRENT_LLM_CALLS = Number.isFinite(configuredLLMConcurrency)
   ? Math.min(64, Math.max(1, Math.floor(configuredLLMConcurrency)))
-  : 13;
+  : 4;
 
 let activeLLMCalls = 0;
 const llmCallWaitQueue: Array<() => void> = [];
