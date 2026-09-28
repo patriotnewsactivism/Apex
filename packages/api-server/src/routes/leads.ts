@@ -195,11 +195,7 @@ export function createLeadsRouter(): Router {
     } else {
       conditions.push(sql`${researchedLeads.status} <> 'rejected'`);
       conditions.push(sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`);
-      conditions.push(sql`(
-        ${researchedLeads.source} IS NULL
-        OR ${researchedLeads.source} NOT LIKE '%web:%'
-        OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
-      )`);
+      conditions.push(sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`);
     }
     if (req.query.pipelineState) conditions.push(eq(researchedLeads.pipelineState, String(req.query.pipelineState)));
     if (req.query.industry) conditions.push(ilike(researchedLeads.industry, `%${String(req.query.industry)}%`));
@@ -228,11 +224,7 @@ export function createLeadsRouter(): Router {
       .where(and(
         sql`${researchedLeads.status} <> 'rejected'`,
         sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-        sql`(
-          ${researchedLeads.source} IS NULL
-          OR ${researchedLeads.source} NOT LIKE '%web:%'
-          OR ${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'
-        )`,
+        sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
       ))
       .orderBy(desc(researchedLeads.createdAt))
       .limit(10000);
@@ -288,8 +280,6 @@ export function createLeadsRouter(): Router {
     const visible = all.filter((lead) => {
       if (lead.status === 'rejected') return false;
       if (!lead.contactEmail && !lead.contactPhone) return false;
-      const isWeb = /^(?:cache:)?web:/i.test(lead.source ?? '');
-      if (!isWeb) return true;
       const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
         | { status?: string }
         | undefined;
