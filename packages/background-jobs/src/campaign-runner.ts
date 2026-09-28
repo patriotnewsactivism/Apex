@@ -5,6 +5,7 @@ import {
   campaignSegments,
   leadCampaigns,
   researchedLeads,
+  leadResearchCache,
 } from '@workspace/db';
 import {
   createLLMClient,
@@ -28,6 +29,7 @@ import {
   insertDiscoveredLead,
   processLeadPipelineBacklog,
   repairWebLeadIdentityBatch,
+  inspectFirstPartyContactUrl,
 } from './lead-pipeline.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
@@ -495,6 +497,7 @@ export class CampaignRunner {
   private knownDomainsCache: Set<string> | null = null;
   private knownDomainsRefreshedAt = 0;
   private knownDomainsLoad: Promise<Set<string>> | null = null;
+  private contactSearchRunning = false;
   private readonly repairedCampaignIds = new Set<string>();
 
   constructor(
@@ -545,6 +548,8 @@ export class CampaignRunner {
       const config = getLeadPipelineConfig();
       void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16))
         .catch((err) => console.warn('[lead-identity] background repair failed:', err instanceof Error ? err.message : String(err)));
+      void this.enrichVerifiedContactsFromSearch(Number(process.env.LEAD_CONTACT_SEARCH_BATCH ?? 6))
+        .catch((err) => console.warn('[lead-contact-search] background search failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();
       const claimed = await this.claimSegments(config.segmentBatchSize);
       if (claimed.length === 0) {
@@ -563,6 +568,154 @@ export class CampaignRunner {
       await this.closeFinishedCampaigns();
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * Second-pass contact recovery for verified businesses. First-party crawling
+   * handles the obvious homepage/contact/about/team pages. For the remainder,
+   * use the existing fast cached Tavily/Brave path to discover hidden official
+   * pages, then fetch only same-domain URLs. No LLM and no guessed contact data.
+   */
+  private async enrichVerifiedContactsFromSearch(limit: number): Promise<void> {
+    if (this.contactSearchRunning) return;
+    this.contactSearchRunning = true;
+    try {
+      const batchSize = Math.max(1, Math.min(20, Math.trunc(limit)));
+      const version = '2026-09-28-contact-web-v1';
+      const candidates = await db
+        .select()
+        .from(researchedLeads)
+        .where(
+          and(
+            sql`${researchedLeads.status} <> 'rejected'`,
+            sql`${researchedLeads.website} IS NOT NULL`,
+            sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
+            or(
+              isNull(researchedLeads.contactEmail),
+              isNull(researchedLeads.contactPhone),
+              isNull(researchedLeads.decisionMakerName),
+            ),
+            sql`COALESCE(${researchedLeads.enrichment}->'contactWebSearch'->>'version', '') <> ${version}`,
+          ),
+        )
+        .orderBy(asc(researchedLeads.createdAt))
+        .limit(batchSize);
+
+      if (candidates.length === 0) return;
+      const registry = getToolRegistry();
+
+      await Promise.all(candidates.map(async (lead) => {
+        const domain = normalizeLeadDomain(lead.website);
+        if (!domain) return;
+        const result = await registry.execute(
+          'webSearch',
+          {
+            query: `site:${domain} "${lead.companyName}" contact owner phone email`,
+            maxResults: 6,
+            fast: true,
+          },
+          this.toolContext,
+        );
+
+        const payload = result.success
+          ? result.data as {
+              provider?: string;
+              cacheHit?: boolean;
+              results?: Array<{ title?: string; url?: string; snippet?: string }>;
+            }
+          : null;
+
+        const urls = [...new Set((payload?.results ?? [])
+          .map((row) => row.url?.trim())
+          .filter((url): url is string => {
+            if (!url) return false;
+            try {
+              return normalizeLeadDomain(url) === domain;
+            } catch {
+              return false;
+            }
+          }))].slice(0, 3);
+
+        const pages = await Promise.all(urls.map((url) => inspectFirstPartyContactUrl(url)));
+        let contactEmail = lead.contactEmail;
+        let contactPhone = lead.contactPhone;
+        let decisionMakerName = lead.decisionMakerName;
+        let contactSourceUrl = lead.contactSourceUrl;
+        let decisionMakerTitle: string | null = null;
+        let decisionMakerSourceUrl: string | null = null;
+
+        for (const page of pages) {
+          if (!page) continue;
+          if (!contactEmail && page.email) {
+            contactEmail = page.email;
+            contactSourceUrl = page.url;
+          }
+          if (!contactPhone && page.phone) {
+            contactPhone = page.phone;
+            contactSourceUrl ??= page.url;
+          }
+          if (!decisionMakerName && page.decisionMaker) {
+            decisionMakerName = page.decisionMaker.name;
+            decisionMakerTitle = page.decisionMaker.title;
+            decisionMakerSourceUrl = page.url;
+          }
+        }
+
+        const now = new Date();
+        const foundAny = Boolean(contactEmail || contactPhone);
+        const enrichment = {
+          ...(lead.enrichment ?? {}),
+          contactWebSearch: {
+            version,
+            checkedAt: now.toISOString(),
+            provider: payload?.provider ?? null,
+            cacheHit: Boolean(payload?.cacheHit),
+            resultsScanned: urls.length,
+            foundEmail: Boolean(!lead.contactEmail && contactEmail),
+            foundPhone: Boolean(!lead.contactPhone && contactPhone),
+            foundDecisionMaker: Boolean(!lead.decisionMakerName && decisionMakerName),
+            decisionMakerTitle,
+            decisionMakerSourceUrl,
+          },
+        };
+
+        await db
+          .update(researchedLeads)
+          .set({
+            decisionMakerName,
+            contactEmail,
+            contactPhone,
+            contactSourceUrl,
+            contactResearchStatus: contactEmail && contactPhone ? 'complete' : foundAny ? 'partial' : lead.contactResearchStatus,
+            contactResearchedAt: now,
+            enrichment,
+            updatedAt: now,
+          })
+          .where(eq(researchedLeads.id, lead.id));
+
+        if (lead.researchCacheKey) {
+          await db
+            .update(leadResearchCache)
+            .set({
+              contactResearch: {
+                decisionMakerName,
+                contactEmail,
+                contactPhone,
+                contactSourceUrl,
+                contactResearchStatus: contactEmail && contactPhone ? 'complete' : foundAny ? 'partial' : lead.contactResearchStatus,
+              },
+              updatedAt: now,
+            })
+            .where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
+        }
+
+        console.log(
+          `[lead-contact-search] ${lead.companyName}: pages=${urls.length} email=${Boolean(contactEmail)} phone=${Boolean(contactPhone)} decisionMaker=${Boolean(decisionMakerName)} provider=${payload?.cacheHit ? 'cache:' : ''}${payload?.provider ?? 'none'}`,
+        );
+      }));
+    } finally {
+      this.contactSearchRunning = false;
     }
   }
 
