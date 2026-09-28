@@ -117,9 +117,9 @@ function webhookTool(
 function desiredTools(toolSecret: string) {
   return [
     webhookTool(
-      'lookup_lead_info',
+      'lookup_lead_info_v2',
       'lookup-lead',
-      'Look up the business or prospect APEX is calling. Use near the start of an outbound call to avoid asking for facts APEX already knows. If do_not_contact is true, apologize briefly, record DNC, and end the call.',
+      'Retrieve CRM context when needed. Answer short replies such as yes immediately. If do_not_contact is true, end politely without pitching or recording a new opt-out.',
       {
         phone_number: dynamic('string', 'system__called_number'),
       },
@@ -197,9 +197,9 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
-      'record_call_outcome',
+      'record_call_outcome_v2',
       'record-outcome',
-      'Record the real call disposition before ending the call. Use dnc immediately when the prospect asks not to be contacted again.',
+      'Record the real call outcome. Use dnc only after a clear request to stop contact, and include the exact spoken opt-out words in opt_out_quote. A yes, no, or not interested is not an opt-out.',
       {
         call_id: dynamic('string', 'system__conversation_id'),
         phone_number: dynamic('string', 'system__called_number'),
@@ -208,6 +208,7 @@ function desiredTools(toolSecret: string) {
         }),
         prospect_name: modelString('Prospect name if known.'),
         notes: modelString('Short factual notes about the outcome and any promised next step.'),
+        opt_out_quote: modelString('Exact prospect words requesting no further contact, required for dnc only.'),
       },
       ['call_id', 'phone_number', 'disposition'],
       toolSecret,
@@ -222,12 +223,14 @@ function agentConfig(toolIds: string[]) {
       'You make outbound business sales calls. Be natural, concise, and conversational. Ask one question at a time and let the person answer.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect name supplied by APEX is {{customer_name}}. Do not assume it is correct if the person tells you otherwise.',
-      'Use lookup_lead_info near the start of the call so you do not ask for information APEX already has.',
+      'If the person says yes, yep, yeah, sure, or okay to your opening question, continue the pitch immediately: explain the value in one sentence and ask one relevant question. Do not call a tool first.',
+      'Use lookup_lead_info_v2 only if you need additional CRM context. A normal affirmative answer is not an opt-out.',
       'Never invent a price, integration, customer result, guarantee, appointment, case study, or action that a tool did not confirm.',
-      'If the person asks not to be contacted, call record_call_outcome with dnc, acknowledge the request, and end the call.',
+      'Only a clear request to stop future calls or messages is an opt-out. Never infer DNC from yes, no, silence, a short reply, or declining the offer. If unclear, ask one brief clarifying question.',
+      'On an explicit opt-out, call record_call_outcome_v2 with dnc and opt_out_quote containing the exact spoken words; acknowledge it and end. If CRM lookup reports do_not_contact, end politely without writing a new DNC.',
       'Ask for explicit permission before using send_demo_link. Never claim a text was delivered if the tool says it failed.',
       'Offer only calendar slots returned by check_calendar_availability. Call book_consultation only after the prospect agrees to one. A booking is confirmed only when booked is true.',
-      'Before a normal call ends, record the real disposition with record_call_outcome.',
+      'Before a normal call ends, record the real disposition with record_call_outcome_v2.',
       'If the prospect asks for Matthew or a human, or a human handoff would clearly help, use the transfer tool.',
       'When a tool is slow, briefly say what you are checking and allow interruption. If a tool fails, continue honestly instead of claiming success.',
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
@@ -238,7 +241,7 @@ function agentConfig(toolIds: string[]) {
     model: {
       id: DEFAULT_MODEL_ID,
       temperature: 0.3,
-      max_output_tokens: 220,
+      max_output_tokens: 160,
     },
     language: { primary: 'en' },
     audio: {
@@ -258,7 +261,7 @@ function agentConfig(toolIds: string[]) {
     tools: toolIds.map((id) => ({ id })),
     system_tools: {
       end_call: {
-        description: 'End the call when the conversation is complete, after recording the outcome when appropriate.',
+        description: 'End only after a clear goodbye, explicit opt-out, or completed conversation. A short yes or pause is not a goodbye.',
         pre_tool_speech: 'force',
       },
       transfer_to_number: {

@@ -34,7 +34,7 @@ const OPTIONAL_FIELDS = new Set(['outreachAngle', 'transcriptSnippet', 'industry
 
 export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
   id: 'buildmybot-intro',
-  version: 1,
+  version: 2,
   name: 'BuildMyBot intro',
   summary: 'One cold email, one sales call, and one follow-up. The buyer is treated as the owner of a local business that misses calls.',
   openEmail: {
@@ -79,7 +79,7 @@ export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
     ].join('\n'),
   },
   call: {
-    firstMessage: 'Hi, is this {{buyerName}}? This is Alex with BuildMyBot. I will be quick. I am calling about the jobs {{companyName}} misses when the phone rings after hours. Did I catch you with a minute?',
+    firstMessage: 'Hi {{buyerName}}, I am Alex, BuildMyBot’s AI assistant. We help {{companyName}} catch missed calls. Is now okay for a quick question?',
     assistantPrompt: [
       'You are Alex, a BuildMyBot sales rep on a live phone call. The person who answered is {{buyerName}}, the buyer at {{companyName}}, a {{industry}} business in {{city}}.',
       'Goal: have a real conversation and earn a ten-minute follow-up. Do not quote a price. Do not say they can subscribe or pay today. Do not invent product features. BuildMyBot answers calls and messages the business would otherwise miss, captures the lead, and helps book the next step.',

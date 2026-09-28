@@ -1,12 +1,12 @@
 const CARTESIA_VERSION = '2026-08-14';
 const CARTESIA_API = 'https://api.cartesia.ai';
 const EXPECTED_SALES_TOOLS = [
-  'lookup_lead_info',
+  'lookup_lead_info_v2',
   'capture_and_qualify_lead',
   'check_calendar_availability',
   'book_consultation',
   'send_demo_link',
-  'record_call_outcome',
+  'record_call_outcome_v2',
 ] as const;
 const EVENT_WEBHOOK_URL = 'https://apex.donmatthews.live/api/cartesia/events';
 

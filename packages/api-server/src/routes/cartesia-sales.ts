@@ -17,6 +17,13 @@ const callIdSchema = z.string().min(3).max(160);
 const short = (max: number) => z.string().trim().min(1).max(max);
 const optional = (max: number) => short(max).optional();
 
+// The DNC write is persistent. Require an unambiguous spoken request, not a
+// model-inferred disposition from a short acknowledgement such as "yep".
+export function isExplicitOptOut(quote: string | undefined): boolean {
+  if (!quote || /\b(?:do\s+not|don't|dont)\s+want\s+(?:you\s+to\s+)?(?:stop|quit)\b/i.test(quote)) return false;
+  return /\b(?:stop|quit)\s+(?:calling|contacting|texting|messaging)\b|\b(?:do\s+not|don't|dont|never)\s+(?:call|contact|text|message)\s+(?:me|us|again|this\s+number)\b|\bremove\s+(?:me|us|my\s+number)\s+from\b|\btake\s+(?:me|us|my\s+number)\s+off\b|\b(?:unsubscribe|opt\s*out)\b|\bput\s+(?:me|us)\s+on\s+(?:(?:the|your)\s+)?do\s+not\s+call\s+list\b/i.test(quote);
+}
+
 export function secretMatches(received: unknown, expected: string | undefined): boolean {
   if (typeof received !== 'string' || !expected || !received) return false;
   const actualBytes = Buffer.from(received);
@@ -202,8 +209,10 @@ export function createCartesiaSalesRouter(): Router {
   router.post('/tools/record-outcome', async (req, res) => {
     const parsed = z.object({ call_id: callIdSchema, phone_number: phoneSchema,
       disposition: z.enum(['qualified', 'callback_requested', 'not_interested', 'no_decision', 'dnc']),
-      prospect_name: optional(160), notes: optional(500) }).safeParse(req.body);
+      prospect_name: optional(160), notes: optional(500), opt_out_quote: optional(240) }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Invalid call outcome' });
+    if (parsed.data.disposition === 'dnc' && !isExplicitOptOut(parsed.data.opt_out_quote))
+      return res.status(400).json({ error: 'DNC requires an explicit spoken opt-out; ask for clarification if uncertain' });
     try {
       const p = parsed.data;
       if (p.disposition === 'dnc') {
