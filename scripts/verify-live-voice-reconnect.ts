@@ -43,6 +43,9 @@ async function main(): Promise<void> {
     path.join(root, 'packages/api-server/src/live-voice.ts')
   )) as typeof import('../packages/api-server/src/live-voice.js');
   const { reconnectDelayMs, RECONNECT_BASE_DELAY_MS, RECONNECT_MAX_DELAY_MS, RECONNECT_MAX_ATTEMPTS } = mod;
+  const control = (await import(
+    path.join(root, 'packages/api-server/src/live-voice-control.ts')
+  )) as typeof import('../packages/api-server/src/live-voice-control.js');
 
   check(
     'the first retry is capped at the base delay (attempt 0, random()=1 -> exactly the base)',
@@ -172,6 +175,31 @@ async function main(): Promise<void> {
     'QuickChat refreshes durable voice history when the call ends so stale in-progress rows disappear',
     /liveVoice\.status !== 'ended'/.test(quickChat) &&
       /invalidateQueries\(\{ queryKey: \['voice-chat-sessions'\] \}\)/.test(quickChat),
+  );
+  check(
+    'explicit spoken hang-up phrases are transport controls, not model interpretation',
+    control.isExplicitLiveVoiceHangup('hang up') &&
+      control.isExplicitLiveVoiceHangup('end the call') &&
+      control.isExplicitLiveVoiceHangup('stop live talk') &&
+      control.isExplicitLiveVoiceHangup('goodbye') &&
+      !control.isExplicitLiveVoiceHangup('stop that task') &&
+      !control.isExplicitLiveVoiceHangup('the customer said goodbye yesterday'),
+  );
+  check(
+    'Deepgram closes the browser transport immediately on a recognized spoken hang-up',
+    /isExplicitLiveVoiceHangup\(text\)[\s\S]{0,260}type: 'ended'[\s\S]{0,180}client\.close\(1000, 'spoken hangup'\)/.test(source),
+  );
+  check(
+    'Gemini closes the browser transport immediately on a recognized spoken hang-up',
+    /isExplicitLiveVoiceHangup\(inputText\)[\s\S]{0,420}type: 'ended'[\s\S]{0,260}client\.close\(1000, 'spoken hangup'\)/.test(geminiSource),
+  );
+  check(
+    'Gemini installs browser-close cleanup before initial provider setup can finish',
+    /client\.on\('close', handleClientClose\);[\s\S]{0,160}const initialConnected = await connect\(\);/.test(geminiSource),
+  );
+  check(
+    'server-authoritative ended events reuse the browser hard-stop cleanup',
+    /case 'ended':[\s\S]{0,180}stop\(\);/.test(clientHook),
   );
 
   // ── Reconnects stay context-aware instead of forgetting where Don is ─────
