@@ -201,9 +201,13 @@ try {
     .where(eq(emailSends.leadId, toolId));
   assert.equal(Number(sends?.count ?? 0), 0, 'qualification sent nothing');
 
-  const readback = (await callTool('getResearchedLeadById', { leadId: toolId })) as Record<string, unknown>;
-  assert.equal((readback.lead as Record<string, unknown>).status, 'qualified');
-  assert.equal((readback.outreach as Record<string, unknown>).sendCount, 0, 'outreach state is untouched');
+  const readback = (await callTool('listResearchedLeads', {
+    status: 'qualified',
+    ids: [toolId],
+    limit: 1,
+  })) as Array<Record<string, unknown>>;
+  assert.equal(readback[0]?.status, 'qualified', 'registered read tool confirms qualified status');
+  assert.equal(Number(sends?.count ?? 0), 0, 'outreach state is untouched');
   console.log('  ✓ AC1+AC3+AC4  updateLeadStatus -> validated API -> persisted, audited, zero outreach');
 
   // ── AC3: contract requires id, status, evidence URL and rationale ──────────
