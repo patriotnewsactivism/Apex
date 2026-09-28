@@ -353,8 +353,57 @@ class ToolRegistry {
       }
     }
 
+    const searchCache = leadSearchCacheSpec(name, parsed.data as Record<string, unknown>);
+    if (searchCache && !searchCache.refresh) {
+      const cached = await readLeadSearchCache(searchCache);
+      if (cached !== null) {
+        return { success: true, data: cached };
+      }
+
+      const existing = leadSearchInFlight.get(searchCache.cacheKey);
+      if (existing) {
+        try {
+          const shared = await existing;
+          await bumpLeadSearchCacheHit(searchCache.cacheKey);
+          console.log(
+            `[lead-search-cache] COALESCE ${searchCache.cacheKind} query="${searchCache.normalizedQuery}"`,
+          );
+          return {
+            success: true,
+            data: annotateLeadSearchCache(shared, { hit: true, coalesced: true }),
+          };
+        } catch {
+          // The first producer failed. Fall through and allow this invocation
+          // to perform a normal attempt rather than inheriting its exception.
+        }
+      }
+    }
+
     try {
-      const result = await tool.execute(parsed.data, context);
+      let result: unknown;
+      if (searchCache && !searchCache.refresh) {
+        const producer = (async () => {
+          const fresh = await tool.execute(parsed.data, context);
+          await writeLeadSearchCache(searchCache, fresh);
+          return fresh;
+        })();
+        leadSearchInFlight.set(searchCache.cacheKey, producer);
+        try {
+          result = await producer;
+        } finally {
+          if (leadSearchInFlight.get(searchCache.cacheKey) === producer) {
+            leadSearchInFlight.delete(searchCache.cacheKey);
+          }
+        }
+      } else {
+        result = await tool.execute(parsed.data, context);
+        if (searchCache) await writeLeadSearchCache(searchCache, result);
+      }
+
+      if (searchCache) {
+        result = annotateLeadSearchCache(result, { hit: false });
+      }
+
       if (salesAuto) {
         const data = result as { success?: boolean; providerId?: string; callId?: string; emailSendId?: string; sent?: number };
         const delivered = data.success !== false && (data.sent === undefined || data.sent > 0);
