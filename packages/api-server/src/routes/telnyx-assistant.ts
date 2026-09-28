@@ -468,6 +468,107 @@ async function enrichInboundConversation(input: {
   }
 }
 
+
+export async function processTelnyxAssistantLifecycleEvent(eventInput: Record<string, any>): Promise<{
+  received: true;
+  recorded?: boolean;
+  ignored?: boolean;
+  reason?: string;
+  eventType?: string | null;
+  callId?: string;
+}> {
+  try {
+    const event = telnyxEventData(eventInput);
+    const eventType = typeof event.event_type === 'string' ? event.event_type : '';
+    const payload = event.payload && typeof event.payload === 'object'
+      ? event.payload as Record<string, any>
+      : eventInput;
+
+    if (!['call.conversation.ended', 'call.conversation_insights.generated'].includes(eventType)) {
+      return { received: true, ignored: true, eventType: eventType || null };
+    }
+
+    const callId = telnyxCallOutcomeId(payload);
+    if (!callId) {
+      console.warn('[Telnyx Assistant] post-call event missing call/conversation identifier', { eventType });
+      return { received: true, ignored: true, reason: 'missing_call_id' };
+    }
+
+    if (eventType === 'call.conversation.ended') {
+      const callerNumber = typeof payload.from === 'string' ? payload.from : '';
+      const [lead, priorCalls] = await Promise.all([
+        findKnownCaller(callerNumber),
+        findRecentCallHistory(callerNumber, 5),
+      ]);
+      const previousOutbound = priorCalls.find((row) => !row.callId.startsWith('telnyx-ai:')) ?? priorCalls[0] ?? null;
+      const name = lead?.decisionMakerName?.trim() || previousOutbound?.customerName?.trim() || lead?.companyName || null;
+      const handlingAgentId = previousOutbound?.createdByAgentId ?? 'apex-front-desk';
+      const duration = typeof payload.duration_sec === 'number' ? payload.duration_sec : null;
+      const reason = typeof payload.reason === 'string' ? payload.reason : null;
+
+      await db.insert(callOutcomes).values({
+        id: crypto.randomUUID(),
+        callId,
+        leadId: lead?.id ?? previousOutbound?.leadId ?? null,
+        customerNumber: callerNumber || previousOutbound?.customerNumber || 'unknown',
+        customerName: name,
+        disposition: 'no_decision',
+        summary: duration != null ? `Inbound callback completed after ${duration} seconds.` : 'Inbound callback completed.',
+        nextAction: 'Post-call conversation enrichment pending.',
+        endedReason: reason,
+        createdByAgentId: handlingAgentId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).onConflictDoUpdate({
+        target: callOutcomes.callId,
+        set: {
+          leadId: lead?.id ?? previousOutbound?.leadId ?? null,
+          customerNumber: callerNumber || previousOutbound?.customerNumber || 'unknown',
+          customerName: name,
+          endedReason: reason,
+          updatedAt: new Date(),
+        },
+      });
+
+      await db.insert(logs).values({
+        agentId: handlingAgentId,
+        taskId: null,
+        level: 'acting',
+        message: `📞 Inbound callback completed from ${(name ?? callerNumber) || 'unknown caller'}${duration != null ? ` (${duration}s)` : ''}. Post-call transcript/insight enrichment queued.`,
+        timestamp: new Date(),
+      });
+
+      void enrichInboundConversation({
+        outcomeCallId: callId,
+        conversationId: typeof payload.conversation_id === 'string' ? payload.conversation_id : null,
+      });
+
+      return { received: true, recorded: true, callId };
+    }
+
+    const results = payload.results;
+    const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, callId)).limit(1);
+    if (!existing) {
+      await db.insert(callOutcomes).values({
+        id: crypto.randomUUID(),
+        callId,
+        customerNumber: 'unknown',
+        disposition: 'no_decision',
+        summary: 'Inbound call insights received.',
+        nextAction: 'Review generated call insights.',
+        createdByAgentId: 'apex-front-desk',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).onConflictDoNothing();
+    }
+    void enrichInboundConversation({ outcomeCallId: callId, results });
+    return { received: true, recorded: true, callId };
+  } catch (err) {
+    console.error('[Telnyx Assistant] post-call event error:', err instanceof Error ? err.message : String(err));
+    return { received: true, recorded: false };
+  }
+}
+
 export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
   const router = Router();
 
@@ -611,102 +712,8 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
     if (!verifyAssistantKey(req.query as Record<string, unknown>)) {
       return res.status(403).json({ error: 'Invalid or missing key' });
     }
-
-    try {
-      const event = telnyxEventData((req.body ?? {}) as Record<string, unknown>);
-      const eventType = typeof event.event_type === 'string' ? event.event_type : '';
-      const payload = event.payload && typeof event.payload === 'object'
-        ? event.payload as Record<string, any>
-        : ((req.body ?? {}) as Record<string, any>);
-
-      if (!['call.conversation.ended', 'call.conversation_insights.generated'].includes(eventType)) {
-        return res.status(200).json({ received: true, ignored: true, eventType: eventType || null });
-      }
-
-      const callId = telnyxCallOutcomeId(payload);
-      if (!callId) {
-        console.warn('[Telnyx Assistant] post-call event missing call/conversation identifier', { eventType });
-        return res.status(200).json({ received: true, ignored: true, reason: 'missing_call_id' });
-      }
-
-      if (eventType === 'call.conversation.ended') {
-        const callerNumber = typeof payload.from === 'string' ? payload.from : '';
-        const [lead, priorCalls] = await Promise.all([
-          findKnownCaller(callerNumber),
-          findRecentCallHistory(callerNumber, 5),
-        ]);
-        const previousOutbound = priorCalls.find((row) => !row.callId.startsWith('telnyx-ai:')) ?? priorCalls[0] ?? null;
-        const name = lead?.decisionMakerName?.trim() || previousOutbound?.customerName?.trim() || lead?.companyName || null;
-        const handlingAgentId = previousOutbound?.createdByAgentId ?? 'apex-front-desk';
-        const duration = typeof payload.duration_sec === 'number' ? payload.duration_sec : null;
-        const reason = typeof payload.reason === 'string' ? payload.reason : null;
-
-        await db.insert(callOutcomes).values({
-          id: crypto.randomUUID(),
-          callId,
-          leadId: lead?.id ?? previousOutbound?.leadId ?? null,
-          customerNumber: callerNumber || previousOutbound?.customerNumber || 'unknown',
-          customerName: name,
-          disposition: 'no_decision',
-          summary: duration != null ? `Inbound callback completed after ${duration} seconds.` : 'Inbound callback completed.',
-          nextAction: 'Post-call conversation enrichment pending.',
-          endedReason: reason,
-          createdByAgentId: handlingAgentId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }).onConflictDoUpdate({
-          target: callOutcomes.callId,
-          set: {
-            leadId: lead?.id ?? previousOutbound?.leadId ?? null,
-            customerNumber: callerNumber || previousOutbound?.customerNumber || 'unknown',
-            customerName: name,
-            endedReason: reason,
-            updatedAt: new Date(),
-          },
-        });
-
-        await db.insert(logs).values({
-          agentId: handlingAgentId,
-          taskId: null,
-          level: 'acting',
-          message: `📞 Inbound callback completed from ${(name ?? callerNumber) || 'unknown caller'}${duration != null ? ` (${duration}s)` : ''}. Post-call transcript/insight enrichment queued.`,
-          timestamp: new Date(),
-        });
-
-        // ACK Telnyx quickly; conversation transcript/insight retrieval is
-        // non-blocking so webhook delivery is not held open by downstream APIs.
-        void enrichInboundConversation({
-          outcomeCallId: callId,
-          conversationId: typeof payload.conversation_id === 'string' ? payload.conversation_id : null,
-        });
-
-        return res.status(200).json({ received: true, recorded: true, callId });
-      }
-
-      // Insights may arrive after call.conversation.ended. They correlate on
-      // call_control_id and enrich the same durable row idempotently.
-      const results = payload.results;
-      const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, callId)).limit(1);
-      if (!existing) {
-        await db.insert(callOutcomes).values({
-          id: crypto.randomUUID(),
-          callId,
-          customerNumber: 'unknown',
-          disposition: 'no_decision',
-          summary: 'Inbound call insights received.',
-          nextAction: 'Review generated call insights.',
-          createdByAgentId: 'apex-front-desk',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }).onConflictDoNothing();
-      }
-      void enrichInboundConversation({ outcomeCallId: callId, results });
-      return res.status(200).json({ received: true, recorded: true, callId });
-    } catch (err) {
-      console.error('[Telnyx Assistant] post-call event error:', err instanceof Error ? err.message : String(err));
-      // Return 200 so an unexpected payload does not create a webhook retry storm.
-      return res.status(200).json({ received: true, recorded: false });
-    }
+    const result = await processTelnyxAssistantLifecycleEvent((req.body ?? {}) as Record<string, any>);
+    return res.status(200).json(result);
   });
 
   // ── POST /tools/take-message ────────────────────────────────────────────
