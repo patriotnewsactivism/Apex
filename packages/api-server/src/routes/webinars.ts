@@ -1,9 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '@workspace/db';
 import { sql } from 'drizzle-orm';
-import { createLLMClient, getDefaultLLMConfig } from '@workspace/core';
+import {
+  CARTESIA_API_VERSION,
+  createLLMClient,
+  getDefaultLLMConfig,
+  resolveCartesiaSalesVoiceId,
+} from '@workspace/core';
 import type { LLMMessage } from '@workspace/core';
 
 type WebinarSessionRow = {
@@ -208,6 +215,85 @@ export const DEFAULT_WEBINAR_SEGMENTS: WebinarSegment[] = [
   },
 ];
 
+
+const webinarAudioBuilds = new Map<string, Promise<Buffer>>();
+
+function webinarAudioPath(segment: WebinarSegment): string {
+  const root = process.env.APEX_ARTIFACT_DIR?.trim() || '/tmp/apex-artifacts';
+  const fingerprint = createHash('sha256').update(segment.narration).digest('hex').slice(0, 12);
+  return join(root, 'webinar-audio', `${segment.id}-${fingerprint}.wav`);
+}
+
+async function ensureSegmentAudio(segment: WebinarSegment): Promise<Buffer> {
+  const path = webinarAudioPath(segment);
+  try {
+    return await readFile(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') throw error;
+  }
+
+  const existing = webinarAudioBuilds.get(path);
+  if (existing) return existing;
+
+  const build = (async () => {
+    const apiKey = process.env.CARTESIA_API_KEY?.trim();
+    if (!apiKey) throw new Error('CARTESIA_API_KEY is not configured');
+
+    const voiceId = await resolveCartesiaSalesVoiceId();
+    const response = await fetch('https://api.cartesia.ai/tts/bytes', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Cartesia-Version': CARTESIA_API_VERSION,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model_id: 'sonic-2',
+        transcript: segment.narration,
+        voice: voiceId,
+        output_format: {
+          container: 'wav',
+          encoding: 'pcm_s16le',
+          sample_rate: 44100,
+        },
+        language: 'en',
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`Cartesia webinar TTS failed (HTTP ${response.status}): ${detail.slice(0, 300)}`);
+    }
+
+    const audio = Buffer.from(await response.arrayBuffer());
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, audio);
+    console.log(`[webinar] Cached Don Matthews narration for segment ${segment.id} (${audio.length} bytes)`);
+    return audio;
+  })();
+
+  webinarAudioBuilds.set(path, build);
+  try {
+    return await build;
+  } finally {
+    webinarAudioBuilds.delete(path);
+  }
+}
+
+function prewarmSegmentAudio(index: number): void {
+  for (const offset of [0, 1]) {
+    const segment = DEFAULT_WEBINAR_SEGMENTS[index + offset];
+    if (!segment) continue;
+    void ensureSegmentAudio(segment).catch((error) => {
+      console.warn(
+        `[webinar] Don Matthews narration prewarm failed for ${segment.id}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    });
+  }
+}
+
 const joinSchema = z.object({
   name: z.string().trim().min(1).max(120),
   email: z.string().trim().email().max(240),
@@ -348,11 +434,29 @@ export function createPublicWebinarRouter() {
   const router = Router();
   const llm = createLLMClient(getDefaultLLMConfig('SALES'));
 
+  router.get('/:slug/audio/:segmentId', async (req, res) => {
+    try {
+      const session = await getSessionBySlug(String(req.params.slug));
+      if (!session) return res.status(404).json({ error: 'Webinar not found' });
+      const segment = DEFAULT_WEBINAR_SEGMENTS.find((item) => item.id === String(req.params.segmentId));
+      if (!segment) return res.status(404).json({ error: 'Webinar segment not found' });
+      const audio = await ensureSegmentAudio(segment);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Content-Length', String(audio.length));
+      return res.send(audio);
+    } catch (error) {
+      console.warn('[webinar] Cartesia narration unavailable:', error instanceof Error ? error.message : String(error));
+      return res.status(503).json({ error: 'Premium webinar narration is temporarily unavailable' });
+    }
+  });
+
   router.get('/:slug', async (req, res) => {
     try {
       let session = await getSessionBySlug(String(req.params.slug));
       if (!session) return res.status(404).json({ error: 'Webinar not found' });
       session = await maybeAdvance(session);
+      prewarmSegmentAudio(Math.max(0, Math.min(DEFAULT_WEBINAR_SEGMENTS.length - 1, session.current_segment)));
       return res.json(await publicSnapshot(session));
     } catch (error) {
       console.error('[webinar] public state failed', error);
