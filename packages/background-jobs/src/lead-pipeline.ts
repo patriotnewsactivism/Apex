@@ -950,8 +950,8 @@ function replaceCompanyNameText(value: string | null | undefined, oldName: strin
   return value.split(oldName).join(newName);
 }
 
-export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked: number; renamed: number; mismatched: number }> {
-  if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0 };
+export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked: number; renamed: number; mismatched: number; contactsAdded: number }> {
+  if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0 };
   webIdentityRepairRunning = true;
   try {
     const batchSize = Math.max(1, Math.min(50, Math.trunc(limit)));
@@ -970,6 +970,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
 
     let renamed = 0;
     let mismatched = 0;
+    let contactsAdded = 0;
     await runPool(rows, Math.min(8, batchSize), async (lead) => {
       const identity = await verifyBusinessWebsiteIdentity({
         website: lead.website,
@@ -978,6 +979,10 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         currentName: lead.companyName,
       });
       const oldName = lead.companyName;
+      const contactEmail = lead.contactEmail ?? identity.contactEmail;
+      const contactPhone = lead.contactPhone ?? identity.contactPhone;
+      const contactSourceUrl = lead.contactSourceUrl ?? identity.contactSourceUrl;
+      if ((!lead.contactEmail && contactEmail) || (!lead.contactPhone && contactPhone)) contactsAdded++;
       const candidate = identity.canonicalName?.trim();
       const newName = candidate && (identity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
         ? candidate
@@ -998,6 +1003,11 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
       await db.update(researchedLeads).set({
         companyName: newName,
         website: identity.homepage ?? lead.website,
+        contactEmail,
+        contactPhone,
+        contactSourceUrl,
+        contactResearchStatus: contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
+        contactResearchedAt: contactEmail || contactPhone ? new Date() : lead.contactResearchedAt,
         enrichment: {
           ...(lead.enrichment ?? {}),
           businessVerification: identity,
@@ -1019,15 +1029,22 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
             ...((lead.enrichment as Record<string, unknown> | null) ?? {}),
             businessVerification: identity,
           },
+          contactResearch: {
+            decisionMakerName: lead.decisionMakerName,
+            contactEmail,
+            contactPhone,
+            contactSourceUrl,
+            contactResearchStatus: contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
+          },
           updatedAt: new Date(),
         }).where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
       }
     });
 
     if (rows.length > 0) {
-      console.log(`[lead-identity] checked=${rows.length} renamed=${renamed} mismatched=${mismatched}`);
+      console.log(`[lead-identity] checked=${rows.length} renamed=${renamed} mismatched=${mismatched} contactsAdded=${contactsAdded}`);
     }
-    return { checked: rows.length, renamed, mismatched };
+    return { checked: rows.length, renamed, mismatched, contactsAdded };
   } finally {
     webIdentityRepairRunning = false;
   }
