@@ -2971,6 +2971,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 customerNumber: call.toNumber,
                 customerName: customerName ?? null,
                 disposition: 'no_decision',
+                summary: 'Outbound call initiated.',
+                nextAction: 'Await call outcome.',
                 createdByAgentId: ctx.agentId,
                 createdAt: new Date(),
                 updatedAt: new Date(),
@@ -3008,6 +3010,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               customerNumber,
               customerName: customerName ?? null,
               disposition: 'failed_to_dial',
+              summary: 'Outbound call request failed before a conversation connected.',
+              nextAction: 'Inspect the provider error and correct the dialing/configuration issue before retrying.',
               endedReason: errorMsg.slice(0, 500),
               createdByAgentId: ctx.agentId,
               createdAt: new Date(),
@@ -3024,7 +3028,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // ─── Get outbound call status + transcript ────────────────────────────
     {
       name: 'get_call_status',
-      description: 'Check the status of an outbound call. New calls are Telnyx call-bridge sessions; historical Vapi call IDs are read as a compatibility fallback.',
+      description: 'Check the status of an outbound call. Current APEX sales calls use Cartesia; historical Telnyx call-bridge and Vapi call IDs remain readable as compatibility fallbacks.',
       schema: z.object({
         callId: z.string().describe('The call bridge session ID returned from make_outbound_call'),
       }),
