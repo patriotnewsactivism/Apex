@@ -723,10 +723,13 @@ export class CampaignRunner {
             provider?: string;
             attempts?: string[];
             error?: string;
+            cacheHit?: boolean;
+            cacheCoalesced?: boolean;
           };
+          const baseProvider = payload.provider ?? 'unknown';
           return {
             source: 'directory',
-            provider: payload.provider ?? 'unknown',
+            provider: payload.cacheHit ? `cache:${baseProvider}` : baseProvider,
             businesses: (payload.businesses ?? []).slice(0, maxResults),
             diagnostics: [
               ...(payload.attempts ?? []),
@@ -767,6 +770,8 @@ export class CampaignRunner {
             results?: Array<{ title?: string; url?: string; snippet?: string }>;
             diagnostics?: string[];
             suggestion?: string;
+            cacheHit?: boolean;
+            cacheCoalesced?: boolean;
           };
           const businesses = (payload.results ?? [])
             .map((item) => businessFromWebResult(item, segment.city))
@@ -774,7 +779,7 @@ export class CampaignRunner {
             .slice(0, maxResults);
           return {
             source: 'web',
-            provider: businesses.length > 0 ? `web:${payload.provider ?? 'search'}` : 'none',
+            provider: businesses.length > 0 ? `${payload.cacheHit ? 'cache:' : ''}web:${payload.provider ?? 'search'}` : 'none',
             businesses,
             diagnostics: [
               ...(payload.diagnostics ?? []),
