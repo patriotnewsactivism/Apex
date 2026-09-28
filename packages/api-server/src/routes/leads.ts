@@ -190,7 +190,11 @@ export function createLeadsRouter(): Router {
     const { db, researchedLeads } = await import('@workspace/db');
 
     const conditions = [];
-    if (req.query.status) conditions.push(eq(researchedLeads.status, String(req.query.status)));
+    if (req.query.status) {
+      conditions.push(eq(researchedLeads.status, String(req.query.status)));
+    } else {
+      conditions.push(sql`${researchedLeads.status} <> 'rejected'`);
+    }
     if (req.query.pipelineState) conditions.push(eq(researchedLeads.pipelineState, String(req.query.pipelineState)));
     if (req.query.industry) conditions.push(ilike(researchedLeads.industry, `%${String(req.query.industry)}%`));
     if (req.query.city) conditions.push(ilike(researchedLeads.city, `%${String(req.query.city)}%`));
