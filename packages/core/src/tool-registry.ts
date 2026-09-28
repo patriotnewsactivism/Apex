@@ -616,9 +616,10 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       schema: z.object({
         query: z.string().describe('Search query — be specific for best results'),
         maxResults: z.number().optional().describe('Maximum results to return (default 10)'),
+        fast: z.boolean().optional().describe('Use the lowest-latency search mode. Ideal for lead discovery where URLs matter more than an AI-written answer.'),
       }),
       requiresApproval: false,
-      async execute({ query, maxResults }) {
+      async execute({ query, maxResults, fast }) {
         const n = maxResults ?? 10;
         const results: Array<{ title: string; url: string; snippet: string }> = [];
         // Why each provider produced nothing. A non-ok HTTP response used to
@@ -644,8 +645,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 api_key: tavilyKey,
                 query,
                 max_results: n,
-                search_depth: 'advanced',
-                include_answer: true,
+                search_depth: fast ? 'basic' : 'advanced',
+                include_answer: !fast,
               }),
               signal: AbortSignal.timeout(20_000),
             });
