@@ -152,14 +152,17 @@ check(
     /inactivity_check_in_secs:\s*5/.test(reconciler),
 );
 check(
-  'Cartesia sales voice cadence is slightly slowed to reduce PSTN\/SIP clipping',
-  /voice_id:\s*voiceId[\s\S]{0,120}speed:\s*0\.96/.test(reconciler),
+  'Cartesia sales voice is materially slowed for clear natural telephony speech',
+  /voice_id:\s*voiceId[\s\S]{0,180}speed:\s*0\.86/.test(reconciler),
 );
 check(
-  'Cartesia sales responses are constrained for lower conversational latency',
-  /temperature:\s*0\.2/.test(reconciler) &&
-    /max_output_tokens:\s*96/.test(reconciler) &&
-    /usually under twelve spoken words/.test(reconciler),
+  'Cartesia sales responses prioritize stable English and complete natural sentences',
+  /LANGUAGE LOCK: speak English only/.test(reconciler) &&
+    /Never switch to Spanish/.test(reconciler) &&
+    /VOICE PACING: speak at a calm American conversational pace/.test(reconciler) &&
+    /temperature:\s*0\.12/.test(reconciler) &&
+    /max_output_tokens:\s*144/.test(reconciler) &&
+    /one or two complete sentences per turn/.test(reconciler),
 );
 check(
   'short uncertain transcripts are clarified instead of guessed or used to hang up',
@@ -178,9 +181,10 @@ check(
 );
 check(
   'BuildMyBot sales pitch is conversational and happens after rapport',
-  /firstMessage:\s*'Gotcha\. I’ll keep it quick/.test(playbooks) &&
-    /What do you normally do with calls that come in when nobody can pick up\?/.test(playbooks) &&
-    /Build brief rapport before the pitch/.test(playbooks),
+  /firstMessage:\s*'Gotcha — appreciate it\. The reason I called is pretty simple\./.test(playbooks) &&
+    /What do you normally do when a call comes in and nobody can answer\?/.test(playbooks) &&
+    /Speak English only/.test(playbooks) &&
+    /Use complete sentences at a relaxed pace/.test(playbooks),
 );
 
 
