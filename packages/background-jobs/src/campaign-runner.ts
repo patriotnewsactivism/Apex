@@ -727,7 +727,7 @@ export class CampaignRunner {
           const result = await registry.execute(
             'webSearch',
             {
-              query: `${effectiveSearch.subcategory} ${segment.city} official business website`,
+              query: `${query} official business website`,
               maxResults,
               fast: true,
             },
