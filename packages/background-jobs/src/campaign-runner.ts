@@ -818,28 +818,48 @@ export class CampaignRunner {
       const known = await this.knownDomains();
       const { fresh, duplicates } = dedupeDiscoveredBusinesses(found, known);
 
+      // Reserve every fresh domain synchronously BEFORE the first insert await.
+      // Multiple segment promises run concurrently; adding domains only after
+      // each insert allowed two shards from the same city to both decide that
+      // the same 15–20 businesses were fresh and insert duplicate batches.
+      const reservedDomains = new Map<DirectoryLead, string>();
+      for (const business of fresh) {
+        const domain = normalizeLeadDomain(business.website);
+        if (domain) {
+          known.add(domain);
+          reservedDomains.set(business, domain);
+        }
+      }
+
       let saved = 0;
       for (const business of fresh) {
-        await insertDiscoveredLead({
-          companyName: business.companyName,
-          website: business.website,
-          industry: segment.industry,
-          city: business.city || segment.city,
-          phone: business.phone,
-          source: provider,
-          campaignId: campaign.id,
-          campaignSegmentId: segment.id,
-          researchedByAgentId: this.toolContext.agentId,
-          metadata: {
-            subcategory: effectiveSearch.subcategory,
-            searchIntent: segment.searchIntent,
-            query,
-            liveDemoMode: config.liveDemoMode,
-          },
-        });
-        const domain = normalizeLeadDomain(business.website);
-        if (domain) known.add(domain);
-        saved++;
+        try {
+          await insertDiscoveredLead({
+            companyName: business.companyName,
+            website: business.website,
+            industry: segment.industry,
+            city: business.city || segment.city,
+            phone: business.phone,
+            source: provider,
+            campaignId: campaign.id,
+            campaignSegmentId: segment.id,
+            researchedByAgentId: this.toolContext.agentId,
+            metadata: {
+              subcategory: effectiveSearch.subcategory,
+              searchIntent: segment.searchIntent,
+              query,
+              liveDemoMode: config.liveDemoMode,
+            },
+          });
+          saved++;
+        } catch (err) {
+          // Release the in-process reservation only when the insert failed so a
+          // later shard may retry it. Successful rows stay reserved until the
+          // short cache refresh confirms them from Postgres.
+          const reserved = reservedDomains.get(business);
+          if (reserved) known.delete(reserved);
+          throw err;
+        }
       }
 
       const now = new Date();
