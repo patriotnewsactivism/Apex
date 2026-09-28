@@ -469,6 +469,7 @@ export class CampaignRunner {
   private readonly toolContext: ToolContext;
   private knownDomainsCache: Set<string> | null = null;
   private knownDomainsRefreshedAt = 0;
+  private knownDomainsLoad: Promise<Set<string>> | null = null;
   private readonly repairedCampaignIds = new Set<string>();
 
   constructor(
@@ -545,11 +546,26 @@ export class CampaignRunner {
    */
   private async knownDomains(): Promise<Set<string>> {
     const now = Date.now();
-    if (!this.knownDomainsCache || now - this.knownDomainsRefreshedAt > 30_000) {
-      this.knownDomainsCache = await getKnownLeadDomains();
-      this.knownDomainsRefreshedAt = now;
+    if (this.knownDomainsCache && now - this.knownDomainsRefreshedAt <= 30_000) {
+      return this.knownDomainsCache;
     }
-    return this.knownDomainsCache;
+
+    // Six segments can arrive here on the same event-loop turn. Without a
+    // shared in-flight promise they each loaded their own Set, defeating the
+    // reservation logic and allowing identical domains to be inserted by
+    // neighboring shards. One loader, one shared Set.
+    if (!this.knownDomainsLoad) {
+      this.knownDomainsLoad = getKnownLeadDomains()
+        .then((domains) => {
+          this.knownDomainsCache = domains;
+          this.knownDomainsRefreshedAt = Date.now();
+          return domains;
+        })
+        .finally(() => {
+          this.knownDomainsLoad = null;
+        });
+    }
+    return this.knownDomainsLoad;
   }
 
   /** A runner that dies mid-segment leaves it in_progress forever. Same
