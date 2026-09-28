@@ -1,14 +1,12 @@
 /**
  * Guards the current APEX voice architecture:
  *
- * 1. Browser/admin Live Talk prefers a direct persistent Gemini 3.8 Live
- *    WebSocket session with full-duplex barge-in, async NON_BLOCKING tools,
- *    session resumption, audio transcription, context compression, and
- *    durable transcript persistence.
- * 2. live-voice.ts retains the proven Deepgram/Groq/ElevenLabs stack only as
- *    an availability fallback when Gemini cannot reach setupComplete.
- * 3. Telnyx/Deepgram and Vapi telephone paths keep their explicitly pinned
- *    ElevenLabs voice configuration.
+ * 1. Browser/admin Live Talk defaults to Deepgram/Groq with Cartesia TTS,
+ *    pinned to the owned "Don Matthews" Cartesia voice clone.
+ * 2. Gemini 3.8 Live remains an explicit opt-in compatibility path, not the
+ *    default, because its native audio cannot use the Cartesia clone.
+ * 3. Telnyx/Deepgram and Vapi telephone paths keep their separate voice
+ *    configuration.
  *
  * Structural source checks are used because CI does not carry production
  * provider credentials. Production verification is completed after deploy
@@ -80,25 +78,59 @@ function checkSpeakBlock(label: string, source: string): void {
   );
 }
 
+
+function checkCartesiaLiveSpeakBlock(source: string): void {
+  const speakStart = source.indexOf('speak: {');
+  check('live-voice.ts: found Cartesia speak block', speakStart > -1);
+  if (speakStart === -1) return;
+  const speakBlock = source.slice(speakStart, speakStart + 1200);
+
+  check(
+    'live-voice.ts: Quick Chat Live uses Cartesia TTS',
+    /type:\s*'cartesia'/.test(speakBlock),
+    speakBlock,
+  );
+  check(
+    'live-voice.ts: Cartesia uses the resolved owned Don Matthews voice id',
+    /voice:\s*\{\s*mode:\s*'id',\s*id:\s*cartesiaVoiceId\s*\}/.test(speakBlock) &&
+      /resolveCartesiaSalesVoiceId/.test(source) &&
+      /CARTESIA_SALES_VOICE_NAME/.test(source),
+  );
+  check(
+    'live-voice.ts: Cartesia Sonic model and TTS endpoint are pinned',
+    /model_id:\s*CARTESIA_LIVE_TTS_MODEL/.test(speakBlock) &&
+      /https:\/\/api\.cartesia\.ai\/tts\/bytes/.test(speakBlock),
+  );
+  check(
+    'live-voice.ts: Cartesia auth/version headers are server-side',
+    /'x-api-key':\s*cartesiaKey/.test(speakBlock) &&
+      /'Cartesia-Version':\s*CARTESIA_API_VERSION/.test(speakBlock),
+  );
+  check(
+    'live-voice.ts: no generic female Aura or ElevenLabs fallback remains on Quick Chat Live',
+    !/aura-2-asteria-en/.test(source) &&
+      !/DEFAULT_ELEVENLABS_VOICE_ID/.test(source),
+  );
+}
+
 function main(): void {
   console.log('Verifying voice-agent realism and live-voice persistence...\n');
 
-  // ── Browser/admin Live Talk: Gemini primary, Deepgram fallback ─────────────
+  // ── Browser/admin Live Talk: Deepgram/Groq + owned Cartesia voice ─────────
   const liveVoiceSource = fs.readFileSync(path.join(root, 'packages/api-server/src/live-voice.ts'), 'utf8');
   const geminiLiveSource = fs.readFileSync(path.join(root, 'packages/api-server/src/gemini-live-session.ts'), 'utf8');
 
   check(
-    'live-voice.ts attempts the direct Gemini session before the Deepgram fallback',
+    'live-voice.ts keeps Gemini available only as an explicit opt-in path',
     /tryStartGeminiLiveSession/.test(liveVoiceSource) &&
-      liveVoiceSource.indexOf('tryStartGeminiLiveSession') < liveVoiceSource.indexOf('connectToDeepgram();'),
+      /requestedProvider === 'gemini'/.test(liveVoiceSource),
   );
   check(
-    'live-voice.ts defaults the browser/admin provider to Gemini but permits an explicit Deepgram fallback override',
+    'live-voice.ts defaults browser/admin Live Talk to Deepgram so Cartesia owns speech output',
     /APEX_LIVE_VOICE_PROVIDER/.test(liveVoiceSource) &&
-      /\|\| 'gemini'/.test(liveVoiceSource) &&
-      /requestedProvider !== 'deepgram'/.test(liveVoiceSource),
+      /\|\| 'deepgram'/.test(liveVoiceSource),
   );
-  checkSpeakBlock('live-voice.ts Deepgram fallback', liveVoiceSource);
+  checkCartesiaLiveSpeakBlock(liveVoiceSource);
 
   check(
     'Gemini adapter pins the fast realtime model to gemini-3.8-live (not Extended Thinking in the critical path)',
