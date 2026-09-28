@@ -170,7 +170,8 @@ export async function countUsableCampaignLeads(campaignId: string): Promise<numb
     .where(
       and(
         eq(researchedLeads.campaignId, campaignId),
-        sql`${researchedLeads.status} <> 'rejected'`,
+        eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
+        eq(researchedLeads.status, 'qualified'),
         sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
         sql`(
           ${researchedLeads.source} IS NULL
