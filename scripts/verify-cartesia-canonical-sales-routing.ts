@@ -143,13 +143,13 @@ check(
 );
 
 check(
-  'outbound sales stays silent until callee speech, confirms identity, builds rapport, then pitches',
-  /initial_message:\s*''/.test(reconciler) &&
-    /stay completely silent when the phone connection opens/.test(reconciler) &&
-    /After their first audible greeting, say naturally: "Hey, is this \{\{customer_name\}\}\?"/.test(reconciler) &&
+  'outbound sales greets immediately on answer, confirms identity, builds rapport, then pitches',
+  /initial_message:\s*'Hey, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
+    /do not wait for the callee to say hello/.test(reconciler) &&
+    /opening must never depend on recognizing their first hello/.test(reconciler) &&
     /How’s your day going\?/.test(reconciler) &&
     /Only then transition into the reason for the call using this campaign line/.test(reconciler) &&
-    /inactivity_check_in_secs:\s*5/.test(reconciler),
+    /inactivity_check_in_secs:\s*4/.test(reconciler),
 );
 check(
   'Cartesia sales voice is materially slowed for clear natural telephony speech',
