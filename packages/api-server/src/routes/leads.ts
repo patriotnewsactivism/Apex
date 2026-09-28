@@ -387,9 +387,23 @@ export function createLeadsRouter(): Router {
   });
 
   // ─── PATCH /api/leads/:id — update status ────────────────────────────────
+  // The single sanctioned write path for lead status transitions. The Lead
+  // Researcher reaches it through the updateLeadStatus tool rather than
+  // mutating researched_leads itself, so this validation block stays the one
+  // source of truth for what a legal status is.
+  //
+  // Optional sourceUrl + note are audit metadata only: they record *why* a lead
+  // was moved and *where the evidence came from*. They are never treated as
+  // consent, and changing a status sends no email, places no call and creates
+  // no campaign.
   router.patch('/:id', async (req, res) => {
     const { db, researchedLeads } = await import('@workspace/db');
-    const { status, pipelineState } = req.body as { status?: string; pipelineState?: string };
+    const { status, pipelineState, sourceUrl, note } = req.body as {
+      status?: string;
+      pipelineState?: string;
+      sourceUrl?: string;
+      note?: string;
+    };
     const validStatuses = ['new', 'contacted', 'qualified', 'rejected'];
     const validPipelineStates = ['DISCOVERED', 'BASIC_ENRICHMENT', 'CONTACT_FOUND', 'QUALIFIED', 'DEEP_RESEARCH', 'CAMPAIGN_READY'];
     if (status && !validStatuses.includes(status)) {
@@ -404,14 +418,78 @@ export function createLeadsRouter(): Router {
       res.status(400).json({ error: 'status or pipelineState is required' });
       return;
     }
+    // Audit fields are validated when present but never required at the API
+    // edge, so existing callers keep working; the tool layer mandates them.
+    if (sourceUrl !== undefined) {
+      const ok = typeof sourceUrl === 'string' && sourceUrl.length <= 600 && /^https?:\/\/\S+$/i.test(sourceUrl.trim());
+      if (!ok) {
+        res.status(400).json({ error: 'sourceUrl must be an absolute http(s) URL of at most 600 characters' });
+        return;
+      }
+    }
+    if (note !== undefined) {
+      const ok = typeof note === 'string' && note.trim().length >= 3 && note.length <= 500;
+      if (!ok) {
+        res.status(400).json({ error: 'note must be a string of 3-500 characters' });
+        return;
+      }
+    }
+
+    const leadId = String(req.params.id);
+    // Read only the columns this transition needs. `select()` of the whole row
+    // breaks the moment the Drizzle schema is ahead of the deployed table, and
+    // a status update must not depend on unrelated columns existing.
+    const [existing] = await db
+      .select({
+        id: researchedLeads.id,
+        status: researchedLeads.status,
+        pipelineState: researchedLeads.pipelineState,
+        qualifiedAt: researchedLeads.qualifiedAt,
+        pipelineMetadata: researchedLeads.pipelineMetadata,
+      })
+      .from(researchedLeads)
+      .where(eq(researchedLeads.id, leadId))
+      .limit(1);
+    // Fail closed: an unknown id is an error, not a silent success. The old
+    // behaviour updated zero rows and still returned 200, which let a caller
+    // believe a lead had been qualified when nothing had changed.
+    if (!existing) {
+      res.status(404).json({ error: `Lead not found: ${leadId}` });
+      return;
+    }
+
+    const transitionedAt = new Date();
+    const previousStatus = existing.status;
+    const previousPipelineState = existing.pipelineState;
+    const auditEntry = {
+      at: transitionedAt.toISOString(),
+      from: previousStatus,
+      to: status ?? previousStatus,
+      fromPipelineState: previousPipelineState,
+      toPipelineState: pipelineState ?? existing.pipelineState,
+      sourceUrl: sourceUrl?.trim() ?? null,
+      note: note?.trim() ?? null,
+      // The acting agent, when the caller identifies itself. Never a secret.
+      actor: typeof req.headers['x-apex-actor'] === 'string' ? String(req.headers['x-apex-actor']).slice(0, 120) : 'api',
+    };
+    const statusAudit = [
+      ...(((existing.pipelineMetadata as { statusAudit?: unknown[] } | null)?.statusAudit as unknown[]) ?? []),
+      auditEntry,
+    ].slice(-20);
 
     await db
       .update(researchedLeads)
       .set({
         ...(status ? { status } : {}),
-        ...(pipelineState ? { pipelineState, pipelineStateChangedAt: new Date(), pipelineLeaseExpiresAt: null } : {}),
+        // qualified_at is the existing timestamp for this transition; set it
+        // once so a re-qualification does not silently rewrite history.
+        ...(status === 'qualified' && !existing.qualifiedAt ? { qualifiedAt: transitionedAt } : {}),
+        ...(pipelineState ? { pipelineState, pipelineStateChangedAt: transitionedAt, pipelineLeaseExpiresAt: null } : {}),
+        ...(sourceUrl !== undefined || note !== undefined
+          ? { pipelineMetadata: { ...((existing.pipelineMetadata as Record<string, unknown>) ?? {}), statusAudit } }
+          : {}),
       })
-      .where(eq(researchedLeads.id, String(req.params.id)));
+      .where(eq(researchedLeads.id, leadId));
 
     if (pipelineState) {
       broadcast({
@@ -423,7 +501,30 @@ export function createLeadsRouter(): Router {
       });
     }
 
-    res.json({ success: true, id: req.params.id, status, pipelineState });
+    // Read-back of the row we just wrote: the response asserts what is actually
+    // stored rather than echoing the request body.
+    const [persisted] = await db
+      .select({
+        id: researchedLeads.id,
+        status: researchedLeads.status,
+        pipelineState: researchedLeads.pipelineState,
+        qualifiedAt: researchedLeads.qualifiedAt,
+        pipelineMetadata: researchedLeads.pipelineMetadata,
+      })
+      .from(researchedLeads)
+      .where(eq(researchedLeads.id, leadId))
+      .limit(1);
+
+    res.json({
+      success: true,
+      id: req.params.id,
+      status,
+      pipelineState,
+      previousStatus,
+      previousPipelineState,
+      persistedStatus: persisted?.status ?? null,
+      persistedPipelineState: persisted?.pipelineState ?? null,
+    });
   });
 
   return router;
