@@ -14,8 +14,10 @@ import {
   Users,
 } from 'lucide-react';
 import { api, type WebinarAdminDashboard, type WebinarAdminSession } from '../lib/api.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 export function WebinarDirector() {
+  const isMobile = useIsMobile();
   const [sessions, setSessions] = useState<WebinarAdminSession[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [dashboard, setDashboard] = useState<WebinarAdminDashboard | null>(null);
@@ -171,7 +173,7 @@ export function WebinarDirector() {
         {copied && <div style={{ color: 'var(--color-apex-green)', fontSize: 11, marginTop: 6 }}>Attendee link copied.</div>}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(290px, 0.65fr)', gap: 18 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1.35fr) minmax(290px, 0.65fr)', gap: 18 }}>
         <section style={{ display: 'grid', gap: 18 }}>
           <div style={{ ...card, padding: 20 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
@@ -198,7 +200,7 @@ export function WebinarDirector() {
               )}
             </div>
 
-            <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+            <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
               <Metric label="Live" value={liveAttendees} />
               <Metric label="Registered" value={dashboard?.attendees.length ?? session?.attendee_count ?? 0} />
               <Metric label="Questions" value={dashboard?.questions.length ?? session?.question_count ?? 0} />
@@ -299,7 +301,7 @@ export function WebinarDirector() {
           </div>
         </section>
 
-        <aside style={{ ...card, padding: 16, alignSelf: 'start', position: 'sticky', top: 82 }}>
+        <aside style={{ ...card, padding: 16, alignSelf: 'start', position: isMobile ? 'static' : 'sticky', top: isMobile ? undefined : 82 }}>
           <div className="apex-eyebrow" style={{ margin: '4px 6px 10px' }}>Run of show</div>
           <div style={{ display: 'grid', gap: 4 }}>
             {segments.map((segment, index) => {
