@@ -12,18 +12,22 @@ import {
   type GeminiLiveFailoverState,
 } from './gemini-live-session.js';
 import { isExplicitLiveVoiceHangup } from './live-voice-control.js';
+import {
+  CARTESIA_API_VERSION,
+  CARTESIA_SALES_VOICE_NAME,
+  resolveCartesiaSalesVoiceId,
+} from '@workspace/core';
 
-// ─── Live voice: direct Gemini 3.8 Live, with Deepgram fallback ──────────────
+// ─── Live voice: Deepgram/Groq + the owned Cartesia Don Matthews voice ─────
 //
-// Browser/admin Live Talk now attempts a direct persistent Gemini 3.8 Live
-// BidiGenerateContent session first. This is the fast voice/orchestration
-// brain: full-duplex audio, native barge-in, non-blocking function calls, and
-// session resumption. Long-running work is dispatched to the APEX swarm.
+// Browser/admin Live Talk uses Deepgram for realtime listening/turn handling,
+// Groq for thinking/tools, and Cartesia for speech. The TTS voice is resolved
+// from the same owned Cartesia clone named "Don Matthews" used by APEX sales.
+// This keeps Quick Chat from ever falling back to a generic female voice.
 //
-// Deepgram Voice Agent + Groq + ElevenLabs remains a compatibility fallback
-// for a deployment whose Gemini project/key still cannot access the Live API.
-// This preserves availability while the old 1008 access-denial condition is
-// retired. Telephone voice is separate and continues through Telnyx.
+// Gemini Live remains an explicit opt-in compatibility path only. It is not
+// the default because Gemini's native audio voice cannot use the owned
+// Cartesia clone. Telephone voice is separate and continues through Telnyx.
 //
 // The "think" (LLM) step runs on Groq rather than Deepgram's own OpenAI
 // integration: Groq is one of Deepgram's explicitly documented "bring your
@@ -34,14 +38,10 @@ import { isExplicitLiveVoiceHangup } from './live-voice-control.js';
 // latency is a genuine fit for a live spoken conversation specifically,
 // not just the safe fallback.
 //
-// The "speak" (TTS) step is ElevenLabs when ELEVENLABS_API_KEY is configured
-// (2026-09-25) — Deepgram's own bundled Aura voice remained the fallback
-// only, not the target: it is functional but reads as noticeably less
-// realistic than ElevenLabs, and Matthew holds an upgraded ElevenLabs plan
-// specifically to fix that gap. Deepgram's Voice Agent API accepts ElevenLabs
-// as a third-party speak provider the same way Groq is a third-party think
-// provider — see ELEVENLABS_TTS_MODEL below for why the model is pinned to
-// Turbo 2.5 specifically, not ElevenLabs' higher-realism tiers.
+// The "speak" (TTS) step is Cartesia Sonic using the owned Don Matthews voice
+// clone. Deepgram's Voice Agent API supports Cartesia as a third-party speak
+// provider, so we keep the existing realtime STT/LLM/tool pipeline while
+// forcing the same voice identity used by the canonical Cartesia sales agent.
 //
 // Architecture unchanged from the Gemini version: server-to-server relay.
 // The browser never sees DEEPGRAM_API_KEY or GROQ_API_KEY — it opens a
@@ -83,20 +83,7 @@ const GROQ_ENDPOINT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 // with confirmed native tool-calling via the standard OpenAI `tools` format,
 // which is what this file's function-call relay depends on.
 const GROQ_THINK_MODEL = 'openai/gpt-oss-120b';
-// Deepgram's own docs specifically confirm Turbo 2.5 as the supported
-// ElevenLabs tier for their real-time agent speak relay ("we support any of
-// ElevenLabs' Turbo 2.5 voices to ensure low latency interactions"), and a
-// live production report (github.com/orgs/deepgram/discussions/1243) shows
-// ElevenLabs v3 does not support the streaming shape this integration needs
-// at all. Higher-realism tiers are used for Vapi phone calls instead (see
-// tool-registry.ts), where Vapi's own infrastructure handles that streaming
-// problem on its side.
-const ELEVENLABS_TTS_MODEL = 'eleven_turbo_v2_5';
-// The same voice id already confirmed live in production for Vapi calls
-// (tool-registry.ts) — reused here by default so Apex sounds like the same
-// person everywhere, and overridable via ELEVENLABS_VOICE_ID once a specific
-// account voice is connected.
-export const DEFAULT_ELEVENLABS_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+const CARTESIA_LIVE_TTS_MODEL = 'sonic-2';
 /** Deepgram closes an idle agent session without a periodic nudge. */
 const KEEPALIVE_INTERVAL_MS = 5_000;
 
@@ -195,8 +182,8 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     };
 
     const geminiKey = process.env.GEMINI_API_KEY;
-    const requestedProvider = (process.env.APEX_LIVE_VOICE_PROVIDER || 'gemini').toLowerCase();
-    if (geminiKey && requestedProvider !== 'deepgram') {
+    const requestedProvider = (process.env.APEX_LIVE_VOICE_PROVIDER || 'deepgram').toLowerCase();
+    if (geminiKey && requestedProvider === 'gemini') {
       client.on('message', captureDuringGeminiSetup);
       geminiStarted = await tryStartGeminiLiveSession({
         client,
@@ -236,13 +223,34 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
         '[live-voice] Gemini is active, but mid-call Deepgram failover is unavailable because fallback credentials are missing',
       );
     }
-    // Optional: when absent, speak falls back to Deepgram's bundled Aura
-    // voice (still functional) rather than breaking live voice entirely over
-    // a missing quality enhancement.
-    const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
-    const elevenLabsVoiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_ELEVENLABS_VOICE_ID;
+    const cartesiaKey = process.env.CARTESIA_API_KEY?.trim();
+    if (!cartesiaKey && !geminiStarted) {
+      client.send(JSON.stringify({
+        type: 'error',
+        message: 'CARTESIA_API_KEY is not configured; Quick Chat Live refuses to use a generic fallback voice.',
+      }));
+      client.close(1011, 'Cartesia voice not configured');
+      return;
+    }
 
-    console.log('🎙️  Live voice client connected');
+    let cartesiaVoiceId: string | null = null;
+    if (cartesiaKey) {
+      try {
+        cartesiaVoiceId = await resolveCartesiaSalesVoiceId();
+      } catch (err) {
+        console.error('[live-voice] Don Matthews Cartesia voice resolution failed:', err instanceof Error ? err.message : String(err));
+        if (!geminiStarted) {
+          client.send(JSON.stringify({
+            type: 'error',
+            message: `The owned Cartesia voice "${CARTESIA_SALES_VOICE_NAME}" is unavailable; Quick Chat Live will not substitute another voice.`,
+          }));
+          client.close(1011, 'Cartesia voice unavailable');
+          return;
+        }
+      }
+    }
+
+    console.log(`🎙️  Live voice client connected${cartesiaVoiceId ? ` with Cartesia voice ${CARTESIA_SALES_VOICE_NAME}` : ''}`);
 
     // Deepgram persistence is lazy: when Gemini remains healthy there should
     // not be a second empty voice-history session. A row is created only when
@@ -393,21 +401,22 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
                     `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
                   functions: CHAT_TOOLS,
                 },
-                speak: elevenLabsKey
-                  ? {
-                      provider: { type: 'eleven_labs', model_id: ELEVENLABS_TTS_MODEL, language_code: 'en' },
-                      // endpoint MUST be a sibling of provider, not nested inside
-                      // it — nesting it there is a documented, real integration
-                      // failure (UNPARSABLE_CLIENT_MESSAGE -> FAILED_TO_SPEAK,
-                      // github.com/orgs/deepgram/discussions/1243), the exact
-                      // same class of "field one level too shallow" bug already
-                      // found and fixed in Vapi's tools placement.
-                      endpoint: {
-                        url: `https://api.elevenlabs.io/v1/text-to-speech/${elevenLabsVoiceId}/stream`,
-                        headers: { 'xi-api-key': elevenLabsKey, 'Content-Type': 'application/json' },
-                      },
-                    }
-                  : { provider: { type: 'deepgram', model: 'aura-2-asteria-en' } },
+                speak: {
+                  provider: {
+                    type: 'cartesia',
+                    model_id: CARTESIA_LIVE_TTS_MODEL,
+                    voice: { mode: 'id', id: cartesiaVoiceId },
+                    language: 'en',
+                    speed: 'normal',
+                  },
+                  endpoint: {
+                    url: 'https://api.cartesia.ai/tts/bytes',
+                    headers: {
+                      'x-api-key': cartesiaKey,
+                      'Cartesia-Version': CARTESIA_API_VERSION,
+                    },
+                  },
+                },
               },
             });
             break;
