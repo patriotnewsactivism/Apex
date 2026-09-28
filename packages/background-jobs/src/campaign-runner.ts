@@ -19,6 +19,7 @@ import { citiesForStates, allStateCodes } from './us-geo.js';
 import {
   dedupeDiscoveredBusinesses,
   generateSearchShards,
+  subcategoriesForIndustry,
   getKnownLeadDomains,
   getLeadPipelineConfig,
   insertDiscoveredLead,
@@ -388,6 +389,37 @@ function domainOf(url: string | undefined): string | null {
   }
 }
 
+const LEGACY_GENERIC_SUBCATEGORIES = ['company', 'service provider', 'contractor', 'local business'] as const;
+
+export function effectiveSegmentSearch(segment: Pick<
+  typeof campaignSegments.$inferSelect,
+  'industry' | 'city' | 'subcategory' | 'searchIntent' | 'query'
+>): { subcategory: string; query: string; repairedLegacyGeneric: boolean } {
+  const specific = subcategoriesForIndustry(segment.industry);
+  const legacyIndex = LEGACY_GENERIC_SUBCATEGORIES.indexOf(
+    segment.subcategory as (typeof LEGACY_GENERIC_SUBCATEGORIES)[number],
+  );
+
+  // Older campaigns stored generic shards before an industry-specific mapping
+  // existed. Do not keep burning those stored queries forever: remap each of
+  // the four generic buckets onto the industry's current specific taxonomy.
+  if (legacyIndex >= 0 && specific.some((value) => !LEGACY_GENERIC_SUBCATEGORIES.includes(
+    value as (typeof LEGACY_GENERIC_SUBCATEGORIES)[number],
+  ))) {
+    const subcategory = specific[legacyIndex % specific.length];
+    const query = segment.searchIntent === 'directory'
+      ? `${subcategory} ${segment.city}`
+      : `${segment.searchIntent} ${subcategory} ${segment.city}`;
+    return { subcategory, query, repairedLegacyGeneric: true };
+  }
+
+  return {
+    subcategory: segment.subcategory,
+    query: segment.query ?? `${segment.searchIntent} ${segment.subcategory} ${segment.city}`,
+    repairedLegacyGeneric: false,
+  };
+}
+
 const SEARCH_DIRECTORY_HOSTS = [
   'yelp.com',
   'facebook.com',
@@ -516,6 +548,56 @@ export class CampaignRunner {
     }
   }
 
+  /**
+   * Repair campaign rows created before an industry-specific shard mapping
+   * existed. Zero-result rows that were incorrectly marked exhausted are
+   * re-queued; pending rows are rewritten so the dashboard/database reflect
+   * the query the runner will actually execute.
+   */
+  private async repairLegacyGenericSegments(campaignId: string): Promise<void> {
+    const candidates = await db
+      .select()
+      .from(campaignSegments)
+      .where(
+        and(
+          eq(campaignSegments.campaignId, campaignId),
+          or(eq(campaignSegments.status, 'pending'), eq(campaignSegments.status, 'exhausted')),
+        ),
+      )
+      .limit(MAX_CAMPAIGN_SEGMENTS);
+
+    let repaired = 0;
+    let requeued = 0;
+    for (const segment of candidates) {
+      const effective = effectiveSegmentSearch(segment);
+      if (!effective.repairedLegacyGeneric) continue;
+      const wasFalseExhaustion = segment.status === 'exhausted' && (segment.saved ?? 0) === 0;
+      await db
+        .update(campaignSegments)
+        .set({
+          subcategory: effective.subcategory,
+          query: effective.query,
+          ...(wasFalseExhaustion
+            ? {
+                status: 'pending' as const,
+                leasedAt: null,
+                completedAt: null,
+                lastError: 'Requeued after industry-specific search-shard repair.',
+              }
+            : {}),
+        })
+        .where(eq(campaignSegments.id, segment.id));
+      repaired++;
+      if (wasFalseExhaustion) requeued++;
+    }
+
+    if (repaired > 0) {
+      console.warn(
+        `[campaigns] Repaired ${repaired} legacy generic segment(s) for campaign ${campaignId}; requeued ${requeued} false exhaustion(s)`,
+      );
+    }
+  }
+
   /** Atomically claim the next pending segment of a running campaign.
    *  The conditional UPDATE is the claim: two runners racing cannot both
    *  match status='pending' on the same row. */
@@ -530,6 +612,8 @@ export class CampaignRunner {
       .orderBy(asc(leadCampaigns.createdAt))
       .limit(1);
     if (!campaign) return [];
+
+    await this.repairLegacyGenericSegments(campaign.id);
 
     const nextSegments = await db
       .select()
@@ -569,7 +653,8 @@ export class CampaignRunner {
     try {
       const registry = getToolRegistry();
       const config = getLeadPipelineConfig();
-      const query = segment.query ?? `${segment.searchIntent} ${segment.subcategory} ${segment.city}`;
+      const effectiveSearch = effectiveSegmentSearch(segment);
+      const query = effectiveSearch.query;
 
       const result = await registry.execute('searchBusinessDirectory', { query }, this.toolContext);
       if (!result.success) throw new Error(result.error ?? 'searchBusinessDirectory failed');
@@ -592,7 +677,7 @@ export class CampaignRunner {
         const webResult = await registry.execute(
           'webSearch',
           {
-            query: `${segment.subcategory} ${segment.city} official business website`,
+            query: `${effectiveSearch.subcategory} ${segment.city} official business website`,
             maxResults: Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard),
           },
           this.toolContext,
@@ -647,7 +732,7 @@ export class CampaignRunner {
           campaignSegmentId: segment.id,
           researchedByAgentId: this.toolContext.agentId,
           metadata: {
-            subcategory: segment.subcategory,
+            subcategory: effectiveSearch.subcategory,
             searchIntent: segment.searchIntent,
             query,
             liveDemoMode: config.liveDemoMode,
