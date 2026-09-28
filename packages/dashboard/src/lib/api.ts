@@ -265,6 +265,16 @@ export interface WebinarAdminDashboard {
     created_at: string;
     answered_at: string | null;
   }>;
+  producer: {
+    timing: 'waiting' | 'on_track' | 'move_on' | 'human_floor' | 'complete';
+    elapsedSeconds: number;
+    targetSeconds: number;
+    secondsRemaining: number;
+    recommendation: string;
+    highIntentCount: number;
+    topLeadNames: string[];
+    questionCount: number;
+  };
 }
 
 export const api = {
@@ -306,6 +316,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ message }),
       }),
+    followup: (id: string) =>
+      apiFetch<{ goalId: string; qualifiedAttendees: number }>(
+        `/webinar/admin/${encodeURIComponent(id)}/followup`,
+        { method: 'POST' },
+      ),
   },
   goals: {
     list: () => apiFetch<{ goals: Goal[] }>('/goals').then((r) => r.goals),

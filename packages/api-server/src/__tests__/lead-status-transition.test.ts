@@ -261,8 +261,12 @@ suite('lead status transition (PATCH /api/leads/:id)', () => {
       .where(eq(emailSends.leadId, leadId));
     expect(Number(sends?.count ?? 0)).toBe(0);
 
-    const readback = (await callTool('getResearchedLeadById', { leadId })) as Record<string, unknown>;
-    expect((readback.lead as Record<string, unknown>)?.status).toBe('qualified');
+    const readback = rowsOf(await callTool('listResearchedLeads', {
+      status: 'qualified',
+      ids: [leadId],
+      limit: 1,
+    }));
+    expect(readback[0]?.status).toBe('qualified');
     expect(readback.outreach).toMatchObject({ sendCount: 0 });
   });
 

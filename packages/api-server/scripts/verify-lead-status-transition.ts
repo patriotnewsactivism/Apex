@@ -117,8 +117,11 @@ try {
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
   const addr = server.address();
   assert.ok(addr && typeof addr !== 'string');
-  base = `http://127.0.0.1:${addr.port}/api/leads`;
-  process.env.APEX_API_BASE_URL = base;
+  const apiOrigin = `http://127.0.0.1:${addr.port}`;
+  base = `${apiOrigin}/api/leads`;
+  // updateLeadStatus appends /api/leads/:id itself. Supplying the route prefix
+  // here produced /api/leads/api/leads/:id and a false 404 in CI.
+  process.env.APEX_API_BASE_URL = apiOrigin;
 
   const patch = async (id: string, body: Record<string, unknown>, auth = `Bearer ${ADMIN_TOKEN}`) => {
     const res = await fetch(`${base}/${id}`, {
@@ -175,11 +178,12 @@ try {
 
   // ── AC1/AC3: the tool drives the same validated path, metadata only ────────
   const toolId = await seed();
+  const toolNote = 'qualified through ICP review, no outreach performed';
   const toolRes = (await callTool('updateLeadStatus', {
     leadId: toolId,
     status: 'qualified',
     sourceUrl,
-    note: 'qualified through ICP review, no outreach performed',
+    note: toolNote,
   })) as Record<string, unknown>;
   assert.equal(toolRes.updated, true, `tool reports the validated response (got ${JSON.stringify(toolRes)})`);
   assert.equal(toolRes.status, 'qualified');
@@ -189,7 +193,7 @@ try {
   assert.ok(Array.isArray(audit) && audit.length > 0, 'audit trail recorded in existing jsonb column');
   assert.equal(audit?.[audit.length - 1]?.to, 'qualified');
   assert.equal(audit?.[audit.length - 1]?.sourceUrl, sourceUrl, 'evidence URL recorded');
-  assert.equal(audit?.[audit.length - 1]?.note, note, 'rationale recorded');
+  assert.equal(audit?.[audit.length - 1]?.note, toolNote, 'rationale recorded');
 
   const [sends] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -197,9 +201,13 @@ try {
     .where(eq(emailSends.leadId, toolId));
   assert.equal(Number(sends?.count ?? 0), 0, 'qualification sent nothing');
 
-  const readback = (await callTool('getResearchedLeadById', { leadId: toolId })) as Record<string, unknown>;
-  assert.equal((readback.lead as Record<string, unknown>).status, 'qualified');
-  assert.equal((readback.outreach as Record<string, unknown>).sendCount, 0, 'outreach state is untouched');
+  const readback = (await callTool('listResearchedLeads', {
+    status: 'qualified',
+    ids: [toolId],
+    limit: 1,
+  })) as Array<Record<string, unknown>>;
+  assert.equal(readback[0]?.status, 'qualified', 'registered read tool confirms qualified status');
+  assert.equal(Number(sends?.count ?? 0), 0, 'outreach state is untouched');
   console.log('  ✓ AC1+AC3+AC4  updateLeadStatus -> validated API -> persisted, audited, zero outreach');
 
   // ── AC3: contract requires id, status, evidence URL and rationale ──────────

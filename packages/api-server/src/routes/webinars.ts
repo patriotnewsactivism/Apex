@@ -5,13 +5,9 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '@workspace/db';
 import { sql } from 'drizzle-orm';
-import {
-  CARTESIA_API_VERSION,
-  createLLMClient,
-  getDefaultLLMConfig,
-  resolveCartesiaSalesVoiceId,
-} from '@workspace/core';
+import { createLLMClient, getDefaultLLMConfig, synthesizeCartesiaSalesSpeech } from '@workspace/core';
 import type { LLMMessage } from '@workspace/core';
+import type { ApexCEO } from '@workspace/agents';
 
 type WebinarSessionRow = {
   id: string;
@@ -216,68 +212,70 @@ export const DEFAULT_WEBINAR_SEGMENTS: WebinarSegment[] = [
 ];
 
 
-const webinarAudioBuilds = new Map<string, Promise<Buffer>>();
+const WEBINAR_AUDIO_CACHE_TTL_MS = 6 * 60 * 60_000;
+const webinarAudioCache = new Map<string, { audio: Uint8Array; expiresAt: number }>();
 
-function webinarAudioPath(segment: WebinarSegment): string {
+async function webinarSpeech(cacheKey: string, text: string): Promise<Uint8Array> {
+  const cached = webinarAudioCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.audio;
+
+  const rendered = await synthesizeCartesiaSalesSpeech(text);
+  webinarAudioCache.set(cacheKey, {
+    audio: rendered.audio,
+    expiresAt: Date.now() + WEBINAR_AUDIO_CACHE_TTL_MS,
+  });
+
+  // Bound a long-lived process even if many unique Q&A items are generated.
+  if (webinarAudioCache.size > 250) {
+    const now = Date.now();
+    for (const [key, value] of webinarAudioCache) {
+      if (value.expiresAt <= now) webinarAudioCache.delete(key);
+    }
+    while (webinarAudioCache.size > 250) {
+      const first = webinarAudioCache.keys().next().value as string | undefined;
+      if (!first) break;
+      webinarAudioCache.delete(first);
+    }
+  }
+
+  return rendered.audio;
+}
+
+const webinarSegmentBuilds = new Map<string, Promise<Buffer>>();
+
+function webinarSegmentAudioPath(segment: WebinarSegment): string {
   const root = process.env.APEX_ARTIFACT_DIR?.trim() || '/tmp/apex-artifacts';
   const fingerprint = createHash('sha256').update(segment.narration).digest('hex').slice(0, 12);
   return join(root, 'webinar-audio', `${segment.id}-${fingerprint}.wav`);
 }
 
 async function ensureSegmentAudio(segment: WebinarSegment): Promise<Buffer> {
-  const path = webinarAudioPath(segment);
+  const path = webinarSegmentAudioPath(segment);
   try {
     return await readFile(path);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 
-  const existing = webinarAudioBuilds.get(path);
+  const existing = webinarSegmentBuilds.get(path);
   if (existing) return existing;
 
   const build = (async () => {
-    const apiKey = process.env.CARTESIA_API_KEY?.trim();
-    if (!apiKey) throw new Error('CARTESIA_API_KEY is not configured');
-
-    const voiceId = await resolveCartesiaSalesVoiceId();
-    const response = await fetch('https://api.cartesia.ai/tts/bytes', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Cartesia-Version': CARTESIA_API_VERSION,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model_id: 'sonic-2',
-        transcript: segment.narration,
-        voice: voiceId,
-        output_format: {
-          container: 'wav',
-          encoding: 'pcm_s16le',
-          sample_rate: 44100,
-        },
-        language: 'en',
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(`Cartesia webinar TTS failed (HTTP ${response.status}): ${detail.slice(0, 300)}`);
-    }
-
-    const audio = Buffer.from(await response.arrayBuffer());
+    const rendered = await synthesizeCartesiaSalesSpeech(segment.narration);
+    const audio = Buffer.from(rendered.audio);
     await mkdir(join(path, '..'), { recursive: true });
     await writeFile(path, audio);
-    console.log(`[webinar] Cached Don Matthews narration for segment ${segment.id} (${audio.length} bytes)`);
+    console.log(
+      `[webinar] Cached Don Matthews narration for segment ${segment.id} (${audio.length} bytes, ${rendered.modelId})`,
+    );
     return audio;
   })();
 
-  webinarAudioBuilds.set(path, build);
+  webinarSegmentBuilds.set(path, build);
   try {
     return await build;
   } finally {
-    webinarAudioBuilds.delete(path);
+    webinarSegmentBuilds.delete(path);
   }
 }
 
@@ -292,6 +290,97 @@ function prewarmSegmentAudio(index: number): void {
       );
     });
   }
+}
+
+export type WebinarProducerCue = {
+  timing: 'waiting' | 'on_track' | 'move_on' | 'human_floor' | 'complete';
+  elapsedSeconds: number;
+  targetSeconds: number;
+  secondsRemaining: number;
+  recommendation: string;
+  highIntentCount: number;
+  topLeadNames: string[];
+  questionCount: number;
+};
+
+export function buildWebinarProducerCue(
+  session: WebinarSessionRow,
+  attendees: Array<{ name?: string; engagement_score?: number }>,
+  questions: Array<{ status?: string }>,
+): WebinarProducerCue {
+  const index = Math.max(0, Math.min(DEFAULT_WEBINAR_SEGMENTS.length - 1, session.current_segment));
+  const segment = DEFAULT_WEBINAR_SEGMENTS[index]!;
+  const segmentStarted = session.segment_started_at ? new Date(session.segment_started_at).getTime() : NaN;
+  const elapsedSeconds = Number.isFinite(segmentStarted)
+    ? Math.max(0, Math.floor((Date.now() - segmentStarted) / 1000))
+    : 0;
+  const secondsRemaining = Math.max(0, segment.durationSeconds - elapsedSeconds);
+  const hot = attendees
+    .filter((a) => Number(a.engagement_score ?? 0) >= 25)
+    .sort((a, b) => Number(b.engagement_score ?? 0) - Number(a.engagement_score ?? 0));
+  const questionCount = questions.length;
+
+  if (session.status === 'ended') {
+    return {
+      timing: 'complete',
+      elapsedSeconds,
+      targetSeconds: segment.durationSeconds,
+      secondsRemaining,
+      recommendation: hot.length
+        ? `Webinar complete. Deploy follow-up for ${hot.length} high-intent attendee${hot.length === 1 ? '' : 's'} while the event is fresh.`
+        : 'Webinar complete. Review questions and CTA activity before deploying follow-up.',
+      highIntentCount: hot.length,
+      topLeadNames: hot.slice(0, 5).map((a) => a.name || 'Attendee'),
+      questionCount,
+    };
+  }
+
+  if (session.status === 'paused') {
+    return {
+      timing: 'human_floor',
+      elapsedSeconds,
+      targetSeconds: segment.durationSeconds,
+      secondsRemaining,
+      recommendation: 'Matthew has the floor. Resume AI hosting when the live intervention is finished.',
+      highIntentCount: hot.length,
+      topLeadNames: hot.slice(0, 5).map((a) => a.name || 'Attendee'),
+      questionCount,
+    };
+  }
+
+  if (session.status === 'draft') {
+    return {
+      timing: 'waiting',
+      elapsedSeconds: 0,
+      targetSeconds: segment.durationSeconds,
+      secondsRemaining: segment.durationSeconds,
+      recommendation: 'Room is staged. Open the attendee link in a second browser, verify audio, then go live.',
+      highIntentCount: hot.length,
+      topLeadNames: hot.slice(0, 5).map((a) => a.name || 'Attendee'),
+      questionCount,
+    };
+  }
+
+  const moveOn = elapsedSeconds >= segment.durationSeconds;
+  const recommendation =
+    segment.id === 'qa' && questionCount > 0
+      ? `Q&A is active with ${questionCount} question${questionCount === 1 ? '' : 's'}. Let the AI answer, and take over only for commitments or custom terms.`
+      : moveOn
+        ? `The "${segment.title}" segment has reached its target length. Advance now if autonomous mode has not already moved it.`
+        : hot.length > 0
+          ? `${hot.length} attendee${hot.length === 1 ? '' : 's'} now show high intent. Keep the CTA visible and continue the planned segment.`
+          : `Stay on "${segment.title}" for about ${secondsRemaining} more second${secondsRemaining === 1 ? '' : 's'}.`;
+
+  return {
+    timing: moveOn ? 'move_on' : 'on_track',
+    elapsedSeconds,
+    targetSeconds: segment.durationSeconds,
+    secondsRemaining,
+    recommendation,
+    highIntentCount: hot.length,
+    topLeadNames: hot.slice(0, 5).map((a) => a.name || 'Attendee'),
+    questionCount,
+  };
 }
 
 const joinSchema = z.object({
@@ -434,33 +523,95 @@ export function createPublicWebinarRouter() {
   const router = Router();
   const llm = createLLMClient(getDefaultLLMConfig('SALES'));
 
-  router.get('/:slug/audio/:segmentId', async (req, res) => {
-    try {
-      const session = await getSessionBySlug(String(req.params.slug));
-      if (!session) return res.status(404).json({ error: 'Webinar not found' });
-      const segment = DEFAULT_WEBINAR_SEGMENTS.find((item) => item.id === String(req.params.segmentId));
-      if (!segment) return res.status(404).json({ error: 'Webinar segment not found' });
-      const audio = await ensureSegmentAudio(segment);
-      res.setHeader('Content-Type', 'audio/wav');
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      res.setHeader('Content-Length', String(audio.length));
-      return res.send(audio);
-    } catch (error) {
-      console.warn('[webinar] Cartesia narration unavailable:', error instanceof Error ? error.message : String(error));
-      return res.status(503).json({ error: 'Premium webinar narration is temporarily unavailable' });
-    }
-  });
-
   router.get('/:slug', async (req, res) => {
     try {
       let session = await getSessionBySlug(String(req.params.slug));
       if (!session) return res.status(404).json({ error: 'Webinar not found' });
       session = await maybeAdvance(session);
-      prewarmSegmentAudio(Math.max(0, Math.min(DEFAULT_WEBINAR_SEGMENTS.length - 1, session.current_segment)));
+      prewarmSegmentAudio(
+        Math.max(0, Math.min(DEFAULT_WEBINAR_SEGMENTS.length - 1, session.current_segment)),
+      );
       return res.json(await publicSnapshot(session));
     } catch (error) {
       console.error('[webinar] public state failed', error);
       return res.status(500).json({ error: 'Unable to load webinar' });
+    }
+  });
+
+  const serveSegmentAudio = async (slug: string, segmentId: string, res: { status: (code: number) => any; json: (body: unknown) => any; setHeader: (name: string, value: string) => void; send: (body: Buffer) => any }) => {
+    try {
+      const session = await getSessionBySlug(slug);
+      if (!session) return res.status(404).json({ error: 'Webinar not found' });
+      const segment = DEFAULT_WEBINAR_SEGMENTS.find((item) => item.id === segmentId);
+      if (!segment) return res.status(404).json({ error: 'Segment not found' });
+      const audio = await ensureSegmentAudio(segment);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=86400');
+      res.setHeader('Content-Length', String(audio.length));
+      return res.send(audio);
+    } catch (error) {
+      console.warn('[webinar] segment speech failed:', error instanceof Error ? error.message : String(error));
+      return res.status(503).json({ error: 'AI host voice is temporarily unavailable' });
+    }
+  };
+
+  // Keep both paths: /audio/:segmentId shipped first; /audio/segment/:segmentId
+  // is explicit and is used by the richer room client in this release.
+  router.get('/:slug/audio/:segmentId', async (req, res) =>
+    serveSegmentAudio(String(req.params.slug), String(req.params.segmentId), res)
+  );
+
+  router.get('/:slug/audio/segment/:segmentId', async (req, res) =>
+    serveSegmentAudio(String(req.params.slug), String(req.params.segmentId), res)
+  );
+
+  router.get('/:slug/audio/question/:questionId', async (req, res) => {
+    try {
+      const session = await getSessionBySlug(String(req.params.slug));
+      if (!session) return res.status(404).json({ error: 'Webinar not found' });
+      const result = await db.execute(sql`
+        SELECT id, question, answer
+        FROM webinar_questions
+        WHERE id = ${String(req.params.questionId)}
+          AND session_id = ${session.id}
+          AND answer IS NOT NULL
+        LIMIT 1
+      `);
+      const question = rows<{ id: string; question: string; answer: string }>(result)[0];
+      if (!question) return res.status(404).json({ error: 'Answered question not found' });
+      const text = `Audience question: ${question.question}. ${question.answer}`;
+      const audio = await webinarSpeech(`question:${question.id}:${question.answer}`, text);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(Buffer.from(audio));
+    } catch (error) {
+      console.warn('[webinar] Q&A speech failed:', error instanceof Error ? error.message : String(error));
+      return res.status(503).json({ error: 'AI host voice is temporarily unavailable' });
+    }
+  });
+
+  router.get('/:slug/audio/event/:eventId', async (req, res) => {
+    try {
+      const session = await getSessionBySlug(String(req.params.slug));
+      if (!session) return res.status(404).json({ error: 'Webinar not found' });
+      const result = await db.execute(sql`
+        SELECT id, payload
+        FROM webinar_events
+        WHERE id = ${String(req.params.eventId)}
+          AND session_id = ${session.id}
+          AND type = 'host_message'
+        LIMIT 1
+      `);
+      const event = rows<{ id: string; payload: { message?: string } | null }>(result)[0];
+      const message = event?.payload?.message?.trim();
+      if (!event || !message) return res.status(404).json({ error: 'Host message not found' });
+      const audio = await webinarSpeech(`event:${event.id}:${message}`, message);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(Buffer.from(audio));
+    } catch (error) {
+      console.warn('[webinar] host-message speech failed:', error instanceof Error ? error.message : String(error));
+      return res.status(503).json({ error: 'AI host voice is temporarily unavailable' });
     }
   });
 
@@ -505,16 +656,30 @@ export function createPublicWebinarRouter() {
     const attendeeId = String(req.body?.attendeeId ?? '');
     const type = String(req.body?.type ?? '').slice(0, 40);
     const session = await getSessionBySlug(String(req.params.slug));
-    if (!session || !attendeeId || !['cta_click', 'question_view', 'rejoin'].includes(type)) {
+    if (!session || !attendeeId || !['cta_click', 'question_view', 'rejoin', 'roi_calculated'].includes(type)) {
       return res.status(400).json({ error: 'Invalid engagement event' });
     }
-    const points = type === 'cta_click' ? 25 : type === 'question_view' ? 2 : 1;
+    const points = type === 'cta_click' ? 25 : type === 'roi_calculated' ? 8 : type === 'question_view' ? 2 : 1;
     await db.execute(sql`
       UPDATE webinar_attendees
       SET engagement_score = engagement_score + ${points}, last_seen_at = now()
       WHERE id = ${attendeeId} AND session_id = ${session.id}
     `);
-    await recordEvent(session.id, type, session.current_segment, { attendeeId });
+    const eventPayload: Record<string, unknown> = { attendeeId };
+    if (type === 'roi_calculated') {
+      const clamp = (value: unknown, min: number, max: number) => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? Math.min(max, Math.max(min, numeric)) : null;
+      };
+      eventPayload.roi = {
+        missedOpportunities: clamp(req.body?.missedOpportunities, 0, 100000),
+        averageValue: clamp(req.body?.averageValue, 0, 10000000),
+        closeRate: clamp(req.body?.closeRate, 0, 100),
+        recoveryRate: clamp(req.body?.recoveryRate, 0, 100),
+        estimate: clamp(req.body?.estimate, 0, 1000000000),
+      };
+    }
+    await recordEvent(session.id, type, session.current_segment, eventPayload);
     return res.json({ ok: true });
   });
 
@@ -567,7 +732,7 @@ export function createPublicWebinarRouter() {
   return router;
 }
 
-export function createWebinarAdminRouter() {
+export function createWebinarAdminRouter(ceo: ApexCEO) {
   const router = Router();
 
   router.get('/sessions', async (_req, res) => {
@@ -626,11 +791,14 @@ export function createWebinarAdminRouter() {
       WHERE session_id = ${session.id}
       ORDER BY created_at DESC
     `);
+    const attendees = rows<{ name: string; engagement_score: number } & Record<string, unknown>>(attendeeResult);
+    const questions = rows<{ status: string } & Record<string, unknown>>(questionResult);
     return res.json({
       session,
       segments: DEFAULT_WEBINAR_SEGMENTS,
-      attendees: rows<Record<string, unknown>>(attendeeResult),
-      questions: rows<Record<string, unknown>>(questionResult),
+      attendees,
+      questions,
+      producer: buildWebinarProducerCue(session, attendees, questions),
     });
   });
 
@@ -716,6 +884,72 @@ export function createWebinarAdminRouter() {
     if (!message) return res.status(400).json({ error: 'Message is required' });
     await recordEvent(session.id, 'host_message', session.current_segment, { message });
     return res.json({ ok: true });
+  });
+
+  router.post('/:id/followup', async (req, res) => {
+    const session = await getSessionById(String(req.params.id));
+    if (!session) return res.status(404).json({ error: 'Webinar not found' });
+
+    const attendeeResult = await db.execute(sql`
+      SELECT id, name, email, company, phone, engagement_score, joined_at, last_seen_at
+      FROM webinar_attendees
+      WHERE session_id = ${session.id}
+      ORDER BY engagement_score DESC, joined_at ASC
+      LIMIT 100
+    `);
+    const questionResult = await db.execute(sql`
+      SELECT attendee_id, question, answer
+      FROM webinar_questions
+      WHERE session_id = ${session.id}
+      ORDER BY created_at ASC
+      LIMIT 100
+    `);
+    const attendees = rows<{
+      id: string;
+      name: string;
+      email: string;
+      company: string | null;
+      phone: string | null;
+      engagement_score: number;
+    }>(attendeeResult);
+    const questions = rows<{ attendee_id: string; question: string; answer: string | null }>(questionResult);
+    const qualified = attendees.filter((attendee) => attendee.engagement_score >= 15);
+    if (qualified.length === 0) {
+      return res.status(400).json({ error: 'No attendees have reached the follow-up threshold yet.' });
+    }
+
+    const attendeeLines = qualified.map((attendee) => {
+      const theirQuestions = questions
+        .filter((question) => question.attendee_id === attendee.id)
+        .map((question) => question.question)
+        .slice(0, 5);
+      return [
+        `- ${attendee.name} | ${attendee.company || 'company not supplied'} | ${attendee.email}`,
+        `  engagement score: ${attendee.engagement_score}`,
+        theirQuestions.length ? `  questions: ${theirQuestions.join(' | ')}` : '  questions: none submitted',
+      ].join('\n');
+    });
+
+    const goalId = await ceo.submitGoal(
+      `Follow up webinar leads — ${session.title}`,
+      [
+        `Follow up qualified attendees from webinar "${session.title}".`,
+        '',
+        'Use the existing APEX sales/outbound policy, suppression lists, approval rules, and campaign logging.',
+        'Personalize follow-up from each attendee\'s company, engagement, and submitted questions.',
+        'Do not send SMS or place an outbound call unless the existing compliance policy establishes the required consent/authority for that channel. Never infer consent from webinar registration alone.',
+        'Prefer a helpful recap and a concrete next step over generic sales copy. Record every attempted contact and result.',
+        '',
+        'Qualified attendees (engagement score >= 15):',
+        ...attendeeLines,
+      ].join('\n'),
+      2,
+    );
+    await recordEvent(session.id, 'followup_goal_created', session.current_segment, {
+      goalId,
+      qualifiedAttendees: qualified.length,
+    });
+    return res.json({ goalId, qualifiedAttendees: qualified.length });
   });
 
   return router;

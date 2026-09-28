@@ -25,6 +25,7 @@ export function WebinarDirector() {
   const [error, setError] = useState('');
   const [hostMessage, setHostMessage] = useState('');
   const [copied, setCopied] = useState(false);
+  const [followupResult, setFollowupResult] = useState<{ goalId: string; qualifiedAttendees: number } | null>(null);
 
   const refreshList = useCallback(async () => {
     const next = await api.webinars.list();
@@ -189,6 +190,18 @@ export function WebinarDirector() {
               {session && session.status !== 'ended' && (
                 <button onClick={() => void run('end', () => api.webinars.end(session.id))} disabled={Boolean(busy)} style={dangerButton}><Square size={15} /> End webinar</button>
               )}
+              {session && hotAttendees > 0 && (
+                <button
+                  onClick={() => void run('followup', async () => {
+                    const result = await api.webinars.followup(session.id);
+                    setFollowupResult(result);
+                  })}
+                  disabled={Boolean(busy)}
+                  style={secondaryButton}
+                >
+                  <Users size={15} /> Deploy APEX follow-up
+                </button>
+              )}
               {session && (
                 <button
                   onClick={() => void run('mode', () => api.webinars.mode(session.id, !session.autonomous))}
@@ -206,6 +219,11 @@ export function WebinarDirector() {
               <Metric label="Questions" value={dashboard?.questions.length ?? session?.question_count ?? 0} />
               <Metric label="High intent" value={hotAttendees} />
             </div>
+            {followupResult && (
+              <div style={{ marginTop: 12, padding: 11, borderRadius: 7, background: 'rgba(106,159,120,0.1)', border: '1px solid rgba(106,159,120,0.28)', color: 'var(--color-apex-green)', fontSize: 12 }}>
+                APEX follow-up deployed for {followupResult.qualifiedAttendees} qualified attendee{followupResult.qualifiedAttendees === 1 ? '' : 's'} · goal {followupResult.goalId}
+              </div>
+            )}
           </div>
 
           <div style={{ ...card, padding: 20 }}>
@@ -301,7 +319,30 @@ export function WebinarDirector() {
           </div>
         </section>
 
-        <aside style={{ ...card, padding: 16, alignSelf: 'start', position: isMobile ? 'static' : 'sticky', top: isMobile ? undefined : 82 }}>
+        <aside style={{ display: 'grid', gap: 14, alignSelf: 'start', position: isMobile ? 'static' : 'sticky', top: isMobile ? undefined : 82 }}>
+          <div style={{ ...card, padding: 16 }}>
+            <div className="apex-eyebrow" style={{ marginBottom: 10 }}>AI Producer</div>
+            <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--color-apex-text)' }}>
+              {dashboard?.producer.recommendation ?? 'Waiting for live state…'}
+            </div>
+            {dashboard?.producer && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 12 }}>
+                  <MiniMetric label="Segment elapsed" value={formatClock(dashboard.producer.elapsedSeconds)} />
+                  <MiniMetric label="Time left" value={formatClock(dashboard.producer.secondsRemaining)} />
+                  <MiniMetric label="High intent" value={String(dashboard.producer.highIntentCount)} />
+                  <MiniMetric label="Questions" value={String(dashboard.producer.questionCount)} />
+                </div>
+                {dashboard.producer.topLeadNames.length > 0 && (
+                  <div style={{ marginTop: 12, color: 'var(--color-apex-muted)', fontSize: 11, lineHeight: 1.5 }}>
+                    Hot attendees: {dashboard.producer.topLeadNames.join(', ')}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div style={{ ...card, padding: 16 }}>
           <div className="apex-eyebrow" style={{ margin: '4px 6px 10px' }}>Run of show</div>
           <div style={{ display: 'grid', gap: 4 }}>
             {segments.map((segment, index) => {
@@ -328,10 +369,25 @@ export function WebinarDirector() {
               );
             })}
           </div>
+          </div>
         </aside>
       </div>
 
       {error && <div style={{ color: 'var(--color-apex-red)', fontSize: 13 }}>{error}</div>}
+    </div>
+  );
+}
+
+function formatClock(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ padding: 9, border: '1px solid var(--color-apex-line)', borderRadius: 6, background: 'rgba(0,0,0,0.14)' }}>
+      <div style={{ color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)', fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.07em' }}>{label}</div>
+      <div style={{ marginTop: 4, color: 'var(--color-apex-text)', fontFamily: 'var(--font-mono)', fontSize: 13 }}>{value}</div>
     </div>
   );
 }
