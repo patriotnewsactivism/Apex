@@ -117,8 +117,11 @@ try {
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
   const addr = server.address();
   assert.ok(addr && typeof addr !== 'string');
-  base = `http://127.0.0.1:${addr.port}/api/leads`;
-  process.env.APEX_API_BASE_URL = base;
+  const apiOrigin = `http://127.0.0.1:${addr.port}`;
+  base = `${apiOrigin}/api/leads`;
+  // updateLeadStatus appends /api/leads/:id itself. Supplying the route prefix
+  // here produced /api/leads/api/leads/:id and a false 404 in CI.
+  process.env.APEX_API_BASE_URL = apiOrigin;
 
   const patch = async (id: string, body: Record<string, unknown>, auth = `Bearer ${ADMIN_TOKEN}`) => {
     const res = await fetch(`${base}/${id}`, {
