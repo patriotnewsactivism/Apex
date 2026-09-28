@@ -320,6 +320,8 @@ export interface BusinessWebsiteIdentity {
   contactEmail: string | null;
   contactPhone: string | null;
   contactSourceUrl: string | null;
+  contactCheckedAt: string;
+  contactScanVersion: '2026-09-28-v1';
 }
 
 export async function verifyBusinessWebsiteIdentity(input: {
@@ -330,7 +332,7 @@ export async function verifyBusinessWebsiteIdentity(input: {
 }): Promise<BusinessWebsiteIdentity> {
   const homepage = canonicalHomepageUrl(input.website);
   const checkedAt = new Date().toISOString();
-  const emptyContacts = { contactEmail: null, contactPhone: null, contactSourceUrl: null };
+  const emptyContacts = { contactEmail: null, contactPhone: null, contactSourceUrl: null, contactCheckedAt: checkedAt, contactScanVersion: '2026-09-28-v1' as const };
   if (!homepage) {
     return {
       status: 'unverified',
@@ -416,6 +418,8 @@ export async function verifyBusinessWebsiteIdentity(input: {
       contactEmail,
       contactPhone,
       contactSourceUrl,
+      contactCheckedAt: checkedAt,
+      contactScanVersion: '2026-09-28-v1',
     };
   } catch (err) {
     return {
@@ -753,7 +757,7 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
     })
     .where(and(eq(researchedLeads.id, lead.id), eq(researchedLeads.pipelineState, expectedState)));
 
-  await upsertResearchCache(cacheKey, lead, next, update);
+  await upsertResearchCache(cacheKey, stageLead, next, update);
   emitLeadState(lead.id, lead.campaignId ?? null, next, now);
 }
 
