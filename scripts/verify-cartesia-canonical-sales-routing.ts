@@ -141,6 +141,18 @@ check(
     !/agent_4Pr3KQCk39EeDx43s7ArAZ/.test(reconciler),
 );
 
+check(
+  'outbound sales waits for the callee before speaking and preserves the campaign opener as first response',
+  /initial_message:\s*''/.test(reconciler) &&
+    /Wait until the person who answered finishes their first audible greeting or acknowledgement/.test(reconciler) &&
+    /Your exact opening line for this call is: \{\{campaign_first_message\}\}/.test(reconciler),
+);
+check(
+  'Cartesia sales voice cadence is slightly slowed to reduce PSTN\/SIP clipping',
+  /voice_id:\s*voiceId[\s\S]{0,120}speed:\s*0\.96/.test(reconciler),
+);
+
+
 const statusStart = registry.indexOf("name: 'get_call_status'");
 const statusEnd = registry.indexOf("name: 'send_email'", statusStart);
 const statusBody = statusStart >= 0 && statusEnd > statusStart ? registry.slice(statusStart, statusEnd) : '';
