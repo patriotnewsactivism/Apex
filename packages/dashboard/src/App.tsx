@@ -31,6 +31,7 @@ import { LoginScreen } from './components/LoginScreen.js';
 import { PublicLanding } from './components/PublicLanding.js';
 import { WebinarDirector } from './components/WebinarDirector.js';
 import { WebinarRoom } from './components/WebinarRoom.js';
+import { VerifyScalePanel } from './components/VerifyScalePanel.js';
 import {
   Target,
   Rocket,
@@ -56,6 +57,7 @@ import {
   ChevronDown,
   MapPinned,
   Presentation,
+  Scale,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -238,6 +240,7 @@ function Sidebar({
         { id: 'command', label: 'Command Center', icon: <Target size={16} /> },
         { id: 'chat', label: 'Talk to APEX', icon: <MessageSquare size={16} /> },
         { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={16} /> },
+        { id: 'verify-scale', label: 'Verify & Scale', icon: <Scale size={16} /> },
       ],
     },
     {
@@ -697,6 +700,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
       </div>
     ),
     approvals: <ApprovalQueue />,
+    'verify-scale': <VerifyScalePanel />,
     health: <HealthPanel />,
     learning: <LearningPanel />,
     pipeline: <PipelinePanel />,
@@ -722,6 +726,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     suggestions: { title: 'Suggestions', kicker: 'Systems & tools' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },
     approvals: { title: 'Approval Queue', kicker: 'Command' },
+    'verify-scale': { title: 'Verify & Scale', kicker: 'Growth control' },
     health: { title: 'System Health', kicker: 'Systems' },
     learning: { title: 'Intelligence', kicker: 'Systems' },
     pipeline: { title: 'CI/CD Pipeline', kicker: 'Systems' },
