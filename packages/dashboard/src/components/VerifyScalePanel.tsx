@@ -49,7 +49,23 @@ function money(value: number | null | undefined): string {
 
 function stageStatus(goal: Goal | undefined, index: number): 'passed' | 'active' | 'blocked' | 'pending' {
   if (!goal) return 'pending';
-  if (goal.status === 'completed') return 'passed';
+
+  // A completed goal is not evidence that every governance stage passed.
+  // Future Verify & Scale runs write this machine-readable footer only after
+  // they have actual stage evidence; old runs stay pending rather than being
+  // painted green retroactively.
+  const labels = ['OBSERVE', 'HYPOTHESIZE', 'VERIFY', 'IMPLEMENT', 'MONITOR', 'LEARN', 'SCALE'];
+  const result = goal.result ?? '';
+  const marker = result.match(/VERIFY_SCALE_STAGE_STATUS:\s*([^\n]+)/i)?.[1] ?? '';
+  const pair = marker
+    .split(',')
+    .map((part) => part.trim().split('='))
+    .find(([name]) => name?.toUpperCase() === labels[index]);
+  const declared = pair?.[1]?.trim().toLowerCase();
+  if (declared === 'pass' || declared === 'passed') return 'passed';
+  if (declared === 'block' || declared === 'blocked' || declared === 'fail' || declared === 'failed') return 'blocked';
+  if (declared === 'active') return 'active';
+
   if (goal.status === 'cancelled' || goal.status === 'paused') return index === 0 ? 'blocked' : 'pending';
   if (goal.status === 'active') return index === 0 ? 'active' : 'pending';
   return 'pending';
@@ -86,6 +102,11 @@ export function VerifyScalePanel() {
     queryKey: ['verify-scale', 'cicd'],
     queryFn: () => api.cicd.status(),
     refetchInterval: 15000,
+  });
+  const governanceQuery = useQuery({
+    queryKey: ['verify-scale', 'governance'],
+    queryFn: () => api.governance.status(),
+    refetchInterval: 10000,
   });
 
   const cycles = useMemo(
@@ -139,9 +160,12 @@ export function VerifyScalePanel() {
           '- Fail closed when verification is missing, malformed, timed out, or contradictory.',
           '- Do not call a cycle successful unless the intended state/outcome is independently verified.',
           '- Keep measured facts, estimates, and model opinions visibly separate.',
+          '- A result cannot enter IMPLEMENT, LEARN, or SCALE unless the producing agent proves code, test, data, and artifact paths refer to the same deployed revision and canonical storage boundary.',
+          '- If runtime provenance, consent, independent verification, budget, or approval evidence is missing, BLOCK the affected stage rather than infer success.',
           '',
           'FINAL REPORT:',
           'Return stage-by-stage status, baseline, hypotheses considered, debate/critique, selected change, automated verification, approvals used, spend impact, post-change measurements, weighted-objective result, what was learned, and whether scaling is justified.',
+          'Finish with exactly one machine-readable line: VERIFY_SCALE_STAGE_STATUS: OBSERVE=pass|block, HYPOTHESIZE=pass|block, VERIFY=pass|block, IMPLEMENT=pass|block, MONITOR=pass|block, LEARN=pass|block, SCALE=pass|block. Use pass only when that stage has recorded evidence; otherwise block.',
         ].join('\n'),
       });
     },
@@ -155,6 +179,7 @@ export function VerifyScalePanel() {
   const spend = spendQuery.data;
   const approvals = approvalQuery.data;
   const health = healthQuery.data;
+  const governance = governanceQuery.data;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0, maxWidth: '100%' }}>
@@ -190,7 +215,12 @@ export function VerifyScalePanel() {
             <Metric label="Health" value={healthQuery.isError ? 'Unavailable' : health?.overall ?? 'Loading'} icon={<Activity size={14} />} />
             <Metric label="Spend today" value={money(spend?.spentUsd)} sub={spend ? `${spend.utilizationPct.toFixed(1)}% of cap` : undefined} icon={<CircleDollarSign size={14} />} />
             <Metric label="Pending gates" value={approvals ? String((approvals.approval ?? 0) + (approvals.escalation ?? 0)) : '—'} icon={<ShieldCheck size={14} />} />
-            <Metric label="CI/CD" value={cicdQuery.isError ? 'Unavailable' : cicdQuery.data ? 'Connected' : 'Loading'} icon={<Gauge size={14} />} />
+            <Metric
+              label="Implement gate"
+              value={governanceQuery.isError ? 'Unavailable' : governance?.implementationGate === 'ready' ? 'READY' : governance ? 'BLOCKED' : 'Loading'}
+              sub={cicdQuery.isError ? 'CI unavailable' : cicdQuery.data ? 'CI/CD connected' : undefined}
+              icon={<Gauge size={14} />}
+            />
           </div>
         </div>
       </div>
@@ -229,8 +259,73 @@ export function VerifyScalePanel() {
             <Guard label="Spend cap" value={spend ? `${money(spend.spentUsd)} / ${money(spend.capUsd)}` : 'Loading'} ok={!spend || spend.state !== 'daily_cap'} />
             <Guard label="Approval boundary" value={approvals ? `${approvals.approval ?? 0} approvals · ${approvals.escalation ?? 0} escalations` : 'Loading'} ok />
             <Guard label="System health" value={health?.overall ?? 'Loading'} ok={!health || health.overall !== 'critical'} />
+            <Guard
+              label="Runtime provenance"
+              value={governance ? `${governance.provenance.verified24h} verified · ${governance.provenance.failed24h} failed in 24h` : 'Loading'}
+              ok={!governance || governance.provenance.failed24h === 0}
+            />
+            <Guard
+              label="Configuration drift"
+              value={governance ? (governance.configuration.legacyPaidFallbackPresent ? 'Legacy paid-fallback flag still present' : `Single switch: ${governance.configuration.paidFallbackFlag}`) : 'Loading'}
+              ok={!governance || !governance.configuration.legacyPaidFallbackPresent}
+            />
             <Guard label="Verification rule" value="No proof = no success" ok />
           </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0,1fr) minmax(0,1fr)', gap: 16, minWidth: 0 }}>
+        <div className="glass-card" style={{ padding: isMobile ? 16 : 20, minWidth: 0 }}>
+          <div className="apex-eyebrow">Runtime provenance · live evidence</div>
+          {governanceQuery.isError ? (
+            <div style={{ marginTop: 12, color: 'var(--color-apex-red)', fontSize: 12 }}>
+              Governance telemetry is unavailable. Autonomous implementation should be treated as blocked.
+            </div>
+          ) : !governance ? (
+            <div style={{ marginTop: 12, color: 'var(--color-apex-muted)', fontSize: 12 }}>Loading runtime evidence…</div>
+          ) : (
+            <div style={{ marginTop: 13, display: 'grid', gap: 8 }}>
+              <EvidenceRow label="Deployed SHA" value={governance.runtime.buildSha} ok={governance.runtime.buildSha !== 'unknown'} mono />
+              <EvidenceRow label="Canonical repo" value={governance.runtime.repoRoot} ok={governance.configuration.canonicalRepoRootConfigured} mono />
+              <EvidenceRow label="Branch" value={governance.runtime.sourceBranch} ok={governance.configuration.sourceBranchConfigured} mono />
+              <EvidenceRow label="Artifact root" value={governance.runtime.artifactRoot ?? 'NOT CONFIGURED'} ok={governance.configuration.artifactRootConfigured} mono />
+              <EvidenceRow label="Database" value={governance.runtime.databaseConfigured ? 'Configured' : 'NOT CONFIGURED'} ok={governance.runtime.databaseConfigured} />
+              <EvidenceRow
+                label="Write gate"
+                value={governance.implementationGate === 'ready' ? 'Writes may proceed when task provenance matches' : 'BLOCKED until provenance is clean'}
+                ok={governance.implementationGate === 'ready'}
+              />
+              {governance.provenance.latest?.reasons.length ? (
+                <div style={{ padding: 10, border: '1px solid rgba(196,92,102,.24)', borderRadius: 6, color: 'var(--color-apex-red)', fontSize: 10, lineHeight: 1.5 }}>
+                  Latest provenance blocker: {governance.provenance.latest.reasons.join('; ')}
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+
+        <div className="glass-card" style={{ padding: isMobile ? 16 : 20, minWidth: 0 }}>
+          <div className="apex-eyebrow">Outbound consent boundary · live evidence</div>
+          {!governance ? (
+            <div style={{ marginTop: 12, color: 'var(--color-apex-muted)', fontSize: 12 }}>Loading consent state…</div>
+          ) : (
+            <>
+              <div style={{ marginTop: 13, display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 8 }}>
+                <Metric label="Allowed" value={String(governance.outbound.gateCounts.allowed)} icon={<CheckCircle2 size={14} />} />
+                <Metric label="Pending" value={String(governance.outbound.gateCounts.pending)} icon={<TriangleAlert size={14} />} />
+                <Metric label="Denied" value={String(governance.outbound.gateCounts.denied)} icon={<ShieldCheck size={14} />} />
+              </div>
+              <div style={{ marginTop: 11, display: 'grid', gap: 8 }}>
+                <EvidenceRow label="Channels" value={governance.outbound.channels.join(' · ')} ok />
+                <EvidenceRow label="Evaluator" value={governance.outbound.evaluator} ok mono />
+                <EvidenceRow label="Missing / ambiguous consent" value="BLOCKS provider call" ok />
+                <EvidenceRow label="Mode" value="FAIL CLOSED" ok />
+              </div>
+              <div style={{ marginTop: 10, color: 'var(--color-apex-muted)', fontSize: 10, lineHeight: 1.5 }}>
+                {governance.outbound.scalingRule}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -409,6 +504,28 @@ function Metric({ label, value, sub, icon }: { label: string; value: string; sub
       </div>
       <div style={{ marginTop: 5, fontWeight: 750, fontSize: 13, overflowWrap: 'anywhere' }}>{value}</div>
       {sub && <div style={{ marginTop: 2, color: 'var(--color-apex-muted)', fontSize: 9 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function EvidenceRow({
+  label,
+  value,
+  ok,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  ok: boolean;
+  mono?: boolean;
+}) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '18px minmax(90px,.35fr) minmax(0,1fr)', gap: 8, alignItems: 'start', minWidth: 0 }}>
+      {ok ? <CheckCircle2 size={15} color="var(--color-apex-green)" /> : <TriangleAlert size={15} color="var(--color-apex-red)" />}
+      <span style={{ fontSize: 10, color: 'var(--color-apex-muted)' }}>{label}</span>
+      <span style={{ fontSize: 10, fontFamily: mono ? 'var(--font-mono)' : undefined, overflowWrap: 'anywhere', color: ok ? 'var(--color-apex-text)' : 'var(--color-apex-red)' }}>
+        {value}
+      </span>
     </div>
   );
 }
