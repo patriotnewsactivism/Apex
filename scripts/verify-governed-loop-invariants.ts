@@ -16,6 +16,9 @@ const guard = read('packages/core/src/outbound-compliance-guard.ts');
 const compliance = read('packages/core/src/revenue-ops/compliance.ts');
 const email = read('packages/core/src/email-delivery.ts');
 const cartesia = read('packages/api-server/src/routes/cartesia-sales.ts');
+const salesOps = read('packages/api-server/src/routes/sales-ops.ts');
+const telnyxAssistant = read('packages/api-server/src/routes/telnyx-assistant.ts');
+const telnyxVoice = read('packages/api-server/src/telnyx-voice-guardrails.ts');
 const envExample = read('.env.example');
 
 console.log('── runtime provenance: evidence must precede autonomous writes ──');
@@ -57,6 +60,11 @@ check(
   provenance.includes("runtime.provenance_verified") &&
     provenance.includes("runtime.provenance_failed") &&
     provenance.includes("auditEvents"),
+);
+check(
+  'unknown tools are treated as state-changing by default',
+  provenance.includes('Unknown tools are treated as state-changing') &&
+    /return true;/.test(provenance),
 );
 
 console.log('\n── outbound compliance: one fail-closed evaluator for all channels ──');
@@ -125,6 +133,31 @@ check(
   'SMS provider call happens only after evaluator allow decision',
   cartesia.indexOf('evaluateOutboundAction({') <
     cartesia.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+);
+check(
+  'operator SMS uses unified compliance before Telnyx',
+  salesOps.includes("assertOutboundAllowed") &&
+    salesOps.indexOf("purpose: 'operator_sms'") <
+      salesOps.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+);
+check(
+  'front-desk confirmation SMS uses unified compliance before Telnyx',
+  telnyxAssistant.includes("assertOutboundAllowed") &&
+    telnyxAssistant.indexOf("purpose: 'front_desk_confirmation'") <
+      telnyxAssistant.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+);
+check(
+  'checkout-link SMS is compliance-gated before Stripe/provider side effects',
+  telnyxVoice.includes("assertOutboundAllowed") &&
+    telnyxVoice.indexOf("purpose: 'requested_checkout_link'") <
+      telnyxVoice.indexOf("https://api.stripe.com/v1/checkout/sessions") &&
+    telnyxVoice.indexOf("purpose: 'requested_checkout_link'") <
+      telnyxVoice.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+);
+check(
+  'internal owner-notification SMS remains a deliberate non-prospect exception',
+  telnyxVoice.includes('Owner notification SMS') &&
+    telnyxVoice.includes('TELNYX_OWNER_NUMBER'),
 );
 
 console.log('\n── configuration source of truth ──');
