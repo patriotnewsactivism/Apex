@@ -41,7 +41,7 @@ import {
   callOutcomes,
 } from '@workspace/db';
 import { and, asc, desc, eq, gte, sql } from 'drizzle-orm';
-import { CARTESIA_SALES_AGENT_NAME, getSpendLedgerSnapshot, startCartesiaSalesCall } from '@workspace/core';
+import { CARTESIA_SALES_AGENT_NAME, assertOutboundAllowed, getSpendLedgerSnapshot, startCartesiaSalesCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
 const SALES_AGENT_ID = 'apex-sales-001';
@@ -679,6 +679,24 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       const text = typeof body.body === 'string' ? body.body.trim() : '';
       if (!text) {
         res.status(400).json({ error: 'Message text is required.' });
+        return;
+      }
+
+      // Operator initiation does not bypass contact consent. A real outbound
+      // SMS is still externally visible, so it uses the same fail-closed gate
+      // as autonomous email/calls. With no consent-linked contact this returns
+      // a clear 409 instead of silently sending.
+      try {
+        await assertOutboundAllowed({
+          channel: 'sms',
+          destination: toNumber,
+          purpose: 'operator_sms',
+        });
+      } catch (error) {
+        res.status(409).json({
+          error: error instanceof Error ? error.message : String(error),
+          complianceBlocked: true,
+        });
         return;
       }
 
