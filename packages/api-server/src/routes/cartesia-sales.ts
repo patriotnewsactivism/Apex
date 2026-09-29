@@ -2,7 +2,8 @@ import { Router, type Request } from 'express';
 import crypto from 'crypto';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { db, callOutcomes, providerEvents, researchedLeads, smsMessages, suppressions } from '@workspace/db';
+import { db, callOutcomes, providerEvents, researchedLeads, smsMessages, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
+import { evaluateOutboundAction } from '@workspace/core';
 
 // Cartesia HTTP tools and lifecycle events are different credentials. Both
 // routes fail closed until the operator configures their respective secrets.
@@ -104,6 +105,113 @@ async function isSuppressed(phone: string): Promise<boolean> {
     or(eq(suppressions.channel, 'all'), eq(suppressions.channel, 'phone'), eq(suppressions.channel, 'sms')),
   )).limit(1);
   return rows.length > 0;
+}
+
+async function recordExplicitSmsConsent(input: {
+  phone: string;
+  callId: string;
+  leadId?: string | null;
+}): Promise<string> {
+  let [contact] = await db.select({ id: contacts.id }).from(contacts).where(and(
+    eq(contacts.organizationId, ORG_ID),
+    eq(contacts.phoneE164, input.phone),
+  )).limit(1);
+
+  if (!contact) {
+    try {
+      const inserted = await db.insert(contacts).values({
+        organizationId: ORG_ID,
+        phoneE164: input.phone,
+        source: 'cartesia_sales_call',
+        status: 'active',
+        metadata: {
+          researchedLeadId: input.leadId ?? null,
+          firstExplicitSmsConsentCallId: input.callId,
+        },
+      }).returning({ id: contacts.id });
+      contact = inserted[0];
+    } catch {
+      [contact] = await db.select({ id: contacts.id }).from(contacts).where(and(
+        eq(contacts.organizationId, ORG_ID),
+        eq(contacts.phoneE164, input.phone),
+      )).limit(1);
+    }
+  }
+
+  if (!contact) throw new Error('Could not create consent-linked contact');
+
+  const now = new Date();
+  await db.insert(consentRecords).values({
+    organizationId: ORG_ID,
+    contactId: contact.id,
+    channel: 'sms',
+    status: 'granted',
+    consentType: 'explicit',
+    scope: 'sales',
+    source: 'phone',
+    evidence: {
+      cartesiaCallId: input.callId,
+      explicitPermissionToText: true,
+      capturedBy: AGENT_ID,
+    },
+    grantedAt: now,
+    revokedAt: null,
+    expiresAt: null,
+  }).onConflictDoUpdate({
+    target: [consentRecords.organizationId, consentRecords.contactId, consentRecords.channel],
+    set: {
+      status: 'granted',
+      consentType: 'explicit',
+      scope: 'sales',
+      source: 'phone',
+      evidence: {
+        cartesiaCallId: input.callId,
+        explicitPermissionToText: true,
+        capturedBy: AGENT_ID,
+      },
+      grantedAt: now,
+      revokedAt: null,
+      expiresAt: null,
+    },
+  });
+
+  await db.insert(contactOutreachGates).values({
+    organizationId: ORG_ID,
+    contactId: contact.id,
+    channel: 'sms',
+    gate: 'allowed',
+    lastCheckedAt: now,
+    updatedAt: now,
+  }).onConflictDoUpdate({
+    target: [contactOutreachGates.organizationId, contactOutreachGates.contactId, contactOutreachGates.channel],
+    set: {
+      gate: 'allowed',
+      lastCheckedAt: now,
+      updatedAt: now,
+    },
+  });
+
+  if (input.leadId) {
+    const [lead] = await db.select({
+      enrichment: researchedLeads.enrichment,
+    }).from(researchedLeads).where(eq(researchedLeads.id, input.leadId)).limit(1);
+    if (lead) {
+      await db.update(researchedLeads).set({
+        enrichment: {
+          ...(lead.enrichment ?? {}),
+          outboundCompliance: {
+            organizationId: ORG_ID,
+            contactId: contact.id,
+            linkedAt: now.toISOString(),
+            linkedFrom: 'cartesia_explicit_sms_consent',
+          },
+        },
+        updatedAt: now,
+      }).where(eq(researchedLeads.id, input.leadId));
+    }
+  }
+
+  return contact.id;
 }
 
 async function saveOutcome(input: {
@@ -293,6 +401,27 @@ export function createCartesiaSalesRouter(): Router {
     if (!key || !from) return res.status(503).json({ error: 'SMS provider not configured' });
     try {
       if (await isSuppressed(p.phone_number)) return res.status(409).json({ error: 'Contact opted out' });
+
+      const lead = await findLead(p.phone_number);
+      const contactId = await recordExplicitSmsConsent({
+        phone: p.phone_number,
+        callId: p.call_id,
+        leadId: lead?.id ?? null,
+      });
+      const compliance = await evaluateOutboundAction({
+        organizationId: ORG_ID,
+        contactId,
+        channel: 'sms',
+        destination: p.phone_number,
+        purpose: 'requested_demo_link',
+      });
+      if (compliance.decision !== 'allow') {
+        return res.status(409).json({
+          error: 'SMS blocked by compliance evaluator',
+          reasons: compliance.reasons.map((reason) => reason.code),
+        });
+      }
+
       const url = p.demo_type === 'buildmybot_live_demo' ? 'https://www.buildmybot.app/' : 'https://apexwork.org/';
       const eventId = `demo:${p.call_id}:${p.demo_type}`;
       const [prior] = await db.select({ id: providerEvents.id }).from(providerEvents).where(and(
