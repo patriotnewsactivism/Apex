@@ -47,6 +47,12 @@ check(
     provenance.includes('target_workspace_root'),
 );
 check(
+  'shell cd/git-clone paths are inspected for shadow checkouts',
+  provenance.includes("toolName === 'runShell'") &&
+    provenance.includes('known shadow QA checkout path detected') &&
+    provenance.includes('git clone inside the canonical runtime tree is forbidden'),
+);
+check(
   'node_modules writes are rejected',
   provenance.includes('writes into node_modules are forbidden'),
 );
