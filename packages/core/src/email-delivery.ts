@@ -78,6 +78,9 @@ export async function createQueuedEmailSend(args: {
 
 export interface DeliverEmailOptions {
   text?: string;
+  /** researched_leads.id, used to resolve the canonical revenue-ops consent link. */
+  leadId?: string | null;
+  purpose?: string;
   /** When set, a missing postal address fails the send before Resend is called. */
   requireCompliance?: boolean;
   postalAddress?: string | null;
@@ -105,6 +108,21 @@ export async function deliverQueuedEmailSend(
 
   if (await isEmailSuppressed(email)) {
     return fail('suppressed', 'Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).');
+  }
+
+  try {
+    const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
+    await assertOutboundAllowed({
+      channel: 'email',
+      destination: email,
+      leadId: options.leadId ?? undefined,
+      purpose: options.purpose ?? 'email_delivery',
+    });
+  } catch (error) {
+    return fail(
+      'failed',
+      error instanceof Error ? error.message : `Compliance denied email: ${String(error)}`,
+    );
   }
 
   const unresolved = [...new Set([...unresolvedMergeTokens(subject), ...unresolvedMergeTokens(html)])];
