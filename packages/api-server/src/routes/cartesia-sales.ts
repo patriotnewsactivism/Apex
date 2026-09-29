@@ -206,7 +206,6 @@ async function recordExplicitSmsConsent(input: {
             linkedFrom: 'cartesia_explicit_sms_consent',
           },
         },
-        updatedAt: now,
       }).where(eq(researchedLeads.id, input.leadId));
     }
   }
