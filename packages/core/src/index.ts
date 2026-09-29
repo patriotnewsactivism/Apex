@@ -50,6 +50,7 @@ export * from './work-classifier.js';
 export * from './worker-heartbeat.js';
 export * from './execution-outcome.js';
 export * from './revenue-ops/workforce-loop.js';
+export * from './revenue-ops/compliance.js';
 
 export { getTurnEconomySnapshot } from './turn-economy.js';
 
