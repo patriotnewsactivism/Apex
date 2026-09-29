@@ -3355,7 +3355,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: true, // Makes a real phone call to a real person — externally visible, costs money, irreversible.
       async execute({ customerNumber, customerName, assistantPrompt, firstMessage, leadId, campaignId, playbookId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
-        await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, purpose: 'make_outbound_call' });
+        await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, leadId, purpose: 'make_outbound_call' });
 
         // Phase 2.3: budget guard — check mission budget before placing call.
         try {
@@ -3557,7 +3557,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: true, // Sends real email to a real inbox — externally visible, irreversible.
       async execute({ toEmail, toName, subject, html, leadId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
-        await assertOutboundAllowed({ channel: 'email', destination: toEmail, purpose: 'send_email' });
+        await assertOutboundAllowed({ channel: 'email', destination: toEmail, leadId, purpose: 'send_email' });
         // Phase 2.3: budget guard — skip for now (email cost is negligible, ~$0.001/email)
         // Budget check would go here if email had a meaningful per-unit cost
         const { randomUUID } = await import('crypto');
@@ -3576,6 +3576,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const policy = await loadOutboundPolicy();
         const rehearsal = Boolean(policy && sameEmail(toEmail, policy.rehearsalEmail));
         const result = await deliverQueuedEmailSend(id, toEmail, subject, html, {
+          leadId: leadId ?? null,
+          purpose: 'send_email',
           requireCompliance: !rehearsal && policy?.mode === 'capped_live',
           postalAddress: policy?.postalAddress,
           unsubscribeEmail: policy?.unsubscribeEmail,
@@ -3784,6 +3786,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const html = row.body ?? resolveMergeFields(campaign.bodyTemplate, fields);
           const rehearsal = Boolean(policy && sameEmail(row.toEmail, policy.rehearsalEmail));
           const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html, {
+            leadId: row.leadId ?? null,
+            purpose: 'send_email_campaign_batch',
             requireCompliance: !rehearsal && policy?.mode === 'capped_live',
             postalAddress: policy?.postalAddress,
             unsubscribeEmail: policy?.unsubscribeEmail,
