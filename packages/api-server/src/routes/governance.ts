@@ -116,8 +116,11 @@ export function createGovernanceRouter(): Router {
         runtime.artifactRoot &&
         runtime.databaseConfigured,
       );
-      const provenanceReady = provenance.failed24h === 0;
-      const implementationGate = runtimeReady && provenanceReady ? 'ready' : 'blocked';
+      // Provenance failures are per-task denials. A blocked shadow-tree
+      // attempt means the guard worked; it should not freeze unrelated clean
+      // tasks for 24 hours. Global readiness depends on the canonical runtime
+      // manifest being complete. Individual writes are still checked live.
+      const implementationGate = runtimeReady ? 'ready' : 'blocked';
 
       res.json({
         loop: [
@@ -164,7 +167,7 @@ export function createGovernanceRouter(): Router {
         invariants: [
           {
             id: 'same_revision',
-            ok: runtimeReady && provenanceReady,
+            ok: runtimeReady,
             text: 'Code, test, data and artifact operations must resolve to the canonical deployed revision and storage boundary before autonomous writes.',
           },
           {
