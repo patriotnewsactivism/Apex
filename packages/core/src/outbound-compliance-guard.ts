@@ -1,6 +1,6 @@
 import { evaluateOutboundAction } from './revenue-ops/compliance.js';
 import type { OutboundChannel } from './compliance/types.js';
-import { db, researchedLeads, suppressions } from '@workspace/db';
+import { contacts, db, researchedLeads, suppressions } from '@workspace/db';
 import { and, eq, or } from 'drizzle-orm';
 
 function normalizePhone(raw: string): string | null {
@@ -35,6 +35,8 @@ async function resolveComplianceIdentity(input: {
   organizationId?: string;
   contactId?: string;
   leadId?: string;
+  channel: OutboundChannel;
+  destination: string;
 }): Promise<{ organizationId?: string; contactId?: string }> {
   if (input.organizationId?.trim() && input.contactId?.trim()) {
     return {
@@ -43,18 +45,39 @@ async function resolveComplianceIdentity(input: {
     };
   }
 
-  if (!input.leadId) return {};
+  if (input.leadId) {
+    const [lead] = await db
+      .select({
+        enrichment: researchedLeads.enrichment,
+        enrichmentData: researchedLeads.enrichmentData,
+      })
+      .from(researchedLeads)
+      .where(eq(researchedLeads.id, input.leadId))
+      .limit(1);
 
-  const [lead] = await db
-    .select({
-      enrichment: researchedLeads.enrichment,
-      enrichmentData: researchedLeads.enrichmentData,
-    })
-    .from(researchedLeads)
-    .where(eq(researchedLeads.id, input.leadId))
+    const linked = lead ? complianceLinkFromLead(lead) : {};
+    if (linked.organizationId && linked.contactId) return linked;
+  }
+
+  // A first-party contact record is also a valid linkage. This keeps
+  // operator/inbound-confirmation paths from needing a researched_leads id
+  // while still refusing arbitrary cold destinations.
+  const org = input.organizationId?.trim() || 'apex';
+  const destination = input.destination.trim();
+  const [contact] = await db
+    .select({ id: contacts.id, organizationId: contacts.organizationId })
+    .from(contacts)
+    .where(and(
+      eq(contacts.organizationId, org),
+      input.channel === 'email'
+        ? eq(contacts.email, destination.toLowerCase())
+        : eq(contacts.phoneE164, normalizePhone(destination) ?? destination),
+    ))
     .limit(1);
 
-  return lead ? complianceLinkFromLead(lead) : {};
+  return contact
+    ? { organizationId: contact.organizationId, contactId: contact.id }
+    : {};
 }
 
 async function isRehearsalDestination(channel: OutboundChannel, destination: string): Promise<boolean> {
@@ -140,7 +163,11 @@ export async function assertOutboundAllowed(input: {
 
   let identity: { organizationId?: string; contactId?: string };
   try {
-    identity = await resolveComplianceIdentity(input);
+    identity = await resolveComplianceIdentity({
+      ...input,
+      channel: input.channel,
+      destination,
+    });
   } catch (error) {
     throw new Error(
       `Compliance denied ${input.channel}: contact linkage lookup failed (${
