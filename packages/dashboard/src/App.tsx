@@ -29,6 +29,9 @@ import { SpendBurnPanel } from './components/SpendBurnPanel.js';
 import { CommandCenter } from './components/CommandCenter.js';
 import { LoginScreen } from './components/LoginScreen.js';
 import { PublicLanding } from './components/PublicLanding.js';
+import { WebinarDirector } from './components/WebinarDirector.js';
+import { WebinarRoom } from './components/WebinarRoom.js';
+import { VerifyScalePanel } from './components/VerifyScalePanel.js';
 import {
   Target,
   Rocket,
@@ -53,6 +56,8 @@ import {
   CircleDollarSign,
   ChevronDown,
   MapPinned,
+  Presentation,
+  Scale,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 
@@ -235,6 +240,7 @@ function Sidebar({
         { id: 'command', label: 'Command Center', icon: <Target size={16} /> },
         { id: 'chat', label: 'Talk to APEX', icon: <MessageSquare size={16} /> },
         { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={16} /> },
+        { id: 'verify-scale', label: 'Verify & Scale', icon: <Scale size={16} /> },
       ],
     },
     {
@@ -243,6 +249,7 @@ function Sidebar({
         { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
         { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
         { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
+        { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
       ],
     },
     {
@@ -675,6 +682,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
     territories: <TerritoryAvailabilityPanel />,
+    webinars: <WebinarDirector />,
     control: <ControlRoom />,
     artifacts: <ArtifactsPanel />,
     scheduled: <ScheduledJobsPanel />,
@@ -692,6 +700,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
       </div>
     ),
     approvals: <ApprovalQueue />,
+    'verify-scale': <VerifyScalePanel />,
     health: <HealthPanel />,
     learning: <LearningPanel />,
     pipeline: <PipelinePanel />,
@@ -709,6 +718,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
     leads: { title: 'Prospects', kicker: 'Revenue' },
     territories: { title: 'Territory Availability', kicker: 'Revenue' },
+    webinars: { title: 'Webinar Director', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
     scheduled: { title: 'Cron Registry', kicker: 'Systems' },
@@ -716,6 +726,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     suggestions: { title: 'Suggestions', kicker: 'Systems & tools' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },
     approvals: { title: 'Approval Queue', kicker: 'Command' },
+    'verify-scale': { title: 'Verify & Scale', kicker: 'Growth control' },
     health: { title: 'System Health', kicker: 'Systems' },
     learning: { title: 'Intelligence', kicker: 'Systems' },
     pipeline: { title: 'CI/CD Pipeline', kicker: 'Systems' },
@@ -869,6 +880,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 }
 
 export default function App() {
+  const publicWebinarMatch = window.location.pathname.match(/^\/webinar\/([^/?#]+)/);
+  const publicWebinarSlug = publicWebinarMatch?.[1] ? decodeURIComponent(publicWebinarMatch[1]) : null;
   const [authed, setAuthed] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [showLogin, setShowLogin] = useState<boolean>(false);
@@ -931,6 +944,10 @@ export default function App() {
     setAuthed(false);
     setShowLogin(true);
   };
+
+  if (publicWebinarSlug) {
+    return <WebinarRoom slug={publicWebinarSlug} />;
+  }
 
   if (loading) {
     return (

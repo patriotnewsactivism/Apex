@@ -386,6 +386,31 @@ export async function migrate() {
     ON lead_research_cache (normalized_domain)
   `;
   await client`
+    CREATE TABLE IF NOT EXISTS lead_search_cache (
+      cache_key text PRIMARY KEY,
+      cache_kind text NOT NULL,
+      normalized_query text NOT NULL,
+      request_fingerprint jsonb NOT NULL DEFAULT '{}'::jsonb,
+      provider text,
+      payload jsonb NOT NULL,
+      result_count integer NOT NULL DEFAULT 0,
+      hit_count integer NOT NULL DEFAULT 0,
+      last_hit_at timestamptz,
+      expires_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS lead_search_cache_query_idx
+    ON lead_search_cache (cache_kind, normalized_query)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS lead_search_cache_expiry_idx
+    ON lead_search_cache (expires_at)
+  `;
+
+  await client`
     CREATE TABLE IF NOT EXISTS territory_exclusivity (
       id text PRIMARY KEY,
       name text NOT NULL,
@@ -1121,6 +1146,102 @@ export async function migrate() {
       dismissed_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+
+  // ── Autonomous webinars (2026-09-28) ─────────────────────────────────────
+  // Public attendee rooms are intentionally backed by durable Postgres state
+  // rather than process memory so Railway restarts and multiple web replicas
+  // cannot reset a live presentation.
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_sessions (
+      id text PRIMARY KEY,
+      slug text NOT NULL UNIQUE,
+      title text NOT NULL,
+      description text,
+      host_name text NOT NULL DEFAULT 'Don',
+      mode text NOT NULL DEFAULT 'autonomous',
+      status text NOT NULL DEFAULT 'draft',
+      autonomous boolean NOT NULL DEFAULT true,
+      current_segment integer NOT NULL DEFAULT 0,
+      segment_started_at timestamptz,
+      started_at timestamptz,
+      ended_at timestamptz,
+      cta_label text NOT NULL DEFAULT 'Explore BuildMyBot.app',
+      cta_url text NOT NULL DEFAULT 'https://buildmybot.app',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_attendees (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      name text NOT NULL,
+      email text NOT NULL,
+      company text,
+      phone text,
+      engagement_score integer NOT NULL DEFAULT 0,
+      joined_at timestamptz NOT NULL DEFAULT now(),
+      last_seen_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS webinar_attendees_session_email_unique
+    ON webinar_attendees (session_id, email)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS webinar_attendees_live_idx
+    ON webinar_attendees (session_id, last_seen_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_questions (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      attendee_id text NOT NULL,
+      question text NOT NULL,
+      answer text,
+      status text NOT NULL DEFAULT 'queued',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      answered_at timestamptz
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS webinar_questions_session_idx
+    ON webinar_questions (session_id, created_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_events (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      type text NOT NULL,
+      segment_index integer,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS webinar_events_session_idx
+    ON webinar_events (session_id, created_at)
+  `;
+  await client`
+    INSERT INTO webinar_sessions
+      (id, slug, title, description, host_name, mode, status, autonomous, current_segment, cta_label, cta_url)
+    VALUES
+      (
+        'webinar-apex-buildmybot-20260928',
+        'apex-buildmybot-live-2026-09-28',
+        'The AI Workforce: APEX + BuildMyBot Live',
+        'See how APEX and BuildMyBot work together as an AI workforce for prospecting, customer conversations, follow-up, and revenue operations.',
+        'Don',
+        'autonomous',
+        'draft',
+        true,
+        0,
+        'Explore BuildMyBot.app',
+        'https://buildmybot.app'
+      )
+    ON CONFLICT (id) DO NOTHING
+  `;
+
 }
 
 export { schema };

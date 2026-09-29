@@ -142,6 +142,61 @@ async function main(): Promise<void> {
     /Rewording will not help/.test(webSearchSrc),
   );
 
+  // ── 3b. Persistent lead-search cache ────────────────────────────────────
+  console.log('\n── persistent lead-search cache ──');
+  check(
+    'structured directory searches participate in the persistent cache',
+    /name === 'searchBusinessDirectory'/.test(src) &&
+      /cacheKind = 'directory'/.test(src),
+  );
+  check(
+    'only fast lead-discovery web searches are cached; ordinary web research stays fresh',
+    /name === 'webSearch' && args\.fast === true/.test(src) &&
+      /Ordinary\/general webSearch remains uncached/.test(src),
+  );
+  check(
+    'directory and web lead searches have multi-day default cache TTLs',
+    /LEAD_DIRECTORY_SEARCH_CACHE_DAYS', 30/.test(src) &&
+      /LEAD_WEB_SEARCH_CACHE_DAYS', 14/.test(src),
+  );
+  check(
+    'provider search responses are stored in the durable lead_search_cache table',
+    /leadSearchCache/.test(src) &&
+      /\.insert\(leadSearchCache\)/.test(src) &&
+      /\.update\(leadSearchCache\)/.test(src),
+  );
+  check(
+    'cache hits increment a durable hit counter so avoided provider requests are measurable',
+    /hitCount: sql/.test(src) && /leadSearchCache\.hitCount/.test(src) &&
+      /\[lead-search-cache\] HIT/.test(src),
+  );
+  check(
+    'zero-result/provider-failure responses are not stored as long-lived cache entries',
+    /resultCount <= 0/.test(src) &&
+      /remain retryable rather than/.test(src),
+  );
+  check(
+    'simultaneous identical searches coalesce behind one provider request',
+    /leadSearchInFlight/.test(src) &&
+      /\[lead-search-cache\] COALESCE/.test(src),
+  );
+  check(
+    'operators can explicitly bypass cache when a fresh search is needed',
+    /refresh: z\.boolean\(\)\.optional\(\)/.test(src) &&
+      /if \(spec\.refresh\) return null/.test(src),
+  );
+
+  const cacheMigration = path.join(root, 'lib/db/drizzle/20260928_lead_search_cache.sql');
+  check('lead-search cache has a production SQL migration', fs.existsSync(cacheMigration));
+  if (fs.existsSync(cacheMigration)) {
+    const migration = fs.readFileSync(cacheMigration, 'utf8');
+    check(
+      'lead-search cache migration includes query and expiry indexes',
+      /CREATE TABLE IF NOT EXISTS lead_search_cache/.test(migration) &&
+        /lead_search_cache_query_idx/.test(migration) &&
+        /lead_search_cache_expiry_idx/.test(migration),
+    );
+  }
 
   // ── 4. Hunter.io contact enrichment ─────────────────────────────────────
   console.log('\n── hunter contact enrichment ──');

@@ -42,6 +42,7 @@ async function main(): Promise<void> {
   console.log('Verifying the Apex Front Desk Telnyx-assistant surface...\n');
 
   const route = read('packages/api-server/src/routes/telnyx-assistant.ts');
+  const telnyxWebhook = read('packages/api-server/src/routes/telnyx-webhook.ts');
   const index = read('packages/api-server/src/index.ts');
   const env = read('.env.example');
 
@@ -50,10 +51,11 @@ async function main(): Promise<void> {
   check('take-message tool endpoint exists', /router\.post\('\/tools\/take-message', async/.test(route));
   check('send-confirmation tool endpoint exists', /router\.post\('\/tools\/send-confirmation', async/.test(route));
   check('lookup-caller-history tool endpoint exists', /router\.post\('\/tools\/lookup-caller-history', async/.test(route));
+  check('post-call events endpoint exists', /router\.post\('\/events', async/.test(route));
   check('inbound SMS endpoint exists', /router\.post\('\/sms-inbound', async/.test(route));
 
   // ── Auth: every handler checks the key, and does so first ────────────────
-  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/tools/lookup-caller-history', '/sms-inbound'];
+  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/tools/lookup-caller-history', '/events', '/sms-inbound'];
   for (const h of handlers) {
     const idx = route.indexOf(`router.post('${h}', async`);
     const body = route.slice(idx, idx + 400);
@@ -129,6 +131,13 @@ async function main(): Promise<void> {
     /\.limit\(5\)/.test(lookupBody),
   );
   check(
+    'caller history also returns recent voice-call outcomes and the last next action',
+    /findRecentCallHistory\(phone, 5\)/.test(lookupBody) &&
+      /recentCalls: recentCalls\.map/.test(lookupBody) &&
+      /nextAction: call\.nextAction/.test(lookupBody) &&
+      /agentName: agentDisplayName\(call\.createdByAgentId\)/.test(lookupBody),
+  );
+  check(
     'a lookup failure degrades to found:false rather than a 500 the assistant has no way to react to',
     /catch \(err\) \{[\s\S]{0,300}found: false/.test(lookupBody),
   );
@@ -143,6 +152,55 @@ async function main(): Promise<void> {
     /\): Record<string, string>/.test(route) && /is_known_caller: String\(input\.knownCaller\)/.test(route),
   );
   check(
+    'known inbound callbacks are matched to call_outcomes by phone and receive previous-call context',
+    /findRecentCallHistory\(callerNumber, 5\)/.test(route) &&
+      /is_returning_caller: String\(Boolean\(previousCall\)\)/.test(route) &&
+      /previous_call_disposition: previousCall\?\.disposition/.test(route) &&
+      /previous_call_summary: previousCall \? recentCallDiscussion\(previousCall\)/.test(route) &&
+      /previous_call_next_action: previousCall\?\.nextAction/.test(route),
+  );
+  check(
+    'returning callers are explicitly handled as inbound callbacks, never restarted with the outbound cold-call opener',
+    /RETURNING CALL MODE/.test(route) &&
+      /Do NOT use the outbound cold-call opener/.test(route) &&
+      /Thanks for calling me back/.test(route) &&
+      /Continue naturally from that context/.test(route),
+  );
+  check(
+    'recognized callbacks are written into the visible APEX log stream',
+    /Inbound callback recognized/.test(route) &&
+      /previousDisposition: previousCall\?\.disposition/.test(route),
+  );
+  check(
+    'dynamic-variable responses enable Telnyx native conversation memory for the same caller',
+    /memory:\s*\{[\s\S]{0,300}conversation_query:/.test(route) &&
+      /metadata->telnyx_end_user_target=eq\./.test(route) &&
+      /limit=5&order=last_message_at\.desc/.test(route),
+  );
+  check(
+    'dynamic-variable responses tag inbound conversations with APEX metadata',
+    /conversation:\s*\{[\s\S]{0,300}apex_caller_number/.test(route) &&
+      /apex_call_direction: 'inbound'/.test(route),
+  );
+  check(
+    'post-call events persist Telnyx conversation end and insights into call_outcomes',
+    /call\.conversation\.ended/.test(route) &&
+      /call\.conversation_insights\.generated/.test(route) &&
+      /db\.insert\(callOutcomes\)/.test(route) &&
+      /enrichInboundConversation/.test(route),
+  );
+  check(
+    'post-call enrichment requests Telnyx transcript and conversation insights',
+    /ai\/conversations\/\$\{encodeURIComponent\(input\.conversationId\)\}\/messages/.test(route) &&
+      /conversations-insights/.test(route),
+  );
+  check(
+    'the standard Telnyx connection webhook also forwards AI conversation lifecycle events into callback persistence',
+    /processTelnyxAssistantLifecycleEvent/.test(telnyxWebhook) &&
+      /case 'call\.conversation\.ended'/.test(telnyxWebhook) &&
+      /case 'call\.conversation_insights\.generated'/.test(telnyxWebhook),
+  );
+  check(
     'the literal FIRST NAME placeholder is normalized to a safe fallback',
     /if \(!trimmed \|\| \/\^first\\s\+name\$\/i\.test\(trimmed\)\) return 'there'/.test(route),
   );
@@ -151,7 +209,7 @@ async function main(): Promise<void> {
   const mod = (await import(
     pathToFileURL(path.join(root, 'packages/api-server/src/routes/telnyx-assistant.ts')).href
   )) as typeof import('../packages/api-server/src/routes/telnyx-assistant.js');
-  const { normalizePhone, extractCallerNumber } = mod;
+  const { normalizePhone, extractCallerNumber, inferInboundDisposition } = mod;
 
   check(
     'normalizePhone treats +1, bare 10-digit, and spaced/dashed forms as the same number',
@@ -187,6 +245,17 @@ async function main(): Promise<void> {
   check(
     'extractCallerNumber returns empty string rather than throwing on a payload with none of the expected fields',
     extractCallerNumber({ unrelated: 'field' }) === '',
+  );
+  check(
+    'inbound post-call inference recognizes booked meetings without overwriting an existing meaningful disposition',
+    inferInboundDisposition('The appointment was scheduled and confirmed for Tuesday.', 'no_decision') === 'appointment_booked' &&
+      inferInboundDisposition('The customer later mentioned an appointment.', 'not_interested') === 'not_interested',
+  );
+  check(
+    'inbound post-call inference recognizes callback, not-interested, and qualified outcomes conservatively',
+    inferInboundDisposition('They asked us to call back tomorrow.', 'no_decision') === 'callback_requested' &&
+      inferInboundDisposition('The prospect said they are not interested.', 'no_decision') === 'not_interested' &&
+      inferInboundDisposition('This is a qualified opportunity and a good fit.', 'no_decision') === 'qualified',
   );
 
   if (failures > 0) {

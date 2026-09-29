@@ -307,6 +307,14 @@ const STANDING_OPERATING_RULES = `
 
 // ─── Base Agent ───────────────────────────────────────────────────────────────
 
+/** Protect shared LLM capacity even when a runtime PATCH or saved override asks for more. */
+function boundedAgentConcurrency(role: string, requested: number): number {
+  const value = Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : 1;
+  if (role === 'LEAD_RESEARCH') return Math.min(value, 2);
+  if (role === 'QA_DIRECTOR') return 1;
+  return value;
+}
+
 export abstract class BaseAgent {
   protected config: AgentConfig;
   protected llm: LLMClient;
@@ -353,7 +361,7 @@ export abstract class BaseAgent {
       });
     });
     this.taskQueue = new TaskQueue(config.id);
-    this.concurrency = Math.max(1, config.concurrency ?? 1);
+    this.concurrency = boundedAgentConcurrency(config.role, config.concurrency ?? 1);
   }
 
   get id() { return this.config.id; }
@@ -368,7 +376,7 @@ export abstract class BaseAgent {
    *  are adjustable at runtime; the LLM provider/model requires a restart. */
   reconfigure(opts: { concurrency?: number; maxIterations?: number }): void {
     if (opts.concurrency !== undefined) {
-      this.concurrency = Math.max(1, opts.concurrency);
+      this.concurrency = boundedAgentConcurrency(this.config.role, opts.concurrency);
     }
     if (opts.maxIterations !== undefined) {
       this.config.maxIterations = opts.maxIterations;

@@ -65,15 +65,15 @@ export async function seedDefaultJobs(): Promise<void> {
         id: 'system-lead-contact-enrichment',
         name: 'Lead contact enrichment backlog',
         jobType: 'task_delegation',
-        cronExpression: '*/30 * * * *', // bounded catch-up cadence; serialized agent prevents overlap
+        cronExpression: '*/10 * * * *', // catch up quickly; agent remains serialized so runs cannot stampede providers
         targetAgentId: 'apex-lead-research-001' as string | null,
-        priority: 3,
+        priority: 2,
         payload: {
-          systemDefinitionVersion: 4,
-          staleOpenTaskMinutes: 120,
-          maxPerRun: 5,
+          systemDefinitionVersion: 5,
+          staleOpenTaskMinutes: 60,
+          maxPerRun: 10,
           title: 'Enrich pending lead contacts',
-          description: 'Call listResearchedLeads with needsContactResearch=true and limit=5. Process at most 5 pending leads this run. Prefer the verified first-party business website, then one targeted public web-search pass for missing decision-maker/email/phone fields. Reject directory-domain, franchise-branch, city, and company-name mismatches. Never guess or synthesize contact data or email patterns. Do not repeat the same failed search/provider call in this task: on provider, quota, pacing, or capacity errors, stop cleanly rather than looping and leave remaining leads pending for the next scheduled run. Call updateLeadContactInfo for every genuinely attempted lead, include the supporting public source URL when found, and honestly mark partial, complete, or unavailable.',
+          description: 'Call listResearchedLeads with needsContactResearch=true and limit=10. Process at most 10 leads this run, in batches. First trust the verified first-party business website/contact/about/team sources already on the lead. For missing fields, use ONE targeted webSearch call per company with fast=true (this path is persistently cached) and only accept contact facts supported by a public source. If Hunter is configured, hunterDomainSearch/hunterEmailFinder/hunterEmailVerify may be used after first-party and cached-web sources, but never guess or synthesize an email pattern. Prefer owner/founder/president/managing-partner contacts when explicitly sourced; otherwise a real business phone or role inbox is still useful. Reject directory-domain, franchise-branch, city, industry, and company-name mismatches. Do not repeat a failed provider call in this task: on quota, pacing, or capacity errors, stop cleanly and leave remaining leads pending. Call updateLeadContactInfo for every genuinely attempted lead, preserve the supporting source URL, and honestly mark partial, complete, or unavailable.',
         },
       },
       {

@@ -16,7 +16,7 @@
 // revenue-ops tool that might import back from here.
 
 import { db } from '@workspace/db';
-import { eq, sql, and, or, isNull } from 'drizzle-orm';
+import { eq, sql, and, or, isNull, gt } from 'drizzle-orm';
 import {
   providerConnections,
   companies,
@@ -24,6 +24,7 @@ import {
   consentRecords,
   suppressions,
   contactOutreachGates,
+  interactions,
 } from '@workspace/db';
 import type { OutboundChannel } from './types';
 
@@ -69,6 +70,7 @@ async function checkSuppression(
   organizationId: string,
   contactId: string,
   channel: OutboundChannel,
+  destination?: string,
 ): Promise<{ suppressed: boolean; reason?: string }> {
   // Check the cross-channel suppressions table
   const suppressionRows = await db
@@ -77,12 +79,19 @@ async function checkSuppression(
     .where(
       and(
         eq(suppressions.organizationId, organizationId),
-        eq(suppressions.contactId, contactId),
+        or(
+          eq(suppressions.contactId, contactId),
+          ...(destination
+            ? channel === 'email'
+              ? [eq(suppressions.email, destination.trim().toLowerCase())]
+              : [eq(suppressions.phoneE164, destination.trim())]
+            : []),
+        ),
         or(
           eq(suppressions.channel, channel),
           eq(suppressions.channel, 'all'),
         ),
-        isNull(suppressions.expiresAt) || sql`${suppressions.expiresAt} > ${new Date()}`,
+        or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
       ),
     )
     .limit(1);
@@ -139,7 +148,7 @@ async function checkConsent(
   organizationId: string,
   contactId: string,
   channel: OutboundChannel,
-): Promise<{ hasConsent: boolean; status?: string; expiresAt?: string }> {
+): Promise<{ hasConsent: boolean; status?: string; scope?: string; expiresAt?: string }> {
   if (!CONSENT_REQUIRED_CHANNELS.includes(channel)) {
     return { hasConsent: true, status: 'not_required' };
   }
@@ -147,6 +156,7 @@ async function checkConsent(
   const consentRows = await db
     .select({
       status: consentRecords.status,
+      scope: consentRecords.scope,
       expiresAt: consentRecords.expiresAt,
     })
     .from(consentRecords)
@@ -155,8 +165,7 @@ async function checkConsent(
         eq(consentRecords.organizationId, organizationId),
         eq(consentRecords.contactId, contactId),
         eq(consentRecords.channel, channel),
-        isNull(consentRecords.expiresAt) ||
-          sql`${consentRecords.expiresAt} > ${sql`${new Date().toISOString()}`}`,
+        or(isNull(consentRecords.expiresAt), gt(consentRecords.expiresAt, new Date())),
       ),
     )
     .orderBy(sql`${consentRecords.createdAt} DESC`)
@@ -168,7 +177,12 @@ async function checkConsent(
 
   const status = consentRows[0].status as string;
   const hasConsent = status === 'granted';
-  return { hasConsent, status, expiresAt: consentRows[0].expiresAt?.toISOString() };
+  return {
+    hasConsent,
+    status,
+    scope: consentRows[0].scope ?? undefined,
+    expiresAt: consentRows[0].expiresAt?.toISOString(),
+  };
 }
 
 // ─── Purpose check ──────────────────────────────────────────────────────────────
@@ -206,6 +220,7 @@ export async function evaluateOutboundAction(
     input.organizationId,
     input.contactId,
     input.channel,
+    input.destination,
   );
   if (suppression.suppressed) {
     return {
@@ -229,10 +244,15 @@ export async function evaluateOutboundAction(
     input.contactId,
     input.channel,
   );
-  if (!gate.allowed && gate.gate === 'denied') {
+  if (!gate.allowed) {
     return {
       decision: 'deny',
-      reasons: [{ code: 'OUTREACH_GATE_DENIED', message: 'Contact outreach gate is denied for this channel.' }],
+      reasons: [{
+        code: gate.gate === 'denied' ? 'OUTREACH_GATE_DENIED' : 'OUTREACH_GATE_PENDING',
+        message: gate.gate === 'denied'
+          ? 'Contact outreach gate is denied for this channel.'
+          : 'Contact outreach gate is not explicitly allowed for this channel.',
+      }],
       evaluatedAt,
       metadata: { gateStatus: gate.gate },
     };
@@ -261,7 +281,7 @@ export async function evaluateOutboundAction(
   }
 
   // 4. Purpose check
-  const purposeResult = checkPurpose(input.channel, input.purpose, consent.status);
+  const purposeResult = checkPurpose(input.channel, input.purpose, consent.scope);
   if (!purposeResult.passes) {
     return {
       decision: 'deny',
@@ -270,7 +290,80 @@ export async function evaluateOutboundAction(
     };
   }
 
-  // 5. Default: allow
+  // 5. Phone/SMS calling window and cross-channel cadence. These checks
+  // were previously implemented in a second legacy evaluator, which allowed
+  // different send paths to get different answers. Keep them here so every
+  // outbound channel uses one fail-closed decision engine.
+  let timezoneUsed = input.timezone;
+  if (!timezoneUsed) {
+    const [contact] = await db
+      .select({ timezone: contacts.timezone })
+      .from(contacts)
+      .where(and(eq(contacts.id, input.contactId), eq(contacts.organizationId, input.organizationId)))
+      .limit(1);
+    timezoneUsed = contact?.timezone ?? 'America/Chicago';
+  }
+
+  if (input.channel === 'phone' || input.channel === 'sms') {
+    try {
+      const now = input.scheduledTime ?? evaluatedAt;
+      const hour = Number(new Intl.DateTimeFormat('en-US', {
+        timeZone: timezoneUsed,
+        hour: '2-digit',
+        hourCycle: 'h23',
+      }).format(now));
+      if (hour < 8 || hour >= 21) {
+        return {
+          decision: 'deny',
+          reasons: [{
+            code: 'OUTSIDE_CALLING_WINDOW',
+            message: `Outbound ${input.channel} is outside the configured 08:00-21:00 local contact window.`,
+          }],
+          evaluatedAt,
+          metadata: {
+            consentStatus: consent.status,
+            gateStatus: gate.gate,
+            timezoneUsed,
+          },
+        };
+      }
+    } catch {
+      return {
+        decision: 'deny',
+        reasons: [{ code: 'TIMEZONE_UNVERIFIED', message: 'Recipient timezone could not be verified.' }],
+        evaluatedAt,
+        metadata: { consentStatus: consent.status, gateStatus: gate.gate },
+      };
+    }
+  }
+
+  const windowStart = new Date(evaluatedAt.getTime() - 24 * 60 * 60 * 1000);
+  const [touches] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(interactions)
+    .where(and(
+      eq(interactions.organizationId, input.organizationId),
+      eq(interactions.contactId, input.contactId),
+      eq(interactions.direction, 'outbound'),
+      gt(interactions.occurredAt, windowStart),
+    ));
+  if ((touches?.count ?? 0) >= 3) {
+    return {
+      decision: 'deny',
+      reasons: [{
+        code: 'CADENCE_EXCEEDED',
+        message: `Contact already has ${touches?.count ?? 0} outbound touches in the last 24 hours.`,
+      }],
+      evaluatedAt,
+      metadata: {
+        consentStatus: consent.status,
+        gateStatus: gate.gate,
+        timezoneUsed,
+      },
+    };
+  }
+
+  // 6. Default: allow
   return {
     decision: 'allow',
     reasons: [],
@@ -279,7 +372,7 @@ export async function evaluateOutboundAction(
       contactStatus: 'active',
       consentStatus: consent.status ?? 'unknown',
       gateStatus: gate.gate,
-      timezoneUsed: input.timezone ?? 'UTC',
+      timezoneUsed,
     },
   };
 }

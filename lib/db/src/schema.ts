@@ -320,6 +320,28 @@ export const leadResearchCache = pgTable('lead_research_cache', {
   domainIdx: index('lead_research_cache_domain_idx').on(t.normalizedDomain),
 }));
 
+// Persistent provider-search cache. This is intentionally separate from
+// lead_research_cache: it caches expensive discovery API responses by query,
+// so a future campaign can reuse already-paid-for Tavily/Brave/directory work
+// while still running the downstream lead de-dup/enrichment pipeline normally.
+export const leadSearchCache = pgTable('lead_search_cache', {
+  cacheKey: text('cache_key').primaryKey(),
+  cacheKind: text('cache_kind').notNull(), // directory | web_fast
+  normalizedQuery: text('normalized_query').notNull(),
+  requestFingerprint: jsonb('request_fingerprint').$type<Record<string, unknown>>().notNull().default({}),
+  provider: text('provider'),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+  resultCount: integer('result_count').notNull().default(0),
+  hitCount: integer('hit_count').notNull().default(0),
+  lastHitAt: timestamp('last_hit_at', { withTimezone: true, mode: 'date' }),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (t) => ({
+  queryIdx: index('lead_search_cache_query_idx').on(t.cacheKind, t.normalizedQuery),
+  expiryIdx: index('lead_search_cache_expiry_idx').on(t.expiresAt),
+}));
+
 export const territoryExclusivity = pgTable('territory_exclusivity', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),

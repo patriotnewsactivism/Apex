@@ -81,6 +81,8 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-source-tools.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-campaign-runner-lead-payload.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-call-outcome-capture.ts"
+          pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-cartesia-canonical-sales-routing.ts"
+          pnpm --filter @workspace/api-server exec vitest run src/routes/cartesia-sales.test.ts
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-voice-agent-realism.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-strategy-queue.ts"
           pnpm --filter @workspace/cicd-automation exec tsx "$GITHUB_WORKSPACE/scripts/verify-ci-workspace-guard.ts"
@@ -90,6 +92,7 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-approval-policy.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-buildmybot-lead-ingest.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-sales-outbound.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-governed-loop-invariants.ts"
           pnpm --filter @workspace/executor exec tsx "$GITHUB_WORKSPACE/scripts/verify-executor-dispatch.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-checkpoint-resume.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-soft-deadline-yield.ts"
@@ -277,3 +280,52 @@ jobs:
         env:
           APEX_TURN_ECONOMY_TEST_DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5433/turn_economy_test
         run: pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-turn-economy-postgres.ts"
+
+  lead-status-postgres:
+    # Proves the sanctioned lead-status transition end to end against a real
+    # PostgreSQL: PATCH /api/leads/:id with status=qualified persists, the
+    # qualified cohort is readable through listResearchedLeads, an invalid
+    # status is refused without touching the row, and the transition leaves
+    # zero outbound footprint. Uses an ephemeral service container only —
+    # never the production database.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: apex_test
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Push schema to the throwaway test database
+        working-directory: lib/db
+        env:
+          DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
+        run: pnpm push
+      - name: Executable acceptance checks for lead status transitions
+        working-directory: packages/api-server
+        env:
+          DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
+          APEX_ADMIN_TOKEN: ci-lead-status-test-token
+        run: pnpm exec tsx scripts/verify-lead-status-transition.ts
+      - name: Lead status transition integration suite
+        working-directory: packages/api-server
+        env:
+          DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
+          APEX_ADMIN_TOKEN: ci-lead-status-test-token
+        run: pnpm exec vitest run src/__tests__/lead-status-transition.test.ts

@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { join, resolve, relative, dirname } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { normalizeIndustry } from './industry-taxonomy.js';
@@ -19,37 +19,14 @@ import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-clie
 import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProfile, listSpecialistDepartments, listSpecialists } from './specialists/index.js';
 import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
-import { db, messages, callOutcomes, callBridgeSessions } from '@workspace/db';
-import { eq, isNull } from 'drizzle-orm';
+import { db, messages, callOutcomes, callBridgeSessions, leadSearchCache } from '@workspace/db';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
+import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 
 const execAsync = promisify(exec);
-const APPROVED_APEX_OUTBOUND_NUMBER = '+18329757665';
-
-function normalizeE164ForOutbound(raw: unknown): string | null {
-  const trimmed = typeof raw === 'string' ? raw.trim() : '';
-  const normalized = trimmed.replace(/[\s()-]/g, '');
-  if (!/^\+?[0-9]{7,15}$/.test(normalized)) return null;
-  return normalized.startsWith('+') ? normalized : `+${normalized}`;
-}
-
-function configuredTelnyxOutboundNumber(): string | null {
-  const normalized = normalizeE164ForOutbound(process.env.APEX_FRONT_DESK_NUMBER);
-  return normalized === APPROVED_APEX_OUTBOUND_NUMBER ? normalized : null;
-}
-
-function callBridgeWebhookUrl(): string {
-  const publicUrl = process.env.PUBLIC_URL ?? 'https://apex.donmatthews.live';
-  const secret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET ?? '';
-  return `${publicUrl}/api/telnyx-assistant/call-bridge-webhook?key=${encodeURIComponent(secret)}`;
-}
-
-function encodeCallBridgeClientState(sessionId: string, role: 'customer'): string {
-  return Buffer.from(JSON.stringify({ sessionId, role }), 'utf8').toString('base64');
-}
-
 // Runtime-only dependencies owned by the API process. The tool registry lives
 // in @workspace/core and cannot import api-server without creating a cycle, so
 // the HTTP entrypoint injects its live WebSocket checker once the server exists.
@@ -76,6 +53,225 @@ function createAgentHealthMonitor(): HealthMonitor {
     getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
     wsChecker: healthWebSocketChecker,
   });
+}
+
+// ─── Persistent lead-search cache ─────────────────────────────────────────────
+//
+// Lead discovery is one of APEX's easiest places to waste money: the same
+// industry/city/query combination can recur across retries, new campaigns, and
+// future customers. Cache only the two lead-discovery surfaces whose staleness
+// tolerance is explicit: structured business-directory searches and webSearch
+// calls with fast:true. Ordinary/general webSearch remains uncached so current
+// research never silently receives old news.
+type LeadSearchCacheSpec = {
+  cacheKey: string;
+  cacheKind: 'directory' | 'web_fast';
+  normalizedQuery: string;
+  requestFingerprint: Record<string, unknown>;
+  ttlMs: number;
+  refresh: boolean;
+};
+
+const LEAD_SEARCH_CACHE_VERSION = '2026-09-28-v1';
+const leadSearchInFlight = new Map<string, Promise<unknown>>();
+
+function normalizeLeadSearchQuery(query: string): string {
+  return query
+    .trim()
+    .toLowerCase()
+    .replace(/[“”"'’]/g, '')
+    .replace(/[,_]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function positiveDaysFromEnv(name: string, fallback: number): number {
+  const parsed = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(90, Math.max(1, parsed));
+}
+
+function leadSearchCacheSpec(name: string, args: Record<string, unknown>): LeadSearchCacheSpec | null {
+  const enabled = String(process.env.LEAD_SEARCH_CACHE_ENABLED ?? 'true').toLowerCase();
+  if (['0', 'false', 'off', 'no'].includes(enabled)) return null;
+
+  const query = typeof args.query === 'string' ? args.query : '';
+  if (!query.trim()) return null;
+  const normalizedQuery = normalizeLeadSearchQuery(query);
+  const refresh = args.refresh === true;
+
+  let cacheKind: LeadSearchCacheSpec['cacheKind'];
+  let requestFingerprint: Record<string, unknown>;
+  let ttlMs: number;
+
+  if (name === 'searchBusinessDirectory') {
+    cacheKind = 'directory';
+    requestFingerprint = { version: LEAD_SEARCH_CACHE_VERSION };
+    ttlMs = positiveDaysFromEnv('LEAD_DIRECTORY_SEARCH_CACHE_DAYS', 30) * 86_400_000;
+  } else if (name === 'webSearch' && args.fast === true) {
+    cacheKind = 'web_fast';
+    requestFingerprint = {
+      version: LEAD_SEARCH_CACHE_VERSION,
+      fast: true,
+      freeOnly: args.freeOnly === true,
+      maxResults: typeof args.maxResults === 'number' ? args.maxResults : 10,
+    };
+    ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
+  } else {
+    return null;
+  }
+
+  const cacheKey = createHash('sha256')
+    .update(`${cacheKind}\n${normalizedQuery}\n${JSON.stringify(requestFingerprint)}`)
+    .digest('hex');
+
+  return { cacheKey, cacheKind, normalizedQuery, requestFingerprint, ttlMs, refresh };
+}
+
+function leadSearchResultCount(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  const row = value as Record<string, unknown>;
+  if (Array.isArray(row.businesses)) return row.businesses.length;
+  if (Array.isArray(row.results)) return row.results.length;
+  if (typeof row.total === 'number' && Number.isFinite(row.total)) return Math.max(0, row.total);
+  return 0;
+}
+
+function leadSearchProvider(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const provider = (value as Record<string, unknown>).provider;
+  return typeof provider === 'string' && provider.trim() ? provider : null;
+}
+
+function annotateLeadSearchCache(
+  value: unknown,
+  metadata: { hit: boolean; coalesced?: boolean; ageMs?: number; expiresAt?: Date | null },
+): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return {
+    ...(value as Record<string, unknown>),
+    cacheHit: metadata.hit,
+    cacheCoalesced: Boolean(metadata.coalesced),
+    ...(metadata.ageMs !== undefined ? { cacheAgeMs: metadata.ageMs } : {}),
+    ...(metadata.expiresAt ? { cacheExpiresAt: metadata.expiresAt.toISOString() } : {}),
+  };
+}
+
+async function bumpLeadSearchCacheHit(cacheKey: string): Promise<void> {
+  const now = new Date();
+  try {
+    await db
+      .update(leadSearchCache)
+      .set({
+        hitCount: sql`${leadSearchCache.hitCount} + 1`,
+        lastHitAt: now,
+      })
+      .where(eq(leadSearchCache.cacheKey, cacheKey));
+  } catch (err) {
+    console.warn('[lead-search-cache] hit counter update failed:', err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function readLeadSearchCache(spec: LeadSearchCacheSpec): Promise<unknown | null> {
+  if (spec.refresh) return null;
+  try {
+    const [row] = await db
+      .select()
+      .from(leadSearchCache)
+      .where(
+        and(
+          eq(leadSearchCache.cacheKey, spec.cacheKey),
+          gt(leadSearchCache.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    if (!row) return null;
+
+    await bumpLeadSearchCacheHit(spec.cacheKey);
+    const ageMs = Math.max(0, Date.now() - row.updatedAt.getTime());
+    console.log(
+      `[lead-search-cache] HIT ${spec.cacheKind} provider=${row.provider ?? 'unknown'} results=${row.resultCount} age=${Math.round(ageMs / 3_600_000)}h hits=${row.hitCount + 1} query="${spec.normalizedQuery}"`,
+    );
+    return annotateLeadSearchCache(row.payload, {
+      hit: true,
+      ageMs,
+      expiresAt: row.expiresAt,
+    });
+  } catch (err) {
+    // Cache failure must never take lead discovery down. Search normally.
+    console.warn('[lead-search-cache] read failed; bypassing cache:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+async function writeLeadSearchCache(spec: LeadSearchCacheSpec, value: unknown): Promise<void> {
+  const resultCount = leadSearchResultCount(value);
+  // Cache only useful positive discovery results. Provider outages, exhausted
+  // keys, and legitimate zero-result searches remain retryable rather than
+  // poisoning future campaigns with a long-lived empty response.
+  if (resultCount <= 0 || !value || typeof value !== 'object' || Array.isArray(value)) return;
+
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + spec.ttlMs);
+  const provider = leadSearchProvider(value);
+  try {
+    await db
+      .insert(leadSearchCache)
+      .values({
+        cacheKey: spec.cacheKey,
+        cacheKind: spec.cacheKind,
+        normalizedQuery: spec.normalizedQuery,
+        requestFingerprint: spec.requestFingerprint,
+        provider,
+        payload: value as Record<string, unknown>,
+        resultCount,
+        hitCount: 0,
+        lastHitAt: null,
+        expiresAt,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: leadSearchCache.cacheKey,
+        set: {
+          cacheKind: spec.cacheKind,
+          normalizedQuery: spec.normalizedQuery,
+          requestFingerprint: spec.requestFingerprint,
+          provider,
+          payload: value as Record<string, unknown>,
+          resultCount,
+          expiresAt,
+          updatedAt: now,
+        },
+      });
+    console.log(
+      `[lead-search-cache] STORE ${spec.cacheKind} provider=${provider ?? 'unknown'} results=${resultCount} ttl=${Math.round(spec.ttlMs / 86_400_000)}d query="${spec.normalizedQuery}"`,
+    );
+  } catch (err) {
+    console.warn('[lead-search-cache] write failed; search result still usable:', err instanceof Error ? err.message : String(err));
+  }
+}
+
+const webSearchProviderCooldowns = new Map<string, number>();
+
+function webSearchProviderReady(provider: string): boolean {
+  return (webSearchProviderCooldowns.get(provider) ?? 0) <= Date.now();
+}
+
+function tripWebSearchProvider(provider: string, status: number, detail: string): void {
+  let cooldownMs = 0;
+  if (status === 402 || status === 401 || status === 403) cooldownMs = 30 * 60 * 1000;
+  else if (status === 429) cooldownMs = 60 * 1000;
+  else if (status >= 500) cooldownMs = 30 * 1000;
+  if (cooldownMs <= 0) return;
+
+  const until = Date.now() + cooldownMs;
+  const current = webSearchProviderCooldowns.get(provider) ?? 0;
+  if (until > current) {
+    webSearchProviderCooldowns.set(provider, until);
+    console.warn(
+      `[webSearch] circuit open for ${provider} for ${Math.round(cooldownMs / 1000)}s after HTTP ${status}: ${detail.slice(0, 140)}`,
+    );
+  }
 }
 
 // ─── Tool Registry ────────────────────────────────────────────────────────────
@@ -119,6 +315,42 @@ class ToolRegistry {
     const parsed = tool.schema.safeParse(rawArgs);
     if (!parsed.success) {
       return { success: false, error: `Invalid args for ${name}: ${parsed.error.message}` };
+    }
+
+    // Verify runtime provenance before any autonomous write. Reads are still
+    // allowed when provenance is incomplete so an agent can diagnose a bad
+    // workspace, but mutating tools fail closed. This prevents a green test or
+    // edit in a shadow checkout from being treated as evidence about the live
+    // deployed revision.
+    try {
+      const { ensureRuntimeProvenance, runtimeProvenanceRequiresGate } = await import('./runtime-provenance.js');
+      const provenance = await ensureRuntimeProvenance(
+        name,
+        parsed.data as Record<string, unknown>,
+        context,
+      );
+      if (runtimeProvenanceRequiresGate(name) && !provenance.ok) {
+        return {
+          success: false,
+          error:
+            `Runtime provenance gate blocked ${name}: ${provenance.reasons.join('; ')}. ` +
+            `repo_root=${provenance.snapshot.repo_root}; git_commit=${provenance.snapshot.git_commit}; ` +
+            `package_root=${provenance.snapshot.package_root ?? 'unknown'}; artifact_root=${provenance.snapshot.artifact_root ?? 'unset'}; ` +
+            `database_target=${provenance.snapshot.database_target ?? 'unset'}; environment=${provenance.snapshot.environment_name}`,
+        };
+      }
+    } catch (error) {
+      const { runtimeProvenanceRequiresGate } = await import('./runtime-provenance.js');
+      if (runtimeProvenanceRequiresGate(name)) {
+        return {
+          success: false,
+          error: `Runtime provenance gate unavailable for ${name}: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+      console.warn(
+        '[runtime-provenance] read-only provenance check failed:',
+        error instanceof Error ? error.message : String(error),
+      );
     }
 
     // Central hard-gate enforcement, checked for EVERY invocation regardless
@@ -181,8 +413,57 @@ class ToolRegistry {
       }
     }
 
+    const searchCache = leadSearchCacheSpec(name, parsed.data as Record<string, unknown>);
+    if (searchCache && !searchCache.refresh) {
+      const cached = await readLeadSearchCache(searchCache);
+      if (cached !== null) {
+        return { success: true, data: cached };
+      }
+
+      const existing = leadSearchInFlight.get(searchCache.cacheKey);
+      if (existing) {
+        try {
+          const shared = await existing;
+          await bumpLeadSearchCacheHit(searchCache.cacheKey);
+          console.log(
+            `[lead-search-cache] COALESCE ${searchCache.cacheKind} query="${searchCache.normalizedQuery}"`,
+          );
+          return {
+            success: true,
+            data: annotateLeadSearchCache(shared, { hit: true, coalesced: true }),
+          };
+        } catch {
+          // The first producer failed. Fall through and allow this invocation
+          // to perform a normal attempt rather than inheriting its exception.
+        }
+      }
+    }
+
     try {
-      const result = await tool.execute(parsed.data, context);
+      let result: unknown;
+      if (searchCache && !searchCache.refresh) {
+        const producer = (async () => {
+          const fresh = await tool.execute(parsed.data, context);
+          await writeLeadSearchCache(searchCache, fresh);
+          return fresh;
+        })();
+        leadSearchInFlight.set(searchCache.cacheKey, producer);
+        try {
+          result = await producer;
+        } finally {
+          if (leadSearchInFlight.get(searchCache.cacheKey) === producer) {
+            leadSearchInFlight.delete(searchCache.cacheKey);
+          }
+        }
+      } else {
+        result = await tool.execute(parsed.data, context);
+        if (searchCache) await writeLeadSearchCache(searchCache, result);
+      }
+
+      if (searchCache) {
+        result = annotateLeadSearchCache(result, { hit: false });
+      }
+
       if (salesAuto) {
         const data = result as { success?: boolean; providerId?: string; callId?: string; emailSendId?: string; sent?: number };
         const delivered = data.success !== false && (data.sent === undefined || data.sent > 0);
@@ -639,9 +920,12 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       schema: z.object({
         query: z.string().describe('Search query — be specific for best results'),
         maxResults: z.number().optional().describe('Maximum results to return (default 10)'),
+        fast: z.boolean().optional().describe('Use the lowest-latency search mode. Ideal for lead discovery where URLs matter more than an AI-written answer.'),
+        freeOnly: z.boolean().optional().describe('Use only free/keyless search providers. Useful for large cleanup/enrichment jobs where cost avoidance matters more than maximum recall.'),
+        refresh: z.boolean().optional().describe('Bypass the persistent lead-search cache and refresh this query from providers.'),
       }),
       requiresApproval: false,
-      async execute({ query, maxResults }) {
+      async execute({ query, maxResults, fast, freeOnly }) {
         const n = maxResults ?? 10;
         const results: Array<{ title: string; url: string; snippet: string }> = [];
         // Why each provider produced nothing. A non-ok HTTP response used to
@@ -653,7 +937,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // ── Strategy 0: Tavily Search API (best quality, AI-optimized) ──
         const tavilyKey = process.env.TAVILY_API_KEY;
         if (!tavilyKey) diagnostics.push('tavily: TAVILY_API_KEY not set');
-        if (tavilyKey) {
+        if (freeOnly && tavilyKey) diagnostics.push('tavily: skipped by freeOnly mode');
+        if (!freeOnly && tavilyKey && !webSearchProviderReady('tavily')) {
+          diagnostics.push('tavily: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && tavilyKey && webSearchProviderReady('tavily')) {
           try {
             const tavilyRes = await fetch('https://api.tavily.com/search', {
               method: 'POST',
@@ -667,8 +955,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
                 api_key: tavilyKey,
                 query,
                 max_results: n,
-                search_depth: 'advanced',
-                include_answer: true,
+                search_depth: fast ? 'basic' : 'advanced',
+                include_answer: !fast,
               }),
               signal: AbortSignal.timeout(20_000),
             });
@@ -676,6 +964,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               const body = await tavilyRes.text().catch(() => '');
               const detail = `tavily: HTTP ${tavilyRes.status} ${body.slice(0, 200)}`.trim();
               diagnostics.push(detail);
+              tripWebSearchProvider('tavily', tavilyRes.status, body);
               console.warn(`[webSearch] ${detail} for "${query}"`);
             }
             if (tavilyRes.ok) {
@@ -702,7 +991,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
         const braveKey = process.env.BRAVE_SEARCH_API_KEY;
         if (!braveKey) diagnostics.push('brave: BRAVE_SEARCH_API_KEY not set');
-        if (braveKey) {
+        if (freeOnly && braveKey) diagnostics.push('brave: skipped by freeOnly mode');
+        if (!freeOnly && braveKey && !webSearchProviderReady('brave')) {
+          diagnostics.push('brave: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && braveKey && webSearchProviderReady('brave')) {
           try {
             const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
             const braveRes = await fetch(braveUrl, {
@@ -713,6 +1006,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
               const body = await braveRes.text().catch(() => '');
               const detail = `brave: HTTP ${braveRes.status} ${body.slice(0, 200)}`.trim();
               diagnostics.push(detail);
+              tripWebSearchProvider('brave', braveRes.status, body);
               console.warn(`[webSearch] ${detail} for "${query}"`);
             }
             if (braveRes.ok) {
@@ -1205,6 +1499,91 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
+        // ── Lead status transition: the sanctioned qualification write path ──────
+    // The Lead Researcher could save and enrich leads but had no way to move
+    // one from 'new' to 'qualified', so every source-verified candidate stayed
+    // at status=new and a qualified cohort could never be produced. This closes
+    // that gap WITHOUT inventing a second mutation path: it calls the existing
+    // PATCH /api/leads/:id, so the endpoint's validation and response contract
+    // remain the single source of truth. (updateLeadContactInfo deliberately
+    // does not accept a status — a status field there was silently ignored.)
+    //
+    // Fail-closed by construction: a status change is metadata only. It sends
+    // no email, places no call, creates no campaign, contacts no lead, and
+    // records no consent — the note explains why the lead fits the ICP, not
+    // that anyone agreed to be contacted.
+    {
+      name: 'updateLeadStatus',
+      description:
+        "Change a researched lead's sales status through the validated API: new | contacted | qualified | rejected. This is the ONLY sanctioned status-transition path — updateLeadContactInfo does not set status. Requires the lead id, the target status, the public source URL that evidences the decision, and a one-line rationale. Qualifying a lead records why it fits; it does NOT contact the lead, send email, place a call, create a campaign, or record consent. Read the row back with getResearchedLeadById to confirm.",
+      schema: z.object({
+        leadId: z.string().describe('researched_leads.id, from saveResearchedLead or listResearchedLeads.'),
+        status: z.enum(['new', 'contacted', 'qualified', 'rejected']).describe("Target status. 'qualified' = passed the ICP checks in this task's criteria; 'rejected' = does not fit (say why in note)."),
+        sourceUrl: z.string().url().describe('Public URL evidencing this decision — the company page you actually read. Never invented, never a directory listing.'),
+        note: z.string().min(8).max(500).describe('One-line audit rationale, e.g. "Owner named on /contact; HVAC with after-hours voicemail gap".'),
+        pipelineState: z.enum(['DISCOVERED', 'BASIC_ENRICHMENT', 'CONTACT_FOUND', 'QUALIFIED', 'DEEP_RESEARCH', 'CAMPAIGN_READY']).optional().describe('Optional acquisition-lifecycle state to move in the same call.'),
+      }),
+      requiresApproval: false,
+      async execute({ leadId, status, sourceUrl, note, pipelineState }, ctx) {
+        const base = (process.env.APEX_API_BASE_URL?.trim()
+          || `http://127.0.0.1:${process.env.PORT ?? '5000'}`).replace(/\/+$/, '');
+        const token = process.env.APEX_ADMIN_TOKEN?.trim();
+        if (!token) {
+          // Fail closed. Do not fall back to a direct database write.
+          return {
+            updated: false,
+            leadId,
+            error: 'APEX_ADMIN_TOKEN is not set, so the sanctioned PATCH /api/leads/:id path is unavailable. Report this as a blocker; do not work around it with a direct database mutation.',
+          };
+        }
+
+        let response: Response;
+        try {
+          response = await fetch(`${base}/api/leads/${encodeURIComponent(leadId)}`, {
+            method: 'PATCH',
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${token}`,
+              'x-apex-actor': ctx?.agentId ?? 'unknown-agent',
+            },
+            body: JSON.stringify({ status, sourceUrl, note, ...(pipelineState ? { pipelineState } : {}) }),
+            signal: AbortSignal.timeout(15_000),
+          });
+        } catch (err) {
+          return {
+            updated: false,
+            leadId,
+            error: `PATCH /api/leads/:id could not reach ${base}: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+
+        const raw = await response.text().catch(() => '');
+        let parsed: Record<string, unknown> = {};
+        try { parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}; } catch { parsed = { raw: raw.slice(0, 300) }; }
+
+        if (!response.ok) {
+          return {
+            updated: false,
+            leadId,
+            requestedStatus: status,
+            httpStatus: response.status,
+            error: typeof parsed.error === 'string' ? parsed.error : `HTTP ${response.status}`,
+          };
+        }
+
+        return {
+          updated: true,
+          leadId,
+          status: parsed.persistedStatus ?? status,
+          previousStatus: parsed.previousStatus ?? null,
+          pipelineState: parsed.persistedPipelineState ?? pipelineState ?? null,
+          sourceUrl,
+          note,
+          auditRecorded: true,
+        };
+      },
+    },
+
     // Read the researched leads pipeline (for Sales/BizDev review, status reporting)
     {
       name: 'listResearchedLeads',
@@ -1212,19 +1591,39 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         'List researched/qualified outbound leads from the researched_leads table, most recent first. Use to review pipeline status honestly instead of guessing counts.',
       schema: z.object({
         status: z.string().optional().describe('Filter by status: new | contacted | qualified | rejected'),
+        ids: z.array(z.string()).max(100).optional().describe('Return exactly these researched_leads ids. Lets a known lead id be read back instead of hunted through a truncated list.'),
         needsContactResearch: z.boolean().optional().describe('Return only leads whose contact research is pending'),
         limit: z.number().optional().describe('Max rows (default 25)'),
       }),
       requiresApproval: false,
-      async execute({ status, needsContactResearch, limit }) {
+      async execute({ status, needsContactResearch, ids, limit }) {
         const { db, researchedLeads } = await import('@workspace/db');
-        const { and, eq, desc } = await import('drizzle-orm');
+        const { and, eq, desc, inArray, isNull, lt, or, sql } = await import('drizzle-orm');
 
         const query = db.select().from(researchedLeads);
         const conditions = [
-          ...(status ? [eq(researchedLeads.status, status)] : []),
-          ...(needsContactResearch ? [eq(researchedLeads.contactResearchStatus, 'pending')] : []),
+          ...(status ? [eq(researchedLeads.status, status)] : [sql`${researchedLeads.status} <> 'rejected'`]),
+          ...(needsContactResearch
+            ? [
+                and(
+                  sql`(${researchedLeads.contactEmail} IS NULL OR ${researchedLeads.contactPhone} IS NULL OR ${researchedLeads.decisionMakerName} IS NULL)`,
+                  or(
+                    eq(researchedLeads.contactResearchStatus, 'pending'),
+                    eq(researchedLeads.contactResearchStatus, 'partial'),
+                    and(
+                      eq(researchedLeads.contactResearchStatus, 'unavailable'),
+                      or(
+                        isNull(researchedLeads.contactResearchedAt),
+                        lt(researchedLeads.contactResearchedAt, new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)),
+                      ),
+                    ),
+                  ),
+                ),
+              ]
+            : []),
         ];
+        if (ids?.length) conditions.push(inArray(researchedLeads.id, ids));
+
         const rows = conditions.length
           ? await query.where(and(...conditions)).orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25)
           : await query.orderBy(desc(researchedLeads.createdAt)).limit(limit ?? 25);
@@ -1240,6 +1639,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       description: 'Search a structured business directory for real businesses by industry and location. Returns up to 50 businesses per call with company name, address, phone, website, rating, and review count. MUCH faster than webSearch for finding leads — one call replaces 10+ web searches. Use this FIRST before webSearch when looking for businesses in a specific industry/location.',
       schema: z.object({
         query: z.string().describe('Search query combining industry and location, e.g. "HVAC contractor Dallas Texas" or "personal injury lawyer Miami FL"'),
+        refresh: z.boolean().optional().describe('Bypass the persistent lead-search cache and refresh this query from directory providers.'),
       }),
       requiresApproval: false,
       async execute({ query }) {
@@ -2939,107 +3339,102 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       },
     },
 
-    // ─── Telnyx: Make outbound AI phone call ──────────────────────────────
+    // ─── Cartesia: canonical outbound AI sales call ────────────────────────
     {
       name: 'make_outbound_call',
-      description: 'Make an outbound AI phone call to a prospect/customer through the Telnyx call bridge. The AI voice agent will use the provided script as its system prompt and conduct the conversation. Returns a call bridge session ID. Requires TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, TELNYX_CALL_BRIDGE_WEBHOOK_SECRET, and APEX_FRONT_DESK_NUMBER=+18329757665.',
+      description: 'Make an outbound AI sales call through the ONE canonical Cartesia agent named "APEX Sales — BuildMyBot". Every APEX sales/calling campaign uses this same agent and the approved caller ID +18329757665. Returns the Cartesia call ID. Requires the canonical Cartesia agent and approved phone number to be provisioned.',
       schema: z.object({
         customerNumber: z.string().describe('Destination phone number in E.164 format (e.g. "+18328804970")'),
         customerName: z.string().optional().describe('Name of the person being called (for personalization)'),
-        assistantPrompt: z.string().describe('System prompt for the AI caller — the cold call script, value proposition, objection handling, and goal of the call. Be specific and conversational.'),
-        firstMessage: z.string().describe('The exact words the AI says when the call connects (e.g. "Hi, is this {{customerName}}? I\'m Alex from BuildMyBot.app...")'),
+        assistantPrompt: z.string().describe('Campaign-specific instructions for this call: discovery angle, value proposition, objections, and goal. The canonical Cartesia sales agent remains the same.'),
+        firstMessage: z.string().describe('The exact opening line for this specific call.'),
+        leadId: z.string().optional().describe('researched_leads.id for the prospect. Include this for live campaign calls so policy/auditing and outcomes stay linked to the lead.'),
+        campaignId: z.string().optional().describe('Campaign identifier for this call, when applicable.'),
+        playbookId: z.string().optional().describe('Sales playbook identifier for traceability, when applicable.'),
       }),
       requiresApproval: true, // Makes a real phone call to a real person — externally visible, costs money, irreversible.
-      async execute({ customerNumber, customerName, assistantPrompt, firstMessage }, ctx) {
+      async execute({ customerNumber, customerName, assistantPrompt, firstMessage, leadId, campaignId, playbookId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
-        await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, purpose: 'make_outbound_call' });
-        // Phase 2.3: budget guard — check mission budget before placing call
+        await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, leadId, purpose: 'make_outbound_call' });
+
+        // Phase 2.3: budget guard — check mission budget before placing call.
         try {
           const { checkMissionBudget } = await import('./revenue-ops/budget.js');
-          // Derive missionId from context if available; skip budget check if no mission context
           const missionId = (globalThis as any).__apexMissionId;
           if (missionId) {
-            const budget = await checkMissionBudget(missionId, 300); // ~$3 estimated call cost
+            const budget = await checkMissionBudget(missionId, 300);
             if (!budget.allowed) {
               return { success: false, error: `Budget exhausted: ${budget.reason}` };
             }
           }
         } catch (e) {
-          // Budget module may not be available in all runtimes; fail open
           console.warn('[budget] check skipped:', e);
         }
-        const apiKey = process.env.TELNYX_API_KEY;
-        const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
-        const from = configuredTelnyxOutboundNumber();
-        const webhookSecret = process.env.TELNYX_CALL_BRIDGE_WEBHOOK_SECRET;
-        const normalizedCustomerNumber = normalizeE164ForOutbound(customerNumber);
-        if (!normalizedCustomerNumber) {
-          return { success: false, error: 'Destination phone number must be E.164-compatible.' };
-        }
-        if (!apiKey || !connectionId || !from || !webhookSecret) {
+
+        const todayContext = `Today's date is ${new Date().toISOString().slice(0, 10)} (${DAY_NAMES[new Date().getUTCDay()]}). Resolve relative dates the prospect gives you into exact dates in their stated time zone before using calendar tools.`;
+        try {
+          const call = await startCartesiaSalesCall({
+            toNumber: customerNumber,
+            customerName: customerName ?? null,
+            assistantPrompt: `${todayContext}\n\n${assistantPrompt}`,
+            firstMessage,
+            leadId: leadId ?? null,
+            campaignId: campaignId ?? null,
+            playbookId: playbookId ?? null,
+            createdByAgentId: ctx.agentId,
+          });
+
+          try {
+            await db
+              .insert(callOutcomes)
+              .values({
+                id: randomUUID(),
+                callId: `cartesia:${call.callId}`,
+                leadId: leadId ?? null,
+                customerNumber: call.toNumber,
+                customerName: customerName ?? null,
+                disposition: 'no_decision',
+                summary: 'Outbound call initiated.',
+                nextAction: 'Await call outcome.',
+                createdByAgentId: ctx.agentId,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .onConflictDoUpdate({
+                target: callOutcomes.callId,
+                set: {
+                  leadId: leadId ?? null,
+                  customerNumber: call.toNumber,
+                  customerName: customerName ?? null,
+                  updatedAt: new Date(),
+                },
+              });
+          } catch (logErr) {
+            console.error('[make_outbound_call] failed to persist Cartesia dialing outcome:', logErr instanceof Error ? logErr.message : String(logErr));
+          }
+
           return {
-            success: false,
-            error: `Telnyx outbound is not configured. Set TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, TELNYX_CALL_BRIDGE_WEBHOOK_SECRET, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER}.`,
+            success: true,
+            callId: call.callId,
+            provider: call.provider,
+            agentId: call.agentId,
+            agentName: CARTESIA_SALES_AGENT_NAME,
+            callerId: call.fromNumber,
+            status: 'created',
+            message: `Outbound Cartesia call initiated to ${call.toNumber}${customerName ? ` (${customerName})` : ''} using ${CARTESIA_SALES_AGENT_NAME} from ${APEX_CARTESIA_CALLER_NUMBER}. Call ID: ${call.callId}.`,
           };
-        }
-
-        const todayContext = `Today's date is ${new Date().toISOString().slice(0, 10)} (${DAY_NAMES[new Date().getUTCDay()]}). Use this to resolve any relative date the prospect gives you (e.g. "next Tuesday", "tomorrow") into an exact calendar date.`;
-        const sessionId = randomUUID();
-
-        await db.insert(callBridgeSessions).values({
-          id: sessionId,
-          status: 'dialing_customer',
-          operatorNumber: normalizeE164ForOutbound(process.env.TELNYX_OWNER_NUMBER) ?? from,
-          customerNumber: normalizedCustomerNumber,
-          conferenceName: sessionId,
-          sessionMode: 'ai_first',
-          buyerName: customerName ?? null,
-          assistantGreeting: firstMessage,
-          assistantInstructions: `${todayContext}\n\n${assistantPrompt}`,
-          createdByAgentId: ctx.agentId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-
-        const callBody = {
-          connection_id: connectionId,
-          from,
-          to: normalizedCustomerNumber,
-          webhook_url: callBridgeWebhookUrl(),
-          client_state: encodeCallBridgeClientState(sessionId, 'customer'),
-          timeout_secs: 30,
-          conference_config: {
-            conference_name: sessionId,
-            early_media: false,
-            end_conference_on_exit: true,
-          },
-        };
-
-        const res = await fetch('https://api.telnyx.com/v2/calls', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(callBody),
-        });
-
-        const data = (await res.json().catch(() => null)) as
-          | { data?: { call_control_id?: string }; errors?: Array<{ detail?: string }> }
-          | null;
-        if (!res.ok || !data?.data?.call_control_id) {
-          const errorMsg = data?.errors?.[0]?.detail ?? `Telnyx call failed (${res.status})`;
-          await db
-            .update(callBridgeSessions)
-            .set({ status: 'failed', lastError: errorMsg, updatedAt: new Date() })
-            .where(eq(callBridgeSessions.id, sessionId));
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
           try {
             await db.insert(callOutcomes).values({
               id: randomUUID(),
               callId: `failed_${randomUUID()}`,
-              customerNumber: normalizedCustomerNumber,
+              leadId: leadId ?? null,
+              customerNumber,
               customerName: customerName ?? null,
               disposition: 'failed_to_dial',
+              summary: 'Outbound call request failed before a conversation connected.',
+              nextAction: 'Inspect the provider error and correct the dialing/configuration issue before retrying.',
               endedReason: errorMsg.slice(0, 500),
               createdByAgentId: ctx.agentId,
               createdAt: new Date(),
@@ -3048,54 +3443,47 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           } catch (logErr) {
             console.error('[make_outbound_call] failed to persist failed_to_dial outcome:', logErr instanceof Error ? logErr.message : String(logErr));
           }
-          return { success: false, error: errorMsg };
+          return { success: false, error: errorMsg, provider: 'cartesia', agentName: CARTESIA_SALES_AGENT_NAME };
         }
-
-        await db
-          .update(callBridgeSessions)
-          .set({ customerCallControlId: data.data.call_control_id, updatedAt: new Date() })
-          .where(eq(callBridgeSessions.id, sessionId));
-        try {
-          await db
-            .insert(callOutcomes)
-            .values({
-              id: randomUUID(),
-              callId: `telnyx_${data.data.call_control_id}`,
-              customerNumber: normalizedCustomerNumber,
-              customerName: customerName ?? null,
-              disposition: 'no_decision',
-              createdByAgentId: ctx.agentId,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .onConflictDoUpdate({
-              target: callOutcomes.callId,
-              set: { updatedAt: new Date() },
-            });
-        } catch (logErr) {
-          console.error('[make_outbound_call] failed to persist dialing outcome:', logErr instanceof Error ? logErr.message : String(logErr));
-        }
-
-        return {
-          success: true,
-          callId: sessionId,
-          providerCallControlId: data.data.call_control_id,
-          provider: 'telnyx',
-          status: 'dialing_customer',
-          message: `Outbound Telnyx call initiated to ${normalizedCustomerNumber}${customerName ? ` (${customerName})` : ''}. Session ID: ${sessionId}.`,
-        };
       },
     },
 
     // ─── Get outbound call status + transcript ────────────────────────────
     {
       name: 'get_call_status',
-      description: 'Check the status of an outbound call. New calls are Telnyx call-bridge sessions; historical Vapi call IDs are read as a compatibility fallback.',
+      description: 'Check the status of an outbound call. Current APEX sales calls use Cartesia; historical Telnyx call-bridge and Vapi call IDs remain readable as compatibility fallbacks.',
       schema: z.object({
         callId: z.string().describe('The call bridge session ID returned from make_outbound_call'),
       }),
       requiresApproval: false, // Read-only — just checks status, no side effects.
       async execute({ callId }) {
+        if (/^ac_[A-Za-z0-9_-]+$/.test(callId)) {
+          try {
+            const call = await getCartesiaSalesCall(callId);
+            const transcript = Array.isArray(call.transcript)
+              ? call.transcript.map((turn) => `${turn.role ?? 'unknown'}: ${turn.text ?? ''}`).join('\n')
+              : null;
+            return {
+              success: true,
+              provider: 'cartesia',
+              callId: call.id,
+              agentId: call.agent_id ?? null,
+              agentName: call.agent_name ?? CARTESIA_SALES_AGENT_NAME,
+              status: call.status ?? 'unknown',
+              customerNumber: call.telephony_params?.to ?? null,
+              callerId: call.telephony_params?.from ?? APEX_CARTESIA_CALLER_NUMBER,
+              transcript,
+              summary: call.summary ?? null,
+              endedReason: call.end_reason ?? null,
+              error: call.error_message ?? null,
+              startedAt: call.start_time ?? null,
+              endedAt: call.end_time ?? null,
+            };
+          } catch (err) {
+            return { success: false, provider: 'cartesia', callId, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+
         const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, callId)).limit(1);
         if (session) {
           return {
@@ -3169,7 +3557,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       requiresApproval: true, // Sends real email to a real inbox — externally visible, irreversible.
       async execute({ toEmail, toName, subject, html, leadId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
-        await assertOutboundAllowed({ channel: 'email', destination: toEmail, purpose: 'send_email' });
+        await assertOutboundAllowed({ channel: 'email', destination: toEmail, leadId, purpose: 'send_email' });
         // Phase 2.3: budget guard — skip for now (email cost is negligible, ~$0.001/email)
         // Budget check would go here if email had a meaningful per-unit cost
         const { randomUUID } = await import('crypto');
@@ -3188,6 +3576,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const policy = await loadOutboundPolicy();
         const rehearsal = Boolean(policy && sameEmail(toEmail, policy.rehearsalEmail));
         const result = await deliverQueuedEmailSend(id, toEmail, subject, html, {
+          leadId: leadId ?? null,
+          purpose: 'send_email',
           requireCompliance: !rehearsal && policy?.mode === 'capped_live',
           postalAddress: policy?.postalAddress,
           unsubscribeEmail: policy?.unsubscribeEmail,
@@ -3396,6 +3786,8 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const html = row.body ?? resolveMergeFields(campaign.bodyTemplate, fields);
           const rehearsal = Boolean(policy && sameEmail(row.toEmail, policy.rehearsalEmail));
           const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html, {
+            leadId: row.leadId ?? null,
+            purpose: 'send_email_campaign_batch',
             requireCompliance: !rehearsal && policy?.mode === 'capped_live',
             postalAddress: policy?.postalAddress,
             unsubscribeEmail: policy?.unsubscribeEmail,

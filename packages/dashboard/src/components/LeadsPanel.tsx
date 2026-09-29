@@ -123,8 +123,15 @@ export function LeadsPanel() {
           alignItems: 'center',
         }}
       >
-        <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-          {stats?.total ?? leads.length} Leads
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-apex-text)' }}>
+            {stats?.contactReady ?? stats?.total ?? leads.length} Contact-ready prospects
+          </div>
+          {stats && (
+            <div style={{ marginTop: 3, fontSize: 10, color: 'var(--color-apex-muted)' }}>
+              {stats.rawCandidates.toLocaleString()} raw candidates · {stats.pendingOrUnverified.toLocaleString()} pending verification/contact · {stats.rejected.toLocaleString()} rejected
+            </div>
+          )}
         </div>
         {stats && (
           <>
@@ -373,6 +380,9 @@ export function LeadsPanel() {
               <tbody>
                 {leads.map((lead) => {
                   const isExpanded = expandedId === lead.id;
+                  const verification = (lead.enrichment?.['businessVerification'] ?? null) as
+                    | { status?: string; contactSourceUrl?: string | null }
+                    | null;
                   return (
                     <>
                       <motion.tr
@@ -410,6 +420,11 @@ export function LeadsPanel() {
                               <ExternalLink size={10} /> {lead.website.replace(/^https?:\/\//, '').slice(0, 35)}
                             </a>
                           )}
+                          {verification?.status === 'verified' && (
+                            <div style={{ marginTop: 3, fontSize: 9, color: '#6a9f78', fontWeight: 700, textTransform: 'uppercase' }}>
+                              Verified business
+                            </div>
+                          )}
                         </td>
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>{lead.industry || '—'}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>{lead.city || '—'}</td>
@@ -417,6 +432,17 @@ export function LeadsPanel() {
                           <div style={{ fontWeight: 600, color: 'var(--color-apex-text)' }}>{lead.decisionMakerName || 'Decision maker pending'}</div>
                           {lead.contactEmail && <a href={`mailto:${lead.contactEmail}`} onClick={(e) => e.stopPropagation()} style={{ color: '#5a9eae', display: 'flex', gap: 4, alignItems: 'center' }}><Mail size={10} />{lead.contactEmail}</a>}
                           {lead.contactPhone && <a href={`tel:${lead.contactPhone}`} onClick={(e) => e.stopPropagation()} style={{ color: '#5a9eae', display: 'flex', gap: 4, alignItems: 'center' }}><Phone size={10} />{lead.contactPhone}</a>}
+                          {lead.contactSourceUrl && (
+                            <a
+                              href={lead.contactSourceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              style={{ color: 'var(--color-apex-muted)', display: 'inline-flex', gap: 3, alignItems: 'center', fontSize: 9, marginTop: 3 }}
+                            >
+                              <ExternalLink size={9} /> contact source
+                            </a>
+                          )}
                           {!lead.contactEmail && !lead.contactPhone && <span style={{ fontSize: 10, textTransform: 'uppercase' }}>{lead.contactResearchStatus}</span>}
                         </td>
                         <td style={{ padding: '8px 12px' }}>

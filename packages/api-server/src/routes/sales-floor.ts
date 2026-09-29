@@ -23,8 +23,8 @@ import {
   rehearsalPersonaFields,
   renderPlaybookTemplate,
   sameEmail,
+  startCartesiaSalesCall,
 } from '@workspace/core';
-import { startAiFirstSession } from './call-bridge.js';
 import { errorMessage, normalizeE164 } from './sales-ops.js';
 
 const PROJECT_ID = 'apex';
@@ -238,14 +238,37 @@ export function createSalesFloorRouter(): Router {
         detail: email.success ? 'rehearsal open email' : email.error ?? 'rehearsal email failed',
       });
 
-      const call = await startAiFirstSession({
-        customerNumber: policy.rehearsalPhone,
-        operatorNumber: policy.rehearsalPhone,
-        buyerName: policy.personaName,
+      const callOpening = renderPlaybookTemplate(playbook.call.firstMessage, fields);
+      const callPrompt = renderPlaybookTemplate(playbook.call.assistantPrompt, fields);
+      if (callOpening.missing.length || callPrompt.missing.length) {
+        res.status(400).json({ error: `Call playbook is missing ${[...new Set([...callOpening.missing, ...callPrompt.missing])].join(', ')}.` });
+        return;
+      }
+
+      const call = await startCartesiaSalesCall({
+        toNumber: policy.rehearsalPhone,
+        customerName: policy.personaName,
+        firstMessage: callOpening.text,
+        assistantPrompt: callPrompt.text,
         playbookId: playbook.id,
         leadId: REHEARSAL_LEAD_ID,
+        createdByAgentId: 'operator',
+      }).then(
+        (started) => ({ success: true as const, ...started }),
+        (err: unknown) => ({ success: false as const, error: err instanceof Error ? err.message : String(err) }),
+      );
+
+      await recordOutboundAudit({
+        toolName: 'make_outbound_call',
+        destination: policy.rehearsalPhone,
+        leadId: REHEARSAL_LEAD_ID,
+        policyMode: policy.mode,
+        providerId: call.success ? call.callId : null,
+        rehearsal: true,
+        detail: call.success ? 'canonical Cartesia rehearsal call' : call.error,
       });
-      res.status(email.success || !('error' in call) ? 201 : 502).json({
+
+      res.status(email.success || call.success ? 201 : 502).json({
         email,
         call,
         playbookId: playbook.id,

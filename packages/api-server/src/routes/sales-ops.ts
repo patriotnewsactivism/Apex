@@ -10,8 +10,8 @@
 //                     operator-initiated action from an authenticated console,
 //                     so it approves the hard-gated make_outbound_call tool on
 //                     the operator's behalf (requestApproval => true) rather than
-//                     parking it in the agent approval queue. The operator owns
-//                     DNC/consent for a number they type in here.
+//                     parking it in the agent approval queue. Approval does
+//                     NOT bypass the unified consent/DNC evaluator.
 //   POST /automate  — designate a target (one lead, a list/campaign, or the whole
 //                     qualified pipeline) for full automation: set the workforce
 //                     autonomy level and hand the Sales org a goal to work it
@@ -41,7 +41,7 @@ import {
   callOutcomes,
 } from '@workspace/db';
 import { and, asc, desc, eq, gte, sql } from 'drizzle-orm';
-import { getSpendLedgerSnapshot } from '@workspace/core';
+import { CARTESIA_SALES_AGENT_NAME, assertOutboundAllowed, getSpendLedgerSnapshot, startCartesiaSalesCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
 const SALES_AGENT_ID = 'apex-sales-001';
@@ -379,7 +379,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
 
       const result = await registry.execute(
         'make_outbound_call',
-        { customerNumber, customerName: customerName || undefined, assistantPrompt, firstMessage },
+        { customerNumber, customerName: customerName || undefined, assistantPrompt, firstMessage, leadId: body.leadId },
         {
           agentId: SALES_AGENT_ID,
           workspaceRoot,
@@ -400,7 +400,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       const callResult: OutboundCallResult =
         result.success && result.data && typeof result.data === 'object'
           ? (result.data as OutboundCallResult)
-          : { success: false, error: result.error ?? 'Outbound call tool failed before reaching Vapi.' };
+          : { success: false, error: result.error ?? 'Outbound call tool failed before reaching Cartesia.' };
       const success = result.success && callResult.success !== false;
 
       // Leave an honest operator-action record next to the agent's own call logs.
@@ -409,7 +409,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         taskId: null,
         level: success ? 'acting' : 'error',
         message: success
-          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops. Vapi call ID: ${callResult.callId ?? 'unknown'}. Initial status: ${callResult.status ?? 'unknown'}.`
+          ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops. Cartesia call ID: ${callResult.callId ?? 'unknown'}. Initial status: ${callResult.status ?? 'unknown'}.`
           : `Operator outbound call to ${customerNumber} failed: ${callResult.error ?? result.error ?? 'unknown error'}`,
         timestamp: new Date(),
       });
@@ -420,12 +420,12 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
     }
   });
 
-  // ── POST /audit-call — requested self-pitch through Telnyx only ─────────────
+  // ── POST /audit-call — requested self-pitch through canonical Cartesia agent ─
   //
-  // This deliberately does NOT call a lead or use the blind-audit persona. It
-  // dials the configured owner number through the Telnyx call bridge and tells
-  // the assistant plainly that Matthew requested a test pitch.
-  router.post('/audit-call', async (req, res) => {
+  // This deliberately does NOT call a lead or use the blind-audit persona.
+  // It dials only the configured owner number, but it uses the exact same
+  // canonical Cartesia sales agent that make_outbound_call and campaigns use.
+  router.post('/audit-call', async (_req, res) => {
     try {
       const ownerNumber = normalizeE164(process.env.TELNYX_OWNER_NUMBER);
       if (!ownerNumber) {
@@ -434,30 +434,32 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         });
         return;
       }
-      const { startAiFirstSession } = await import('./call-bridge.js');
-      const started = await startAiFirstSession({
-        customerNumber: ownerNumber,
-        operatorNumber: ownerNumber,
-        buyerName: 'Matthew',
-        assistantGreeting: 'Hi Matthew, this is Alex from BuildMyBot and APEX. You asked me to test pitch you; is now still a good time?',
-        assistantInstructions: [
-          'You are Alex, a BuildMyBot and APEX sales rep on a requested internal test pitch.',
+
+      const started = await startCartesiaSalesCall({
+        toNumber: ownerNumber,
+        customerName: 'Matthew',
+        firstMessage: 'Hi Matthew, this is Alex from BuildMyBot and APEX. You asked me to test pitch you; is now still a good time?',
+        assistantPrompt: [
+          'This is an owner-requested internal self-pitch test.',
           'The person who answered is Matthew Reardon, the operator/owner testing the outbound sales experience.',
           'Do not call him Sam. Do not pretend he called you first. Do not pretend he is a researched prospect or a random business owner.',
-          'Pitch naturally and briefly: explain how BuildMyBot answers missed calls/messages, qualifies leads, follows up by SMS or email, and helps book appointments. Explain that APEX can coordinate the operational follow-through.',
+          'Pitch naturally and briefly: explain how BuildMyBot answers missed calls/messages, qualifies leads, follows up, and helps book appointments. Explain that APEX can coordinate the operational follow-through.',
           'Ask for feedback on the pitch quality and whether the offer is clear. Keep it conversational and under three minutes.',
         ].join('\n'),
         createdByAgentId: SALES_AGENT_ID,
-      });
-      const success = !('error' in started);
+      }).then(
+        (call) => ({ call }),
+        (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
+      );
 
+      const success = 'call' in started;
       await db.insert(logs).values({
         agentId: SALES_AGENT_ID,
         taskId: null,
         level: success ? 'acting' : 'error',
         message: success
-          ? `Self-pitch call initiated through Telnyx. sessionId=${started.id} destination=configured owner number.`
-          : `Self-pitch call failed through Telnyx: ${started.error}`,
+          ? `Self-pitch call initiated through canonical Cartesia agent. callId=${started.call.callId} destination=configured owner number.`
+          : `Self-pitch call failed through Cartesia: ${started.error}`,
         timestamp: new Date(),
       });
 
@@ -465,11 +467,14 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         success
           ? {
               success: true,
-              callId: started.id,
-              status: 'dialing_customer',
-              provider: 'telnyx',
+              callId: started.call.callId,
+              status: 'created',
+              provider: 'cartesia',
+              agentId: started.call.agentId,
+              agentName: CARTESIA_SALES_AGENT_NAME,
+              callerId: started.call.fromNumber,
             }
-          : { success: false, error: started.error, provider: 'telnyx' },
+          : { success: false, error: started.error, provider: 'cartesia', agentName: CARTESIA_SALES_AGENT_NAME },
       );
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
@@ -674,6 +679,24 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       const text = typeof body.body === 'string' ? body.body.trim() : '';
       if (!text) {
         res.status(400).json({ error: 'Message text is required.' });
+        return;
+      }
+
+      // Operator initiation does not bypass contact consent. A real outbound
+      // SMS is still externally visible, so it uses the same fail-closed gate
+      // as autonomous email/calls. With no consent-linked contact this returns
+      // a clear 409 instead of silently sending.
+      try {
+        await assertOutboundAllowed({
+          channel: 'sms',
+          destination: toNumber,
+          purpose: 'operator_sms',
+        });
+      } catch (error) {
+        res.status(409).json({
+          error: error instanceof Error ? error.message : String(error),
+          complianceBlocked: true,
+        });
         return;
       }
 

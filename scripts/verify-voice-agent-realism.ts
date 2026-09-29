@@ -1,14 +1,12 @@
 /**
  * Guards the current APEX voice architecture:
  *
- * 1. Browser/admin Live Talk prefers a direct persistent Gemini 3.8 Live
- *    WebSocket session with full-duplex barge-in, async NON_BLOCKING tools,
- *    session resumption, audio transcription, context compression, and
- *    durable transcript persistence.
- * 2. live-voice.ts retains the proven Deepgram/Groq/ElevenLabs stack only as
- *    an availability fallback when Gemini cannot reach setupComplete.
- * 3. Telnyx/Deepgram and Vapi telephone paths keep their explicitly pinned
- *    ElevenLabs voice configuration.
+ * 1. Browser/admin Live Talk defaults to Deepgram/Groq with Cartesia TTS,
+ *    pinned to the owned "Don Matthews" Cartesia voice clone.
+ * 2. Gemini 3.8 Live remains an explicit opt-in compatibility path, not the
+ *    default, because its native audio cannot use the Cartesia clone.
+ * 3. Telnyx/Deepgram and Vapi telephone paths keep their separate voice
+ *    configuration.
  *
  * Structural source checks are used because CI does not carry production
  * provider credentials. Production verification is completed after deploy
@@ -80,25 +78,59 @@ function checkSpeakBlock(label: string, source: string): void {
   );
 }
 
+
+function checkCartesiaLiveSpeakBlock(source: string): void {
+  const speakStart = source.indexOf('speak: {');
+  check('live-voice.ts: found Cartesia speak block', speakStart > -1);
+  if (speakStart === -1) return;
+  const speakBlock = source.slice(speakStart, speakStart + 1200);
+
+  check(
+    'live-voice.ts: Quick Chat Live uses Cartesia TTS',
+    /type:\s*'cartesia'/.test(speakBlock),
+    speakBlock,
+  );
+  check(
+    'live-voice.ts: Cartesia uses the resolved owned Don Matthews voice id',
+    /voice:\s*\{\s*mode:\s*'id',\s*id:\s*cartesiaVoiceId\s*\}/.test(speakBlock) &&
+      /resolveCartesiaSalesVoiceId/.test(source) &&
+      /CARTESIA_SALES_VOICE_NAME/.test(source),
+  );
+  check(
+    'live-voice.ts: Cartesia Sonic model and TTS endpoint are pinned',
+    /model_id:\s*CARTESIA_LIVE_TTS_MODEL/.test(speakBlock) &&
+      /https:\/\/api\.cartesia\.ai\/tts\/bytes/.test(speakBlock),
+  );
+  check(
+    'live-voice.ts: Cartesia auth/version headers are server-side',
+    /'x-api-key':\s*cartesiaKey/.test(speakBlock) &&
+      /'Cartesia-Version':\s*CARTESIA_API_VERSION/.test(speakBlock),
+  );
+  check(
+    'live-voice.ts: no generic female Aura or ElevenLabs fallback remains on Quick Chat Live',
+    !/aura-2-asteria-en/.test(source) &&
+      !/DEFAULT_ELEVENLABS_VOICE_ID/.test(source),
+  );
+}
+
 function main(): void {
   console.log('Verifying voice-agent realism and live-voice persistence...\n');
 
-  // ── Browser/admin Live Talk: Gemini primary, Deepgram fallback ─────────────
+  // ── Browser/admin Live Talk: Deepgram/Groq + owned Cartesia voice ─────────
   const liveVoiceSource = fs.readFileSync(path.join(root, 'packages/api-server/src/live-voice.ts'), 'utf8');
   const geminiLiveSource = fs.readFileSync(path.join(root, 'packages/api-server/src/gemini-live-session.ts'), 'utf8');
 
   check(
-    'live-voice.ts attempts the direct Gemini session before the Deepgram fallback',
+    'live-voice.ts keeps Gemini available only as an explicit opt-in path',
     /tryStartGeminiLiveSession/.test(liveVoiceSource) &&
-      liveVoiceSource.indexOf('tryStartGeminiLiveSession') < liveVoiceSource.indexOf('connectToDeepgram();'),
+      /requestedProvider === 'gemini'/.test(liveVoiceSource),
   );
   check(
-    'live-voice.ts defaults the browser/admin provider to Gemini but permits an explicit Deepgram fallback override',
+    'live-voice.ts defaults browser/admin Live Talk to Deepgram so Cartesia owns speech output',
     /APEX_LIVE_VOICE_PROVIDER/.test(liveVoiceSource) &&
-      /\|\| 'gemini'/.test(liveVoiceSource) &&
-      /requestedProvider !== 'deepgram'/.test(liveVoiceSource),
+      /\|\| 'deepgram'/.test(liveVoiceSource),
   );
-  checkSpeakBlock('live-voice.ts Deepgram fallback', liveVoiceSource);
+  checkCartesiaLiveSpeakBlock(liveVoiceSource);
 
   check(
     'Gemini adapter pins the fast realtime model to gemini-3.8-live (not Extended Thinking in the critical path)',
@@ -170,7 +202,7 @@ function main(): void {
 
   check(
     'Gemini browser input listener is attached before the initial provider connection so startup speech is buffered',
-    /client\.on\('message', handleClientMessage\)[\s\S]{0,180}const initialConnected = await connect\(\)/.test(geminiLiveSource),
+    /client\.on\('message', handleClientMessage\)[\s\S]{0,420}const initialConnected = await connect\(\)/.test(geminiLiveSource),
   );
   check(
     'Gemini startup snapshot has a hard latency budget instead of blocking provider connect on Postgres',
@@ -203,10 +235,11 @@ function main(): void {
   const telnyxAgentSource = fs.readFileSync(path.join(root, 'packages/api-server/src/telnyx-deepgram-agent.ts'), 'utf8');
   checkSpeakBlock('telnyx-deepgram-agent.ts', telnyxAgentSource);
 
-  // ── tool-registry.ts: Vapi phone calls ────────────────────────────────────
+  // ── Canonical Cartesia outbound sales + Vapi inbound assistant ───────────
   const registrySource = fs.readFileSync(path.join(root, 'packages/core/src/tool-registry.ts'), 'utf8');
   const apiIndexSource = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
   const inboundReconcileSource = fs.readFileSync(path.join(root, 'packages/api-server/src/vapi-inbound-latency.ts'), 'utf8');
+  const callBridgeSource = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/call-bridge.ts'), 'utf8');
   const mocStart = registrySource.indexOf("name: 'make_outbound_call'");
   const mocEnd = registrySource.indexOf("name: 'get_call_status'");
   const ciaStart = registrySource.indexOf("name: 'configure_inbound_assistant'");
@@ -216,24 +249,28 @@ function main(): void {
     const mocBody = registrySource.slice(mocStart, mocEnd);
     const ciaBody = registrySource.slice(ciaStart, ciaEnd);
     check(
-      'make_outbound_call: OpenAI Realtime 2 is the default so telephone turns do not serialize STT -> LLM -> TTS',
-      /model:\s*'gpt-realtime-2'/.test(mocBody) &&
-        /voice:\s*\{[\s\S]*?provider:\s*'openai'/.test(mocBody),
+      'make_outbound_call: routes through the canonical Cartesia sales client, not Telnyx or Vapi',
+      /startCartesiaSalesCall\(\{/.test(mocBody) &&
+        /agentName:\s*CARTESIA_SALES_AGENT_NAME/.test(mocBody) &&
+        !/api\.telnyx\.com\/v2\/calls/.test(mocBody) &&
+        !/api\.vapi\.ai\/call/.test(mocBody),
     );
     check(
-      'make_outbound_call: realtime voice is configurable and defaults to cedar',
-      /voiceId:\s*process\.env\.VAPI_REALTIME_VOICE_ID\s*\|\|\s*'cedar'/.test(mocBody),
+      'make_outbound_call: requires approval and checks number-level suppression',
+      /requiresApproval:\s*true/.test(mocBody) &&
+        /assertOutboundAllowed\(\{\s*channel:\s*'phone'/.test(mocBody),
     );
     check(
-      'make_outbound_call: there is no separate transcriber in the outbound assistant',
-      !/transcriber:\s*\{/.test(mocBody),
+      'make_outbound_call: carries lead/campaign/playbook identity into the canonical Cartesia call',
+      /leadId:\s*z\.string\(\)\.optional/.test(mocBody) &&
+        /campaignId:\s*z\.string\(\)\.optional/.test(mocBody) &&
+        /playbookId:\s*z\.string\(\)\.optional/.test(mocBody) &&
+        /leadId:\s*leadId \?\? null/.test(mocBody) &&
+        /campaignId:\s*campaignId \?\? null/.test(mocBody),
     );
     check(
-      'make_outbound_call: turn taking is explicitly tuned for low latency and VAD barge-in',
-      /startSpeakingPlan:\s*\{[\s\S]*?waitSeconds:\s*0\.1/.test(mocBody) &&
-        /provider:\s*'livekit'/.test(mocBody) &&
-        /stopSpeakingPlan:\s*\{[\s\S]*?numWords:\s*0/.test(mocBody) &&
-        /voiceSeconds:\s*0\.15/.test(mocBody),
+      'historical Telnyx call bridge remains available only as a compatibility/operator surface',
+      /telnyxCommand\(session\.customerCallControlId, 'ai_assistant_start'/.test(callBridgeSource),
     );
     check(
       'configure_inbound_assistant: uses GPT-5.6 Luna fast tier for lower model latency',

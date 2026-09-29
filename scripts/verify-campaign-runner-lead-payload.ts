@@ -192,6 +192,76 @@ async function main(): Promise<void> {
     !runnerMod.isDeterministicFailure('All LLM providers failed: free pool exhausted'),
   );
 
+  // ── Legacy campaign search repair ───────────────────────────────────────
+  const legacyBail = runnerMod.effectiveSegmentSearch({
+    industry: 'Bail Bonds',
+    city: 'Birmingham, AL',
+    subcategory: 'company',
+    searchIntent: 'directory',
+    query: 'company Birmingham, AL',
+  } as any);
+  check(
+    'legacy Bail Bonds generic shards are repaired to an actual bail-bonds query',
+    legacyBail.repairedLegacyGeneric &&
+      /bail/i.test(legacyBail.subcategory) &&
+      /bail/i.test(legacyBail.query) &&
+      /Birmingham, AL/i.test(legacyBail.query),
+    legacyBail,
+  );
+
+  const roofingSpecific = runnerMod.effectiveSegmentSearch({
+    industry: 'Roofing',
+    city: 'Dallas, TX',
+    subcategory: 'roof repair',
+    searchIntent: 'directory',
+    query: 'roof repair Dallas, TX',
+  } as any);
+  check(
+    'already-specific campaign shards are left unchanged',
+    !roofingSpecific.repairedLegacyGeneric &&
+      roofingSpecific.query === 'roof repair Dallas, TX',
+    roofingSpecific,
+  );
+
+  // ── Search-result identity quality ──────────────────────────────────────
+  const franciscus = runnerMod.businessFromWebResult({
+    title: '#1 Roofing Company In Northeast Ohio | Franciscus Roofing',
+    url: 'https://1866staydry.com/',
+  }, 'Cleveland, OH');
+  check(
+    'web discovery extracts the real brand from an SEO title instead of storing the marketing headline',
+    franciscus?.name === 'Franciscus Roofing' &&
+      franciscus.website === 'https://1866staydry.com/',
+    franciscus,
+  );
+
+  const roofAndNail = runnerMod.businessFromWebResult({
+    title: 'Top Quality Roof Repair in Portland Oregon',
+    url: 'https://roofandnailco.com/roof-repairs',
+  }, 'Portland, OR');
+  check(
+    'SEO-only titles fall back to the official site/domain identity and normalize to the homepage',
+    roofAndNail?.name === 'Roofandnailco' &&
+      roofAndNail.website === 'https://roofandnailco.com/',
+    roofAndNail,
+  );
+
+  const unknownIndustry = (await import(
+    path.join(root, 'packages/background-jobs/src/lead-pipeline.ts')
+  )) as typeof import('../packages/background-jobs/src/lead-pipeline.js');
+  const locksmithTerms = unknownIndustry.subcategoriesForIndustry('Emergency Locksmiths');
+  check(
+    'locksmith campaigns use locksmith-specific search terms rather than generic company/service-provider queries',
+    locksmithTerms.every((value) => /locksmith/i.test(value)),
+    locksmithTerms,
+  );
+  const solarTerms = unknownIndustry.subcategoriesForIndustry('Solar Installers');
+  check(
+    'an unmapped industry still stays industry-specific instead of falling back to arbitrary companies',
+    solarTerms.every((value) => /solar installer/i.test(value)),
+    solarTerms,
+  );
+
   console.log(
     failures === 0
       ? '\n✅ Campaign runner lead payload verified.\n'

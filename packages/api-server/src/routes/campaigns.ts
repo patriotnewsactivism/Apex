@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, campaignSegments, leadCampaigns, researchedLeads } from '@workspace/db';
-import { computeCampaignProgress, createCampaign } from '@workspace/background-jobs';
+import { computeCampaignProgress, countUsableCampaignLeads, createCampaign } from '@workspace/background-jobs';
 import { broadcast } from '../websocket.js';
 
 // Progress is always computed from campaign + segment rows at read time, never
@@ -52,8 +52,38 @@ export function createCampaignsRouter() {
       list.push(s);
       byCampaign.set(s.campaignId, list);
     }
+
+    const usableRows = await db
+      .select({
+        campaignId: researchedLeads.campaignId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(researchedLeads)
+      .where(
+        and(
+          inArray(researchedLeads.campaignId, campaigns.map((campaign) => campaign.id)),
+          eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
+          eq(researchedLeads.status, 'qualified'),
+          sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
+          sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
+        ),
+      )
+      .groupBy(researchedLeads.campaignId);
+    const usableByCampaign = new Map(
+      usableRows
+        .filter((row): row is typeof row & { campaignId: string } => Boolean(row.campaignId))
+        .map((row) => [row.campaignId, Number(row.count)]),
+    );
+
     res.json({
-      campaigns: campaigns.map((c) => computeCampaignProgress(c, byCampaign.get(c.id) ?? [])),
+      campaigns: campaigns.map((campaign) =>
+        computeCampaignProgress(
+          campaign,
+          byCampaign.get(campaign.id) ?? [],
+          Date.now(),
+          usableByCampaign.get(campaign.id) ?? 0,
+        ),
+      ),
     });
   });
 
@@ -70,8 +100,13 @@ export function createCampaignsRouter() {
       .where(eq(campaignSegments.campaignId, campaign.id))
       .orderBy(campaignSegments.industry, campaignSegments.city);
 
+    const usableLeadCount = await countUsableCampaignLeads(campaign.id);
     res.json({
-      campaign: { ...computeCampaignProgress(campaign, segments), icp: campaign.icp, result: campaign.result },
+      campaign: {
+        ...computeCampaignProgress(campaign, segments, Date.now(), usableLeadCount),
+        icp: campaign.icp,
+        result: campaign.result,
+      },
       segments,
     });
   });
@@ -81,7 +116,15 @@ export function createCampaignsRouter() {
     const leads = await db
       .select()
       .from(researchedLeads)
-      .where(eq(researchedLeads.campaignId, req.params.id))
+      .where(
+        and(
+          eq(researchedLeads.campaignId, req.params.id),
+          eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
+          eq(researchedLeads.status, 'qualified'),
+          sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
+          sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
+        ),
+      )
       .orderBy(desc(researchedLeads.createdAt))
       .limit(Math.min(Number(req.query.limit) || 500, 5000));
     res.json({ leads });

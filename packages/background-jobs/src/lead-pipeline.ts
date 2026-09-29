@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
-import { and, asc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
 import {
   db,
   leadResearchCache,
   researchedLeads,
 } from '@workspace/db';
 import { emitApexEvent, normalizeIndustry } from '@workspace/core';
+import { recordOperatorActivity } from './operator-activity.js';
 
 export const LEAD_PIPELINE_STATES = [
   'DISCOVERED',
@@ -36,6 +37,8 @@ const STATE_TIMESTAMP: Partial<Record<LeadPipelineState, keyof typeof researched
 };
 
 const SERVICE_SUBCATEGORIES: Record<string, string[]> = {
+  'bail bond': ['bail bonds', 'bail bondsman', '24 hour bail bonds', 'surety bail bonds'],
+  locksmith: ['locksmith', 'emergency locksmith', '24 hour locksmith', 'mobile locksmith'],
   roofing: ['roof repair', 'roof replacement', 'storm damage roofing', 'commercial roofing'],
   hvac: ['ac repair', 'hvac contractor', 'furnace repair', 'emergency hvac'],
   plumbing: ['emergency plumber', 'water heater repair', 'drain cleaning', 'plumbing contractor'],
@@ -74,7 +77,7 @@ export function getLeadPipelineConfig(): LeadPipelineConfig {
     discoveryConcurrency: Number(process.env.LEAD_DISCOVERY_CONCURRENCY ?? (liveDemoMode ? 8 : 3)),
     stageConcurrency: Number(process.env.LEAD_STAGE_CONCURRENCY ?? (liveDemoMode ? 12 : 5)),
     shardsPerCell: Number(process.env.LEAD_SHARDS_PER_CELL ?? (liveDemoMode ? 8 : 12)),
-    segmentBatchSize: Number(process.env.LEAD_SEGMENT_BATCH_SIZE ?? (liveDemoMode ? 8 : 3)),
+    segmentBatchSize: Number(process.env.LEAD_SEGMENT_BATCH_SIZE ?? (liveDemoMode ? 10 : 6)),
     maxDirectoryResultsPerShard: Number(process.env.LEAD_DIRECTORY_RESULTS_PER_SHARD ?? (liveDemoMode ? 12 : 25)),
     leaseMs: Number(process.env.LEAD_PIPELINE_LEASE_MS ?? 2 * 60 * 1000),
     initialQualificationMaxWords: Number(process.env.LEAD_INITIAL_QUALIFICATION_WORDS ?? (liveDemoMode ? 28 : 55)),
@@ -84,9 +87,17 @@ export function getLeadPipelineConfig(): LeadPipelineConfig {
 export function subcategoriesForIndustry(industry: string): string[] {
   const normalized = normalizeIndustry(industry)?.toLowerCase() ?? industry.toLowerCase();
   for (const [key, values] of Object.entries(SERVICE_SUBCATEGORIES)) {
-    if (normalized.includes(key)) return values;
+    if (key !== 'default' && normalized.includes(key)) return values;
   }
-  return SERVICE_SUBCATEGORIES.default;
+
+  // Unknown industries must still search for that industry. Generic fallback
+  // queries such as "company Dallas" produced unrelated SEO pages.
+  const clean = normalized
+    .replace(/\b(?:business|businesses|company|companies)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return SERVICE_SUBCATEGORIES.default;
+  return [clean, `${clean} company`, `${clean} service`, `local ${clean}`];
 }
 
 export function generateSearchShards(
@@ -129,6 +140,387 @@ export function normalizeLeadDomain(url: string | null | undefined): string | nu
   }
 }
 
+export function canonicalHomepageUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url.includes('://') ? url : `https://${url}`);
+    return `${parsed.protocol}//${parsed.host}/`;
+  } catch {
+    return null;
+  }
+}
+
+export function companyNameFromDomain(url: string | null | undefined): string | null {
+  const domain = normalizeLeadDomain(url);
+  if (!domain) return null;
+  const label = domain.split('.')[0] ?? '';
+  if (!label) return null;
+  return label
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b(co|llc|inc|corp)\b/gi, (m) => m.toUpperCase())
+    .replace(/\b\w/g, (m) => m.toUpperCase())
+    .trim();
+}
+
+export function isSeoLikeCompanyName(name: string, city?: string | null): boolean {
+  const value = name.trim().toLowerCase();
+  if (!value) return true;
+  const cityName = (city ?? '').split(',')[0]?.trim().toLowerCase() ?? '';
+  const generic = /(?:^|\b)(?:#?1|top|best|near me|official|trusted|premier|quality|affordable|professional|local|emergency|residential|commercial|services?|roof repair|roof replacement|roofing company|roofing contractor|installation|financing|reviews?|free estimate)(?:\b|$)/i;
+  if (generic.test(value)) return true;
+  if (cityName.length >= 4 && value.includes(cityName)) return true;
+  return value.length > 70 || value.split(/\s+/).length > 9;
+}
+
+function decodeHtmlText(value: string): string {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&ndash;|&mdash;/gi, '–')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function companyNameFromSearchResultTitle(title: string, website: string, city?: string | null): string {
+  const candidates: string[] = [];
+  for (const match of title.matchAll(/\(([^()]{3,80})\)/g)) {
+    candidates.push(decodeHtmlText(match[1] ?? ''));
+  }
+  candidates.push(...title.split(/\s+(?:\||–|—|-)\s+/).map(decodeHtmlText).filter(Boolean));
+  const usable = candidates.filter((name) => !isSeoLikeCompanyName(name, city));
+  return usable[usable.length - 1] ?? companyNameFromDomain(website) ?? title.trim();
+}
+
+function jsonLdBusinessName(html: string): string | null {
+  const scripts = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) ?? [];
+  const businessType = /organization|localbusiness|corporation|professionalservice|homeandconstructionbusiness|roofingcontractor|legalservice|dentist|locksmith|plumber/i;
+  const walk = (value: unknown): string | null => {
+    if (Array.isArray(value)) {
+      for (const item of value) { const found = walk(item); if (found) return found; }
+      return null;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const row = value as Record<string, unknown>;
+    const rawType = row['@type'];
+    const types = Array.isArray(rawType) ? rawType.join(' ') : String(rawType ?? '');
+    if (businessType.test(types) && typeof row.name === 'string' && row.name.trim()) return row.name.trim();
+    if (row['@graph']) return walk(row['@graph']);
+    return null;
+  };
+  for (const script of scripts) {
+    const body = script.replace(/^<script[^>]*>/i, '').replace(/<\/script>$/i, '').trim();
+    try { const found = walk(JSON.parse(body)); if (found) return decodeHtmlText(found); } catch {}
+  }
+  return null;
+}
+
+function metaContent(html: string, key: string): string | null {
+  const safeKey = key.replace(/[^a-z0-9:_-]/gi, '');
+  const patterns = [
+    new RegExp(`<meta[^>]+(?:property|name)=["']${safeKey}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${safeKey}["'][^>]*>`, 'i'),
+  ];
+  for (const pattern of patterns) { const match = html.match(pattern); if (match?.[1]) return decodeHtmlText(match[1]); }
+  return null;
+}
+
+function industryAffinity(industry: string | null | undefined, text: string): boolean {
+  const normalized = (normalizeIndustry(industry ?? '') ?? industry ?? '').toLowerCase();
+  if (!normalized) return true;
+  const haystack = text.toLowerCase();
+  const checks: Array<[RegExp, RegExp]> = [
+    [/roof/, /\broof(?:ing|er|ers| repair| replacement)?\b/],
+    [/bail/, /\bbail\b|bondsman/],
+    [/locksmith/, /\blocksmith\b|lock repair|lockout/],
+    [/hvac/, /\bhvac\b|air condition|heating|furnace/],
+    [/plumb/, /\bplumb(?:er|ing)?\b|water heater|drain/],
+    [/dental|dentist/, /\bdent(?:al|ist|istry)\b|orthodont/],
+    [/medspa|medical spa/, /med(?:ical)? spa|botox|aesthetic|laser hair/],
+    [/legal|law|attorney/, /\blaw\b|lawyer|attorney|legal/],
+  ];
+  for (const [industryPattern, contentPattern] of checks) if (industryPattern.test(normalized)) return contentPattern.test(haystack);
+  const meaningful = normalized.split(/\s+/).filter((token) => token.length >= 4 && !['business','company','service','services','emergency'].includes(token));
+  return meaningful.length === 0 || meaningful.some((token) => haystack.includes(token));
+}
+
+function normalizeBusinessEmail(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const email = value.trim().toLowerCase().replace(/^mailto:/i, '').split('?')[0] ?? '';
+  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) return null;
+  if (/(?:example\.com|example\.org|domain\.com|yourdomain|sentry|wixpress|cloudflare)/i.test(email)) return null;
+  if (/^(?:noreply|no-reply|donotreply|do-not-reply)@/i.test(email)) return null;
+  return email;
+}
+
+function normalizeUsBusinessPhone(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const raw = value.trim().replace(/^tel:/i, '').split(/[;,?]/)[0] ?? '';
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (digits.length >= 8 && digits.length <= 15 && raw.startsWith('+')) return `+${digits}`;
+  return null;
+}
+
+function publicContactsFromHtml(html: string): { email: string | null; phone: string | null } {
+  const emails = [
+    ...Array.from(html.matchAll(/href=["']mailto:([^"'?#\s>]+)/gi), (m) => m[1] ?? ''),
+    ...Array.from(decodeHtmlText(html).matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi), (m) => m[0] ?? ''),
+  ];
+  const phones = [
+    ...Array.from(html.matchAll(/href=["']tel:([^"'?#>]+)/gi), (m) => m[1] ?? ''),
+    ...Array.from(decodeHtmlText(html).matchAll(/(?:\+?1[\s.()-]*)?(?:\d{3}[\s.()-]*){2}\d{4}/g), (m) => m[0] ?? ''),
+  ];
+  return {
+    email: emails.map(normalizeBusinessEmail).find((value): value is string => Boolean(value)) ?? null,
+    phone: phones.map(normalizeUsBusinessPhone).find((value): value is string => Boolean(value)) ?? null,
+  };
+}
+
+function structuredDecisionMakerFromHtml(html: string): { name: string; title: string } | null {
+  const scripts = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) ?? [];
+  const seniority = /\b(owner|founder|co-founder|president|ceo|chief executive|managing partner|managing member|principal|partner)\b/i;
+
+  const walk = (value: unknown): { name: string; title: string } | null => {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = walk(item);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (!value || typeof value !== 'object') return null;
+    const row = value as Record<string, unknown>;
+    const rawType = row['@type'];
+    const types = Array.isArray(rawType) ? rawType.join(' ') : String(rawType ?? '');
+    const name = typeof row.name === 'string' ? decodeHtmlText(row.name) : '';
+    const title = typeof row.jobTitle === 'string' ? decodeHtmlText(row.jobTitle) : '';
+    if (/\bPerson\b/i.test(types) && name && title && seniority.test(title)) {
+      return { name, title };
+    }
+    for (const child of Object.values(row)) {
+      const found = walk(child);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  for (const script of scripts) {
+    const body = script.replace(/^<script[^>]*>/i, '').replace(/<\/script>$/i, '').trim();
+    try {
+      const found = walk(JSON.parse(body));
+      if (found) return found;
+    } catch {
+      // Ignore malformed third-party JSON-LD.
+    }
+  }
+  return null;
+}
+
+function sameOriginContactLinks(html: string, homepage: string): string[] {
+  const base = new URL(homepage);
+  const candidates: string[] = [];
+  for (const match of html.matchAll(/href=["']([^"'#]+)["']/gi)) {
+    const href = match[1]?.trim();
+    if (!href || !/(?:contact|about|team|staff|leadership)/i.test(href)) continue;
+    try {
+      const url = new URL(href, base);
+      if (url.origin !== base.origin || !/^https?:$/.test(url.protocol)) continue;
+      url.hash = '';
+      candidates.push(url.toString());
+    } catch {}
+  }
+
+  // Some sites hide useful contact/team pages behind JS navigation. Probe a
+  // few conventional first-party paths before paying an external enrichment
+  // provider. These direct website requests are cheap and high-provenance.
+  for (const suffix of ['/contact', '/contact-us', '/about', '/about-us', '/team', '/staff']) {
+    try {
+      const url = new URL(suffix, base);
+      candidates.push(url.toString());
+    } catch {}
+  }
+  return [...new Set(candidates)].slice(0, 4);
+}
+
+export async function inspectFirstPartyContactUrl(url: string): Promise<{
+  url: string;
+  email: string | null;
+  phone: string | null;
+  decisionMaker: { name: string; title: string } | null;
+} | null> {
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow',
+      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'APEX-LeadVerifier/1.0 (+https://apex.donmatthews.live)' },
+      signal: AbortSignal.timeout(Number(process.env.LEAD_CONTACT_PAGE_TIMEOUT_MS ?? 2500)),
+    });
+    if (!response.ok) return null;
+    const html = (await response.text()).slice(0, 250000);
+    const contacts = publicContactsFromHtml(html);
+    return {
+      url: response.url || url,
+      ...contacts,
+      decisionMaker: structuredDecisionMakerFromHtml(html),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface BusinessWebsiteIdentity {
+  status: 'verified' | 'mismatch' | 'unverified';
+  canonicalName: string | null;
+  homepage: string | null;
+  checkedAt: string;
+  reason: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  contactSourceUrl: string | null;
+  contactCheckedAt: string;
+  contactScanVersion: '2026-09-28-v2';
+  decisionMakerName: string | null;
+  decisionMakerTitle: string | null;
+  decisionMakerSourceUrl: string | null;
+}
+
+export async function verifyBusinessWebsiteIdentity(input: {
+  website?: string | null;
+  industry?: string | null;
+  city?: string | null;
+  currentName?: string | null;
+}): Promise<BusinessWebsiteIdentity> {
+  const homepage = canonicalHomepageUrl(input.website);
+  const checkedAt = new Date().toISOString();
+  const emptyContacts = {
+    contactEmail: null,
+    contactPhone: null,
+    contactSourceUrl: null,
+    contactCheckedAt: checkedAt,
+    contactScanVersion: '2026-09-28-v2' as const,
+    decisionMakerName: null,
+    decisionMakerTitle: null,
+    decisionMakerSourceUrl: null,
+  };
+  if (!homepage) {
+    return {
+      status: 'unverified',
+      canonicalName: input.currentName?.trim() || null,
+      homepage: null,
+      checkedAt,
+      reason: 'missing_or_invalid_website',
+      ...emptyContacts,
+    };
+  }
+
+  try {
+    const response = await fetch(homepage, {
+      redirect: 'follow',
+      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'APEX-LeadVerifier/1.0 (+https://apex.donmatthews.live)' },
+      signal: AbortSignal.timeout(Number(process.env.LEAD_WEBSITE_VERIFY_TIMEOUT_MS ?? 3500)),
+    });
+    if (!response.ok) {
+      return {
+        status: 'unverified',
+        canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null,
+        homepage,
+        checkedAt,
+        reason: `http_${response.status}`,
+        ...emptyContacts,
+      };
+    }
+
+    const finalHomepage = canonicalHomepageUrl(response.url || homepage) ?? homepage;
+    const raw = (await response.text()).slice(0, 350000);
+    const title = decodeHtmlText(raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '');
+    const canonicalName =
+      jsonLdBusinessName(raw) ||
+      metaContent(raw, 'og:site_name') ||
+      metaContent(raw, 'application-name') ||
+      companyNameFromSearchResultTitle(title, finalHomepage, input.city) ||
+      companyNameFromDomain(finalHomepage) ||
+      input.currentName?.trim() ||
+      null;
+
+    const homepageContacts = publicContactsFromHtml(raw);
+    const homepageDecisionMaker = structuredDecisionMakerFromHtml(raw);
+    let contactEmail = homepageContacts.email;
+    let contactPhone = homepageContacts.phone;
+    let contactSourceUrl: string | null = (contactEmail || contactPhone) ? finalHomepage : null;
+    let decisionMakerName = homepageDecisionMaker?.name ?? null;
+    let decisionMakerTitle = homepageDecisionMaker?.title ?? null;
+    let decisionMakerSourceUrl: string | null = homepageDecisionMaker ? finalHomepage : null;
+
+    if (!contactEmail || !contactPhone || !decisionMakerName) {
+      const contactLinks = sameOriginContactLinks(raw, finalHomepage);
+      const pages = await Promise.all(contactLinks.map(inspectFirstPartyContactUrl));
+      for (const page of pages) {
+        if (!page) continue;
+        if (!contactEmail && page.email) {
+          contactEmail = page.email;
+          contactSourceUrl = page.url;
+        }
+        if (!contactPhone && page.phone) {
+          contactPhone = page.phone;
+          contactSourceUrl ??= page.url;
+        }
+        if (!decisionMakerName && page.decisionMaker) {
+          decisionMakerName = page.decisionMaker.name;
+          decisionMakerTitle = page.decisionMaker.title;
+          decisionMakerSourceUrl = page.url;
+        }
+        if (contactEmail && contactPhone && decisionMakerName) break;
+      }
+    }
+
+    const visible = decodeHtmlText(raw.slice(0, 150000));
+    if (!industryAffinity(input.industry, `${title} ${visible}`)) {
+      return {
+        status: 'mismatch',
+        canonicalName,
+        homepage: finalHomepage,
+        checkedAt,
+        reason: 'homepage_does_not_match_target_industry',
+        contactEmail,
+        contactPhone,
+        contactSourceUrl,
+        contactCheckedAt: checkedAt,
+        contactScanVersion: '2026-09-28-v2',
+        decisionMakerName,
+        decisionMakerTitle,
+        decisionMakerSourceUrl,
+      };
+    }
+
+    return {
+      status: 'verified',
+      canonicalName,
+      homepage: finalHomepage,
+      checkedAt,
+      reason: 'homepage_and_industry_verified',
+      contactEmail,
+      contactPhone,
+      contactSourceUrl,
+      contactCheckedAt: checkedAt,
+      contactScanVersion: '2026-09-28-v2',
+      decisionMakerName,
+      decisionMakerTitle,
+      decisionMakerSourceUrl,
+    };
+  } catch (err) {
+    return {
+      status: 'unverified',
+      canonicalName: companyNameFromDomain(homepage) ?? input.currentName?.trim() ?? null,
+      homepage,
+      checkedAt,
+      reason: err instanceof Error ? err.message.slice(0, 180) : 'website_fetch_failed',
+      ...emptyContacts,
+    };
+  }
+}
 export function makeResearchCacheKey(input: {
   companyName: string;
   website?: string | null;
@@ -210,11 +602,18 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
     contactEmail?: string;
     contactPhone?: string;
     contactSourceUrl?: string;
-    contactResearchStatus?: 'partial' | 'complete' | 'unavailable';
+    contactResearchStatus?: 'pending' | 'partial' | 'complete' | 'unavailable';
   } | null;
 
   const cachedCampaignDraft = cached?.campaignDraft as Record<string, unknown> | null;
-  const readyFromCache = Boolean(cachedCampaignDraft);
+  const cachedBasic = cached?.basicEnrichment as Record<string, unknown> | null;
+  const cachedVerification = cachedBasic?.['businessVerification'] as { status?: string } | undefined;
+  const cachedHasContact = Boolean(cachedContact?.contactEmail || cachedContact?.contactPhone || input.phone);
+  const readyFromCache = Boolean(
+    cachedCampaignDraft &&
+    cachedHasContact &&
+    cachedVerification?.status === 'verified',
+  );
   const state: LeadPipelineState = readyFromCache ? 'CAMPAIGN_READY' : 'DISCOVERED';
 
   const [lead] = await db
@@ -309,12 +708,31 @@ export async function processLeadPipelineBacklog(options: {
   }
 
   if (advanced > 0) {
+    const timestamp = new Date().toISOString();
     emitApexEvent({
       type: 'lead:pipeline:metrics',
       campaignId: options.campaignId ?? null,
       advanced,
       byState,
-      timestamp: new Date().toISOString(),
+      timestamp,
+    });
+
+    const labels: Record<string, string> = {
+      DISCOVERED: 'basic business checks',
+      BASIC_ENRICHMENT: 'contact lookup',
+      CONTACT_FOUND: 'qualification',
+      QUALIFIED: 'deeper research',
+      DEEP_RESEARCH: 'campaign-ready',
+    };
+    const detail = Object.entries(byState)
+      .filter(([, count]) => count > 0)
+      .map(([state, count]) => `${count} moved into ${labels[state] ?? state.toLowerCase()}`)
+      .join(', ');
+    void recordOperatorActivity({
+      category: 'pipeline',
+      agentId: 'apex-campaign-runner',
+      message: `Lead pipeline moved ${advanced} prospect${advanced === 1 ? '' : 's'} forward${detail ? `: ${detail}.` : '.'}`,
+      data: { campaignId: options.campaignId ?? null, advanced, byState },
     });
   }
 
@@ -328,8 +746,22 @@ async function claimLeadsForState(
   const now = new Date();
   const conditions = [
     eq(researchedLeads.pipelineState, state),
+    sql`${researchedLeads.status} <> 'rejected'`,
     or(isNull(researchedLeads.pipelineLeaseExpiresAt), lt(researchedLeads.pipelineLeaseExpiresAt, now)),
   ];
+  if (state === 'CONTACT_FOUND') {
+    // Do not manufacture "qualified" prospects that have no reachable public
+    // contact path. They remain parked for the enrichment backlog.
+    conditions.push(
+      or(
+        sql`${researchedLeads.contactEmail} IS NOT NULL`,
+        sql`${researchedLeads.contactPhone} IS NOT NULL`,
+      ),
+    );
+  }
+  if (state === 'QUALIFIED' || state === 'DEEP_RESEARCH') {
+    conditions.push(eq(researchedLeads.status, 'qualified'));
+  }
   if (options.campaignId) conditions.push(eq(researchedLeads.campaignId, options.campaignId));
 
   const candidates = await db
@@ -366,7 +798,56 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
   });
   const domain = normalizeLeadDomain(lead.website);
   const [cached] = await db.select().from(leadResearchCache).where(eq(leadResearchCache.cacheKey, cacheKey)).limit(1);
-  const update = buildStageUpdate(next, lead, cached);
+
+  let identity: BusinessWebsiteIdentity | null = null;
+  let stageLead = lead;
+  if (next === 'BASIC_ENRICHMENT' && lead.website) {
+    identity = await verifyBusinessWebsiteIdentity({
+      website: lead.website,
+      industry: lead.industry,
+      city: lead.city,
+      currentName: lead.companyName,
+    });
+    const betterName = identity.canonicalName?.trim();
+    stageLead = {
+      ...lead,
+      companyName: betterName && (identity.status === 'verified' || isSeoLikeCompanyName(lead.companyName, lead.city))
+        ? betterName
+        : lead.companyName,
+      website: identity.homepage ?? lead.website,
+      decisionMakerName: lead.decisionMakerName ?? identity.decisionMakerName,
+      contactEmail: lead.contactEmail ?? identity.contactEmail,
+      contactPhone: lead.contactPhone ?? identity.contactPhone,
+      contactSourceUrl: lead.contactSourceUrl ?? identity.contactSourceUrl ?? identity.decisionMakerSourceUrl,
+      contactResearchStatus:
+        (lead.contactEmail ?? identity.contactEmail) && (lead.contactPhone ?? identity.contactPhone)
+          ? 'complete'
+          : (lead.contactEmail || lead.contactPhone || identity.contactEmail || identity.contactPhone)
+            ? 'partial'
+            : lead.contactResearchStatus,
+    };
+  }
+
+  const update = buildStageUpdate(next, stageLead, cached);
+  if (identity) {
+    update.companyName = stageLead.companyName;
+    update.website = stageLead.website;
+    update.decisionMakerName = stageLead.decisionMakerName;
+    update.contactEmail = stageLead.contactEmail;
+    update.contactPhone = stageLead.contactPhone;
+    update.contactSourceUrl = stageLead.contactSourceUrl;
+    update.contactResearchStatus = stageLead.contactResearchStatus;
+    update.contactResearchedAt = identity.contactEmail || identity.contactPhone ? now : lead.contactResearchedAt;
+    update.enrichment = {
+      ...((update.enrichment as Record<string, unknown> | null) ?? {}),
+      businessVerification: identity,
+      summary: `${stageLead.companyName} is a ${stageLead.industry ?? 'local'} business in ${stageLead.city ?? 'its market'}.`,
+    };
+    if (identity.status === 'mismatch') {
+      update.status = 'rejected';
+      update.qualificationScore = 0;
+    }
+  }
   const timestampColumn = STATE_TIMESTAMP[next];
 
   await db
@@ -387,7 +868,7 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
     })
     .where(and(eq(researchedLeads.id, lead.id), eq(researchedLeads.pipelineState, expectedState)));
 
-  await upsertResearchCache(cacheKey, lead, next, update);
+  await upsertResearchCache(cacheKey, stageLead, next, update);
   emitLeadState(lead.id, lead.campaignId ?? null, next, now);
 }
 
@@ -414,7 +895,7 @@ function buildStageUpdate(
       contactEmail?: string;
       contactPhone?: string;
       contactSourceUrl?: string;
-      contactResearchStatus?: 'partial' | 'complete' | 'unavailable';
+      contactResearchStatus?: 'pending' | 'partial' | 'complete' | 'unavailable';
     } | null;
     const hasContact = Boolean(lead.contactEmail || lead.contactPhone || cachedContact?.contactEmail || cachedContact?.contactPhone);
     return {
@@ -422,8 +903,8 @@ function buildStageUpdate(
       contactEmail: lead.contactEmail ?? cachedContact?.contactEmail,
       contactPhone: lead.contactPhone ?? cachedContact?.contactPhone,
       contactSourceUrl: lead.contactSourceUrl ?? cachedContact?.contactSourceUrl,
-      contactResearchStatus: cachedContact?.contactResearchStatus ?? (hasContact ? 'partial' : 'unavailable'),
-      contactResearchedAt: new Date(),
+      contactResearchStatus: cachedContact?.contactResearchStatus ?? (hasContact ? 'partial' : 'pending'),
+      contactResearchedAt: hasContact ? new Date() : lead.contactResearchedAt,
     };
   }
 
@@ -555,7 +1036,13 @@ export function makeShortOutreachAngle(companyName: string, industry?: string | 
 }
 
 function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
-  let score = 45;
+  const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
+    | { status?: string }
+    | undefined;
+  if (verification?.status !== 'verified') return 0;
+  if (!lead.contactEmail && !lead.contactPhone) return 0;
+
+  let score = 55;
   if (lead.website) score += 15;
   if (lead.contactEmail || lead.contactPhone) score += 15;
   if (lead.industry) score += 10;
@@ -568,6 +1055,131 @@ function trimWords(text: string): string {
   const maxWords = getLeadPipelineConfig().initialQualificationMaxWords;
   const words = text.split(/\s+/);
   return words.length <= maxWords ? text : `${words.slice(0, maxWords).join(' ')}.`;
+}
+
+let webIdentityRepairRunning = false;
+
+function replaceCompanyNameText(value: string | null | undefined, oldName: string, newName: string): string | null | undefined {
+  if (!value || oldName === newName) return value;
+  return value.split(oldName).join(newName);
+}
+
+export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked: number; renamed: number; mismatched: number; contactsAdded: number }> {
+  if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0 };
+  webIdentityRepairRunning = true;
+  try {
+    const batchSize = Math.max(1, Math.min(50, Math.trunc(limit)));
+    const rows = await db
+      .select()
+      .from(researchedLeads)
+      .where(
+        and(
+          sql`${researchedLeads.status} <> 'rejected'`,
+          sql`${researchedLeads.website} IS NOT NULL`,
+          or(
+            like(researchedLeads.source, 'web:%'),
+            like(researchedLeads.source, 'cache:web:%'),
+            and(
+              sql`${researchedLeads.contactEmail} IS NULL`,
+              sql`${researchedLeads.contactPhone} IS NULL`,
+            ),
+          ),
+          sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v2'`,
+        ),
+      )
+      .orderBy(asc(researchedLeads.createdAt))
+      .limit(batchSize);
+
+    let renamed = 0;
+    let mismatched = 0;
+    let contactsAdded = 0;
+    await runPool(rows, Math.min(8, batchSize), async (lead) => {
+      const identity = await verifyBusinessWebsiteIdentity({
+        website: lead.website,
+        industry: lead.industry,
+        city: lead.city,
+        currentName: lead.companyName,
+      });
+      const oldName = lead.companyName;
+      const decisionMakerName = lead.decisionMakerName ?? identity.decisionMakerName;
+      const contactEmail = lead.contactEmail ?? identity.contactEmail;
+      const contactPhone = lead.contactPhone ?? identity.contactPhone;
+      const contactSourceUrl = lead.contactSourceUrl ?? identity.contactSourceUrl ?? identity.decisionMakerSourceUrl;
+      if ((!lead.contactEmail && contactEmail) || (!lead.contactPhone && contactPhone)) contactsAdded++;
+      const candidate = identity.canonicalName?.trim();
+      const newName = candidate && (identity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
+        ? candidate
+        : oldName;
+      if (newName !== oldName) renamed++;
+      if (identity.status === 'mismatch') mismatched++;
+
+      const existingDraft = (lead.campaignDraft ?? {}) as Record<string, unknown>;
+      const campaignDraft = Object.keys(existingDraft).length > 0
+        ? {
+            ...existingDraft,
+            ...(typeof existingDraft.firstTouch === 'string' ? { firstTouch: replaceCompanyNameText(existingDraft.firstTouch, oldName, newName) } : {}),
+            ...(typeof existingDraft.emailSubject === 'string' ? { emailSubject: replaceCompanyNameText(existingDraft.emailSubject, oldName, newName) } : {}),
+            ...(typeof existingDraft.callOpener === 'string' ? { callOpener: replaceCompanyNameText(existingDraft.callOpener, oldName, newName) } : {}),
+          }
+        : lead.campaignDraft;
+
+      await db.update(researchedLeads).set({
+        companyName: newName,
+        website: identity.homepage ?? lead.website,
+        decisionMakerName,
+        contactEmail,
+        contactPhone,
+        contactSourceUrl,
+        contactResearchStatus: contactEmail && contactPhone ? 'complete' : contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
+        contactResearchedAt: contactEmail || contactPhone ? new Date() : lead.contactResearchedAt,
+        enrichment: {
+          ...(lead.enrichment ?? {}),
+          businessVerification: identity,
+          normalizedDomain: normalizeLeadDomain(identity.homepage ?? lead.website),
+          summary: `${newName} is a ${lead.industry ?? 'local'} business in ${lead.city ?? 'its market'}.`,
+        },
+        fitReason: replaceCompanyNameText(lead.fitReason, oldName, newName) ?? lead.fitReason,
+        outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
+        campaignDraft,
+        ...(identity.status === 'mismatch' ? { status: 'rejected', qualificationScore: 0 } : {}),
+      }).where(eq(researchedLeads.id, lead.id));
+
+      if (lead.researchCacheKey) {
+        await db.update(leadResearchCache).set({
+          companyName: newName,
+          website: identity.homepage ?? lead.website,
+          basicEnrichment: {
+            ...((lead.enrichment as Record<string, unknown> | null) ?? {}),
+            businessVerification: identity,
+          },
+          contactResearch: {
+            decisionMakerName,
+            contactEmail,
+            contactPhone,
+            contactSourceUrl,
+            contactResearchStatus: contactEmail && contactPhone ? 'complete' : contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
+          },
+          updatedAt: new Date(),
+        }).where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
+      }
+    });
+
+    if (rows.length > 0) {
+      console.log(`[lead-identity] checked=${rows.length} renamed=${renamed} mismatched=${mismatched} contactsAdded=${contactsAdded}`);
+      await recordOperatorActivity({
+        category: 'lead_cleanup',
+        agentId: 'apex-campaign-runner',
+        message:
+          `Cleaned ${rows.length} older prospect${rows.length === 1 ? '' : 's'}: ` +
+          `${renamed} company name${renamed === 1 ? '' : 's'} corrected, ` +
+          `contact information added to ${contactsAdded}, and ${mismatched} wrong-match${mismatched === 1 ? '' : 'es'} rejected.`,
+        data: { checked: rows.length, renamed, mismatched, contactsAdded },
+      });
+    }
+    return { checked: rows.length, renamed, mismatched, contactsAdded };
+  } finally {
+    webIdentityRepairRunning = false;
+  }
 }
 
 export interface PipelineBenchmarkResult {

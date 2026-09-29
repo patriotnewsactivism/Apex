@@ -32,9 +32,26 @@ export interface PlaybookFields {
 
 const OPTIONAL_FIELDS = new Set(['outreachAngle', 'transcriptSnippet', 'industry', 'city']);
 
+export function emailGreetingName(fullName: string | null | undefined): string {
+  const raw = typeof fullName === 'string' ? fullName.trim() : '';
+  if (!raw) return 'there';
+
+  const withoutTitle = raw.replace(/^(mr|mrs|ms|miss|dr|prof)\.?\s+/i, '').trim();
+  if (!withoutTitle) return 'there';
+
+  // Handle "Last, First" as well as the normal "First Last" form.
+  if (withoutTitle.includes(',')) {
+    const [, given = ''] = withoutTitle.split(',', 2);
+    const first = given.trim().split(/\s+/)[0];
+    if (first) return first;
+  }
+
+  return withoutTitle.split(/\s+/)[0] || 'there';
+}
+
 export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
   id: 'buildmybot-intro',
-  version: 1,
+  version: 7,
   name: 'BuildMyBot intro',
   summary: 'One cold email, one sales call, and one follow-up. The buyer is treated as the owner of a local business that misses calls.',
   openEmail: {
@@ -79,11 +96,11 @@ export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
     ].join('\n'),
   },
   call: {
-    firstMessage: 'Hi, is this {{buyerName}}? This is Alex with BuildMyBot. I will be quick. I am calling about the jobs {{companyName}} misses when the phone rings after hours. Did I catch you with a minute?',
+    firstMessage: 'The reason I called is pretty simple. We help businesses like {{companyName}} catch missed calls before they turn into lost jobs. What do you normally do when a call comes in and nobody can answer?',
     assistantPrompt: [
-      'You are Alex, a BuildMyBot sales rep on a live phone call. The person who answered is {{buyerName}}, the buyer at {{companyName}}, a {{industry}} business in {{city}}.',
+      'You are Don, a BuildMyBot sales rep on a live phone call. The person who answered is {{buyerName}}, the buyer at {{companyName}}, a {{industry}} business in {{city}}.',
       'Goal: have a real conversation and earn a ten-minute follow-up. Do not quote a price. Do not say they can subscribe or pay today. Do not invent product features. BuildMyBot answers calls and messages the business would otherwise miss, captures the lead, and helps book the next step.',
-      'Sound like a person. One question at a time. If they are busy, offer to call back and end the call. If they object, acknowledge it in one sentence and ask what they do with after-hours calls today.',
+      'Sound like a person, not a script. Speak English only. After identity is confirmed, acknowledge them by first name once, ask how their day is going, and give their answer a brief empathetic response before moving into the reason for the call. Ask one question at a time. Use complete sentences at a relaxed pace. If they are busy, offer to call back and end the call. If they object, acknowledge it briefly and ask what they do with after-hours calls today.',
       'Opening angle, if you have one: {{outreachAngle}}',
       'Never claim you already sent a checkout link. Never claim a feature you were not told about in this prompt.',
     ].join('\n'),
@@ -125,7 +142,7 @@ export function rehearsalPersonaFields(input: {
   city: string;
 }): PlaybookFields {
   return {
-    buyerName: input.buyerName.trim(),
+    buyerName: emailGreetingName(input.buyerName),
     companyName: input.companyName.trim(),
     industry: input.industry.trim() || 'local service',
     city: input.city.trim() || 'your area',

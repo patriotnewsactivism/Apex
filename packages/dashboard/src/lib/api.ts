@@ -191,6 +191,52 @@ export interface SpendSnapshot {
   updatedAt: string;
 }
 
+export interface GovernanceStatus {
+  loop: Array<'observe' | 'hypothesize' | 'verify' | 'implement' | 'monitor' | 'learn' | 'scale'>;
+  implementationGate: 'ready' | 'blocked';
+  runtime: {
+    repoRoot: string;
+    buildSha: string;
+    sourceBranch: string;
+    runtimeEntrypoint: string;
+    artifactRoot: string | null;
+    databaseConfigured: boolean;
+    environmentName: string;
+  };
+  provenance: {
+    verified24h: number;
+    failed24h: number;
+    latest: {
+      action: string;
+      agentId: string;
+      taskId: string | null;
+      at: string;
+      reasons: string[];
+    } | null;
+  };
+  outbound: {
+    mode: 'fail_closed';
+    evaluator: string;
+    channels: string[];
+    requiresConsent: boolean;
+    requiresAllowedGate: boolean;
+    gateCounts: { allowed: number; pending: number; denied: number };
+    consentCounts: { granted: number; unknown: number; denied: number; revoked: number };
+    scalingRule: string;
+  };
+  configuration: {
+    paidFallbackEnabled: boolean;
+    paidFallbackFlag: string;
+    legacyPaidFallbackPresent: boolean;
+    canonicalRepoRootConfigured: boolean;
+    sourceBranchConfigured: boolean;
+    artifactRootConfigured: boolean;
+    databaseConfigured: boolean;
+  };
+  invariants: Array<{ id: string; ok: boolean; text: string }>;
+  observedAt: string;
+}
+
 export interface DiagnosticsReport {
   status: DiagnosticSeverity;
   generatedAt: string;
@@ -213,9 +259,114 @@ export interface DiagnosticsReport {
   findings: DiagnosticFinding[];
 }
 
+
+export interface WebinarAdminSession {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  host_name: string;
+  mode: 'autonomous' | 'cohost';
+  status: 'draft' | 'live' | 'paused' | 'ended';
+  autonomous: boolean;
+  current_segment: number;
+  segment_started_at: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  cta_label: string;
+  cta_url: string;
+  created_at: string;
+  updated_at: string;
+  attendee_count?: number;
+  question_count?: number;
+}
+
+export interface WebinarAdminDashboard {
+  session: WebinarAdminSession;
+  segments: Array<{
+    id: string;
+    title: string;
+    kicker: string;
+    durationSeconds: number;
+    bullets: string[];
+    narration: string;
+    demoCue?: string;
+  }>;
+  attendees: Array<{
+    id: string;
+    name: string;
+    email: string;
+    company: string | null;
+    phone: string | null;
+    engagement_score: number;
+    joined_at: string;
+    last_seen_at: string;
+  }>;
+  questions: Array<{
+    id: string;
+    attendee_id: string;
+    question: string;
+    answer: string | null;
+    status: string;
+    created_at: string;
+    answered_at: string | null;
+  }>;
+  producer: {
+    timing: 'waiting' | 'on_track' | 'move_on' | 'human_floor' | 'complete';
+    elapsedSeconds: number;
+    targetSeconds: number;
+    secondsRemaining: number;
+    recommendation: string;
+    highIntentCount: number;
+    topLeadNames: string[];
+    questionCount: number;
+  };
+}
+
 export const api = {
   auth: {
     websocketTicket: () => apiFetch<{ ticket: string }>('/auth/websocket-ticket', { method: 'POST' }),
+  },
+
+
+  webinars: {
+    list: () =>
+      apiFetch<{ sessions: WebinarAdminSession[] }>('/webinar/admin/sessions').then((r) => r.sessions),
+    create: (body?: { title?: string; description?: string; mode?: 'autonomous' | 'cohost'; ctaLabel?: string; ctaUrl?: string }) =>
+      apiFetch<{ session: WebinarAdminSession }>('/webinar/admin/sessions', {
+        method: 'POST',
+        body: JSON.stringify(body ?? {}),
+      }).then((r) => r.session),
+    dashboard: (id: string) =>
+      apiFetch<WebinarAdminDashboard>(`/webinar/admin/${encodeURIComponent(id)}/dashboard`),
+    start: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/start`, { method: 'POST' }).then((r) => r.session),
+    pause: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/pause`, { method: 'POST' }).then((r) => r.session),
+    resume: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/resume`, { method: 'POST' }).then((r) => r.session),
+    end: (id: string) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/end`, { method: 'POST' }).then((r) => r.session),
+    segment: (id: string, segment: number) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/segment`, {
+        method: 'POST',
+        body: JSON.stringify({ segment }),
+      }).then((r) => r.session),
+    mode: (id: string, autonomous: boolean) =>
+      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/mode`, {
+        method: 'POST',
+        body: JSON.stringify({ autonomous }),
+      }).then((r) => r.session),
+    message: (id: string, message: string) =>
+      apiFetch<{ ok: boolean }>(`/webinar/admin/${encodeURIComponent(id)}/message`, {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      }),
+    followup: (id: string) =>
+      apiFetch<{ goalId: string; qualifiedAttendees: number }>(
+        `/webinar/admin/${encodeURIComponent(id)}/followup`,
+        { method: 'POST' },
+      ),
   },
   goals: {
     list: () => apiFetch<{ goals: Goal[] }>('/goals').then((r) => r.goals),
@@ -267,6 +418,10 @@ export const api = {
   logs: {
     list: (limit?: number) =>
       apiFetch<{ logs: LogEntry[] }>(`/logs${limit ? `?limit=${limit}` : ''}`).then((r) => r.logs),
+    activity: (limit = 2000) =>
+      apiFetch<{ logs: LogEntry[] }>(
+        `/logs?kind=operator_activity&limit=${Math.max(1, Math.min(limit, 5000))}`,
+      ).then((r) => r.logs),
   },
 
   approvals: {
@@ -391,6 +546,10 @@ export const api = {
   diagnostics: {
     get: () => apiFetch<DiagnosticsReport>('/diagnostics'),
     text: () => apiFetchText('/diagnostics?format=text'),
+  },
+
+  governance: {
+    status: () => apiFetch<GovernanceStatus>('/governance/status'),
   },
 
   spend: {
@@ -674,7 +833,7 @@ export interface CallOutcome {
   leadId: string | null;
   customerNumber: string;
   customerName: string | null;
-  disposition: 'appointment_booked' | 'callback_requested' | 'not_interested' | 'voicemail' | 'no_answer' | 'no_decision' | 'failed_to_dial';
+  disposition: 'appointment_booked' | 'qualified' | 'callback_requested' | 'not_interested' | 'dnc' | 'voicemail' | 'no_answer' | 'no_decision' | 'failed_to_dial';
   appointmentAt: string | null;
   appointmentDateRaw: string | null;
   appointmentTimeRaw: string | null;
@@ -950,6 +1109,7 @@ export interface LogEntry {
   taskId: string | null;
   level: string;
   message: string;
+  data?: Record<string, unknown> | null;
   timestamp: string;
 }
 
@@ -1374,6 +1534,8 @@ export interface ResearchedLead {
   contactSourceUrl: string | null;
   contactResearchStatus: 'pending' | 'partial' | 'complete' | 'unavailable';
   contactResearchedAt: string | null;
+  source: string | null;
+  enrichment: Record<string, unknown> | null;
   fitReason: string;
   outreachAngle: string | null;
   status: string;
@@ -1394,6 +1556,10 @@ export interface ResearchedLead {
 
 export interface LeadStats {
   total: number;
+  contactReady: number;
+  rawCandidates: number;
+  pendingOrUnverified: number;
+  rejected: number;
   byStatus: { new: number; contacted: number; qualified: number; rejected: number };
   byPipelineState: Record<string, number>;
   byIndustry: Record<string, number>;

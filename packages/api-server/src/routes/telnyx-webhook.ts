@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { answerAndStartStreaming } from '../telnyx-deepgram-agent.js';
+import { processTelnyxAssistantLifecycleEvent } from './telnyx-assistant.js';
 
 // ─── Telnyx Webhook Route ─────────────────────────────────────────────────────
 //
@@ -9,8 +10,10 @@ import { answerAndStartStreaming } from '../telnyx-deepgram-agent.js';
 // Protected by TELNYX_WEBHOOK_SECRET via timing-safe comparison.
 //
 // Handled events:
-//   call.initiated  — inbound call arrived; answer it and start PCMU streaming
-//   call.hangup     — call ended; nothing to do server-side (WS cleanup handles it)
+//   call.initiated                    — inbound call arrived; answer it and start PCMU streaming
+//   call.hangup                       — media call ended; WS cleanup handles it
+//   call.conversation.ended           — Telnyx AI Assistant callback finished; persist CRM history
+//   call.conversation_insights.generated — enrich that same call record with post-call insights
 //
 // The stream WebSocket URL is derived from PUBLIC_URL env var (same as other
 // external-facing URL references in APEX). The call_control_id is passed as a
@@ -110,6 +113,15 @@ export function createTelnyxWebhookRouter(): Router {
             `[Telnyx Webhook] Hangup for ${callControlId}: ${payload.hangup_cause ?? 'unknown'}`,
           );
           break;
+
+        case 'call.conversation.ended':
+        case 'call.conversation_insights.generated': {
+          const result = await processTelnyxAssistantLifecycleEvent(req.body as Record<string, any>);
+          console.info(
+            `[Telnyx Webhook] AI Assistant post-call persistence: ${JSON.stringify(result)}`,
+          );
+          break;
+        }
 
         default:
           break;

@@ -1,10 +1,11 @@
 import { randomUUID } from 'crypto';
-import { and, asc, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import {
   db,
   campaignSegments,
   leadCampaigns,
   researchedLeads,
+  leadResearchCache,
 } from '@workspace/db';
 import {
   createLLMClient,
@@ -18,12 +19,19 @@ import {
 import { citiesForStates, allStateCodes } from './us-geo.js';
 import {
   dedupeDiscoveredBusinesses,
+  canonicalHomepageUrl,
+  companyNameFromSearchResultTitle,
   generateSearchShards,
+  subcategoriesForIndustry,
   getKnownLeadDomains,
   getLeadPipelineConfig,
+  normalizeLeadDomain,
   insertDiscoveredLead,
   processLeadPipelineBacklog,
+  repairWebLeadIdentityBatch,
+  inspectFirstPartyContactUrl,
 } from './lead-pipeline.js';
+import { recordOperatorActivity } from './operator-activity.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
 //
@@ -99,10 +107,12 @@ export function computeCampaignProgress(
   campaign: typeof leadCampaigns.$inferSelect,
   segments: Array<typeof campaignSegments.$inferSelect>,
   now: number = Date.now(),
+  usableLeadCount?: number,
 ): CampaignProgress {
   const done = segments.filter((s) => s.status === 'done' || s.status === 'exhausted');
   const failed = segments.filter((s) => s.status === 'failed');
-  const leadsSaved = segments.reduce((n, s) => n + (s.saved ?? 0), 0);
+  const rawLeadsSaved = segments.reduce((n, s) => n + (s.saved ?? 0), 0);
+  const leadsSaved = usableLeadCount ?? rawLeadsSaved;
   const duplicates = segments.reduce((n, s) => n + (s.duplicates ?? 0), 0);
   const remaining = segments.length - done.length - failed.length;
 
@@ -152,6 +162,24 @@ export function computeCampaignProgress(
     startedAt: campaign.startedAt?.toISOString() ?? null,
     completedAt: campaign.completedAt?.toISOString() ?? null,
   };
+}
+
+export async function countUsableCampaignLeads(campaignId: string): Promise<number> {
+  const [row] = await db
+    .select({
+      count: sql<number>`count(*)::int`,
+    })
+    .from(researchedLeads)
+    .where(
+      and(
+        eq(researchedLeads.campaignId, campaignId),
+        eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
+        eq(researchedLeads.status, 'qualified'),
+        sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
+        sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
+      ),
+    );
+  return Number(row?.count ?? 0);
 }
 
 export interface CreateCampaignInput {
@@ -388,12 +416,101 @@ function domainOf(url: string | undefined): string | null {
   }
 }
 
+const LEGACY_GENERIC_SUBCATEGORIES = ['company', 'service provider', 'contractor', 'local business'] as const;
+
+export function effectiveSegmentSearch(segment: Pick<
+  typeof campaignSegments.$inferSelect,
+  'industry' | 'city' | 'subcategory' | 'searchIntent' | 'query'
+>): { subcategory: string; query: string; repairedLegacyGeneric: boolean } {
+  const specific = subcategoriesForIndustry(segment.industry);
+  const legacyIndex = LEGACY_GENERIC_SUBCATEGORIES.indexOf(
+    segment.subcategory as (typeof LEGACY_GENERIC_SUBCATEGORIES)[number],
+  );
+
+  // Older campaigns stored generic shards before an industry-specific mapping
+  // existed. Do not keep burning those stored queries forever: remap each of
+  // the four generic buckets onto the industry's current specific taxonomy.
+  if (legacyIndex >= 0 && specific.some((value) => !LEGACY_GENERIC_SUBCATEGORIES.includes(
+    value as (typeof LEGACY_GENERIC_SUBCATEGORIES)[number],
+  ))) {
+    const subcategory = specific[legacyIndex % specific.length];
+    const query = segment.searchIntent === 'directory'
+      ? `${subcategory} ${segment.city}`
+      : `${segment.searchIntent} ${subcategory} ${segment.city}`;
+    return { subcategory, query, repairedLegacyGeneric: true };
+  }
+
+  return {
+    subcategory: segment.subcategory,
+    query: segment.query ?? `${segment.searchIntent} ${segment.subcategory} ${segment.city}`,
+    repairedLegacyGeneric: false,
+  };
+}
+
+const SEARCH_DIRECTORY_HOSTS = [
+  'yelp.com',
+  'facebook.com',
+  'instagram.com',
+  'linkedin.com',
+  'yellowpages.com',
+  'mapquest.com',
+  'bbb.org',
+  'chamberofcommerce.com',
+  'manta.com',
+] as const;
+
+export function businessFromWebResult(result: { title?: string; url?: string; snippet?: string }, city: string): DirectoryBusiness | null {
+  const url = result.url?.trim();
+  if (!url || !/^https?:\/\//i.test(url)) return null;
+  let host = '';
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!host || SEARCH_DIRECTORY_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`))) {
+    return null;
+  }
+
+  const homepage = canonicalHomepageUrl(url);
+  if (!homepage) return null;
+
+  // Search engines return PAGE titles, not necessarily company names. That is
+  // why the UI showed things like "#1 Roofing Company In Northeast Ohio".
+  // Pick a brand-looking title segment when one exists; otherwise fall back to
+  // the official site's domain identity. The asynchronous BASIC_ENRICHMENT
+  // stage then verifies the homepage and upgrades this to JSON-LD/OG identity.
+  const rawTitle = result.title?.trim() ?? '';
+  const name = companyNameFromSearchResultTitle(rawTitle, homepage, city);
+  if (!name) return null;
+
+  return {
+    name,
+    website: homepage,
+    city,
+  };
+}
+
 export class CampaignRunner {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private readonly toolContext: ToolContext;
+  private knownDomainsCache: Set<string> | null = null;
+  private knownDomainsRefreshedAt = 0;
+  private knownDomainsLoad: Promise<Set<string>> | null = null;
+  private contactSearchRunning = false;
+  private contactSearchLastRunAt = 0;
+  private contactSearchZeroYieldStreak = 0;
+  private contactSearchBackoffUntil = 0;
+  private contactSearchLastSummaryAt = 0;
+  private readonly repairedCampaignIds = new Set<string>();
 
-  constructor(private readonly intervalMs = getLeadPipelineConfig().liveDemoMode ? 3_000 : 30_000) {
+  constructor(
+    private readonly intervalMs = Number(
+      process.env.LEAD_CAMPAIGN_INTERVAL_MS ??
+      (getLeadPipelineConfig().liveDemoMode ? 2_000 : 5_000),
+    ),
+  ) {
     this.toolContext = {
       agentId: 'apex-campaign-runner',
       workspaceRoot: process.cwd(),
@@ -412,14 +529,14 @@ export class CampaignRunner {
         console.error('[campaigns] tick failed:', err instanceof Error ? err.message : String(err)),
       );
     }, this.intervalMs);
-    console.log(`[campaigns] Runner started (every ${Math.round(this.intervalMs / 1000)}s)`);
-    if (getLeadPipelineConfig().liveDemoMode) {
-      setTimeout(() => {
-        this.tick().catch((err) =>
-          console.error('[campaigns] live demo prewarm tick failed:', err instanceof Error ? err.message : String(err)),
-        );
-      }, 500).unref?.();
-    }
+    console.log(`[campaigns] Runner started (every ${Math.max(0.1, this.intervalMs / 1000).toFixed(1)}s)`);
+    // Do not sit idle for a full interval after boot/deploy. Start one pass
+    // immediately, then the normal interval keeps the runner moving.
+    setTimeout(() => {
+      this.tick().catch((err) =>
+        console.error('[campaigns] prewarm tick failed:', err instanceof Error ? err.message : String(err)),
+      );
+    }, 250).unref?.();
   }
 
   stop(): void {
@@ -434,6 +551,10 @@ export class CampaignRunner {
     this.running = true;
     try {
       const config = getLeadPipelineConfig();
+      void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16))
+        .catch((err) => console.warn('[lead-identity] background repair failed:', err instanceof Error ? err.message : String(err)));
+      void this.enrichVerifiedContactsFromSearch(Number(process.env.LEAD_CONTACT_SEARCH_BATCH ?? 6))
+        .catch((err) => console.warn('[lead-contact-search] background search failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();
       const claimed = await this.claimSegments(config.segmentBatchSize);
       if (claimed.length === 0) {
@@ -455,6 +576,261 @@ export class CampaignRunner {
     }
   }
 
+  /**
+   * Second-pass contact recovery for verified businesses. First-party crawling
+   * handles the obvious homepage/contact/about/team pages. For the remainder,
+   * use the existing fast cached Tavily/Brave path to discover hidden official
+   * pages, then fetch only same-domain URLs. No LLM and no guessed contact data.
+   */
+  private async enrichVerifiedContactsFromSearch(limit: number): Promise<void> {
+    if (this.contactSearchRunning) return;
+    const nowMs = Date.now();
+    const intervalMs = Math.max(15_000, Number(process.env.LEAD_CONTACT_SEARCH_INTERVAL_MS ?? 60_000));
+    if (nowMs < this.contactSearchBackoffUntil) return;
+    if (nowMs - this.contactSearchLastRunAt < intervalMs) return;
+    this.contactSearchLastRunAt = nowMs;
+    this.contactSearchRunning = true;
+    try {
+      const batchSize = Math.max(1, Math.min(20, Math.trunc(limit)));
+      const version = '2026-09-28-contact-web-v1';
+      const candidates = await db
+        .select()
+        .from(researchedLeads)
+        .where(
+          and(
+            sql`${researchedLeads.status} <> 'rejected'`,
+            sql`${researchedLeads.website} IS NOT NULL`,
+            sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
+            or(
+              isNull(researchedLeads.contactEmail),
+              isNull(researchedLeads.contactPhone),
+            ),
+            sql`COALESCE(${researchedLeads.enrichment}->'contactWebSearch'->>'version', '') <> ${version}`,
+          ),
+        )
+        .orderBy(asc(researchedLeads.createdAt))
+        .limit(batchSize);
+
+      if (candidates.length === 0) return;
+      const registry = getToolRegistry();
+      let emailsAdded = 0;
+      let phonesAdded = 0;
+      let decisionMakersAdded = 0;
+      let fullyReachable = 0;
+      let stillIncomplete = 0;
+      let cacheHits = 0;
+
+      await Promise.all(candidates.map(async (lead) => {
+        const domain = normalizeLeadDomain(lead.website);
+        if (!domain) return;
+        const result = await registry.execute(
+          'webSearch',
+          {
+            query: `site:${domain} "${lead.companyName}" contact phone email`,
+            maxResults: 6,
+            fast: true,
+            freeOnly: true,
+          },
+          this.toolContext,
+        );
+
+        const payload = result.success
+          ? result.data as {
+              provider?: string;
+              cacheHit?: boolean;
+              results?: Array<{ title?: string; url?: string; snippet?: string }>;
+            }
+          : null;
+
+        const urls = [...new Set((payload?.results ?? [])
+          .map((row) => row.url?.trim())
+          .filter((url): url is string => {
+            if (!url) return false;
+            try {
+              return normalizeLeadDomain(url) === domain;
+            } catch {
+              return false;
+            }
+          }))].slice(0, 3);
+
+        const pages = await Promise.all(urls.map((url) => inspectFirstPartyContactUrl(url)));
+        let contactEmail = lead.contactEmail;
+        let contactPhone = lead.contactPhone;
+        let decisionMakerName = lead.decisionMakerName;
+        let contactSourceUrl = lead.contactSourceUrl;
+        let decisionMakerTitle: string | null = null;
+        let decisionMakerSourceUrl: string | null = null;
+
+        for (const page of pages) {
+          if (!page) continue;
+          if (!contactEmail && page.email) {
+            contactEmail = page.email;
+            contactSourceUrl = page.url;
+          }
+          if (!contactPhone && page.phone) {
+            contactPhone = page.phone;
+            contactSourceUrl ??= page.url;
+          }
+          if (!decisionMakerName && page.decisionMaker) {
+            decisionMakerName = page.decisionMaker.name;
+            decisionMakerTitle = page.decisionMaker.title;
+            decisionMakerSourceUrl = page.url;
+          }
+        }
+
+        if (!lead.contactEmail && contactEmail) emailsAdded++;
+        if (!lead.contactPhone && contactPhone) phonesAdded++;
+        if (!lead.decisionMakerName && decisionMakerName) decisionMakersAdded++;
+        if (contactEmail && contactPhone) fullyReachable++;
+        else stillIncomplete++;
+        if (payload?.cacheHit) cacheHits++;
+
+        const now = new Date();
+        const foundAny = Boolean(contactEmail || contactPhone);
+        const enrichment = {
+          ...(lead.enrichment ?? {}),
+          contactWebSearch: {
+            version,
+            checkedAt: now.toISOString(),
+            provider: payload?.provider ?? null,
+            cacheHit: Boolean(payload?.cacheHit),
+            resultsScanned: urls.length,
+            foundEmail: Boolean(!lead.contactEmail && contactEmail),
+            foundPhone: Boolean(!lead.contactPhone && contactPhone),
+            foundDecisionMaker: Boolean(!lead.decisionMakerName && decisionMakerName),
+            decisionMakerTitle,
+            decisionMakerSourceUrl,
+          },
+        };
+
+        await db
+          .update(researchedLeads)
+          .set({
+            decisionMakerName,
+            contactEmail,
+            contactPhone,
+            contactSourceUrl,
+            contactResearchStatus: contactEmail && contactPhone ? 'complete' : foundAny ? 'partial' : lead.contactResearchStatus,
+            contactResearchedAt: now,
+            enrichment,
+          })
+          .where(eq(researchedLeads.id, lead.id));
+
+        if (lead.researchCacheKey) {
+          await db
+            .update(leadResearchCache)
+            .set({
+              contactResearch: {
+                decisionMakerName,
+                contactEmail,
+                contactPhone,
+                contactSourceUrl,
+                contactResearchStatus: contactEmail && contactPhone ? 'complete' : foundAny ? 'partial' : lead.contactResearchStatus,
+              },
+              updatedAt: now,
+            })
+            .where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
+        }
+
+        console.log(
+          `[lead-contact-search] ${lead.companyName}: pages=${urls.length} email=${Boolean(contactEmail)} phone=${Boolean(contactPhone)} decisionMaker=${Boolean(decisionMakerName)} provider=${payload?.cacheHit ? 'cache:' : ''}${payload?.provider ?? 'none'}`,
+        );
+      }));
+
+      const contactAdds = emailsAdded + phonesAdded;
+      if (contactAdds === 0) {
+        this.contactSearchZeroYieldStreak += 1;
+      } else {
+        this.contactSearchZeroYieldStreak = 0;
+        this.contactSearchBackoffUntil = 0;
+      }
+
+      // Repeated zero-yield scans of a large backlog create noise and burn
+      // provider/CPU capacity without improving the prospect pool. Back off
+      // progressively after three dry batches, capped at 15 minutes. A later
+      // successful batch immediately clears the backoff.
+      if (contactAdds === 0 && this.contactSearchZeroYieldStreak >= 3) {
+        const exponent = Math.min(4, this.contactSearchZeroYieldStreak - 2);
+        const backoffMs = Math.min(
+          15 * 60_000,
+          Math.max(intervalMs, intervalMs * (2 ** exponent)),
+        );
+        this.contactSearchBackoffUntil = Date.now() + backoffMs;
+      }
+
+      const idleSummaryMs = Math.max(
+        5 * 60_000,
+        Number(process.env.LEAD_CONTACT_SEARCH_IDLE_SUMMARY_MS ?? 15 * 60_000),
+      );
+      const shouldLog =
+        contactAdds > 0 ||
+        decisionMakersAdded > 0 ||
+        Date.now() - this.contactSearchLastSummaryAt >= idleSummaryMs;
+
+      if (shouldLog) {
+        this.contactSearchLastSummaryAt = Date.now();
+        const backoffMinutes = this.contactSearchBackoffUntil > Date.now()
+          ? Math.ceil((this.contactSearchBackoffUntil - Date.now()) / 60_000)
+          : 0;
+        await recordOperatorActivity({
+          category: 'contact_recovery',
+          agentId: 'apex-campaign-runner',
+          message:
+            contactAdds > 0 || decisionMakersAdded > 0
+              ? `Contact recovery checked ${candidates.length} verified business${candidates.length === 1 ? '' : 'es'}: ` +
+                `${emailsAdded} new email${emailsAdded === 1 ? '' : 's'}, ${phonesAdded} new phone number${phonesAdded === 1 ? '' : 's'}, ` +
+                `${decisionMakersAdded} sourced decision maker${decisionMakersAdded === 1 ? '' : 's'}; ` +
+                `${fullyReachable} now have both email and phone, ${stillIncomplete} still need more contact research.`
+              : `Contact recovery checked ${candidates.length} verified businesses and found no new email or phone data. ` +
+                `APEX is backing this lane off${backoffMinutes ? ` for about ${backoffMinutes} minute${backoffMinutes === 1 ? '' : 's'}` : ''} instead of repeatedly scanning low-yield records.`,
+          data: {
+            checked: candidates.length,
+            emailsAdded,
+            phonesAdded,
+            decisionMakersAdded,
+            fullyReachable,
+            stillIncomplete,
+            cacheHits,
+            zeroYieldStreak: this.contactSearchZeroYieldStreak,
+            backoffUntil: this.contactSearchBackoffUntil || null,
+            lane: 'free_cached_web_plus_first_party',
+          },
+        });
+      }
+    } finally {
+      this.contactSearchRunning = false;
+    }
+  }
+
+  /**
+   * Loading every known website from Postgres once per segment was O(N×M)
+   * database work during large campaigns. Keep a short-lived shared cache for
+   * the runner and update it as new leads are inserted.
+   */
+  private async knownDomains(): Promise<Set<string>> {
+    const now = Date.now();
+    if (this.knownDomainsCache && now - this.knownDomainsRefreshedAt <= 30_000) {
+      return this.knownDomainsCache;
+    }
+
+    // Six segments can arrive here on the same event-loop turn. Without a
+    // shared in-flight promise they each loaded their own Set, defeating the
+    // reservation logic and allowing identical domains to be inserted by
+    // neighboring shards. One loader, one shared Set.
+    if (!this.knownDomainsLoad) {
+      this.knownDomainsLoad = getKnownLeadDomains()
+        .then((domains) => {
+          this.knownDomainsCache = domains;
+          this.knownDomainsRefreshedAt = Date.now();
+          return domains;
+        })
+        .finally(() => {
+          this.knownDomainsLoad = null;
+        });
+    }
+    return this.knownDomainsLoad;
+  }
+
   /** A runner that dies mid-segment leaves it in_progress forever. Same
    *  lease-expiry pattern the task queue already uses. */
   private async recoverExpiredLeases(): Promise<void> {
@@ -471,7 +847,67 @@ export class CampaignRunner {
       .returning({ id: campaignSegments.id });
     if (stale.length > 0) {
       console.warn(`[campaigns] Recovered ${stale.length} segment(s) from an expired lease`);
+      void recordOperatorActivity({
+        category: 'campaign',
+        level: 'warn',
+        agentId: 'apex-campaign-runner',
+        message: `Recovered ${stale.length} campaign search segment${stale.length === 1 ? '' : 's'} that had been left stuck after a restart or timeout. They were put back in line to run again.`,
+        data: { recoveredSegments: stale.length },
+      });
     }
+  }
+
+  /**
+   * Repair campaign rows created before an industry-specific shard mapping
+   * existed. Zero-result rows that were incorrectly marked exhausted are
+   * re-queued; pending rows are rewritten so the dashboard/database reflect
+   * the query the runner will actually execute.
+   */
+  private async repairLegacyGenericSegments(campaignId: string): Promise<void> {
+    if (this.repairedCampaignIds.has(campaignId)) return;
+
+    const candidates = await db
+      .select()
+      .from(campaignSegments)
+      .where(
+        and(
+          eq(campaignSegments.campaignId, campaignId),
+          or(eq(campaignSegments.status, 'pending'), eq(campaignSegments.status, 'exhausted')),
+        ),
+      )
+      .limit(MAX_CAMPAIGN_SEGMENTS);
+
+    let repaired = 0;
+    let requeued = 0;
+    for (const segment of candidates) {
+      const effective = effectiveSegmentSearch(segment);
+      if (!effective.repairedLegacyGeneric) continue;
+      const wasFalseExhaustion = segment.status === 'exhausted' && (segment.saved ?? 0) === 0;
+      await db
+        .update(campaignSegments)
+        .set({
+          subcategory: effective.subcategory,
+          query: effective.query,
+          ...(wasFalseExhaustion
+            ? {
+                status: 'pending' as const,
+                leasedAt: null,
+                completedAt: null,
+                lastError: 'Requeued after industry-specific search-shard repair.',
+              }
+            : {}),
+        })
+        .where(eq(campaignSegments.id, segment.id));
+      repaired++;
+      if (wasFalseExhaustion) requeued++;
+    }
+
+    if (repaired > 0) {
+      console.warn(
+        `[campaigns] Repaired ${repaired} legacy generic segment(s) for campaign ${campaignId}; requeued ${requeued} false exhaustion(s)`,
+      );
+    }
+    this.repairedCampaignIds.add(campaignId);
   }
 
   /** Atomically claim the next pending segment of a running campaign.
@@ -488,6 +924,8 @@ export class CampaignRunner {
       .orderBy(asc(leadCampaigns.createdAt))
       .limit(1);
     if (!campaign) return [];
+
+    await this.repairLegacyGenericSegments(campaign.id);
 
     const nextSegments = await db
       .select()
@@ -524,43 +962,200 @@ export class CampaignRunner {
     segment: typeof campaignSegments.$inferSelect,
   ): Promise<void> {
     const label = `${segment.industry} / ${segment.city}`;
+    const segmentStartedAt = Date.now();
     try {
       const registry = getToolRegistry();
       const config = getLeadPipelineConfig();
-      const query = segment.query ?? `${segment.searchIntent} ${segment.subcategory} ${segment.city}`;
+      const effectiveSearch = effectiveSegmentSearch(segment);
+      const query = effectiveSearch.query;
 
-      const result = await registry.execute('searchBusinessDirectory', { query }, this.toolContext);
-      if (!result.success) throw new Error(result.error ?? 'searchBusinessDirectory failed');
+      const maxResults = Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard);
+      type DiscoveryCandidate = {
+        source: 'directory' | 'web';
+        provider: string;
+        businesses: DirectoryBusiness[];
+        diagnostics: string[];
+      };
 
-      const payload = result.data as { businesses?: DirectoryBusiness[]; provider?: string };
-      const raw = (payload.businesses ?? []).slice(0, Math.min(MAX_PER_SEGMENT, config.maxDirectoryResultsPerShard));
+      const runDirectory = async (): Promise<DiscoveryCandidate> => {
+        try {
+          const result = await registry.execute('searchBusinessDirectory', { query }, this.toolContext);
+          if (!result.success) {
+            return {
+              source: 'directory',
+              provider: 'none',
+              businesses: [],
+              diagnostics: [result.error ?? 'searchBusinessDirectory failed'],
+            };
+          }
+          const payload = result.data as {
+            businesses?: DirectoryBusiness[];
+            provider?: string;
+            attempts?: string[];
+            error?: string;
+            cacheHit?: boolean;
+            cacheCoalesced?: boolean;
+          };
+          const baseProvider = payload.provider ?? 'unknown';
+          return {
+            source: 'directory',
+            provider: payload.cacheHit ? `cache:${baseProvider}` : baseProvider,
+            businesses: (payload.businesses ?? []).slice(0, maxResults),
+            diagnostics: [
+              ...(payload.attempts ?? []),
+              ...(payload.error ? [payload.error] : []),
+            ],
+          };
+        } catch (err) {
+          return {
+            source: 'directory',
+            provider: 'none',
+            businesses: [],
+            diagnostics: [err instanceof Error ? err.message : String(err)],
+          };
+        }
+      };
+
+      const runFastWeb = async (): Promise<DiscoveryCandidate> => {
+        try {
+          const result = await registry.execute(
+            'webSearch',
+            {
+              query: `${query} official business website`,
+              maxResults,
+              fast: true,
+            },
+            this.toolContext,
+          );
+          if (!result.success) {
+            return {
+              source: 'web',
+              provider: 'none',
+              businesses: [],
+              diagnostics: [result.error ?? 'webSearch failed'],
+            };
+          }
+          const payload = result.data as {
+            provider?: string;
+            results?: Array<{ title?: string; url?: string; snippet?: string }>;
+            diagnostics?: string[];
+            suggestion?: string;
+            cacheHit?: boolean;
+            cacheCoalesced?: boolean;
+          };
+          const businesses = (payload.results ?? [])
+            .map((item) => businessFromWebResult(item, segment.city))
+            .filter((item): item is DirectoryBusiness => item !== null)
+            .slice(0, maxResults);
+          return {
+            source: 'web',
+            provider: businesses.length > 0 ? `${payload.cacheHit ? 'cache:' : ''}web:${payload.provider ?? 'search'}` : 'none',
+            businesses,
+            diagnostics: [
+              ...(payload.diagnostics ?? []),
+              ...(payload.suggestion ? [payload.suggestion] : []),
+            ],
+          };
+        } catch (err) {
+          return {
+            source: 'web',
+            provider: 'none',
+            businesses: [],
+            diagnostics: [err instanceof Error ? err.message : String(err)],
+          };
+        }
+      };
+
+      // Current production has Tavily/Brave but no Yelp/Google Places. In that
+      // shape, start with the fast web source and only pay the slower
+      // TomTom/OSM chain when web discovery is empty. This avoids leaving
+      // dozens of 20–25 second fallback requests running after Tavily already
+      // produced a usable lead set.
+      const hasFastWeb = Boolean(process.env.TAVILY_API_KEY || process.env.BRAVE_SEARCH_API_KEY);
+      const hasFastStructured = Boolean(process.env.YELP_API_KEY || process.env.GOOGLE_PLACES_API_KEY);
+
+      let first: DiscoveryCandidate;
+      let second: DiscoveryCandidate | null = null;
+
+      if (hasFastWeb && !hasFastStructured) {
+        first = await runFastWeb();
+        if (first.businesses.length === 0) second = await runDirectory();
+      } else if (hasFastStructured && !hasFastWeb) {
+        first = await runDirectory();
+        if (first.businesses.length === 0) second = await runFastWeb();
+      } else {
+        // When both fast source families are available, race them. The slower
+        // task is only created in this configuration because both are expected
+        // to return quickly enough that racing improves latency without a
+        // buildup of long-lived OSM fallbacks.
+        const directoryTask = runDirectory();
+        const webTask = runFastWeb();
+        first = await Promise.race([directoryTask, webTask]);
+        if (first.businesses.length === 0) {
+          second = await (first.source === 'directory' ? webTask : directoryTask);
+        }
+      }
+
+      const chosen = first.businesses.length > 0 ? first : second;
+      if (!chosen || chosen.businesses.length === 0) {
+        const reasons = [...first.diagnostics, ...(second?.diagnostics ?? [])].filter(Boolean);
+        throw new Error(
+          `All lead discovery sources returned zero for "${query}". ${reasons.slice(0, 10).join(' | ') || 'No provider diagnostics were returned.'}`,
+        );
+      }
+
+      const provider = chosen.provider;
+      const raw = chosen.businesses.slice(0, maxResults);
+
       const found = raw.map(readBusiness).filter((b): b is NonNullable<typeof b> => b !== null);
 
       // Drop companies already on file before spending enrichment or model
       // work on them. Fresh businesses are inserted immediately as DISCOVERED.
-      const known = await getKnownLeadDomains();
+      const known = await this.knownDomains();
       const { fresh, duplicates } = dedupeDiscoveredBusinesses(found, known);
+
+      // Reserve every fresh domain synchronously BEFORE the first insert await.
+      // Multiple segment promises run concurrently; adding domains only after
+      // each insert allowed two shards from the same city to both decide that
+      // the same 15–20 businesses were fresh and insert duplicate batches.
+      const reservedDomains = new Map<DirectoryLead, string>();
+      for (const business of fresh) {
+        const domain = normalizeLeadDomain(business.website);
+        if (domain) {
+          known.add(domain);
+          reservedDomains.set(business, domain);
+        }
+      }
 
       let saved = 0;
       for (const business of fresh) {
-        await insertDiscoveredLead({
-          companyName: business.companyName,
-          website: business.website,
-          industry: segment.industry,
-          city: business.city || segment.city,
-          phone: business.phone,
-          source: payload.provider ?? 'directory',
-          campaignId: campaign.id,
-          campaignSegmentId: segment.id,
-          researchedByAgentId: this.toolContext.agentId,
-          metadata: {
-            subcategory: segment.subcategory,
-            searchIntent: segment.searchIntent,
-            query,
-            liveDemoMode: config.liveDemoMode,
-          },
-        });
-        saved++;
+        try {
+          await insertDiscoveredLead({
+            companyName: business.companyName,
+            website: business.website,
+            industry: segment.industry,
+            city: business.city || segment.city,
+            phone: business.phone,
+            source: provider,
+            campaignId: campaign.id,
+            campaignSegmentId: segment.id,
+            researchedByAgentId: this.toolContext.agentId,
+            metadata: {
+              subcategory: effectiveSearch.subcategory,
+              searchIntent: segment.searchIntent,
+              query,
+              liveDemoMode: config.liveDemoMode,
+            },
+          });
+          saved++;
+        } catch (err) {
+          // Release the in-process reservation only when the insert failed so a
+          // later shard may retry it. Successful rows stay reserved until the
+          // short cache refresh confirms them from Postgres.
+          const reserved = reservedDomains.get(business);
+          if (reserved) known.delete(reserved);
+          throw err;
+        }
       }
 
       const now = new Date();
@@ -585,9 +1180,30 @@ export class CampaignRunner {
         .set({ lastProgressAt: now })
         .where(eq(leadCampaigns.id, campaign.id));
 
+      const segmentMs = Date.now() - segmentStartedAt;
       console.log(
-        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${payload.provider ?? 'unknown'})`,
+        `[campaigns] ${campaign.name} · ${label}: ${found.length} found, ${saved} discovered, ${duplicates} known (${provider}) in ${segmentMs}ms`,
       );
+      await recordOperatorActivity({
+        category: 'lead_search',
+        agentId: 'apex-campaign-runner',
+        message:
+          saved > 0
+            ? `Searched ${segment.industry} in ${segment.city}. Found ${found.length} candidate${found.length === 1 ? '' : 's'}, saved ${saved} new one${saved === 1 ? '' : 's'} for verification, and skipped ${duplicates} already-known result${duplicates === 1 ? '' : 's'}.`
+            : `Searched ${segment.industry} in ${segment.city}. Found ${found.length} candidate${found.length === 1 ? '' : 's'}, but none were new enough to save; ${duplicates} were already known or duplicates.`,
+        data: {
+          campaignId: campaign.id,
+          segmentId: segment.id,
+          industry: segment.industry,
+          city: segment.city,
+          found: found.length,
+          saved,
+          duplicates,
+          provider,
+          durationMs: segmentMs,
+        },
+      });
+      await this.pruneSaturatedCell(campaign, segment);
       emitApexEvent({
         type: 'campaign:segment',
         campaignId: campaign.id,
@@ -629,22 +1245,81 @@ export class CampaignRunner {
               ? ' — retries exhausted, segment marked failed'
               : ' — will retry'),
       );
+      await recordOperatorActivity({
+        category: 'lead_search',
+        level: 'warn',
+        agentId: 'apex-campaign-runner',
+        message: exhaustedRetries
+          ? `Search for ${segment.industry} in ${segment.city} failed after ${attempts} attempt${attempts === 1 ? '' : 's'} and has been closed for this campaign. Reason: ${message.slice(0, 220)}`
+          : `Search for ${segment.industry} in ${segment.city} hit a temporary problem on attempt ${attempts}. APEX will retry it. Reason: ${message.slice(0, 220)}`,
+        data: { campaignId: campaign.id, segmentId: segment.id, attempts, exhaustedRetries, error: message.slice(0, 500) },
+      });
     }
   }
 
-  /** Every website already on file, as bare domains. Read per segment rather
-   *  than cached for the runner's lifetime: agents and other campaigns write
-   *  to this table concurrently, and a stale set means duplicate work. */
-  private async knownDomains(): Promise<Set<string>> {
-    const rows = await db
-      .select({ website: researchedLeads.website })
-      .from(researchedLeads);
-    const set = new Set<string>();
-    for (const r of rows) {
-      const d = domainOf(r.website ?? undefined);
-      if (d) set.add(d);
+  /**
+   * Once several searches in the same industry/city are mostly returning
+   * businesses already on file, stop spending the remaining query variants.
+   * This is deliberately conservative so a single weak search never prunes a
+   * city: require 4 completed shards, 8+ saved leads, and duplicate-heavy
+   * results in at least two of the latest three shards.
+   */
+  private async pruneSaturatedCell(
+    campaign: typeof leadCampaigns.$inferSelect,
+    segment: typeof campaignSegments.$inferSelect,
+  ): Promise<number> {
+    const worked = await db
+      .select()
+      .from(campaignSegments)
+      .where(
+        and(
+          eq(campaignSegments.campaignId, campaign.id),
+          eq(campaignSegments.industry, segment.industry),
+          eq(campaignSegments.city, segment.city),
+          or(eq(campaignSegments.status, 'done'), eq(campaignSegments.status, 'exhausted')),
+        ),
+      );
+
+    if (worked.length < 4) return 0;
+    const totalSaved = worked.reduce((sum, row) => sum + (row.saved ?? 0), 0);
+    if (totalSaved < 8) return 0;
+
+    const recent = [...worked]
+      .sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0))
+      .slice(0, 3);
+    if (recent.length < 3) return 0;
+
+    const duplicateHeavy = recent.filter((row) =>
+      (row.found ?? 0) >= 5 && (row.duplicates ?? 0) / Math.max(1, row.found ?? 0) >= 0.65,
+    ).length;
+    const zeroNew = recent.filter((row) => (row.saved ?? 0) === 0).length;
+    if (duplicateHeavy < 2 || zeroNew < 1) return 0;
+
+    const now = new Date();
+    const pruned = await db
+      .update(campaignSegments)
+      .set({
+        status: 'exhausted',
+        leasedAt: null,
+        completedAt: now,
+        lastError: `Pruned after city saturation: ${totalSaved} leads already saved and recent searches were mostly duplicates.`,
+      })
+      .where(
+        and(
+          eq(campaignSegments.campaignId, campaign.id),
+          eq(campaignSegments.industry, segment.industry),
+          eq(campaignSegments.city, segment.city),
+          eq(campaignSegments.status, 'pending'),
+        ),
+      )
+      .returning({ id: campaignSegments.id });
+
+    if (pruned.length > 0) {
+      console.log(
+        `[campaigns] ${campaign.name} · ${segment.industry} / ${segment.city}: pruned ${pruned.length} saturated shard(s) after ${totalSaved} unique leads`,
+      );
     }
-    return set;
+    return pruned.length;
   }
 
   /**
@@ -730,7 +1405,8 @@ export class CampaignRunner {
         .from(campaignSegments)
         .where(eq(campaignSegments.campaignId, campaign.id));
 
-      const progress = computeCampaignProgress(campaign, segments);
+      const usableLeadCount = await countUsableCampaignLeads(campaign.id);
+      const progress = computeCampaignProgress(campaign, segments, Date.now(), usableLeadCount);
       const hitTarget = progress.leadsSaved >= campaign.targetLeads;
       const territoryWorked = progress.segmentsRemaining === 0;
       if (!hitTarget && !territoryWorked) continue;
@@ -757,6 +1433,21 @@ export class CampaignRunner {
       }
 
       console.log(`[campaigns] ${campaign.name} -> ${status}. ${result}`);
+      await recordOperatorActivity({
+        category: 'campaign',
+        agentId: 'apex-campaign-runner',
+        message: hitTarget
+          ? `Campaign "${campaign.name}" reached its target with ${progress.leadsSaved} verified, contact-ready prospect${progress.leadsSaved === 1 ? '' : 's'}.`
+          : `Campaign "${campaign.name}" finished the available territory with ${progress.leadsSaved} verified, contact-ready prospect${progress.leadsSaved === 1 ? '' : 's'} out of the ${campaign.targetLeads} requested. The remaining search area did not produce enough usable businesses.`,
+        data: {
+          campaignId: campaign.id,
+          status,
+          leadsSaved: progress.leadsSaved,
+          targetLeads: campaign.targetLeads,
+          segmentsDone: progress.segmentsDone,
+          segmentsTotal: progress.segmentsTotal,
+        },
+      });
       emitApexEvent({
         type: 'campaign:completed',
         campaignId: campaign.id,
@@ -771,7 +1462,8 @@ export class CampaignRunner {
     const [campaign] = await db.select().from(leadCampaigns).where(eq(leadCampaigns.id, campaignId)).limit(1);
     if (!campaign) return;
     const segments = await db.select().from(campaignSegments).where(eq(campaignSegments.campaignId, campaignId));
-    const progress = computeCampaignProgress(campaign, segments);
+    const usableLeadCount = await countUsableCampaignLeads(campaignId);
+    const progress = computeCampaignProgress(campaign, segments, Date.now(), usableLeadCount);
     emitApexEvent({
       type: 'campaign:progress',
       campaignId,

@@ -45,6 +45,7 @@ import { createSuggestionsRouter } from './routes/suggestions.js';
 import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
+import { createCartesiaSalesRouter } from './routes/cartesia-sales.js';
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
@@ -56,12 +57,16 @@ import { createTerritoriesRouter } from './routes/territories.js';
 import { createEmailCampaignsRouter } from './routes/email-campaigns.js';
 import { createArtifactsRouter } from './routes/artifacts.js';
 import { createAutonomyRouter } from './routes/autonomy.js';
+import { createGovernanceRouter } from './routes/governance.js';
 import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { createSalesFloorRouter } from './routes/sales-floor.js';
+import { createPublicWebinarRouter, createWebinarAdminRouter } from './routes/webinars.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
 import { reconcileVapiInboundLatency } from './vapi-inbound-latency.js';
+import { diagnoseCartesiaRuntime } from './cartesia-runtime-diagnostic.js';
+import { reconcileCartesiaSalesAgent } from './cartesia-sales-reconciler.js';
 
 const PORT = parseInt(process.env.PORT ?? '5000', 10);
 const __filename = fileURLToPath(import.meta.url);
@@ -494,12 +499,20 @@ async function main() {
   // Must be mounted BEFORE requireAdminAuth for the same reason as the above.
   app.use('/api/telnyx-assistant', createTelnyxAssistantRouter(ceo));
 
+  // Cartesia custom sales tools and call events verify independent secrets.
+  app.use('/api/cartesia', createCartesiaSalesRouter());
+
   // Call Bridge webhook — Telnyx Call Control events for operator-bridged
   // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
   // mounted at the same /api/telnyx-assistant prefix (a different router,
   // registered separately for the feature's own file) since it is equally
   // Telnyx-originated. Must be mounted BEFORE requireAdminAuth.
   app.use('/api/telnyx-assistant', createCallBridgeWebhookRouter());
+
+  // Public webinar attendee surface. Registration, state polling, Q&A, and
+  // engagement are intentionally reachable without the APEX admin bearer token.
+  // Operator controls are mounted only after requireAdminAuth below.
+  app.use('/api/webinar/public', createPublicWebinarRouter());
 
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
@@ -531,9 +544,11 @@ async function main() {
   app.use('/api/email-campaigns', createEmailCampaignsRouter());
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
+  app.use('/api/governance', createGovernanceRouter());
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));
   app.use('/api/sales-ops', createSalesFloorRouter());
   app.use('/api/call-bridge', createCallBridgeRouter());
+  app.use('/api/webinar/admin', createWebinarAdminRouter(ceo));
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
   // run out of tokens?" could only be answered by reading provider error logs
@@ -731,6 +746,16 @@ async function main() {
       ),
     );
   }, 1_500);
+
+  // Reconcile the ONE canonical outbound sales agent before diagnosing it.
+  // This intentionally leaves any other Cartesia agents (including the
+  // existing Receptionist/Telnyx agent) untouched. All APEX outbound sales
+  // calls resolve this canonical identity by exact name.
+  setTimeout(() => {
+    void reconcileCartesiaSalesAgent().finally(() => {
+      void diagnoseCartesiaRuntime();
+    });
+  }, 2_500);
 
   // 60s Background Health Monitoring Loop
   const runHealthPoll = async () => {

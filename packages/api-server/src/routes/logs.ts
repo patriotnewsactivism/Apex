@@ -1,20 +1,21 @@
 import { Router } from 'express';
 import { db, logs } from '@workspace/db';
-import { desc, eq, and, gte } from 'drizzle-orm';
+import { desc, eq, and, gte, sql } from 'drizzle-orm';
 
 export function createLogsRouter() {
   const router = Router();
 
   router.get('/', async (req, res) => {
     try {
-      const { agentId, taskId, level, since, limit = '100' } = req.query;
+      const { agentId, taskId, level, kind, since, limit = '100' } = req.query;
       const rawLimit = parseInt(String(limit), 10);
-      const safeLimit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+      const safeLimit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 5000) : 100;
 
       const conditions = [];
       if (agentId) conditions.push(eq(logs.agentId, String(agentId)));
       if (taskId) conditions.push(eq(logs.taskId, String(taskId)));
       if (level) conditions.push(eq(logs.level, String(level)));
+      if (kind) conditions.push(sql`${logs.data}->>'kind' = ${String(kind)}`);
       if (since) {
         const sinceDate = new Date(String(since));
         if (!Number.isNaN(sinceDate.getTime())) {

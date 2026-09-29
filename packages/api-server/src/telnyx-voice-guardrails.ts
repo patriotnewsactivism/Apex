@@ -11,6 +11,8 @@
 // APEX tool registry or the agent swarm. It runs only inside a live phone
 // session and is optimised for latency and side-effect clarity.
 
+import { assertOutboundAllowed } from '@workspace/core';
+
 // ─── Plan catalog ─────────────────────────────────────────────────────────────
 
 interface PlanSpec {
@@ -224,6 +226,26 @@ async function executeSendCheckoutLink(
     typeof args.phone === 'string' && args.phone
       ? args.phone
       : callerNumber ?? '';
+
+  // The caller may have requested signup, but a model tool call is not by
+  // itself durable consent evidence. Require the same persisted contact/consent
+  // gate before creating a checkout session whose delivery depends on SMS.
+  if (smsTo) {
+    try {
+      await assertOutboundAllowed({
+        channel: 'sms',
+        destination: smsTo,
+        purpose: 'requested_checkout_link',
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        checkoutCreated: false,
+        smsSent: false,
+      };
+    }
+  }
 
   // Create Stripe Checkout session.
   const params = new URLSearchParams();
