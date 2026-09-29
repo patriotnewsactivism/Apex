@@ -317,6 +317,42 @@ class ToolRegistry {
       return { success: false, error: `Invalid args for ${name}: ${parsed.error.message}` };
     }
 
+    // Verify runtime provenance before any autonomous write. Reads are still
+    // allowed when provenance is incomplete so an agent can diagnose a bad
+    // workspace, but mutating tools fail closed. This prevents a green test or
+    // edit in a shadow checkout from being treated as evidence about the live
+    // deployed revision.
+    try {
+      const { ensureRuntimeProvenance, runtimeProvenanceRequiresGate } = await import('./runtime-provenance.js');
+      const provenance = await ensureRuntimeProvenance(
+        name,
+        parsed.data as Record<string, unknown>,
+        context,
+      );
+      if (runtimeProvenanceRequiresGate(name) && !provenance.ok) {
+        return {
+          success: false,
+          error:
+            `Runtime provenance gate blocked ${name}: ${provenance.reasons.join('; ')}. ` +
+            `repo_root=${provenance.snapshot.repo_root}; git_commit=${provenance.snapshot.git_commit}; ` +
+            `package_root=${provenance.snapshot.package_root ?? 'unknown'}; artifact_root=${provenance.snapshot.artifact_root ?? 'unset'}; ` +
+            `database_target=${provenance.snapshot.database_target ?? 'unset'}; environment=${provenance.snapshot.environment_name}`,
+        };
+      }
+    } catch (error) {
+      const { runtimeProvenanceRequiresGate } = await import('./runtime-provenance.js');
+      if (runtimeProvenanceRequiresGate(name)) {
+        return {
+          success: false,
+          error: `Runtime provenance gate unavailable for ${name}: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+      console.warn(
+        '[runtime-provenance] read-only provenance check failed:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
     // Central hard-gate enforcement, checked for EVERY invocation regardless
     // of the individual tool's own requiresApproval flag. Fixed 2026-09-07:
     // buildmybot_dispatch_engineering and casebuddy_dispatch_engineering were
