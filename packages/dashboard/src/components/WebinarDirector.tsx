@@ -126,8 +126,8 @@ export function WebinarDirector() {
         <div className="apex-eyebrow" style={{ marginBottom: 10 }}>Revenue · Live events</div>
         <h2 className="apex-display" style={{ margin: 0, fontSize: 28 }}>Build today’s autonomous webinar room</h2>
         <p style={{ color: 'var(--color-apex-muted)', lineHeight: 1.65, maxWidth: 620 }}>
-          This creates the public attendee room, AI narration, live Q&A, lead capture,
-          engagement scoring, CTA tracking, and your operator takeover controls.
+          This creates the public attendee room with a Tavus interactive video host,
+          live Q&A, lead capture, engagement scoring, CTA tracking, and your operator takeover controls.
         </p>
         <button onClick={() => void createToday()} disabled={busy === 'create'} style={primaryButton}>
           <Plus size={16} /> {busy === 'create' ? 'Creating…' : 'Create today’s webinar'}
@@ -178,6 +178,28 @@ export function WebinarDirector() {
       <div className="webinar-director-grid" style={{ display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1.35fr) minmax(290px, 0.65fr)', gap: isMobile ? 12 : 18, minWidth: 0 }}>
         <section className="webinar-director-main" style={{ display: 'grid', gap: isMobile ? 12 : 18, minWidth: 0 }}>
           <div className="webinar-control-card" style={{ ...card, padding: isMobile ? 14 : 20, minWidth: 0 }}>
+            <div
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'flex-start',
+                marginBottom: 14,
+                padding: 11,
+                borderRadius: 8,
+                border: '1px solid rgba(120,181,140,0.18)',
+                background: 'rgba(120,181,140,0.06)',
+              }}
+            >
+              <Bot size={17} color="var(--color-apex-green)" style={{ flexShrink: 0, marginTop: 1 }} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 750, color: 'var(--color-apex-text)' }}>
+                  Tavus interactive host is primary
+                </div>
+                <div style={{ marginTop: 4, color: 'var(--color-apex-muted)', fontSize: 11, lineHeight: 1.5 }}>
+                  Every attendee gets their own face-to-face conversation with the same webinar host. APEX still owns room state, slides, engagement, Q&A, follow-up and your takeover controls. The legacy audio narrator only runs if the video embed cannot load.
+                </div>
+              </div>
+            </div>
             <div className="webinar-control-actions" style={{ display: isMobile ? 'grid' : 'flex', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : undefined, flexWrap: 'wrap', gap: 10, alignItems: 'stretch' }}>
               {session?.status === 'draft' && (
                 <button className="webinar-control-action" onClick={() => void run('start', () => api.webinars.start(session.id))} disabled={Boolean(busy)} style={primaryButton}><Play size={16} /> Go live now</button>
@@ -186,7 +208,7 @@ export function WebinarDirector() {
                 <button className="webinar-control-action" onClick={() => void run('pause', () => api.webinars.pause(session.id))} disabled={Boolean(busy)} style={warningButton}><Pause size={16} /> Take the floor</button>
               )}
               {session?.status === 'paused' && (
-                <button className="webinar-control-action" onClick={() => void run('resume', () => api.webinars.resume(session.id))} disabled={Boolean(busy)} style={primaryButton}><Play size={16} /> Return to AI host</button>
+                <button className="webinar-control-action" onClick={() => void run('resume', () => api.webinars.resume(session.id))} disabled={Boolean(busy)} style={primaryButton}><Play size={16} /> Return to interactive host</button>
               )}
               {session && session.status !== 'ended' && (
                 <button className="webinar-control-action" onClick={() => void run('end', () => api.webinars.end(session.id))} disabled={Boolean(busy)} style={dangerButton}><Square size={15} /> End webinar</button>
