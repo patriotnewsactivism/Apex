@@ -500,6 +500,9 @@ export class CampaignRunner {
   private knownDomainsLoad: Promise<Set<string>> | null = null;
   private contactSearchRunning = false;
   private contactSearchLastRunAt = 0;
+  private contactSearchZeroYieldStreak = 0;
+  private contactSearchBackoffUntil = 0;
+  private contactSearchLastSummaryAt = 0;
   private readonly repairedCampaignIds = new Set<string>();
 
   constructor(
@@ -581,9 +584,11 @@ export class CampaignRunner {
    */
   private async enrichVerifiedContactsFromSearch(limit: number): Promise<void> {
     if (this.contactSearchRunning) return;
+    const nowMs = Date.now();
     const intervalMs = Math.max(15_000, Number(process.env.LEAD_CONTACT_SEARCH_INTERVAL_MS ?? 60_000));
-    if (Date.now() - this.contactSearchLastRunAt < intervalMs) return;
-    this.contactSearchLastRunAt = Date.now();
+    if (nowMs < this.contactSearchBackoffUntil) return;
+    if (nowMs - this.contactSearchLastRunAt < intervalMs) return;
+    this.contactSearchLastRunAt = nowMs;
     this.contactSearchRunning = true;
     try {
       const batchSize = Math.max(1, Math.min(20, Math.trunc(limit)));
@@ -599,7 +604,6 @@ export class CampaignRunner {
             or(
               isNull(researchedLeads.contactEmail),
               isNull(researchedLeads.contactPhone),
-              isNull(researchedLeads.decisionMakerName),
             ),
             sql`COALESCE(${researchedLeads.enrichment}->'contactWebSearch'->>'version', '') <> ${version}`,
           ),
@@ -622,7 +626,7 @@ export class CampaignRunner {
         const result = await registry.execute(
           'webSearch',
           {
-            query: `site:${domain} "${lead.companyName}" contact owner phone email`,
+            query: `site:${domain} "${lead.companyName}" contact phone email`,
             maxResults: 6,
             fast: true,
             freeOnly: true,
@@ -733,25 +737,66 @@ export class CampaignRunner {
         );
       }));
 
-      await recordOperatorActivity({
-        category: 'contact_recovery',
-        agentId: 'apex-campaign-runner',
-        message:
-          `Contact recovery checked ${candidates.length} verified business${candidates.length === 1 ? '' : 'es'}: ` +
-          `${emailsAdded} new email${emailsAdded === 1 ? '' : 's'}, ${phonesAdded} new phone number${phonesAdded === 1 ? '' : 's'}, ` +
-          `${decisionMakersAdded} sourced decision maker${decisionMakersAdded === 1 ? '' : 's'}; ` +
-          `${fullyReachable} now have both email and phone, ${stillIncomplete} still need more contact research.`,
-        data: {
-          checked: candidates.length,
-          emailsAdded,
-          phonesAdded,
-          decisionMakersAdded,
-          fullyReachable,
-          stillIncomplete,
-          cacheHits,
-          lane: 'free_cached_web_plus_first_party',
-        },
-      });
+      const contactAdds = emailsAdded + phonesAdded;
+      if (contactAdds === 0) {
+        this.contactSearchZeroYieldStreak += 1;
+      } else {
+        this.contactSearchZeroYieldStreak = 0;
+        this.contactSearchBackoffUntil = 0;
+      }
+
+      // Repeated zero-yield scans of a large backlog create noise and burn
+      // provider/CPU capacity without improving the prospect pool. Back off
+      // progressively after three dry batches, capped at 15 minutes. A later
+      // successful batch immediately clears the backoff.
+      if (contactAdds === 0 && this.contactSearchZeroYieldStreak >= 3) {
+        const exponent = Math.min(4, this.contactSearchZeroYieldStreak - 2);
+        const backoffMs = Math.min(
+          15 * 60_000,
+          Math.max(intervalMs, intervalMs * (2 ** exponent)),
+        );
+        this.contactSearchBackoffUntil = Date.now() + backoffMs;
+      }
+
+      const idleSummaryMs = Math.max(
+        5 * 60_000,
+        Number(process.env.LEAD_CONTACT_SEARCH_IDLE_SUMMARY_MS ?? 15 * 60_000),
+      );
+      const shouldLog =
+        contactAdds > 0 ||
+        decisionMakersAdded > 0 ||
+        Date.now() - this.contactSearchLastSummaryAt >= idleSummaryMs;
+
+      if (shouldLog) {
+        this.contactSearchLastSummaryAt = Date.now();
+        const backoffMinutes = this.contactSearchBackoffUntil > Date.now()
+          ? Math.ceil((this.contactSearchBackoffUntil - Date.now()) / 60_000)
+          : 0;
+        await recordOperatorActivity({
+          category: 'contact_recovery',
+          agentId: 'apex-campaign-runner',
+          message:
+            contactAdds > 0 || decisionMakersAdded > 0
+              ? `Contact recovery checked ${candidates.length} verified business${candidates.length === 1 ? '' : 'es'}: ` +
+                `${emailsAdded} new email${emailsAdded === 1 ? '' : 's'}, ${phonesAdded} new phone number${phonesAdded === 1 ? '' : 's'}, ` +
+                `${decisionMakersAdded} sourced decision maker${decisionMakersAdded === 1 ? '' : 's'}; ` +
+                `${fullyReachable} now have both email and phone, ${stillIncomplete} still need more contact research.`
+              : `Contact recovery checked ${candidates.length} verified businesses and found no new email or phone data. ` +
+                `APEX is backing this lane off${backoffMinutes ? ` for about ${backoffMinutes} minute${backoffMinutes === 1 ? '' : 's'}` : ''} instead of repeatedly scanning low-yield records.`,
+          data: {
+            checked: candidates.length,
+            emailsAdded,
+            phonesAdded,
+            decisionMakersAdded,
+            fullyReachable,
+            stillIncomplete,
+            cacheHits,
+            zeroYieldStreak: this.contactSearchZeroYieldStreak,
+            backoffUntil: this.contactSearchBackoffUntil || null,
+            lane: 'free_cached_web_plus_first_party',
+          },
+        });
+      }
     } finally {
       this.contactSearchRunning = false;
     }
