@@ -261,8 +261,8 @@ export function VerifyScalePanel() {
             <Guard label="System health" value={health?.overall ?? 'Loading'} ok={!health || health.overall !== 'critical'} />
             <Guard
               label="Runtime provenance"
-              value={governance ? `${governance.provenance.verified24h} verified · ${governance.provenance.failed24h} failed in 24h` : 'Loading'}
-              ok={!governance || governance.provenance.failed24h === 0}
+              value={governance ? `${governance.provenance.verified24h} verified · ${governance.provenance.failed24h} blocked in 24h` : 'Loading'}
+              ok={!governance || governance.implementationGate === 'ready'}
             />
             <Guard
               label="Configuration drift"
@@ -297,7 +297,7 @@ export function VerifyScalePanel() {
               />
               {governance.provenance.latest?.reasons.length ? (
                 <div style={{ padding: 10, border: '1px solid rgba(196,92,102,.24)', borderRadius: 6, color: 'var(--color-apex-red)', fontSize: 10, lineHeight: 1.5 }}>
-                  Latest provenance blocker: {governance.provenance.latest.reasons.join('; ')}
+                  Latest blocked write: {governance.provenance.latest.reasons.join('; ')}
                 </div>
               ) : null}
             </div>
