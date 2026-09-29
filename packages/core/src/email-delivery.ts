@@ -35,7 +35,7 @@ export function humanizeEmailGreeting(
   const firstName = emailGreetingName(fullName);
   if (!fullName || firstName === 'there' || firstName.toLowerCase() === fullName.toLowerCase()) return body;
 
-  const escaped = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\  const escaped = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\export async function isEmailSuppressed(email: string): Promise<boolean> {');');
+  const escaped = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\  const escaped = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\  const escaped = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\export async function isEmailSuppressed(email: string): Promise<boolean> {');');');
   const htmlGreeting = new RegExp('(<p>\\s*(?:hi|hello|hey|dear)\\s+)' + escaped + '(\\s*[,!]?\\s*<\\/p>)', 'i');
   const plainGreeting = new RegExp('(^|\\n)(\\s*(?:hi|hello|hey|dear)\\s+)' + escaped + '(\\s*[,!]?)', 'i');
 
