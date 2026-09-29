@@ -191,6 +191,52 @@ export interface SpendSnapshot {
   updatedAt: string;
 }
 
+export interface GovernanceStatus {
+  loop: Array<'observe' | 'hypothesize' | 'verify' | 'implement' | 'monitor' | 'learn' | 'scale'>;
+  implementationGate: 'ready' | 'blocked';
+  runtime: {
+    repoRoot: string;
+    buildSha: string;
+    sourceBranch: string;
+    runtimeEntrypoint: string;
+    artifactRoot: string | null;
+    databaseConfigured: boolean;
+    environmentName: string;
+  };
+  provenance: {
+    verified24h: number;
+    failed24h: number;
+    latest: {
+      action: string;
+      agentId: string;
+      taskId: string | null;
+      at: string;
+      reasons: string[];
+    } | null;
+  };
+  outbound: {
+    mode: 'fail_closed';
+    evaluator: string;
+    channels: string[];
+    requiresConsent: boolean;
+    requiresAllowedGate: boolean;
+    gateCounts: { allowed: number; pending: number; denied: number };
+    consentCounts: { granted: number; unknown: number; denied: number; revoked: number };
+    scalingRule: string;
+  };
+  configuration: {
+    paidFallbackEnabled: boolean;
+    paidFallbackFlag: string;
+    legacyPaidFallbackPresent: boolean;
+    canonicalRepoRootConfigured: boolean;
+    sourceBranchConfigured: boolean;
+    artifactRootConfigured: boolean;
+    databaseConfigured: boolean;
+  };
+  invariants: Array<{ id: string; ok: boolean; text: string }>;
+  observedAt: string;
+}
+
 export interface DiagnosticsReport {
   status: DiagnosticSeverity;
   generatedAt: string;
@@ -500,6 +546,10 @@ export const api = {
   diagnostics: {
     get: () => apiFetch<DiagnosticsReport>('/diagnostics'),
     text: () => apiFetchText('/diagnostics?format=text'),
+  },
+
+  governance: {
+    status: () => apiFetch<GovernanceStatus>('/governance/status'),
   },
 
   spend: {
