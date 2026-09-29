@@ -223,7 +223,17 @@ export async function ensureRuntimeProvenance(
   const canonicalRoot = resolve(process.env.APEX_CANONICAL_REPO_ROOT || process.cwd());
   const contextRoot = resolve(context.workspaceRoot || canonicalRoot);
   const targetPath = extractTargetPath(toolName, rawArgs, contextRoot);
-  const targetProbe = targetPath ? dirname(targetPath) : contextRoot;
+  const targetIsDirectory =
+    toolName === 'runShell' ||
+    typeof rawArgs.cwd === 'string' ||
+    typeof rawArgs.directory === 'string' ||
+    typeof rawArgs.workspacePath === 'string' ||
+    typeof rawArgs.repoPath === 'string';
+  const targetProbe = targetPath
+    ? targetIsDirectory
+      ? targetPath
+      : dirname(targetPath)
+    : contextRoot;
   const detectedRoot =
     (await findWorkspaceRoot(targetProbe)) ??
     (await findWorkspaceRoot(contextRoot));
