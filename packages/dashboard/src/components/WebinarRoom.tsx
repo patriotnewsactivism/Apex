@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, Send, Users, Volume2, VolumeX, Sparkles } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile.js';
+import { TavusWebinarHost } from './TavusWebinarHost.js';
 
 type Segment = {
   id: string;
@@ -75,6 +76,8 @@ export function WebinarRoom({ slug }: { slug: string }) {
   const [question, setQuestion] = useState('');
   const [answering, setAnswering] = useState(false);
   const [joinError, setJoinError] = useState('');
+  const [interactiveHostConsent, setInteractiveHostConsent] = useState(false);
+  const [tavusHostState, setTavusHostState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [voiceOn, setVoiceOn] = useState(true);
   const [startedAudio, setStartedAudio] = useState(false);
   const [lastSpokenSegment, setLastSpokenSegment] = useState<number | null>(null);
@@ -88,6 +91,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
   const [roiRecoveryRate, setRoiRecoveryRate] = useState(50);
   const [roiTracked, setRoiTracked] = useState(false);
   const attendeeRef = useRef(attendeeId);
+  const tavusTrackedRef = useRef(false);
   attendeeRef.current = attendeeId;
 
   const fallbackSpeak = useCallback((text: string) => {
@@ -182,6 +186,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
   }, [attendeeId, fetchSnapshot, slug]);
 
   useEffect(() => {
+    if (tavusHostState !== 'error') return;
     if (!snapshot || !attendeeId || snapshot.session.status !== 'live') return;
     const index = snapshot.session.currentSegment;
     if (lastSpokenSegment === index) return;
@@ -193,9 +198,10 @@ export function WebinarRoom({ slug }: { slug: string }) {
         true,
       );
     }
-  }, [snapshot, attendeeId, lastSpokenSegment, playVoice, slug]);
+  }, [snapshot, attendeeId, lastSpokenSegment, playVoice, slug, tavusHostState]);
 
   useEffect(() => {
+    if (tavusHostState !== 'error') return;
     if (!snapshot || !attendeeId) return;
     for (const event of snapshot.events ?? []) {
       const id = String(event.id ?? '');
@@ -224,9 +230,10 @@ export function WebinarRoom({ slug }: { slug: string }) {
         }
       }
     }
-  }, [snapshot, attendeeId, playVoice, slug, speakFallback]);
+  }, [snapshot, attendeeId, playVoice, slug, speakFallback, tavusHostState]);
 
   useEffect(() => {
+    if (tavusHostState !== 'error') return;
     if (!snapshot || !attendeeId) return;
     for (const item of [...snapshot.questions].reverse()) {
       if (seenQuestionIds.current.has(item.id)) continue;
@@ -239,11 +246,26 @@ export function WebinarRoom({ slug }: { slug: string }) {
         );
       }
     }
-  }, [snapshot, attendeeId, playVoice, slug]);
+  }, [snapshot, attendeeId, playVoice, slug, tavusHostState]);
+
+  useEffect(() => {
+    if (tavusHostState === 'ready') stopVoice();
+    if (!attendeeId || tavusHostState !== 'ready' || tavusTrackedRef.current) return;
+    tavusTrackedRef.current = true;
+    void fetch(`/api/webinar/public/${encodeURIComponent(slug)}/engagement`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attendeeId, type: 'interactive_video_host_ready' }),
+    }).catch(() => {});
+  }, [attendeeId, slug, stopVoice, tavusHostState]);
 
   const join = async (event: React.FormEvent) => {
     event.preventDefault();
     setJoinError('');
+    if (!interactiveHostConsent) {
+      setJoinError('Please confirm the interactive AI host notice before entering.');
+      return;
+    }
     setStartedAudio(true);
     if ('speechSynthesis' in window) {
       // Warm the browser's audio permission during the user gesture.
@@ -383,9 +405,40 @@ export function WebinarRoom({ slug }: { slug: string }) {
               <input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Company" style={inputStyle} />
               <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone (optional)" style={inputStyle} />
               {joinError && <div style={{ gridColumn: '1 / -1', color: '#e58b92', fontSize: 13 }}>{joinError}</div>}
-              <button type="submit" style={{ ...buttonStyle, gridColumn: '1 / -1', padding: '14px 18px' }}>Enter webinar</button>
+              <label
+                style={{
+                  gridColumn: '1 / -1',
+                  display: 'flex',
+                  gap: 10,
+                  alignItems: 'flex-start',
+                  color: '#a9a7a2',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  padding: '4px 1px',
+                }}
+              >
+                <input
+                  required
+                  type="checkbox"
+                  checked={interactiveHostConsent}
+                  onChange={(event) => setInteractiveHostConsent(event.target.checked)}
+                  style={{ marginTop: 2, width: 17, height: 17, accentColor: '#c9a66b', flexShrink: 0 }}
+                />
+                <span>
+                  Start my interactive AI video host. My browser may ask for microphone/camera permission so I can talk with the host face-to-face.
+                </span>
+              </label>
+              <button
+                type="submit"
+                disabled={!interactiveHostConsent}
+                style={{ ...buttonStyle, gridColumn: '1 / -1', padding: '14px 18px', opacity: interactiveHostConsent ? 1 : 0.55 }}
+              >
+                Enter interactive webinar
+              </button>
             </form>
-            <div style={{ color: '#777b85', fontSize: 12, marginTop: 14 }}>Entering enables the AI narration in your browser. You can mute it at any time.</div>
+            <div style={{ color: '#777b85', fontSize: 12, marginTop: 14 }}>
+              Each attendee gets a separate Tavus-powered conversation inside the webinar room. The browser controls your microphone and camera permissions.
+            </div>
           </div>
         </div>
       </div>
@@ -404,28 +457,47 @@ export function WebinarRoom({ slug }: { slug: string }) {
         </div>
         <div className="webinar-room-header-actions" style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 7 : 12, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#9b9da4', fontSize: isMobile ? 10 : 12, whiteSpace: 'nowrap' }}><Users size={isMobile ? 12 : 14} /> {snapshot.attendeeCount}{isMobile ? '' : ' live'}</div>
-          <button onClick={() => {
-            if (!startedAudio) {
-              setStartedAudio(true);
-              setVoiceOn(true);
-              setLastSpokenSegment(null);
-              return;
-            }
-            setVoiceOn((value) => {
-              const next = !value;
-              if (!next) stopVoice();
-              if (next) setLastSpokenSegment(null);
-              return next;
-            });
-          }} className="apex-icon-btn" style={iconButtonStyle} title={voiceOn && startedAudio ? 'Mute AI host' : 'Unmute AI host'}>
-            {voiceOn && startedAudio ? <Volume2 size={17} /> : <VolumeX size={17} />}
-          </button>
+          {tavusHostState === 'error' ? (
+            <button onClick={() => {
+              if (!startedAudio) {
+                setStartedAudio(true);
+                setVoiceOn(true);
+                setLastSpokenSegment(null);
+                return;
+              }
+              setVoiceOn((value) => {
+                const next = !value;
+                if (!next) stopVoice();
+                if (next) setLastSpokenSegment(null);
+                return next;
+              });
+            }} className="apex-icon-btn" style={iconButtonStyle} title={voiceOn && startedAudio ? 'Mute fallback audio host' : 'Unmute fallback audio host'}>
+              {voiceOn && startedAudio ? <Volume2 size={17} /> : <VolumeX size={17} />}
+            </button>
+          ) : (
+            <div
+              style={{
+                padding: '6px 9px',
+                borderRadius: 999,
+                border: '1px solid rgba(120,181,140,0.24)',
+                background: 'rgba(120,181,140,0.08)',
+                color: tavusHostState === 'ready' ? '#78b58c' : '#c9a66b',
+                fontSize: isMobile ? 9 : 10,
+                fontWeight: 700,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {tavusHostState === 'ready' ? 'VIDEO HOST LIVE' : 'HOST LOADING'}
+            </div>
+          )}
         </div>
       </header>
 
       <div style={{ height: 3, background: '#252830' }}><div style={{ height: '100%', width: `${progress}%`, background: '#c9a66b', transition: 'width 0.5s ease' }} /></div>
 
       <main className="webinar-room-main" style={{ maxWidth: 1180, width: '100%', margin: '0 auto', padding: isMobile ? '14px 12px 22px' : 'clamp(22px, 4vw, 52px) clamp(16px, 3vw, 30px)', display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1.7fr) minmax(280px, 0.7fr)', gap: isMobile ? 12 : 24, minWidth: 0 }}>
+        <div className="webinar-room-primary" style={{ display: 'grid', gap: isMobile ? 12 : 18, minWidth: 0 }}>
+          <TavusWebinarHost onStateChange={setTavusHostState} compact={isMobile} />
         <section className="webinar-room-stage" style={{ ...card, minHeight: isMobile ? 0 : 520, padding: isMobile ? '22px 16px 48px' : 'clamp(26px, 5vw, 58px)', position: 'relative', overflow: 'hidden', minWidth: 0 }}>
           <div style={{ position: 'absolute', inset: '0 auto auto 0', width: 180, height: 4, background: '#c9a66b' }} />
           <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#c9a66b' }}>{segment.kicker}</div>
@@ -467,23 +539,41 @@ export function WebinarRoom({ slug }: { slug: string }) {
           )}
           <div style={{ position: 'absolute', right: isMobile ? 16 : 28, bottom: isMobile ? 14 : 24, fontSize: 12, color: '#656871' }}>{snapshot.session.currentSegment + 1} / {snapshot.segments.length}</div>
         </section>
+        </div>
 
         <aside className="webinar-room-sidebar" style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 12 : 18, minWidth: 0 }}>
           <div style={{ ...card, padding: isMobile ? 15 : 20, minWidth: 0 }}>
             <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#777b85', marginBottom: 10 }}>Host status</div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ width: 9, height: 9, borderRadius: '50%', background: live ? '#78b58c' : snapshot.session.status === 'paused' ? '#d6a15c' : '#777b85', boxShadow: live ? '0 0 0 5px rgba(120,181,140,0.12)' : 'none' }} />
-              <strong>{snapshot.session.status === 'draft' ? 'Waiting to begin' : snapshot.session.status === 'paused' ? 'Matthew has the floor' : snapshot.session.status === 'ended' ? 'Webinar ended' : snapshot.session.autonomous ? 'AI host live' : 'Co-host mode'}</strong>
+              <strong>
+                {snapshot.session.status === 'draft'
+                  ? 'Waiting to begin'
+                  : snapshot.session.status === 'paused'
+                    ? 'Human takeover active'
+                    : snapshot.session.status === 'ended'
+                      ? 'Webinar ended'
+                      : tavusHostState === 'ready'
+                        ? 'Interactive video host live'
+                        : tavusHostState === 'error'
+                          ? 'Audio fallback host live'
+                          : 'Interactive host loading'}
+              </strong>
             </div>
-            <div style={{ marginTop: 10, color: '#8d9099', fontSize: 13, lineHeight: 1.5 }}>Host: {snapshot.session.hostName} · {snapshot.session.mode}</div>
+            <div style={{ marginTop: 10, color: '#8d9099', fontSize: 13, lineHeight: 1.5 }}>
+              Tavus runs a separate live conversation for this attendee while APEX keeps the webinar state, slides, Q&A, engagement and follow-up workflow synchronized.
+            </div>
           </div>
 
           <div style={{ ...card, padding: isMobile ? 15 : 20, minWidth: 0 }}>
-            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#777b85', marginBottom: 12 }}>Ask a question</div>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#777b85', marginBottom: 8 }}>Text question backup</div>
+            <div style={{ color: '#8d9099', fontSize: 11, lineHeight: 1.45, marginBottom: 12 }}>
+              Talk directly to the video host above. Use this box when you prefer text or need a fallback.
+            </div>
             <form onSubmit={ask}>
               <textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask about APEX, BuildMyBot, automation, voice, campaigns…" rows={5} style={{ ...inputStyle, width: '100%', resize: 'vertical', boxSizing: 'border-box' }} />
               <button disabled={answering || !question.trim()} type="submit" style={{ ...buttonStyle, marginTop: 10, width: '100%', opacity: answering ? 0.65 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                <Send size={15} /> {answering ? 'AI is answering…' : 'Ask the AI host'}
+                <Send size={15} /> {answering ? 'Sending…' : 'Send text question'}
               </button>
             </form>
           </div>
