@@ -10,8 +10,8 @@
 //                     operator-initiated action from an authenticated console,
 //                     so it approves the hard-gated make_outbound_call tool on
 //                     the operator's behalf (requestApproval => true) rather than
-//                     parking it in the agent approval queue. The operator owns
-//                     DNC/consent for a number they type in here.
+//                     parking it in the agent approval queue. Approval does
+//                     NOT bypass the unified consent/DNC evaluator.
 //   POST /automate  — designate a target (one lead, a list/campaign, or the whole
 //                     qualified pipeline) for full automation: set the workforce
 //                     autonomy level and hand the Sales org a goal to work it
@@ -379,7 +379,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
 
       const result = await registry.execute(
         'make_outbound_call',
-        { customerNumber, customerName: customerName || undefined, assistantPrompt, firstMessage },
+        { customerNumber, customerName: customerName || undefined, assistantPrompt, firstMessage, leadId: body.leadId },
         {
           agentId: SALES_AGENT_ID,
           workspaceRoot,
