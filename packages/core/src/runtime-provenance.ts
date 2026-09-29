@@ -139,9 +139,19 @@ function extractTargetPath(
       return resolve(workspaceRoot, value);
     }
   }
-  if (toolName === 'writeFile' && typeof args.path === 'string') {
-    return resolve(workspaceRoot, args.path);
+
+  if (toolName === 'runShell' && typeof args.command === 'string') {
+    const command = args.command;
+
+    // Shell commands used to be able to hide a second checkout behind
+    // "cd /app/qa1-apex/apex && ...". Resolve the directory the command
+    // actually enters, not merely ToolContext.workspaceRoot.
+    const cd = command.match(/(?:^|[;&|]\s*)cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/i);
+    const gitC = command.match(/\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/i);
+    const raw = cd?.[1] ?? cd?.[2] ?? cd?.[3] ?? gitC?.[1] ?? gitC?.[2] ?? gitC?.[3];
+    if (raw) return resolve(workspaceRoot, raw);
   }
+
   return null;
 }
 
@@ -263,6 +273,25 @@ export async function ensureRuntimeProvenance(
     const normalized = targetPath.split('\\').join('/');
     if (normalized.includes('/node_modules/')) {
       reasons.push('writes into node_modules are forbidden; edit the canonical workspace package instead');
+    }
+  }
+
+  if (toolName === 'runShell' && typeof rawArgs.command === 'string') {
+    const command = rawArgs.command;
+    // Creating another repository below /app makes subsequent tests/edit
+    // provenance ambiguous even if the clone does not exist yet when the
+    // gate runs. Scratch clones belong outside the canonical runtime tree.
+    if (/\bgit\s+clone\b/i.test(command)) {
+      const cloneMatch = command.match(/\bgit\s+clone(?:\s+--[^\s]+(?:=\S+)?)*\s+\S+\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/i);
+      const cloneDest = cloneMatch?.[1] ?? cloneMatch?.[2] ?? cloneMatch?.[3];
+      if (!cloneDest || pathWithin(canonicalRoot, resolve(contextRoot, cloneDest))) {
+        reasons.push('git clone inside the canonical runtime tree is forbidden; use the deployed workspace or an isolated scratch location');
+      }
+    }
+
+    const normalizedCommand = command.split('\\').join('/');
+    if (/\/qa\d*[-_]?apex\/apex(?:\/|\s|$)/i.test(normalizedCommand)) {
+      reasons.push('known shadow QA checkout path detected in shell command');
     }
   }
 
