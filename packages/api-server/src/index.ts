@@ -57,6 +57,7 @@ import { createTerritoriesRouter } from './routes/territories.js';
 import { createEmailCampaignsRouter } from './routes/email-campaigns.js';
 import { createArtifactsRouter } from './routes/artifacts.js';
 import { createAutonomyRouter } from './routes/autonomy.js';
+import { createGovernanceRouter } from './routes/governance.js';
 import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { createSalesFloorRouter } from './routes/sales-floor.js';
 import { createPublicWebinarRouter, createWebinarAdminRouter } from './routes/webinars.js';
@@ -543,6 +544,7 @@ async function main() {
   app.use('/api/email-campaigns', createEmailCampaignsRouter());
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
+  app.use('/api/governance', createGovernanceRouter());
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));
   app.use('/api/sales-ops', createSalesFloorRouter());
   app.use('/api/call-bridge', createCallBridgeRouter());
