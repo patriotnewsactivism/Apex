@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { db, researchedLeads, logs, smsMessages, callBridgeSessions, callOutcomes } from '@workspace/db';
 import { eq, or, desc } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
+import { assertOutboundAllowed } from '@workspace/core';
 
 // ─── Apex Front Desk — Telnyx AI Assistant tool-calling surface ─────────────
 //
@@ -821,6 +822,11 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
         } else {
           const text = `Apex: thanks for calling — we received your message about "${reason}" and will follow up soon.`;
           try {
+            await assertOutboundAllowed({
+              channel: 'sms',
+              destination: toPhone,
+              purpose: 'front_desk_confirmation',
+            });
             const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
               method: 'POST',
               headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
