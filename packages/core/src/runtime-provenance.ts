@@ -32,38 +32,6 @@ const READ_ONLY_TOOLS = new Set([
   'searchBusinessDirectory',
 ]);
 
-const MUTATION_PREFIXES = [
-  'add',
-  'approve',
-  'acknowledge',
-  'cancel',
-  'configure',
-  'create',
-  'delegate',
-  'deploy',
-  'dispatch',
-  'enroll',
-  'import',
-  'make_',
-  'pause',
-  'provision',
-  'publish',
-  'push',
-  'record',
-  'register',
-  'reject',
-  'resume',
-  'rollback',
-  'run',
-  'save',
-  'schedule',
-  'send',
-  'start',
-  'store',
-  'sync',
-  'update',
-  'write',
-];
 
 export interface RuntimeProvenanceSnapshot {
   repo_root: string;
@@ -184,9 +152,13 @@ function pathWithin(root: string, candidate: string): boolean {
 
 function isMutationTool(name: string): boolean {
   if (READ_ONLY_TOOLS.has(name)) return false;
-  if (name === 'sendMessage') return true;
-  if (name === 'writeFile' || name === 'runShell' || name === 'runInSandbox') return true;
-  return MUTATION_PREFIXES.some((prefix) => name.startsWith(prefix));
+  if (/^(?:get_|list|read|search|fetch|hunter)/.test(name)) return false;
+  if (name === 'health_check' || name === 'app_health_check' || name === 'git_status') return false;
+
+  // Unknown tools are treated as state-changing. A newly added write-capable
+  // tool must never bypass provenance just because somebody forgot to update
+  // this guard. Truly read-only tools can be explicitly exempted above.
+  return true;
 }
 
 async function persistSnapshot(
