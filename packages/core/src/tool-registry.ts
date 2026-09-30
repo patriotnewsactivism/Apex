@@ -992,6 +992,57 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           }
         }
 
+        // ── Strategy 0b: BuildMyBot Tavily proxy ──────────────────────────
+        // Railway OAuth redacts BuildMyBot's existing Tavily key, so APEX cannot
+        // safely copy it across projects. Use BuildMyBot's narrow bearer-protected
+        // proxy instead; the Tavily provider credential never leaves BuildMyBot.
+        const tavilyProxyUrl = process.env.BUILDMYBOT_TAVILY_PROXY_URL?.trim();
+        const tavilyProxySecret = process.env.BUILDMYBOT_TAVILY_PROXY_SECRET?.trim();
+        if (tavilyProxyUrl && !tavilyProxySecret) {
+          diagnostics.push('buildmybot-tavily: proxy URL configured but secret missing');
+        }
+        if (freeOnly && tavilyProxyUrl && tavilyProxySecret) {
+          diagnostics.push('buildmybot-tavily: skipped by freeOnly mode');
+        }
+        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret) {
+          try {
+            const proxyRes = await fetch(tavilyProxyUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${tavilyProxySecret}`,
+              },
+              body: JSON.stringify({ query, maxResults: n }),
+              signal: AbortSignal.timeout(20_000),
+            });
+            if (!proxyRes.ok) {
+              const body = await proxyRes.text().catch(() => '');
+              const detail = `buildmybot-tavily: HTTP ${proxyRes.status} ${body.slice(0, 200)}`.trim();
+              diagnostics.push(detail);
+              console.warn(`[webSearch] ${detail} for "${query}"`);
+            } else {
+              const proxyData = await proxyRes.json() as {
+                provider?: string;
+                results?: Array<{ title?: string; url?: string; snippet?: string }>;
+              };
+              for (const r of proxyData.results ?? []) {
+                if (!r.url) continue;
+                results.push({ title: r.title ?? '', url: r.url, snippet: r.snippet ?? '' });
+              }
+              if (results.length > 0) {
+                return {
+                  query,
+                  provider: proxyData.provider ?? 'buildmybot-tavily-proxy',
+                  results: results.slice(0, n),
+                };
+              }
+              diagnostics.push('buildmybot-tavily: 200 but zero results');
+            }
+          } catch (e) {
+            diagnostics.push(`buildmybot-tavily: ${e instanceof Error ? e.message : String(e)}`);
+            console.warn(`[webSearch] BuildMyBot Tavily proxy failed for "${query}": ${e}`);
+          }
+        }
         // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
         const braveKey = process.env.BRAVE_SEARCH_API_KEY;
         if (!braveKey) diagnostics.push('brave: BRAVE_SEARCH_API_KEY not set');
