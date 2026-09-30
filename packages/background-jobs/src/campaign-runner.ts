@@ -1089,7 +1089,13 @@ export class CampaignRunner {
       let first: DiscoveryCandidate;
       let second: DiscoveryCandidate | null = null;
 
-      if (hasFastWeb && !hasFastStructured) {
+      if (!hasFastWeb && !hasFastStructured) {
+        // No paid/keyed fast source exists. Do NOT launch webSearch just to
+        // rediscover that Tavily/Brave are unconfigured on every shard; that
+        // produces no leads, doubles the work, and can flood Railway logs.
+        // searchBusinessDirectory still has the keyless OSM category fallback.
+        first = await runDirectory();
+      } else if (hasFastWeb && !hasFastStructured) {
         first = await runFastWeb();
         if (first.businesses.length === 0) second = await runDirectory();
       } else if (hasFastStructured && !hasFastWeb) {
