@@ -116,7 +116,7 @@ check(
 check(
   'reconciler creates/updates the rotated seven-tool APEX webhook set and attaches the event webhook',
   /desiredTools/.test(reconciler) &&
-    /CARTESIA_SALES_TOOL_NAMES/.test(reconciler) &&
+    /cartesiaSalesToolNames/.test(reconciler) &&
     /lookup_lead_info_v3/.test(salesAuth) &&
     /capture_and_qualify_lead_v2/.test(salesAuth) &&
     /check_calendar_availability_v2/.test(salesAuth) &&
@@ -131,6 +131,8 @@ check(
   /createHmac\('sha256', apiKey\)/.test(salesAuth) &&
     /derivedSecret\('tool'\)/.test(salesAuth) &&
     /derivedSecret\('webhook'\)/.test(salesAuth) &&
+    /createHash\('sha256'\)\.update\(secret\)/.test(salesAuth) &&
+    /slice\(0, 8\)/.test(salesAuth) &&
     /CARTESIA_TOOL_SECRET/.test(salesAuth) &&
     /CARTESIA_WEBHOOK_SECRET/.test(salesAuth),
 );
@@ -181,7 +183,7 @@ check(
 );
 check(
   'prospect-requested email follow-up is attempted immediately and never treated as blanket marketing consent',
-  /CARTESIA_SALES_TOOL_NAMES\[5\]/.test(reconciler) &&
+  /toolNames\[5\]/.test(reconciler) &&
     /send_requested_followup_email_v1/.test(salesAuth) &&
     /confirm the email address aloud once/.test(reconciler) &&
     /do not say you cannot send email before trying the tool/.test(reconciler) &&
