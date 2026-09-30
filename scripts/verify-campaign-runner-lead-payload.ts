@@ -188,6 +188,12 @@ async function main(): Promise<void> {
     !runnerMod.isDeterministicFailure('searchBusinessDirectory failed: 503 from every endpoint'),
   );
   check(
+    'a fully unconfigured discovery chain plus an unsupported OSM category fails once instead of burning three retries',
+    runnerMod.isDeterministicFailure(
+      'All lead discovery sources returned zero. yelp: YELP_API_KEY not set | google: GOOGLE_PLACES_API_KEY not set | tomtom: TOMTOM_API_KEY not set | OSM: no known category tag | tavily: TAVILY_API_KEY not set | brave: BRAVE_SEARCH_API_KEY not set',
+    ),
+  );
+  check(
     'a capacity pause is still retryable',
     !runnerMod.isDeterministicFailure('All LLM providers failed: free pool exhausted'),
   );
