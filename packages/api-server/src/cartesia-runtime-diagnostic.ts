@@ -1,14 +1,7 @@
+import { cartesiaSalesToolNames } from './cartesia-sales-auth.js';
+
 const CARTESIA_VERSION = '2026-08-14';
 const CARTESIA_API = 'https://api.cartesia.ai';
-const EXPECTED_SALES_TOOLS = [
-  'lookup_lead_info_v2',
-  'capture_and_qualify_lead',
-  'check_calendar_availability',
-  'book_consultation',
-  'send_demo_link',
-  'send_requested_followup_email',
-  'record_call_outcome_v2',
-] as const;
 const EVENT_WEBHOOK_URL = 'https://apex.donmatthews.live/api/cartesia/events';
 
 type CartesiaList<T> = {
@@ -67,6 +60,10 @@ export async function diagnoseCartesiaRuntime(): Promise<void> {
   }
 
   try {
+    // Integration settings are loaded into process.env during runtime bootstrap,
+    // after this module itself may have been imported. Resolve the credential
+    // generation here, not at module evaluation time.
+    const expectedSalesTools = cartesiaSalesToolNames();
     const [agentPage, toolPage, webhookPage] = await Promise.all([
       cartesiaGet<CartesiaList<CartesiaAgentSummary>>('/v1/agents?limit=100', apiKey),
       cartesiaGet<CartesiaList<CartesiaToolSummary>>('/v1/agents/tools?limit=100', apiKey),
@@ -82,12 +79,12 @@ export async function diagnoseCartesiaRuntime(): Promise<void> {
       return haystack.includes('apex') || haystack.includes('alex') || haystack.includes('buildmybot');
     });
     const presentToolNames = new Set(tools.map((tool) => tool.name).filter(Boolean));
-    const presentSalesTools = EXPECTED_SALES_TOOLS.filter((name) => presentToolNames.has(name));
+    const presentSalesTools = expectedSalesTools.filter((name) => presentToolNames.has(name));
     const eventWebhook = webhooks.find((webhook) => webhook.url === EVENT_WEBHOOK_URL);
 
     console.log(
       `[cartesia] API authentication succeeded; agents=${agents.length}; sales-agent-matches=${salesAgents.length}; ` +
-      `sales-tools=${presentSalesTools.length}/${EXPECTED_SALES_TOOLS.length}; event-webhook=${eventWebhook ? 'present' : 'missing'}`,
+      `sales-tools=${presentSalesTools.length}/${expectedSalesTools.length}; event-webhook=${eventWebhook ? 'present' : 'missing'}`,
     );
 
     if (agents.length > 0) {
@@ -104,7 +101,7 @@ export async function diagnoseCartesiaRuntime(): Promise<void> {
       );
     }
 
-    const missingTools = EXPECTED_SALES_TOOLS.filter((name) => !presentToolNames.has(name));
+    const missingTools = expectedSalesTools.filter((name) => !presentToolNames.has(name));
     if (missingTools.length > 0) {
       console.warn('[cartesia] Missing APEX sales tools:', missingTools.join(', '));
     }
