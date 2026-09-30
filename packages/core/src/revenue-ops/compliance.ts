@@ -192,9 +192,26 @@ function checkPurpose(
   purpose?: string,
   consentScope?: string,
 ): { passes: boolean; reason?: string } {
+  const purposeLower = purpose?.toLowerCase() ?? '';
+
+  // Transactional consent is intentionally narrow. It can satisfy a one-time
+  // response the person explicitly requested, but it must never become a
+  // temporary back door for ordinary sales/campaign email just because the
+  // consent row is still within its short expiry window.
+  if (consentScope === 'transactional') {
+    const requestedTransactional =
+      purposeLower.startsWith('requested_') ||
+      purposeLower.includes('transactional');
+    if (!requestedTransactional) {
+      return {
+        passes: false,
+        reason: 'Transactional consent is limited to an explicitly requested transactional response.',
+      };
+    }
+  }
+
   if (!purpose) return { passes: true };
 
-  const purposeLower = purpose.toLowerCase();
   const isMarketing = purposeLower.includes('marketing') || purposeLower.includes('campaign');
 
   if (isMarketing && consentScope === 'transactional') {
