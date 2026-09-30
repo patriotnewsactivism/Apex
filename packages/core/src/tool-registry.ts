@@ -575,15 +575,18 @@ const OSM_CATEGORY_TAGS: ReadonlyArray<{ keywords: readonly string[]; tags: read
   { keywords: ['chiropractor', 'chiropractic'], tags: ['healthcare=chiropractor'] },
   { keywords: ['pharmacy'], tags: ['amenity=pharmacy'] },
   { keywords: ['gym', 'fitness'], tags: ['leisure=fitness_centre'] },
+  { keywords: ['newspapers', 'newspaper', 'news publisher', 'publishing house'], tags: ['office=newspaper', 'office=publisher'] },
+  { keywords: ['radio stations', 'radio station', 'broadcaster', 'broadcasting station'], tags: ['office=broadcaster'] },
 ];
 
 /** Business-shaped filler that is neither a category nor a place name. */
 const OSM_GENERIC_WORDS = new Set([
   'agency', 'agencies', 'company', 'companies', 'service', 'services', 'shop', 'shops',
   'contractor', 'contractors', 'business', 'businesses', 'firm', 'firms', 'llc', 'inc',
-  'near', 'in', 'around', 'local', 'best', 'top', 'licensed', 'family', 'owned',
+  'near', 'in', 'around', 'local', 'best', 'top', 'rated', 'open', 'now', 'licensed', 'family', 'owned',
   'phone', 'website', 'contact', 'address', '24/7', '24', 'hour', 'hours',
   'clinic', 'clinics', 'center', 'centre', 'official', 'about', 'us', 'team',
+  'news', 'media', 'and', '&',
 ]);
 
 /** Match a free-text query onto OSM tag filters. Empty when nothing is recognized. */
@@ -1862,7 +1865,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           }
         }
 
-        // ── Provider 4: OpenStreetMap Overpass API (no key, always works) ──
+        // ── Provider 4: OpenStreetMap Overpass API (keyless category fallback) ──
         // Free, no signup, no credit card. Queries by OSM category tag inside a
         // geocoded bounding box — NOT by name. A business is tagged
         // office=bail_bond; it is not named "bail bonds agency", which is why
