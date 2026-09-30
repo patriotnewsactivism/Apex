@@ -57,6 +57,10 @@ async function main(): Promise<void> {
   check('auto body maps to shop=car_repair', auto.tags.includes('shop=car_repair'), auto);
   const vet = osmTagFiltersForQuery('Portland Oregon veterinary clinic contact phone');
   check('veterinary maps to amenity=veterinary', vet.tags.includes('amenity=veterinary'), vet);
+  const newspaper = osmTagFiltersForQuery('top rated news & newspapers San Francisco, CA');
+  check('newspapers map to office=newspaper', newspaper.tags.includes('office=newspaper'), newspaper);
+  const radio = osmTagFiltersForQuery('radio stations Austin, TX');
+  check('radio stations map to office=broadcaster', radio.tags.includes('office=broadcaster'), radio);
 
   const unknown = osmTagFiltersForQuery('artisanal widget refurbishment Springfield');
   check(
@@ -72,6 +76,8 @@ async function main(): Promise<void> {
     ['auto body collision repair shop Charlotte North Carolina', 'charlotte north carolina'],
     ['Portland Oregon veterinary clinic contact phone', 'portland oregon'],
     ['pest control company Orlando FL family owned official website contact', 'orlando fl'],
+    ['top rated news & newspapers San Francisco, CA', 'san francisco, ca'],
+    ['open now radio stations Austin, TX', 'austin, tx'],
   ] as const) {
     const { matchedKeywords } = osmTagFiltersForQuery(query);
     const place = osmLocationFromQuery(query, matchedKeywords);
@@ -284,6 +290,11 @@ async function main(): Promise<void> {
   check(
     'a missing TOMTOM_API_KEY is reported as an attempt, not silence',
     /tomtom: TOMTOM_API_KEY not set/.test(src),
+  );
+  const settingsSrc = fs.readFileSync(path.join(root, 'packages/api-server/src/routes/settings.ts'), 'utf8');
+  check(
+    'TomTom is exposed in Settings → Business Search so a migrated deployment can restore the key',
+    /id: 'business-search'[\s\S]{0,1600}key: 'TOMTOM_API_KEY'/.test(settingsSrc),
   );
 
 

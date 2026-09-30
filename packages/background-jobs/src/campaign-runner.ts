@@ -402,7 +402,19 @@ export function templateCopyFor(
  *  validates every call against the tool's Zod schema before executing it,
  *  and a payload that fails that check fails it every time. */
 export function isDeterministicFailure(message: string): boolean {
-  return message.startsWith('Invalid args for ') || message.startsWith('Unknown tool: ');
+  const allDiscoveryProvidersMissing =
+    message.includes('YELP_API_KEY not set') &&
+    message.includes('GOOGLE_PLACES_API_KEY not set') &&
+    message.includes('TOMTOM_API_KEY not set') &&
+    message.includes('TAVILY_API_KEY not set') &&
+    message.includes('BRAVE_SEARCH_API_KEY not set');
+  const osmCannotAnswer = message.includes('OSM: no known category tag');
+
+  return (
+    message.startsWith('Invalid args for ') ||
+    message.startsWith('Unknown tool: ') ||
+    (allDiscoveryProvidersMissing && osmCannotAnswer)
+  );
 }
 
 /** Strip to a comparable hostname so "https://www.acme.com/" and
