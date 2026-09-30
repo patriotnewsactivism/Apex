@@ -134,6 +134,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     envVars: [
       { key: 'YELP_API_KEY', label: 'Yelp API Key', placeholder: 'Yelp key', secret: true },
       { key: 'GOOGLE_PLACES_API_KEY', label: 'Google Places API Key', placeholder: 'Google Places key', secret: true },
+      { key: 'TOMTOM_API_KEY', label: 'TomTom Search API Key', placeholder: 'TomTom Search API key', secret: true },
       { key: 'TAVILY_API_KEY', label: 'Tavily API Key', placeholder: 'tvly-...', secret: true },
       { key: 'BRAVE_SEARCH_API_KEY', label: 'Brave Search API Key', placeholder: 'Brave Search key', secret: true },
     ],
