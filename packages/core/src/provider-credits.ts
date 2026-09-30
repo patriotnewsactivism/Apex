@@ -121,6 +121,7 @@ export interface ProviderCreditSnapshot {
 let cached: ProviderCreditSnapshot | null = null;
 let inFlight: Promise<void> | null = null;
 let lastAttemptAt = 0;
+const lastKnownAccountByFingerprint = new Map<string, string>();
 
 interface UniqueCredential {
   env: string;
@@ -162,6 +163,30 @@ function publicAccountId(creatorUserId: string | null | undefined, keyFingerprin
   if (!creatorUserId || !creatorUserId.trim()) return `keyfp_${keyFingerprint}`;
   const digest = createHash('sha256').update(creatorUserId.trim()).digest('hex').slice(0, 8);
   return `oracct_${digest}`;
+}
+
+export function preserveLastKnownOpenRouterAccounts(
+  credentials: ReadonlyArray<{ fingerprint: string }>,
+  accounts: ReadonlyArray<ProviderAccountSnapshot>,
+): ProviderAccountSnapshot[] {
+  return accounts.map((account, index) => {
+    const fingerprint = credentials[index]?.fingerprint;
+    if (!fingerprint) return account;
+    if (account.account.startsWith('oracct_')) {
+      lastKnownAccountByFingerprint.set(fingerprint, account.account);
+      return account;
+    }
+    const lastKnown = lastKnownAccountByFingerprint.get(fingerprint);
+    if (!lastKnown) return account;
+    return {
+      ...account,
+      account: lastKnown,
+      detail: [
+        account.detail,
+        'using last-known OpenRouter account identity after a transient identity-probe failure',
+      ].filter(Boolean).join('; '),
+    };
+  });
 }
 
 function keySha256(apiKey: string): string {
@@ -466,18 +491,31 @@ async function fetchCredits(): Promise<void> {
   // credential it came from — which is the only place the key fingerprint and
   // the OpenRouter account id are both in hand. The fingerprint stays here and
   // never reaches the authenticated health-detail payload.
+  const accountsWithKnownIdentities = preserveLastKnownOpenRouterAccounts(
+    inference,
+    accounts,
+  );
   const identities = new Map<string, string>(
-    inference.map((entry, index) => [entry.fingerprint, accounts[index].account]),
+    inference.map((entry, index) => [
+      entry.fingerprint,
+      accountsWithKnownIdentities[index].account,
+    ]),
   );
 
   const liveKeyAccounts = new Map<string, string>(
-    inference.map((entry, index) => [keySha256(entry.key), accounts[index].account]),
+    inference.map((entry, index) => [
+      keySha256(entry.key),
+      accountsWithKnownIdentities[index].account,
+    ]),
   );
   const management = await Promise.all(
     configuredManagementCredentials().map((entry) => probeManagementKey(entry, liveKeyAccounts)),
   );
 
-  const accountsWithBalances = backfillBalances(accounts, management);
+  const accountsWithBalances = backfillBalances(
+    accountsWithKnownIdentities,
+    management,
+  );
   reconcileOpenRouterCreditBalances(accountsWithBalances);
   cached = summarize(accountsWithBalances, management, identities);
 }
@@ -508,4 +546,9 @@ export async function initializeProviderCredits(): Promise<ProviderCreditSnapsho
   lastAttemptAt = Date.now();
   await fetchCredits();
   return cached;
+}
+
+/** Test-only reset for deterministic identity-refresh coverage. */
+export function __resetProviderCreditIdentityCacheForTest(): void {
+  lastKnownAccountByFingerprint.clear();
 }

@@ -12,6 +12,11 @@ import {
   setObservedAccounts,
 } from "../../../core/src/request-ledger.js";
 import { createLLMClient } from "../../../core/src/llm-client.js";
+import {
+  __resetProviderCreditIdentityCacheForTest,
+  preserveLastKnownOpenRouterAccounts,
+  type ProviderAccountSnapshot,
+} from "../../../core/src/provider-credits.js";
 
 vi.mock("@workspace/db", () => ({
   db: {
@@ -61,10 +66,28 @@ function configureIsolatedRouter(): void {
   vi.stubEnv("APEX_TOKEN_PACING_ENABLED", "false");
 }
 
+function providerAccount(
+  account: string,
+  detail: string | null = null,
+): ProviderAccountSnapshot {
+  return {
+    env: "OPENROUTER_FREE_API_KEY",
+    account,
+    remaining: null,
+    totalCredits: null,
+    totalUsage: null,
+    isFreeTier: true,
+    dailyLimit: 1_000,
+    status: "unknown",
+    detail,
+  };
+}
+
 beforeEach(() => {
   configureIsolatedRouter();
   resolveTestAccounts();
   __resetOpenRouterAccountExclusionsForTest();
+  __resetProviderCreditIdentityCacheForTest();
 });
 
 afterEach(() => {
@@ -73,6 +96,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   setObservedAccounts(null);
   __resetOpenRouterAccountExclusionsForTest();
+  __resetProviderCreditIdentityCacheForTest();
 });
 
 describe("OpenRouter account exclusions", () => {
@@ -182,6 +206,33 @@ describe("OpenRouter account exclusions", () => {
         now: now + 60_000,
       }),
     ).toBeNull();
+  });
+
+  it("preserves resolved account grouping through a transient identity-probe failure", () => {
+    const credential = {
+      fingerprint: accountFingerprint(ACCOUNT_A_KEY_1),
+    };
+    expect(
+      preserveLastKnownOpenRouterAccounts(
+        [credential],
+        [providerAccount(ACCOUNT_A)],
+      )[0]?.account,
+    ).toBe(ACCOUNT_A);
+
+    const refreshed = preserveLastKnownOpenRouterAccounts(
+      [credential],
+      [
+        providerAccount(
+          `keyfp_${credential.fingerprint}`,
+          "key HTTP 503",
+        ),
+      ],
+    )[0];
+
+    expect(refreshed?.account).toBe(ACCOUNT_A);
+    expect(refreshed?.detail).toContain(
+      "using last-known OpenRouter account identity",
+    );
   });
 
   it("skips sibling keys after account A fails and succeeds through account B", async () => {
