@@ -113,13 +113,14 @@ check(
   !/version_description:\s*'Reconcile APEX canonical outbound sales configuration'/.test(reconciler),
 );
 check(
-  'reconciler creates/updates six APEX webhook tools and attaches the event webhook',
+  'reconciler creates/updates seven APEX webhook tools and attaches the event webhook',
   /desiredTools/.test(reconciler) &&
     /lookup_lead_info/.test(reconciler) &&
     /capture_and_qualify_lead/.test(reconciler) &&
     /check_calendar_availability/.test(reconciler) &&
     /book_consultation/.test(reconciler) &&
     /send_demo_link/.test(reconciler) &&
+    /send_requested_followup_email/.test(reconciler) &&
     /record_call_outcome/.test(reconciler) &&
     /webhook_id: webhookId/.test(reconciler),
 );
@@ -167,6 +168,13 @@ check(
     /Acknowledge their answer briefly and naturally with empathy/.test(reconciler) &&
     /then transition into the reason for the call using this campaign line/.test(reconciler) &&
     /inactivity_check_in_secs:\s*5/.test(reconciler),
+);
+check(
+  'prospect-requested email follow-up is attempted immediately and never treated as blanket marketing consent',
+  /send_requested_followup_email/.test(reconciler) &&
+    /confirm the email address aloud once/.test(reconciler) &&
+    /do not say you cannot send email before trying the tool/.test(reconciler) &&
+    /do not treat the request as general marketing consent/.test(reconciler),
 );
 check(
   'Cartesia sales voice uses native 1.0 speed to avoid time-stretch artifacts on SIP telephony',

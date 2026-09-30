@@ -6,6 +6,7 @@ const EXPECTED_SALES_TOOLS = [
   'check_calendar_availability',
   'book_consultation',
   'send_demo_link',
+  'send_requested_followup_email',
   'record_call_outcome_v2',
 ] as const;
 const EVENT_WEBHOOK_URL = 'https://apex.donmatthews.live/api/cartesia/events';
