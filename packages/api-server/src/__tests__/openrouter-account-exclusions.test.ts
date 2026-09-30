@@ -221,12 +221,7 @@ describe("OpenRouter account exclusions", () => {
 
     const refreshed = preserveLastKnownOpenRouterAccounts(
       [credential],
-      [
-        providerAccount(
-          `keyfp_${credential.fingerprint}`,
-          "key HTTP 503",
-        ),
-      ],
+      [providerAccount(`keyfp_${credential.fingerprint}`, "key HTTP 503")],
     )[0];
 
     expect(refreshed?.account).toBe(ACCOUNT_A);
