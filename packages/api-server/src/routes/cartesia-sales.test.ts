@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import express from 'express';
 import { createServer, type Server } from 'node:http';
 import { createCartesiaSalesRouter, isExplicitOptOut, secretMatches } from './cartesia-sales.js';
+import { cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
 
 describe('Cartesia sales webhook boundary', () => {
   let server: Server;
@@ -24,6 +25,7 @@ describe('Cartesia sales webhook boundary', () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     delete process.env.CARTESIA_TOOL_SECRET;
     delete process.env.CARTESIA_WEBHOOK_SECRET;
+    delete process.env.CARTESIA_API_KEY;
   });
 
   it('rejects missing or wrong secrets without reaching a database action', async () => {
@@ -38,6 +40,19 @@ describe('Cartesia sales webhook boundary', () => {
     expect(secretMatches('test-tool-secret', 'test-tool-secret')).toBe(true);
     expect(secretMatches('test-tool-secret', undefined)).toBe(false);
     expect(secretMatches('é', 'ab')).toBe(false);
+  });
+
+  it('derives separate durable tool and webhook credentials when Railway explicit secrets are absent', () => {
+    delete process.env.CARTESIA_TOOL_SECRET;
+    delete process.env.CARTESIA_WEBHOOK_SECRET;
+    process.env.CARTESIA_API_KEY = 'test-cartesia-api-key';
+    const tool = cartesiaToolSecret();
+    const webhook = cartesiaWebhookSecret();
+    expect(tool).toBeTruthy();
+    expect(webhook).toBeTruthy();
+    expect(tool).not.toBe(webhook);
+    expect(tool).toBe(cartesiaToolSecret());
+    expect(webhook).toBe(cartesiaWebhookSecret());
   });
 
   it('validates phone, booking, and consent input before external effects', async () => {
