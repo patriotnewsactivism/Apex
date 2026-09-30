@@ -306,6 +306,19 @@ async function main(): Promise<void> {
     'contact recovery skips its Tavily/Brave search lane when neither provider is configured',
     /enrichVerifiedContactsFromSearch[\s\S]{0,700}!process\.env\.TAVILY_API_KEY && !process\.env\.BRAVE_SEARCH_API_KEY/.test(campaignRunnerSrc),
   );
+  check(
+    'campaign discovery treats the authenticated BuildMyBot Tavily proxy as a fast web source',
+    /BUILDMYBOT_TAVILY_PROXY_URL/.test(campaignRunnerSrc) &&
+      /BUILDMYBOT_TAVILY_PROXY_SECRET/.test(campaignRunnerSrc) &&
+      /const hasFastWeb = Boolean/.test(campaignRunnerSrc),
+  );
+  check(
+    'webSearch can use the BuildMyBot Tavily proxy without exposing the provider credential to APEX',
+    /Strategy 0b: BuildMyBot Tavily proxy/.test(src) &&
+      /BUILDMYBOT_TAVILY_PROXY_URL/.test(src) &&
+      /BUILDMYBOT_TAVILY_PROXY_SECRET/.test(src) &&
+      /buildmybot-tavily-proxy/.test(src),
+  );
 
 
   // ── 6. Geocode cache ────────────────────────────────────────────────────
