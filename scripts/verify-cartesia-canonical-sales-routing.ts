@@ -27,6 +27,7 @@ const registry = read('packages/core/src/tool-registry.ts');
 const salesOps = read('packages/api-server/src/routes/sales-ops.ts');
 const salesFloor = read('packages/api-server/src/routes/sales-floor.ts');
 const reconciler = read('packages/api-server/src/cartesia-sales-reconciler.ts');
+const salesAuth = read('packages/api-server/src/cartesia-sales-auth.ts');
 const playbooks = read('packages/core/src/sales-playbooks.ts');
 const index = read('packages/api-server/src/index.ts');
 
@@ -113,16 +114,25 @@ check(
   !/version_description:\s*'Reconcile APEX canonical outbound sales configuration'/.test(reconciler),
 );
 check(
-  'reconciler creates/updates seven APEX webhook tools and attaches the event webhook',
+  'reconciler creates/updates the rotated seven-tool APEX webhook set and attaches the event webhook',
   /desiredTools/.test(reconciler) &&
-    /lookup_lead_info/.test(reconciler) &&
-    /capture_and_qualify_lead/.test(reconciler) &&
-    /check_calendar_availability/.test(reconciler) &&
-    /book_consultation/.test(reconciler) &&
-    /send_demo_link/.test(reconciler) &&
-    /send_requested_followup_email/.test(reconciler) &&
-    /record_call_outcome/.test(reconciler) &&
+    /CARTESIA_SALES_TOOL_NAMES/.test(reconciler) &&
+    /lookup_lead_info_v3/.test(salesAuth) &&
+    /capture_and_qualify_lead_v2/.test(salesAuth) &&
+    /check_calendar_availability_v2/.test(salesAuth) &&
+    /book_consultation_v2/.test(salesAuth) &&
+    /send_demo_link_v2/.test(salesAuth) &&
+    /send_requested_followup_email_v1/.test(salesAuth) &&
+    /record_call_outcome_v3/.test(salesAuth) &&
     /webhook_id: webhookId/.test(reconciler),
+);
+check(
+  'Cartesia tool and webhook credentials survive Railway secret loss by deriving separate HMAC credentials from the Cartesia API key',
+  /createHmac\('sha256', apiKey\)/.test(salesAuth) &&
+    /derivedSecret\('tool'\)/.test(salesAuth) &&
+    /derivedSecret\('webhook'\)/.test(salesAuth) &&
+    /CARTESIA_TOOL_SECRET/.test(salesAuth) &&
+    /CARTESIA_WEBHOOK_SECRET/.test(salesAuth),
 );
 check(
   'Cartesia-injected dynamic/constant tool fields are never emitted in JSON Schema required',
@@ -171,7 +181,8 @@ check(
 );
 check(
   'prospect-requested email follow-up is attempted immediately and never treated as blanket marketing consent',
-  /send_requested_followup_email/.test(reconciler) &&
+  /CARTESIA_SALES_TOOL_NAMES\[5\]/.test(reconciler) &&
+    /send_requested_followup_email_v1/.test(salesAuth) &&
     /confirm the email address aloud once/.test(reconciler) &&
     /do not say you cannot send email before trying the tool/.test(reconciler) &&
     /do not treat the request as general marketing consent/.test(reconciler),
