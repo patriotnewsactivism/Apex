@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, callOutcomes, providerEvents, researchedLeads, smsMessages, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
-import { evaluateOutboundAction } from '@workspace/core';
+import { createQueuedEmailSend, deliverQueuedEmailSend, evaluateOutboundAction } from '@workspace/core';
 
 // Cartesia HTTP tools and lifecycle events are different credentials. Both
 // routes fail closed until the operator configures their respective secrets.
@@ -213,6 +213,160 @@ async function recordExplicitSmsConsent(input: {
   return contact.id;
 }
 
+async function recordExplicitEmailConsent(input: {
+  phone: string;
+  email: string;
+  callId: string;
+  leadId?: string | null;
+}): Promise<string> {
+  const normalizedEmail = input.email.trim().toLowerCase();
+  const now = new Date();
+
+  const [emailContact] = await db.select({
+    id: contacts.id,
+    email: contacts.email,
+    phoneE164: contacts.phoneE164,
+    metadata: contacts.metadata,
+  }).from(contacts).where(and(
+    eq(contacts.organizationId, ORG_ID),
+    eq(contacts.email, normalizedEmail),
+  )).limit(1);
+
+  const [phoneContact] = await db.select({
+    id: contacts.id,
+    email: contacts.email,
+    phoneE164: contacts.phoneE164,
+    metadata: contacts.metadata,
+  }).from(contacts).where(and(
+    eq(contacts.organizationId, ORG_ID),
+    eq(contacts.phoneE164, input.phone),
+  )).limit(1);
+
+  let contact = emailContact ?? phoneContact;
+  if (!contact) {
+    try {
+      const inserted = await db.insert(contacts).values({
+        organizationId: ORG_ID,
+        email: normalizedEmail,
+        phoneE164: input.phone,
+        source: 'cartesia_sales_call',
+        status: 'active',
+        metadata: {
+          researchedLeadId: input.leadId ?? null,
+          firstRequestedEmailCallId: input.callId,
+        },
+      }).returning({
+        id: contacts.id,
+        email: contacts.email,
+        phoneE164: contacts.phoneE164,
+        metadata: contacts.metadata,
+      });
+      contact = inserted[0];
+    } catch {
+      [contact] = await db.select({
+        id: contacts.id,
+        email: contacts.email,
+        phoneE164: contacts.phoneE164,
+        metadata: contacts.metadata,
+      }).from(contacts).where(and(
+        eq(contacts.organizationId, ORG_ID),
+        eq(contacts.email, normalizedEmail),
+      )).limit(1);
+    }
+  } else if (!contact.email || contact.email.toLowerCase() !== normalizedEmail) {
+    // The prospect just dictated/confirmed this address on the call. Update the
+    // existing phone-linked contact so email compliance resolves to the same
+    // identity. If another row already owns the email, emailContact would have
+    // won above and we do not merge records here.
+    await db.update(contacts).set({
+      email: normalizedEmail,
+      metadata: {
+        ...(contact.metadata ?? {}),
+        lastRequestedEmailCallId: input.callId,
+        researchedLeadId: input.leadId ?? (contact.metadata as Record<string, unknown> | null)?.researchedLeadId ?? null,
+      },
+      updatedAt: now,
+    }).where(eq(contacts.id, contact.id));
+    contact = { ...contact, email: normalizedEmail };
+  }
+
+  if (!contact) throw new Error('Could not create email consent-linked contact');
+
+  await db.insert(consentRecords).values({
+    organizationId: ORG_ID,
+    contactId: contact.id,
+    channel: 'email',
+    status: 'granted',
+    consentType: 'explicit',
+    scope: 'transactional',
+    source: 'phone',
+    evidence: {
+      cartesiaCallId: input.callId,
+      requestedOneTimeFollowUpEmail: true,
+      confirmedEmail: normalizedEmail,
+      capturedBy: AGENT_ID,
+    },
+    grantedAt: now,
+    revokedAt: null,
+    // One requested message, not a durable marketing subscription.
+    expiresAt: new Date(now.getTime() + 60 * 60_000),
+  }).onConflictDoUpdate({
+    target: [consentRecords.organizationId, consentRecords.contactId, consentRecords.channel],
+    set: {
+      status: 'granted',
+      consentType: 'explicit',
+      scope: 'transactional',
+      source: 'phone',
+      evidence: {
+        cartesiaCallId: input.callId,
+        requestedOneTimeFollowUpEmail: true,
+        confirmedEmail: normalizedEmail,
+        capturedBy: AGENT_ID,
+      },
+      grantedAt: now,
+      revokedAt: null,
+      expiresAt: new Date(now.getTime() + 60 * 60_000),
+    },
+  });
+
+  await db.insert(contactOutreachGates).values({
+    organizationId: ORG_ID,
+    contactId: contact.id,
+    channel: 'email',
+    gate: 'allowed',
+    lastCheckedAt: now,
+    updatedAt: now,
+  }).onConflictDoUpdate({
+    target: [contactOutreachGates.organizationId, contactOutreachGates.contactId, contactOutreachGates.channel],
+    set: {
+      gate: 'allowed',
+      lastCheckedAt: now,
+      updatedAt: now,
+    },
+  });
+
+  if (input.leadId) {
+    const [lead] = await db.select({ enrichment: researchedLeads.enrichment })
+      .from(researchedLeads).where(eq(researchedLeads.id, input.leadId)).limit(1);
+    if (lead) {
+      await db.update(researchedLeads).set({
+        contactEmail: normalizedEmail,
+        enrichment: {
+          ...(lead.enrichment ?? {}),
+          outboundCompliance: {
+            organizationId: ORG_ID,
+            contactId: contact.id,
+            linkedAt: now.toISOString(),
+            linkedFrom: 'cartesia_requested_email_followup',
+          },
+        },
+      }).where(eq(researchedLeads.id, input.leadId));
+    }
+  }
+
+  return contact.id;
+}
+
 async function saveOutcome(input: {
   callId: string; phone: string; name?: string; leadId?: string; disposition: string;
   appointmentAt?: Date; email?: string; notes?: string;
@@ -277,7 +431,10 @@ export function createCartesiaSalesRouter(): Router {
     if (!parsed.success) return res.status(400).json({ error: 'Call, phone, business, and interest track required' });
     try {
       const p = parsed.data;
-      if (await isSuppressed(p.phone_number)) return res.status(409).json({ error: 'Contact opted out' });
+      // Capturing factual CRM details is an internal write, not outbound contact.
+      // Do not discard an email the prospect explicitly provides merely because
+      // the phone/SMS channel is suppressed; actual outbound actions are gated
+      // separately by channel-specific compliance at send time.
       let lead = await findLead(p.phone_number);
       const spoken = { interest_track: p.interest_track, call_or_ticket_volume: p.call_or_ticket_volume,
         current_tech_stack: p.current_tech_stack, qualification_notes: p.qualification_notes,
@@ -305,6 +462,126 @@ export function createCartesiaSalesRouter(): Router {
         disposition: 'no_decision', notes: p.qualification_notes });
       return res.json({ saved: true, lead_id: lead?.id ?? null });
     } catch { return res.status(503).json({ error: 'CRM write unavailable' }); }
+  });
+
+  router.post('/tools/send-requested-followup-email', async (req, res) => {
+    const parsed = z.object({
+      call_id: callIdSchema,
+      phone_number: phoneSchema,
+      prospect_email: z.string().email(),
+      prospect_name: optional(160),
+      follow_up_type: z.enum(['buildmybot_overview', 'apex_overview']).default('buildmybot_overview'),
+      requested_by_prospect: z.literal(true),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Confirmed email and explicit prospect request are required' });
+    }
+
+    try {
+      const p = parsed.data;
+      const normalizedEmail = p.prospect_email.trim().toLowerCase();
+      const lead = await findLead(p.phone_number);
+      const eventId =
+        'requested-email:' + p.call_id + ':' +
+        crypto.createHash('sha256').update(normalizedEmail).digest('hex').slice(0, 16);
+
+      const [prior] = await db.select({ id: providerEvents.id }).from(providerEvents).where(and(
+        eq(providerEvents.provider, 'cartesia'),
+        eq(providerEvents.externalEventId, eventId),
+      )).limit(1);
+      if (prior) {
+        return res.json({ sent: true, already_sent: true, to: normalizedEmail });
+      }
+
+      await recordExplicitEmailConsent({
+        phone: p.phone_number,
+        email: normalizedEmail,
+        callId: p.call_id,
+        leadId: lead?.id ?? null,
+      });
+
+      const firstName = p.prospect_name?.trim().split(/\s+/)[0] || 'there';
+      const isBuildMyBot = p.follow_up_type === 'buildmybot_overview';
+      const subject = isBuildMyBot
+        ? 'BuildMyBot follow-up you requested'
+        : 'APEX follow-up you requested';
+      const productName = isBuildMyBot ? 'BuildMyBot' : 'APEX Work Solutions';
+      const productUrl = isBuildMyBot ? 'https://www.buildmybot.app/' : 'https://apexwork.org/';
+      const html =
+        '<p>Hi ' + firstName.replace(/[<>&"]/g, '') + ',</p>' +
+        '<p>As requested, here is the follow-up from our call.</p>' +
+        '<p><strong>' + productName + '</strong>: <a href="' + productUrl + '">' + productUrl + '</a></p>' +
+        (isBuildMyBot
+          ? '<p>BuildMyBot helps businesses handle inbound calls and automate follow-up workflows.</p>'
+          : '<p>APEX is an AI-powered business automation and revenue-workforce platform.</p>') +
+        '<p>— Don<br>BuildMyBot / APEX</p>';
+      const text =
+        'Hi ' + firstName + ',\n\n' +
+        'As requested, here is the follow-up from our call.\n\n' +
+        productName + ': ' + productUrl + '\n\n' +
+        (isBuildMyBot
+          ? 'BuildMyBot helps businesses handle inbound calls and automate follow-up workflows.\n\n'
+          : 'APEX is an AI-powered business automation and revenue-workforce platform.\n\n') +
+        '— Don\nBuildMyBot / APEX';
+
+      const sendId = crypto.randomUUID();
+      await createQueuedEmailSend({
+        id: sendId,
+        leadId: lead?.id ?? null,
+        toEmail: normalizedEmail,
+        toName: p.prospect_name ?? null,
+        subject,
+        body: html,
+        createdByAgentId: AGENT_ID,
+      });
+      const result = await deliverQueuedEmailSend(sendId, normalizedEmail, subject, html, {
+        text,
+        leadId: lead?.id ?? null,
+        purpose: 'requested_followup_email',
+      });
+      if (!result.success) {
+        return res.status(result.status === 'suppressed' ? 409 : 503).json({
+          sent: false,
+          error: result.error ?? 'Requested email could not be sent',
+        });
+      }
+
+      const now = new Date();
+      await db.insert(providerEvents).values({
+        provider: 'cartesia',
+        externalEventId: eventId,
+        eventType: 'requested_email_sent',
+        payload: {
+          call_id: p.call_id,
+          email_send_id: sendId,
+          follow_up_type: p.follow_up_type,
+        },
+        status: 'processed',
+        processedAt: now,
+      }).onConflictDoNothing();
+
+      if (lead) {
+        await db.update(researchedLeads).set({ contactEmail: normalizedEmail })
+          .where(eq(researchedLeads.id, lead.id));
+      }
+      await db.update(callOutcomes).set({
+        contactEmail: normalizedEmail,
+        nextAction: 'Prospect-requested email follow-up sent during the call.',
+        updatedAt: now,
+      }).where(eq(callOutcomes.callId, outcomeId(p.call_id)));
+
+      return res.json({
+        sent: true,
+        email_send_id: sendId,
+        to: normalizedEmail,
+        message: 'Requested follow-up email sent.',
+      });
+    } catch (error) {
+      return res.status(503).json({
+        sent: false,
+        error: error instanceof Error ? error.message.slice(0, 240) : 'Requested email could not be sent',
+      });
+    }
   });
 
   router.post('/tools/check-calendar-availability', async (req, res) => {
