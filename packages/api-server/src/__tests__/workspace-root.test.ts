@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -82,6 +82,7 @@ describe('canonical agent workspace root', () => {
     const evilRoot = `${root}-evil`;
     await mkdir(evilRoot);
     await writeFile(join(evilRoot, 'secret.txt'), 'secret');
+    await symlink(evilRoot, join(root, 'linked-outside'));
 
     expect(() => resolveInWorkspace(root, join(evilRoot, 'secret.txt')))
       .toThrow(/Path outside workspace/);
@@ -89,6 +90,10 @@ describe('canonical agent workspace root', () => {
       .rejects.toThrow(/Path outside workspace/);
     await expect(execute('writeFile', { path: '../escape.md', content: 'no' }))
       .rejects.toThrow(/Path outside workspace/);
+    await expect(execute('readFile', { path: 'linked-outside/secret.txt' }))
+      .rejects.toThrow(/Path outside workspace through symlink/);
+    await expect(execute('writeFile', { path: 'linked-outside/new.txt', content: 'no' }))
+      .rejects.toThrow(/Path outside workspace through symlink/);
 
     const result = await execute('writeFile', {
       path: '/workspace/research/aliased.md',

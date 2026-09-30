@@ -588,9 +588,12 @@ Durability requires a separate, approval-gated operator action that is not part
 of a code release: attach a Railway volume to the existing `apex-backend`
 service (for example at `/data`) and set
 `APEX_ARTIFACT_DIR=/data/artifacts`. Optionally point agent deliverable
-directories at that mounted volume. Do not create, attach, resize, or remount a
-volume, and do not change this environment variable, without Matthew's explicit
-approval.
+directories at a volume mounted inside the canonical workspace. When the
+artifact directory is outside that workspace (such as `/data/artifacts`), use
+the artifact-store tools; ordinary `writeFile` remains workspace-contained and
+correctly reports those checkout writes as ephemeral. Do not create, attach,
+resize, or remount a volume, and do not change this environment variable,
+without Matthew's explicit approval.
 
 Autonomy mode: a project (`projects`) with `autonomyLevel` in the autonomy modes and a non-empty `autoapproveTools` list may auto-approve only the bounded eligible set (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated tools are never auto-approvable regardless of the list.
 

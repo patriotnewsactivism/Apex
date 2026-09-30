@@ -11,13 +11,20 @@ import { getWorkspaceRoot, resolveInWorkspace } from '@workspace/core/workspace-
 
 const execAsync = promisify(exec);
 
-async function listSandboxFiles(directory: string, prefix = ''): Promise<string[]> {
+const MAX_REPORTED_SANDBOX_FILES = 200;
+
+async function listSandboxFiles(directory: string, prefix = '', limit = MAX_REPORTED_SANDBOX_FILES + 2): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
+    if (files.length >= limit) break;
     const relativePath = prefix ? join(prefix, entry.name) : entry.name;
     if (entry.isDirectory()) {
-      files.push(...await listSandboxFiles(join(directory, entry.name), relativePath));
+      files.push(...await listSandboxFiles(
+        join(directory, entry.name),
+        relativePath,
+        limit - files.length,
+      ));
     } else {
       files.push(relativePath);
     }
@@ -59,6 +66,7 @@ export interface RunSandboxResult {
   exitCode: number;
   sandboxDir: string;
   discardedFiles: string[];
+  discardedFilesTruncated: boolean;
   warning?: string;
 }
 
@@ -88,8 +96,9 @@ export async function handleRunSandbox(payload: RunSandboxPayload): Promise<RunS
   const filePath = join(sandboxDir, fileName);
   await writeFile(filePath, payload.code, 'utf8');
 
-  let executionResult: Omit<RunSandboxResult, 'discardedFiles' | 'warning'>;
+  let executionResult: Omit<RunSandboxResult, 'discardedFiles' | 'discardedFilesTruncated' | 'warning'>;
   let discardedFiles: string[] = [];
+  let discardedFilesTruncated = false;
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd: sandboxDir,
@@ -118,9 +127,16 @@ export async function handleRunSandbox(payload: RunSandboxPayload): Promise<RunS
     };
   } finally {
     try {
-      discardedFiles = (await listSandboxFiles(sandboxDir))
-        .filter((path) => path !== fileName)
+      const generatedFiles = (await listSandboxFiles(sandboxDir))
+        .filter((path) => path !== fileName);
+      discardedFilesTruncated = generatedFiles.length > MAX_REPORTED_SANDBOX_FILES;
+      discardedFiles = generatedFiles
+        .slice(0, MAX_REPORTED_SANDBOX_FILES)
         .sort();
+    } catch (listErr) {
+      console.error('Failed to list discarded sandbox files:', listErr);
+    }
+    try {
       await rm(sandboxDir, { recursive: true, force: true });
     } catch (cleanErr) {
       console.error('Failed to clean up sandbox directory:', cleanErr);
@@ -129,8 +145,9 @@ export async function handleRunSandbox(payload: RunSandboxPayload): Promise<RunS
   return {
     ...executionResult,
     discardedFiles,
-    warning: discardedFiles.length > 0
-      ? `Deleted ${discardedFiles.length} file(s) created in the temporary sandbox. Write deliverables with write_file or the durable artifact tools.`
+    discardedFilesTruncated,
+    warning: discardedFiles.length > 0 || discardedFilesTruncated
+      ? `Deleted ${discardedFiles.length}${discardedFilesTruncated ? '+' : ''} file(s) created in the temporary sandbox. Write deliverables with write_file or the durable artifact tools.`
       : undefined,
   };
 }

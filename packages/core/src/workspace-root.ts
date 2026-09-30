@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 export function findWorkspaceRoot(start: string): string | null {
@@ -52,6 +52,19 @@ export function resolveInWorkspace(root: string, path: string): string {
 
   if (!pathWithin(workspaceRoot, candidate)) {
     throw new Error(`Path outside workspace: ${candidate}`);
+  }
+
+  const realWorkspaceRoot = realpathSync(workspaceRoot);
+  let existingAncestor = candidate;
+  while (!existsSync(existingAncestor)) {
+    const parent = dirname(existingAncestor);
+    if (parent === existingAncestor) break;
+    existingAncestor = parent;
+  }
+  const realAncestor = realpathSync(existingAncestor);
+  const realCandidate = resolve(realAncestor, relative(existingAncestor, candidate));
+  if (!pathWithin(realWorkspaceRoot, realCandidate)) {
+    throw new Error(`Path outside workspace through symlink: ${candidate}`);
   }
   return candidate;
 }
