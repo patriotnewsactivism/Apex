@@ -577,6 +577,21 @@ The autonomous-execution scheduler adds three operator-configured GCP-scoped res
 - `APEX_EXECUTOR_JOB` — optional Cloud Run Jobs resource name (e.g. `apex-executor`) for the legacy external-executor mode. On current Railway production the documented default is `APEX_EXECUTOR_MODE=inprocess`, so unset `APEX_EXECUTOR_JOB` is expected. If the external GCP executor is intentionally reactivated, configure its project/region/image explicitly; it is never the APEX control-plane host and does not change ADR-015's Railway release path.
 - `GITHUB_TOKEN_4` (existing) needs `repo` create scope for `create_github_repo`; `APEX_GITHUB_ORG` defaults to `patriotnewsactivism`.
 
+### Railway filesystem durability (separate operator action)
+
+`writeFile` writes into the canonical checkout and now reports `durable: false`
+unless the resolved path is under `APEX_ARTIFACT_DIR`. A successful write to the
+container filesystem is visible to other agents in that runtime, but does not
+survive a Railway redeploy.
+
+Durability requires a separate, approval-gated operator action that is not part
+of a code release: attach a Railway volume to the existing `apex-backend`
+service (for example at `/data`) and set
+`APEX_ARTIFACT_DIR=/data/artifacts`. Optionally point agent deliverable
+directories at that mounted volume. Do not create, attach, resize, or remount a
+volume, and do not change this environment variable, without Matthew's explicit
+approval.
+
 Autonomy mode: a project (`projects`) with `autonomyLevel` in the autonomy modes and a non-empty `autoapproveTools` list may auto-approve only the bounded eligible set (push/PR, `create_github_repo`, `deploy_via_hook`, `create_workstream`, `run_executor_job`, `publish_artifact`). Hard-gated tools are never auto-approvable regardless of the list.
 
 ### Incidents

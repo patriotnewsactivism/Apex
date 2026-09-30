@@ -1,8 +1,9 @@
 import { access, readFile } from 'fs/promises';
-import { dirname, join, relative, resolve, sep } from 'path';
+import { dirname, join, resolve } from 'path';
 import { db, auditEvents } from '@workspace/db';
 import type { ToolContext } from './types.js';
 import { getBuildInfo } from './runtime-health.js';
+import { findWorkspaceRoot, getWorkspaceRoot, pathWithin, resolveInWorkspace } from './workspace-root.js';
 
 const recordedTasks = new Set<string>();
 
@@ -75,21 +76,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function findWorkspaceRoot(start: string): Promise<string | null> {
-  let current = resolve(start);
-  while (true) {
-    if (
-      (await exists(join(current, 'pnpm-workspace.yaml'))) &&
-      (await exists(join(current, 'package.json')))
-    ) {
-      return current;
-    }
-    const parent = dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
-
 async function findPackageRoot(start: string, stopAt: string): Promise<string | null> {
   let current = resolve(start);
   const stop = resolve(stopAt);
@@ -139,6 +125,9 @@ function extractTargetPath(
   for (const key of candidates) {
     const value = args[key];
     if (typeof value === 'string' && value.trim()) {
+      if (/^\/?workspace(?:\/|$)/.test(value.replaceAll('\\', '/'))) {
+        return resolveInWorkspace(workspaceRoot, value);
+      }
       return resolve(workspaceRoot, value);
     }
   }
@@ -156,11 +145,6 @@ function extractTargetPath(
   }
 
   return null;
-}
-
-function pathWithin(root: string, candidate: string): boolean {
-  const rel = relative(resolve(root), resolve(candidate));
-  return rel === '' || (!rel.startsWith('..') && !rel.startsWith(`..${sep}`) && !rel.includes(`${sep}..${sep}`));
 }
 
 function isMutationTool(name: string): boolean {
@@ -223,13 +207,7 @@ export async function ensureRuntimeProvenance(
   rawArgs: Record<string, unknown>,
   context: ToolContext,
 ): Promise<RuntimeProvenanceResult> {
-  // pnpm --filter starts in the selected package, while the canonical tree is
-  // the containing workspace. Keep an explicit operator root authoritative.
-  const canonicalRoot = resolve(
-    process.env.APEX_CANONICAL_REPO_ROOT?.trim() ||
-    (await findWorkspaceRoot(process.cwd())) ||
-    process.cwd(),
-  );
+  const canonicalRoot = getWorkspaceRoot();
   const contextRoot = resolve(context.workspaceRoot || canonicalRoot);
   const targetPath = extractTargetPath(toolName, rawArgs, contextRoot);
   const targetIsDirectory =
@@ -244,8 +222,8 @@ export async function ensureRuntimeProvenance(
       : dirname(targetPath)
     : contextRoot;
   const detectedRoot =
-    (await findWorkspaceRoot(targetProbe)) ??
-    (await findWorkspaceRoot(contextRoot));
+    findWorkspaceRoot(targetProbe) ??
+    findWorkspaceRoot(contextRoot);
 
   const packageRoot = await findPackageRoot(targetProbe, canonicalRoot);
   // Use the same trusted commit sources as /health, including Railway's

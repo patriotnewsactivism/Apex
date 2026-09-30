@@ -6,7 +6,7 @@ import {
   contactOutreachGates,
   db,
 } from '@workspace/db';
-import { getBuildInfo, paidLLMFallbackEnabled } from '@workspace/core';
+import { getBuildInfo, getWorkspaceRoot, paidLLMFallbackEnabled } from '@workspace/core';
 
 type CountRow = { key: string; count: number };
 
@@ -16,7 +16,7 @@ function countMap(rows: CountRow[]): Record<string, number> {
 
 function canonicalRuntimeSnapshot() {
   const build = getBuildInfo();
-  const repoRoot = process.env.APEX_CANONICAL_REPO_ROOT?.trim() || process.cwd();
+  const repoRoot = getWorkspaceRoot();
   const artifactRoot =
     process.env.APEX_ARTIFACT_DIR?.trim() ||
     (process.env.APEX_ARTIFACT_BUCKET?.trim()

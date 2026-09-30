@@ -5,6 +5,7 @@
   "license": "MIT",
   "scripts": {
     "build": "pnpm run typecheck:production && pnpm --filter @workspace/dashboard run build",
+    "test": "pnpm -r --if-present run test",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:production",
     "typecheck:production": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./packages/**\" --filter \"./scripts\" --filter \"!@workspace/convex-backend\" --filter \"!@workspace/apex-cicd-worker\" --if-present run typecheck",

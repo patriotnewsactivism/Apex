@@ -5,6 +5,7 @@ import { db, agents, approvals, messages, tasks as tasksTable, taskCheckpoints, 
 import { eq, and, desc, inArray } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, llmCapacityAvailableNow, type LLMClient } from './llm-client.js';
 import { getToolRegistry } from './tool-registry.js';
+import { getWorkspaceRoot } from './workspace-root.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
@@ -712,9 +713,9 @@ export abstract class BaseAgent {
       // This is a closed allowlist, not a generic tool/approval bypass.
       const deterministicRead = resolveDeterministicRead(context, this.config.tools, this.config.approvalRequired);
       if (deterministicRead) {
-        const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+        const registry = getToolRegistry();
         const result = await registry.execute(deterministicRead.tool, deterministicRead.args, {
-          agentId: this.config.id, taskId, workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
+          agentId: this.config.id, taskId, workspaceRoot: getWorkspaceRoot(),
           requestApproval: async () => false,
         });
         recordTurnEconomy(result.success ? 'successfulTools' : 'failedTools');
@@ -796,7 +797,7 @@ export abstract class BaseAgent {
         }
       }
 
-      const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+      const registry = getToolRegistry();
       const tools = registry.getLLMToolSchemas(this.config.tools);
 
       // Resolve this task's goal once, up front, instead of re-querying inside
@@ -1177,7 +1178,7 @@ export abstract class BaseAgent {
             agentId: this.config.id,
             taskId,
             goalId: taskGoalId,
-            workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
+            workspaceRoot: getWorkspaceRoot(),
             requestApproval: async (toolName, args, reason) => {
               requiredApprovals++;
               return this.requestHumanApproval(taskId, toolName, args, reason);

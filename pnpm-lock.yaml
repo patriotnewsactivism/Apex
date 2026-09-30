@@ -352,6 +352,9 @@ importers:
       '@workspace/convex-backend':
         specifier: workspace:*
         version: link:../convex-backend
+      '@workspace/core':
+        specifier: workspace:*
+        version: link:../core
       convex:
         specifier: ^1.42.3
         version: 1.42.3(react@19.1.0)

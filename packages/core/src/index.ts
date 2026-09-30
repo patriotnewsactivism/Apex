@@ -23,6 +23,7 @@ export * from './request-ledger.js';
 export * from './spend-ledger.js';
 export * from './provider-credits.js';
 export * from './runtime-health.js';
+export * from './workspace-root.js';
 export * from './agent-supervisor.js';
 export * from './provider-failure.js';
 export * from './opportunity-engine.js';

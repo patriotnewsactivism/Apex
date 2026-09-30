@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { db, researchedLeads, logs, smsMessages, callBridgeSessions, callOutcomes } from '@workspace/db';
 import { eq, or, desc } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
-import { assertOutboundAllowed } from '@workspace/core';
+import { assertOutboundAllowed, getWorkspaceRoot } from '@workspace/core';
 
 // ─── Apex Front Desk — Telnyx AI Assistant tool-calling surface ─────────────
 //
@@ -794,13 +794,13 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
 
       if ((channel === 'email' || channel === 'both') && toEmail) {
         const { getToolRegistry } = await import('@workspace/core');
-        const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+        const registry = getToolRegistry();
         const html = `<p>Hi ${contactName},</p><p>Thanks for calling Apex. This confirms we received your message about: ${reason}.</p><p>Someone will follow up with you shortly.</p><p>— Apex Front Desk</p>`;
         try {
           const result = await registry.execute(
             'send_email',
             { toEmail, toName: contactName === 'there' ? undefined : contactName, subject: 'Apex — we received your message', html },
-            { agentId: 'apex-front-desk', workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(), requestApproval: async () => true },
+            { agentId: 'apex-front-desk', workspaceRoot: getWorkspaceRoot(), requestApproval: async () => true },
           );
           if (result && typeof result === 'object' && 'success' in result && (result as { success?: boolean }).success === false) {
             errors.push(`email: ${(result as { error?: string }).error ?? 'unknown error'}`);
