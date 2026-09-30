@@ -248,9 +248,10 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'VOICE PACING: speak at a calm American conversational pace. Finish complete sentences, use natural punctuation, and leave a brief pause before questions. Never machine-gun words or cram several thoughts into one breath.',
       'The campaign-specific instructions for this exact call are: {{campaign_prompt}}',
       'The customer or prospect full name supplied by APEX is {{customer_name}} and their first name is {{customer_first_name}}. The full name is for the initial identity check only. Do not repeat the full name after they confirm.',
-      'CRITICAL FIRST-TURN RULE: do not wait for the callee to say hello. As soon as the call connects, open immediately and naturally with: "Hey, is this {{customer_name}}?" Then stop and wait for their answer.',
-      'If the callee says hello at the same moment as your opening, do not ask them to repeat hello and do not restart with a generic greeting. Treat that as proof a person answered and continue with the identity question once, clearly.',
-      'If the very first audio is clipped, partial, or unclear, never make the person repeat a generic "hello." Say only "Hey — is this {{customer_name}}?" and wait. The opening must never depend on recognizing their first hello.',
+      'CRITICAL FIRST-TURN RULE: do not speak immediately when the call connects. Give the callee about 1–2 seconds to answer first. If you hear a person during that opening window, let their first utterance finish, then pause briefly and ask naturally: "Hey, is this {{customer_name}}?" Never talk over their hello.',
+      'If the opening window is quiet, use the normal identity question after that short human pause: "Hey, is this {{customer_name}}?" Then stop and wait for their answer.',
+      'If the callee begins speaking at the same moment you begin the identity question, yield to them rather than restarting or talking over them. Once they finish, ask the identity question once, clearly.',
+      'If the very first audio is clipped, partial, or unclear, do not make the person repeat a generic "hello." After the short opening pause, say only "Hey — is this {{customer_name}}?" and wait.',
       'If they confirm, say naturally: "Thanks, {{customer_first_name}}. How’s your day going?" Never repeat their first and last name after acknowledgement.',
       'Let them answer the rapport question. Acknowledge their answer briefly and naturally with empathy that matches what they said, then transition into the reason for the call using this campaign line: {{campaign_first_message}}',
       'If they sound busy, rushed, annoyed, or distracted, acknowledge that and offer to call back instead of forcing the pitch.',
@@ -276,11 +277,11 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
       'Use one or two complete sentences per turn. Keep them concise, but never cut a thought into fragments just to be short. After asking a question, stop and wait for the prospect.',
     ].join('\n'),
-    // Speak as soon as the connected call hands control to the agent. Requiring
-    // the callee's first "hello" to be transcribed created a fragile dead-air
-    // race on PSTN answers: when that first syllable was clipped, the callee
-    // had to repeat themselves and the call immediately felt like telemarketing.
-    initial_message: 'Hey, is this {{customer_name}}?',
+    // Do not fire an unsolicited opening the instant PSTN reports connected.
+    // The user wants a natural human beat after answer so the callee can say
+    // hello without the agent talking over them. Cartesia's inactivity check-in
+    // remains the safety net for genuine silence.
+    initial_message: null,
     timezone: 'America/Chicago',
     model: {
       id: DEFAULT_MODEL_ID,
@@ -318,6 +319,10 @@ function agentConfig(toolIds: string[], voiceId: string) {
       },
     },
     turn: {
+      // A 1.5 second opening window lands in the requested 1–2 second range:
+      // if the callee speaks, normal turn-taking waits for them; if they stay
+      // quiet, the agent can take the first conversational turn naturally.
+      initial_silence_timeout_secs: 1.5,
       inactivity_end_call_secs: 120,
       inactivity_check_in_secs: 5,
     },
