@@ -45,6 +45,7 @@ describe('Cartesia sales webhook boundary', () => {
       ['/tools/lookup-lead', { phone_number: 'not-a-phone' }],
       ['/tools/book-consultation', { slot_time: 'tomorrow at two' }],
       ['/tools/send-demo-link', { phone_number: '+18328804970', demo_type: 'buildmybot_live_demo', consent_to_text: false }],
+      ['/tools/send-requested-followup-email', { call_id: 'ac_test', phone_number: '+18328804970', prospect_email: 'buyer@example.com', follow_up_type: 'buildmybot_overview', requested_by_prospect: false }],
     ] as const;
     for (const [path, body] of cases) {
       const response = await fetch(base + path, { method: 'POST', headers: {
