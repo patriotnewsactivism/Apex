@@ -36,13 +36,13 @@
  * source.
  */
 
-import { createHash } from 'crypto';
-import { accountFingerprint, setObservedAccounts } from './request-ledger.js';
-import { reconcileOpenRouterCreditBalances } from './provider-account-exclusions.js';
+import { createHash } from "crypto";
+import { accountFingerprint, setObservedAccounts } from "./request-ledger.js";
+import { reconcileOpenRouterCreditBalances } from "./provider-account-exclusions.js";
 
-const CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
-const KEY_URL = 'https://openrouter.ai/api/v1/key';
-const KEYS_URL = 'https://openrouter.ai/api/v1/keys';
+const CREDITS_URL = "https://openrouter.ai/api/v1/credits";
+const KEY_URL = "https://openrouter.ai/api/v1/key";
+const KEYS_URL = "https://openrouter.ai/api/v1/keys";
 const REFRESH_MS = 10 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 5_000;
 
@@ -51,18 +51,18 @@ const LOW_BALANCE_USD = 2;
 
 /** Same roster as OPENROUTER_FREE_KEY_ENVS — keep the two lists identical. */
 export const OPENROUTER_CREDIT_KEY_ENVS = [
-  'OPENROUTER_FREE_API_KEY',
-  'OPENROUTER_API_KEY_2',
-  'OPENROUTER_API_KEY',
-  'OPENROUTER_API_KEY_4',
+  "OPENROUTER_FREE_API_KEY",
+  "OPENROUTER_API_KEY_2",
+  "OPENROUTER_API_KEY",
+  "OPENROUTER_API_KEY_4",
 ] as const;
 
 /** One management key per independent OpenRouter account. Cannot infer. */
 export const OPENROUTER_MGMT_KEY_ENVS = [
-  'OPENROUTER_MGMT_KEY',
-  'OPENROUTER_MGMT_KEY_2',
-  'OPENROUTER_MGMT_KEY_3',
-  'OPENROUTER_MGMT_KEY_4',
+  "OPENROUTER_MGMT_KEY",
+  "OPENROUTER_MGMT_KEY_2",
+  "OPENROUTER_MGMT_KEY_3",
+  "OPENROUTER_MGMT_KEY_4",
 ] as const;
 
 export interface ProviderAccountSnapshot {
@@ -80,7 +80,7 @@ export interface ProviderAccountSnapshot {
   totalUsage: number | null;
   isFreeTier: boolean | null;
   dailyLimit: number | null;
-  status: 'ok' | 'low' | 'exhausted' | 'unknown';
+  status: "ok" | "low" | "exhausted" | "unknown";
   detail: string | null;
 }
 
@@ -112,7 +112,7 @@ export interface ProviderCreditSnapshot {
   totalUsage: number;
   /** What is actually left on the most-alarming probed account. */
   remaining: number;
-  status: 'ok' | 'low' | 'exhausted' | 'unknown';
+  status: "ok" | "low" | "exhausted" | "unknown";
   detail: string | null;
   accounts: ProviderAccountSnapshot[];
   management: ProviderManagementSnapshot[];
@@ -121,6 +121,7 @@ export interface ProviderCreditSnapshot {
 let cached: ProviderCreditSnapshot | null = null;
 let inFlight: Promise<void> | null = null;
 let lastAttemptAt = 0;
+const lastKnownAccountByFingerprint = new Map<string, string>();
 
 interface UniqueCredential {
   env: string;
@@ -144,7 +145,10 @@ function configuredInferenceCredentials(): UniqueCredential[] {
   return out;
 }
 
-function configuredManagementCredentials(): Array<{ env: string; key: string }> {
+function configuredManagementCredentials(): Array<{
+  env: string;
+  key: string;
+}> {
   const seen = new Set<string>();
   const out: Array<{ env: string; key: string }> = [];
   for (const env of OPENROUTER_MGMT_KEY_ENVS) {
@@ -158,21 +162,55 @@ function configuredManagementCredentials(): Array<{ env: string; key: string }> 
   return out;
 }
 
-function publicAccountId(creatorUserId: string | null | undefined, keyFingerprint: string): string {
+function publicAccountId(
+  creatorUserId: string | null | undefined,
+  keyFingerprint: string,
+): string {
   if (!creatorUserId || !creatorUserId.trim()) return `keyfp_${keyFingerprint}`;
-  const digest = createHash('sha256').update(creatorUserId.trim()).digest('hex').slice(0, 8);
+  const digest = createHash("sha256")
+    .update(creatorUserId.trim())
+    .digest("hex")
+    .slice(0, 8);
   return `oracct_${digest}`;
 }
 
-function keySha256(apiKey: string): string {
-  return createHash('sha256').update(apiKey).digest('hex');
+export function preserveLastKnownOpenRouterAccounts(
+  credentials: ReadonlyArray<{ fingerprint: string }>,
+  accounts: ReadonlyArray<ProviderAccountSnapshot>,
+): ProviderAccountSnapshot[] {
+  return accounts.map((account, index) => {
+    const fingerprint = credentials[index]?.fingerprint;
+    if (!fingerprint) return account;
+    if (account.account.startsWith("oracct_")) {
+      lastKnownAccountByFingerprint.set(fingerprint, account.account);
+      return account;
+    }
+    const lastKnown = lastKnownAccountByFingerprint.get(fingerprint);
+    if (!lastKnown) return account;
+    return {
+      ...account,
+      account: lastKnown,
+      detail: [
+        account.detail,
+        "using last-known OpenRouter account identity after a transient identity-probe failure",
+      ]
+        .filter(Boolean)
+        .join("; "),
+    };
+  });
 }
 
-function creditStatus(remaining: number | null): ProviderAccountSnapshot['status'] {
-  if (remaining === null || !Number.isFinite(remaining)) return 'unknown';
-  if (remaining <= 0) return 'exhausted';
-  if (remaining < LOW_BALANCE_USD) return 'low';
-  return 'ok';
+function keySha256(apiKey: string): string {
+  return createHash("sha256").update(apiKey).digest("hex");
+}
+
+function creditStatus(
+  remaining: number | null,
+): ProviderAccountSnapshot["status"] {
+  if (remaining === null || !Number.isFinite(remaining)) return "unknown";
+  if (remaining <= 0) return "exhausted";
+  if (remaining < LOW_BALANCE_USD) return "low";
+  return "ok";
 }
 
 async function fetchJson(
@@ -211,43 +249,53 @@ interface OpenRouterCredits {
   total_usage?: number;
 }
 
-async function probeInferenceKey(entry: UniqueCredential): Promise<ProviderAccountSnapshot> {
+async function probeInferenceKey(
+  entry: UniqueCredential,
+): Promise<ProviderAccountSnapshot> {
   const [creditsRes, keyRes] = await Promise.all([
     fetchJson(CREDITS_URL, entry.key),
     fetchJson(KEY_URL, entry.key),
   ]);
 
-  const credits = (creditsRes.ok
+  const credits = creditsRes.ok
     ? ((creditsRes.body as { data?: OpenRouterCredits } | null)?.data ?? null)
-    : null);
-  const meta = (keyRes.ok
+    : null;
+  const meta = keyRes.ok
     ? ((keyRes.body as { data?: OpenRouterKeyMetadata } | null)?.data ?? null)
-    : null);
+    : null;
 
-  const totalCredits = credits && Number.isFinite(Number(credits.total_credits))
-    ? Number(credits.total_credits)
-    : null;
-  const totalUsage = credits && Number.isFinite(Number(credits.total_usage))
-    ? Number(credits.total_usage)
-    : null;
-  const remaining = totalCredits !== null && totalUsage !== null
-    ? Math.round((totalCredits - totalUsage + Number.EPSILON) * 100) / 100
-    : null;
+  const totalCredits =
+    credits && Number.isFinite(Number(credits.total_credits))
+      ? Number(credits.total_credits)
+      : null;
+  const totalUsage =
+    credits && Number.isFinite(Number(credits.total_usage))
+      ? Number(credits.total_usage)
+      : null;
+  const remaining =
+    totalCredits !== null && totalUsage !== null
+      ? Math.round((totalCredits - totalUsage + Number.EPSILON) * 100) / 100
+      : null;
 
   const dailyLimit = Number.isFinite(Number(meta?.rate_limit?.requests))
     ? Number(meta?.rate_limit?.requests)
     : null;
-  const account = publicAccountId(meta?.creator_user_id ?? null, entry.fingerprint);
-  const identityKnown = account.startsWith('oracct_');
+  const account = publicAccountId(
+    meta?.creator_user_id ?? null,
+    entry.fingerprint,
+  );
+  const identityKnown = account.startsWith("oracct_");
 
   const parts: string[] = [];
   if (!creditsRes.ok) parts.push(`credits HTTP ${creditsRes.status}`);
   if (!keyRes.ok) parts.push(`key HTTP ${keyRes.status}`);
   if (!identityKnown && keyRes.ok) {
-    parts.push('OpenRouter did not return creator_user_id; this row cannot prove a distinct account');
+    parts.push(
+      "OpenRouter did not return creator_user_id; this row cannot prove a distinct account",
+    );
   }
   if (remaining !== null && remaining <= 0) {
-    parts.push('paid credits exhausted — :free routing is unaffected');
+    parts.push("paid credits exhausted — :free routing is unaffected");
   }
 
   return {
@@ -256,10 +304,11 @@ async function probeInferenceKey(entry: UniqueCredential): Promise<ProviderAccou
     remaining,
     totalCredits,
     totalUsage,
-    isFreeTier: typeof meta?.is_free_tier === 'boolean' ? meta.is_free_tier : null,
+    isFreeTier:
+      typeof meta?.is_free_tier === "boolean" ? meta.is_free_tier : null,
     dailyLimit,
     status: creditStatus(remaining),
-    detail: parts.length > 0 ? parts.join('; ') : null,
+    detail: parts.length > 0 ? parts.join("; ") : null,
   };
 }
 
@@ -269,13 +318,14 @@ function listedKeyHashes(body: unknown): string[] {
   const rows = Array.isArray(data)
     ? data
     : Array.isArray((data as { keys?: unknown } | null)?.keys)
-      ? ((data as { keys: unknown[] }).keys)
+      ? (data as { keys: unknown[] }).keys
       : [];
   const hashes: string[] = [];
   for (const row of rows) {
-    if (!row || typeof row !== 'object') continue;
+    if (!row || typeof row !== "object") continue;
     const hash = (row as { hash?: unknown }).hash;
-    if (typeof hash === 'string' && hash.length > 0) hashes.push(hash.toLowerCase());
+    if (typeof hash === "string" && hash.length > 0)
+      hashes.push(hash.toLowerCase());
   }
   return hashes;
 }
@@ -284,7 +334,12 @@ async function probeManagementKey(
   entry: { env: string; key: string },
   liveKeyAccounts: ReadonlyMap<string, string>,
 ): Promise<ProviderManagementSnapshot> {
-  const empty = { account: null, remaining: null, totalCredits: null, totalUsage: null };
+  const empty = {
+    account: null,
+    remaining: null,
+    totalCredits: null,
+    totalUsage: null,
+  };
   try {
     const [result, creditsRes] = await Promise.all([
       fetchJson(KEYS_URL, entry.key),
@@ -293,15 +348,18 @@ async function probeManagementKey(
     const credits = creditsRes?.ok
       ? ((creditsRes.body as { data?: OpenRouterCredits } | null)?.data ?? null)
       : null;
-    const totalCredits = credits && Number.isFinite(Number(credits.total_credits))
-      ? Number(credits.total_credits)
-      : null;
-    const totalUsage = credits && Number.isFinite(Number(credits.total_usage))
-      ? Number(credits.total_usage)
-      : null;
-    const remaining = totalCredits !== null && totalUsage !== null
-      ? Math.round((totalCredits - totalUsage) * 100) / 100
-      : null;
+    const totalCredits =
+      credits && Number.isFinite(Number(credits.total_credits))
+        ? Number(credits.total_credits)
+        : null;
+    const totalUsage =
+      credits && Number.isFinite(Number(credits.total_usage))
+        ? Number(credits.total_usage)
+        : null;
+    const remaining =
+      totalCredits !== null && totalUsage !== null
+        ? Math.round((totalCredits - totalUsage) * 100) / 100
+        : null;
     if (!result.ok) {
       return {
         env: entry.env,
@@ -328,8 +386,8 @@ async function probeManagementKey(
       detail: matched
         ? null
         : hashes.length === 0
-          ? 'account listed zero inference keys'
-          : 'no live APEX inference key is a member of this OpenRouter account',
+          ? "account listed zero inference keys"
+          : "no live APEX inference key is a member of this OpenRouter account",
     };
   } catch (error) {
     return {
@@ -337,7 +395,10 @@ async function probeManagementKey(
       listedKeys: 0,
       liveInferenceKeyMatched: false,
       ...empty,
-      detail: error instanceof Error ? error.message : 'management key listing failed',
+      detail:
+        error instanceof Error
+          ? error.message
+          : "management key listing failed",
     };
   }
 }
@@ -361,9 +422,10 @@ function backfillBalances(
       totalCredits: mgmt.totalCredits,
       totalUsage: mgmt.totalUsage,
       status,
-      detail: status === 'exhausted'
-        ? `paid credits exhausted (via ${mgmt.env}) — :free routing is unaffected`
-        : `balance via ${mgmt.env}`,
+      detail:
+        status === "exhausted"
+          ? `paid credits exhausted (via ${mgmt.env}) — :free routing is unaffected`
+          : `balance via ${mgmt.env}`,
     };
   });
 }
@@ -393,35 +455,50 @@ function summarize(
   setObservedAccounts(identities.size > 0 ? identities : null);
 
   const withBalance = accounts.filter((account) => account.remaining !== null);
-  const mostAlarming = withBalance.length > 0
-    ? withBalance.reduce((worst, account) =>
-        (account.remaining ?? 0) < (worst.remaining ?? 0) ? account : worst)
-    : null;
+  const mostAlarming =
+    withBalance.length > 0
+      ? withBalance.reduce((worst, account) =>
+          (account.remaining ?? 0) < (worst.remaining ?? 0) ? account : worst,
+        )
+      : null;
 
   const remaining = mostAlarming?.remaining ?? 0;
-  const status = loadedKeys === 0
-    ? 'unknown'
-    : mostAlarming
-      ? creditStatus(mostAlarming.remaining)
-      : 'unknown';
+  const status =
+    loadedKeys === 0
+      ? "unknown"
+      : mostAlarming
+        ? creditStatus(mostAlarming.remaining)
+        : "unknown";
 
   const parts: string[] = [];
   if (loadedKeys === 0) {
-    parts.push('no OpenRouter inference key configured');
+    parts.push("no OpenRouter inference key configured");
   } else {
-    parts.push(`${loadedKeys} live key${loadedKeys === 1 ? '' : 's'} across ${uniqueAccounts} OpenRouter account${uniqueAccounts === 1 ? '' : 's'}`);
-  }
-  if (sharedQuota) {
-    parts.push('two or more keys share one OpenRouter account and therefore one :free daily bucket');
-  }
-  const unmatchedMgmt = management.filter((row) => !row.liveInferenceKeyMatched);
-  if (unmatchedMgmt.length > 0 && management.length > 0) {
     parts.push(
-      `${unmatchedMgmt.map((row) => row.env).join(', ')} did not list a live APEX inference key`,
+      `${loadedKeys} live key${loadedKeys === 1 ? "" : "s"} across ${uniqueAccounts} OpenRouter account${uniqueAccounts === 1 ? "" : "s"}`,
     );
   }
-  if (mostAlarming && mostAlarming.remaining !== null && mostAlarming.remaining <= 0) {
-    parts.push('at least one account has exhausted paid credits — :free routing is unaffected');
+  if (sharedQuota) {
+    parts.push(
+      "two or more keys share one OpenRouter account and therefore one :free daily bucket",
+    );
+  }
+  const unmatchedMgmt = management.filter(
+    (row) => !row.liveInferenceKeyMatched,
+  );
+  if (unmatchedMgmt.length > 0 && management.length > 0) {
+    parts.push(
+      `${unmatchedMgmt.map((row) => row.env).join(", ")} did not list a live APEX inference key`,
+    );
+  }
+  if (
+    mostAlarming &&
+    mostAlarming.remaining !== null &&
+    mostAlarming.remaining <= 0
+  ) {
+    parts.push(
+      "at least one account has exhausted paid credits — :free routing is unaffected",
+    );
   }
 
   return {
@@ -433,7 +510,7 @@ function summarize(
     totalUsage: mostAlarming?.totalUsage ?? 0,
     remaining,
     status,
-    detail: parts.join('. ') + (parts.length > 0 ? '.' : ''),
+    detail: parts.join(". ") + (parts.length > 0 ? "." : ""),
     accounts,
     management,
   };
@@ -448,17 +525,20 @@ async function fetchCredits(): Promise<void> {
 
   const accounts = await Promise.all(
     inference.map((entry) =>
-      probeInferenceKey(entry).catch((error): ProviderAccountSnapshot => ({
-        env: entry.env,
-        account: `keyfp_${entry.fingerprint}`,
-        remaining: null,
-        totalCredits: null,
-        totalUsage: null,
-        isFreeTier: null,
-        dailyLimit: null,
-        status: 'unknown',
-        detail: error instanceof Error ? error.message : 'account lookup failed',
-      })),
+      probeInferenceKey(entry).catch(
+        (error): ProviderAccountSnapshot => ({
+          env: entry.env,
+          account: `keyfp_${entry.fingerprint}`,
+          remaining: null,
+          totalCredits: null,
+          totalUsage: null,
+          isFreeTier: null,
+          dailyLimit: null,
+          status: "unknown",
+          detail:
+            error instanceof Error ? error.message : "account lookup failed",
+        }),
+      ),
     ),
   );
 
@@ -466,18 +546,33 @@ async function fetchCredits(): Promise<void> {
   // credential it came from — which is the only place the key fingerprint and
   // the OpenRouter account id are both in hand. The fingerprint stays here and
   // never reaches the authenticated health-detail payload.
+  const accountsWithKnownIdentities = preserveLastKnownOpenRouterAccounts(
+    inference,
+    accounts,
+  );
   const identities = new Map<string, string>(
-    inference.map((entry, index) => [entry.fingerprint, accounts[index].account]),
+    inference.map((entry, index) => [
+      entry.fingerprint,
+      accountsWithKnownIdentities[index].account,
+    ]),
   );
 
   const liveKeyAccounts = new Map<string, string>(
-    inference.map((entry, index) => [keySha256(entry.key), accounts[index].account]),
+    inference.map((entry, index) => [
+      keySha256(entry.key),
+      accountsWithKnownIdentities[index].account,
+    ]),
   );
   const management = await Promise.all(
-    configuredManagementCredentials().map((entry) => probeManagementKey(entry, liveKeyAccounts)),
+    configuredManagementCredentials().map((entry) =>
+      probeManagementKey(entry, liveKeyAccounts),
+    ),
   );
 
-  const accountsWithBalances = backfillBalances(accounts, management);
+  const accountsWithBalances = backfillBalances(
+    accountsWithKnownIdentities,
+    management,
+  );
   reconcileOpenRouterCreditBalances(accountsWithBalances);
   cached = summarize(accountsWithBalances, management, identities);
 }
@@ -508,4 +603,9 @@ export async function initializeProviderCredits(): Promise<ProviderCreditSnapsho
   lastAttemptAt = Date.now();
   await fetchCredits();
   return cached;
+}
+
+/** Test-only reset for deterministic identity-refresh coverage. */
+export function __resetProviderCreditIdentityCacheForTest(): void {
+  lastKnownAccountByFingerprint.clear();
 }
