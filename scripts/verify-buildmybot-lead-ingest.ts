@@ -11,6 +11,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
+import { withMockProvenanceAudit } from './mock-provenance-audit.js';
 
 const TOKEN = "super-secret-ingest-token";
 
@@ -616,7 +617,7 @@ async function main(): Promise<void> {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main().catch((err) => {
+withMockProvenanceAudit(main).catch((err) => {
   console.warn = originalWarn;
   console.error(err);
   process.exit(1);

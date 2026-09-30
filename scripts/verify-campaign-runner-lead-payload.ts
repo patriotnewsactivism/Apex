@@ -255,11 +255,12 @@ async function main(): Promise<void> {
     locksmithTerms.every((value) => /locksmith/i.test(value)),
     locksmithTerms,
   );
-  const solarTerms = unknownIndustry.subcategoriesForIndustry('Solar Installers');
+  // Solar is now a canonical industry; use an unmapped fixture.
+  const unmappedTerms = unknownIndustry.subcategoriesForIndustry('Clock Restorers');
   check(
     'an unmapped industry still stays industry-specific instead of falling back to arbitrary companies',
-    solarTerms.every((value) => /solar installer/i.test(value)),
-    solarTerms,
+    unmappedTerms.every((value) => /clock restorers/i.test(value)),
+    unmappedTerms,
   );
 
   console.log(

@@ -7,6 +7,7 @@
  *
  * Usage: pnpm --filter @workspace/core exec tsx scripts/verify-approval-policy.ts
  */
+import { withMockProvenanceAudit } from './mock-provenance-audit.js';
 // Force the BuildMyBot/CaseBuddy connectors to register their tool
 // definitions even in an environment with no real credentials configured, so
 // the "registry consistency" check below actually inspects the real
@@ -240,7 +241,7 @@ async function main(): Promise<void> {
   console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures} FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);
 }
-main().catch((err) => {
+withMockProvenanceAudit(main).catch((err) => {
   console.error(err);
   process.exit(1);
 });

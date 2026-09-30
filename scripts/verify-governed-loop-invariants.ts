@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const root = process.cwd();
+const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
 let failures = 0;
 
 const read = (p: string) => fs.readFileSync(path.join(root, p), 'utf8');

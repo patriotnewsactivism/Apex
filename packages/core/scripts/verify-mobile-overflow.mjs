@@ -72,6 +72,7 @@ const DRAWER = [
   { id: 'suggestions', label: 'Suggestions' },
   { id: 'multiapp', label: 'Portfolio' },
   { id: 'control', label: 'Control Room' },
+  { id: 'verify-scale', label: 'Verify & Scale' },
   { id: 'artifacts', label: 'Artifacts' },
   { id: 'scheduled', label: 'Cron Registry' },
   { id: 'health', label: 'Health' },
@@ -92,7 +93,7 @@ const NAV_ID_TO_LABEL = {
   command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals',
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
   'sales-ops': 'Revenue Operations', leads: 'Prospects', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
-  multiapp: 'Portfolio', control: 'Control Room', artifacts: 'Artifacts',
+  multiapp: 'Portfolio', control: 'Control Room', 'verify-scale': 'Verify & Scale', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
 };

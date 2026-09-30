@@ -56,7 +56,8 @@ check(
 
 check(
   'Cartesia outbound payload preserves the live account-compatible request-level telephony controls',
-  /JSON\.stringify\(\{[\s\S]{0,220}from_number_id:\s*fromNumberId[\s\S]{0,220}ringing_timeout_seconds:/.test(client) &&
+  // Comments before the fields must not change this structural assertion.
+  /JSON\.stringify\(\{[\s\S]*?from_number_id:\s*fromNumberId[\s\S]*?ringing_timeout_seconds:[\s\S]*?outbound_calls:/.test(client) &&
     /outbound_calls:\s*\[\{[\s\S]{0,180}to_number:\s*toNumber[\s\S]{0,180}dynamic_variables:\s*dynamicVariables/.test(client),
 );
 check(
@@ -197,7 +198,7 @@ check(
 );
 check(
   'BuildMyBot sales pitch follows a first-name rapport and empathy step',
-  /version:\s*6/.test(playbooks) &&
+  Number(/version:\s*(\d+)/.exec(playbooks)?.[1]) >= 6 &&
     /firstMessage:\s*'The reason I called is pretty simple\./.test(playbooks) &&
     /acknowledge them by first name once, ask how their day is going, and give their answer a brief empathetic response/.test(playbooks) &&
     /What do you normally do when a call comes in and nobody can answer\?/.test(playbooks) &&
