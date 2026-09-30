@@ -149,7 +149,7 @@ Before production deployment:
 3. Confirm the exact commit intended for release.
 4. Push/merge that exact reviewed commit to `main`; Railway is the production deployment authority and its GitHub trigger is configured to wait for CI.
 5. Confirm Railway service `apex-backend` reports a successful deployment for that commit (GitHub status `APEX - apex-backend`).
-6. Verify `/health.build.sha` equals the released commit and `taskQueue.verdict` is healthy.
+6. Verify public `GET /health` reports the released commit in `build.sha`, then verify authenticated `GET /api/health/detail` reports a healthy `taskQueue.verdict`.
 7. Smoke-test the changed production path.
 8. Record anything that remains unverified.
 
