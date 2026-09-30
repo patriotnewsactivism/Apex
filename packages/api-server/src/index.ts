@@ -468,6 +468,7 @@ async function main() {
   // Health Monitor & Alert Manager setup
   const healthMonitor = new HealthMonitor({
     getConfiguredProviders,
+    llmCapacityAvailableNow,
     getDegradedToolCalling: () => getDegradedToolCallingReport(),
     getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
     wsChecker: () => ({ serverRunning: server.listening, connectedClients: getConnectedClientCount() }),

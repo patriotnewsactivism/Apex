@@ -27,8 +27,27 @@ The ordinary production chain is:
 
 `railway.toml` fixes the build to the repository `Dockerfile` and the health
 check to `/health`. Railway injects `RAILWAY_GIT_COMMIT_SHA`; current
-`packages/core/src/runtime-health.ts` reports `APEX_BUILD_SHA` when explicitly
-provided, otherwise that Railway commit SHA, otherwise `unknown`.
+`packages/core/src/runtime-health.ts` reports a known `APEX_BUILD_SHA` when
+explicitly provided, otherwise that Railway commit SHA, otherwise `unknown`.
+Empty values, whitespace and the image's default `unknown` are placeholders
+and do not mask Railway's commit. The autonomous mutation gate uses the same
+resolver, so its recorded commit agrees with `/health.build.sha`.
+
+The runtime image sets `WORKSPACE_ROOT=/app` and
+`APEX_CANONICAL_REPO_ROOT=/app`. `pnpm --filter` starts the server inside its
+package directory; that directory is not the canonical repository root.
+Without an explicit canonical root, the gate discovers the containing pnpm
+workspace. Explicit operator roots remain authoritative.
+
+## Diagnosing blocked autonomous tools
+
+Read the exact `Runtime provenance gate blocked` reasons. A production write
+requires a known deployed commit, `DATABASE_URL`, a durable artifact root
+(`APEX_ARTIFACT_DIR` on a mounted volume or `APEX_ARTIFACT_BUCKET`), and a
+successful durable audit write. Repair those preconditions in the existing
+Railway service; do not fabricate a build SHA or disable the gate. Writes to
+`node_modules`, outside the canonical tree, or into shadow workspaces remain
+blocked. Edit `packages/<package>/src` or `lib/db/src` in the canonical tree.
 
 ## What `/health` proves
 

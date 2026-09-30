@@ -164,16 +164,18 @@ COPY --from=builder /app/packages/dashboard/dist ./packages/dashboard/dist
 COPY *.md ./
 
 # ─── Build provenance ────────────────────────────────────────────────────────
-# Baked in so /health can report exactly which commit is running. Without this,
-# a mutable `:latest` tag makes "is my fix actually deployed?" unanswerable
-# without a redeploy — which cost hours on 2026-08-19. Pass from CodeBuild:
-#   --build-arg APEX_BUILD_SHA=$CODEBUILD_RESOLVED_SOURCE_VERSION
-#   --build-arg APEX_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# Defaults to 'unknown' so an un-updated buildspec still builds (and says so).
+# An explicit build argument takes priority when supplied. On Railway the
+# runtime falls back to RAILWAY_GIT_COMMIT_SHA; the default 'unknown' is only a
+# placeholder and must never mask that platform-provided commit.
 ARG APEX_BUILD_SHA=unknown
 ARG APEX_BUILD_TIME=
 ENV APEX_BUILD_SHA=$APEX_BUILD_SHA
 ENV APEX_BUILD_TIME=$APEX_BUILD_TIME
+
+# pnpm --filter runs start from /app/packages/api-server. Agent paths and the
+# provenance gate must agree on the containing canonical workspace.
+ENV WORKSPACE_ROOT=/app
+ENV APEX_CANONICAL_REPO_ROOT=/app
 
 # Local execution sandboxes live here. Durable application state is in
 # Supabase Postgres.

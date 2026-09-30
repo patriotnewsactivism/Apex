@@ -51,7 +51,7 @@ If the exact configured service cannot be found or accessed, deployment stops. A
 **Status:** Accepted  
 **Last confirmed:** 2026-08-28
 
-Commit-SHA provenance remains the release invariant. On current Railway production, `packages/core/src/runtime-health.ts` reports explicit `APEX_BUILD_SHA` first and Railway's injected `RAILWAY_GIT_COMMIT_SHA` as the production fallback. The retired Cloud Run migration-back path still uses `cloudbuild.apex.yaml` to bake `APEX_BUILD_SHA` into an immutable image.
+Commit-SHA provenance remains the release invariant. On current Railway production, `packages/core/src/runtime-health.ts` reports a known explicit `APEX_BUILD_SHA` first and Railway's injected `RAILWAY_GIT_COMMIT_SHA` as the production fallback. Empty/whitespace/`unknown` image placeholders do not mask the platform commit. The autonomous mutation gate shares this resolver and still requires durable artifact/database/audit evidence. The retired Cloud Run migration-back path still uses `cloudbuild.apex.yaml` to bake `APEX_BUILD_SHA` into an immutable image.
 
 Production is considered released only when the public health endpoint reports the expected SHA.
 

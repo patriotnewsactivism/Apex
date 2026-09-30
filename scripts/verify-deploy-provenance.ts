@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { checkRetiredHostingInstructions } from './verify-retired-hosting-instructions.js';
+import { getBuildInfo } from '../packages/core/src/runtime-health.js';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -74,18 +75,43 @@ const runtimeHealth = fs.readFileSync(
 );
 check(
   'the running commit is recoverable from /health on Railway',
-  /process\.env\.APEX_BUILD_SHA \|\| process\.env\.RAILWAY_GIT_COMMIT_SHA \|\| 'unknown'/.test(
-    runtimeHealth,
-  ),
+  runtimeHealth.includes('process.env.RAILWAY_GIT_COMMIT_SHA'),
 );
 check(
   'an explicit build SHA still outranks the Railway inferred SHA',
   runtimeHealth.indexOf('APEX_BUILD_SHA') < runtimeHealth.indexOf('RAILWAY_GIT_COMMIT_SHA'),
 );
 
+const savedBuildSha = process.env.APEX_BUILD_SHA;
+const savedRailwaySha = process.env.RAILWAY_GIT_COMMIT_SHA;
+try {
+  process.env.RAILWAY_GIT_COMMIT_SHA = 'railway-commit';
+  for (const placeholder of ['', ' ', 'unknown', ' UNKNOWN ']) {
+    process.env.APEX_BUILD_SHA = placeholder;
+    check(`image placeholder ${JSON.stringify(placeholder)} does not mask Railway`, getBuildInfo().sha === 'railway-commit');
+  }
+  process.env.APEX_BUILD_SHA = 'reviewed-build';
+  check('a known explicit build SHA wins', getBuildInfo().sha === 'reviewed-build');
+  delete process.env.APEX_BUILD_SHA;
+  delete process.env.RAILWAY_GIT_COMMIT_SHA;
+  check('absent build evidence remains unknown', getBuildInfo().sha === 'unknown');
+} finally {
+  if (savedBuildSha === undefined) delete process.env.APEX_BUILD_SHA;
+  else process.env.APEX_BUILD_SHA = savedBuildSha;
+  if (savedRailwaySha === undefined) delete process.env.RAILWAY_GIT_COMMIT_SHA;
+  else process.env.RAILWAY_GIT_COMMIT_SHA = savedRailwaySha;
+}
+
+const runtimeProvenance = fs.readFileSync(path.join(root, 'packages/core/src/runtime-provenance.ts'), 'utf8');
+check('the mutation gate uses the same deployed commit as health', runtimeProvenance.includes('const expectedSha = getBuildInfo().sha'));
+
 console.log('\n── Runtime image ABI ──');
 
 const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
+check(
+  'the image keeps agent and provenance roots at the containing workspace',
+  /^ENV WORKSPACE_ROOT=\/app$/m.test(dockerfile) && /^ENV APEX_CANONICAL_REPO_ROOT=\/app$/m.test(dockerfile),
+);
 const stageBases = [...dockerfile.matchAll(/^FROM\s+(\S+)\s+AS\s+(\S+)/gm)].map((m) => ({
   image: m[1],
   stage: m[2],
