@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 const DERIVATION_CONTEXT = 'apex-cartesia-sales-auth-v1';
 
-export const CARTESIA_SALES_TOOL_NAMES = [
+const CARTESIA_SALES_TOOL_BASE_NAMES = [
   'lookup_lead_info_v3',
   'capture_and_qualify_lead_v2',
   'check_calendar_availability_v2',
@@ -40,4 +40,24 @@ export function cartesiaCredentialMode(): 'explicit' | 'derived' | 'missing' {
     return 'explicit';
   }
   return process.env.CARTESIA_API_KEY?.trim() ? 'derived' : 'missing';
+}
+
+
+/**
+ * Cartesia webhook-tool authentication is write-only/immutable after creation.
+ * Include a non-secret fingerprint of the effective bearer credential in each
+ * canonical tool name. If Railway or the Cartesia API credential rotates, APEX
+ * automatically creates a fresh authenticated tool generation and reattaches
+ * the canonical agent instead of silently reusing stale credentials.
+ */
+export function cartesiaSalesToolNames(): readonly string[] {
+  const secret = cartesiaToolSecret();
+  const generation = secret
+    ? crypto.createHash('sha256').update(secret).digest('hex').slice(0, 8)
+    : 'missing';
+  return CARTESIA_SALES_TOOL_BASE_NAMES.map((name) => `${name}_${generation}`);
+}
+
+export function cartesiaSalesToolBaseNames(): readonly string[] {
+  return CARTESIA_SALES_TOOL_BASE_NAMES;
 }
