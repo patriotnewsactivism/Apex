@@ -77,6 +77,7 @@ async function main(): Promise<void> {
     ['Portland Oregon veterinary clinic contact phone', 'portland oregon'],
     ['pest control company Orlando FL family owned official website contact', 'orlando fl'],
     ['top rated news & newspapers San Francisco, CA', 'san francisco, ca'],
+    ['near me news & newspapers San Francisco, CA', 'san francisco, ca'],
     ['open now radio stations Austin, TX', 'austin, tx'],
   ] as const) {
     const { matchedKeywords } = osmTagFiltersForQuery(query);
@@ -295,6 +296,11 @@ async function main(): Promise<void> {
   check(
     'TomTom is exposed in Settings → Business Search so a migrated deployment can restore the key',
     /id: 'business-search'[\s\S]{0,1600}key: 'TOMTOM_API_KEY'/.test(settingsSrc),
+  );
+  const campaignRunnerSrc = fs.readFileSync(path.join(root, 'packages/background-jobs/src/campaign-runner.ts'), 'utf8');
+  check(
+    'when no fast providers are configured, campaign discovery uses the keyless directory fallback without launching a guaranteed-fail webSearch',
+    /if \(!hasFastWeb && !hasFastStructured\)[\s\S]{0,500}first = await runDirectory\(\)/.test(campaignRunnerSrc),
   );
 
 
