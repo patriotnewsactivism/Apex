@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import express from 'express';
 import { createServer, type Server } from 'node:http';
 import { createCartesiaSalesRouter, isExplicitOptOut, secretMatches } from './cartesia-sales.js';
-import { cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
+import { cartesiaSalesToolNames, cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
 
 describe('Cartesia sales webhook boundary', () => {
   let server: Server;
@@ -53,6 +53,11 @@ describe('Cartesia sales webhook boundary', () => {
     expect(tool).not.toBe(webhook);
     expect(tool).toBe(cartesiaToolSecret());
     expect(webhook).toBe(cartesiaWebhookSecret());
+    const firstGeneration = cartesiaSalesToolNames();
+    expect(firstGeneration).toHaveLength(7);
+    expect(firstGeneration.every((name) => /_[0-9a-f]{8}$/.test(name))).toBe(true);
+    process.env.CARTESIA_API_KEY = 'rotated-test-cartesia-api-key';
+    expect(cartesiaSalesToolNames()).not.toEqual(firstGeneration);
   });
 
   it('validates phone, booking, and consent input before external effects', async () => {
