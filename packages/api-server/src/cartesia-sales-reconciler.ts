@@ -5,7 +5,7 @@ import {
   clearCartesiaSalesResolutionCache,
   resolveCartesiaSalesVoiceId,
 } from '@workspace/core';
-import { CARTESIA_SALES_TOOL_NAMES, cartesiaCredentialMode, cartesiaToolSecret, cartesiaWebhookSecret } from './cartesia-sales-auth.js';
+import { cartesiaCredentialMode, cartesiaSalesToolNames, cartesiaToolSecret, cartesiaWebhookSecret } from './cartesia-sales-auth.js';
 
 const CARTESIA_API = 'https://api.cartesia.ai';
 const TOOL_BASE_URL = 'https://apex.donmatthews.live/api/cartesia';
@@ -115,9 +115,10 @@ function webhookTool(
 }
 
 function desiredTools(toolSecret: string) {
+  const toolNames = cartesiaSalesToolNames();
   return [
     webhookTool(
-      CARTESIA_SALES_TOOL_NAMES[0],
+      toolNames[0],
       'lookup-lead',
       'Retrieve CRM context when needed. Answer short replies such as yes immediately. If do_not_contact is true, end politely without pitching or recording a new opt-out.',
       {
@@ -127,7 +128,7 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
-      CARTESIA_SALES_TOOL_NAMES[1],
+      toolNames[1],
       'capture-and-qualify-lead',
       'Save confirmed prospect details and qualification context after the caller has actually provided or confirmed them. Never invent missing fields.',
       {
@@ -147,7 +148,7 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
-      CARTESIA_SALES_TOOL_NAMES[2],
+      toolNames[2],
       'check-calendar-availability',
       'Check real consultation availability before offering appointment times. Use only resolved calendar dates in the prospect time zone and offer only returned slots.',
       {
@@ -162,7 +163,7 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
-      CARTESIA_SALES_TOOL_NAMES[3],
+      toolNames[3],
       'book-consultation',
       'Book a consultation only after the prospect explicitly agrees to a slot returned by check_calendar_availability. Say it is confirmed only when booked is true.',
       {
@@ -178,7 +179,7 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
-      CARTESIA_SALES_TOOL_NAMES[4],
+      toolNames[4],
       'send-demo-link',
       'Text a fixed BuildMyBot or APEX link only after the prospect explicitly agrees to receive a text. Never set consent_to_text true without that agreement.',
       {
@@ -197,7 +198,7 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
-      CARTESIA_SALES_TOOL_NAMES[5],
+      toolNames[5],
       'send-requested-followup-email',
       'Send one follow-up email only after the prospect explicitly asks for an email and confirms the address. This is a one-time requested response, not consent to an email campaign. Never claim it was sent unless the tool returns sent=true.',
       {
@@ -218,7 +219,7 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
-      CARTESIA_SALES_TOOL_NAMES[6],
+      toolNames[6],
       'record-outcome',
       'Record the real call outcome. Use dnc only after a clear request to stop contact, and include the exact spoken opt-out words in opt_out_quote. A yes, no, or not interested is not an opt-out.',
       {
@@ -238,6 +239,7 @@ function desiredTools(toolSecret: string) {
 }
 
 function agentConfig(toolIds: string[], voiceId: string) {
+  const toolNames = cartesiaSalesToolNames();
   return {
     instructions: [
       'You are Don, a clearly identified AI sales assistant for BuildMyBot.app and APEX Work Solutions at apexwork.org.',
@@ -261,14 +263,14 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'If speech recognition returns any unexpected goodbye phrase that does not fit the conversation, do not hang up immediately. Confirm once and wait for the answer.',
       'Only treat a goodbye as final when it is clear in context or the person confirms they are ending the call.',
       'If the person says yes, yep, yeah, sure, okay, speaking, this is, or otherwise confirms they are the person, acknowledge with "Thanks, {{customer_first_name}}. How’s your day going?" Let them answer, acknowledge it briefly, then move into the reason for the call. Do not call a tool first.',
-      `Use ${CARTESIA_SALES_TOOL_NAMES[0]} only if you need additional CRM context. A normal affirmative answer is not an opt-out.`,
+      `Use ${toolNames[0]} only if you need additional CRM context. A normal affirmative answer is not an opt-out.`,
       'Never invent a price, integration, customer result, guarantee, appointment, case study, or action that a tool did not confirm.',
       'Only a clear request to stop future calls or messages is an opt-out. Never infer DNC from yes, no, silence, a short reply, or declining the offer. If unclear, ask one brief clarifying question.',
-      `On an explicit opt-out, call ${CARTESIA_SALES_TOOL_NAMES[6]} with dnc and opt_out_quote containing the exact spoken words; acknowledge it and end. If CRM lookup reports do_not_contact, end politely without writing a new DNC.`,
-      `Ask for explicit permission before using ${CARTESIA_SALES_TOOL_NAMES[4]}. Never claim a text was delivered if the tool says it failed.`,
-      `If the prospect asks you to email them, confirm the email address aloud once, then call ${CARTESIA_SALES_TOOL_NAMES[5]} immediately. Do not route that request through ${CARTESIA_SALES_TOOL_NAMES[1]}, do not say you cannot send email before trying the tool, and do not treat the request as general marketing consent. Say it was sent only when the tool returns sent=true.`,
-      `Offer only calendar slots returned by ${CARTESIA_SALES_TOOL_NAMES[2]}. Call ${CARTESIA_SALES_TOOL_NAMES[3]} only after the prospect agrees to one. A booking is confirmed only when booked is true.`,
-      `Before a normal call ends, record the real disposition with ${CARTESIA_SALES_TOOL_NAMES[6]}.`,
+      `On an explicit opt-out, call ${toolNames[6]} with dnc and opt_out_quote containing the exact spoken words; acknowledge it and end. If CRM lookup reports do_not_contact, end politely without writing a new DNC.`,
+      `Ask for explicit permission before using ${toolNames[4]}. Never claim a text was delivered if the tool says it failed.`,
+      `If the prospect asks you to email them, confirm the email address aloud once, then call ${toolNames[5]} immediately. Do not route that request through ${toolNames[1]}, do not say you cannot send email before trying the tool, and do not treat the request as general marketing consent. Say it was sent only when the tool returns sent=true.`,
+      `Offer only calendar slots returned by ${toolNames[2]}. Call ${toolNames[3]} only after the prospect agrees to one. A booking is confirmed only when booked is true.`,
+      `Before a normal call ends, record the real disposition with ${toolNames[6]}.`,
       'If the prospect asks for Matthew or a human, or a human handoff would clearly help, use the transfer tool.',
       'When a tool is slow, briefly say what you are checking and allow interruption. If a tool fails, continue honestly instead of claiming success.',
       'Everything you say is spoken aloud. Use plain spoken prose, no markdown, no JSON, and no stage directions.',
@@ -576,7 +578,7 @@ export async function reconcileCartesiaSalesAgent(): Promise<void> {
     clearCartesiaSalesResolutionCache();
 
     console.log(
-      `[cartesia-sales] Canonical outbound ready: agent=${agentId}; tools=${toolIds.length}/${CARTESIA_SALES_TOOL_NAMES.length}; auth=${cartesiaCredentialMode()}; webhook=${webhookId}; caller=${APEX_CARTESIA_CALLER_NUMBER}; numberId=${outbound.id}; telephony=${outbound.providerType}; voice=Don Matthews (${voiceId})`,
+      `[cartesia-sales] Canonical outbound ready: agent=${agentId}; tools=${toolIds.length}/${cartesiaSalesToolNames().length}; auth=${cartesiaCredentialMode()}; webhook=${webhookId}; caller=${APEX_CARTESIA_CALLER_NUMBER}; numberId=${outbound.id}; telephony=${outbound.providerType}; voice=Don Matthews (${voiceId})`,
     );
     await diagnoseTelnyxSipAudio();
   } catch (err) {
