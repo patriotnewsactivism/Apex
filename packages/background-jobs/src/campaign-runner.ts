@@ -1088,7 +1088,11 @@ export class CampaignRunner {
       // TomTom/OSM chain when web discovery is empty. This avoids leaving
       // dozens of 20–25 second fallback requests running after Tavily already
       // produced a usable lead set.
-      const hasFastWeb = Boolean(process.env.TAVILY_API_KEY || process.env.BRAVE_SEARCH_API_KEY);
+      const hasFastWeb = Boolean(
+        process.env.TAVILY_API_KEY ||
+        process.env.BRAVE_SEARCH_API_KEY ||
+        (process.env.BUILDMYBOT_TAVILY_PROXY_URL && process.env.BUILDMYBOT_TAVILY_PROXY_SECRET),
+      );
       const hasFastStructured = Boolean(process.env.YELP_API_KEY || process.env.GOOGLE_PLACES_API_KEY);
 
       let first: DiscoveryCandidate;
