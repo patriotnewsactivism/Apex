@@ -196,6 +196,27 @@ function desiredTools(toolSecret: string) {
       toolSecret,
     ),
     webhookTool(
+      'send_requested_followup_email',
+      'send-requested-followup-email',
+      'Send one follow-up email only after the prospect explicitly asks for an email and confirms the address. This is a one-time requested response, not consent to an email campaign. Never claim it was sent unless the tool returns sent=true.',
+      {
+        call_id: dynamic('string', 'system__conversation_id'),
+        phone_number: dynamic('string', 'system__called_number'),
+        prospect_email: modelString('Email address the prospect stated and then confirmed.'),
+        prospect_name: modelString('Prospect name if known.'),
+        follow_up_type: modelString('Which requested overview to send.', {
+          enum: ['buildmybot_overview', 'apex_overview'],
+        }),
+        requested_by_prospect: {
+          type: 'boolean',
+          description: 'Set true only when the prospect explicitly asks to receive an email during this call.',
+          enum: [true],
+        },
+      },
+      ['call_id', 'phone_number', 'prospect_email', 'follow_up_type', 'requested_by_prospect'],
+      toolSecret,
+    ),
+    webhookTool(
       'record_call_outcome_v2',
       'record-outcome',
       'Record the real call outcome. Use dnc only after a clear request to stop contact, and include the exact spoken opt-out words in opt_out_quote. A yes, no, or not interested is not an opt-out.',
@@ -244,6 +265,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Only a clear request to stop future calls or messages is an opt-out. Never infer DNC from yes, no, silence, a short reply, or declining the offer. If unclear, ask one brief clarifying question.',
       'On an explicit opt-out, call record_call_outcome_v2 with dnc and opt_out_quote containing the exact spoken words; acknowledge it and end. If CRM lookup reports do_not_contact, end politely without writing a new DNC.',
       'Ask for explicit permission before using send_demo_link. Never claim a text was delivered if the tool says it failed.',
+      'If the prospect asks you to email them, confirm the email address aloud once, then call send_requested_followup_email immediately. Do not route that request through capture_and_qualify_lead, do not say you cannot send email before trying the tool, and do not treat the request as general marketing consent. Say it was sent only when the tool returns sent=true.',
       'Offer only calendar slots returned by check_calendar_availability. Call book_consultation only after the prospect agrees to one. A booking is confirmed only when booked is true.',
       'Before a normal call ends, record the real disposition with record_call_outcome_v2.',
       'If the prospect asks for Matthew or a human, or a human handoff would clearly help, use the transfer tool.',
