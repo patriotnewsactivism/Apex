@@ -962,10 +962,10 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
       const credentialId = `${provider.name}:${credential.env}`;
       if (credentialCooldown(credentialId)) return false;
       if (!isOpenRouterProvider(provider)) return true;
-      return (
-        !getOpenRouterAccountExclusion(credential.key, { paid: provider.paid }) &&
-        accountCapacityWindow(credential.key).allowed
-      );
+      if (getOpenRouterAccountExclusion(credential.key, { paid: provider.paid })) {
+        return false;
+      }
+      return provider.paid === true || accountCapacityWindow(credential.key).allowed;
     });
     if (usableCredentials.length === 0) continue;
 

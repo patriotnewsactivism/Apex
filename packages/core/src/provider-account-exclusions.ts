@@ -1,9 +1,6 @@
-import {
-  accountFingerprint,
-  observedAccountFor,
-} from './request-ledger.js';
+import { accountFingerprint, observedAccountFor } from "./request-ledger.js";
 
-const COMPONENT_PREFIX = 'llm-provider-account-exclusion:';
+const COMPONENT_PREFIX = "llm-provider-account-exclusion:";
 const CREDIT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MS = 30_000;
 
@@ -12,12 +9,12 @@ const DAILY_QUOTA_PATTERN =
 const CREDIT_EXHAUSTED_PATTERN =
   /\b(payment required|insufficient credits?|credits? exhausted|no credits?|negative balance|billing required)\b/i;
 
-export type OpenRouterAccountExclusionScope = 'all' | 'paid';
+export type OpenRouterAccountExclusionScope = "all" | "paid";
 export type OpenRouterAccountExclusionKind =
-  | 'credit_exhausted'
-  | 'credit_balance'
-  | 'daily_quota'
-  | 'rate_limit';
+  | "credit_exhausted"
+  | "credit_balance"
+  | "daily_quota"
+  | "rate_limit";
 
 export interface OpenRouterAccountExclusion {
   account: string;
@@ -54,8 +51,8 @@ function accountIdForKey(apiKey: string): string {
 
 function sanitizeReason(reason: string): string {
   return reason
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[redacted credential]')
-    .replace(/\s+/g, ' ')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted credential]")
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, 240);
 }
@@ -81,25 +78,27 @@ function publicExclusion(entry: StoredExclusion): OpenRouterAccountExclusion {
   };
 }
 
-function isStoredExclusion(value: unknown): value is OpenRouterAccountExclusion {
-  if (!value || typeof value !== 'object') return false;
+function isStoredExclusion(
+  value: unknown,
+): value is OpenRouterAccountExclusion {
+  if (!value || typeof value !== "object") return false;
   const entry = value as Partial<OpenRouterAccountExclusion>;
   return (
-    typeof entry.account === 'string' &&
-    (entry.scope === 'all' || entry.scope === 'paid') &&
-    (
-      entry.kind === 'credit_exhausted' ||
-      entry.kind === 'credit_balance' ||
-      entry.kind === 'daily_quota' ||
-      entry.kind === 'rate_limit'
-    ) &&
-    typeof entry.reason === 'string' &&
-    typeof entry.excludedAt === 'string' &&
-    (entry.resumeAt === null || typeof entry.resumeAt === 'string')
+    typeof entry.account === "string" &&
+    (entry.scope === "all" || entry.scope === "paid") &&
+    (entry.kind === "credit_exhausted" ||
+      entry.kind === "credit_balance" ||
+      entry.kind === "daily_quota" ||
+      entry.kind === "rate_limit") &&
+    typeof entry.reason === "string" &&
+    typeof entry.excludedAt === "string" &&
+    (entry.resumeAt === null || typeof entry.resumeAt === "string")
   );
 }
 
-function fromPublicExclusion(entry: OpenRouterAccountExclusion): StoredExclusion | null {
+function fromPublicExclusion(
+  entry: OpenRouterAccountExclusion,
+): StoredExclusion | null {
   const excludedAt = Date.parse(entry.excludedAt);
   const until = entry.resumeAt === null ? null : Date.parse(entry.resumeAt);
   if (!Number.isFinite(excludedAt)) return null;
@@ -116,10 +115,10 @@ function fromPublicExclusion(entry: OpenRouterAccountExclusion): StoredExclusion
 }
 
 async function persistExclusion(entry: StoredExclusion): Promise<void> {
-  if (process.env.NODE_ENV === 'test') return;
+  if (process.env.NODE_ENV === "test") return;
   try {
     const [{ db, componentHealth }] = await Promise.all([
-      import('@workspace/db'),
+      import("@workspace/db"),
     ]);
     const now = new Date();
     const exclusion = publicExclusion(entry);
@@ -127,7 +126,7 @@ async function persistExclusion(entry: StoredExclusion): Promise<void> {
       .insert(componentHealth)
       .values({
         component: `${COMPONENT_PREFIX}${entry.account}`,
-        status: 'degraded',
+        status: "degraded",
         detail: `${entry.kind}: ${entry.reason}`,
         lastCheckTime: now,
         consecutiveFailures: 1,
@@ -139,7 +138,7 @@ async function persistExclusion(entry: StoredExclusion): Promise<void> {
       .onConflictDoUpdate({
         target: componentHealth.component,
         set: {
-          status: 'degraded',
+          status: "degraded",
           detail: `${entry.kind}: ${entry.reason}`,
           lastCheckTime: now,
           consecutiveFailures: 1,
@@ -156,11 +155,11 @@ async function persistExclusion(entry: StoredExclusion): Promise<void> {
 }
 
 async function removePersistedExclusion(account: string): Promise<void> {
-  if (process.env.NODE_ENV === 'test') return;
+  if (process.env.NODE_ENV === "test") return;
   try {
     const [{ db, componentHealth }, { eq }] = await Promise.all([
-      import('@workspace/db'),
-      import('drizzle-orm'),
+      import("@workspace/db"),
+      import("drizzle-orm"),
     ]);
     await db
       .delete(componentHealth)
@@ -179,8 +178,8 @@ function deleteExclusion(account: string): void {
 function setExclusion(entry: StoredExclusion): void {
   const existing = exclusions.get(entry.account);
   if (existing) {
-    const existingScopeRank = existing.scope === 'all' ? 2 : 1;
-    const nextScopeRank = entry.scope === 'all' ? 2 : 1;
+    const existingScopeRank = existing.scope === "all" ? 2 : 1;
+    const nextScopeRank = entry.scope === "all" ? 2 : 1;
     const existingUntil = existing.until ?? Number.POSITIVE_INFINITY;
     const nextUntil = entry.until ?? Number.POSITIVE_INFINITY;
     if (
@@ -232,22 +231,22 @@ export function classifyOpenRouterAccountFailure(
   message: string,
   now: number = Date.now(),
   retryAfterMs?: number,
-): Omit<StoredExclusion, 'account'> | null {
+): Omit<StoredExclusion, "account"> | null {
   const reason = sanitizeReason(message);
   let kind: OpenRouterAccountExclusionKind;
   let until: number;
 
   if (status === 402 || CREDIT_EXHAUSTED_PATTERN.test(message)) {
-    kind = 'credit_exhausted';
+    kind = "credit_exhausted";
     until = now + CREDIT_COOLDOWN_MS;
   } else if (
     DAILY_QUOTA_PATTERN.test(message) &&
     (status === 401 || status === 403 || status === 429 || status === undefined)
   ) {
-    kind = 'daily_quota';
+    kind = "daily_quota";
     until = nextUtcMidnight(now);
   } else if (status === 429) {
-    kind = 'rate_limit';
+    kind = "rate_limit";
     until = now + RATE_LIMIT_COOLDOWN_MS;
   } else {
     return null;
@@ -257,7 +256,7 @@ export function classifyOpenRouterAccountFailure(
     until = Math.max(until, now + Math.max(0, retryAfterMs));
   }
   return {
-    scope: 'all',
+    scope: "all",
     kind,
     status: status ?? null,
     reason: reason || kind,
@@ -294,7 +293,7 @@ export function getOpenRouterAccountExclusion(
 ): OpenRouterAccountExclusion | null {
   const entry = exclusionForKey(apiKey, options.now ?? Date.now());
   if (!entry) return null;
-  if (entry.scope === 'paid' && options.paid !== true) return null;
+  if (entry.scope === "paid" && options.paid !== true) return null;
   return publicExclusion(entry);
 }
 
@@ -306,20 +305,21 @@ export function reconcileOpenRouterCreditBalances(
   now: number = Date.now(),
 ): void {
   for (const account of accounts) {
-    if (account.remaining === null || !Number.isFinite(account.remaining)) continue;
+    if (account.remaining === null || !Number.isFinite(account.remaining))
+      continue;
     const existing = activeExclusionByAccount(account.account, now);
     if (account.remaining <= 0) {
-      if (existing?.scope === 'all') continue;
+      if (existing?.scope === "all") continue;
       setExclusion({
         account: account.account,
-        scope: 'paid',
-        kind: 'credit_balance',
+        scope: "paid",
+        kind: "credit_balance",
         status: null,
-        reason: 'OpenRouter account balance is not positive',
+        reason: "OpenRouter account balance is not positive",
         excludedAt: now,
         until: null,
       });
-    } else if (existing?.kind === 'credit_balance') {
+    } else if (existing?.kind === "credit_balance") {
       deleteExclusion(account.account);
     }
   }
@@ -329,14 +329,14 @@ export function getOpenRouterAccountExclusionReport(
   credentials: ReadonlyArray<{ env: string; key: string }> = [],
   now: number = Date.now(),
 ): {
-  persistence: 'postgres+memory' | 'memory-only';
+  persistence: "postgres+memory" | "memory-only";
   exclusions: Array<OpenRouterAccountExclusion & { credentials: string[] }>;
 } {
   const active = [...exclusions.values()]
     .map((entry) => activeExclusionByAccount(entry.account, now))
     .filter((entry): entry is StoredExclusion => entry !== null);
   return {
-    persistence: persistenceReady ? 'postgres+memory' : 'memory-only',
+    persistence: persistenceReady ? "postgres+memory" : "memory-only",
     exclusions: active.map((entry) => ({
       ...publicExclusion(entry),
       credentials: credentials
@@ -352,16 +352,18 @@ export async function initializeProviderAccountExclusions(
 ): Promise<boolean> {
   try {
     const [{ db, componentHealth }, { like }] = await Promise.all([
-      import('@workspace/db'),
-      import('drizzle-orm'),
+      import("@workspace/db"),
+      import("drizzle-orm"),
     ]);
     const rows = await db
       .select()
       .from(componentHealth)
       .where(like(componentHealth.component, `${COMPONENT_PREFIX}%`));
     for (const row of rows) {
-      const metadata = row.metadata as Partial<ProviderAccountHealthMetadata> | null;
-      if (metadata?.version !== 1 || !isStoredExclusion(metadata.exclusion)) continue;
+      const metadata =
+        row.metadata as Partial<ProviderAccountHealthMetadata> | null;
+      if (metadata?.version !== 1 || !isStoredExclusion(metadata.exclusion))
+        continue;
       const entry = fromPublicExclusion(metadata.exclusion);
       if (!entry) continue;
       if (entry.until !== null && entry.until <= now) {
