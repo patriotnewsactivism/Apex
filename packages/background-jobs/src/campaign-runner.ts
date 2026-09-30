@@ -596,6 +596,11 @@ export class CampaignRunner {
    */
   private async enrichVerifiedContactsFromSearch(limit: number): Promise<void> {
     if (this.contactSearchRunning) return;
+    // This lane is specifically a Tavily/Brave recovery pass. When neither
+    // provider is configured, do not issue guaranteed-fail searches for every
+    // candidate on every interval; first-party crawling remains active in the
+    // normal lead pipeline and this lane resumes automatically once a key is set.
+    if (!process.env.TAVILY_API_KEY && !process.env.BRAVE_SEARCH_API_KEY) return;
     const nowMs = Date.now();
     const intervalMs = Math.max(15_000, Number(process.env.LEAD_CONTACT_SEARCH_INTERVAL_MS ?? 60_000));
     if (nowMs < this.contactSearchBackoffUntil) return;
