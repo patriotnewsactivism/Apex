@@ -583,7 +583,7 @@ const OSM_CATEGORY_TAGS: ReadonlyArray<{ keywords: readonly string[]; tags: read
 const OSM_GENERIC_WORDS = new Set([
   'agency', 'agencies', 'company', 'companies', 'service', 'services', 'shop', 'shops',
   'contractor', 'contractors', 'business', 'businesses', 'firm', 'firms', 'llc', 'inc',
-  'near', 'in', 'around', 'local', 'best', 'top', 'rated', 'open', 'now', 'licensed', 'family', 'owned',
+  'near', 'me', 'in', 'around', 'local', 'best', 'top', 'rated', 'open', 'now', 'licensed', 'family', 'owned',
   'phone', 'website', 'contact', 'address', '24/7', '24', 'hour', 'hours',
   'clinic', 'clinics', 'center', 'centre', 'official', 'about', 'us', 'team',
   'news', 'media', 'and', '&',
