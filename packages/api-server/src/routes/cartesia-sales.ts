@@ -4,6 +4,7 @@ import { and, desc, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, callOutcomes, providerEvents, researchedLeads, smsMessages, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
 import { createQueuedEmailSend, deliverQueuedEmailSend, evaluateOutboundAction } from '@workspace/core';
+import { cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
 
 // Cartesia HTTP tools and lifecycle events are different credentials. Both
 // routes fail closed until the operator configures their respective secrets.
@@ -34,8 +35,8 @@ export function secretMatches(received: unknown, expected: string | undefined): 
 
 function authorized(req: Request, kind: 'tool' | 'event'): boolean {
   return kind === 'tool'
-    ? secretMatches(req.headers.authorization?.replace(/^Bearer\s+/i, ''), process.env.CARTESIA_TOOL_SECRET)
-    : secretMatches(req.headers['x-webhook-secret'], process.env.CARTESIA_WEBHOOK_SECRET);
+    ? secretMatches(req.headers.authorization?.replace(/^Bearer\s+/i, ''), cartesiaToolSecret())
+    : secretMatches(req.headers['x-webhook-secret'], cartesiaWebhookSecret());
 }
 
 const outcomeId = (callId: string) => `cartesia:${callId}`;
