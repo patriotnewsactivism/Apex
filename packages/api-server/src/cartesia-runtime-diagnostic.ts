@@ -1,14 +1,8 @@
+import { CARTESIA_SALES_TOOL_NAMES } from './cartesia-sales-auth.js';
+
 const CARTESIA_VERSION = '2026-08-14';
 const CARTESIA_API = 'https://api.cartesia.ai';
-const EXPECTED_SALES_TOOLS = [
-  'lookup_lead_info_v2',
-  'capture_and_qualify_lead',
-  'check_calendar_availability',
-  'book_consultation',
-  'send_demo_link',
-  'send_requested_followup_email',
-  'record_call_outcome_v2',
-] as const;
+const EXPECTED_SALES_TOOLS = CARTESIA_SALES_TOOL_NAMES;
 const EVENT_WEBHOOK_URL = 'https://apex.donmatthews.live/api/cartesia/events';
 
 type CartesiaList<T> = {
