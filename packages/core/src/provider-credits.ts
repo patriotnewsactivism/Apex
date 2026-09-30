@@ -38,6 +38,7 @@
 
 import { createHash } from 'crypto';
 import { accountFingerprint, setObservedAccounts } from './request-ledger.js';
+import { reconcileOpenRouterCreditBalances } from './provider-account-exclusions.js';
 
 const CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
 const KEY_URL = 'https://openrouter.ai/api/v1/key';
@@ -476,7 +477,9 @@ async function fetchCredits(): Promise<void> {
     configuredManagementCredentials().map((entry) => probeManagementKey(entry, liveKeyAccounts)),
   );
 
-  cached = summarize(backfillBalances(accounts, management), management, identities);
+  const accountsWithBalances = backfillBalances(accounts, management);
+  reconcileOpenRouterCreditBalances(accountsWithBalances);
+  cached = summarize(accountsWithBalances, management, identities);
 }
 
 /**

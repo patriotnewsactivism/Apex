@@ -12,7 +12,6 @@ import { callGeminiInteractions } from './gemini-interactions.js';
 import {
   getTokenLedgerSnapshot,
   isTotalDailyCapReached,
-  msUntilDailyReset,
   recordTokenUsage,
   reserveProviderTokenCapacity,
   reserveTotalTokenCapacity,
@@ -34,6 +33,12 @@ import {
   reserveProviderRequest,
   type DirectRequestPool,
 } from './request-ledger.js';
+import {
+  classifyOpenRouterAccountFailure,
+  excludeOpenRouterAccountForFailure,
+  getOpenRouterAccountExclusion,
+  getOpenRouterAccountExclusionReport as buildOpenRouterAccountExclusionReport,
+} from './provider-account-exclusions.js';
 import { recordSpend } from './spend-ledger.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
@@ -657,12 +662,9 @@ const COOLDOWN_429_MS = 30_000;
  * full rate-limit cooldown blacks out every agent on APEX's single OpenRouter
  * credential for 30s over one slow response. */
 const COOLDOWN_TIMEOUT_MS = 5_000;
-const COOLDOWN_402_MS = 6 * 60 * 60 * 1000;
 const COOLDOWN_AUTH_MS = 10 * 60 * 1000;
 const COOLDOWN_404_MS = 10 * 60 * 1000;
 const COOLDOWN_413_MS = 15 * 60 * 1000;
-const DAILY_QUOTA_PATTERN =
-  /\b(per[\s-]?day|daily|tokens per day|tpd|quota exhausted|daily limit|free tier|free quota)\b/i;
 
 function recordProviderFailure(
   provider: string,
@@ -684,16 +686,15 @@ export function parseRetryAfterMs(value: string | null, now: number = Date.now()
 }
 
 function cooldownMs(status: number | undefined, message: string): number {
-  if (status === 402) return COOLDOWN_402_MS;
+  const accountFailure = classifyOpenRouterAccountFailure(status, message);
+  if (accountFailure?.until !== null && accountFailure?.until !== undefined) {
+    return Math.max(0, accountFailure.until - Date.now());
+  }
   if (status === 401 || status === 403) {
-    if (/free.?tier.?only|allocationquota|free quota|quota exhausted/i.test(message)) {
-      return msUntilDailyReset();
-    }
     return COOLDOWN_AUTH_MS;
   }
   if (status === 404) return COOLDOWN_404_MS;
   if (status === 413) return COOLDOWN_413_MS;
-  if (status === 429 && DAILY_QUOTA_PATTERN.test(message)) return msUntilDailyReset();
   if (status === undefined && /request timed out|aborted/i.test(message)) {
     return COOLDOWN_TIMEOUT_MS;
   }
@@ -704,12 +705,7 @@ export function isAccountQuotaFailure(
   status: number | undefined,
   message: string,
 ): boolean {
-  return (
-    status === 429 ||
-    status === 402 ||
-    ((status === 401 || status === 403) &&
-      /free.?tier.?only|allocationquota|free quota|quota exhausted/i.test(message))
-  );
+  return classifyOpenRouterAccountFailure(status, message) !== null;
 }
 
 export function isCapacityFailure(
@@ -772,36 +768,6 @@ function setCredentialCooldown(
 
 function clearCredentialCooldown(id: string): void {
   credentialCooldowns.delete(id);
-}
-
-const accountCooldowns = new Map<string, CredentialCooldown>();
-
-function accountCooldown(apiKey: string): CredentialCooldown | null {
-  const fingerprint = accountFingerprint(apiKey);
-  const cooldown = accountCooldowns.get(fingerprint);
-  if (!cooldown) return null;
-  if (Date.now() >= cooldown.until) {
-    accountCooldowns.delete(fingerprint);
-    return null;
-  }
-  return cooldown;
-}
-
-function setAccountCooldown(
-  apiKey: string,
-  status: number | undefined,
-  message: string,
-  retryAfterMs?: number,
-): void {
-  const duration = Math.max(cooldownMs(status, message), retryAfterMs ?? 0);
-  const fingerprint = accountFingerprint(apiKey);
-  const existing = accountCooldowns.get(fingerprint);
-  const until = Date.now() + duration;
-  accountCooldowns.set(fingerprint, {
-    until: Math.max(existing?.until ?? 0, until),
-    capacityPause: true,
-    reason: message.slice(0, 240),
-  });
 }
 
 function providerMinIntervalMs(provider: ProviderSpec): number {
@@ -995,9 +961,9 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
     const usableCredentials = configuredCredentials(provider).filter((credential) => {
       const credentialId = `${provider.name}:${credential.env}`;
       if (credentialCooldown(credentialId)) return false;
-      if (!isOpenRouterProvider(provider) || provider.paid) return true;
+      if (!isOpenRouterProvider(provider)) return true;
       return (
-        !accountCooldown(credential.key) &&
+        !getOpenRouterAccountExclusion(credential.key, { paid: provider.paid }) &&
         accountCapacityWindow(credential.key).allowed
       );
     });
@@ -1701,18 +1667,20 @@ class MultiProviderClient {
               }
 
               const accountLock =
-                isOpenRouterProvider(provider) && !provider.paid
-                  ? accountCooldown(credential.key)
+                isOpenRouterProvider(provider)
+                  ? getOpenRouterAccountExclusion(credential.key, {
+                      paid: provider.paid,
+                    })
                   : null;
               if (accountLock) {
-                skipReasons.push(`${credentialId}: account in cooldown`);
-                if (accountLock.capacityPause) {
-                  capacityBlocks.push({
-                    source: credential.env,
-                    resumeAt: new Date(accountLock.until).toISOString(),
-                    reason: accountLock.reason,
-                  });
-                }
+                skipReasons.push(
+                  `${credentialId}: OpenRouter account excluded (${accountLock.kind}; ${accountLock.reason})`,
+                );
+                capacityBlocks.push({
+                  source: accountLock.account,
+                  resumeAt: accountLock.resumeAt,
+                  reason: accountLock.reason,
+                });
                 continue;
               }
 
@@ -1869,12 +1837,13 @@ class MultiProviderClient {
                 if (shouldCooldownCredential(status, message)) {
                   setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 }
-                if (
-                  isOpenRouterProvider(provider) &&
-                  !provider.paid &&
-                  isAccountQuotaFailure(status, message)
-                ) {
-                  setAccountCooldown(credential.key, status, message, err.retryAfterMs);
+                if (isOpenRouterProvider(provider)) {
+                  excludeOpenRouterAccountForFailure(
+                    credential.key,
+                    status,
+                    message,
+                    err.retryAfterMs,
+                  );
                 }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
@@ -1883,13 +1852,19 @@ class MultiProviderClient {
                   nonCapacityFailureSeen = true;
                 }
                 const newCooldown =
-                  credentialCooldown(credentialId) ??
-                  (isOpenRouterProvider(provider) ? accountCooldown(credential.key) : null);
-                if (newCooldown?.capacityPause) {
+                  credentialCooldown(credentialId);
+                const newAccountExclusion = isOpenRouterProvider(provider)
+                  ? getOpenRouterAccountExclusion(credential.key, {
+                      paid: provider.paid,
+                    })
+                  : null;
+                if (newCooldown?.capacityPause || newAccountExclusion) {
                   capacityBlocks.push({
-                    source: credentialId,
-                    resumeAt: new Date(newCooldown.until).toISOString(),
-                    reason: message.slice(0, 240),
+                    source: newAccountExclusion?.account ?? credentialId,
+                    resumeAt:
+                      newAccountExclusion?.resumeAt ??
+                      (newCooldown ? new Date(newCooldown.until).toISOString() : null),
+                    reason: newAccountExclusion?.reason ?? message.slice(0, 240),
                   });
                 } else if (capacityFailure) {
                   // Timeouts/aborts deliberately do not poison a credential,
@@ -2279,6 +2254,19 @@ export function getConfiguredProviders(): Array<{
     configured: providerConfigured(provider),
     enabled: providerActivationIssue(provider) === null,
   }));
+}
+
+export function getProviderAccountExclusionReport() {
+  const envNames = new Set(
+    PROVIDERS
+      .filter(isOpenRouterProvider)
+      .flatMap((provider) => provider.apiKeyEnvs),
+  );
+  return buildOpenRouterAccountExclusionReport(
+    [...envNames]
+      .map((env) => ({ env, key: process.env[env] ?? '' }))
+      .filter(({ key }) => Boolean(key)),
+  );
 }
 
 export function getProviderRoster(): {

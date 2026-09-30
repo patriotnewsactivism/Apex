@@ -41,9 +41,9 @@ import { dirname } from 'path';
  * An account is identified by a fingerprint of its KEY, not by the env var
  * holding it.
  *
- * This matters because the two are not one-to-one. APEX reads OpenRouter keys
- * from OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY, OPENROUTER_API_KEY_2,
- * OPENROUTER_API_KEY_3, and OPENROUTER_API_KEY_4. Extra env names for the same
+ * This matters because the two are not one-to-one. APEX's active OpenRouter
+ * roster reads OPENROUTER_FREE_API_KEY, OPENROUTER_API_KEY,
+ * OPENROUTER_API_KEY_2, and OPENROUTER_API_KEY_4. Extra env names for the same
  * key or account are credential redundancy, not extra capacity. Keying on the env name would split one
  * account's spend across several rows, so a per-account cap of 1,000 set on
  * two names that hold the same key would authorize 2,000 requests against an
@@ -89,9 +89,9 @@ const LEDGER_PATH =
 const UTC_DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Conservative workspace default. Actual account capacity is resolved from
- *  the live OpenRouter account identities reported by the credit probe. The
- *  credential roster includes OPENROUTER_API_KEY_3 and _4; duplicate keys or
- *  multiple keys from one account still collapse into one quota bucket. */
+ *  the live OpenRouter account identities reported by the credit probe.
+ *  Duplicate keys or multiple keys from one account still collapse into one
+ *  quota bucket. */
 const DEFAULT_TOTAL_CAP = 2_775;
 /** Enough to get real work done immediately after a restart without letting a
  *  startup swarm eat the morning. ~1.4h of the steady-state rate. */

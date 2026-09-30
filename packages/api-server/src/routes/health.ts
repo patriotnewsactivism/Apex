@@ -40,10 +40,15 @@ export function createHealthRouter(
   // recent failures, and structured-tool-call degradation telemetry.
   router.get('/providers', async (_req, res) => {
     try {
-      const { getProviderFailureReport, getDegradedToolCallingReport, getConfiguredProviders } =
-        await import('@workspace/core');
+      const {
+        getProviderFailureReport,
+        getDegradedToolCallingReport,
+        getConfiguredProviders,
+        getProviderAccountExclusionReport,
+      } = await import('@workspace/core');
       res.json({
         configured: getConfiguredProviders(),
+        accountExclusions: getProviderAccountExclusionReport(),
         recentFailures: getProviderFailureReport(),
         degradedToolCalling: getDegradedToolCallingReport(),
       });

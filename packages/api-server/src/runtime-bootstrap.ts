@@ -24,6 +24,7 @@ import {
   initializeRequestLedgerPersistence,
   initializeSpendLedgerPersistence,
   initializeProviderCredits,
+  initializeProviderAccountExclusions,
   logProviderRoster,
   startWorkerHeartbeat,
   type AgentSupervisorHandle,
@@ -96,6 +97,12 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   } else if (credits) {
     log(`✅ OpenRouter credits: $${credits.remaining} remaining`);
   }
+  const durableProviderExclusions = await initializeProviderAccountExclusions();
+  log(
+    durableProviderExclusions
+      ? '✅ OpenRouter account exclusions hydrated from Postgres'
+      : '⚠️  OpenRouter account exclusions are memory-only; restarts may readmit exhausted accounts',
+  );
 
   // Money, and therefore the budget that most needs to survive a restart:
   // Cloud Run replaces the container on every deploy, so a memory-only spend
