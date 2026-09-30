@@ -22,6 +22,7 @@ export * from './token-ledger.js';
 export * from './request-ledger.js';
 export * from './spend-ledger.js';
 export * from './provider-credits.js';
+export * from './provider-account-exclusions.js';
 export * from './runtime-health.js';
 export * from './workspace-root.js';
 export * from './agent-supervisor.js';

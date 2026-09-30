@@ -25,6 +25,10 @@ const check = (label: string, condition: boolean, detail?: unknown) => {
 
 const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
 const clientSource = fs.readFileSync(path.join(root, 'packages/core/src/llm-client.ts'), 'utf8');
+const accountExclusionSource = fs.readFileSync(
+  path.join(root, 'packages/core/src/provider-account-exclusions.ts'),
+  'utf8',
+);
 
 const openRouterProviders = [
   'openrouter-nex-n2-5-mini-free',
@@ -203,9 +207,10 @@ console.log('\n── Capacity/failure behavior ──');
 check('HTTP 402 is a capacity failure', isCapacityFailure(402, 'Payment required') === true);
 check('HTTP 429 is an account quota failure', isAccountQuotaFailure(429, 'rate limit') === true);
 check(
-  'OpenRouter account quota failures rotate/cool the account without poisoning direct providers',
-  /isOpenRouterProvider\(provider\)[\s\S]{0,160}!provider\.paid[\s\S]{0,160}isAccountQuotaFailure/.test(clientSource) &&
-    /setAccountCooldown\(credential\.key/.test(clientSource),
+  'OpenRouter quota failures exclude resolved accounts across routes and persist them',
+  /isOpenRouterProvider\(provider\)[\s\S]{0,200}excludeOpenRouterAccountForFailure/.test(clientSource) &&
+    /observedAccountFor\(fingerprint\)/.test(accountExclusionSource) &&
+    /componentHealth/.test(accountExclusionSource),
 );
 check(
   'every upstream attempt is reserved before callProvider',

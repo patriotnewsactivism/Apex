@@ -24,6 +24,7 @@ import {
   initializeRequestLedgerPersistence,
   initializeSpendLedgerPersistence,
   initializeProviderCredits,
+  initializeProviderAccountExclusions,
   logProviderRoster,
   startWorkerHeartbeat,
   type AgentSupervisorHandle,
@@ -90,6 +91,16 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // memory-only request budget would hand the workforce a fresh full allowance
   // after each one. On a day with three deploys that is three days of spend
   // authorized against a one-day provider quota.
+  // Hydrate exclusions before probing balances. A fresh positive management
+  // balance must be able to clear a persisted paid-only exclusion from the
+  // previous process; loading that stale row after the probe would reapply it.
+  const durableProviderExclusions = await initializeProviderAccountExclusions();
+  log(
+    durableProviderExclusions
+      ? '✅ OpenRouter account exclusions hydrated from Postgres'
+      : '⚠️  OpenRouter account exclusions are memory-only; restarts may readmit exhausted accounts',
+  );
+
   const credits = await initializeProviderCredits();
   if (credits && credits.status !== 'ok') {
     warn(`⚠️  OpenRouter credits: ${credits.status} ($${credits.remaining} left) — ${credits.detail ?? ''}`);

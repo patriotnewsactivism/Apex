@@ -207,7 +207,7 @@ is how the overrun went unnoticed:
 | `projected` | Requests/day at today's rate. **This is the number to compare against the provider allowance.** `null` before 00:15 UTC, when too little has elapsed to extrapolate honestly |
 | `releasedSoFar` | How much of the cap the pacing ramp has released so far today |
 | `lastMinute` / `ratePerMinute` | Requests in the last 60s against the short-window limit. **Watch this, not just `used`** — a day fully under budget can still be spent in half an hour |
-| `accounts[]` | Per-KEY split. APEX reads OpenRouter keys from `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and `OPENROUTER_API_KEY_4`. Env names holding the same key collapse into one row. Two rows can still be one account — read `openRouterAccount` for that |
+| `accounts[]` | Per-KEY split. The active OpenRouter roster reads `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, and `OPENROUTER_API_KEY_4`. Env names holding the same key collapse into one row. Two rows can still be one account — read `openRouterAccount` for that |
 | `accounts[].requests` | What this KEY served. Not a capacity figure on its own |
 | `accounts[].openRouterAccount` | Which OpenRouter user the key belongs to (`oracct_…`, or `null` before the credit probe resolves it). **Rows sharing this value share one 1,000/day bucket** |
 | `accounts[].accountRequests` | Requests today across every key on that account — what the free tier actually meters, and the number credentials are sorted on. Compare THIS between distinct `openRouterAccount` values to judge balance |
@@ -271,17 +271,23 @@ model at once — confirmed live on 2026-09-12 by an HTTP 429 carrying
 `limit_source: openrouter_free_tier_daily`. Adding more free *models* buys
 nothing against it (all three rungs went into cooldown together, because they
 draw on one bucket); adding a key for another account buys a whole extra
-1,000/day. `OPENROUTER_API_KEY_3` and `OPENROUTER_API_KEY_4` are both wired for exactly that — set either slot and load
-balancing picks the account up with no other change. It has to be a key from an
+1,000/day. `OPENROUTER_API_KEY_4` is the remaining optional independent-account
+slot; `OPENROUTER_API_KEY_3` is deliberately absent because it duplicated the
+free-key account. Any new slot has to hold a key from an
 account APEX does not already hold: a second key on an existing account raises
 neither the ceiling nor the throughput, and `providerCredits.sharedQuota: true`
 is how that mistake announces itself.
 
-There is no paid credential list. The $10 historical deposit on each qualifying
-account exists only to lift its `:free` tier from ~200/day to 1,000/day.
-Spending that balance on paid tokens is how the retired chain reached HTTP 402
-on 2026-09-12 while three accounts' free allowance sat unused. A 402 now cools
-that account and rotates; it cannot select a paid model.
+The ordinary OpenRouter roster is free-only; `OPENROUTER_API_KEY_4` is also the
+single explicit FlashX paid-continuity credential. The $10 historical deposit
+on other qualifying accounts exists only to lift their `:free` tier from
+~200/day to 1,000/day. Spending those balances on paid tokens is how the retired
+chain reached HTTP 402 on 2026-09-12 while three accounts' free allowance sat
+unused. A 402 now excludes the resolved account — every sibling key and route —
+for six hours (or longer `Retry-After`) and rotates. Daily free-quota responses
+exclude it until UTC midnight. These exclusions persist in `component_health`
+across restarts and are reported by authenticated
+`GET /api/health/providers`.
 
 Note also that some free models are gated: `thinkingmachines/inkling:free` and
 `inkling-small:free` return `403 — only available on agentic harnesses` for
@@ -344,15 +350,16 @@ provider credit; HTTP 402 from OpenRouter is still authoritative.
 
 Current runtime routing order:
 
-1. `nex-agi/nex-n2.5-mini:free`
-2. `nex-agi/nex-n2.5-pro:free`
-3. `nvidia/nemotron-3-super-120b-a12b:free`
-4. `nvidia/nemotron-3.5-lightning:free`
-5. `openrouter/free`
-6. `nvidia/nemotron-3-ultra-550b-a55b:free`
-7. direct Groq GPT-OSS 120B BYOK when enabled
-8. direct Gemini 3.8 Flash BYOK when enabled
-9. `z-ai/glm-5.3-flashx` paid continuity
+1. QwenCloud Token Plan (`qwen3.8-flash`) when configured and enabled
+2. `nex-agi/nex-n2.5-mini:free`
+3. `nex-agi/nex-n2.5-pro:free`
+4. `nvidia/nemotron-3-super-120b-a12b:free`
+5. `nvidia/nemotron-3.5-lightning:free`
+6. `openrouter/free`
+7. `nvidia/nemotron-3-ultra-550b-a55b:free`
+8. direct Groq GPT-OSS 120B BYOK when enabled
+9. direct Gemini 3.8 Flash BYOK when enabled
+10. `z-ai/glm-5.3-flashx` paid continuity when explicitly enabled
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and
@@ -370,6 +377,12 @@ many distinct OpenRouter **users** those keys belong to (`oracct_<8 hex>` of
 `creator_user_id`; never the raw user id). `sharedQuota: true` means two env
 names are the same OpenRouter account and therefore share one 1,000/day `:free`
 bucket — extra keys are not extra capacity.
+
+At boot and on the cached ten-minute refresh, management-key balances are
+matched to their inference accounts. A nonpositive balance excludes that
+account from paid routing until a later positive probe; it does not by itself
+remove the account's separately metered free allowance. An actual 402 remains
+authoritative and creates the six-hour account-wide exclusion described above.
 
 | Field | Meaning |
 |---|---|

@@ -48,7 +48,7 @@ If the exact configured service cannot be found or accessed, deployment stops. A
 
 ## ADR-003 — Source-to-production provenance is commit-SHA based
 
-**Status:** Accepted  
+**Status:** Accepted
 **Last confirmed:** 2026-08-28
 
 Commit-SHA provenance remains the release invariant. On current Railway production, `packages/core/src/runtime-health.ts` reports a known explicit `APEX_BUILD_SHA` first and Railway's injected `RAILWAY_GIT_COMMIT_SHA` as the production fallback. Empty/whitespace/`unknown` image placeholders do not mask the platform commit. The autonomous mutation gate shares this resolver and still requires durable artifact/database/audit evidence. The retired Cloud Run migration-back path still uses `cloudbuild.apex.yaml` to bake `APEX_BUILD_SHA` into an immutable image.
@@ -600,6 +600,34 @@ Account, spend, cap, and worker diagnosis stays available to an operator with `A
 - Railway's healthcheck path stays `/health` and still fails the deploy when the queue is provably broken.
 - Release checks that previously read `taskQueue.verdict` from the public body must use authenticated `GET /api/health/detail`. Public `/health` still proves `build.sha`.
 - No new production secret, service, or healthcheck path is required. The change takes effect when this commit is deployed.
+
+## ADR-019 — OpenRouter exhaustion is account-scoped and restart-safe
+
+**Status:** Accepted
+**Date:** 2026-09-30
+
+OpenRouter quotas and balances belong to an account, not a model route, env-var
+slot, or individual key. The earlier cooldown path stored
+`provider:env-name` and key-fingerprint entries only in process memory.
+Consequently, a sibling key on the same account, the paid route, or a new
+Railway process could immediately retry an account whose 402/429 had already
+proved it unavailable.
+
+APEX now resolves each inference key to OpenRouter's privacy-minimized account
+identity, applies an exhaustion exclusion to every sibling key and OpenRouter
+route, and persists that state as a dedicated `component_health` row. Daily
+free-quota exclusions expire at UTC midnight; 402/credit exhaustion lasts six
+hours or a longer upstream `Retry-After`. A management-key balance at or below
+zero excludes paid routing until a later positive probe, but does not by itself
+suppress the account's separately metered free allowance. If account identity
+cannot be resolved, a key fingerprint remains the fail-safe identity and is
+migrated when the account probe recovers.
+
+Authenticated `GET /api/health/providers` reports active exclusions, their
+scope/reason/resume time, affected env names, and whether persistence is
+available. Persistence and health writes are best-effort: database
+unavailability degrades to process-local protection and must never turn a
+successful inference into a failed task.
 
 ## How to change an architecture decision
 

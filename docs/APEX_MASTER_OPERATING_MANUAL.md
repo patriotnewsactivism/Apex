@@ -221,10 +221,12 @@ Qualifying credential slots include:
 - `OPENROUTER_FREE_API_KEY`
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_API_KEY_2`
-- `OPENROUTER_API_KEY_3`
 - `OPENROUTER_API_KEY_4`
 
-Multiple keys on one OpenRouter account do not create multiple quota pools. Account identity/unique-account telemetry must be used instead of assuming key count equals capacity.
+`OPENROUTER_API_KEY_3` is deliberately not active because it duplicated the
+free-key account. Multiple keys on one OpenRouter account do not create
+multiple quota pools. Account identity/unique-account telemetry must be used
+instead of assuming key count equals capacity.
 
 ### Routing requirements
 
