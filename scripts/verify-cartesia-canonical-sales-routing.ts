@@ -170,10 +170,13 @@ check(
 );
 
 check(
-  'outbound sales greets immediately, uses full name only for identity check, then first-name rapport before pitch',
-  /initial_message:\s*'Hey, is this \{\{customer_name\}\}\?'/.test(reconciler) &&
-    /do not wait for the callee to say hello/.test(reconciler) &&
-    /opening must never depend on recognizing their first hello/.test(reconciler) &&
+  'outbound sales waits a 1.5s answer beat, yields to the callee, then uses first-name rapport before pitch',
+  /OUTBOUND_ANSWER_BEAT_SECONDS\s*=\s*1\.5/.test(reconciler) &&
+    /initial_message:\s*null/.test(reconciler) &&
+    /initial_silence_timeout_secs:\s*OUTBOUND_ANSWER_BEAT_SECONDS/.test(reconciler) &&
+    /do not speak immediately when the call connects/.test(reconciler) &&
+    /Give the callee about 1–2 seconds to answer first/.test(reconciler) &&
+    /Never talk over their hello/.test(reconciler) &&
     /full name is for the initial identity check only/.test(reconciler) &&
     /Thanks, \{\{customer_first_name\}\}\. How’s your day going\?/.test(reconciler) &&
     /Never repeat their first and last name after acknowledgement/.test(reconciler) &&
