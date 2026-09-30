@@ -1,8 +1,8 @@
-import { CARTESIA_SALES_TOOL_NAMES } from './cartesia-sales-auth.js';
+import { cartesiaSalesToolNames } from './cartesia-sales-auth.js';
 
 const CARTESIA_VERSION = '2026-08-14';
 const CARTESIA_API = 'https://api.cartesia.ai';
-const EXPECTED_SALES_TOOLS = CARTESIA_SALES_TOOL_NAMES;
+const EXPECTED_SALES_TOOLS = cartesiaSalesToolNames();
 const EVENT_WEBHOOK_URL = 'https://apex.donmatthews.live/api/cartesia/events';
 
 type CartesiaList<T> = {
