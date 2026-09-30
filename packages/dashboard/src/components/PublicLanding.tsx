@@ -14,7 +14,6 @@ import {
   Mail,
   MessageSquareText,
   Network,
-  PhoneCall,
   ShieldCheck,
   Sparkles,
   Target,
@@ -44,7 +43,7 @@ const demoJourneySteps = [
   'Strategy ready',
   'Email sent',
   '48h no response',
-  'AI call',
+  'Follow-up approved',
   'Appointment booked',
   'Business notified',
   'Prospect confirmed',
@@ -52,48 +51,48 @@ const demoJourneySteps = [
 
 const demoLeads: DemoLead[] = [
   {
-    company: 'Ready Roofing & Solar',
+    company: 'Example Roofing Co.',
     industry: 'Roofing',
     city: 'Dallas, TX',
-    decisionMaker: 'William Jeffery Thompson',
-    contact: 'Verified email + phone · redacted in public demo',
+    decisionMaker: 'Jordan Example',
+    contact: 'Fictional contact · no real email or phone',
     fitReason:
       'APEX identified a Dallas roofing contractor taking phone and free-inspection leads for high-ticket roof replacement and solar work. After-hours and storm-surge inquiries create a clear missed-opportunity window.',
     strategy:
-      'Lead with the cost of missed inspection and storm-damage opportunities. Position an always-on AI front desk that responds immediately, qualifies roof or solar needs, books inspections, and preserves the account context for the sales team.',
+      'Lead with the cost of missed inspection and storm-damage opportunities. Use approved outreach to qualify roof or solar needs, propose an inspection, and preserve the account context for the sales team.',
     emailSubject: 'Capture the roofing leads that arrive when the office is closed',
     emailBody:
-      'William — APEX identified a straightforward opportunity for Ready Roofing & Solar: high-value inspection and storm-damage inquiries do not always arrive during office hours. The system can answer those inquiries immediately, qualify the roof or solar need, book the next step, and keep the full conversation attached to the opportunity. I would start with a focused 30-day deployment around the Dallas market so the impact is measurable.',
+      'Jordan — this fictional example shows a straightforward opportunity for Example Roofing Co.: high-value inspection and storm-damage inquiries do not always arrive during office hours. An approved outreach workflow can qualify the roof or solar need, propose the next step, and keep the full conversation attached to the opportunity. I would start with a focused 30-day deployment around the Dallas market so the impact is measurable.',
     appointment: 'Tuesday · 10:30 AM',
   },
   {
-    company: 'RESTOR Medical Spa',
+    company: 'Sample Wellness Studio',
     industry: 'MedSpa',
     city: 'Denver, CO',
-    decisionMaker: 'Dr. Flora Waples, MD',
-    contact: 'Verified email + phone · redacted in public demo',
+    decisionMaker: 'Taylor Sample',
+    contact: 'Fictional contact · no real email or phone',
     fitReason:
       'APEX identified a multi-location med spa taking phone and web appointment bookings with limited staffed hours, creating an after-hours window for injectable and consultation inquiries.',
     strategy:
-      'Center the outreach on consultation capture across multiple locations. Show how voice and chat can answer common questions, qualify treatment interest, route by location, and book the consultation before the lead chooses another provider.',
-    emailSubject: 'A 24/7 consultation layer for RESTOR’s locations',
+      'Center approved outreach on consultation capture across multiple locations. Show how a governed workflow can qualify treatment interest, route by location, and propose a consultation before the lead chooses another provider.',
+    emailSubject: 'A coordinated consultation workflow for Sample Wellness Studio',
     emailBody:
-      'Dr. Waples — RESTOR already has the demand channels in place. The gap APEX identified is what happens when a consultation or injectable inquiry arrives after staffed hours. APEX can respond immediately, qualify the treatment interest and preferred location, answer common questions, and move the prospect into a booked consultation while preserving the full context for your team.',
+      'Taylor — this fictional example assumes Sample Wellness Studio already has demand channels in place. The opportunity is to coordinate approved follow-up, qualify treatment interest and preferred location, and move an interested prospect toward a consultation while preserving the full context for the team.',
     appointment: 'Thursday · 2:00 PM',
   },
   {
-    company: 'Robins Plumbing Inc',
+    company: 'Placeholder Plumbing Co.',
     industry: 'Plumbing',
     city: 'Phoenix, AZ',
-    decisionMaker: 'Stephanie Robins',
-    contact: 'Verified email + phone · redacted in public demo',
+    decisionMaker: 'Casey Placeholder',
+    contact: 'Fictional contact · no real email or phone',
     fitReason:
       'APEX identified a full-service plumbing company handling round-the-clock demand. Routine calls, web inquiries, and emergency triage create a workload that can consume staff time and leak revenue when response capacity is constrained.',
     strategy:
       'Position APEX as a front-desk operating layer: handle routine questions, qualify the service need, triage emergencies, book service windows, and escalate only the conversations that require a person.',
     emailSubject: 'Take routine call load off the team without missing service revenue',
     emailBody:
-      'Stephanie — APEX can sit in front of the routine call and web volume that reaches Robins Plumbing every day, handle the initial questions, qualify the service need, triage emergencies, and book the right service window. Your staff keeps control of the jobs that need a human while the system makes sure the rest of the pipeline does not go quiet.',
+      'Casey — this fictional example shows how Placeholder Plumbing Co. could coordinate routine web inquiries, qualify the service need, triage emergencies, and propose the right service window. Staff keeps control of the jobs that need a human while the approved workflow keeps the rest of the pipeline organized.',
     appointment: 'Wednesday · 9:00 AM',
   },
 ];
@@ -239,20 +238,20 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
         <section className="public-section public-container" id="demo">
           <div className="public-section-heading public-journey-heading">
             <div className="public-eyebrow">LIVE SALES WORKFLOW SIMULATION</div>
-            <h2>Watch one researched lead move from intelligence to a booked appointment.</h2>
+            <h2>Watch one fictional lead move from intelligence to a simulated booked appointment.</h2>
             <p>
-              These are APEX-researched account snapshots. Direct contact details are redacted. Outreach, responses,
-              calls and appointments below are simulated in your browser so you can watch the operating model without
-              sending a real message or placing a real call.
+              These are fictional account snapshots created for this simulation. All names, contact references,
+              outreach, responses and appointments below are illustrative. The workflow runs in your browser and
+              sends no real messages or calls.
             </p>
           </div>
 
           <div className="public-demo-disclosure">
             <ShieldCheck size={16} />
-            <span><strong>SIMULATION:</strong> real researched lead context, illustrative outreach and response path, zero external actions.</span>
+            <span><strong>SIMULATION:</strong> fictional lead context, illustrative outreach and response path, zero external actions.</span>
           </div>
 
-          <div className="public-lead-picker" role="group" aria-label="Choose an APEX-researched lead">
+          <div className="public-lead-picker" role="group" aria-label="Choose a fictional demo lead">
             {demoLeads.map((lead, index) => (
               <button
                 key={lead.company}
@@ -273,7 +272,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                 <span>01</span>
                 <div>
                   <strong>Research snapshot</strong>
-                  <small>Already sourced by APEX</small>
+                  <small>Fictional example for demonstration</small>
                 </div>
               </div>
 
@@ -303,7 +302,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                 <div className="public-card-label"><Sparkles size={14} /> UNIQUE SALES STRATEGY</div>
                 <p>{selectedLead.strategy}</p>
                 <div className="public-strategy-route">
-                  <span>Email</span><i>→</i><span>48h</span><i>→</i><span>Voice</span><i>→</i><span>Qualify</span><i>→</i><span>Handoff</span>
+                  <span>Email</span><i>→</i><span>48h</span><i>→</i><span>Approval</span><i>→</i><span>Follow-up</span><i>→</i><span>Handoff</span>
                 </div>
               </div>
 
@@ -351,26 +350,26 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                     <span>Subject</span><strong>{selectedLead.emailSubject}</strong>
                   </div>
                   <p>{selectedLead.emailBody}</p>
-                  <small>Generated from this prospect’s stored APEX research + individualized strategy.</small>
+                  <small>Illustrative copy generated from this fictional prospect profile and strategy.</small>
                 </article>
 
                 <div className={'public-time-jump ' + (activeStep >= 3 || complete ? 'visible' : '')}>
                   <Clock3 size={16} />
-                  <div><strong>48 HOURS LATER</strong><span>No reply detected. Follow-up policy advances to voice.</span></div>
+                  <div><strong>48 HOURS LATER</strong><span>No reply detected. Follow-up pauses at the human approval gate.</span></div>
                 </div>
 
                 <article className={'public-action-card public-call-action ' + (activeStep >= 4 || complete ? 'visible' : '')}>
                   <div className="public-action-head">
-                    <div><PhoneCall size={17} /><span>AUTOMATIC AI FOLLOW-UP CALL</span></div>
-                    <strong>{activeStep >= 5 || complete ? 'QUALIFIED' : 'LIVE'}</strong>
+                    <div><ShieldCheck size={17} /><span>HUMAN-APPROVED FOLLOW-UP</span></div>
+                    <strong>{activeStep >= 5 || complete ? 'REPLIED' : 'APPROVED'}</strong>
                   </div>
                   <div className="public-call-wave" aria-hidden="true">
                     {Array.from({ length: 24 }).map((_, index) => <i key={index} />)}
                   </div>
                   <div className="public-call-transcript">
-                    <p><strong>APEX:</strong> I’m following up on the note I sent about {selectedLead.company}. The reason I reached out was specific to the opportunity APEX identified in your current lead flow.</p>
+                    <p><strong>APEX FOLLOW-UP:</strong> I’m following up on the note I sent about {selectedLead.company}. The reason I reached out was specific to the opportunity in your current lead flow.</p>
                     <p><strong>SIMULATED PROSPECT:</strong> I saw it. Give me the short version.</p>
-                    <p><strong>APEX:</strong> The system researches each account first, adapts the strategy, and then works email and voice until there is a qualified next step. Would a short walkthrough make sense?</p>
+                    <p><strong>APEX FOLLOW-UP:</strong> The system researches each account, adapts the strategy, and coordinates approved follow-up toward a qualified next step. Would a short walkthrough make sense?</p>
                     <p><strong>SIMULATED PROSPECT:</strong> Yes. Put something on my calendar.</p>
                   </div>
                 </article>
@@ -406,7 +405,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                     <div>
                       <strong>Pipeline outcome created.</strong>
                       <span>
-                        Research → strategy → personalized email → timed follow-up call → qualification → appointment →
+                        Research → strategy → personalized email → approved follow-up → qualification → appointment →
                         two-sided notification, with the CRM state carried through the entire journey.
                       </span>
                     </div>
@@ -442,7 +441,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
               {
                 icon: <MessageSquareText size={20} />,
                 title: 'Multichannel execution',
-                body: 'Coordinate approved email, SMS, voice, callbacks and follow-up as parts of one operating flow.',
+                body: 'Coordinate approved email, SMS and follow-up as parts of one governed operating flow.',
               },
               {
                 icon: <Bot size={20} />,
@@ -547,7 +546,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                   'Decision-maker and contact research',
                   'Individualized strategy for each prospect',
                   'Automated email outreach and controlled follow-up',
-                  'AI-powered outbound calling and inbound call handling',
+                  'Approved outreach coordinated through human approval gates',
                   'SMS follow-up where appropriate',
                   'CRM, pipeline tracking and appointment scheduling',
                   'Campaign performance reporting',
@@ -578,8 +577,8 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                   'Up to 5,000 new researched prospects/month',
                   'Continuous research and enrichment',
                   'Multiple active outreach campaigns',
-                  'Personalized email, SMS, voice and follow-up',
-                  'Inbound and outbound AI sales agents',
+                  'Personalized email, SMS and controlled follow-up',
+                  'Governed sales workflows with human approval gates',
                   'CRM and pipeline management',
                   'Appointment scheduling and lead nurturing',
                   'Performance and revenue reporting',
@@ -608,7 +607,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                 {[
                   'Up to 15,000 new researched prospects/month',
                   'Multiple simultaneous markets or campaigns',
-                  'Expanded outbound calling capacity',
+                  'Expanded approved outreach capacity',
                   'Advanced segmentation and sales personas',
                   'Higher-volume email and SMS orchestration',
                   'Multi-agent sales workflows',
@@ -640,7 +639,7 @@ export function PublicLanding({ onOperatorLogin }: PublicLandingProps) {
                   'Custom account and prospect limits',
                   'Multiple business units, territories or brands',
                   'Custom AI workforce configuration',
-                  'Dedicated voice and sales agents',
+                  'Dedicated governed sales workflows',
                   'Custom workflow, API and CRM integrations',
                   'Advanced governance and approval controls',
                   'Custom reporting and priority support',
