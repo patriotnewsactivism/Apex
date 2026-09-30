@@ -302,6 +302,10 @@ async function main(): Promise<void> {
     'when no fast providers are configured, campaign discovery uses the keyless directory fallback without launching a guaranteed-fail webSearch',
     /if \(!hasFastWeb && !hasFastStructured\)[\s\S]{0,500}first = await runDirectory\(\)/.test(campaignRunnerSrc),
   );
+  check(
+    'contact recovery skips its Tavily/Brave search lane when neither provider is configured',
+    /enrichVerifiedContactsFromSearch[\s\S]{0,700}!process\.env\.TAVILY_API_KEY && !process\.env\.BRAVE_SEARCH_API_KEY/.test(campaignRunnerSrc),
+  );
 
 
   // ── 6. Geocode cache ────────────────────────────────────────────────────
