@@ -9,8 +9,9 @@
 // Design constraints carried over from the tool version:
 // - Every check is read-only, no side effects.
 // - No live LLM API calls (slow, costs real requests every check) -- LLM
-//   provider health is reported as "which providers have keys configured",
-//   not "which providers actually respond right now".
+//   provider health combines key presence with the injected local capacity
+//   snapshot (budgets, pacing and reliability cooldowns). It is not a live
+//   provider response probe.
 // - Each check must be fast (<5s) and must never throw -- a failing check
 //   reports 'critical' with the real error message, it doesn't crash the caller.
 
@@ -44,6 +45,9 @@ export type WebSocketLivenessChecker = () => { serverRunning: boolean; connected
  * real llm-client.ts provider list and tool-registry.ts registry). */
 export interface HealthMonitorDeps {
   getConfiguredProviders?: () => Array<{ name: string; configured: boolean; enabled?: boolean }>;
+  /** Local routing eligibility, including budgets, pacing and cooldowns;
+   * no network calls. A configured key alone is not availability evidence. */
+  llmCapacityAvailableNow?: () => boolean;
   // Reports whether the LLM chain has recently served tool-bearing requests
   // from a provider that cannot reliably emit structured tool calls. Injected
   // (rather than imported) to keep this package free of a @workspace/core
@@ -90,9 +94,22 @@ export class HealthMonitor {
         .map((p) =>
           p.enabled === false
             ? `${p.name}:disabled`
-            : `${p.name}:${p.configured ? 'ok' : 'missing'}`,
+            : `${p.name}:${p.configured ? 'configured' : 'missing'}`,
         )
         .join(', ');
+
+      if (configuredCount === 0) {
+        return { status: 'critical', detail: `No enabled LLM provider configured. Keys: ${detail}` };
+      }
+      if (!this.deps.llmCapacityAvailableNow) {
+        return { status: 'degraded', detail: `LLM capacity unknown (no capacity source injected). Keys: ${detail}` };
+      }
+      if (!this.deps.llmCapacityAvailableNow()) {
+        return {
+          status: 'degraded',
+          detail: `LLM capacity unavailable: configured routes are blocked by routing eligibility, budgets, pacing or reliability cooldowns. Keys: ${detail}`,
+        };
+      }
 
       // Key-presence alone says nothing about whether the workforce can
       // actually WORK. On 2026-07-29 every key was present and healthy-looking
@@ -114,12 +131,7 @@ export class HealthMonitor {
       }
 
       return {
-        status:
-          configuredCount === 0
-            ? 'critical'
-            : configuredCount < enabledProviders.length
-              ? 'degraded'
-              : 'healthy',
+        status: configuredCount < enabledProviders.length ? 'degraded' : 'healthy',
         detail,
       };
     });
@@ -293,4 +305,3 @@ export class HealthMonitor {
 // Re-export AlertManager
 export { AlertManager } from './alert-manager.js';
 export type { Alert, AlertSeverity, AlertRule } from './alert-manager.js';
-

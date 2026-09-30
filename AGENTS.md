@@ -42,6 +42,8 @@ The retired Cloud Run migration-back code (`packages/cicd-automation/src/cloud-r
 
 `deploy_to_environment` and rollback remain hard-gated. See `docs/PRODUCTION_OPERATIONS.md`, `docs/HOSTING_MIGRATION.md`, and `docs/deploy-provenance.md`.
 
+Runtime health and the autonomous provenance gate use the same deployed commit resolver: a known `APEX_BUILD_SHA`, then Railway's injected `RAILWAY_GIT_COMMIT_SHA`. Empty/whitespace/`unknown` build placeholders do not mask the Railway commit. The image pins `WORKSPACE_ROOT` and `APEX_CANONICAL_REPO_ROOT` to `/app`; outside the image the gate discovers the containing pnpm workspace when no canonical root is specified. Missing commit/artifact/database/audit evidence still blocks writes; fix the reported precondition instead of bypassing provenance. `health_check` and the API health monitor use local LLM routing capacity (including budgets, pacing and cooldowns) in addition to key presence. `configured` means a key exists; capacity unavailable/unknown reports degraded without issuing an inference call.
+
 ## What APEX is
 
 APEX is a persistent hierarchical autonomous workforce, not a request/response chatbot.

@@ -133,6 +133,13 @@ pnpm run dev
 
 Production CI also runs deterministic guards for provider routing/backpressure, token-budget pauses, deploy provenance, malformed tool calls, non-completion, and branch/review behavior.
 
+If autonomous writes are blocked, follow the exact provenance rejection and
+[provenance recovery instructions](docs/deploy-provenance.md#diagnosing-blocked-autonomous-tools).
+Health and the mutation gate share the known build-SHA/Railway-commit resolver;
+the Docker `unknown` placeholder does not override Railway's deployed commit.
+LLM health combines configured keys with local routing capacity, including
+budget, pacing and cooldown state, without making a live inference call.
+
 ## Production release gate
 
 Before production deployment:

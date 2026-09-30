@@ -366,8 +366,8 @@ export function WebinarDirector() {
           </div>
         </section>
 
-        <aside className="webinar-director-sidebar" style={{ display: 'grid', gap: isMobile ? 12 : 14, alignSelf: 'start', position: isMobile ? 'static' : 'sticky', top: isMobile ? undefined : 82, minWidth: 0 }}>
-          <div style={{ ...card, padding: 16 }}>
+        <aside className="webinar-director-sidebar" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: isMobile ? 12 : 14, alignSelf: 'start', position: isMobile ? 'static' : 'sticky', top: isMobile ? undefined : 82, minWidth: 0 }}>
+          <div style={{ ...card, padding: 16, minWidth: 0 }}>
             <div className="apex-eyebrow" style={{ marginBottom: 10 }}>AI Producer</div>
             <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--color-apex-text)' }}>
               {dashboard?.producer.recommendation ?? 'Waiting for live state…'}
@@ -389,7 +389,7 @@ export function WebinarDirector() {
             )}
           </div>
 
-          <div style={{ ...card, padding: 16 }}>
+          <div style={{ ...card, padding: 16, minWidth: 0 }}>
           <div className="apex-eyebrow" style={{ margin: '4px 6px 10px' }}>Run of show</div>
           <div className="webinar-run-of-show" style={{ display: isMobile ? 'flex' : 'grid', gap: 6, overflowX: isMobile ? 'auto' : undefined, paddingBottom: isMobile ? 4 : undefined, WebkitOverflowScrolling: isMobile ? 'touch' : undefined }}>
             {segments.map((segment, index) => {

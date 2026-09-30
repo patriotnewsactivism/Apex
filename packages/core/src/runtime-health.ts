@@ -102,7 +102,7 @@ export interface BuildInfo {
 /**
  * Where the running commit comes from, in order of trust.
  *
- * APEX_BUILD_SHA is explicit and wins: a builder that states which commit it
+ * A known APEX_BUILD_SHA is explicit and wins: a builder that states which commit it
  * built is more trustworthy than one inferred from the environment.
  *
  * RAILWAY_GIT_COMMIT_SHA is the fallback because Railway injects it itself,
@@ -113,8 +113,13 @@ export interface BuildInfo {
  * could not say what it was serving.
  */
 export function getBuildInfo(): BuildInfo {
+  // The Dockerfile's default 'unknown' is a placeholder, not build evidence.
+  // It must not mask the commit Railway injects at runtime.
+  const sha = [process.env.APEX_BUILD_SHA, process.env.RAILWAY_GIT_COMMIT_SHA]
+    .map((value) => value?.trim())
+    .find((value) => value && value.toLowerCase() !== 'unknown') ?? 'unknown';
   return {
-    sha: process.env.APEX_BUILD_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
+    sha,
     builtAt: process.env.APEX_BUILD_TIME || process.env.RAILWAY_DEPLOYMENT_CREATED_AT || null,
     startedAt: startedAt.toISOString(),
     uptimeSeconds: Math.round((Date.now() - startedAt.getTime()) / 1000),

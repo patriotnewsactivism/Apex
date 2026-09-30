@@ -19,6 +19,28 @@ Railway builds `Dockerfile` per `railway.toml` and deploys from `main`. Google C
 
 The Cloud Run configuration block below is **rollback-only**. Do not use it while GCP billing is off.
 
+## Autonomous tool and capacity recovery
+
+For `Runtime provenance gate blocked`, inspect the exact rejection reasons
+before changing configuration. Health and the gate resolve a known
+`APEX_BUILD_SHA`, then Railway's injected `RAILWAY_GIT_COMMIT_SHA`, ignoring
+empty/whitespace/`unknown` placeholders. Never set a fabricated SHA to clear
+the check. The image pins the canonical and agent workspace roots to `/app`;
+source edits belong in `packages/*/src` or `lib/db/src`, not `node_modules`.
+
+The gate also requires `DATABASE_URL`, durable artifacts through
+`APEX_ARTIFACT_DIR` (a mounted volume) or `APEX_ARTIFACT_BUCKET`, and a durable
+audit write. Verify those on the existing `apex-backend` service and repair
+the reported precondition. See [deploy provenance](deploy-provenance.md).
+
+`health_check` and the API health monitor label key presence as `configured`.
+They report degraded when the local routing capacity check finds no usable
+route, or when no capacity source is available. This check includes budget,
+pacing and reliability cooldowns, including cooldowns after empty completions;
+it does not send an inference request. Use authenticated `/api/health/detail`
+to inspect capacity and provider state. A configured key does not prove a
+provider has remaining quota.
+
 ## Required release configuration
 
 The deploy process requires:

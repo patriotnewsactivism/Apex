@@ -2,6 +2,7 @@ import { access, readFile } from 'fs/promises';
 import { dirname, join, relative, resolve, sep } from 'path';
 import { db, auditEvents } from '@workspace/db';
 import type { ToolContext } from './types.js';
+import { getBuildInfo } from './runtime-health.js';
 
 const recordedTasks = new Set<string>();
 
@@ -28,6 +29,8 @@ const READ_ONLY_TOOLS = new Set([
   'read_artifact',
   'git_status',
   'get_email_campaign_status',
+  'campaign_snapshot',
+  'buildmybot_recent_leads',
   'get_call_status',
   'searchBusinessDirectory',
 ]);
@@ -220,7 +223,13 @@ export async function ensureRuntimeProvenance(
   rawArgs: Record<string, unknown>,
   context: ToolContext,
 ): Promise<RuntimeProvenanceResult> {
-  const canonicalRoot = resolve(process.env.APEX_CANONICAL_REPO_ROOT || process.cwd());
+  // pnpm --filter starts in the selected package, while the canonical tree is
+  // the containing workspace. Keep an explicit operator root authoritative.
+  const canonicalRoot = resolve(
+    process.env.APEX_CANONICAL_REPO_ROOT?.trim() ||
+    (await findWorkspaceRoot(process.cwd())) ||
+    process.cwd(),
+  );
   const contextRoot = resolve(context.workspaceRoot || canonicalRoot);
   const targetPath = extractTargetPath(toolName, rawArgs, contextRoot);
   const targetIsDirectory =
@@ -239,7 +248,9 @@ export async function ensureRuntimeProvenance(
     (await findWorkspaceRoot(contextRoot));
 
   const packageRoot = await findPackageRoot(targetProbe, canonicalRoot);
-  const expectedSha = (process.env.APEX_BUILD_SHA || '').trim();
+  // Use the same trusted commit sources as /health, including Railway's
+  // deployed commit when the image's APEX_BUILD_SHA is unset/unknown.
+  const expectedSha = getBuildInfo().sha;
   const production = isProductionRuntime();
   const artifact = artifactRoot();
   const databaseTarget = sanitizeDatabaseTarget(process.env.DATABASE_URL);
@@ -306,7 +317,7 @@ export async function ensureRuntimeProvenance(
   }
 
   if (production && (!expectedSha || expectedSha === 'unknown')) {
-    reasons.push('APEX_BUILD_SHA is missing/unknown in production');
+    reasons.push('deployed commit (APEX_BUILD_SHA or RAILWAY_GIT_COMMIT_SHA) is missing/unknown in production');
   }
   if (production && !artifact) {
     reasons.push('durable artifact root is not configured');

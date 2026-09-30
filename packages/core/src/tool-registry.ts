@@ -15,7 +15,7 @@ import { createDurableWorkTools } from './durable-work-tools.js';
 import { createRevenueOpsTools } from './revenue-ops/tools.js';
 import { createCampaignTools } from './revenue-ops/campaign-engine.js';
 import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connector.js';
-import { getConfiguredProviders, getDegradedToolCallingReport } from './llm-client.js';
+import { getConfiguredProviders, getDegradedToolCallingReport, llmCapacityAvailableNow } from './llm-client.js';
 import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProfile, listSpecialistDepartments, listSpecialists } from './specialists/index.js';
 import { getNextRunTimes } from './cron-utils.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
@@ -49,6 +49,7 @@ export function configureHealthMonitorRuntimeDeps(deps: {
 function createAgentHealthMonitor(): HealthMonitor {
   return new HealthMonitor({
     getConfiguredProviders,
+    llmCapacityAvailableNow,
     getDegradedToolCalling: () => getDegradedToolCallingReport(),
     getRegisteredToolCount: () => getToolRegistry().getLLMToolSchemas().length,
     wsChecker: healthWebSocketChecker,
