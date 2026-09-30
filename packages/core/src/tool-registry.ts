@@ -1,7 +1,7 @@
 import { campaignSnapshotTool } from './campaign-snapshot.js';
 import { readFile, writeFile, mkdir, readdir, rm } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join, resolve, relative, dirname } from 'path';
+import { join, resolve, dirname } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { createHash, randomUUID } from 'crypto';
@@ -18,6 +18,7 @@ import { tubeScribeConfigured, createTubeScribeTools } from './tubescribe-connec
 import { getConfiguredProviders, getDegradedToolCallingReport, llmCapacityAvailableNow } from './llm-client.js';
 import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProfile, listSpecialistDepartments, listSpecialists } from './specialists/index.js';
 import { getNextRunTimes } from './cron-utils.js';
+import { getWorkspaceRoot, pathWithin, resolveInWorkspace } from './workspace-root.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
 import { db, messages, callOutcomes, callBridgeSessions, leadSearchCache } from '@workspace/db';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
@@ -827,36 +828,69 @@ export const researchedLeadInputSchema = z.object({
 /** Exactly what a producer must hand saveResearchedLead(sBatch). */
 export type ResearchedLeadInput = z.infer<typeof researchedLeadInputSchema>;
 
-export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
+function toolWorkspaceRoot(context: ToolContext): string {
+  const canonicalRoot = getWorkspaceRoot();
+  const contextRoot = context.workspaceRoot?.trim();
+  if (!contextRoot) return canonicalRoot;
+  const resolvedContextRoot = resolve(contextRoot);
+  return pathWithin(canonicalRoot, resolvedContextRoot) ? resolvedContextRoot : canonicalRoot;
+}
+
+function durableFilePath(path: string): boolean {
+  const artifactRoot = process.env.APEX_ARTIFACT_DIR?.trim();
+  return Boolean(artifactRoot && pathWithin(resolve(artifactRoot), path));
+}
+
+const MAX_REPORTED_SANDBOX_FILES = 200;
+
+async function listSandboxFiles(directory: string, prefix = '', limit = MAX_REPORTED_SANDBOX_FILES + 2): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    if (files.length >= limit) break;
+    const relativePath = prefix ? join(prefix, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      files.push(...await listSandboxFiles(
+        join(directory, entry.name),
+        relativePath,
+        limit - files.length,
+      ));
+    } else {
+      files.push(relativePath);
+    }
+  }
+  return files;
+}
+
+export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
   return [
     // Read File
     {
       name: 'readFile',
-      description: 'Read the contents of a file. Path is relative to the workspace root.',
+      description: 'Read the contents of a file. Path is relative to the workspace root. Returns the absolute resolved path with the content.',
       schema: z.object({
         path: z.string().describe('File path relative to workspace root'),
         startLine: z.number().optional().describe('Start line (1-indexed)'),
         endLine: z.number().optional().describe('End line (1-indexed)'),
       }),
       requiresApproval: false,
-      async execute({ path, startLine, endLine }) {
-        const abs = resolve(workspaceRoot, path);
-        if (!abs.startsWith(workspaceRoot)) throw new Error('Path outside workspace');
+      async execute({ path, startLine, endLine }, ctx) {
+        const abs = resolveInWorkspace(toolWorkspaceRoot(ctx), path);
         const content = await readFile(abs, 'utf8');
         if (startLine !== undefined || endLine !== undefined) {
           const lines = content.split('\n');
           const sl = (startLine ?? 1) - 1;
           const el = endLine ?? lines.length;
-          return lines.slice(sl, el).join('\n');
+          return { path: abs, content: lines.slice(sl, el).join('\n') };
         }
-        return content;
+        return { path: abs, content };
       },
     },
 
     // Write File
     {
       name: 'writeFile',
-      description: 'Write content to a file. Creates parent directories if needed. Path is relative to workspace root.',
+      description: 'Write content to a file. Creates parent directories if needed. Path is relative to the workspace root. Returns the absolute resolved path and whether the destination is durable under APEX_ARTIFACT_DIR.',
       schema: z.object({
         path: z.string().describe('File path relative to workspace root'),
         content: z.string().describe('File content to write'),
@@ -867,8 +901,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       // push/deploy/production action remain gated. See tool-registry.ts approval split, 2026-07-19.
       requiresApproval: false,
       async execute({ path, content, append }, ctx) {
-        const abs = resolve(workspaceRoot, path);
-        if (!abs.startsWith(workspaceRoot)) throw new Error('Path outside workspace');
+        const abs = resolveInWorkspace(toolWorkspaceRoot(ctx), path);
         await mkdir(dirname(abs), { recursive: true });
         if (append && existsSync(abs)) {
           const existing = await readFile(abs, 'utf8');
@@ -876,23 +909,25 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         } else {
           await writeFile(abs, content, 'utf8');
         }
-        return { path: relative(workspaceRoot, abs), written: true };
+        return { path: abs, written: true, durable: durableFilePath(abs) };
       },
     },
 
     // List Directory
     {
       name: 'listDir',
-      description: 'List files and directories at the given path. Path is relative to workspace root.',
+      description: 'List files and directories at the given path. Path is relative to the workspace root. Returns the absolute resolved directory path with its entries.',
       schema: z.object({
         path: z.string().describe('Directory path relative to workspace root').optional(),
       }),
       requiresApproval: false,
-      async execute({ path: p }) {
-        const abs = resolve(workspaceRoot, p ?? '.');
-        if (!abs.startsWith(workspaceRoot)) throw new Error('Path outside workspace');
+      async execute({ path: p }, ctx) {
+        const abs = resolveInWorkspace(toolWorkspaceRoot(ctx), p ?? '.');
         const entries = await readdir(abs, { withFileTypes: true });
-        return entries.map((e) => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' }));
+        return {
+          path: abs,
+          entries: entries.map((e) => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file' })),
+        };
       },
     },
 
@@ -906,8 +941,9 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         timeoutMs: z.number().optional().describe('Timeout in milliseconds (default 30000)'),
       }),
       requiresApproval: true,
-      async execute({ command, cwd, timeoutMs }) {
-        const execCwd = cwd ? resolve(workspaceRoot, cwd) : workspaceRoot;
+      async execute({ command, cwd, timeoutMs }, ctx) {
+        const root = toolWorkspaceRoot(ctx);
+        const execCwd = cwd ? resolveInWorkspace(root, cwd) : root;
         const { stdout, stderr } = await execAsync(command, {
           cwd: execCwd,
           timeout: timeoutMs ?? 30000,
@@ -2425,7 +2461,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
     // Run Code in Sandbox
     {
       name: 'runInSandbox',
-      description: 'Execute TypeScript, JavaScript, Python, or Shell code in an isolated temporary sandbox directory with a strict timeout and automatic cleanup.',
+      description: 'Execute TypeScript, JavaScript, Python, or Shell code in an isolated temporary sandbox directory with a strict timeout and automatic cleanup. Relative files created by the script are deleted after execution and reported in discardedFiles.',
       schema: z.object({
         code: z.string().describe('The code or script content to execute'),
         language: z.enum(['typescript', 'javascript', 'python', 'shell']).describe('The programming language or script type'),
@@ -2433,10 +2469,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
       }),
       requiresApproval: false, // Auto-approved 2026-07-22: runs in an isolated temp dir with strict timeout + automatic cleanup by design -- gating it same as raw shell defeated the whole point of a sandboxed tool.
       // (was requiresApproval: true)
-      async execute({ code, language, timeoutMs }) {
+      async execute({ code, language, timeoutMs }, ctx) {
         const { randomUUID } = await import('crypto');
         const uuid = randomUUID();
-        const sandboxDir = resolve(workspaceRoot, '.local', 'sandboxes', uuid);
+        const root = toolWorkspaceRoot(ctx);
+        const sandboxDir = resolveInWorkspace(root, join('.local', 'sandboxes', uuid));
         await mkdir(sandboxDir, { recursive: true });
 
         let fileName = 'script';
@@ -2459,6 +2496,15 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
         const filePath = join(sandboxDir, fileName);
         await writeFile(filePath, code, 'utf8');
 
+        let executionResult: {
+          success: boolean;
+          stdout: string;
+          stderr: string;
+          exitCode: number | string;
+          sandboxDir: string;
+        };
+        let discardedFiles: string[] = [];
+        let discardedFilesTruncated = false;
         try {
           const { exec } = await import('child_process');
           const { promisify } = await import('util');
@@ -2467,9 +2513,14 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           const { stdout, stderr } = await execAsync(command, {
             cwd: sandboxDir,
             timeout: timeoutMs ?? 10000,
+            env: {
+              ...process.env,
+              APEX_WORKSPACE_ROOT: root,
+              WORKSPACE_ROOT: root,
+            },
           });
 
-          return {
+          executionResult = {
             success: true,
             stdout: stdout.slice(0, 5000),
             stderr: stderr.slice(0, 5000),
@@ -2477,7 +2528,7 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
             sandboxDir: uuid,
           };
         } catch (err: any) {
-          return {
+          executionResult = {
             success: false,
             stdout: err.stdout?.slice(0, 5000) ?? '',
             stderr: err.stderr?.slice(0, 5000) ?? err.message,
@@ -2486,11 +2537,29 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
           };
         } finally {
           try {
+            const generatedFiles = (await listSandboxFiles(sandboxDir))
+              .filter((path) => path !== fileName);
+            discardedFilesTruncated = generatedFiles.length > MAX_REPORTED_SANDBOX_FILES;
+            discardedFiles = generatedFiles
+              .slice(0, MAX_REPORTED_SANDBOX_FILES)
+              .sort();
+          } catch (listErr) {
+            console.error('Failed to list discarded sandbox files:', listErr);
+          }
+          try {
             await rm(sandboxDir, { recursive: true, force: true });
           } catch (cleanErr) {
             console.error('Failed to clean up sandbox directory:', cleanErr);
           }
         }
+        return {
+          ...executionResult,
+          discardedFiles,
+          discardedFilesTruncated,
+          warning: discardedFiles.length > 0 || discardedFilesTruncated
+            ? `Deleted ${discardedFiles.length}${discardedFilesTruncated ? '+' : ''} file(s) created in the temporary sandbox. Write deliverables with writeFile or the durable artifact tools.`
+            : undefined,
+        };
       },
     },
 
@@ -4142,12 +4211,11 @@ export function createBuiltinTools(workspaceRoot: string): ToolDefinition[] {
 
 let _registry: ToolRegistry | null = null;
 
-export function getToolRegistry(workspaceRoot?: string): ToolRegistry {
+export function getToolRegistry(_workspaceRoot?: string): ToolRegistry {
   if (!_registry) {
     _registry = new ToolRegistry();
-    const root = workspaceRoot ?? process.cwd();
     _registry.register(campaignSnapshotTool);
-    for (const tool of createBuiltinTools(root)) {
+    for (const tool of createBuiltinTools()) {
      _registry.register(tool);
     }
     // Goal-lifecycle / delegation-feedback / escalation tools. Always

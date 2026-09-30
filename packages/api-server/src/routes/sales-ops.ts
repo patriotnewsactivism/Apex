@@ -373,9 +373,9 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
           ? body.firstMessage.trim()
           : defaultFirstMessage(customerName || undefined);
 
-      const { getToolRegistry } = await import('@workspace/core');
-      const workspaceRoot = process.env.WORKSPACE_ROOT ?? process.cwd();
-      const registry = getToolRegistry(workspaceRoot);
+      const { getToolRegistry, getWorkspaceRoot } = await import('@workspace/core');
+      const workspaceRoot = getWorkspaceRoot();
+      const registry = getToolRegistry();
 
       const result = await registry.execute(
         'make_outbound_call',

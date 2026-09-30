@@ -3,6 +3,7 @@ import { db, approvals, tasks as tasksTable } from '@workspace/db';
 import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { BaseAgent as CoreBaseAgent, emitApexEvent } from './base-agent.js';
 import { getToolRegistry } from './tool-registry.js';
+import { getWorkspaceRoot } from './workspace-root.js';
 import { operatorAutoApproveAllEnabled } from './approval-policy.js';
 import {
   ApprovalYieldSignal,
@@ -186,7 +187,7 @@ export class BaseAgent extends CoreBaseAgent {
     if (!this.config.tools.includes(toolName)) {
       throw new Error(`Approval refused: tool ${toolName} is not allowed for agent ${this.id}`);
     }
-    const tool = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd()).get(toolName);
+    const tool = getToolRegistry().get(toolName);
     if (!tool || !tool.requiresApproval) {
       throw new Error(`Approval refused: ${toolName} is not a registered approval-gated tool`);
     }
@@ -281,7 +282,7 @@ export class BaseAgent extends CoreBaseAgent {
       agentId: this.id,
       taskId,
       goalId,
-      workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
+      workspaceRoot: getWorkspaceRoot(),
       requestApproval: (toolName, args, reason) =>
         this.requestHumanApproval(taskId, toolName, args, reason),
       delegateToRole: (targetRole, input) => this.delegateToRole(targetRole, {
@@ -323,7 +324,7 @@ export class BaseAgent extends CoreBaseAgent {
     const row = rows.find((candidate) => isApprovalDecision(candidate.status));
     if (!row || !isApprovalDecision(row.status)) return null;
 
-    const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+    const registry = getToolRegistry();
     const tool = registry.get(row.toolName);
     if (!tool || !tool.requiresApproval || !this.config.tools.includes(row.toolName)) {
       await db.update(approvals).set({

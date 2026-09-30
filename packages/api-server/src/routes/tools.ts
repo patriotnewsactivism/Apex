@@ -5,8 +5,8 @@ export function createToolsRouter() {
 
   // POST /api/tools/:name — manually invoke a registered tool
   router.post('/:name', async (req, res) => {
-    const { getToolRegistry } = await import('@workspace/core');
-    const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+    const { getToolRegistry, getWorkspaceRoot } = await import('@workspace/core');
+    const registry = getToolRegistry();
     const tool = registry.get(req.params.name);
     if (!tool) {
       res.status(404).json({ success: false, error: `Tool ${req.params.name} not found` });
@@ -21,7 +21,7 @@ export function createToolsRouter() {
     }
     const result = await registry.execute(req.params.name, req.body, {
       agentId: 'manual-console',
-      workspaceRoot: process.env.WORKSPACE_ROOT ?? process.cwd(),
+      workspaceRoot: getWorkspaceRoot(),
       requestApproval: async () => true,
     });
     res.json(result);
@@ -30,7 +30,7 @@ export function createToolsRouter() {
   // GET /api/tools — list available tools
   router.get('/', async (_req, res) => {
     const { getToolRegistry } = await import('@workspace/core');
-    const registry = getToolRegistry(process.env.WORKSPACE_ROOT ?? process.cwd());
+    const registry = getToolRegistry();
     const tools = registry.getAll().map((t) => ({
       name: t.name,
       description: t.description,

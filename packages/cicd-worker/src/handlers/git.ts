@@ -8,17 +8,14 @@
 // `execAsync(...)` for these four with NO explicit `cwd`, implicitly relying
 // on the long-lived monolithic server process's cwd already being the repo
 // root. This worker is a standalone process that may be launched from
-// anywhere, so all git commands here explicitly pass `cwd: workspaceRoot()`
-// -- same WORKSPACE_ROOT concept the fs handlers use -- instead of trusting
+// anywhere, so all git commands here explicitly use the shared canonical
+// workspace root -- the same root as the fs handlers -- instead of trusting
 // process.cwd() to already be correct.
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { getWorkspaceRoot } from '@workspace/core/workspace-root';
 
 const execAsync = promisify(exec);
-
-function workspaceRoot(): string {
-  return process.env.WORKSPACE_ROOT ?? process.cwd();
-}
 
 export interface GitStatusResult {
   branch: string;
@@ -27,7 +24,7 @@ export interface GitStatusResult {
 }
 
 export async function handleGitStatus(): Promise<GitStatusResult | { error: string }> {
-  const cwd = workspaceRoot();
+  const cwd = getWorkspaceRoot();
   try {
     const [branch, status, lastCommit] = await Promise.all([
       execAsync('git rev-parse --abbrev-ref HEAD', { cwd }),
@@ -52,7 +49,7 @@ export interface CreateBranchPayload {
 export async function handleCreateBranch(
   payload: CreateBranchPayload,
 ): Promise<{ success: boolean; branchName?: string; error?: string }> {
-  const cwd = workspaceRoot();
+  const cwd = getWorkspaceRoot();
   const branchName = payload.branchName;
   const valid = /^[A-Za-z0-9_\-/.]+$/.test(branchName) && !branchName.startsWith('-') && !branchName.includes('..');
   if (!valid) {
@@ -74,7 +71,7 @@ export interface PushPayload {
 export async function handlePush(
   payload: PushPayload,
 ): Promise<{ success: boolean; branch?: string; remote?: string; output?: string; error?: string }> {
-  const cwd = workspaceRoot();
+  const cwd = getWorkspaceRoot();
   const token = process.env.GITHUB_TOKEN_4;
   if (!token) {
     return { success: false, error: 'GITHUB_TOKEN_4 is not configured in this environment' };

@@ -25,6 +25,7 @@ import {
   BaseAgent,
   TaskQueue,
   getDefaultLLMConfig,
+  getWorkspaceRoot,
   isArtifactStoreConfigured,
   pullWorkspace,
   pushWorkspace,
@@ -155,7 +156,7 @@ export async function main(argv: string[]): Promise<number> {
   const worktree = (context.worktree as string | undefined) ?? 'main';
 
   // ── Step 2: sync the durable workspace (best-effort) ─────────────────────
-  let sandboxDir = resolve(process.env.WORKSPACE_ROOT ?? process.cwd(), '.local', 'executor', taskId);
+  let sandboxDir = resolve(getWorkspaceRoot(), '.local', 'executor', taskId);
   if (isArtifactStoreConfigured()) {
     try {
       const result = await pullWorkspace({

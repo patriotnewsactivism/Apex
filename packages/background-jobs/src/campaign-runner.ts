@@ -12,6 +12,7 @@ import {
   emitApexEvent,
   getDefaultLLMConfig,
   getToolRegistry,
+  getWorkspaceRoot,
   normalizeIndustry,
   type ResearchedLeadInput,
   type ToolContext,
@@ -525,7 +526,7 @@ export class CampaignRunner {
   ) {
     this.toolContext = {
       agentId: 'apex-campaign-runner',
-      workspaceRoot: process.cwd(),
+      workspaceRoot: getWorkspaceRoot(),
       // The runner only ever calls read/write tools that are not approval
       // gated. Refusing here rather than auto-approving means that if a gated
       // tool is ever wired in by mistake it fails loudly instead of silently

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBuildInfo } from '../../../core/src/runtime-health.js';
 import { ensureRuntimeProvenance, runtimeProvenanceRequiresGate } from '../../../core/src/runtime-provenance.js';
+import { getWorkspaceRoot } from '../../../core/src/workspace-root.js';
 
 const audit = vi.hoisted(() => ({
   values: vi.fn(),
@@ -72,6 +73,15 @@ describe('Railway runtime provenance', () => {
     expect(result.snapshot.repo_root).toBe(root);
     expect(result.snapshot.target_workspace_root).toBe(root);
     expect(result.snapshot.resolved_workspace_package).toBe('@workspace/api-server');
+    expect(result.ok, result.reasons.join('; ')).toBe(true);
+  });
+
+  it('uses the same explicit Docker workspace root as the provenance gate', async () => {
+    vi.stubEnv('WORKSPACE_ROOT', root);
+    vi.stubEnv('APEX_CANONICAL_REPO_ROOT', join(root, 'wrong-root'));
+    const result = await check();
+    expect(getWorkspaceRoot()).toBe(root);
+    expect(result.snapshot.repo_root).toBe(getWorkspaceRoot());
     expect(result.ok, result.reasons.join('; ')).toBe(true);
   });
 
