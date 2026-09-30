@@ -51,7 +51,7 @@ After the backend deploy and Cartesia tool configuration, test with a Cartesia p
 
 ### Railway credential resilience
 
-The canonical Cartesia sales tools now use versioned tool names. If `CARTESIA_TOOL_SECRET` or
+The canonical Cartesia sales tools now use versioned tool names with an 8-character credential-generation suffix. If `CARTESIA_TOOL_SECRET` or
 `CARTESIA_WEBHOOK_SECRET` is absent after a Railway migration, APEX derives distinct HMAC
 credentials from the configured `CARTESIA_API_KEY`. Explicit secrets still take precedence when
 present. The derived values are never logged. Versioning avoids reusing legacy Cartesia webhook
