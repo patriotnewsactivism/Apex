@@ -96,7 +96,7 @@ export const BUILD_MY_BOT_INTRO: SalesPlaybook = {
     ].join('\n'),
   },
   call: {
-    firstMessage: 'The reason I called is pretty simple. We help businesses like {{companyName}} catch missed calls before they turn into lost jobs. What do you normally do when a call comes in and nobody can answer?',
+    firstMessage: 'We help businesses like {{companyName}} catch missed calls before they turn into lost jobs. When a call comes in and nobody can answer, what happens to it?',
     assistantPrompt: [
       'You are Don, a BuildMyBot sales rep on a live phone call. The person who answered is {{buyerName}}, the buyer at {{companyName}}, a {{industry}} business in {{city}}.',
       'Goal: have a real conversation and earn a ten-minute follow-up. Do not quote a price. Do not say they can subscribe or pay today. Do not invent product features. BuildMyBot answers calls and messages the business would otherwise miss, captures the lead, and helps book the next step.',
