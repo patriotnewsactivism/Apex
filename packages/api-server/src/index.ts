@@ -59,6 +59,7 @@ import { createArtifactsRouter } from './routes/artifacts.js';
 import { createAutonomyRouter } from './routes/autonomy.js';
 import { createGovernanceRouter } from './routes/governance.js';
 import { createSalesOpsRouter } from './routes/sales-ops.js';
+import { createPhoneLinesRouter } from './routes/phone-lines.js';
 import { createSalesFloorRouter } from './routes/sales-floor.js';
 import { createPublicWebinarRouter, createWebinarAdminRouter } from './routes/webinars.js';
 import { requireAdminAuth } from './middleware/auth.js';
@@ -548,6 +549,7 @@ async function main() {
   app.use('/api/governance', createGovernanceRouter());
   app.use('/api/sales-ops', createSalesOpsRouter(ceo));
   app.use('/api/sales-ops', createSalesFloorRouter());
+  app.use('/api/sales-ops', createPhoneLinesRouter());
   app.use('/api/call-bridge', createCallBridgeRouter());
   app.use('/api/webinar/admin', createWebinarAdminRouter(ceo));
 

@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { db, researchedLeads, logs, smsMessages, callBridgeSessions, callOutcomes } from '@workspace/db';
 import { eq, or, desc } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
-import { assertOutboundAllowed, getWorkspaceRoot } from '@workspace/core';
+import { assertOutboundAllowed, getWorkspaceRoot, markLineBusy, markLineFree } from '@workspace/core';
 
 // ─── Apex Front Desk — Telnyx AI Assistant tool-calling surface ─────────────
 //
@@ -109,6 +109,25 @@ export function extractCallerNumber(body: Record<string, unknown>): string {
     body.caller_number,
     call?.from,
     payload?.from,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+  return '';
+}
+
+/** The number the caller dialed, i.e. which of OUR lines this call is on. */
+function extractDialedNumber(body: Record<string, unknown>): string {
+  const data = body.data as Record<string, unknown> | undefined;
+  const dataPayload = data?.payload as Record<string, unknown> | undefined;
+  const payload = body.payload as Record<string, unknown> | undefined;
+  const candidates = [
+    dataPayload?.telnyx_agent_target,
+    dataPayload?.to,
+    payload?.telnyx_agent_target,
+    payload?.to,
+    body.telnyx_agent_target,
+    body.to,
   ];
   for (const c of candidates) {
     if (typeof c === 'string' && c.trim()) return c.trim();
@@ -496,6 +515,11 @@ export async function processTelnyxAssistantLifecycleEvent(eventInput: Record<st
     }
 
     if (eventType === 'call.conversation.ended') {
+      await markLineFree({
+        callId,
+        lineNumber: typeof payload.to === 'string' ? payload.to : null,
+        reason: typeof payload.reason === 'string' ? payload.reason : 'conversation_ended',
+      });
       const callerNumber = typeof payload.from === 'string' ? payload.from : '';
       const [lead, priorCalls] = await Promise.all([
         findKnownCaller(callerNumber),
@@ -582,6 +606,17 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const callerNumber = extractCallerNumber(body);
       const callControlId = extractCallControlId(body);
+      const dialedNumber = extractDialedNumber(body);
+      if (dialedNumber) {
+        // Fire-and-forget: the assistant must not wait on lamp bookkeeping.
+        void markLineBusy({
+          lineNumber: dialedNumber,
+          direction: 'inbound',
+          source: 'telnyx-call-start',
+          remoteNumber: callerNumber || null,
+          callId: callControlId || null,
+        });
+      }
       const ownerNumber = process.env.TELNYX_OWNER_NUMBER ?? '';
       if (callerNumber && ownerNumber && normalizePhone(callerNumber) === normalizePhone(ownerNumber)) {
         console.log('[Telnyx Assistant] dynamic-variables request', {

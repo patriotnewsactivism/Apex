@@ -59,6 +59,24 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Authenticated binary fetch. An <audio src> cannot send the bearer token, so
+ *  call recordings are pulled here and handed to the player as an object URL. */
+async function apiFetchBlob(path: string): Promise<Blob> {
+  const token = localStorage.getItem('apex_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${API}${path}`, { headers });
+  if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('apex_token');
+      window.dispatchEvent(new Event('apex:unauthorized'));
+    }
+    const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
+    throw new Error(err.error ?? err.message ?? `HTTP ${res.status}`);
+  }
+  return res.blob();
+}
+
 /** Same auth as apiFetch, but returns the body verbatim. `/diagnostics?format=text`
  *  answers in plain text on purpose — it is meant to be pasted into an issue or a
  *  chat, so parsing it into JSON and re-rendering it would defeat the point. */
@@ -699,6 +717,13 @@ export const api = {
       const query = qs.toString();
       return apiFetch<{ outcomes: CallOutcome[] }>(`/sales-ops/call-outcomes${query ? `?${query}` : ''}`);
     },
+    /** Every owned phone line with busy/idle state, plus the main-lamp rollup. */
+    lines: () => apiFetch<PhoneLinesResponse>('/sales-ops/lines'),
+    /** Call audio as a Blob (fresh signed Telnyx link resolved server-side). */
+    recordingBlob: (callId: string) => apiFetchBlob(`/sales-ops/calls/${encodeURIComponent(callId)}/recording`),
+    /** Full transcript + summary for one call. */
+    transcript: (callId: string) =>
+      apiFetch<CallTranscript>(`/sales-ops/calls/${encodeURIComponent(callId)}/transcript`),
     /** Place one operator-initiated outbound call. */
     placeCall: (body: SalesOpsCallRequest) =>
       apiFetch<SalesOpsCallResult>('/sales-ops/call', { method: 'POST', body: JSON.stringify(body) }),
@@ -849,6 +874,41 @@ export interface CallOutcome {
   costUsd: number | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PhoneLineStatus {
+  number: string;
+  label: string;
+  kind: 'outbound-sales' | 'inbound' | 'voice';
+  busy: boolean;
+  current: {
+    direction: 'inbound' | 'outbound';
+    remoteNumber: string | null;
+    remoteName: string | null;
+    callId: string | null;
+    source: string;
+    startedAt: string;
+    seconds: number;
+  } | null;
+}
+
+export interface PhoneLinesResponse {
+  lines: PhoneLineStatus[];
+  unlisted: Array<{ number: string; startedAt: string }>;
+  anyBusy: boolean;
+  busyCount: number;
+  checkedAt: string;
+}
+
+export interface CallTranscript {
+  callId: string;
+  customerName: string | null;
+  customerNumber: string;
+  disposition: string;
+  summary: string | null;
+  transcript: string | null;
+  endedReason: string | null;
+  createdAt: string;
 }
 
 export interface SalesOpsOverview {

@@ -8,6 +8,7 @@ import { EmailCampaignsPanel } from './EmailCampaignsPanel.js';
 import { SmsPanel } from './SmsPanel.js';
 import { CallBridgePanel } from './CallBridgePanel.js';
 import { CallLogPanel } from './CallLogPanel.js';
+import { LineLampsPanel } from './LineLampsPanel.js';
 import { Activity, PhoneCall, MessageSquare, Mail, Zap, Crosshair } from 'lucide-react';
 
 // ─── Sales Operations — the one-stop shop ──────────────────────────────────
@@ -116,6 +117,7 @@ export function SalesOperationsPanel() {
         </div>
       )}
 
+      {(tab === 'overview' || tab === 'calls') && <LineLampsPanel />}
       {tab === 'overview' && <SalesFloor />}
       {tab === 'overview' && overview && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

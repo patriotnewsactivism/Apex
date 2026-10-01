@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { api, type CallOutcome } from '../lib/api.js';
-import { Phone, ChevronDown, ChevronRight, PhoneOff } from 'lucide-react';
+import { Phone, ChevronDown, ChevronRight, PhoneOff, Play, FileText } from 'lucide-react';
 
 // APEX call attempts and provider call outcomes share call_outcomes. Cartesia
 // call-event webhooks also append transcript and summary after the call.
@@ -44,10 +44,102 @@ function formatWhen(iso: string | null): string {
   return `${Math.round(ms / 86_400_000)}d ago`;
 }
 
+/** Loads the recording only when asked (audio is large and most rows are never
+ *  played), through the authenticated API so the bearer token is sent. */
+function RecordingPlayer({ callId }: { callId: string }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [src, setSrc] = useState<string | null>(null);
+  const [message, setMessage] = useState('');
+
+  // Release the object URL when the row closes or the component unmounts.
+  useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
+
+  const load = async () => {
+    setState('loading');
+    setMessage('');
+    try {
+      const blob = await api.salesOps.recordingBlob(callId);
+      setSrc(URL.createObjectURL(blob));
+      setState('ready');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Could not load the recording.');
+      setState('error');
+    }
+  };
+
+  if (state === 'ready' && src) {
+    // eslint-disable-next-line jsx-a11y/media-has-caption
+    return <audio controls autoPlay src={src} style={{ width: '100%', maxWidth: 420, height: 34 }} />;
+  }
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <button
+        onClick={load}
+        disabled={state === 'loading'}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', fontSize: 11,
+          borderRadius: 4, cursor: state === 'loading' ? 'wait' : 'pointer',
+          background: 'rgba(245,166,35,0.12)', color: '#f5a623', border: '1px solid rgba(245,166,35,0.4)',
+        }}
+      >
+        <Play size={11} /> {state === 'loading' ? 'Loading audio...' : 'Listen to call'}
+      </button>
+      {state === 'error' && <span style={{ fontSize: 11, color: '#c45c66' }}>{message}</span>}
+    </div>
+  );
+}
+
+/** Transcript fetched on demand so it is reachable even when the list payload
+ *  was trimmed, and clearly says so when a call has none stored. */
+function TranscriptViewer({ callId, inline }: { callId: string; inline: string | null }) {
+  const [text, setText] = useState<string | null>(inline);
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>(inline ? 'done' : 'idle');
+  const [open, setOpen] = useState(false);
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (next && state === 'idle') {
+      setState('loading');
+      try {
+        const res = await api.salesOps.transcript(callId);
+        setText(res.transcript);
+        setState('done');
+      } catch {
+        setState('error');
+      }
+    }
+  };
+
+  return (
+    <div>
+      <button
+        onClick={toggle}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', fontSize: 11,
+          borderRadius: 4, cursor: 'pointer', background: 'rgba(255,255,255,0.05)',
+          color: 'var(--color-apex-text)', border: '1px solid rgba(255,255,255,0.14)',
+        }}
+      >
+        <FileText size={11} /> {open ? 'Hide transcript' : 'View transcript'}
+      </button>
+      {open && (
+        <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', lineHeight: 1.5, maxHeight: 300, overflowY: 'auto', marginTop: 6, whiteSpace: 'pre-wrap' }}>
+          {state === 'loading' && 'Loading transcript...'}
+          {state === 'error' && 'Could not load the transcript.'}
+          {state === 'done' && (text?.trim() ? text : 'No transcript was stored for this call.')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CallRow({ call }: { call: CallOutcome }) {
   const [open, setOpen] = useState(false);
   const color = DISPOSITION_COLOR[call.disposition] ?? '#7d8a91';
-  const hasDetail = Boolean(call.transcript || call.summary || call.objection || call.nextAction || call.endedReason);
+  // Every call is expandable: audio and transcript load on demand, so even a
+  // row with no stored text can still be listened to.
+  const hasDetail = call.disposition !== 'failed_to_dial' || Boolean(call.endedReason);
 
   return (
     <div style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
@@ -134,14 +226,10 @@ function CallRow({ call }: { call: CallOutcome }) {
               <strong style={{ color: 'var(--color-apex-text)' }}>Next action:</strong> {call.nextAction}
             </div>
           )}
-          {call.transcript && (
-            <details>
-              <summary style={{ fontSize: 11, color: 'var(--color-apex-muted)', cursor: 'pointer' }}>Full transcript</summary>
-              <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', lineHeight: 1.5, maxHeight: 260, overflowY: 'auto', marginTop: 6, whiteSpace: 'pre-wrap' }}>
-                {call.transcript}
-              </div>
-            </details>
-          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 2 }}>
+            <RecordingPlayer callId={call.callId} />
+            <TranscriptViewer callId={call.callId} inline={call.transcript} />
+          </div>
         </div>
       )}
     </div>

@@ -1072,6 +1072,32 @@ export async function migrate() {
     CREATE UNIQUE INDEX IF NOT EXISTS call_outcomes_call_id_unique
     ON call_outcomes (call_id)
   `;
+  // Live phone-line state for the Sales Ops lamps. One row per call leg that
+  // touched one of our numbers. A line is "busy" while any row for it has
+  // ended_at IS NULL and started_at is recent (stale rows are swept, see
+  // routes/phone-lines.ts), so a missed hangup event can never pin a lamp on.
+  await client`
+    CREATE TABLE IF NOT EXISTS line_calls (
+      id text PRIMARY KEY,
+      line_number text NOT NULL,
+      direction text NOT NULL DEFAULT 'outbound',
+      remote_number text,
+      remote_name text,
+      call_id text,
+      source text NOT NULL DEFAULT 'unknown',
+      started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz,
+      end_reason text
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS line_calls_line_open_idx
+    ON line_calls (line_number, ended_at, started_at DESC)
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS line_calls_call_id_unique
+    ON line_calls (call_id) WHERE call_id IS NOT NULL
+  `;
   // The dashboard's "what's booked" query: future appointments, soonest first.
   await client`
     CREATE INDEX IF NOT EXISTS call_outcomes_appointment_idx

@@ -1,3 +1,4 @@
+import { markLineBusy } from './line-activity.js';
 const CARTESIA_API = 'https://api.cartesia.ai';
 export const CARTESIA_API_VERSION = '2026-08-14';
 export const CARTESIA_SALES_AGENT_NAME = 'APEX Sales — BuildMyBot';
@@ -341,6 +342,16 @@ export async function startCartesiaSalesCall(
     const detail = typeof call?.error === 'string' ? call.error : 'Cartesia did not issue a call ID.';
     throw new Error(`Cartesia outbound call could not start: ${detail}`);
   }
+
+  // Light the line lamp. Keyed on the same id the webhook uses to close it.
+  await markLineBusy({
+    lineNumber: APEX_CARTESIA_CALLER_NUMBER,
+    direction: 'outbound',
+    source: 'cartesia-dial',
+    remoteNumber: toNumber,
+    remoteName: input.customerName ?? null,
+    callId: `cartesia:${call.agent_call_id}`,
+  });
 
   return {
     callId: call.agent_call_id,

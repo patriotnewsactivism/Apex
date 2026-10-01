@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, callOutcomes, providerEvents, researchedLeads, smsMessages, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
-import { createQueuedEmailSend, deliverQueuedEmailSend, evaluateOutboundAction } from '@workspace/core';
+import { createQueuedEmailSend, deliverQueuedEmailSend, evaluateOutboundAction, markLineFree } from '@workspace/core';
 import { cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
 
 // Cartesia HTTP tools and lifecycle events are different credentials. Both
@@ -741,6 +741,9 @@ export function createCartesiaSalesRouter(): Router {
 
     try {
       const call = event.call ?? {};
+      if (event.type === 'call_completed' || event.type === 'call_failed') {
+        await markLineFree({ callId: outcomeId(event.call_id), reason: event.type });
+      }
       const params = call.telephony_params ?? {};
       const phone = params.direction === 'inbound' ? params.from : params.to;
       const [current] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, outcomeId(event.call_id))).limit(1);

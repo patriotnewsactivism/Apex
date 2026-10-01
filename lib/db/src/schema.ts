@@ -620,6 +620,21 @@ export const callOutcomes = pgTable('call_outcomes', {
   callIdUniq: uniqueIndex('call_outcomes_call_id_unique').on(table.callId),
 }));
 
+// ─── Phone-line activity (drives the Sales Ops line lamps) ────────────────────
+export const lineCalls = pgTable('line_calls', {
+  id: text('id').primaryKey(),
+  lineNumber: text('line_number').notNull(),
+  // outbound | inbound
+  direction: text('direction').notNull().default('outbound'),
+  remoteNumber: text('remote_number'),
+  remoteName: text('remote_name'),
+  callId: text('call_id'),
+  source: text('source').notNull().default('unknown'),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
+  endReason: text('end_reason'),
+});
+
 // ─── Live Voice Chat (browser mic call with Apex, packages/api-server/src/live-voice.ts) ──
 //
 // Before this, the transcript rendered in QuickChat.tsx lived only in React
