@@ -13,9 +13,6 @@ const EVENT_WEBHOOK_URL = `${TOOL_BASE_URL}/events`;
 const EVENT_WEBHOOK_NAME = 'APEX Sales Events';
 const DEFAULT_MODEL_ID = process.env.CARTESIA_SALES_MODEL_ID?.trim() || 'gpt-5.4-mini';
 const OWNER_TRANSFER_NUMBER = '+18328804970';
-// Human-sounding outbound calls need a short beat after PSTN answer before
-// APEX says anything. Keep this inside the requested 1–2 second window.
-const OUTBOUND_ANSWER_BEAT_SECONDS = 1.5;
 
 type AgentSummary = { id?: string; name?: string; description?: string | null };
 type AgentPage = { data?: AgentSummary[] };
@@ -325,10 +322,12 @@ function agentConfig(toolIds: string[], voiceId: string) {
       },
     },
     turn: {
-      // A 1.5 second opening window lands in the requested 1–2 second range:
-      // if the callee speaks, normal turn-taking waits for them; if they stay
-      // quiet, the agent can take the first conversational turn naturally.
-      initial_silence_timeout_secs: OUTBOUND_ANSWER_BEAT_SECONDS,
+      // Managed Agents accepts only the inactivity settings below.
+      // initial_silence_timeout_secs is REJECTED by Cartesia and blocks the
+      // whole reconcile, so it must not come back. The opening beat is handled
+      // by initial_message: null (agent stays silent until the callee speaks)
+      // plus the first-turn rules in the system prompt; the 5s check-in covers
+      // a callee who answers and says nothing.
       inactivity_end_call_secs: 120,
       inactivity_check_in_secs: 5,
     },
