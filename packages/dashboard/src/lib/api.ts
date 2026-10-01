@@ -720,6 +720,8 @@ export const api = {
     playbooks: () => apiFetch<{ playbooks: SalesPlaybookSummary[] }>('/sales-ops/playbooks'),
     preview: () => apiFetch<RehearsalPreview>('/sales-ops/rehearsal/preview'),
     rehearse: () => apiFetch<RehearsalResult>('/sales-ops/rehearsal', { method: 'POST' }),
+    rehearseLead: (leadId: string) =>
+      apiFetch<RehearsalResult & { leadId?: string; leadCompany?: string }>(`/sales-ops/rehearsal/lead/${encodeURIComponent(leadId)}`, { method: 'POST' }),
     savePolicy: (body: OutboundPolicyInput) =>
       apiFetch<{ policy: OutboundPolicyView }>('/sales-ops/outbound-policy', { method: 'PUT', body: JSON.stringify(body) }),
     killSwitch: (on: boolean) =>
@@ -1010,7 +1012,7 @@ export interface RehearsalPreview {
 
 export interface RehearsalResult {
   email: { success: boolean; status: string; error?: string; providerId?: string };
-  call: { id?: string; error?: string };
+  call: { success?: boolean; id?: string; callId?: string; error?: string };
   playbookId: string;
   version: number;
 }

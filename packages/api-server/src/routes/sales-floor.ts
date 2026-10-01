@@ -162,118 +162,50 @@ export function createSalesFloorRouter(): Router {
         res.status(400).json({ error: 'Save your rehearsal email, phone, name, and company before selling to yourself.' });
         return;
       }
-      if (policy.killSwitch) {
-        res.status(409).json({ error: 'The outbound kill switch is on.' });
-        return;
-      }
-      const playbook = getSalesPlaybook('buildmybot-intro');
-      if (!playbook) {
-        res.status(500).json({ error: 'The intro playbook is missing.' });
-        return;
-      }
-      const fields = rehearsalPersonaFields({
+      const outcome = await runRehearsal(policy, {
+        leadId: REHEARSAL_LEAD_ID,
         buyerName: policy.personaName,
         companyName: policy.personaCompany,
         industry: policy.personaIndustry || 'local service',
         city: policy.personaCity || 'your area',
+        outreachAngle: null,
+        persistPersonaLead: true,
       });
-      const subject = renderPlaybookTemplate(playbook.openEmail.subject, fields);
-      const html = renderPlaybookTemplate(playbook.openEmail.html, fields);
-      const text = renderPlaybookTemplate(playbook.openEmail.text, fields);
-      if (subject.missing.length || html.missing.length) {
-        res.status(400).json({ error: `Playbook is missing ${[...subject.missing, ...html.missing].join(', ')}.` });
+      res.status(outcome.status).json(outcome.body);
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // Practice-pitch a REAL lead: the email and call are written from that lead's
+  // own details but delivered ONLY to the operator's rehearsal email and phone.
+  // The lead is never contacted, and nothing on the lead record is modified.
+  router.post('/rehearsal/lead/:leadId', async (req, res) => {
+    try {
+      const policy = await loadOutboundPolicy();
+      if (!policy?.rehearsalEmail || !policy.rehearsalPhone) {
+        res.status(400).json({ error: 'Save your rehearsal email and phone in the Sales floor profile first.' });
         return;
       }
-      if (!sameEmail(policy.rehearsalEmail, policy.rehearsalEmail)) {
-        res.status(400).json({ error: 'Rehearsal email is not usable.' });
+      const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, req.params.leadId)).limit(1);
+      if (!lead) {
+        res.status(404).json({ error: 'That lead no longer exists.' });
         return;
       }
-
-      await db.insert(researchedLeads).values({
-        id: REHEARSAL_LEAD_ID,
-        companyName: policy.personaCompany,
-        industry: policy.personaIndustry,
-        city: policy.personaCity,
-        decisionMakerName: policy.personaName,
-        contactEmail: policy.rehearsalEmail,
-        contactPhone: policy.rehearsalPhone,
-        contactResearchStatus: 'complete',
-        fitReason: 'Operator rehearsal persona. Not a real prospect.',
-        outreachAngle: fields.outreachAngle ?? null,
-        status: 'new',
-        source: 'rehearsal',
-        researchedByAgentId: 'operator',
-        createdAt: new Date(),
-      }).onConflictDoUpdate({
-        target: researchedLeads.id,
-        set: {
-          companyName: policy.personaCompany,
-          industry: policy.personaIndustry,
-          city: policy.personaCity,
-          decisionMakerName: policy.personaName,
-          contactEmail: policy.rehearsalEmail,
-          contactPhone: policy.rehearsalPhone,
-          outreachAngle: fields.outreachAngle ?? null,
-          source: 'rehearsal',
-        },
-      });
-
-      const sendId = crypto.randomUUID();
-      await createQueuedEmailSend({
-        id: sendId,
-        leadId: REHEARSAL_LEAD_ID,
-        toEmail: policy.rehearsalEmail,
-        toName: policy.personaName,
-        subject: subject.text,
-        createdByAgentId: 'operator',
-      });
-      const email = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, subject.text, html.text, { text: text.text });
-      await recordOutboundAudit({
-        toolName: 'send_email',
-        destination: policy.rehearsalEmail,
-        leadId: REHEARSAL_LEAD_ID,
-        policyMode: policy.mode,
-        providerId: email.providerId ?? null,
-        rehearsal: true,
-        detail: email.success ? 'rehearsal open email' : email.error ?? 'rehearsal email failed',
-      });
-
-      const callOpening = renderPlaybookTemplate(playbook.call.firstMessage, fields);
-      const callPrompt = renderPlaybookTemplate(playbook.call.assistantPrompt, fields);
-      if (callOpening.missing.length || callPrompt.missing.length) {
-        res.status(400).json({ error: `Call playbook is missing ${[...new Set([...callOpening.missing, ...callPrompt.missing])].join(', ')}.` });
+      if (lead.id === REHEARSAL_LEAD_ID) {
+        res.status(400).json({ error: 'Use Sell to me for your own rehearsal persona.' });
         return;
       }
-
-      const call = await startCartesiaSalesCall({
-        toNumber: policy.rehearsalPhone,
-        customerName: policy.personaName,
-        firstMessage: callOpening.text,
-        assistantPrompt: callPrompt.text,
-        playbookId: playbook.id,
-        leadId: REHEARSAL_LEAD_ID,
-        createdByAgentId: 'operator',
-      }).then(
-        (started) => ({ success: true as const, ...started }),
-        (err: unknown) => ({ success: false as const, error: err instanceof Error ? err.message : String(err) }),
-      );
-
-      await recordOutboundAudit({
-        toolName: 'make_outbound_call',
-        destination: policy.rehearsalPhone,
-        leadId: REHEARSAL_LEAD_ID,
-        policyMode: policy.mode,
-        providerId: call.success ? call.callId : null,
-        rehearsal: true,
-        detail: call.success ? 'canonical Cartesia rehearsal call' : call.error,
+      const outcome = await runRehearsal(policy, {
+        leadId: lead.id,
+        buyerName: lead.decisionMakerName || 'there',
+        companyName: lead.companyName,
+        industry: lead.industry || 'local service',
+        city: lead.city || 'your area',
+        outreachAngle: lead.outreachAngle ?? null,
+        persistPersonaLead: false,
       });
-
-      res.status(email.success || call.success ? 201 : 502).json({
-        email,
-        call,
-        playbookId: playbook.id,
-        version: playbook.version,
-      });
+      res.status(outcome.status).json({ ...outcome.body, leadId: lead.id, leadCompany: lead.companyName });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }
@@ -365,6 +297,137 @@ export function createSalesFloorRouter(): Router {
   });
 
   return router;
+}
+
+type RehearsalTarget = {
+  leadId: string;
+  buyerName: string;
+  companyName: string;
+  industry: string;
+  city: string;
+  outreachAngle: string | null;
+  persistPersonaLead: boolean;
+};
+
+type RehearsalPolicy = NonNullable<Awaited<ReturnType<typeof loadOutboundPolicy>>>;
+
+/**
+ * Sends the designed email to the OPERATOR's rehearsal address and calls the
+ * OPERATOR's rehearsal phone, written as if the target were the buyer. The
+ * target's own email/phone are never used as a destination.
+ */
+async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
+  if (!policy.rehearsalEmail || !policy.rehearsalPhone) {
+    return { status: 400, body: { error: 'Rehearsal email and phone are required.' } };
+  }
+  if (policy.killSwitch) {
+    return { status: 409, body: { error: 'The outbound kill switch is on.' } };
+  }
+  const playbook = getSalesPlaybook('buildmybot-intro');
+  if (!playbook) return { status: 500, body: { error: 'The intro playbook is missing.' } };
+
+  const fields = rehearsalPersonaFields({
+    buyerName: target.buyerName,
+    companyName: target.companyName,
+    industry: target.industry,
+    city: target.city,
+  });
+  if (target.outreachAngle?.trim()) fields.outreachAngle = target.outreachAngle.trim();
+
+  const subject = renderPlaybookTemplate(playbook.openEmail.subject, fields);
+  const html = renderPlaybookTemplate(playbook.openEmail.html, fields);
+  const text = renderPlaybookTemplate(playbook.openEmail.text, fields);
+  if (subject.missing.length || html.missing.length) {
+    return { status: 400, body: { error: `Playbook is missing ${[...subject.missing, ...html.missing].join(', ')}.` } };
+  }
+
+  if (target.persistPersonaLead) {
+    await db.insert(researchedLeads).values({
+      id: target.leadId,
+      companyName: target.companyName,
+      industry: target.industry,
+      city: target.city,
+      decisionMakerName: target.buyerName,
+      contactEmail: policy.rehearsalEmail,
+      contactPhone: policy.rehearsalPhone,
+      contactResearchStatus: 'complete',
+      fitReason: 'Operator rehearsal persona. Not a real prospect.',
+      outreachAngle: fields.outreachAngle ?? null,
+      status: 'new',
+      source: 'rehearsal',
+      researchedByAgentId: 'operator',
+      createdAt: new Date(),
+    }).onConflictDoUpdate({
+      target: researchedLeads.id,
+      set: {
+        companyName: target.companyName,
+        industry: target.industry,
+        city: target.city,
+        decisionMakerName: target.buyerName,
+        contactEmail: policy.rehearsalEmail,
+        contactPhone: policy.rehearsalPhone,
+        outreachAngle: fields.outreachAngle ?? null,
+        source: 'rehearsal',
+      },
+    });
+  }
+
+  const sendId = crypto.randomUUID();
+  await createQueuedEmailSend({
+    id: sendId,
+    leadId: target.leadId,
+    toEmail: policy.rehearsalEmail,
+    toName: policy.personaName ?? target.buyerName,
+    subject: `[Practice] ${subject.text}`,
+    createdByAgentId: 'operator',
+  });
+  const email = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, `[Practice] ${subject.text}`, html.text, { text: text.text });
+  await recordOutboundAudit({
+    toolName: 'send_email',
+    destination: policy.rehearsalEmail,
+    leadId: target.leadId,
+    policyMode: policy.mode,
+    providerId: email.providerId ?? null,
+    rehearsal: true,
+    detail: email.success ? 'rehearsal open email' : email.error ?? 'rehearsal email failed',
+  });
+
+  const callOpening = renderPlaybookTemplate(playbook.call.firstMessage, fields);
+  const callPrompt = renderPlaybookTemplate(playbook.call.assistantPrompt, fields);
+  if (callOpening.missing.length || callPrompt.missing.length) {
+    return {
+      status: 400,
+      body: { email, error: `Call playbook is missing ${[...new Set([...callOpening.missing, ...callPrompt.missing])].join(', ')}.` },
+    };
+  }
+
+  const call = await startCartesiaSalesCall({
+    toNumber: policy.rehearsalPhone,
+    customerName: policy.personaName ?? target.buyerName,
+    firstMessage: callOpening.text,
+    assistantPrompt: callPrompt.text,
+    playbookId: playbook.id,
+    leadId: target.leadId,
+    createdByAgentId: 'operator',
+  }).then(
+    (started) => ({ success: true as const, ...started }),
+    (err: unknown) => ({ success: false as const, error: err instanceof Error ? err.message : String(err) }),
+  );
+
+  await recordOutboundAudit({
+    toolName: 'make_outbound_call',
+    destination: policy.rehearsalPhone,
+    leadId: target.leadId,
+    policyMode: policy.mode,
+    providerId: call.success ? call.callId : null,
+    rehearsal: true,
+    detail: call.success ? 'canonical Cartesia rehearsal call' : call.error,
+  });
+
+  return {
+    status: email.success || call.success ? 201 : 502,
+    body: { email, call, playbookId: playbook.id, version: playbook.version },
+  };
 }
 
 function textOrNull(value: unknown): string | null {

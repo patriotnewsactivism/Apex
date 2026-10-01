@@ -76,6 +76,18 @@ export function LeadsPanel() {
     refetchInterval: 10000,
   });
 
+  const [practiceNote, setPracticeNote] = useState<Record<string, string>>({});
+  const practice = useMutation({
+    mutationFn: (leadId: string) => api.salesFloor.rehearseLead(leadId),
+    onMutate: (leadId) => setPracticeNote((n) => ({ ...n, [leadId]: 'Calling you…' })),
+    onSuccess: (result, leadId) => {
+      const emailPart = result.email?.success ? 'email sent' : `email failed${result.email?.error ? `: ${result.email.error}` : ''}`;
+      const callPart = result.call?.success ? 'calling your phone' : `call failed${result.call?.error ? `: ${result.call.error}` : ''}`;
+      setPracticeNote((n) => ({ ...n, [leadId]: `${emailPart}; ${callPart}` }));
+    },
+    onError: (err, leadId) =>
+      setPracticeNote((n) => ({ ...n, [leadId]: err instanceof Error ? err.message : 'Practice failed' })),
+  });
   const updateStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => api.leads.updateStatus(id, status),
     onSuccess: () => {
@@ -375,6 +387,7 @@ export function LeadsPanel() {
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Pipeline</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Status</th>
                   <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Outreach Angle</th>
+                  <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--color-apex-muted)', fontWeight: 600, fontSize: 10, textTransform: 'uppercase' }}>Practice</th>
                 </tr>
               </thead>
               <tbody>
@@ -502,10 +515,26 @@ export function LeadsPanel() {
                             {lead.outreachAngle || '—'}
                           </div>
                         </td>
+                        <td style={{ padding: '8px 12px', minWidth: 150 }} onClick={(e) => e.stopPropagation()}>
+                          <button
+                            className="btn-secondary"
+                            disabled={practice.isPending}
+                            onClick={(e) => { e.stopPropagation(); practice.mutate(lead.id); }}
+                            title="Email and call YOU with this lead's pitch. The lead is never contacted."
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap' }}
+                          >
+                            <Phone size={12} /> Practice pitch
+                          </button>
+                          {practiceNote[lead.id] && (
+                            <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', marginTop: 4, whiteSpace: 'normal' }}>
+                              {practiceNote[lead.id]}
+                            </div>
+                          )}
+                        </td>
                       </motion.tr>
                       {isExpanded && (
                         <tr key={`${lead.id}-detail`}>
-                          <td colSpan={8} style={{ padding: '12px 24px', background: 'rgba(0,0,0,0.2)' }}>
+                          <td colSpan={9} style={{ padding: '12px 24px', background: 'rgba(0,0,0,0.2)' }}>
                             <div className="apex-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                               <div>
                                 <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', textTransform: 'uppercase', fontWeight: 600, marginBottom: 4 }}>
