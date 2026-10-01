@@ -170,10 +170,11 @@ check(
 );
 
 check(
-  'outbound sales waits a 1.5s answer beat, yields to the callee, then uses first-name rapport before pitch',
-  /OUTBOUND_ANSWER_BEAT_SECONDS\s*=\s*1\.5/.test(reconciler) &&
-    /initial_message:\s*null/.test(reconciler) &&
-    /initial_silence_timeout_secs:\s*OUTBOUND_ANSWER_BEAT_SECONDS/.test(reconciler) &&
+  'outbound sales stays silent until the callee speaks, yields to them, then uses first-name rapport before pitch',
+  /initial_message:\s*null/.test(reconciler) &&
+    // Cartesia rejects this key and the whole reconcile fails with it.
+    !/initial_silence_timeout_secs\s*:/.test(reconciler) &&
+    /inactivity_check_in_secs:\s*5/.test(reconciler) &&
     /do not speak immediately when the call connects/.test(reconciler) &&
     /Give the callee about 1–2 seconds to answer first/.test(reconciler) &&
     /Never talk over their hello/.test(reconciler) &&
