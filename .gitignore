@@ -1,44 +1,46 @@
-# Dependencies
-node_modules
-/node_modules
-**/node_modules
+# Runtime state files (not tracked)
+.orchestrator.lock
+.cycle_count
+.browser_server.pid
+.session_alert
+monitor_step_count.json
+cycle_state.json
+cycle_issue_permit
+.upgrade/
+live_progress.json
+live_progress_steps.jsonl
 
-# Local/Environment Config
-.env
-.env.local
-.env.*.local
+# Sensitive files
+settings.json
+codex_settings.json
+.env*
+services/whatsapp/memory/
 
-# Databases and Local Storage
-.local/
-*.db
-*.db-journal
-*.sqlite
+# Browser data
+**/browser_data/
+**/sessions/_tmp_cookies.db
+# Volatile browsr runtime files
+**/Singleton*
+browser/**/*-wal
+browser/**/*-shm
 
-# Build and Compilation outputs
-dist
-/dist
-**/dist
-*.tsbuildinfo
+# Python
+__pycache__/
+*.py[cod]
 
-# IDEs and Editors
-.vscode/
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# OS Files
-.DS_Store
-Thumbs.db
-
-# Temp/Logs
-logs
+# Logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-.gemini/
+**/logs/
+
+# OS
+.DS_Store
+
+# ignore the system prompt files created for agent from MD
+system_prompt.txt
+system_prompt_*.txt
+
+# ignore the codex skills
+.codex/*
+
+# Machine-local / runtime state
+.config
