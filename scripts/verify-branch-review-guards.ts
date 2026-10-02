@@ -7,7 +7,10 @@ import {
 } from '../packages/background-jobs/src/handlers/index.js';
 import {
   isLLMProviderChainFailure,
+  isProviderOutageEscalation,
   isRecoverableLLMProviderFailure,
+  isStaleProviderChainFailure,
+  providersNamedInChainFailure,
 } from '../packages/core/src/provider-failure.js';
 
 let failures = 0;
@@ -73,6 +76,87 @@ check(
   partitioned.actionable.map((failure) => failure.id).join(',') ===
     'real-defect,task-specific-chain,fresh-provider',
   partitioned,
+);
+
+// ── Issue #166: errors are evidence only about the build that wrote them ────
+const buildProviders = [
+  'qwen-dashscope-byok',
+  'openrouter-nex-n2-5-mini-free',
+  'openrouter-nemotron-ultra',
+  'openrouter-glm-5-3-flashx-paid',
+];
+const retiredRouteFailure =
+  'All LLM providers failed or were unavailable. ' +
+  'openrouter-gpt-oss-120b-paid/openai/gpt-oss-120b via OPENROUTER_API_KEY: HTTP 402 insufficient credits | ' +
+  'openrouter-minimax-m3/minimax/minimax-m3 via OPENROUTER_API_KEY: HTTP 404 model is unavailable';
+const currentRouteFailure =
+  'All LLM providers failed or were unavailable. ' +
+  'openrouter-nex-n2-5-mini-free/nex-agi/nex-n2.5-mini:free via OPENROUTER_FREE_API_KEY: HTTP 429 rate limit | ' +
+  'qwen-dashscope-byok: QWEN_API_KEY';
+const mixedRouteFailure =
+  'All LLM providers failed or were unavailable. ' +
+  'openrouter-minimax-m3/minimax/minimax-m3 via OPENROUTER_API_KEY: HTTP 404 model is unavailable | ' +
+  'openrouter-nemotron-ultra/nvidia/nemotron-3-ultra-550b-a55b:free via OPENROUTER_FREE_API_KEY: HTTP 429 rate limit';
+
+check(
+  'current chain-failure format names its providers',
+  providersNamedInChainFailure(currentRouteFailure).join(',') ===
+    'openrouter-nex-n2-5-mini-free,qwen-dashscope-byok',
+  providersNamedInChainFailure(currentRouteFailure),
+);
+check(
+  'legacy bullet chain-failure format names its providers',
+  providersNamedInChainFailure(quotaFailure).join(',') === 'groq,openrouter',
+  providersNamedInChainFailure(quotaFailure),
+);
+check(
+  'a failure naming only retired routes is stale on the current build',
+  isStaleProviderChainFailure(retiredRouteFailure, buildProviders),
+);
+check(
+  'a failure naming a current route is not stale',
+  !isStaleProviderChainFailure(currentRouteFailure, buildProviders) &&
+    !isStaleProviderChainFailure(mixedRouteFailure, buildProviders),
+);
+check(
+  'a failure naming no provider carries no build evidence and is not stale',
+  !isStaleProviderChainFailure(noProviders, buildProviders),
+);
+check('non-chain errors are never stale', !isStaleProviderChainFailure('TypeError: openrouter-x/y', buildProviders));
+
+const withStale = partitionRecoveredProviderFailures(
+  [
+    { id: 'retired', errorMessage: retiredRouteFailure, updatedAt: newAt },
+    { id: 'current', errorMessage: currentRouteFailure, updatedAt: newAt },
+    { id: 'real-defect', errorMessage: 'TypeError: broken task', updatedAt: newAt },
+  ],
+  null,
+  buildProviders,
+);
+check(
+  'retired-route failure is stale, never actionable, even with no later success',
+  withStale.stale.map((f) => f.id).join(',') === 'retired' &&
+    withStale.actionable.map((f) => f.id).join(',') === 'current,real-defect',
+  withStale,
+);
+check(
+  'partition without build providers keeps its previous behaviour',
+  partitionRecoveredProviderFailures(
+    [{ id: 'retired', errorMessage: retiredRouteFailure, updatedAt: newAt }],
+    null,
+  ).actionable.length === 1,
+);
+
+check(
+  'differently worded outage escalations share the outage signature',
+  isProviderOutageEscalation('LLM provider outage — need new OpenRouter key', '') &&
+    isProviderOutageEscalation('All providers failing, credits exhausted', '') &&
+    isProviderOutageEscalation('Lead sweep blocked', retiredRouteFailure),
+);
+check(
+  'unrelated escalations keep their own identity',
+  !isProviderOutageEscalation('Approve Q4 marketing budget', 'Spend is above threshold') &&
+    !isProviderOutageEscalation('Contract review needed', 'The provider of the venue failed to sign'),
 );
 
 console.log(failures === 0 ? '✅ ALL BRANCH-REVIEW GUARDS PASSED' : `❌ ${failures} CHECK(S) FAILED`);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HealthMonitor } from '../../../health-monitor/src/index.js';
 
 const providers = () => [{ name: 'configured-route', configured: true, enabled: true }];
@@ -60,5 +60,16 @@ describe('LLM provider health', () => {
     const result = await monitor.checkLLMProviders();
     expect(result.status).toBe('critical');
     expect(result.detail).toContain('capacity snapshot unavailable');
+  });
+
+  it('makes no network request on the fast provider-health path', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    try {
+      const monitor = new HealthMonitor({ getConfiguredProviders: providers, llmCapacityAvailableNow: () => false });
+      await monitor.checkLLMProviders();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

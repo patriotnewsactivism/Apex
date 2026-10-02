@@ -4,7 +4,13 @@
 // Handlers are stateless — they receive the job row and execute against the DB.
 
 import type { ScheduledJob } from '@workspace/db';
-import { isRecoverableLLMProviderFailure } from '@workspace/core';
+import {
+  getBuildInfo,
+  getConfiguredProviders,
+  isRecoverableLLMProviderFailure,
+  isStaleProviderChainFailure,
+  providersNamedInChainFailure,
+} from '@workspace/core';
 
 export interface JobHandler {
   execute(job: ScheduledJob, signal?: AbortSignal): Promise<unknown>;
@@ -16,21 +22,37 @@ export interface JobHandler {
 const OPEN_STATUSES = ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const;
 
 /** Separate historical provider failures disproved by a later successful task
- * from failures that are still actionable. Kept pure so the exact incident
- * classification can be regression-tested without touching production data. */
+ * from failures that are still actionable. When the running build's provider
+ * names are supplied, chain failures that name only providers this build no
+ * longer contains are split out as stale: they were written by an earlier
+ * build and are not evidence about the current chain. Kept pure so the exact
+ * incident classification can be regression-tested without touching
+ * production data. */
 export function partitionRecoveredProviderFailures<
   T extends { id: string; errorMessage: string | null; updatedAt: Date },
->(failures: T[], latestSuccessfulTaskAt: Date | null): { actionable: T[]; recovered: T[] } {
-  if (!latestSuccessfulTaskAt) return { actionable: failures, recovered: [] };
-  const recovered = failures.filter(
-    (failure) =>
-      isRecoverableLLMProviderFailure(failure.errorMessage) &&
-      failure.updatedAt.getTime() < latestSuccessfulTaskAt.getTime(),
-  );
+>(
+  failures: T[],
+  latestSuccessfulTaskAt: Date | null,
+  buildProviderNames?: Iterable<string>,
+): { actionable: T[]; recovered: T[]; stale: T[] } {
+  const buildNames = buildProviderNames ? [...buildProviderNames] : null;
+  const stale = buildNames
+    ? failures.filter((failure) => isStaleProviderChainFailure(failure.errorMessage, buildNames))
+    : [];
+  const staleIds = new Set(stale.map((failure) => failure.id));
+  const recovered = latestSuccessfulTaskAt
+    ? failures.filter(
+        (failure) =>
+          !staleIds.has(failure.id) &&
+          isRecoverableLLMProviderFailure(failure.errorMessage) &&
+          failure.updatedAt.getTime() < latestSuccessfulTaskAt.getTime(),
+      )
+    : [];
   const recoveredIds = new Set(recovered.map((failure) => failure.id));
   return {
-    actionable: failures.filter((failure) => !recoveredIds.has(failure.id)),
+    actionable: failures.filter((failure) => !recoveredIds.has(failure.id) && !staleIds.has(failure.id)),
     recovered,
+    stale,
   };
 }
 
@@ -1270,16 +1292,29 @@ export class BranchReviewJob implements JobHandler {
       .orderBy(desc(tasks.updatedAt))
       .limit(1);
 
+    // Errors are only evidence about the build that wrote them. Every
+    // review carries the running SHA and provider chain so an agent can tell
+    // a current outage from a failure naming a route this build retired.
+    const providers = getConfiguredProviders();
+    const runtime = {
+      buildSha: getBuildInfo().sha,
+      activeProviders: providers.filter((p) => p.enabled && p.configured).map((p) => p.name),
+      buildProviders: providers.map((p) => p.name),
+    };
+
     const {
       actionable: actionableFailures,
       recovered: recoveredProviderFailures,
+      stale: staleProviderFailures,
     } = partitionRecoveredProviderFailures(
       branchFailures,
       latestSuccessfulTask?.updatedAt ?? null,
+      runtime.buildProviders,
     );
 
     const snapshot: Record<string, unknown> = {
       manager: targetAgentId,
+      runtime,
       subordinates,
       myOpenTasks: ownOpen,
       branchOpenByAgent: branchOpen,
@@ -1294,6 +1329,14 @@ export class BranchReviewJob implements JobHandler {
         latestSuccessfulTaskAt: latestSuccessfulTask?.updatedAt.toISOString() ?? null,
         note:
           'Historical provider-chain failures older than a later successful task. They are recovered context, not active incidents; do not escalate or duplicate them unless health_check currently fails.',
+      },
+      staleProviderFailuresLast24h: {
+        count: staleProviderFailures.length,
+        providersNamed: [
+          ...new Set(staleProviderFailures.flatMap((f) => providersNamedInChainFailure(f.errorMessage))),
+        ],
+        note:
+          'Provider-chain failures naming only providers absent from runtime.buildProviders. They were written by an earlier build; do not escalate or request credentials for them unless the failure reproduces on runtime.buildSha.',
       },
       branchCompletedLast24h: branchCompleted.map((c) => ({
         taskId: c.id,
@@ -1328,6 +1371,8 @@ export class BranchReviewJob implements JobHandler {
       '3. ACT ONLY ON CURRENT FAILURES. Items in branchFailuresLast24h need a corrected delegation, a fix, or',
       '   an escalation. recoveredProviderFailuresLast24h is historical context: do not re-delegate or',
       '   escalate it unless a fresh health_check proves the provider chain is still failing.',
+      '   staleProviderFailuresLast24h names routes this build (runtime.buildSha) does not contain: never',
+      '   request credentials for them.',
       '4. RESPECT THE MANAGEMENT CHAIN. Delegate through direct reports and check for equivalent open work',
       '   first. The CTO delegates engineering only to the Lead Developer; it must never also assign the same',
       '   work directly to Frontend, Backend, DevOps, or QA.',
