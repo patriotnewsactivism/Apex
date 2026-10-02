@@ -28,6 +28,9 @@ import { z } from 'zod';
 import { db, tasks, goals, approvals, memories } from '@workspace/db';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { ToolDefinition } from './types.js';
+import { getConfiguredProviders } from './llm-client.js';
+import { isProviderOutageEscalation } from './provider-failure.js';
+import { getBuildInfo } from './runtime-health.js';
 
 /** Terminal task states — a task in one of these will never run again. */
 export const TERMINAL_TASK_STATUSES = ['done', 'failed', 'cancelled'] as const;
@@ -62,6 +65,42 @@ export function escalationDedupeKey(agentId: string, goalId: string | undefined,
     .update(`${agentId}\u0000${goalId ?? ''}\u0000${normalizedSubject}`)
     .digest('hex')
     .slice(0, 32);
+}
+
+/**
+ * Identity for an escalation. A provider-outage escalation is one incident per
+ * running build, whichever agent raised it and however it was worded: on
+ * 2026-09-16 several agents each escalated the same chain failure under their
+ * own subject, and every one became a separate ask for Don. A new deploy gets
+ * a new key, since it may have fixed or changed the chain. Everything else
+ * keeps the per-agent/goal/subject identity.
+ */
+export function resolveEscalationDedupeKey(
+  agentId: string,
+  goalId: string | undefined,
+  subject: string,
+  detail: string,
+  buildSha: string,
+): { dedupeKey: string; providerOutage: boolean } {
+  if (!isProviderOutageEscalation(subject, detail)) {
+    return { dedupeKey: escalationDedupeKey(agentId, goalId, subject), providerOutage: false };
+  }
+  return {
+    dedupeKey: createHash('sha256').update(`provider-outage\u0000${buildSha}`).digest('hex').slice(0, 32),
+    providerOutage: true,
+  };
+}
+
+/** What the running build can say about its own provider chain. Attached to
+ * provider-outage escalations so the reader can check the reported failure
+ * against the routes actually deployed. Key presence only — no network call. */
+function providerRuntimeEvidence(buildSha: string) {
+  const providers = getConfiguredProviders();
+  return {
+    buildSha,
+    activeProviders: providers.filter((p) => p.enabled && p.configured).map((p) => p.name),
+    buildProviders: providers.map((p) => p.name),
+  };
 }
 
 export function createOrchestrationTools(): ToolDefinition[] {
@@ -343,7 +382,21 @@ export function createOrchestrationTools(): ToolDefinition[] {
         // escalations covering a handful of distinct problems. Bumping a
         // counter keeps the "still blocked, 340 shifts running" signal while
         // leaving one row to actually read and act on.
-        const dedupeKey = escalationDedupeKey(ctx.agentId, ctx.goalId, subject);
+        const buildSha = getBuildInfo().sha;
+        const { dedupeKey, providerOutage } = resolveEscalationDedupeKey(
+          ctx.agentId,
+          ctx.goalId,
+          subject,
+          detail,
+          buildSha,
+        );
+        const toolArgs = {
+          subject,
+          detail,
+          urgency: resolvedUrgency,
+          category: resolvedCategory,
+          ...(providerOutage ? { runtimeEvidence: providerRuntimeEvidence(buildSha) } : {}),
+        };
 
         const [existing] = await db
           .select({ id: approvals.id, occurrences: approvals.occurrences })
@@ -366,7 +419,7 @@ export function createOrchestrationTools(): ToolDefinition[] {
               lastOccurredAt: now,
               // Keep the newest detail — the situation may have moved on even
               // though the ask has not.
-              toolArgs: { subject, detail, urgency: resolvedUrgency, category: resolvedCategory },
+              toolArgs,
               reason: `[${resolvedUrgency.toUpperCase()} · ${resolvedCategory}] ${subject} (raised ${occurrences}×)`,
             })
             .where(eq(approvals.id, existing.id));
@@ -379,7 +432,9 @@ export function createOrchestrationTools(): ToolDefinition[] {
             duplicate: true,
             occurrences,
             note:
-              `This exact escalation is already open and awaiting Don (raised ${occurrences}× now). ` +
+              (providerOutage
+                ? `A provider-outage escalation for build ${buildSha} is already open and awaiting Don (raised ${occurrences}× now). `
+                : `This exact escalation is already open and awaiting Don (raised ${occurrences}× now). `) +
               'It was NOT duplicated. Do not raise it again this task — continue with the work you can ' +
               'still do and state clearly in your final report what is blocked pending his decision.',
           };
@@ -394,7 +449,7 @@ export function createOrchestrationTools(): ToolDefinition[] {
           taskId: ctx.taskId ?? 'system',
           agentId: ctx.agentId,
           toolName: 'escalate_to_human',
-          toolArgs: { subject, detail, urgency: resolvedUrgency, category: resolvedCategory },
+          toolArgs,
           reason: `[${resolvedUrgency.toUpperCase()} · ${resolvedCategory}] ${subject}`,
           status: 'pending',
           kind: 'escalation',

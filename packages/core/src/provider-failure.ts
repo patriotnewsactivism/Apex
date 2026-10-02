@@ -138,3 +138,53 @@ export function isRecoverableLLMProviderFailure(error: string | null): boolean {
     error,
   );
 }
+
+/** Provider names a chain-failure message attributes failures to. Reads both
+ * the current `name/model via ENV: ...` and skip-reason `name: ...` segments
+ * (joined by ` | `) and the older `• name (model: ...)` format, so failures
+ * written by a previous build can still be correlated with this one. */
+export function providersNamedInChainFailure(error: string | null): string[] {
+  if (!error || !isLLMProviderChainFailure(error)) return [];
+  const names = new Set<string>();
+  const segmentStart =
+    /(?:^|\||•|unavailable\.|failed\.)\s*([a-z][a-z0-9.-]*[a-z0-9])(?=\/|\s*\(|:)/gim;
+  for (const match of error.matchAll(segmentStart)) {
+    if (match[1]) names.add(match[1].toLowerCase());
+  }
+  return [...names];
+}
+
+/** A chain failure that names only providers absent from the running build.
+ *
+ * The 2026-09-16 escalations asked for credentials for routes such as
+ * `openrouter-gpt-oss-120b-paid` and `openrouter-minimax-m3` that the deployed
+ * build no longer contains. Such an error was written by an earlier build and
+ * says nothing about the current chain until it is reproduced on this one —
+ * a reproduction would name current providers and stop matching here. A
+ * failure naming no provider at all is not stale: it carries no build
+ * evidence either way. */
+export function isStaleProviderChainFailure(
+  error: string | null,
+  buildProviderNames: Iterable<string>,
+): boolean {
+  const named = providersNamedInChainFailure(error);
+  if (named.length === 0) return false;
+  const inBuild = new Set([...buildProviderNames].map((name) => name.toLowerCase()));
+  return named.every((name) => !inBuild.has(name));
+}
+
+/** An escalation reporting an LLM provider outage or credential problem.
+ * These share one outage signature per running build regardless of which
+ * agent raised them or how the subject was worded. The detail is checked only
+ * for the literal chain-failure signature; the looser keyword match applies
+ * to the subject so an unrelated escalation that merely mentions a provider
+ * in passing keeps its own identity. */
+export function isProviderOutageEscalation(subject: string, detail: string): boolean {
+  if (isLLMProviderChainFailure(subject) || isLLMProviderChainFailure(detail)) return true;
+  return (
+    /\b(?:llm|providers?|openrouter|inference|model routes?|api keys?|credentials?)\b/i.test(subject) &&
+    /\b(?:outage|down|fail(?:s|ed|ing|ure)?|unavailable|exhausted|missing|no usable|40[12]|429|credits?|quota|rotate|invalid)\b/i.test(
+      subject,
+    )
+  );
+}
