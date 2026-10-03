@@ -1,6 +1,8 @@
 // Dispatches a job only after the operator session has already cleared it.
 // Provider functions call assertSendAllowed again at the moment of send.
 
+import { randomUUID } from 'node:crypto';
+import { commitCallOutcome } from './crm/store.js';
 import { deliverQueuedEmailSend } from './email-delivery.js';
 import { startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { deliverCalendarInvite } from './calendar-invite.js';
@@ -64,7 +66,7 @@ async function deliverRecipient(jobId: string, recipient: SendRecipientRecord): 
       return result.success;
     }
     if (recipient.channel === 'phone' && payload.kind === 'cartesia_call') {
-      await startCartesiaSalesCall({
+      const call = await startCartesiaSalesCall({
         toNumber: recipient.destination,
         customerName: typeof payload.customerName === 'string' ? payload.customerName : null,
         assistantPrompt: String(payload.assistantPrompt ?? recipient.messageText),
@@ -75,6 +77,27 @@ async function deliverRecipient(jobId: string, recipient: SendRecipientRecord): 
         createdByAgentId: typeof payload.createdByAgentId === 'string' ? payload.createdByAgentId : null,
         sendJobId: jobId,
       });
+      // The tool that queued this call was held before dialing, so nothing has
+      // recorded it yet. Same upsert make_outbound_call writes after an inline
+      // dial; the Cartesia webhook later fills in the real disposition.
+      try {
+        await commitCallOutcome({
+          id: randomUUID(),
+          callId: `cartesia:${call.callId}`,
+          leadId: typeof payload.leadId === 'string' ? payload.leadId : null,
+          customerNumber: call.toNumber,
+          customerName: typeof payload.customerName === 'string' ? payload.customerName : null,
+          disposition: 'no_decision',
+          summary: 'Outbound call placed after release from Pending sends.',
+          nextAction: 'Await call outcome.',
+          createdByAgentId: typeof payload.createdByAgentId === 'string' ? payload.createdByAgentId : 'operator',
+          conflictUpdate: true,
+        });
+      } catch (error) {
+        console.error(
+          `[send-safeguard] call outcome record failed job=${jobId} reason=${error instanceof Error ? error.message : 'error'}`,
+        );
+      }
       return true;
     }
     if (recipient.channel === 'calendar' && payload.kind !== GOOGLE_INVITE_KIND) {

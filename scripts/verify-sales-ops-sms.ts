@@ -81,9 +81,10 @@ async function main(): Promise<void> {
     'send rejects empty message text before calling Telnyx',
     /if \(!text\) \{\s*res\.status\(400\)/.test(sendBody),
   );
+  const crmStore = read('packages/core/src/crm/store.ts');
   check(
     'a failed Telnyx send is still persisted (status failed), not silently dropped',
-    /status = 'failed'/.test(sendBody) && /await db\.insert\(smsMessages\)\.values/.test(sendBody),
+    /status = 'failed'/.test(sendBody) && /commitSmsMessage\(/.test(sendBody) && /insert\(smsMessages\)/.test(crmStore),
   );
 
   // ── Backend: /call and /sms/send share one validator, not two copies ────────
@@ -118,7 +119,9 @@ async function main(): Promise<void> {
   // ── Inbound SMS webhook persists into the same table the dashboard reads ────
   check(
     '/sms-inbound persists an inbound row into smsMessages (not just a log line)',
-    /direction: 'inbound'/.test(telnyxAssistant) && /await db\.insert\(smsMessages\)\.values/.test(telnyxAssistant),
+    /direction: 'inbound'/.test(telnyxAssistant)
+      && /commitSmsMessage\(/.test(telnyxAssistant)
+      && /insert\(smsMessages\)/.test(crmStore),
   );
   check(
     'send-confirmation\'s SMS branch also persists an outbound row (so AI-sent confirmations show up in the thread view)',

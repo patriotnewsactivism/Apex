@@ -54,6 +54,7 @@ import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
 import { createLeadsRouter } from './routes/leads.js';
+import { createCrmRouter } from './routes/crm.js';
 import { createCampaignsRouter } from './routes/campaigns.js';
 import { createTerritoriesRouter } from './routes/territories.js';
 import { createEmailCampaignsRouter } from './routes/email-campaigns.js';
@@ -552,6 +553,7 @@ async function main() {
   app.use('/api/predictive', createPredictiveRouter());
   app.use('/api/settings', createSettingsRouter());
   app.use('/api/leads', createLeadsRouter());
+  app.use('/api/crm', createCrmRouter());
   app.use('/api/campaigns', createCampaignsRouter());
   app.use('/api/territories', createTerritoriesRouter());
   app.use('/api/email-campaigns', createEmailCampaignsRouter());

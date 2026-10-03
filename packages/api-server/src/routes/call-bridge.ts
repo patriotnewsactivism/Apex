@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { db, callBridgeSessions } from '@workspace/db';
-import { eq } from 'drizzle-orm';
+import { SendBlockedError, assertContactSendable, commitSendRecord } from '@workspace/core';
+import { and, eq } from 'drizzle-orm';
 import { normalizeE164 } from './sales-ops.js';
 
 // ─── Call Bridge — operator call with live AI takeover ─────────────────────
@@ -298,8 +299,14 @@ export async function startAiFirstSession(input: {
   assistantGreeting?: string;
   assistantInstructions?: string;
   createdByAgentId?: string;
-}): Promise<{ id: string } | { error: string }> {
+}): Promise<{ id: string } | { error: string; awaitingSafeguard?: boolean; sendJobId?: string }> {
   const id = crypto.randomUUID();
+  try {
+    await assertContactSendable({ channel: 'phone', destination: input.customerNumber });
+  } catch (error) {
+    if (error instanceof SendBlockedError) return { error: error.message };
+    throw error;
+  }
   await db.insert(callBridgeSessions).values({
     id,
     status: 'dialing_customer',
@@ -333,12 +340,60 @@ export async function startAiFirstSession(input: {
     await db.update(callBridgeSessions)
       .set({ status: 'failed', lastError: result.error, updatedAt: new Date() })
       .where(eq(callBridgeSessions.id, id));
-    return { error: result.error };
+    return result.awaitingSafeguard
+      ? { error: result.error, awaitingSafeguard: true, sendJobId: result.sendJobId }
+      : { error: result.error };
   }
-  await db.update(callBridgeSessions)
-    .set({ customerCallControlId: result.callControlId, updatedAt: new Date() })
-    .where(eq(callBridgeSessions.id, id));
+  await recordCustomerLegDialed(id, result.callControlId);
   return { id };
+}
+
+// Only the customer leg reaches the contact, so it alone writes the CRM
+// timeline row, and only once Telnyx accepted the dial: a leg still held in
+// Pending sends never gets here. The release hook uses this too, and there the
+// session was marked failed while the leg was held and has no customer leg id
+// yet, which attachSalesAi needs when the buyer answers.
+async function recordCustomerLegDialed(sessionId: string, callControlId: string): Promise<void> {
+  const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
+  if (!session) return;
+  const aiFirst = (session.sessionMode ?? 'operator_first') === 'ai_first';
+  const now = new Date();
+  try {
+    await commitSendRecord(async (tx) => {
+      await tx.update(callBridgeSessions)
+        .set({ customerCallControlId: callControlId, updatedAt: now })
+        .where(eq(callBridgeSessions.id, sessionId));
+      await tx.update(callBridgeSessions)
+        .set({ status: 'dialing_customer', lastError: null, updatedAt: now })
+        .where(and(eq(callBridgeSessions.id, sessionId), eq(callBridgeSessions.status, 'failed')));
+      return sessionId;
+    }, {
+      destination: session.customerNumber,
+      channel: 'call',
+      direction: 'outbound',
+      actorType: aiFirst ? 'agent' : 'operator',
+      actorName: aiFirst ? (session.createdByAgentId ?? 'operator') : 'Matthew',
+      eventKind: 'call',
+      bodyText: aiFirst ? (session.assistantGreeting ?? 'AI-first call bridge started.') : 'Operator call bridge started.',
+      provider: 'telnyx',
+      providerMessageId: `bridge:${sessionId}:${callControlId}`,
+      sendRecordTable: 'call_bridge_sessions',
+      sendRecordId: sessionId,
+    });
+  } catch (error) {
+    // The call is already ringing. Keep the leg id so the AI can attach, and
+    // leave the missing timeline row visible in the log rather than failing the call.
+    console.error('[Call Bridge] customer leg timeline write failed', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await db.update(callBridgeSessions)
+      .set({ customerCallControlId: callControlId, updatedAt: now })
+      .where(eq(callBridgeSessions.id, sessionId));
+    await db.update(callBridgeSessions)
+      .set({ status: 'dialing_customer', lastError: null, updatedAt: now })
+      .where(and(eq(callBridgeSessions.id, sessionId), eq(callBridgeSessions.status, 'failed')));
+  }
 }
 
 async function attachSalesAi(sessionId: string): Promise<void> {
@@ -525,6 +580,17 @@ export function createCallBridgeRouter(): Router {
       }
 
       const id = crypto.randomUUID();
+      try {
+        await assertContactSendable({ channel: 'phone', destination: customerNumber });
+      } catch (error) {
+        if (error instanceof SendBlockedError) {
+          res.status(409).json({ error: error.message, doNotContact: true });
+          return;
+        }
+        throw error;
+      }
+      // The customer's timeline row is written when their leg is dialed, after
+      // the operator answers, not here: this dial only rings the operator.
       await db.insert(callBridgeSessions).values({
         id,
         status: 'dialing_operator',
@@ -788,10 +854,7 @@ export function createCallBridgeWebhookRouter(): Router {
               .set({ status: 'failed', lastError: result.error, updatedAt: new Date() })
               .where(eq(callBridgeSessions.id, session.id));
           } else {
-            await db
-              .update(callBridgeSessions)
-              .set({ customerCallControlId: result.callControlId, updatedAt: new Date() })
-              .where(eq(callBridgeSessions.id, session.id));
+            await recordCustomerLegDialed(session.id, result.callControlId);
           }
         } else if (state.role === 'customer') {
           await db.update(callBridgeSessions).set({ status: 'active', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
@@ -875,6 +938,8 @@ void import('@workspace/core').then(({ registerSendTransport }) => {
       whisperCallControlIds: whisper,
       sendJobId: jobId,
     });
-    return 'callControlId' in result;
+    if (!('callControlId' in result)) return false;
+    if (role === 'customer') await recordCustomerLegDialed(sessionId, result.callControlId);
+    return true;
   });
 });

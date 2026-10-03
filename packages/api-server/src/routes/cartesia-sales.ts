@@ -2,17 +2,20 @@ import { Router, type Request } from 'express';
 import crypto from 'crypto';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { db, callOutcomes, providerEvents, researchedLeads, smsMessages, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
+import { db, callOutcomes, providerEvents, researchedLeads, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
 import {
+  assertContactSendable,
   calendarBookingConfigured,
   calendarOrganizationId,
   CalendarNotConnectedError,
+  commitSmsMessage,
   createQueuedEmailSend,
   deliverQueuedEmailSend,
   DoNotContactError,
   evaluateOutboundAction,
   getCalendarBookingService,
   markLineFree,
+  SendBlockedError,
   SlotUnavailableError,
   zonedTimeToUtc,
 } from '@workspace/core';
@@ -734,6 +737,12 @@ export function createCartesiaSalesRouter(): Router {
       if (prior) return res.json({ sent: true, already_sent: true, url });
       const text = `As requested, here is ${p.demo_type === 'buildmybot_live_demo' ? 'BuildMyBot' : 'APEX Work Solutions'}: ${url} Reply STOP to opt out.`;
       try {
+        await assertContactSendable({ channel: 'sms', destination: p.phone_number, contactId });
+      } catch (error) {
+        if (error instanceof SendBlockedError) return res.status(409).json({ error: error.message, doNotContact: true });
+        throw error;
+      }
+      try {
         const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
         const opened = await openOutboundSendJob({
           caller: 'voice',
@@ -766,9 +775,10 @@ export function createCartesiaSalesRouter(): Router {
       const result = await response.json() as { data?: { id?: string } };
       try {
         const id = crypto.randomUUID();
-        await db.insert(smsMessages).values({ id, direction: 'outbound',
+        await commitSmsMessage({ id, direction: 'outbound',
           counterpartyNumber: p.phone_number, fromNumber: from, toNumber: p.phone_number,
-          body: text, status: 'sent', providerId: result.data?.id, createdByAgentId: AGENT_ID });
+          body: text, status: 'sent', providerId: result.data?.id, createdByAgentId: AGENT_ID,
+        }, { actorType: 'agent', actorName: AGENT_ID });
         await db.insert(providerEvents).values({ provider: 'cartesia',
           externalEventId: eventId, eventType: 'demo_link_sent',
           payload: { call_id: p.call_id, sms_id: id, demo_type: p.demo_type }, status: 'processed',

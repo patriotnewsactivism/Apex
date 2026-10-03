@@ -208,6 +208,12 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 `scripts/verify-provider-routing.ts`, `scripts/verify-provider-backpressure.ts`, `scripts/verify-model-routing-policy.ts`, and `scripts/verify-model-intelligence.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
 
+## CRM contact book
+
+The operator contact book lives in the revenue-ops tables (`lib/db/src/schema-revenue-ops.ts`) plus the additive migration `lib/db/drizzle/20261003_crm.sql`. `contact_timeline` is append-only: a trigger rejects UPDATE and DELETE, and corrections are new rows. `audit_events` may hold many rows per entity. Every outbound send first passes the CRM do-not-contact check (`assertContactSendable`, contact-level, all channels), then the send safeguard (`openOutboundSendJob` + `assertSendAllowed`: operator confirm/code, kill switch, suppressions), then the provider call, and only then writes the CRM timeline row. A send held in Pending Sends writes no timeline row, because nothing was sent; released email, texts, and calls write it when they go out. The send safeguard's suppression check also reads contact-level do-not-contact, so a released send is blocked if the contact opted out on any channel after release. Clearing do-not-contact and merging contacts require the operator dashboard session (`X-Apex-Operator-Session`), not just the admin bearer. Clearing lifts only the contact flag: suppressions from an SMS STOP, a bounce, or a complaint keep that channel blocked.
+
+Inbound email is `POST /api/resend/inbound` (Svix). Reply-To uses `r+<token>@APEX_REPLY_DOMAIN` when that host is set. Inbound Telnyx SMS requires an ed25519 signature from `TELNYX_PUBLIC_KEY`; `TELNYX_SMS_QUERY_KEY_FALLBACK` defaults off. BCC capture (`APEX_CRM_BCC_CAPTURE`) and Gmail read-only sync (`APEX_CRM_GMAIL_SYNC`, scope `gmail.readonly`) both default off. Agents may call `crm_search_contacts`, `crm_get_contact`, and `crm_get_timeline`. They cannot merge contacts or clear do-not-contact, through a tool or the HTTP routes. `scripts/import-contacts-csv.ts` and `scripts/backfill-crm.ts` are dry-run by default and refuse non-local databases. See `docs/CRM.md`.
+
 ## Turn Economy
 
 `docs/TURN_ECONOMY.md` describes opt-in durable queue bundles, the read-only
@@ -361,7 +367,8 @@ Production CI currently includes:
 - call-outcome-capture guard (DST-correct appointment timezone resolution, upsert never lets end-of-call-report overwrite a disposition the mid-call function already recorded);
 - crash-recovery integration guard (create → claim → disappear → resume → exactly-one-side-effect → complete);
 - dashboard build;
-- mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across every nav view (including Pending Sends) at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.
+- mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across every nav view (including Pending Sends and Contacts) at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.
+- CRM postgres guard (`crm-postgres` job): contact book, append-only timeline, inbound matching, and do-not-contact against a throwaway Postgres. It is not part of `production-checks` because that job has no database.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
 

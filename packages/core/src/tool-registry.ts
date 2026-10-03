@@ -20,9 +20,11 @@ import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProf
 import { getNextRunTimes } from './cron-utils.js';
 import { getWorkspaceRoot, pathWithin, resolveInWorkspace } from './workspace-root.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
-import { db, messages, callOutcomes, callBridgeSessions, leadSearchCache } from '@workspace/db';
+import { db, messages, callBridgeSessions, leadSearchCache } from '@workspace/db';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
+import { SendBlockedError, assertContactSendable, commitCallOutcome } from './crm/store.js';
+import { createCrmTools } from './crm/tools.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
@@ -3493,6 +3495,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
       async execute({ customerNumber, customerName, assistantPrompt, firstMessage, leadId, campaignId, playbookId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
         await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, leadId, purpose: 'make_outbound_call' });
+        try {
+          await assertContactSendable({ channel: 'phone', destination: customerNumber });
+        } catch (error) {
+          if (error instanceof SendBlockedError) return { success: false, error: error.message, doNotContact: true };
+          throw error;
+        }
 
         // Phase 2.3: budget guard — check mission budget before placing call.
         try {
@@ -3546,30 +3554,18 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           });
 
           try {
-            await db
-              .insert(callOutcomes)
-              .values({
-                id: randomUUID(),
-                callId: `cartesia:${call.callId}`,
-                leadId: leadId ?? null,
-                customerNumber: call.toNumber,
-                customerName: customerName ?? null,
-                disposition: 'no_decision',
-                summary: 'Outbound call initiated.',
-                nextAction: 'Await call outcome.',
-                createdByAgentId: ctx.agentId,
-                createdAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .onConflictDoUpdate({
-                target: callOutcomes.callId,
-                set: {
-                  leadId: leadId ?? null,
-                  customerNumber: call.toNumber,
-                  customerName: customerName ?? null,
-                  updatedAt: new Date(),
-                },
-              });
+            await commitCallOutcome({
+              id: randomUUID(),
+              callId: `cartesia:${call.callId}`,
+              leadId: leadId ?? null,
+              customerNumber: call.toNumber,
+              customerName: customerName ?? null,
+              disposition: 'no_decision',
+              summary: 'Outbound call initiated.',
+              nextAction: 'Await call outcome.',
+              createdByAgentId: ctx.agentId,
+              conflictUpdate: true,
+            });
           } catch (logErr) {
             console.error('[make_outbound_call] failed to persist Cartesia dialing outcome:', logErr instanceof Error ? logErr.message : String(logErr));
           }
@@ -3596,7 +3592,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           }
           const errorMsg = err instanceof Error ? err.message : String(err);
           try {
-            await db.insert(callOutcomes).values({
+            await commitCallOutcome({
               id: randomUUID(),
               callId: `failed_${randomUUID()}`,
               leadId: leadId ?? null,
@@ -3607,8 +3603,6 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
               nextAction: 'Inspect the provider error and correct the dialing/configuration issue before retrying.',
               endedReason: errorMsg.slice(0, 500),
               createdByAgentId: ctx.agentId,
-              createdAt: new Date(),
-              updatedAt: new Date(),
             });
           } catch (logErr) {
             console.error('[make_outbound_call] failed to persist failed_to_dial outcome:', logErr instanceof Error ? logErr.message : String(logErr));
@@ -4383,8 +4377,11 @@ export function getToolRegistry(_workspaceRoot?: string): ToolRegistry {
       _registry.register(tool);
     }
     // Calendar reads and booking requests. Invites stay on sendUpdates=none
-    // until the send safeguard clears; these tools cannot skip that gate.
+    // until the operator releases them in Pending sends; these tools cannot skip that.
     for (const tool of createCalendarTools()) {
+      _registry.register(tool);
+    }
+    for (const tool of createCrmTools()) {
       _registry.register(tool);
     }
     // Portfolio connectors register only when their env is configured, so a

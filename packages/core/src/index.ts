@@ -62,6 +62,7 @@ export * from './revenue-ops/compliance.js';
 export { getTurnEconomySnapshot } from './turn-economy.js';
 
 export * from './specialists/index.js';
+export * from './crm/index.js';
 export {
   getCalendarBookingService,
   calendarBookingConfigured,

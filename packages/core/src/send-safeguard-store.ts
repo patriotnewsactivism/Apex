@@ -146,7 +146,20 @@ class PostgresSendSafeguardStore implements SendSafeguardStore {
         : eq(suppressions.phoneE164, normalized),
       or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, now)),
     )).limit(1);
-    return rows.length > 0;
+    if (rows.length > 0) return true;
+    // Contact-level do-not-contact covers every channel: a STOP by text or an
+    // email bounce blocks a held call to the same person, including one the
+    // operator released before the opt-out arrived. Errors propagate so the
+    // engine fails closed.
+    const { assertContactSendable } = await import('./crm/store.js');
+    const { SendBlockedError } = await import('./crm/pure.js');
+    try {
+      await assertContactSendable({ channel, destination: normalized });
+      return false;
+    } catch (error) {
+      if (error instanceof SendBlockedError) return true;
+      throw error;
+    }
   }
 }
 

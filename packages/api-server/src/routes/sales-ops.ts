@@ -41,7 +41,7 @@ import {
   callOutcomes,
 } from '@workspace/db';
 import { and, asc, desc, eq, gte, sql } from 'drizzle-orm';
-import { CARTESIA_SALES_AGENT_NAME, assertOutboundAllowed, getSpendLedgerSnapshot, startCartesiaSalesCall } from '@workspace/core';
+import { CARTESIA_SALES_AGENT_NAME, SendBlockedError, assertOutboundAllowed, assertContactSendable, commitCallOutcome, commitSmsMessage, getSpendLedgerSnapshot, startCartesiaSalesCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
 const SALES_AGENT_ID = 'apex-sales-001';
@@ -442,6 +442,16 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         return;
       }
 
+      try {
+        await assertContactSendable({ channel: 'phone', destination: ownerNumber });
+      } catch (error) {
+        if (error instanceof SendBlockedError) {
+          res.status(409).json({ error: error.message, doNotContact: true });
+          return;
+        }
+        throw error;
+      }
+
       const started = await startCartesiaSalesCall({
         toNumber: ownerNumber,
         customerName: 'Matthew',
@@ -461,6 +471,20 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
 
       const success = 'call' in started;
       const awaiting = !success && (started.error.includes('Pending sends') || started.error.includes('confirmations') || started.error.includes('safeguard'));
+      if (!awaiting) {
+        await commitCallOutcome({
+          id: crypto.randomUUID(),
+          callId: success ? `cartesia:${started.call.callId}` : `failed_${crypto.randomUUID()}`,
+          customerNumber: ownerNumber,
+          customerName: 'Matthew',
+          disposition: success ? 'no_decision' : 'failed_to_dial',
+          summary: success ? 'Owner self-pitch call initiated.' : `Self-pitch failed: ${started.error}`,
+          nextAction: success ? 'Await call outcome.' : 'Inspect the provider error before retrying.',
+          endedReason: success ? null : started.error,
+          createdByAgentId: SALES_AGENT_ID,
+          conflictUpdate: success,
+        });
+      }
       await db.insert(logs).values({
         agentId: SALES_AGENT_ID,
         taskId: null,
@@ -708,6 +732,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
           destination: toNumber,
           purpose: 'operator_sms',
         });
+        await assertContactSendable({ channel: 'sms', destination: toNumber });
       } catch (error) {
         res.status(409).json({
           error: error instanceof Error ? error.message : String(error),
@@ -771,7 +796,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       }
 
       const id = crypto.randomUUID();
-      await db.insert(smsMessages).values({
+      await commitSmsMessage({
         id,
         direction: 'outbound',
         counterpartyNumber: toNumber,
@@ -782,8 +807,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         providerId,
         errorMessage: errorMsg,
         createdByAgentId: 'operator',
-        createdAt: new Date(),
-      });
+      }, { actorType: 'operator', actorName: 'Matthew' });
 
       res.status(status === 'sent' ? 200 : 502).json({ success: status === 'sent', id, error: errorMsg ?? undefined });
     } catch (err) {
@@ -794,7 +818,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
   return router;
 }
 
-void import('@workspace/core').then(({ registerSendTransport, assertSendAllowed, recordOutboundSendResult }) => {
+void import('@workspace/core').then(({ registerSendTransport, assertSendAllowed, recordOutboundSendResult, commitSmsMessage, getSendSafeguard, OPERATOR_ACTOR }) => {
   registerSendTransport('telnyx_sms', async (jobId, recipient) => {
     const from = typeof recipient.payload.from === 'string' ? recipient.payload.from : process.env.APEX_FRONT_DESK_NUMBER;
     const text = recipient.messageText;
@@ -815,6 +839,24 @@ void import('@workspace/core').then(({ registerSendTransport, assertSendAllowed,
     }
     const json = await smsRes.json().catch(() => null) as { data?: { id?: string } } | null;
     await recordOutboundSendResult(jobId, recipient.id, 'sent', json?.data?.id ?? null);
+    // The path that queued this text was held before sending, so it wrote no
+    // CRM row. A failure here must not mark a delivered text as failed.
+    try {
+      const { job } = await (await getSendSafeguard()).describe(jobId);
+      await commitSmsMessage({
+        id: crypto.randomUUID(),
+        direction: 'outbound',
+        counterpartyNumber: recipient.destination,
+        fromNumber: from,
+        toNumber: recipient.destination,
+        body: text,
+        status: 'sent',
+        providerId: json?.data?.id ?? null,
+        createdByAgentId: job.createdBy,
+      }, { actorType: 'operator', actorName: OPERATOR_ACTOR });
+    } catch (error) {
+      console.error(`[send-safeguard] SMS timeline record failed job=${jobId} reason=${error instanceof Error ? error.message : 'error'}`);
+    }
     return true;
   });
 });
