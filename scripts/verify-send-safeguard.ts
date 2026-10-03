@@ -337,6 +337,14 @@ async function main(): Promise<void> {
     'email safeguard runs before Resend',
     email.indexOf('assertSendAllowed(') < email.indexOf('fetch(RESEND_API_URL'),
   );
+  const cartesiaSales = read('packages/api-server/src/routes/cartesia-sales.ts');
+  const bookingFnStart = cartesiaSales.indexOf('async function submitCalBooking');
+  const bookingFn = bookingFnStart >= 0 ? cartesiaSales.slice(bookingFnStart) : '';
+  check(
+    'Cal.com booking asserts before the bookings POST',
+    bookingFn.includes('assertSendAllowed(')
+      && bookingFn.indexOf('assertSendAllowed(') < bookingFn.indexOf("calRequest('bookings'"),
+  );
   const registry = read('packages/core/src/tool-registry.ts');
   check('outbound call tool still reaches Cartesia only after the gate', registry.includes('startCartesiaSalesCall({'));
   check('registry forces outbound sales tools through approval', registry.includes('isOutboundSalesSendTool(name)'));

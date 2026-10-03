@@ -130,6 +130,13 @@ check(
   telnyxVoice.includes('assertSendAllowed') &&
     telnyxVoice.indexOf('assertSendAllowed') < telnyxVoice.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
 );
+const bookingFnStart = cartesia.indexOf('async function submitCalBooking');
+const bookingFn = bookingFnStart >= 0 ? cartesia.slice(bookingFnStart) : '';
+check(
+  'Cal.com consultation booking asserts before the bookings POST',
+  bookingFn.includes('assertSendAllowed') &&
+    bookingFn.indexOf('assertSendAllowed') < bookingFn.indexOf("calRequest('bookings'"),
+);
 
 console.log('\n── irreversible send paths cannot bypass the evaluator ──');
 check(

@@ -403,6 +403,102 @@ async function calRequest(path: string, key: string, body?: object) {
   return data.data;
 }
 
+function consultationInviteText(input: {
+  name: string;
+  email: string;
+  phone: string;
+  start: string;
+  timezone: string;
+  scope?: string;
+}): string {
+  return [
+    `Consultation with ${input.name}`,
+    `When: ${input.start} (${input.timezone})`,
+    `Email: ${input.email}`,
+    `Phone: ${input.phone}`,
+    input.scope ? `Scope: ${input.scope}` : '',
+  ].filter((line) => line.length > 0).join('\n');
+}
+
+async function pendingCalendarJob(storyKey: string, email: string): Promise<string | null> {
+  const { getSendSafeguard } = await import('@workspace/core');
+  const engine = await getSendSafeguard();
+  const jobs = await engine.list();
+  const target = email.trim().toLowerCase();
+  for (const { job, recipients } of jobs) {
+    if (job.storyKey !== storyKey) continue;
+    if (job.status === 'stopped' || job.status === 'completed' || job.status === 'voided') continue;
+    const waiting = recipients.some((row) =>
+      row.channel === 'calendar'
+      && row.destination.trim().toLowerCase() === target
+      && (row.status === 'queued' || row.status === 'released' || row.status === 'sending' || row.status === 'blocked'),
+    );
+    if (waiting) return job.id;
+  }
+  return null;
+}
+
+// The bookings POST is the invite. assertSendAllowed runs before it, using the
+// recipient row the operator already confirmed.
+async function submitCalBooking(jobId: string, email: string): Promise<{ uid: string; status?: string; start?: string }> {
+  const { assertSendAllowed, recordOutboundSendResult } = await import('@workspace/core');
+  const cleared = await assertSendAllowed(jobId, email, 'calendar');
+  const config = calConfig();
+  if (!config) {
+    await recordOutboundSendResult(jobId, cleared.id, 'failed', null);
+    throw new Error('Live calendar is not connected');
+  }
+  const payload = cleared.payload;
+  const name = typeof payload.name === 'string' ? payload.name : '';
+  const phone = typeof payload.phone === 'string' ? payload.phone : '';
+  const start = typeof payload.start === 'string' ? payload.start : '';
+  const timezone = typeof payload.timezone === 'string' ? payload.timezone : '';
+  const callId = typeof payload.callId === 'string' ? payload.callId : '';
+  const attendeeEmail = typeof payload.email === 'string' ? payload.email : cleared.destination;
+  try {
+    const booking = await calRequest('bookings', config.key, {
+      eventTypeId: config.eventTypeId,
+      start,
+      attendee: { name, email: attendeeEmail, phoneNumber: phone, timeZone: timezone },
+      metadata: { source: 'apex_cartesia', call_id: callId },
+    }) as { uid?: string; status?: string; start?: string };
+    if (!booking.uid) throw new Error('Calendar did not confirm a booking');
+    await recordOutboundSendResult(jobId, cleared.id, 'sent', booking.uid);
+    return { uid: booking.uid, status: booking.status, start: booking.start };
+  } catch (error) {
+    await recordOutboundSendResult(jobId, cleared.id, 'failed', null);
+    throw error;
+  }
+}
+
+async function recordBookedOutcome(input: {
+  callId: string;
+  phone: string;
+  name: string;
+  email: string;
+  start: string;
+  scope: string;
+  uid: string;
+  status?: string;
+}): Promise<boolean> {
+  const booked = input.status === 'accepted';
+  try {
+    await saveOutcome({
+      callId: input.callId,
+      phone: input.phone,
+      name: input.name,
+      leadId: (await findLead(input.phone))?.id,
+      disposition: booked ? 'appointment_booked' : 'callback_requested',
+      appointmentAt: booked ? new Date(input.start) : undefined,
+      email: input.email,
+      notes: `Cal.com ${input.uid}; ${input.scope}`,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createCartesiaSalesRouter(): Router {
   const router = Router();
   router.use((req, res, next) => {
@@ -637,22 +733,63 @@ export function createCartesiaSalesRouter(): Router {
       const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, outcomeId(p.call_id))).limit(1);
       if (existing?.disposition === 'appointment_booked')
         return res.json({ booked: true, already_booked: true, start: existing.appointmentAt?.toISOString() });
-      const booking = await calRequest('bookings', config.key, { eventTypeId: config.eventTypeId,
-        start: at.toISOString(), attendee: { name: p.prospect_name, email: p.prospect_email,
-          phoneNumber: p.phone_number, timeZone: p.timezone },
-        metadata: { source: 'apex_cartesia', call_id: p.call_id },
-      }) as { uid?: string; status?: string; start?: string };
-      if (!booking.uid) throw new Error('Calendar did not confirm a booking');
-      const booked = booking.status === 'accepted';
-      let recorded = true;
+      const start = at.toISOString();
+      const inviteText = consultationInviteText({
+        name: p.prospect_name,
+        email: p.prospect_email,
+        phone: p.phone_number,
+        start,
+        timezone: p.timezone,
+        scope: p.scope_summary,
+      });
+      const { openOutboundSendJob, SendSafeguardError } = await import('@workspace/core');
+      const jobId = await pendingCalendarJob(p.call_id, p.prospect_email) ?? (await openOutboundSendJob({
+        caller: 'voice',
+        createdBy: AGENT_ID,
+        storyKey: p.call_id,
+        recipients: [{
+          channel: 'calendar',
+          destination: p.prospect_email,
+          messageText: inviteText,
+          payload: {
+            kind: 'cal_booking',
+            callId: p.call_id,
+            phone: p.phone_number,
+            name: p.prospect_name,
+            email: p.prospect_email,
+            start,
+            timezone: p.timezone,
+            scope: p.scope_summary ?? '',
+          },
+        }],
+      })).jobId;
+      let booking: { uid: string; status?: string; start?: string };
       try {
-        await saveOutcome({ callId: p.call_id, phone: p.phone_number, name: p.prospect_name,
-          leadId: (await findLead(p.phone_number))?.id, disposition: booked ? 'appointment_booked' : 'callback_requested',
-          appointmentAt: booked ? at : undefined, email: p.prospect_email,
-          notes: `Cal.com ${booking.uid}; ${p.scope_summary ?? ''}` });
-      } catch { recorded = false; }
+        booking = await submitCalBooking(jobId, p.prospect_email);
+      } catch (error) {
+        if (error instanceof SendSafeguardError) {
+          return res.status(202).json({
+            booked: false,
+            awaitingSafeguard: true,
+            sendJobId: error.jobId ?? jobId,
+            error: 'Nothing was sent. Clear this send in Pending sends.',
+          });
+        }
+        throw error;
+      }
+      const recorded = await recordBookedOutcome({
+        callId: p.call_id,
+        phone: p.phone_number,
+        name: p.prospect_name,
+        email: p.prospect_email,
+        start,
+        scope: p.scope_summary ?? '',
+        uid: booking.uid,
+        status: booking.status,
+      });
+      const booked = booking.status === 'accepted';
       return res.json({ booked, recorded, booking_uid: booking.uid, booking_status: booking.status,
-        start: booking.start ?? at.toISOString(), message: booked ? 'Confirmed by calendar' : 'Awaiting host confirmation; do not claim it is booked' });
+        start: booking.start ?? start, message: booked ? 'Confirmed by calendar' : 'Awaiting host confirmation; do not claim it is booked' });
     } catch { return res.status(503).json({ error: 'Booking failed; do not claim it is booked' }); }
   });
 
@@ -837,3 +974,32 @@ export function createCartesiaSalesRouter(): Router {
   });
   return router;
 }
+
+void import('@workspace/core').then(({ registerSendTransport, SendSafeguardError }) => {
+  registerSendTransport('cal_booking', async (jobId, recipient) => {
+    const payload = recipient.payload;
+    const callId = typeof payload.callId === 'string' ? payload.callId : '';
+    const phone = typeof payload.phone === 'string' ? payload.phone : '';
+    const name = typeof payload.name === 'string' ? payload.name : '';
+    const email = typeof payload.email === 'string' ? payload.email : recipient.destination;
+    const start = typeof payload.start === 'string' ? payload.start : '';
+    const scope = typeof payload.scope === 'string' ? payload.scope : '';
+    try {
+      const booking = await submitCalBooking(jobId, recipient.destination);
+      await recordBookedOutcome({
+        callId,
+        phone,
+        name,
+        email,
+        start: booking.start ?? start,
+        scope,
+        uid: booking.uid,
+        status: booking.status,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof SendSafeguardError) return false;
+      return false;
+    }
+  });
+});

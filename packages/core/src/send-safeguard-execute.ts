@@ -76,6 +76,9 @@ async function deliverRecipient(jobId: string, recipient: SendRecipientRecord): 
       });
       return true;
     }
+    if (recipient.channel === 'calendar' && payload.kind === 'cal_booking') {
+      return runTransportHook('cal_booking', jobId, recipient);
+    }
     if (recipient.channel === 'calendar') {
       await deliverCalendarInvite({
         toEmail: recipient.destination,
