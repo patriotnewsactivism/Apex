@@ -837,8 +837,12 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
             { toEmail, toName: contactName === 'there' ? undefined : contactName, subject: 'Apex — we received your message', html },
             { agentId: 'apex-front-desk', workspaceRoot: getWorkspaceRoot(), requestApproval: async () => true },
           );
-          if (result && typeof result === 'object' && 'success' in result && (result as { success?: boolean }).success === false) {
-            errors.push(`email: ${(result as { error?: string }).error ?? 'unknown error'}`);
+          const data = result && typeof result === 'object' && 'data' in result
+            ? (result as { data?: { success?: boolean; awaitingSafeguard?: boolean; error?: string } }).data
+            : undefined;
+          const failed = (result as { success?: boolean }).success === false || data?.success === false || data?.awaitingSafeguard === true;
+          if (failed) {
+            errors.push(`email: ${data?.awaitingSafeguard ? 'Nothing was sent. Clear this send in Pending sends.' : (data?.error ?? (result as { error?: string }).error ?? 'unknown error')}`);
           } else {
             sentVia.push('email');
           }
@@ -862,6 +866,18 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
               destination: toPhone,
               purpose: 'front_desk_confirmation',
             });
+            const { assertSendAllowed, openOutboundSendJob, SendSafeguardError } = await import('@workspace/core');
+            const opened = await openOutboundSendJob({
+              caller: 'voice',
+              createdBy: 'apex-front-desk',
+              recipients: [{
+                channel: 'sms',
+                destination: toPhone,
+                messageText: text,
+                payload: { kind: 'telnyx_sms', from, text },
+              }],
+            });
+            await assertSendAllowed(opened.jobId, toPhone, 'sms');
             const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
               method: 'POST',
               headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },

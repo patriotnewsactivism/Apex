@@ -74,20 +74,35 @@ function isLeadImportRoute(req: Request): boolean {
   return req.method === 'POST' && path === '/api/leads/import-enrichment';
 }
 
+export type ApexAuthKind = 'admin' | 'outcome_ingest' | 'vapi_sms' | 'lead_import';
+
+export function requestAuthKind(req: Request): ApexAuthKind | null {
+  const tagged = (req as Request & { apexAuthKind?: ApexAuthKind }).apexAuthKind;
+  return tagged ?? null;
+}
+
+function tagAuth(req: Request, kind: ApexAuthKind): void {
+  (req as Request & { apexAuthKind?: ApexAuthKind }).apexAuthKind = kind;
+}
+
 export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
   if (validateAdminToken(req.headers.authorization)) {
+    tagAuth(req, 'admin');
     next();
     return;
   }
   if (isOutcomeIngestRoute(req) && validateOutcomeIngestToken(req.headers.authorization)) {
+    tagAuth(req, 'outcome_ingest');
     next();
     return;
   }
   if (isVapiSmsRoute(req) && validateVapiSmsToken(req.headers.authorization)) {
+    tagAuth(req, 'vapi_sms');
     next();
     return;
   }
   if (isLeadImportRoute(req) && validateLeadImportToken(req.headers.authorization)) {
+    tagAuth(req, 'lead_import');
     next();
     return;
   }

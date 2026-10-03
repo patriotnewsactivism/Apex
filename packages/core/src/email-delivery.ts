@@ -85,6 +85,10 @@ export interface DeliverEmailOptions {
   requireCompliance?: boolean;
   postalAddress?: string | null;
   unsubscribeEmail?: string | null;
+  /** Cleared send-safeguard job. Absent means stage a job and refuse to send. */
+  sendJobId?: string | null;
+  campaignKey?: string | null;
+  storyKey?: string | null;
 }
 
 export async function deliverQueuedEmailSend(
@@ -99,10 +103,40 @@ export async function deliverQueuedEmailSend(
   const { appendComplianceFooter } = await import('./outbound-policy.js');
   const email = toEmail.trim().toLowerCase();
 
+  const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
+  let sendJobId = options.sendJobId ?? null;
+  let safeguardRecipientId: string | null = null;
+  try {
+    if (!sendJobId) {
+      const opened = await openOutboundSendJob({
+        caller: 'tool',
+        createdBy: 'email-delivery',
+        campaignKey: options.campaignKey ?? null,
+        storyKey: options.storyKey ?? null,
+        recipients: [{
+          channel: 'email',
+          destination: email,
+          messageText: `${subject}\n${html}`,
+          payload: { kind: 'email', sendId, subject, html, purpose: options.purpose ?? 'email_delivery' },
+        }],
+      });
+      sendJobId = opened.jobId;
+    }
+    const cleared = await assertSendAllowed(sendJobId, email, 'email');
+    safeguardRecipientId = cleared.id;
+  } catch (error) {
+    if (error instanceof SendSafeguardError) throw error;
+    console.error(`[send-safeguard] blocked job=${sendJobId ?? 'none'} channel=email reason=safeguard_error`);
+    throw new SendSafeguardError('Send safeguard failed closed.', 'safeguard_error', sendJobId, 'email');
+  }
+
   const fail = async (status: string, error: string) => {
     await db.update(emailSends)
       .set({ status, errorMessage: error.slice(0, 500) })
       .where(eq(emailSends.id, sendId));
+    if (sendJobId && safeguardRecipientId) {
+      await recordOutboundSendResult(sendJobId, safeguardRecipientId, 'failed', null).catch(() => undefined);
+    }
     return { success: false, status, error };
   };
 
@@ -180,6 +214,9 @@ export async function deliverQueuedEmailSend(
     await db.update(emailSends)
       .set({ status: 'sent', providerId: data.id, sentAt: new Date(), errorMessage: null })
       .where(eq(emailSends.id, sendId));
+    if (safeguardRecipientId) {
+      await recordOutboundSendResult(sendJobId, safeguardRecipientId, 'sent', data.id);
+    }
     return { success: true, status: 'sent', providerId: data.id, complianceWarning };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

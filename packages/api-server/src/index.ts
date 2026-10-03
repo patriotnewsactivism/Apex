@@ -36,6 +36,7 @@ import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
 import { resolveTrustProxyHops } from './login-guard.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createSendSafeguardRouter } from './routes/send-safeguard.js';
 import { createHealthRouter } from './routes/health.js';
 import { sendPublicHealth } from './public-health.js';
 import { createDiagnosticsRouter } from './routes/diagnostics.js';
@@ -547,6 +548,7 @@ async function main() {
   app.use('/api/campaigns', createCampaignsRouter());
   app.use('/api/territories', createTerritoriesRouter());
   app.use('/api/email-campaigns', createEmailCampaignsRouter());
+  app.use('/api/send-safeguard', createSendSafeguardRouter());
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
   app.use('/api/governance', createGovernanceRouter());

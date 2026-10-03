@@ -165,12 +165,48 @@ export async function dialBridgeLeg(params: {
   endConferenceOnExit: boolean;
   supervisorRole?: 'monitor' | 'whisper' | 'barge';
   whisperCallControlIds?: string[];
-}): Promise<{ callControlId: string } | { error: string }> {
+  sendJobId?: string | null;
+}): Promise<{ callControlId: string } | { error: string; awaitingSafeguard?: boolean; sendJobId?: string }> {
   const apiKey = process.env.TELNYX_API_KEY;
   const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
   const from = configuredApexOutboundNumber();
   if (!apiKey || !connectionId || !from) {
     return { error: `TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER} are required for outbound Telnyx calls.` };
+  }
+  const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('@workspace/core');
+  let sendJobId = params.sendJobId ?? null;
+  let recipientId: string | null = null;
+  try {
+    if (!sendJobId) {
+      const opened = await openOutboundSendJob({
+        caller: 'tool',
+        createdBy: 'call-bridge',
+        recipients: [{
+          channel: 'phone',
+          destination: params.to,
+          messageText: `Bridge ${params.role} for session ${params.sessionId}`,
+          payload: {
+            kind: 'telnyx_call',
+            role: params.role,
+            sessionId: params.sessionId,
+            endConferenceOnExit: params.endConferenceOnExit,
+            ...(params.supervisorRole ? { supervisorRole: params.supervisorRole } : {}),
+            ...(params.whisperCallControlIds?.length ? { whisperCallControlIds: params.whisperCallControlIds } : {}),
+          },
+        }],
+      });
+      sendJobId = opened.jobId;
+    }
+    const cleared = await assertSendAllowed(sendJobId, params.to, 'phone');
+    recipientId = cleared.id;
+  } catch (error) {
+    if (error instanceof SendSafeguardError) {
+      return { error: 'Nothing was sent. Clear this send in Pending sends.', awaitingSafeguard: true, sendJobId: error.jobId ?? sendJobId ?? undefined };
+    }
+    return { error: 'Send safeguard failed closed.' };
+  }
+  if (!sendJobId || !recipientId) {
+    return { error: 'Send safeguard failed closed.' };
   }
   try {
     const res = await fetch('https://api.telnyx.com/v2/calls', {
@@ -199,14 +235,18 @@ export async function dialBridgeLeg(params: {
       | { data?: { call_control_id?: string }; errors?: Array<{ detail?: string }> }
       | null;
     if (!res.ok) {
+      if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'failed', null);
       return { error: json?.errors?.[0]?.detail ?? `Telnyx returned ${res.status}` };
     }
     const callControlId = json?.data?.call_control_id;
     if (!callControlId) {
+      if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'failed', null);
       return { error: 'Telnyx accepted the dial but did not return a call_control_id.' };
     }
+    if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'sent', callControlId);
     return { callControlId };
   } catch (err) {
+    if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'failed', null);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -436,7 +476,21 @@ async function maybeSendRehearsalFollowUp(sessionId: string): Promise<void> {
     subject: subject.text,
     createdByAgentId: 'operator',
   });
-  const result = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, subject.text, rendered.text, { text: text.text });
+  let result: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+  try {
+    result = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, subject.text, rendered.text, { text: text.text });
+  } catch (error) {
+    const { SendSafeguardError } = await import('@workspace/core');
+    if (error instanceof SendSafeguardError) {
+      await db.update(callBridgeSessions).set({
+        followUpSent: false,
+        lastError: 'Nothing was sent. Clear this send in Pending sends.',
+        updatedAt: new Date(),
+      }).where(eq(callBridgeSessions.id, session.id));
+      return;
+    }
+    throw error;
+  }
   await db.update(callBridgeSessions).set({
     followUpSent: result.success,
     lastError: result.success ? session.lastError : result.error ?? session.lastError,
@@ -798,3 +852,29 @@ export function createCallBridgeWebhookRouter(): Router {
 
   return router;
 }
+
+void import('@workspace/core').then(({ registerSendTransport }) => {
+  registerSendTransport('telnyx_call', async (jobId, recipient) => {
+    const role = recipient.payload.role;
+    const sessionId = recipient.payload.sessionId;
+    if (typeof role !== 'string' || !BRIDGE_ROLES.has(role as BridgeLegRole) || typeof sessionId !== 'string') {
+      const { recordOutboundSendResult } = await import('@workspace/core');
+      await recordOutboundSendResult(jobId, recipient.id, 'failed', null);
+      return false;
+    }
+    const whisper = Array.isArray(recipient.payload.whisperCallControlIds)
+      ? recipient.payload.whisperCallControlIds.filter((id): id is string => typeof id === 'string')
+      : undefined;
+    const supervisor = recipient.payload.supervisorRole;
+    const result = await dialBridgeLeg({
+      to: recipient.destination,
+      role: role as BridgeLegRole,
+      sessionId,
+      endConferenceOnExit: recipient.payload.endConferenceOnExit !== false,
+      supervisorRole: supervisor === 'monitor' || supervisor === 'whisper' || supervisor === 'barge' ? supervisor : undefined,
+      whisperCallControlIds: whisper,
+      sendJobId: jobId,
+    });
+    return 'callControlId' in result;
+  });
+});
