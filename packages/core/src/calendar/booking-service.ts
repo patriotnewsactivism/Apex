@@ -450,8 +450,8 @@ export class CalendarBookingService {
   /**
    * Cal.com already emails public-link guests. APEX mirrors the booking onto
    * Google with sendUpdates="none" so it does not send a second invite.
-   * TODO(feat/crm): also call the CRM timeline writer when that branch exists.
    * Rows are appended to `interactions` by the production repository.
+   * TODO(crm): also write these to the CRM `contact_timeline`.
    */
   async ingestCalWebhook(organizationId: string, booking: CalWebhookBooking): Promise<{ duplicate: boolean; meetingId: string | null; conflict: boolean }> {
     const claim = await this.deps.repo.claimEvent('cal.com', `${booking.trigger}:${booking.uid}`);
@@ -627,9 +627,9 @@ export class CalendarBookingService {
     summary: string,
     meetingId: string | null,
   ): Promise<void> {
-    // TODO(feat/crm): feat/crm is not on origin. This append-only row is the
-    // contact timeline (UTC occurredAt, America/Chicago shown by the API).
-    // When the CRM timeline writer lands, call it from here as well.
+    // Append-only calendar history (UTC occurredAt, America/Chicago shown by
+    // the API). TODO(crm): the CRM `contact_timeline` does not see these rows
+    // yet; call its writer from here as well.
     await this.deps.repo.appendTimeline({
       id: randomUUID(),
       organizationId,

@@ -294,7 +294,7 @@ export class PostgresCalendarRepository implements CalendarRepository {
       eq(contacts.id, contactId),
     )).limit(1);
     if (!row) return null;
-    return this.toContact(organizationId, row.id, row.email, joinName(row.firstName, row.lastName), row.status === 'suppressed');
+    return this.toContact(organizationId, row.id, row.email, joinName(row.firstName, row.lastName), row.status === 'suppressed' || row.doNotContact);
   }
 
   async findContactByEmail(organizationId: string, email: string): Promise<ContactSnapshot | null> {
@@ -308,7 +308,7 @@ export class PostgresCalendarRepository implements CalendarRepository {
       if (!suppressed) return null;
       return { id: '', email: normalized, name: null, doNotContact: true };
     }
-    return this.toContact(organizationId, row.id, row.email, joinName(row.firstName, row.lastName), row.status === 'suppressed');
+    return this.toContact(organizationId, row.id, row.email, joinName(row.firstName, row.lastName), row.status === 'suppressed' || row.doNotContact);
   }
 
   async claimEvent(provider: string, externalId: string): Promise<'new' | 'duplicate'> {
