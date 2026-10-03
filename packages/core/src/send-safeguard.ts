@@ -1122,7 +1122,7 @@ async function createDrizzleSendSafeguardStore(): Promise<SendSafeguardStore> {
     payload: row.payload ?? null,
   });
 
-  return {
+  const store: SendSafeguardStore = {
     async getJob(id) {
       const [row] = await db.select().from(sendSafeguardJobs).where(eq(sendSafeguardJobs.id, id)).limit(1);
       return row ? mapJob(row) : null;
@@ -1237,7 +1237,7 @@ async function createDrizzleSendSafeguardStore(): Promise<SendSafeguardStore> {
       };
     },
     async setOperator(patch) {
-      const current = await this.getOperator();
+      const current = await store.getOperator();
       await db.insert(sendSafeguardOperator).values({
         id: 'default',
         codeHash: patch.codeHash ?? current.codeHash,
@@ -1259,4 +1259,5 @@ async function createDrizzleSendSafeguardStore(): Promise<SendSafeguardStore> {
       });
     },
   };
+  return store;
 }

@@ -132,7 +132,7 @@ export function PendingSendsPanel() {
                 <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>{job.publicStatus}</div>
                 <div style={{ fontSize: 16, fontWeight: 600 }}>{job.job.recipientCount} outbound message{job.job.recipientCount === 1 ? '' : 's'}</div>
               </div>
-              {(job.job.status === 'sending' || job.job.status === 'cleared' || job.job.status === 'waiting_code') && (
+              {!['stopped', 'voided', 'cancelled', 'completed'].includes(job.job.status) && (
                 <button style={btn('danger')} onClick={() => run(() => api.sendSafeguard.stop(job.job.id))}>
                   <Square size={12} /> Stop
                 </button>

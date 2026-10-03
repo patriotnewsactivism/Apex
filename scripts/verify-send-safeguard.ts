@@ -13,6 +13,8 @@ import {
   confirmSendJob,
   createSendJob,
   gateOutboundSend,
+  getOperatorSafeguardSettings,
+  getSendJobView,
   hashOperatorCode,
   isOperatorDashboardSession,
   isValidFourDigitCode,
@@ -37,6 +39,7 @@ import {
 } from '../packages/core/src/approval-policy.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail?: unknown) => {
@@ -274,7 +277,7 @@ async function main(): Promise<void> {
         // expected
       }
     }
-    const settings = await (await import('../packages/core/src/send-safeguard.js')).getOperatorSafeguardSettings();
+    const settings = await getOperatorSafeguardSettings();
     check('lock engages after 3 failures', settings.locked === true);
     const other = await createSendJob({
       recipients: [{ channel: 'sms', destination: '+15551112222', messageText: 'later' }],
@@ -282,7 +285,7 @@ async function main(): Promise<void> {
     // create also checks lock
     check('new jobs cannot enqueue while locked', other === true);
     await unlockSafeguard();
-    const after = await (await import('../packages/core/src/send-safeguard.js')).getOperatorSafeguardSettings();
+    const after = await getOperatorSafeguardSettings();
     check('operator password path unlocks (unlock() clears lock)', after.locked === false);
   }
 
@@ -296,7 +299,7 @@ async function main(): Promise<void> {
       ],
     });
     await stopSendJob(job.id, operator);
-    const view = await (await import('../packages/core/src/send-safeguard.js')).getSendJobView(job.id);
+    const view = await getSendJobView(job.id);
     check('job is stopped', view.job.status === 'stopped');
     check('queued recipients were cancelled, not deleted', view.recipients.length === 2 && view.recipients.every((row) => row.status === 'cancelled'));
   }
@@ -376,7 +379,8 @@ async function main(): Promise<void> {
   }
 
   console.log('\n── source: every live send path calls the safeguard ──');
-  const root = process.env.GITHUB_WORKSPACE ?? process.cwd();
+  const root = process.env.GITHUB_WORKSPACE
+    ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
   const email = read('packages/core/src/email-delivery.ts');
   const cartesia = read('packages/core/src/cartesia-sales-client.ts');
@@ -425,4 +429,7 @@ async function main(): Promise<void> {
   console.log('\nAll send-safeguard checks passed.');
 }
 
-await main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
