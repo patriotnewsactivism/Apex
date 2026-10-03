@@ -281,6 +281,37 @@ jobs:
           APEX_TURN_ECONOMY_TEST_DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5433/turn_economy_test
         run: pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-turn-economy-postgres.ts"
 
+  crm-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: apex_crm_verify
+        ports:
+          - 5435:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify the CRM contact book against PostgreSQL
+        env:
+          CRM_TEST_DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5435/apex_crm_verify
+          CI: true
+        run: pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-crm.ts"
+
   lead-status-postgres:
     # Proves the sanctioned lead-status transition end to end against a real
     # PostgreSQL: PATCH /api/leads/:id with status=qualified persists, the

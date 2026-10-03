@@ -14,6 +14,7 @@ import crypto from 'crypto';
 import { db } from '@workspace/db';
 import { providerEvents, providerConnections, calls } from '@workspace/db';
 import { eq, and } from 'drizzle-orm';
+import { commitSendRecord } from '@workspace/core';
 
 const RAW_BODY_CAP = 256 * 1024; // 256 KB — webhooks are small JSON
 
@@ -339,38 +340,60 @@ async function handleCallEvent(
       .limit(1);
 
     const now = new Date();
+    const timeline = {
+      contactId: existing?.contactId ?? null,
+      destination: toNumber || fromNumber || null,
+      createContact: Boolean(toNumber || fromNumber),
+      channel: 'call',
+      direction: direction === 'inbound' ? 'inbound' as const : 'outbound' as const,
+      actorType: 'provider' as const,
+      actorName: provider,
+      eventKind: 'call',
+      bodyText: `${provider} ${eventType} status=${status}`,
+      provider,
+      providerMessageId: `${provider}:${callId}:${eventType}:${status}`,
+      sendRecordTable: 'calls',
+      sendRecordId: existing?.id ?? callId,
+    };
     if (existing) {
-      await db.update(calls).set({
-        status,
-        direction,
-        callControlId: callControlId ?? existing.callControlId,
-        callSessionId: callSessionId ?? existing.callSessionId,
-        fromNumber: fromNumber ?? existing.fromNumber,
-        toNumber: toNumber ?? existing.toNumber,
-        answeredAt: answeredAt ? new Date(answeredAt) : existing.answeredAt,
-        endedAt: endedAt ? new Date(endedAt) : existing.endedAt,
-        durationSeconds: durationSeconds ?? existing.durationSeconds,
-        errorCode: errorCode ?? existing.errorCode,
-        updatedAt: now,
-      }).where(eq(calls.id, existing.id));
+      await commitSendRecord(async (tx) => {
+        await tx.update(calls).set({
+          status,
+          direction,
+          callControlId: callControlId ?? existing.callControlId,
+          callSessionId: callSessionId ?? existing.callSessionId,
+          fromNumber: fromNumber ?? existing.fromNumber,
+          toNumber: toNumber ?? existing.toNumber,
+          answeredAt: answeredAt ? new Date(answeredAt) : existing.answeredAt,
+          endedAt: endedAt ? new Date(endedAt) : existing.endedAt,
+          durationSeconds: durationSeconds ?? existing.durationSeconds,
+          errorCode: errorCode ?? existing.errorCode,
+          updatedAt: now,
+        }).where(eq(calls.id, existing.id));
+        return existing.id;
+      }, { ...timeline, contactId: existing.contactId, sendRecordId: existing.id });
     } else {
-      await db.insert(calls).values({
-        id: crypto.randomUUID(),
-        organizationId: '', // filled by the caller — provider events don't carry org
-        externalCallId: callId,
-        callControlId,
-        callSessionId,
-        fromNumber,
-        toNumber,
-        direction,
-        status,
-        answeredAt: answeredAt ? new Date(answeredAt) : null,
-        endedAt: endedAt ? new Date(endedAt) : null,
-        durationSeconds,
-        errorCode,
-        createdAt: now,
-        updatedAt: now,
-      });
+      const id = crypto.randomUUID();
+      await commitSendRecord(async (tx) => {
+        await tx.insert(calls).values({
+          id,
+          organizationId: 'apex',
+          externalCallId: callId,
+          callControlId,
+          callSessionId,
+          fromNumber,
+          toNumber,
+          direction,
+          status,
+          answeredAt: answeredAt ? new Date(answeredAt) : null,
+          endedAt: endedAt ? new Date(endedAt) : null,
+          durationSeconds,
+          errorCode,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return id;
+      }, { ...timeline, sendRecordId: id });
     }
   } catch (err) {
     console.error(`[RevenueOps Webhook] failed to update calls row for ${provider}:${callId}:`, err instanceof Error ? err.message : String(err));

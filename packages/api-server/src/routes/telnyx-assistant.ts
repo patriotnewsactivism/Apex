@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { db, researchedLeads, logs, smsMessages, callBridgeSessions, callOutcomes } from '@workspace/db';
 import { eq, or, desc } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
-import { assertOutboundAllowed, getWorkspaceRoot, markLineBusy, markLineFree } from '@workspace/core';
+import { applyDoNotContact, assertOutboundAllowed, assertSendAllowed, commitSmsMessage, getWorkspaceRoot, inboundSmsAuthorized, isOptOutMessage, markLineBusy, markLineFree, verifyTelnyxWebhookSignature } from '@workspace/core';
 
 // ─── Apex Front Desk — Telnyx AI Assistant tool-calling surface ─────────────
 //
@@ -862,6 +862,8 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
               destination: toPhone,
               purpose: 'front_desk_confirmation',
             });
+            // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
+            await assertSendAllowed({ channel: 'sms', destination: toPhone });
             const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
               method: 'POST',
               headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -872,7 +874,8 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
             } else {
               sentVia.push('sms');
             }
-            await db.insert(smsMessages).values({
+            const smsJson = smsRes.ok ? await smsRes.clone().json().catch(() => null) as { data?: { id?: string } } | null : null;
+            await commitSmsMessage({
               id: crypto.randomUUID(),
               direction: 'outbound',
               counterpartyNumber: toPhone,
@@ -880,10 +883,10 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
               toNumber: toPhone,
               body: text,
               status: smsRes.ok ? 'sent' : 'failed',
+              providerId: smsJson?.data?.id ?? null,
               errorMessage: smsRes.ok ? null : `Telnyx returned ${smsRes.status}`,
               createdByAgentId: 'apex-front-desk',
-              createdAt: new Date(),
-            });
+            }, { actorType: 'agent', actorName: 'apex-front-desk' });
           } catch (err) {
             errors.push(`sms: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -984,8 +987,22 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
   // Messaging-profile webhook_url for the front-desk number. A text to this
   // number gets the same "someone will see this" treatment as a missed call.
   router.post('/sms-inbound', async (req, res) => {
-    if (!verifyAssistantKey(req.query as Record<string, unknown>)) {
-      return res.status(403).json({ error: 'Invalid or missing key' });
+    const rawBody = (req as { rawBody?: Buffer }).rawBody?.toString('utf8') ?? JSON.stringify(req.body ?? {});
+    const signatureHeader = req.header('telnyx-signature-ed25519');
+    const timestampHeader = req.header('telnyx-timestamp');
+    const signatureOk = verifyTelnyxWebhookSignature({
+      publicKeyBase64: process.env.TELNYX_PUBLIC_KEY ?? '',
+      signatureBase64: signatureHeader,
+      timestamp: timestampHeader,
+      rawBody,
+    });
+    const authorized = inboundSmsAuthorized({
+      signatureOk,
+      signaturePresent: Boolean(signatureHeader || timestampHeader),
+      queryKeyOk: verifyAssistantKey(req.query as Record<string, unknown>),
+    });
+    if (!authorized) {
+      return res.status(403).json({ error: 'Invalid Telnyx signature' });
     }
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
@@ -1013,7 +1030,8 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
       // Persisted separately from the goal/log line above so the Sales
       // Operations SMS thread view has real conversation history to render,
       // not just a one-line summary buried in the agent log stream.
-      await db.insert(smsMessages).values({
+      const providerId = typeof payload?.id === 'string' ? payload.id : null;
+      await commitSmsMessage({
         id: crypto.randomUUID(),
         direction: 'inbound',
         counterpartyNumber: from,
@@ -1021,8 +1039,19 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
         toNumber: to,
         body: text,
         status: 'received',
-        createdAt: new Date(),
-      });
+        providerId,
+        createdByAgentId: 'apex-front-desk',
+      }, { actorType: 'system', actorName: 'telnyx' });
+      const optOut = isOptOutMessage(text);
+      if (optOut.matched && from !== 'unknown') {
+        await applyDoNotContact(db, {
+          destination: from,
+          reason: optOut.phrase ?? 'STOP',
+          setBy: 'telnyx-sms',
+          channel: 'sms',
+          providerMessageId: providerId ? `sms-optout:${providerId}` : undefined,
+        });
+      }
 
       await db.insert(logs).values({
         agentId: 'apex-front-desk',

@@ -69,6 +69,7 @@ const DRAWER = [
   { id: 'tasks', label: 'Work Queue' },
   { id: 'logs', label: 'Activity Log' },
   { id: 'leads', label: 'Prospects' },
+  { id: 'contacts', label: 'Contacts' },
   { id: 'suggestions', label: 'Suggestions' },
   { id: 'multiapp', label: 'Portfolio' },
   { id: 'control', label: 'Control Room' },
@@ -92,7 +93,7 @@ const DRAWER = [
 const NAV_ID_TO_LABEL = {
   command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals',
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
-  'sales-ops': 'Revenue Operations', leads: 'Prospects', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
+  'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', 'verify-scale': 'Verify & Scale', artifacts: 'Artifacts',
   scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
@@ -228,6 +229,23 @@ for (const width of WIDTHS) {
     if(u.includes('/goals')) return j(Array.from({length:6},(_,i)=>({id:`g${i}`,title:`Launch Lead Generation & Outreach Campaign For Commercial Real Estate ${i}`,description:NASTY[1],status:'active',priority:1,assignedAgentId:'apex-ceo-001',createdAt:new Date().toISOString(),completedAt:null,result:null})));
     if(u.includes('/approvals/counts')) return j({pending:5});
     if(u.includes('/leads/stats')) return j({total:1284,byIndustry:{'commercial real estate':402,'law firms':311},byCity:{'Baton Rouge':210}});
+    if(u.includes('/crm/gmail/status')) return j({enabled:false,scope:'https://www.googleapis.com/auth/gmail.readonly',sends:false});
+    if(u.includes('/crm/unmatched')) return j([{id:'unmatched-1',fromAddress:'tips@baton-rouge-investigative-desk.example',subject:NASTY[0],bodyText:'Unmatched inbound note',receivedAt:new Date().toISOString()}]);
+    if(u.includes('/crm/duplicates')) return j([{kind:'domain',value:'baton-rouge-investigative-desk.example',contactIds:['contact-1','contact-2']}]);
+    if(u.includes('/crm/contacts/') && !u.includes('/export')) return j({
+      timezone:'America/Chicago',
+      contact:{id:'contact-1',firstName:'Pat',lastName:'Newsroom',organizationName:'Baton Rouge Investigative Desk',email:'editor@baton-rouge-investigative-desk.example',phoneE164:'+12255550199',city:'Baton Rouge',state:'LA',tags:['newsroom','tier-A'],notes:NASTY[1],doNotContact:false,ownerBot:'newsroom-bot',website:'https://baton-rouge-investigative-desk.example'},
+      identifiers:[{id:'id-1',kind:'email',value:'editor@baton-rouge-investigative-desk.example',verified:true,sourceUrl:'https://baton-rouge-investigative-desk.example/contact',foundAt:new Date().toISOString()}],
+      meetings:[],
+      timeline:[{id:'tl-1',occurredAt:new Date().toISOString(),occurredChicago:'Oct 3, 2026, 3:13 PM',channel:'email',direction:'inbound',actorName:'Pat Newsroom',eventKind:'reply',subject:'Tip',bodyText:NASTY[1],attachments:[]}],
+    });
+    if(u.includes('/crm/contacts')) return j({timezone:'America/Chicago',contacts:[{
+      id:'contact-1',firstName:'Pat',lastName:'Newsroom Directory Contact With A Very Long Legal Name',
+      organizationName:'Baton Rouge Investigative Desk And Publishing Cooperative',
+      email:'editor@baton-rouge-investigative-desk.example',phoneE164:'+12255550199',city:'Baton Rouge',state:'LA',
+      tags:['newsroom','tier-A'],doNotContact:false,ownerBot:'newsroom-bot',notes:NASTY[1],
+      lastContactedAt:new Date().toISOString(),lastReplyAt:null,lastContactedChicago:'Oct 3, 2026, 3:13 PM',lastReplyChicago:null,
+    }]});
     return j([]); });
 
   await page.goto(`http://127.0.0.1:${PORT}/`,{waitUntil:'domcontentloaded'}).catch(()=>{});

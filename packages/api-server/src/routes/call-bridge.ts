@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { db, callBridgeSessions } from '@workspace/db';
+import { SendBlockedError, assertSendAllowed, commitSendRecord } from '@workspace/core';
 import { eq } from 'drizzle-orm';
 import { normalizeE164 } from './sales-ops.js';
 
@@ -260,21 +261,43 @@ export async function startAiFirstSession(input: {
   createdByAgentId?: string;
 }): Promise<{ id: string } | { error: string }> {
   const id = crypto.randomUUID();
-  await db.insert(callBridgeSessions).values({
-    id,
-    status: 'dialing_customer',
-    operatorNumber: input.operatorNumber,
-    customerNumber: input.customerNumber,
-    conferenceName: id,
-    sessionMode: 'ai_first',
-    buyerName: input.buyerName ?? null,
-    playbookId: input.playbookId ?? null,
-    leadId: input.leadId ?? null,
-    assistantGreeting: input.assistantGreeting ?? null,
-    assistantInstructions: input.assistantInstructions ?? null,
-    createdByAgentId: input.createdByAgentId ?? 'operator',
-    createdAt: new Date(),
-    updatedAt: new Date(),
+  // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
+  try {
+    await assertSendAllowed({ channel: 'phone', destination: input.customerNumber });
+  } catch (error) {
+    if (error instanceof SendBlockedError) return { error: error.message };
+    throw error;
+  }
+  await commitSendRecord(async (tx) => {
+    await tx.insert(callBridgeSessions).values({
+      id,
+      status: 'dialing_customer',
+      operatorNumber: input.operatorNumber,
+      customerNumber: input.customerNumber,
+      conferenceName: id,
+      sessionMode: 'ai_first',
+      buyerName: input.buyerName ?? null,
+      playbookId: input.playbookId ?? null,
+      leadId: input.leadId ?? null,
+      assistantGreeting: input.assistantGreeting ?? null,
+      assistantInstructions: input.assistantInstructions ?? null,
+      createdByAgentId: input.createdByAgentId ?? 'operator',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return id;
+  }, {
+    destination: input.customerNumber,
+    channel: 'call',
+    direction: 'outbound',
+    actorType: 'agent',
+    actorName: input.createdByAgentId ?? 'operator',
+    eventKind: 'call',
+    bodyText: input.assistantGreeting ?? 'AI-first call bridge started.',
+    provider: 'telnyx',
+    providerMessageId: `bridge:${id}`,
+    sendRecordTable: 'call_bridge_sessions',
+    sendRecordId: id,
   });
   const dialStartedAt = Date.now();
   const result = await dialBridgeLeg({
@@ -471,15 +494,40 @@ export function createCallBridgeRouter(): Router {
       }
 
       const id = crypto.randomUUID();
-      await db.insert(callBridgeSessions).values({
-        id,
-        status: 'dialing_operator',
-        operatorNumber,
-        customerNumber,
-        conferenceName: id,
-        createdByAgentId: 'operator',
-        createdAt: new Date(),
-        updatedAt: new Date(),
+      // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
+      try {
+        await assertSendAllowed({ channel: 'phone', destination: customerNumber });
+      } catch (error) {
+        if (error instanceof SendBlockedError) {
+          res.status(409).json({ error: error.message, doNotContact: true });
+          return;
+        }
+        throw error;
+      }
+      await commitSendRecord(async (tx) => {
+        await tx.insert(callBridgeSessions).values({
+          id,
+          status: 'dialing_operator',
+          operatorNumber,
+          customerNumber,
+          conferenceName: id,
+          createdByAgentId: 'operator',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+        return id;
+      }, {
+        destination: customerNumber,
+        channel: 'call',
+        direction: 'outbound',
+        actorType: 'operator',
+        actorName: 'Matthew',
+        eventKind: 'call',
+        bodyText: 'Operator call bridge started.',
+        provider: 'telnyx',
+        providerMessageId: `bridge:${id}`,
+        sendRecordTable: 'call_bridge_sessions',
+        sendRecordId: id,
       });
 
       const result = await dialBridgeLeg({ to: operatorNumber, role: 'operator', sessionId: id, endConferenceOnExit: true });

@@ -132,22 +132,42 @@ export function createResendWebhookRouter(): Router {
         case 'email.clicked':
           await db.update(emailSends).set({ status: 'clicked', clickedAt: row.clickedAt ?? now }).where(eq(emailSends.id, row.id));
           break;
-        case 'email.bounced': {
-          await db.update(emailSends).set({ status: 'bounced', bouncedAt: now }).where(eq(emailSends.id, row.id));
-          // Auto-suppress: a bounced address must never be re-emailed by a
-          // later campaign. onConflictDoNothing — a manual suppression
-          // already covering this address should not be overwritten.
-          await db.insert(emailSuppressions)
-            .values({ email: row.toEmail, reason: 'bounced', createdAt: now })
-            .onConflictDoNothing();
-          break;
-        }
+        case 'email.bounced':
         case 'email.complained': {
-          await db.update(emailSends).set({ status: 'complained', complainedAt: now }).where(eq(emailSends.id, row.id));
-          await db.insert(emailSuppressions)
-            .values({ email: row.toEmail, reason: 'complained', createdAt: now })
-            .onConflictDoNothing();
-          console.warn(`[Resend] SPAM COMPLAINT from ${row.toEmail} (send ${row.id}) — address suppressed`);
+          const complained = type === 'email.complained';
+          const { applyDoNotContact, commitSendRecord } = await import('@workspace/core');
+          await commitSendRecord(async (tx) => {
+            await tx.update(emailSends).set(
+              complained
+                ? { status: 'complained', complainedAt: now }
+                : { status: 'bounced', bouncedAt: now },
+            ).where(eq(emailSends.id, row.id));
+            await tx.insert(emailSuppressions)
+              .values({ email: row.toEmail, reason: complained ? 'complained' : 'bounced', createdAt: now })
+              .onConflictDoNothing();
+            await applyDoNotContact(tx, {
+              destination: row.toEmail,
+              reason: complained ? 'complaint' : 'bounced',
+              setBy: 'resend',
+              channel: 'email',
+              providerMessageId: `optout:${type}:${row.id}`,
+            });
+            return row.id;
+          }, {
+            destination: row.toEmail,
+            channel: 'email',
+            direction: 'inbound',
+            actorType: 'provider',
+            actorName: 'resend',
+            eventKind: complained ? 'complaint' : 'bounce',
+            subject: row.subject,
+            bodyText: complained ? `Spam complaint from ${row.toEmail}` : `Email bounced for ${row.toEmail}`,
+            provider: 'resend',
+            providerMessageId: `${type}:${row.id}`,
+            sendRecordTable: 'email_sends',
+            sendRecordId: row.id,
+          });
+          if (complained) console.warn(`[Resend] SPAM COMPLAINT from ${row.toEmail} (send ${row.id}) — address suppressed`);
           break;
         }
         case 'email.delivery_delayed':
@@ -164,6 +184,42 @@ export function createResendWebhookRouter(): Router {
     } catch (err) {
       console.error('[Resend] Webhook error:', err instanceof Error ? err.message : String(err));
       return res.status(500).json({ error: 'Webhook processing failed' });
+    }
+  });
+
+  // Inbound mail on APEX_REPLY_DOMAIN (for example reply.example.com). Signed
+  // the same way as delivery webhooks. Unmatched mail stays in the queue.
+  router.post('/inbound', async (req, res) => {
+    const secret = process.env.RESEND_WEBHOOK_SECRET;
+    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+    const svixId = req.header('svix-id') ?? '';
+    const svixTimestamp = req.header('svix-timestamp') ?? '';
+    const svixSignature = req.header('svix-signature') ?? '';
+    if (!secret || !rawBody || !verifySvixSignature(secret, svixId, svixTimestamp, rawBody, svixSignature)) {
+      return res.status(403).json({ error: 'Invalid webhook signature' });
+    }
+    try {
+      const event = req.body as { type?: string; data?: Record<string, unknown> };
+      const data = event.data ?? {};
+      const { ingestInboundEmail } = await import('@workspace/core');
+      const headers = (data.headers ?? {}) as Record<string, string>;
+      const result = await ingestInboundEmail({
+        from: typeof data.from === 'string' ? data.from : '',
+        to: Array.isArray(data.to) ? data.to.filter((value): value is string => typeof value === 'string') : [],
+        cc: Array.isArray(data.cc) ? data.cc.filter((value): value is string => typeof value === 'string') : [],
+        bcc: Array.isArray(data.bcc) ? data.bcc.filter((value): value is string => typeof value === 'string') : [],
+        subject: typeof data.subject === 'string' ? data.subject : null,
+        text: typeof data.text === 'string' ? data.text : null,
+        html: typeof data.html === 'string' ? data.html : null,
+        messageId: typeof data.message_id === 'string' ? data.message_id : headers['message-id'] ?? null,
+        inReplyTo: typeof headers['in-reply-to'] === 'string' ? headers['in-reply-to'] : null,
+        references: typeof headers['references'] === 'string' ? headers.references : null,
+        providerMessageId: typeof data.email_id === 'string' ? data.email_id : null,
+      });
+      return res.status(200).json({ received: true, ...result });
+    } catch (err) {
+      console.error('[Resend] Inbound error:', err instanceof Error ? err.message : String(err));
+      return res.status(500).json({ error: 'Inbound processing failed' });
     }
   });
 

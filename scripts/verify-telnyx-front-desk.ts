@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   check('inbound SMS endpoint exists', /router\.post\('\/sms-inbound', async/.test(route));
 
   // ── Auth: every handler checks the key, and does so first ────────────────
-  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/tools/lookup-caller-history', '/events', '/sms-inbound'];
+  const handlers = ['/dynamic-variables', '/tools/take-message', '/tools/send-confirmation', '/tools/lookup-caller-history', '/events'];
   for (const h of handlers) {
     const idx = route.indexOf(`router.post('${h}', async`);
     const body = route.slice(idx, idx + 400);
@@ -64,6 +64,20 @@ async function main(): Promise<void> {
       /if \(!verifyAssistantKey\(req\.query as Record<string, unknown>\)\) \{\s*return res\.status\(403\)/.test(body),
     );
   }
+  const inboundIdx = route.indexOf("router.post('/sms-inbound', async");
+  const inboundBody = route.slice(inboundIdx, inboundIdx + 900);
+  check(
+    '/sms-inbound verifies the Telnyx ed25519 signature before accepting the message',
+    /verifyTelnyxWebhookSignature\(/.test(inboundBody) && /inboundSmsAuthorized\(/.test(inboundBody),
+  );
+  check(
+    '/sms-inbound rejects an unsigned request',
+    /return res\.status\(403\)\.json\(\{ error: 'Invalid Telnyx signature' \}\)/.test(inboundBody),
+  );
+  check(
+    'the legacy query-string key is not the first check on /sms-inbound',
+    !/if \(!verifyAssistantKey\(req\.query as Record<string, unknown>\)\) \{\s*return res\.status\(403\)/.test(inboundBody.slice(0, 400)),
+  );
   check(
     'the key check is timing-safe, not a plain string compare',
     /crypto\.timingSafeEqual\(Buffer\.from\(received\), Buffer\.from\(secret\)\)/.test(route),

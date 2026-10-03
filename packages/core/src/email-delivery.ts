@@ -3,6 +3,8 @@
 
 import { unresolvedMergeTokens } from './outbound-policy.js';
 import { emailGreetingName } from './sales-playbooks.js';
+import { assertSendAllowed, commitSendRecord } from './crm/store.js';
+import { SendBlockedError, newReplyToken, replyDomain, replyToAddress } from './crm/pure.js';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
@@ -99,15 +101,46 @@ export async function deliverQueuedEmailSend(
   const { appendComplianceFooter } = await import('./outbound-policy.js');
   const email = toEmail.trim().toLowerCase();
 
+  const token = newReplyToken();
+  const domain = replyDomain();
+  const replyTo = replyToAddress(token, domain);
+  const emailMessageId = `<${token}@${domain ?? 'apex.local'}>`;
+
   const fail = async (status: string, error: string) => {
-    await db.update(emailSends)
-      .set({ status, errorMessage: error.slice(0, 500) })
-      .where(eq(emailSends.id, sendId));
+    // TODO(feat/send-safeguard): the do-not-contact gate below is assertSendAllowed.
+    await commitSendRecord(async (tx) => {
+      await tx.update(emailSends)
+        .set({ status, errorMessage: error.slice(0, 500) })
+        .where(eq(emailSends.id, sendId));
+      return sendId;
+    }, {
+      destination: email,
+      channel: 'email',
+      direction: 'outbound',
+      actorType: 'agent',
+      actorName: 'email-delivery',
+      eventKind: 'email_failed',
+      subject,
+      bodyText: error,
+      bodyHtml: html,
+      provider: 'resend',
+      replyToken: token,
+      emailMessageId,
+      sendRecordTable: 'email_sends',
+      sendRecordId: sendId,
+    });
     return { success: false, status, error };
   };
 
   if (await isEmailSuppressed(email)) {
     return fail('suppressed', 'Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).');
+  }
+
+  try {
+    await assertSendAllowed({ channel: 'email', destination: email });
+  } catch (error) {
+    if (error instanceof SendBlockedError) return fail('blocked', error.message);
+    return fail('failed', error instanceof Error ? error.message : String(error));
   }
 
   try {
@@ -167,6 +200,8 @@ export async function deliverQueuedEmailSend(
         subject,
         html: bodyHtml,
         text: bodyText,
+        ...(replyTo ? { reply_to: replyTo } : {}),
+        headers: { 'Message-ID': emailMessageId },
         tags: [{ name: 'apex_send_id', value: sendId }],
       }),
     });
@@ -177,9 +212,28 @@ export async function deliverQueuedEmailSend(
     }
 
     const data = await res.json() as { id: string };
-    await db.update(emailSends)
-      .set({ status: 'sent', providerId: data.id, sentAt: new Date(), errorMessage: null })
-      .where(eq(emailSends.id, sendId));
+    await commitSendRecord(async (tx) => {
+      await tx.update(emailSends)
+        .set({ status: 'sent', providerId: data.id, sentAt: new Date(), errorMessage: null })
+        .where(eq(emailSends.id, sendId));
+      return sendId;
+    }, {
+      destination: email,
+      channel: 'email',
+      direction: 'outbound',
+      actorType: 'agent',
+      actorName: 'email-delivery',
+      eventKind: 'email',
+      subject,
+      bodyText,
+      bodyHtml,
+      provider: 'resend',
+      providerMessageId: data.id,
+      replyToken: token,
+      emailMessageId,
+      sendRecordTable: 'email_sends',
+      sendRecordId: sendId,
+    });
     return { success: true, status: 'sent', providerId: data.id, complianceWarning };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -13,6 +13,9 @@ import {
 } from '@workspace/db';
 import {
   buildSalesSuggestions,
+  SendBlockedError,
+  assertSendAllowed,
+  commitCallOutcome,
   createQueuedEmailSend,
   deliverQueuedEmailSend,
   emptyOutboundPolicy,
@@ -401,6 +404,16 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     };
   }
 
+  // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
+  try {
+    await assertSendAllowed({ channel: 'phone', destination: policy.rehearsalPhone });
+  } catch (error) {
+    if (error instanceof SendBlockedError) {
+      return { status: 409, body: { email, error: error.message, doNotContact: true } };
+    }
+    throw error;
+  }
+
   const call = await startCartesiaSalesCall({
     toNumber: policy.rehearsalPhone,
     customerName: policy.personaName ?? target.buyerName,
@@ -413,6 +426,18 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     (started) => ({ success: true as const, ...started }),
     (err: unknown) => ({ success: false as const, error: err instanceof Error ? err.message : String(err) }),
   );
+
+  await commitCallOutcome({
+    id: crypto.randomUUID(),
+    callId: call.success ? `cartesia:${call.callId}` : `failed_${crypto.randomUUID()}`,
+    leadId: target.leadId,
+    customerNumber: policy.rehearsalPhone,
+    customerName: policy.personaName ?? target.buyerName,
+    disposition: call.success ? 'no_decision' : 'failed_to_dial',
+    summary: call.success ? 'Playbook rehearsal call initiated.' : `Playbook call failed: ${call.error}`,
+    createdByAgentId: 'operator',
+    conflictUpdate: call.success,
+  });
 
   await recordOutboundAudit({
     toolName: 'make_outbound_call',
