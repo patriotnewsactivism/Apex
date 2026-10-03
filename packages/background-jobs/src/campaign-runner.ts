@@ -14,6 +14,9 @@ import {
   getToolRegistry,
   getWorkspaceRoot,
   normalizeIndustry,
+  noteLeadDiscoveryPaused,
+  noteLeadDiscoveryTickSkipped,
+  tavilyProxyEnabled,
   type ResearchedLeadInput,
   type ToolContext,
 } from '@workspace/core';
@@ -418,6 +421,30 @@ export function isDeterministicFailure(message: string): boolean {
   );
 }
 
+/**
+ * Lead discovery could not search at all: every keyed web-search provider APEX
+ * may use is blocked by its credit budget, plan limit, or breaker, and the
+ * keyless fallbacks found nothing. This is an outage, not a property of the
+ * segment, so the segment goes back to pending WITHOUT spending one of its
+ * attempts and the runner pauses discovery until the provider can answer.
+ */
+export class SearchUnavailableError extends Error {
+  constructor(message: string, readonly retryAt: Date, readonly providers: string[]) {
+    super(message);
+    this.name = 'SearchUnavailableError';
+  }
+}
+
+const MIN_DISCOVERY_PAUSE_MS = 60_000;
+const MAX_DISCOVERY_PAUSE_MS = 60 * 60 * 1000;
+
+/** Clamp a provider's retry time into a sane runner pause window. */
+export function discoveryPauseUntil(retryAt: Date | string | undefined, nowMs = Date.now()): Date {
+  const parsed = retryAt ? new Date(retryAt).getTime() : NaN;
+  const target = Number.isFinite(parsed) ? parsed : nowMs + 15 * 60 * 1000;
+  return new Date(Math.min(nowMs + MAX_DISCOVERY_PAUSE_MS, Math.max(nowMs + MIN_DISCOVERY_PAUSE_MS, target)));
+}
+
 /** Strip to a comparable hostname so "https://www.acme.com/" and
  *  "http://acme.com" are recognized as the same company. */
 function domainOf(url: string | undefined): string | null {
@@ -517,6 +544,9 @@ export class CampaignRunner {
   private contactSearchBackoffUntil = 0;
   private contactSearchLastSummaryAt = 0;
   private readonly repairedCampaignIds = new Set<string>();
+  /** While set, the runner does not claim new discovery segments (search is
+   *  unavailable). Enrichment/qualification backlog keeps moving. */
+  private discoveryPausedUntil = 0;
 
   constructor(
     private readonly intervalMs = Number(
@@ -569,6 +599,16 @@ export class CampaignRunner {
       void this.enrichVerifiedContactsFromSearch(Number(process.env.LEAD_CONTACT_SEARCH_BATCH ?? 6))
         .catch((err) => console.warn('[lead-contact-search] background search failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();
+      if (Date.now() < this.discoveryPausedUntil) {
+        // Search is unavailable; claiming segments now would only fail them.
+        noteLeadDiscoveryTickSkipped();
+        await processLeadPipelineBacklog({
+          stageConcurrency: config.stageConcurrency,
+          leaseMs: config.leaseMs,
+        });
+        await this.closeFinishedCampaigns();
+        return;
+      }
       const claimed = await this.claimSegments(config.segmentBatchSize);
       if (claimed.length === 0) {
         await processLeadPipelineBacklog({
@@ -993,6 +1033,7 @@ export class CampaignRunner {
         provider: string;
         businesses: DirectoryBusiness[];
         diagnostics: string[];
+        searchUnavailable?: { providers: string[]; retryAt: string };
       };
 
       const runDirectory = async (): Promise<DiscoveryCandidate> => {
@@ -1060,6 +1101,7 @@ export class CampaignRunner {
             suggestion?: string;
             cacheHit?: boolean;
             cacheCoalesced?: boolean;
+            searchUnavailable?: { providers: string[]; retryAt: string };
           };
           const businesses = (payload.results ?? [])
             .map((item) => businessFromWebResult(item, segment.city))
@@ -1073,6 +1115,7 @@ export class CampaignRunner {
               ...(payload.diagnostics ?? []),
               ...(payload.suggestion ? [payload.suggestion] : []),
             ],
+            ...(payload.searchUnavailable ? { searchUnavailable: payload.searchUnavailable } : {}),
           };
         } catch (err) {
           return {
@@ -1089,10 +1132,12 @@ export class CampaignRunner {
       // TomTom/OSM chain when web discovery is empty. This avoids leaving
       // dozens of 20–25 second fallback requests running after Tavily already
       // produced a usable lead set.
+      // The BuildMyBot proxy only counts when APEX_TAVILY_PROXY_ENABLED
+      // allows it (default: only when APEX has no direct TAVILY_API_KEY).
       const hasFastWeb = Boolean(
         process.env.TAVILY_API_KEY ||
         process.env.BRAVE_SEARCH_API_KEY ||
-        (process.env.BUILDMYBOT_TAVILY_PROXY_URL && process.env.BUILDMYBOT_TAVILY_PROXY_SECRET),
+        (tavilyProxyEnabled() && process.env.BUILDMYBOT_TAVILY_PROXY_URL && process.env.BUILDMYBOT_TAVILY_PROXY_SECRET),
       );
       const hasFastStructured = Boolean(process.env.YELP_API_KEY || process.env.GOOGLE_PLACES_API_KEY);
 
@@ -1127,6 +1172,17 @@ export class CampaignRunner {
       const chosen = first.businesses.length > 0 ? first : second;
       if (!chosen || chosen.businesses.length === 0) {
         const reasons = [...first.diagnostics, ...(second?.diagnostics ?? [])].filter(Boolean);
+        // Web search could not run at all and there is no structured
+        // directory provider to carry discovery: that is an outage. Pause
+        // instead of failing this shard (and every other shard in the batch).
+        const unavailable = [first, second].find((c) => c?.searchUnavailable)?.searchUnavailable;
+        if (unavailable && !hasFastStructured) {
+          throw new SearchUnavailableError(
+            `Lead search unavailable (${unavailable.providers.join(', ')}) until ${unavailable.retryAt}. ${reasons.slice(0, 4).join(' | ')}`,
+            new Date(unavailable.retryAt),
+            unavailable.providers,
+          );
+        }
         throw new Error(
           `All lead discovery sources returned zero for "${query}". ${reasons.slice(0, 10).join(' | ') || 'No provider diagnostics were returned.'}`,
         );
@@ -1244,6 +1300,10 @@ export class CampaignRunner {
       });
       await this.emitProgress(campaign.id);
     } catch (err) {
+      if (err instanceof SearchUnavailableError) {
+        await this.deferSegmentForSearchOutage(campaign, segment, err);
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       const attempts = segment.attempts ?? 1;
       // A schema rejection is deterministic: the same producer building the
@@ -1283,6 +1343,53 @@ export class CampaignRunner {
         data: { campaignId: campaign.id, segmentId: segment.id, attempts, exhaustedRetries, error: message.slice(0, 500) },
       });
     }
+  }
+
+  /**
+   * Put a segment back untouched (its attempt refunded) and pause discovery
+   * until search can answer. Logs and records operator activity once per
+   * pause, not once per shard.
+   */
+  private async deferSegmentForSearchOutage(
+    campaign: typeof leadCampaigns.$inferSelect,
+    segment: typeof campaignSegments.$inferSelect,
+    err: SearchUnavailableError,
+  ): Promise<void> {
+    await db
+      .update(campaignSegments)
+      .set({
+        status: 'pending',
+        leasedAt: null,
+        attempts: Math.max(0, (segment.attempts ?? 1) - 1),
+        lastError: err.message.slice(0, 500),
+        completedAt: null,
+      })
+      .where(eq(campaignSegments.id, segment.id));
+
+    const until = discoveryPauseUntil(err.retryAt);
+    if (until.getTime() > this.discoveryPausedUntil) this.discoveryPausedUntil = until.getTime();
+    const freshPause = noteLeadDiscoveryPaused(new Date(this.discoveryPausedUntil), err.message);
+    if (!freshPause) return;
+
+    console.log(
+      `[campaigns] lead discovery paused until ${new Date(this.discoveryPausedUntil).toISOString()}: ` +
+        `search unavailable (${err.providers.join(', ')}). Segments stay pending; no attempts spent.`,
+    );
+    await recordOperatorActivity({
+      category: 'lead_search',
+      level: 'warn',
+      agentId: 'apex-campaign-runner',
+      message:
+        `Lead search is paused until ${new Date(this.discoveryPausedUntil).toISOString()} because web search is unavailable ` +
+        `(${err.providers.join(', ')}: budget, plan limit, or provider outage). Campaign "${campaign.name}" keeps its place; ` +
+        `no searches were marked failed.`,
+      data: {
+        campaignId: campaign.id,
+        segmentId: segment.id,
+        providers: err.providers,
+        pausedUntil: new Date(this.discoveryPausedUntil).toISOString(),
+      },
+    });
   }
 
   /**
