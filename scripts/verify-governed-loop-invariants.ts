@@ -111,24 +111,24 @@ check(
 
 console.log('\n── send safeguard sits in front of every live provider call ──');
 check(
-  'shared email delivery calls gateOutboundSend before Resend',
-  email.includes('gateOutboundSend') &&
-    email.indexOf('gateOutboundSend') < email.indexOf('fetch(RESEND_API_URL'),
+  'shared email delivery calls assertSendAllowed before Resend',
+  email.includes('assertSendAllowed') &&
+    email.indexOf('assertSendAllowed') < email.indexOf('fetch(RESEND_API_URL'),
 );
 check(
-  'operator SMS calls gateOutboundSend before Telnyx',
-  salesOps.includes('gateOutboundSend') &&
-    salesOps.indexOf('gateOutboundSend') < salesOps.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+  'operator SMS calls assertSendAllowed before Telnyx',
+  salesOps.includes('assertSendAllowed') &&
+    salesOps.indexOf('assertSendAllowed') < salesOps.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
 );
 check(
-  'front-desk confirmation SMS calls gateOutboundSend before Telnyx',
-  telnyxAssistant.includes('gateOutboundSend') &&
-    telnyxAssistant.indexOf('gateOutboundSend') < telnyxAssistant.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+  'front-desk confirmation SMS calls assertSendAllowed before Telnyx',
+  telnyxAssistant.includes('assertSendAllowed') &&
+    telnyxAssistant.indexOf('assertSendAllowed') < telnyxAssistant.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
 );
 check(
-  'checkout SMS calls gateOutboundSend before Telnyx',
-  telnyxVoice.includes('gateOutboundSend') &&
-    telnyxVoice.indexOf('gateOutboundSend') < telnyxVoice.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+  'checkout SMS calls assertSendAllowed before Telnyx',
+  telnyxVoice.includes('assertSendAllowed') &&
+    telnyxVoice.indexOf('assertSendAllowed') < telnyxVoice.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
 );
 
 console.log('\n── irreversible send paths cannot bypass the evaluator ──');

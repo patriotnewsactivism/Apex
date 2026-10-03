@@ -73,7 +73,6 @@ const DRAWER = [
   { id: 'suggestions', label: 'Suggestions' },
   { id: 'multiapp', label: 'Portfolio' },
   { id: 'control', label: 'Control Room' },
-  { id: 'pending-sends', label: 'Pending Sends' },
   { id: 'verify-scale', label: 'Verify & Scale' },
   { id: 'artifacts', label: 'Artifacts' },
   { id: 'scheduled', label: 'Cron Registry' },

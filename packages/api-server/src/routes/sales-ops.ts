@@ -716,23 +716,6 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         return;
       }
 
-      try {
-        const { ensureProductionSendSafeguard, gateOutboundSend } = await import('@workspace/core');
-        await ensureProductionSendSafeguard();
-        await gateOutboundSend({
-          channel: 'sms',
-          recipient: toNumber,
-          messageText: text,
-          createdBy: 'sales-ops-sms',
-        });
-      } catch (error) {
-        res.status(409).json({
-          error: error instanceof Error ? error.message : String(error),
-          safeguardBlocked: true,
-        });
-        return;
-      }
-
       const apiKey = process.env.TELNYX_API_KEY;
       const fromNumber = process.env.APEX_FRONT_DESK_NUMBER;
       if (!apiKey || !fromNumber) {
