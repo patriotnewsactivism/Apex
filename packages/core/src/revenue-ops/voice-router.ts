@@ -264,6 +264,7 @@ export interface InitiateCallInput {
   providerConnectionId?: string;
   strategyId?: string;
   steps?: Array<{ channel: string; content?: string }>;
+  sendJobId?: string | null;
 }
 
 export interface InitiateCallResult {
@@ -273,6 +274,8 @@ export interface InitiateCallResult {
   provider?: string;
   error?: string;
   cleanupAction?: string; // if call was queued but not started, what to do
+  awaitingSafeguard?: boolean;
+  sendJobId?: string;
 }
 
 export async function initiateOutboundCall(input: InitiateCallInput): Promise<InitiateCallResult> {
@@ -302,6 +305,36 @@ export async function initiateOutboundCall(input: InitiateCallInput): Promise<In
     if (circuitStatus === 'open') {
       return { success: false, error: `Provider ${conn.provider} has an open circuit.`, cleanupAction: 'circuit_open' };
     }
+  }
+
+  const { assertSendAllowed, openOutboundSendJob, SendSafeguardError } = await import('../send-safeguard.js');
+  let sendJobId = input.sendJobId ?? null;
+  try {
+    if (!sendJobId) {
+      const opened = await openOutboundSendJob({
+        caller: 'tool',
+        createdBy: 'call_initiate',
+        campaignKey: input.campaignId ?? null,
+        recipients: [{
+          channel: 'phone',
+          destination: input.toNumber,
+          messageText: input.steps?.map((step) => step.content ?? '').join('\n') || `Call ${input.toNumber}`,
+          payload: { kind: 'voice_router', organizationId: input.organizationId, contactId: input.contactId },
+        }],
+      });
+      sendJobId = opened.jobId;
+    }
+    await assertSendAllowed(sendJobId, input.toNumber, 'phone');
+  } catch (error) {
+    if (error instanceof SendSafeguardError) {
+      return {
+        success: false,
+        error: 'Nothing was sent. Clear this send in Pending sends.',
+        awaitingSafeguard: true,
+        sendJobId: error.jobId ?? sendJobId ?? undefined,
+      };
+    }
+    return { success: false, error: 'Send safeguard failed closed.' };
   }
 
   // 3. Create the call record

@@ -516,12 +516,22 @@ class ToolRegistry {
     // future tool with the same mismatch. A hard gate must not depend on a
     // second, independently-maintained flag agreeing with it -- so this now
     // checks HARD_GATED_TOOLS directly, first, unconditionally.
-    const { HARD_GATED_TOOLS, operatorAutoApproveAllEnabled } = await import('./approval-policy.js');
+    const { HARD_GATED_TOOLS, operatorAutoApproveAllEnabled, isOutboundSalesSendTool } = await import('./approval-policy.js');
     let salesAuto: { rehearsal: boolean; reason: string; mode: string } | null = null;
-    if (operatorAutoApproveAllEnabled()) {
-      // Standing operator authorization: all approval-gated tools proceed
-      // without yielding. Set APEX_OPERATOR_AUTO_APPROVE_ALL=false to restore
-      // the ordinary hard-gate, then the outbound policy below.
+    if (isOutboundSalesSendTool(name)) {
+      // Standing auto-approve never covers an outbound sales send. The human
+      // gate stays, and the send safeguard still has to clear the job.
+      const approved = await context.requestApproval(
+        name,
+        rawArgs,
+        `Agent requests to execute outbound send tool: ${name}. Outbound sales sends require explicit human approval.`,
+      );
+      if (!approved) {
+        return { success: false, error: 'Action rejected by user' };
+      }
+    } else if (operatorAutoApproveAllEnabled()) {
+      // Standing operator authorization skips the ordinary approval gate.
+      // It does not cover outbound sales sends, which are handled above.
     } else if (HARD_GATED_TOOLS.has(name)) {
       // APEX_SALES_OUTBOUND_GATE=closed is for the approval guard only. Do not
       // set it in production: it forces every sales send back through a human.
@@ -596,7 +606,8 @@ class ToolRegistry {
       let result: unknown;
       if (searchCache && !searchCache.refresh) {
         const producer = (async () => {
-          const fresh = await tool.execute(parsed.data, context);
+          const { runWithSendCaller } = await import('./send-safeguard.js');
+          const fresh = await runWithSendCaller('tool', () => tool.execute(parsed.data, context));
           await writeLeadSearchCache(searchCache, fresh);
           return fresh;
         })();
@@ -609,7 +620,8 @@ class ToolRegistry {
           }
         }
       } else {
-        result = await tool.execute(parsed.data, context);
+        const { runWithSendCaller } = await import('./send-safeguard.js');
+        result = await runWithSendCaller('tool', () => tool.execute(parsed.data, context));
         if (searchCache) await writeLeadSearchCache(searchCache, result);
       }
 
@@ -3662,7 +3674,30 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         }
 
         const todayContext = `Today's date is ${new Date().toISOString().slice(0, 10)} (${DAY_NAMES[new Date().getUTCDay()]}). Resolve relative dates the prospect gives you into exact dates in their stated time zone before using calendar tools.`;
+        const { openOutboundSendJob, SendSafeguardError } = await import('./send-safeguard.js');
+        let stagedJobId: string | null = null;
         try {
+          const staged = await openOutboundSendJob({
+            caller: 'tool',
+            campaignKey: campaignId ?? null,
+            createdBy: ctx.agentId,
+            recipients: [{
+              channel: 'phone',
+              destination: customerNumber,
+              messageText: `${firstMessage}\n${assistantPrompt}`,
+              payload: {
+                kind: 'cartesia_call',
+                customerName: customerName ?? null,
+                assistantPrompt: `${todayContext}\n\n${assistantPrompt}`,
+                firstMessage,
+                leadId: leadId ?? null,
+                campaignId: campaignId ?? null,
+                playbookId: playbookId ?? null,
+                createdByAgentId: ctx.agentId,
+              },
+            }],
+          });
+          stagedJobId = staged.jobId;
           const call = await startCartesiaSalesCall({
             toNumber: customerNumber,
             customerName: customerName ?? null,
@@ -3672,6 +3707,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             campaignId: campaignId ?? null,
             playbookId: playbookId ?? null,
             createdByAgentId: ctx.agentId,
+            sendJobId: staged.jobId,
           });
 
           try {
@@ -3714,6 +3750,15 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             message: `Outbound Cartesia call initiated to ${call.toNumber}${customerName ? ` (${customerName})` : ''} using ${CARTESIA_SALES_AGENT_NAME} from ${APEX_CARTESIA_CALLER_NUMBER}. Call ID: ${call.callId}.`,
           };
         } catch (err) {
+          if (err instanceof SendSafeguardError) {
+            return {
+              success: false,
+              sent: false,
+              awaitingSafeguard: true,
+              sendJobId: err.jobId ?? stagedJobId,
+              error: 'Nothing was sent. Clear this send in Pending sends.',
+            };
+          }
           const errorMsg = err instanceof Error ? err.message : String(err);
           try {
             await db.insert(callOutcomes).values({
@@ -3863,15 +3908,53 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         });
         const { loadOutboundPolicy } = await import('./outbound-policy-store.js');
         const { sameEmail } = await import('./outbound-policy.js');
+        const { openOutboundSendJob, SendSafeguardError } = await import('./send-safeguard.js');
         const policy = await loadOutboundPolicy();
         const rehearsal = Boolean(policy && sameEmail(toEmail, policy.rehearsalEmail));
-        const result = await deliverQueuedEmailSend(id, toEmail, subject, html, {
-          leadId: leadId ?? null,
-          purpose: 'send_email',
-          requireCompliance: !rehearsal && policy?.mode === 'capped_live',
-          postalAddress: policy?.postalAddress,
-          unsubscribeEmail: policy?.unsubscribeEmail,
+        const staged = await openOutboundSendJob({
+          caller: 'tool',
+          createdBy: ctx.agentId,
+          recipients: [{
+            channel: 'email',
+            destination: toEmail,
+            messageText: `${subject}\n${html}`,
+            payload: {
+              kind: 'email',
+              sendId: id,
+              subject,
+              html,
+              leadId: leadId ?? null,
+              purpose: 'send_email',
+              requireCompliance: !rehearsal && policy?.mode === 'capped_live',
+              postalAddress: policy?.postalAddress ?? null,
+              unsubscribeEmail: policy?.unsubscribeEmail ?? null,
+            },
+          }],
         });
+        let result: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+        try {
+          result = await deliverQueuedEmailSend(id, toEmail, subject, html, {
+            leadId: leadId ?? null,
+            purpose: 'send_email',
+            requireCompliance: !rehearsal && policy?.mode === 'capped_live',
+            postalAddress: policy?.postalAddress,
+            unsubscribeEmail: policy?.unsubscribeEmail,
+            sendJobId: staged.jobId,
+          });
+        } catch (error) {
+          if (error instanceof SendSafeguardError) {
+            return {
+              emailSendId: id,
+              success: false,
+              sent: false,
+              status: 'queued',
+              awaitingSafeguard: true,
+              sendJobId: error.jobId ?? staged.jobId,
+              error: 'Nothing was sent. Clear this send in Pending sends.',
+            };
+          }
+          throw error;
+        }
         return {
           emailSendId: id,
           ...result,
@@ -4039,17 +4122,50 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           return { campaignId, sent: 0, remaining: 0, status: done ? 'completed' : campaign.status, message: 'No queued emails remain for this campaign.' };
         }
 
-        await db.update(emailCampaigns)
-          .set({ status: 'running', startedAt: campaign.startedAt ?? new Date(), lastProgressAt: new Date() })
-          .where(eq(emailCampaigns.id, campaignId));
-
         const leadIds = queued.map((r) => r.leadId).filter((id): id is string => Boolean(id));
         const leads = leadIds.length > 0 ? await db.select().from(researchedLeads).where(inArray(researchedLeads.id, leadIds)) : [];
         const leadById = new Map(leads.map((l) => [l.id, l]));
 
         const { loadOutboundPolicy } = await import('./outbound-policy-store.js');
         const { sameEmail } = await import('./outbound-policy.js');
+        const { openOutboundSendJob, SendSafeguardError } = await import('./send-safeguard.js');
         const policy = await loadOutboundPolicy();
+        const staged = await openOutboundSendJob({
+          caller: 'tool',
+          campaignKey: campaignId,
+          createdBy: 'send_email_campaign_batch',
+          recipients: queued.map((row) => {
+            const lead = row.leadId ? leadById.get(row.leadId) : undefined;
+            const buyerName = lead?.decisionMakerName?.trim() || row.toName || lead?.companyName || '';
+            const fields = {
+              companyName: lead?.companyName ?? row.toName ?? '',
+              buyerName,
+              toName: buyerName,
+              outreachAngle: lead?.outreachAngle ?? '',
+              fitReason: lead?.fitReason ?? '',
+              industry: lead?.industry ?? '',
+              city: lead?.city ?? '',
+            };
+            const html = row.body ?? resolveMergeFields(campaign.bodyTemplate, fields);
+            const rehearsal = Boolean(policy && sameEmail(row.toEmail, policy.rehearsalEmail));
+            return {
+              channel: 'email' as const,
+              destination: row.toEmail,
+              messageText: `${row.subject}\n${html}`,
+              payload: {
+                kind: 'email',
+                sendId: row.id,
+                subject: row.subject,
+                html,
+                leadId: row.leadId ?? null,
+                purpose: 'send_email_campaign_batch',
+                requireCompliance: !rehearsal && policy?.mode === 'capped_live',
+                postalAddress: policy?.postalAddress ?? null,
+                unsubscribeEmail: policy?.unsubscribeEmail ?? null,
+              },
+            };
+          }),
+        });
         let sent = 0;
         let failed = 0;
         let suppressed = 0;
@@ -4075,13 +4191,35 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           };
           const html = row.body ?? resolveMergeFields(campaign.bodyTemplate, fields);
           const rehearsal = Boolean(policy && sameEmail(row.toEmail, policy.rehearsalEmail));
-          const result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html, {
-            leadId: row.leadId ?? null,
-            purpose: 'send_email_campaign_batch',
-            requireCompliance: !rehearsal && policy?.mode === 'capped_live',
-            postalAddress: policy?.postalAddress,
-            unsubscribeEmail: policy?.unsubscribeEmail,
-          });
+          let result: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+          try {
+            result = await deliverQueuedEmailSend(row.id, row.toEmail, row.subject, html, {
+              leadId: row.leadId ?? null,
+              purpose: 'send_email_campaign_batch',
+              requireCompliance: !rehearsal && policy?.mode === 'capped_live',
+              postalAddress: policy?.postalAddress,
+              unsubscribeEmail: policy?.unsubscribeEmail,
+              sendJobId: staged.jobId,
+            });
+          } catch (error) {
+            if (error instanceof SendSafeguardError) {
+              return {
+                campaignId,
+                sent: 0,
+                sentThisBatch: 0,
+                awaitingSafeguard: true,
+                sendJobId: error.jobId ?? staged.jobId,
+                status: campaign.status,
+                message: 'Nothing was sent. Clear this send in Pending sends.',
+              };
+            }
+            throw error;
+          }
+          if (sent === 0 && result.success) {
+            await db.update(emailCampaigns)
+              .set({ status: 'running', startedAt: campaign.startedAt ?? new Date(), lastProgressAt: new Date() })
+              .where(eq(emailCampaigns.id, campaignId));
+          }
           if (result.success) sent++;
           else if (result.status === 'suppressed') suppressed++;
           else {
