@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { db, callBridgeSessions } from '@workspace/db';
-import { SendBlockedError, assertSendAllowed, commitSendRecord } from '@workspace/core';
-import { eq } from 'drizzle-orm';
+import { SendBlockedError, assertContactSendable, commitSendRecord } from '@workspace/core';
+import { and, eq } from 'drizzle-orm';
 import { normalizeE164 } from './sales-ops.js';
 
 // ─── Call Bridge — operator call with live AI takeover ─────────────────────
@@ -166,12 +166,48 @@ export async function dialBridgeLeg(params: {
   endConferenceOnExit: boolean;
   supervisorRole?: 'monitor' | 'whisper' | 'barge';
   whisperCallControlIds?: string[];
-}): Promise<{ callControlId: string } | { error: string }> {
+  sendJobId?: string | null;
+}): Promise<{ callControlId: string } | { error: string; awaitingSafeguard?: boolean; sendJobId?: string }> {
   const apiKey = process.env.TELNYX_API_KEY;
   const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
   const from = configuredApexOutboundNumber();
   if (!apiKey || !connectionId || !from) {
     return { error: `TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER} are required for outbound Telnyx calls.` };
+  }
+  const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('@workspace/core');
+  let sendJobId = params.sendJobId ?? null;
+  let recipientId: string | null = null;
+  try {
+    if (!sendJobId) {
+      const opened = await openOutboundSendJob({
+        caller: 'tool',
+        createdBy: 'call-bridge',
+        recipients: [{
+          channel: 'phone',
+          destination: params.to,
+          messageText: `Bridge ${params.role} for session ${params.sessionId}`,
+          payload: {
+            kind: 'telnyx_call',
+            role: params.role,
+            sessionId: params.sessionId,
+            endConferenceOnExit: params.endConferenceOnExit,
+            ...(params.supervisorRole ? { supervisorRole: params.supervisorRole } : {}),
+            ...(params.whisperCallControlIds?.length ? { whisperCallControlIds: params.whisperCallControlIds } : {}),
+          },
+        }],
+      });
+      sendJobId = opened.jobId;
+    }
+    const cleared = await assertSendAllowed(sendJobId, params.to, 'phone');
+    recipientId = cleared.id;
+  } catch (error) {
+    if (error instanceof SendSafeguardError) {
+      return { error: 'Nothing was sent. Clear this send in Pending sends.', awaitingSafeguard: true, sendJobId: error.jobId ?? sendJobId ?? undefined };
+    }
+    return { error: 'Send safeguard failed closed.' };
+  }
+  if (!sendJobId || !recipientId) {
+    return { error: 'Send safeguard failed closed.' };
   }
   try {
     const res = await fetch('https://api.telnyx.com/v2/calls', {
@@ -200,14 +236,18 @@ export async function dialBridgeLeg(params: {
       | { data?: { call_control_id?: string }; errors?: Array<{ detail?: string }> }
       | null;
     if (!res.ok) {
+      if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'failed', null);
       return { error: json?.errors?.[0]?.detail ?? `Telnyx returned ${res.status}` };
     }
     const callControlId = json?.data?.call_control_id;
     if (!callControlId) {
+      if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'failed', null);
       return { error: 'Telnyx accepted the dial but did not return a call_control_id.' };
     }
+    if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'sent', callControlId);
     return { callControlId };
   } catch (err) {
+    if (recipientId) await recordOutboundSendResult(sendJobId, recipientId, 'failed', null);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -259,45 +299,29 @@ export async function startAiFirstSession(input: {
   assistantGreeting?: string;
   assistantInstructions?: string;
   createdByAgentId?: string;
-}): Promise<{ id: string } | { error: string }> {
+}): Promise<{ id: string } | { error: string; awaitingSafeguard?: boolean; sendJobId?: string }> {
   const id = crypto.randomUUID();
-  // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
   try {
-    await assertSendAllowed({ channel: 'phone', destination: input.customerNumber });
+    await assertContactSendable({ channel: 'phone', destination: input.customerNumber });
   } catch (error) {
     if (error instanceof SendBlockedError) return { error: error.message };
     throw error;
   }
-  await commitSendRecord(async (tx) => {
-    await tx.insert(callBridgeSessions).values({
-      id,
-      status: 'dialing_customer',
-      operatorNumber: input.operatorNumber,
-      customerNumber: input.customerNumber,
-      conferenceName: id,
-      sessionMode: 'ai_first',
-      buyerName: input.buyerName ?? null,
-      playbookId: input.playbookId ?? null,
-      leadId: input.leadId ?? null,
-      assistantGreeting: input.assistantGreeting ?? null,
-      assistantInstructions: input.assistantInstructions ?? null,
-      createdByAgentId: input.createdByAgentId ?? 'operator',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    return id;
-  }, {
-    destination: input.customerNumber,
-    channel: 'call',
-    direction: 'outbound',
-    actorType: 'agent',
-    actorName: input.createdByAgentId ?? 'operator',
-    eventKind: 'call',
-    bodyText: input.assistantGreeting ?? 'AI-first call bridge started.',
-    provider: 'telnyx',
-    providerMessageId: `bridge:${id}`,
-    sendRecordTable: 'call_bridge_sessions',
-    sendRecordId: id,
+  await db.insert(callBridgeSessions).values({
+    id,
+    status: 'dialing_customer',
+    operatorNumber: input.operatorNumber,
+    customerNumber: input.customerNumber,
+    conferenceName: id,
+    sessionMode: 'ai_first',
+    buyerName: input.buyerName ?? null,
+    playbookId: input.playbookId ?? null,
+    leadId: input.leadId ?? null,
+    assistantGreeting: input.assistantGreeting ?? null,
+    assistantInstructions: input.assistantInstructions ?? null,
+    createdByAgentId: input.createdByAgentId ?? 'operator',
+    createdAt: new Date(),
+    updatedAt: new Date(),
   });
   const dialStartedAt = Date.now();
   const result = await dialBridgeLeg({
@@ -316,12 +340,60 @@ export async function startAiFirstSession(input: {
     await db.update(callBridgeSessions)
       .set({ status: 'failed', lastError: result.error, updatedAt: new Date() })
       .where(eq(callBridgeSessions.id, id));
-    return { error: result.error };
+    return result.awaitingSafeguard
+      ? { error: result.error, awaitingSafeguard: true, sendJobId: result.sendJobId }
+      : { error: result.error };
   }
-  await db.update(callBridgeSessions)
-    .set({ customerCallControlId: result.callControlId, updatedAt: new Date() })
-    .where(eq(callBridgeSessions.id, id));
+  await recordCustomerLegDialed(id, result.callControlId);
   return { id };
+}
+
+// Only the customer leg reaches the contact, so it alone writes the CRM
+// timeline row, and only once Telnyx accepted the dial: a leg still held in
+// Pending sends never gets here. The release hook uses this too, and there the
+// session was marked failed while the leg was held and has no customer leg id
+// yet, which attachSalesAi needs when the buyer answers.
+async function recordCustomerLegDialed(sessionId: string, callControlId: string): Promise<void> {
+  const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
+  if (!session) return;
+  const aiFirst = (session.sessionMode ?? 'operator_first') === 'ai_first';
+  const now = new Date();
+  try {
+    await commitSendRecord(async (tx) => {
+      await tx.update(callBridgeSessions)
+        .set({ customerCallControlId: callControlId, updatedAt: now })
+        .where(eq(callBridgeSessions.id, sessionId));
+      await tx.update(callBridgeSessions)
+        .set({ status: 'dialing_customer', lastError: null, updatedAt: now })
+        .where(and(eq(callBridgeSessions.id, sessionId), eq(callBridgeSessions.status, 'failed')));
+      return sessionId;
+    }, {
+      destination: session.customerNumber,
+      channel: 'call',
+      direction: 'outbound',
+      actorType: aiFirst ? 'agent' : 'operator',
+      actorName: aiFirst ? (session.createdByAgentId ?? 'operator') : 'Matthew',
+      eventKind: 'call',
+      bodyText: aiFirst ? (session.assistantGreeting ?? 'AI-first call bridge started.') : 'Operator call bridge started.',
+      provider: 'telnyx',
+      providerMessageId: `bridge:${sessionId}:${callControlId}`,
+      sendRecordTable: 'call_bridge_sessions',
+      sendRecordId: sessionId,
+    });
+  } catch (error) {
+    // The call is already ringing. Keep the leg id so the AI can attach, and
+    // leave the missing timeline row visible in the log rather than failing the call.
+    console.error('[Call Bridge] customer leg timeline write failed', {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await db.update(callBridgeSessions)
+      .set({ customerCallControlId: callControlId, updatedAt: now })
+      .where(eq(callBridgeSessions.id, sessionId));
+    await db.update(callBridgeSessions)
+      .set({ status: 'dialing_customer', lastError: null, updatedAt: now })
+      .where(and(eq(callBridgeSessions.id, sessionId), eq(callBridgeSessions.status, 'failed')));
+  }
 }
 
 async function attachSalesAi(sessionId: string): Promise<void> {
@@ -459,7 +531,21 @@ async function maybeSendRehearsalFollowUp(sessionId: string): Promise<void> {
     subject: subject.text,
     createdByAgentId: 'operator',
   });
-  const result = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, subject.text, rendered.text, { text: text.text });
+  let result: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+  try {
+    result = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, subject.text, rendered.text, { text: text.text });
+  } catch (error) {
+    const { SendSafeguardError } = await import('@workspace/core');
+    if (error instanceof SendSafeguardError) {
+      await db.update(callBridgeSessions).set({
+        followUpSent: false,
+        lastError: 'Nothing was sent. Clear this send in Pending sends.',
+        updatedAt: new Date(),
+      }).where(eq(callBridgeSessions.id, session.id));
+      return;
+    }
+    throw error;
+  }
   await db.update(callBridgeSessions).set({
     followUpSent: result.success,
     lastError: result.success ? session.lastError : result.error ?? session.lastError,
@@ -494,9 +580,8 @@ export function createCallBridgeRouter(): Router {
       }
 
       const id = crypto.randomUUID();
-      // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
       try {
-        await assertSendAllowed({ channel: 'phone', destination: customerNumber });
+        await assertContactSendable({ channel: 'phone', destination: customerNumber });
       } catch (error) {
         if (error instanceof SendBlockedError) {
           res.status(409).json({ error: error.message, doNotContact: true });
@@ -504,30 +589,17 @@ export function createCallBridgeRouter(): Router {
         }
         throw error;
       }
-      await commitSendRecord(async (tx) => {
-        await tx.insert(callBridgeSessions).values({
-          id,
-          status: 'dialing_operator',
-          operatorNumber,
-          customerNumber,
-          conferenceName: id,
-          createdByAgentId: 'operator',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-        return id;
-      }, {
-        destination: customerNumber,
-        channel: 'call',
-        direction: 'outbound',
-        actorType: 'operator',
-        actorName: 'Matthew',
-        eventKind: 'call',
-        bodyText: 'Operator call bridge started.',
-        provider: 'telnyx',
-        providerMessageId: `bridge:${id}`,
-        sendRecordTable: 'call_bridge_sessions',
-        sendRecordId: id,
+      // The customer's timeline row is written when their leg is dialed, after
+      // the operator answers, not here: this dial only rings the operator.
+      await db.insert(callBridgeSessions).values({
+        id,
+        status: 'dialing_operator',
+        operatorNumber,
+        customerNumber,
+        conferenceName: id,
+        createdByAgentId: 'operator',
+        createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
       const result = await dialBridgeLeg({ to: operatorNumber, role: 'operator', sessionId: id, endConferenceOnExit: true });
@@ -782,10 +854,7 @@ export function createCallBridgeWebhookRouter(): Router {
               .set({ status: 'failed', lastError: result.error, updatedAt: new Date() })
               .where(eq(callBridgeSessions.id, session.id));
           } else {
-            await db
-              .update(callBridgeSessions)
-              .set({ customerCallControlId: result.callControlId, updatedAt: new Date() })
-              .where(eq(callBridgeSessions.id, session.id));
+            await recordCustomerLegDialed(session.id, result.callControlId);
           }
         } else if (state.role === 'customer') {
           await db.update(callBridgeSessions).set({ status: 'active', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
@@ -846,3 +915,31 @@ export function createCallBridgeWebhookRouter(): Router {
 
   return router;
 }
+
+void import('@workspace/core').then(({ registerSendTransport }) => {
+  registerSendTransport('telnyx_call', async (jobId, recipient) => {
+    const role = recipient.payload.role;
+    const sessionId = recipient.payload.sessionId;
+    if (typeof role !== 'string' || !BRIDGE_ROLES.has(role as BridgeLegRole) || typeof sessionId !== 'string') {
+      const { recordOutboundSendResult } = await import('@workspace/core');
+      await recordOutboundSendResult(jobId, recipient.id, 'failed', null);
+      return false;
+    }
+    const whisper = Array.isArray(recipient.payload.whisperCallControlIds)
+      ? recipient.payload.whisperCallControlIds.filter((id): id is string => typeof id === 'string')
+      : undefined;
+    const supervisor = recipient.payload.supervisorRole;
+    const result = await dialBridgeLeg({
+      to: recipient.destination,
+      role: role as BridgeLegRole,
+      sessionId,
+      endConferenceOnExit: recipient.payload.endConferenceOnExit !== false,
+      supervisorRole: supervisor === 'monitor' || supervisor === 'whisper' || supervisor === 'barge' ? supervisor : undefined,
+      whisperCallControlIds: whisper,
+      sendJobId: jobId,
+    });
+    if (!('callControlId' in result)) return false;
+    if (role === 'customer') await recordCustomerLegDialed(sessionId, result.callControlId);
+    return true;
+  });
+});

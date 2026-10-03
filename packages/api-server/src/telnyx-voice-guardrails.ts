@@ -11,7 +11,7 @@
 // APEX tool registry or the agent swarm. It runs only inside a live phone
 // session and is optimised for latency and side-effect clarity.
 
-import { assertOutboundAllowed, assertSendAllowed, commitSmsMessage } from '@workspace/core';
+import { assertOutboundAllowed, assertContactSendable, commitSmsMessage } from '@workspace/core';
 import crypto from 'crypto';
 
 // ─── Plan catalog ─────────────────────────────────────────────────────────────
@@ -312,8 +312,20 @@ async function executeSendCheckoutLink(
           text: `Your BuildMyBot ${spec.name} checkout link: ${checkoutUrl}`,
         };
 
-        // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
-        await assertSendAllowed({ channel: 'sms', destination: smsTo });
+        await assertContactSendable({ channel: 'sms', destination: smsTo });
+        const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
+        const opened = await openOutboundSendJob({
+          caller: 'voice',
+          createdBy: 'voice-guardrails',
+          recipients: [{
+            channel: 'sms',
+            destination: smsTo,
+            messageText: smsBody.text,
+            payload: { kind: 'telnyx_sms', from: fromNumber, text: smsBody.text },
+          }],
+        });
+        await assertSendAllowed(opened.jobId, smsTo, 'sms');
+
         const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
           method: 'POST',
           headers: {
@@ -439,9 +451,21 @@ async function executeTransferToOwner(
   const messagingFrom = process.env.TELNYX_MESSAGING_NUMBER;
   if (ownerNumber && messagingKey && messagingFrom) {
     try {
-      // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
-      await assertSendAllowed({ channel: 'sms', destination: ownerNumber });
+      await assertContactSendable({ channel: 'sms', destination: ownerNumber });
+      // Owner notification SMS to TELNYX_OWNER_NUMBER still passes the send safeguard.
+      const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
       const ownerText = `BuildMyBot: a caller needs you (live transfer unavailable). Reason: ${reason}. Call ${callControlId}.`;
+      const opened = await openOutboundSendJob({
+        caller: 'voice',
+        createdBy: 'voice-guardrails',
+        recipients: [{
+          channel: 'sms',
+          destination: ownerNumber,
+          messageText: ownerText,
+          payload: { kind: 'telnyx_sms', from: messagingFrom, text: ownerText },
+        }],
+      });
+      await assertSendAllowed(opened.jobId, ownerNumber, 'sms');
       const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
         method: 'POST',
         headers: {

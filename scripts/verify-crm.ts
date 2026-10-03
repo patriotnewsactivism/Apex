@@ -57,8 +57,11 @@ const outboundFiles: Array<[string, string]> = [
 function sourceChecks(): void {
   for (const [file, recorder] of outboundFiles) {
     const src = read(file);
-    assert.ok(src.includes('TODO(feat/send-safeguard)'), `${file} marks the send-safeguard hook`);
-    assert.ok(src.includes('assertSendAllowed'), `${file} checks do-not-contact`);
+    assert.ok(
+      /openOutboundSendJob|startCartesiaSalesCall|dialBridgeLeg|assertSendAllowed\(/.test(src) || file.endsWith('campaign-engine.ts'),
+      `${file} routes through the send safeguard`,
+    );
+    assert.ok(src.includes('assertContactSendable'), `${file} checks do-not-contact`);
     assert.ok(src.includes(recorder), `${file} writes the send and timeline together`);
   }
   assert.ok(read('packages/api-server/src/routes/sales-ops.ts').includes('commitCallOutcome'), 'audit-call writes a timeline row');
@@ -116,7 +119,7 @@ async function databaseChecks(): Promise<void> {
 
   const {
     applyDoNotContact,
-    assertSendAllowed,
+    assertContactSendable,
     backfillCrm,
     codeCheckTimelineText,
     commitCallOutcome,
@@ -270,7 +273,7 @@ async function databaseChecks(): Promise<void> {
   const blockedId = await findOrCreateContact(db, `stop-${stamp}@example.com`, { name: 'Stop Person' });
   await setDoNotContact({ contactId: blockedId, value: true, actor: OPERATOR_ACTOR, reason: 'manual' });
   await assert.rejects(
-    () => assertSendAllowed({ channel: 'email', contactId: blockedId, destination: `stop-${stamp}@example.com` }),
+    () => assertContactSendable({ channel: 'email', contactId: blockedId, destination: `stop-${stamp}@example.com` }),
     (error: unknown) => error instanceof SendBlockedError,
   );
   await assert.rejects(
@@ -280,18 +283,18 @@ async function databaseChecks(): Promise<void> {
   const [stillBlocked] = await db.select().from(contacts).where(eq(contacts.id, blockedId));
   assert.equal(stillBlocked?.doNotContact, true);
   await setDoNotContact({ contactId: blockedId, value: false, actor: OPERATOR_ACTOR });
-  await assertSendAllowed({ channel: 'email', contactId: blockedId });
+  await assertContactSendable({ channel: 'email', contactId: blockedId });
 
   const stopId = await findOrCreateContact(db, `+15045550133`.replace('133', stamp.slice(-3).padEnd(3, '1')), { name: 'Sms Stop' });
   await applyDoNotContact(db, { contactId: stopId, destination: '+15045550133', reason: 'stop', setBy: 'system', channel: 'sms' });
-  await assert.rejects(() => assertSendAllowed({ channel: 'sms', contactId: stopId }), (error: unknown) => error instanceof SendBlockedError);
+  await assert.rejects(() => assertContactSendable({ channel: 'sms', contactId: stopId }), (error: unknown) => error instanceof SendBlockedError);
 
   const bounceId = await findOrCreateContact(db, `bounce-${stamp}@example.com`, { name: 'Bounce Person' });
   await applyDoNotContact(db, { contactId: bounceId, destination: `bounce-${stamp}@example.com`, reason: 'bounce', setBy: 'system', channel: 'email' });
-  await assert.rejects(() => assertSendAllowed({ channel: 'email', contactId: bounceId }), (error: unknown) => error instanceof SendBlockedError);
+  await assert.rejects(() => assertContactSendable({ channel: 'email', contactId: bounceId }), (error: unknown) => error instanceof SendBlockedError);
   const complaintId = await findOrCreateContact(db, `complaint-${stamp}@example.com`);
   await applyDoNotContact(db, { contactId: complaintId, destination: `complaint-${stamp}@example.com`, reason: 'complaint', setBy: 'system', channel: 'email' });
-  await assert.rejects(() => assertSendAllowed({ channel: 'email', contactId: complaintId }), (error: unknown) => error instanceof SendBlockedError);
+  await assert.rejects(() => assertContactSendable({ channel: 'email', contactId: complaintId }), (error: unknown) => error instanceof SendBlockedError);
 
   const replyEmail = `reply-${stamp}@newsroom.test`;
   const replyId = await findOrCreateContact(db, replyEmail, { name: 'Reply Person', organizationName: 'Reply Desk' });

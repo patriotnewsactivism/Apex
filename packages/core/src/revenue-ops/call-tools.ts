@@ -38,7 +38,7 @@ export const revenueCallTools: ToolDefinition<any>[] = [
       providerConnectionId: z.string().optional().describe('Specific provider connection to use (let router select if omitted)'),
       strategyId: z.string().optional().describe('Outreach strategy UUID for context'),
     }),
-    requiresApproval: false,
+    requiresApproval: true,
     async execute(input: z.infer<typeof this.schema>, _ctx: any) {
       const result = await initiateOutboundCall({
         organizationId: input.organizationId,
@@ -52,7 +52,13 @@ export const revenueCallTools: ToolDefinition<any>[] = [
       });
 
       if (!result.success) {
-        return { ok: false, error: result.error, callId: result.callId };
+        return {
+          ok: false,
+          error: result.error,
+          callId: result.callId,
+          awaitingSafeguard: result.awaitingSafeguard === true,
+          sendJobId: result.sendJobId,
+        };
       }
 
       return {

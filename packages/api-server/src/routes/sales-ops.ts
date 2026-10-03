@@ -41,7 +41,7 @@ import {
   callOutcomes,
 } from '@workspace/db';
 import { and, asc, desc, eq, gte, sql } from 'drizzle-orm';
-import { CARTESIA_SALES_AGENT_NAME, SendBlockedError, assertOutboundAllowed, assertSendAllowed, commitCallOutcome, commitSmsMessage, getSpendLedgerSnapshot, startCartesiaSalesCall } from '@workspace/core';
+import { CARTESIA_SALES_AGENT_NAME, SendBlockedError, assertOutboundAllowed, assertContactSendable, commitCallOutcome, commitSmsMessage, getSpendLedgerSnapshot, startCartesiaSalesCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
 const SALES_AGENT_ID = 'apex-sales-001';
@@ -401,20 +401,27 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         result.success && result.data && typeof result.data === 'object'
           ? (result.data as OutboundCallResult)
           : { success: false, error: result.error ?? 'Outbound call tool failed before reaching Cartesia.' };
-      const success = result.success && callResult.success !== false;
+      const awaiting = callResult.awaitingSafeguard === true;
+      const success = result.success && callResult.success !== false && !awaiting;
 
       // Leave an honest operator-action record next to the agent's own call logs.
       await db.insert(logs).values({
         agentId: SALES_AGENT_ID,
         taskId: null,
         level: success ? 'acting' : 'error',
-        message: success
+        message: awaiting
+          ? `Operator call to ${customerNumber} is waiting in Pending sends. Nothing was sent.`
+          : success
           ? `Operator placed an outbound call to ${customerName ? `${customerName} ` : ''}${customerNumber} from Sales Ops. Cartesia call ID: ${callResult.callId ?? 'unknown'}. Initial status: ${callResult.status ?? 'unknown'}.`
           : `Operator outbound call to ${customerNumber} failed: ${callResult.error ?? result.error ?? 'unknown error'}`,
         timestamp: new Date(),
       });
 
-      res.status(success ? 200 : 502).json(success ? callResult : { ...callResult, success: false });
+      res.status(awaiting ? 202 : success ? 200 : 502).json(
+        awaiting
+          ? { success: false, awaitingSafeguard: true, sendJobId: callResult.sendJobId, error: 'Nothing was sent. Clear this send in Pending sends.' }
+          : success ? callResult : { ...callResult, success: false },
+      );
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }
@@ -435,9 +442,8 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
         return;
       }
 
-      // TODO(feat/send-safeguard): assertSendAllowed is the CRM do-not-contact gate.
       try {
-        await assertSendAllowed({ channel: 'phone', destination: ownerNumber });
+        await assertContactSendable({ channel: 'phone', destination: ownerNumber });
       } catch (error) {
         if (error instanceof SendBlockedError) {
           res.status(409).json({ error: error.message, doNotContact: true });
@@ -464,29 +470,34 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       );
 
       const success = 'call' in started;
-      await commitCallOutcome({
-        id: crypto.randomUUID(),
-        callId: success ? `cartesia:${started.call.callId}` : `failed_${crypto.randomUUID()}`,
-        customerNumber: ownerNumber,
-        customerName: 'Matthew',
-        disposition: success ? 'no_decision' : 'failed_to_dial',
-        summary: success ? 'Owner self-pitch call initiated.' : `Self-pitch failed: ${started.error}`,
-        nextAction: success ? 'Await call outcome.' : 'Inspect the provider error before retrying.',
-        endedReason: success ? null : started.error,
-        createdByAgentId: SALES_AGENT_ID,
-        conflictUpdate: success,
-      });
+      const awaiting = !success && (started.error.includes('Pending sends') || started.error.includes('confirmations') || started.error.includes('safeguard'));
+      if (!awaiting) {
+        await commitCallOutcome({
+          id: crypto.randomUUID(),
+          callId: success ? `cartesia:${started.call.callId}` : `failed_${crypto.randomUUID()}`,
+          customerNumber: ownerNumber,
+          customerName: 'Matthew',
+          disposition: success ? 'no_decision' : 'failed_to_dial',
+          summary: success ? 'Owner self-pitch call initiated.' : `Self-pitch failed: ${started.error}`,
+          nextAction: success ? 'Await call outcome.' : 'Inspect the provider error before retrying.',
+          endedReason: success ? null : started.error,
+          createdByAgentId: SALES_AGENT_ID,
+          conflictUpdate: success,
+        });
+      }
       await db.insert(logs).values({
         agentId: SALES_AGENT_ID,
         taskId: null,
         level: success ? 'acting' : 'error',
         message: success
           ? `Self-pitch call initiated through canonical Cartesia agent. callId=${started.call.callId} destination=configured owner number.`
-          : `Self-pitch call failed through Cartesia: ${started.error}`,
+          : awaiting
+            ? 'Self-pitch call is waiting in Pending sends. Nothing was sent.'
+            : `Self-pitch call failed through Cartesia: ${started.error}`,
         timestamp: new Date(),
       });
 
-      res.status(success ? 200 : 502).json(
+      res.status(awaiting ? 202 : success ? 200 : 502).json(
         success
           ? {
               success: true,
@@ -497,7 +508,13 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
               agentName: CARTESIA_SALES_AGENT_NAME,
               callerId: started.call.fromNumber,
             }
-          : { success: false, error: started.error, provider: 'cartesia', agentName: CARTESIA_SALES_AGENT_NAME },
+          : {
+              success: false,
+              awaitingSafeguard: awaiting,
+              error: awaiting ? 'Nothing was sent. Clear this send in Pending sends.' : started.error,
+              provider: 'cartesia',
+              agentName: CARTESIA_SALES_AGENT_NAME,
+            },
       );
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
@@ -715,8 +732,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
           destination: toNumber,
           purpose: 'operator_sms',
         });
-        // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
-        await assertSendAllowed({ channel: 'sms', destination: toNumber });
+        await assertContactSendable({ channel: 'sms', destination: toNumber });
       } catch (error) {
         res.status(409).json({
           error: error instanceof Error ? error.message : String(error),
@@ -730,6 +746,32 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
       if (!apiKey || !fromNumber) {
         res.status(500).json({ error: 'TELNYX_API_KEY or APEX_FRONT_DESK_NUMBER is not configured.' });
         return;
+      }
+
+      const { assertSendAllowed, openOutboundSendJob, SendSafeguardError } = await import('@workspace/core');
+      try {
+        const opened = await openOutboundSendJob({
+          caller: 'operator-dashboard',
+          createdBy: 'operator',
+          recipients: [{
+            channel: 'sms',
+            destination: toNumber,
+            messageText: text,
+            payload: { kind: 'telnyx_sms', from: fromNumber, text },
+          }],
+        });
+        await assertSendAllowed(opened.jobId, toNumber, 'sms');
+      } catch (error) {
+        if (error instanceof SendSafeguardError) {
+          res.status(202).json({
+            success: false,
+            awaitingSafeguard: true,
+            sendJobId: error.jobId,
+            error: 'Nothing was sent. Clear this send in Pending sends.',
+          });
+          return;
+        }
+        throw error;
       }
 
       let providerId: string | undefined;
@@ -775,3 +817,28 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
 
   return router;
 }
+
+void import('@workspace/core').then(({ registerSendTransport, assertSendAllowed, recordOutboundSendResult }) => {
+  registerSendTransport('telnyx_sms', async (jobId, recipient) => {
+    const from = typeof recipient.payload.from === 'string' ? recipient.payload.from : process.env.APEX_FRONT_DESK_NUMBER;
+    const text = recipient.messageText;
+    const apiKey = process.env.TELNYX_API_KEY;
+    if (!apiKey || !from) {
+      await recordOutboundSendResult(jobId, recipient.id, 'failed', null);
+      return false;
+    }
+    await assertSendAllowed(jobId, recipient.destination, 'sms');
+    const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to: recipient.destination, text }),
+    });
+    if (!smsRes.ok) {
+      await recordOutboundSendResult(jobId, recipient.id, 'failed', null);
+      return false;
+    }
+    const json = await smsRes.json().catch(() => null) as { data?: { id?: string } } | null;
+    await recordOutboundSendResult(jobId, recipient.id, 'sent', json?.data?.id ?? null);
+    return true;
+  });
+});

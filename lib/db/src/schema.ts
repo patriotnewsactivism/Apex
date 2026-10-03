@@ -1249,3 +1249,75 @@ export type TaskCheckpointRow = typeof taskCheckpoints.$inferSelect;
 export type NewTaskCheckpointRow = typeof taskCheckpoints.$inferInsert;
 export type WorkerHeartbeatRow = typeof workerHeartbeats.$inferSelect;
 export type NewWorkerHeartbeatRow = typeof workerHeartbeats.$inferInsert;
+
+// ─── Send safeguard ───────────────────────────────────────────────────────────
+// Additive outbound gate. Events are append-only. The operator code stores a
+// scrypt hash and salt only — never the code itself.
+
+export const sendJobs = pgTable('send_jobs', {
+  id: text('id').primaryKey(),
+  campaignKey: text('campaign_key'),
+  storyKey: text('story_key'),
+  fullAuto: boolean('full_auto').notNull().default(false),
+  status: text('status').notNull().default('waiting_confirm'),
+  confirm1At: timestamp('confirm1_at', { withTimezone: true, mode: 'date' }),
+  confirm2At: timestamp('confirm2_at', { withTimezone: true, mode: 'date' }),
+  codeVerifiedAt: timestamp('code_verified_at', { withTimezone: true, mode: 'date' }),
+  contentHash: text('content_hash').notNull(),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  campaignCreatedIdx: index('send_jobs_campaign_created_idx').on(table.campaignKey, table.createdAt),
+  storyCreatedIdx: index('send_jobs_story_created_idx').on(table.storyKey, table.createdAt),
+  statusIdx: index('send_jobs_status_idx').on(table.status),
+}));
+
+export const sendJobRecipients = pgTable('send_job_recipients', {
+  id: text('id').primaryKey(),
+  jobId: text('job_id').notNull(),
+  channel: text('channel').notNull(),
+  destination: text('destination').notNull(),
+  messageText: text('message_text').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  status: text('status').notNull().default('queued'),
+  released: boolean('released').notNull().default(false),
+  externalId: text('external_id'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  jobIdx: index('send_job_recipients_job_idx').on(table.jobId),
+}));
+
+export const sendSafeguardEvents = pgTable('send_safeguard_events', {
+  id: text('id').primaryKey(),
+  jobId: text('job_id'),
+  eventType: text('event_type').notNull(),
+  detail: jsonb('detail').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  jobCreatedIdx: index('send_safeguard_events_job_created_idx').on(table.jobId, table.createdAt),
+}));
+
+export const operatorSendCode = pgTable('operator_send_code', {
+  id: text('id').primaryKey().default('operator'),
+  codeHash: text('code_hash'),
+  salt: text('salt'),
+  failedAttempts: integer('failed_attempts').notNull().default(0),
+  locked: boolean('locked').notNull().default(false),
+  lockedAt: timestamp('locked_at', { withTimezone: true, mode: 'date' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+export const operatorDashboardSessions = pgTable('operator_dashboard_sessions', {
+  tokenHash: text('token_hash').primaryKey(),
+  origin: text('origin').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+export type SendJobRow = typeof sendJobs.$inferSelect;
+export type SendJobRecipientRow = typeof sendJobRecipients.$inferSelect;
+export type SendSafeguardEventRow = typeof sendSafeguardEvents.$inferSelect;
+export type OperatorSendCodeRow = typeof operatorSendCode.$inferSelect;
+export type OperatorDashboardSessionRow = typeof operatorDashboardSessions.$inferSelect;

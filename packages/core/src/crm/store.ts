@@ -1,8 +1,5 @@
 /**
  * CRM contact book. Timeline rows are insert-only. Corrections are new rows.
- * TODO(feat/send-safeguard): feat/send-safeguard is not on origin. assertSendAllowed
- * is the do-not-contact gate every outbound send calls. When that branch lands,
- * compose its gate at the top of assertSendAllowed.
  */
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
@@ -177,12 +174,13 @@ export async function findOrCreateContact(
   }
 }
 
-export async function assertSendAllowed(input: {
+// Contact-level do-not-contact, every channel. The send safeguard's own gate
+// (send-safeguard.ts assertSendAllowed) still runs after this on every path.
+export async function assertContactSendable(input: {
   channel: string;
   destination?: string | null;
   contactId?: string | null;
 }): Promise<{ contactId: string | null }> {
-  // TODO(feat/send-safeguard): compose the send-safeguard gate here when that branch exists.
   void input.channel;
   const ids = new Set<string>();
   if (input.contactId) ids.add(input.contactId);

@@ -3,7 +3,7 @@
 
 import { unresolvedMergeTokens } from './outbound-policy.js';
 import { emailGreetingName } from './sales-playbooks.js';
-import { assertSendAllowed, commitSendRecord } from './crm/store.js';
+import { assertContactSendable, commitSendRecord } from './crm/store.js';
 import { SendBlockedError, newReplyToken, replyDomain, replyToAddress } from './crm/pure.js';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
@@ -87,6 +87,25 @@ export interface DeliverEmailOptions {
   requireCompliance?: boolean;
   postalAddress?: string | null;
   unsubscribeEmail?: string | null;
+  /** Cleared send-safeguard job. Absent means stage a job and refuse to send. */
+  sendJobId?: string | null;
+  campaignKey?: string | null;
+  storyKey?: string | null;
+}
+
+// A staged or released job whose recipient is refused before the gate runs
+// would otherwise stay open in Pending sends with nothing left to send.
+async function openEmailRecipientId(jobId: string, email: string): Promise<string | null> {
+  try {
+    const { getSendSafeguard, normalizeDestination } = await import('./send-safeguard.js');
+    const { recipients } = await (await getSendSafeguard()).describe(jobId);
+    const destination = normalizeDestination('email', email);
+    return recipients.find((row) => row.channel === 'email'
+      && row.destination === destination
+      && (row.status === 'queued' || row.status === 'released'))?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function deliverQueuedEmailSend(
@@ -101,13 +120,16 @@ export async function deliverQueuedEmailSend(
   const { appendComplianceFooter } = await import('./outbound-policy.js');
   const email = toEmail.trim().toLowerCase();
 
+  const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
+  let sendJobId = options.sendJobId ?? null;
+  let safeguardRecipientId: string | null = null;
+
   const token = newReplyToken();
   const domain = replyDomain();
   const replyTo = replyToAddress(token, domain);
   const emailMessageId = `<${token}@${domain ?? 'apex.local'}>`;
 
   const fail = async (status: string, error: string) => {
-    // TODO(feat/send-safeguard): the do-not-contact gate below is assertSendAllowed.
     await commitSendRecord(async (tx) => {
       await tx.update(emailSends)
         .set({ status, errorMessage: error.slice(0, 500) })
@@ -129,6 +151,10 @@ export async function deliverQueuedEmailSend(
       sendRecordTable: 'email_sends',
       sendRecordId: sendId,
     });
+    const recipientId = safeguardRecipientId ?? (sendJobId ? await openEmailRecipientId(sendJobId, email) : null);
+    if (sendJobId && recipientId) {
+      await recordOutboundSendResult(sendJobId, recipientId, 'failed', null).catch(() => undefined);
+    }
     return { success: false, status, error };
   };
 
@@ -137,10 +163,36 @@ export async function deliverQueuedEmailSend(
   }
 
   try {
-    await assertSendAllowed({ channel: 'email', destination: email });
+    await assertContactSendable({ channel: 'email', destination: email });
   } catch (error) {
     if (error instanceof SendBlockedError) return fail('blocked', error.message);
     return fail('failed', error instanceof Error ? error.message : String(error));
+  }
+
+  // A recipient refused above never opens a Pending-sends job. Everything else
+  // clears the operator gate before Resend is called.
+  try {
+    if (!sendJobId) {
+      const opened = await openOutboundSendJob({
+        caller: 'tool',
+        createdBy: 'email-delivery',
+        campaignKey: options.campaignKey ?? null,
+        storyKey: options.storyKey ?? null,
+        recipients: [{
+          channel: 'email',
+          destination: email,
+          messageText: `${subject}\n${html}`,
+          payload: { kind: 'email', sendId, subject, html, purpose: options.purpose ?? 'email_delivery' },
+        }],
+      });
+      sendJobId = opened.jobId;
+    }
+    const cleared = await assertSendAllowed(sendJobId, email, 'email');
+    safeguardRecipientId = cleared.id;
+  } catch (error) {
+    if (error instanceof SendSafeguardError) throw error;
+    console.error(`[send-safeguard] blocked job=${sendJobId ?? 'none'} channel=email reason=safeguard_error`);
+    throw new SendSafeguardError('Send safeguard failed closed.', 'safeguard_error', sendJobId, 'email');
   }
 
   try {
@@ -234,6 +286,9 @@ export async function deliverQueuedEmailSend(
       sendRecordTable: 'email_sends',
       sendRecordId: sendId,
     });
+    if (sendJobId && safeguardRecipientId) {
+      await recordOutboundSendResult(sendJobId, safeguardRecipientId, 'sent', data.id);
+    }
     return { success: true, status: 'sent', providerId: data.id, complianceWarning };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

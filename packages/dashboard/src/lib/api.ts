@@ -10,6 +10,27 @@ import type {
 
 const API = '/api';
 
+export interface SendJobView {
+  id: string;
+  status: string;
+  fullAuto: boolean;
+  campaignKey: string | null;
+  storyKey: string | null;
+  confirm1At: string | null;
+  confirm2At: string | null;
+  codeVerifiedAt: string | null;
+  count: number;
+  createdAt: string;
+  recipients: Array<{
+    id: string;
+    channel: string;
+    destination: string;
+    messageText: string;
+    status: string;
+    released: boolean;
+  }>;
+}
+
 type ApiErrorBody = {
   error?: string;
   message?: string;
@@ -38,6 +59,9 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+  const operatorSession = localStorage.getItem('apex_operator_session');
+  if (operatorSession) headers['X-Apex-Operator-Session'] = operatorSession;
+  headers['X-Apex-Caller'] = 'operator-dashboard';
 
   const res = await fetch(`${API}${path}`, {
     headers,
@@ -49,6 +73,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       // the login screen, rather than letting each panel render its own empty
       // state and leave the operator staring at a dashboard with no data.
       localStorage.removeItem('apex_token');
+      localStorage.removeItem('apex_operator_session');
       window.dispatchEvent(new Event('apex:unauthorized'));
     }
     const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
@@ -69,6 +94,7 @@ async function apiFetchBlob(path: string): Promise<Blob> {
   if (!res.ok) {
     if (res.status === 401) {
       localStorage.removeItem('apex_token');
+      localStorage.removeItem('apex_operator_session');
       window.dispatchEvent(new Event('apex:unauthorized'));
     }
     const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
@@ -90,6 +116,7 @@ async function apiFetchText(path: string): Promise<string> {
     // button silently dead instead of returning the operator to login.
     if (res.status === 401) {
       localStorage.removeItem('apex_token');
+      localStorage.removeItem('apex_operator_session');
       window.dispatchEvent(new Event('apex:unauthorized'));
     }
     throw new Error(`HTTP ${res.status}`);
@@ -438,6 +465,39 @@ export interface CrmDuplicate {
 export const api = {
   auth: {
     websocketTicket: () => apiFetch<{ ticket: string }>('/auth/websocket-ticket', { method: 'POST' }),
+  },
+
+  sendSafeguard: {
+    list: () => apiFetch<{ locked: boolean; jobs: SendJobView[] }>('/send-safeguard/jobs'),
+    status: () => apiFetch<{ locked: boolean }>('/send-safeguard/status'),
+    confirm: (id: string, step: 1 | 2) => apiFetch<{ job: { id: string; status: string } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ step, source: 'operator-dashboard' }),
+    }),
+    code: (id: string, code: string) => apiFetch<{ job: { id: string; status: string } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/code`, {
+      method: 'POST',
+      body: JSON.stringify({ code, source: 'operator-dashboard' }),
+    }),
+    release: (id: string, recipientId: string) => apiFetch<{ dispatched: { sent: boolean } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/release`, {
+      method: 'POST',
+      body: JSON.stringify({ recipientId, source: 'operator-dashboard' }),
+    }),
+    stop: (id: string) => apiFetch<{ job: { status: string } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/stop`, {
+      method: 'POST',
+      body: JSON.stringify({ source: 'operator-dashboard' }),
+    }),
+    fullAuto: (id: string, fullAuto: boolean) => apiFetch<{ job: { fullAuto: boolean } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/full-auto`, {
+      method: 'POST',
+      body: JSON.stringify({ fullAuto, source: 'operator-dashboard' }),
+    }),
+    setCode: (code: string, password: string) => apiFetch<{ ok: boolean }>('/send-safeguard/code', {
+      method: 'POST',
+      body: JSON.stringify({ code, password, source: 'operator-dashboard' }),
+    }),
+    unlock: (password: string) => apiFetch<{ ok: boolean }>('/send-safeguard/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ password, source: 'operator-dashboard' }),
+    }),
   },
 
 

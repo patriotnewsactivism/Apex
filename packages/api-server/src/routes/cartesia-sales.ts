@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, callOutcomes, providerEvents, researchedLeads, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
-import { SendBlockedError, assertSendAllowed, commitSmsMessage, createQueuedEmailSend, deliverQueuedEmailSend, evaluateOutboundAction, markLineFree } from '@workspace/core';
+import { SendBlockedError, assertContactSendable, commitSmsMessage, createQueuedEmailSend, deliverQueuedEmailSend, evaluateOutboundAction, markLineFree } from '@workspace/core';
 import { cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
 
 // Cartesia HTTP tools and lifecycle events are different credentials. Both
@@ -535,11 +535,25 @@ export function createCartesiaSalesRouter(): Router {
         body: html,
         createdByAgentId: AGENT_ID,
       });
-      const result = await deliverQueuedEmailSend(sendId, normalizedEmail, subject, html, {
-        text,
-        leadId: lead?.id ?? null,
-        purpose: 'requested_followup_email',
-      });
+      let result: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+      try {
+        result = await deliverQueuedEmailSend(sendId, normalizedEmail, subject, html, {
+          text,
+          leadId: lead?.id ?? null,
+          purpose: 'requested_followup_email',
+        });
+      } catch (error) {
+        const { SendSafeguardError } = await import('@workspace/core');
+        if (error instanceof SendSafeguardError) {
+          return res.status(202).json({
+            sent: false,
+            awaitingSafeguard: true,
+            sendJobId: error.jobId,
+            error: 'Nothing was sent. Clear this send in Pending sends.',
+          });
+        }
+        throw error;
+      }
       if (!result.success) {
         return res.status(result.status === 'suppressed' ? 409 : 503).json({
           sent: false,
@@ -705,11 +719,36 @@ export function createCartesiaSalesRouter(): Router {
         eq(providerEvents.provider, 'cartesia'), eq(providerEvents.externalEventId, eventId))).limit(1);
       if (prior) return res.json({ sent: true, already_sent: true, url });
       const text = `As requested, here is ${p.demo_type === 'buildmybot_live_demo' ? 'BuildMyBot' : 'APEX Work Solutions'}: ${url} Reply STOP to opt out.`;
-      // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the provider call.
       try {
-        await assertSendAllowed({ channel: 'sms', destination: p.phone_number, contactId });
+        await assertContactSendable({ channel: 'sms', destination: p.phone_number, contactId });
       } catch (error) {
         if (error instanceof SendBlockedError) return res.status(409).json({ error: error.message, doNotContact: true });
+        throw error;
+      }
+      try {
+        const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
+        const opened = await openOutboundSendJob({
+          caller: 'voice',
+          createdBy: AGENT_ID,
+          storyKey: p.call_id,
+          recipients: [{
+            channel: 'sms',
+            destination: p.phone_number,
+            messageText: text,
+            payload: { kind: 'telnyx_sms', from, text },
+          }],
+        });
+        await assertSendAllowed(opened.jobId, p.phone_number, 'sms');
+      } catch (error) {
+        const { SendSafeguardError } = await import('@workspace/core');
+        if (error instanceof SendSafeguardError) {
+          return res.status(202).json({
+            sent: false,
+            awaitingSafeguard: true,
+            sendJobId: error.jobId,
+            error: 'Nothing was sent. Clear this send in Pending sends.',
+          });
+        }
         throw error;
       }
       const response = await fetch('https://api.telnyx.com/v2/messages', { method: 'POST',

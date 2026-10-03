@@ -245,6 +245,7 @@ export interface StartCartesiaSalesCallInput {
   playbookId?: string | null;
   createdByAgentId?: string | null;
   ringingTimeoutSeconds?: number;
+  sendJobId?: string | null;
 }
 
 export interface StartCartesiaSalesCallResult {
@@ -261,10 +262,55 @@ export async function startCartesiaSalesCall(
 ): Promise<StartCartesiaSalesCallResult> {
   const toNumber = normalizeE164(input.toNumber);
   if (!toNumber) throw new Error('Destination phone number is invalid.');
+  const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
+  let sendJobId = input.sendJobId ?? null;
+  let safeguardRecipientId: string | null = null;
+  try {
+    if (!sendJobId) {
+      const opened = await openOutboundSendJob({
+        caller: 'tool',
+        createdBy: input.createdByAgentId ?? 'cartesia-sales',
+        campaignKey: input.campaignId ?? null,
+        recipients: [{
+          channel: 'phone',
+          destination: toNumber,
+          messageText: `${input.firstMessage}\n${input.assistantPrompt}`,
+          payload: {
+            kind: 'cartesia_call',
+            customerName: input.customerName ?? null,
+            assistantPrompt: input.assistantPrompt,
+            firstMessage: input.firstMessage,
+            leadId: input.leadId ?? null,
+            campaignId: input.campaignId ?? null,
+            playbookId: input.playbookId ?? null,
+            createdByAgentId: input.createdByAgentId ?? null,
+          },
+        }],
+      });
+      sendJobId = opened.jobId;
+    }
+    const cleared = await assertSendAllowed(sendJobId, toNumber, 'phone');
+    safeguardRecipientId = cleared.id;
+  } catch (error) {
+    if (error instanceof SendSafeguardError) throw error;
+    console.error(`[send-safeguard] blocked job=${sendJobId ?? 'none'} channel=phone reason=safeguard_error`);
+    throw new SendSafeguardError('Send safeguard failed closed.', 'safeguard_error', sendJobId, 'phone');
+  }
+  const markSafeguardFailed = async () => {
+    if (sendJobId && safeguardRecipientId) {
+      await recordOutboundSendResult(sendJobId, safeguardRecipientId, 'failed', null).catch(() => undefined);
+    }
+  };
   const assistantPrompt = input.assistantPrompt.trim();
   const firstMessage = input.firstMessage.trim();
-  if (!assistantPrompt) throw new Error('assistantPrompt is required.');
-  if (!firstMessage) throw new Error('firstMessage is required.');
+  if (!assistantPrompt) {
+    await markSafeguardFailed();
+    throw new Error('assistantPrompt is required.');
+  }
+  if (!firstMessage) {
+    await markSafeguardFailed();
+    throw new Error('firstMessage is required.');
+  }
 
   const [agentId, fromNumberId] = await Promise.all([
     resolveCartesiaSalesAgentId(),
@@ -335,11 +381,13 @@ export async function startCartesiaSalesCall(
       (body.errors ? JSON.stringify(body.errors) : undefined) ??
       (rawBody ? rawBody.slice(0, 1000) : undefined) ??
       `HTTP ${response.status}`;
+    await markSafeguardFailed();
     throw new Error(`Cartesia outbound call request failed (HTTP ${response.status}): ${providerDetail}`);
   }
   const call = body.calls?.[0];
   if (!call?.agent_call_id || call.error) {
     const detail = typeof call?.error === 'string' ? call.error : 'Cartesia did not issue a call ID.';
+    await markSafeguardFailed();
     throw new Error(`Cartesia outbound call could not start: ${detail}`);
   }
 
@@ -353,6 +401,9 @@ export async function startCartesiaSalesCall(
     callId: `cartesia:${call.agent_call_id}`,
   });
 
+  if (safeguardRecipientId) {
+    await recordOutboundSendResult(sendJobId, safeguardRecipientId, 'sent', call.agent_call_id);
+  }
   return {
     callId: call.agent_call_id,
     provider: 'cartesia',

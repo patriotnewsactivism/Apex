@@ -2,7 +2,7 @@
 
 One contact record per person or organization, and an append-only timeline of every interaction. The tables live with the existing revenue-ops schema. The migration is `lib/db/drizzle/20261003_crm.sql` (applied by `applyCrmMigration` at the end of `migrate()`).
 
-`feat/send-safeguard` was not on `origin` when this branch was cut from `main`. Each outbound path calls `assertSendAllowed`, which blocks a contact whose `do_not_contact` flag is set, and carries a `TODO(feat/send-safeguard)` comment so the rest of that gate can be composed later. This branch does not invent those other checks.
+Every outbound path first calls `assertContactSendable`, which blocks a contact whose `do_not_contact` flag is set on any channel. It then goes through the send safeguard (`openOutboundSendJob` + `assertSendAllowed` in `packages/core/src/send-safeguard.ts`: two operator confirmations, the code at 5+ sends, the kill switch, and suppressions). Only after both does the provider call happen.
 
 ## Contacts page
 
@@ -12,7 +12,7 @@ The dashboard **Contacts** view (Revenue) searches name, organization, emails, p
 
 `contact_timeline` rejects UPDATE and DELETE with a trigger (`crm_reject_timeline_mutation`, errcode 55000). Corrections are new rows. A merge does not rewrite `contact_id`; `contact_merges` links the loser, and the winner's timeline read includes both histories.
 
-Outbound email, SMS, calls, calendar invites, and provider call events write the timeline row in the same transaction as the send record. The provider HTTP call stays outside that transaction. `assertSendAllowed` runs before the provider call.
+Outbound email, SMS, calls, calendar invites, and provider call events write the timeline row in the same transaction as the send record. The provider HTTP call stays outside that transaction. `assertContactSendable` and the send safeguard both run before the provider call. A send held in Pending Sends writes no timeline row, because nothing was sent.
 
 ## Inbound mail and SMS
 

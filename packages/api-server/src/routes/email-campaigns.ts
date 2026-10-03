@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db, emailCampaigns, emailSends, researchedLeads } from '@workspace/db';
-import { getSalesPlaybook } from '@workspace/core';
+import { cascadeCampaignCancellation, getSalesPlaybook } from '@workspace/core';
 
 // ─── Email Campaigns — human-facing surface ──────────────────────────────────
 //
@@ -289,6 +289,13 @@ export function createEmailCampaignsRouter() {
       if (!updated) {
         res.status(409).json({ error: 'Campaign status changed before this action applied. Reload and try again.' });
         return;
+      }
+
+      if (next === 'cancelled') {
+        await db.update(emailSends)
+          .set({ status: 'cancelled', errorMessage: 'Campaign cancelled.' })
+          .where(and(eq(emailSends.campaignId, campaign.id), eq(emailSends.status, 'queued')));
+        await cascadeCampaignCancellation(campaign.id);
       }
 
       res.json({ campaignId: campaign.id, status: updated.status });

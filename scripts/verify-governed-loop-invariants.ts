@@ -109,6 +109,28 @@ check(
     compliance.includes('interactions'),
 );
 
+console.log('\n── send safeguard sits in front of every live provider call ──');
+check(
+  'shared email delivery calls assertSendAllowed before Resend',
+  email.includes('assertSendAllowed') &&
+    email.indexOf('assertSendAllowed') < email.indexOf('fetch(RESEND_API_URL'),
+);
+check(
+  'operator SMS calls assertSendAllowed before Telnyx',
+  salesOps.includes('assertSendAllowed') &&
+    salesOps.indexOf('assertSendAllowed') < salesOps.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+);
+check(
+  'front-desk confirmation SMS calls assertSendAllowed before Telnyx',
+  telnyxAssistant.includes('assertSendAllowed') &&
+    telnyxAssistant.indexOf('assertSendAllowed') < telnyxAssistant.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+);
+check(
+  'checkout SMS calls assertSendAllowed before Telnyx',
+  telnyxVoice.includes('assertSendAllowed') &&
+    telnyxVoice.indexOf('assertSendAllowed') < telnyxVoice.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
+);
+
 console.log('\n── irreversible send paths cannot bypass the evaluator ──');
 check(
   'shared email delivery calls assertOutboundAllowed before Resend',

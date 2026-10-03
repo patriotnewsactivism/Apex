@@ -13,7 +13,7 @@
 // until the response is classified.
 
 import { db } from '@workspace/db';
-import { SendBlockedError, assertSendAllowed, commitSendRecord } from '../crm/store.js';
+import { SendBlockedError, assertContactSendable, commitSendRecord } from '../crm/store.js';
 import {
   campaigns,
   sequences,
@@ -455,9 +455,8 @@ async function upsertRevenueOpportunity(input: {
   )).limit(1);
   if (existingMeeting) return;
 
-  // TODO(feat/send-safeguard): assertSendAllowed checks do-not-contact before the invite is recorded.
   try {
-    await assertSendAllowed({ channel: 'calendar', contactId: input.contactId });
+    await assertContactSendable({ channel: 'calendar', contactId: input.contactId });
   } catch (error) {
     if (error instanceof SendBlockedError) return;
     throw error;

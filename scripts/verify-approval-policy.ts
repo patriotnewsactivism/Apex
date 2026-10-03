@@ -127,6 +127,19 @@ async function main(): Promise<void> {
     toolName: eligible, projectAutonomyLevel: AUTONOMOUS, projectAutoapproveTools: null, taskBelongsToProject: true,
   }).autoApprove === false);
 
+  console.log('\n── operator auto-approve unset fails closed; outbound never covered ──');
+  {
+    const previous = process.env.APEX_OPERATOR_AUTO_APPROVE_ALL;
+    delete process.env.APEX_OPERATOR_AUTO_APPROVE_ALL;
+    check('unset APEX_OPERATOR_AUTO_APPROVE_ALL is false', approvalPolicy.operatorAutoApproveAllEnabled() === false);
+    process.env.APEX_OPERATOR_AUTO_APPROVE_ALL = 'true';
+    check('explicit true still cannot auto-approve send_email', approvalPolicy.operatorMayAutoApproveTool('send_email') === false);
+    check('explicit true still cannot auto-approve make_outbound_call', approvalPolicy.operatorMayAutoApproveTool('make_outbound_call') === false);
+    check('explicit true still cannot auto-approve send_email_campaign_batch', approvalPolicy.operatorMayAutoApproveTool('send_email_campaign_batch') === false);
+    if (previous === undefined) delete process.env.APEX_OPERATOR_AUTO_APPROVE_ALL;
+    else process.env.APEX_OPERATOR_AUTO_APPROVE_ALL = previous;
+  }
+
   console.log('\n── registry consistency ──');
   const registry = getToolRegistry(process.cwd());
   check('AUTONOMY_MODES contains full_autonomous', AUTONOMY_MODES.has('full_autonomous'));
