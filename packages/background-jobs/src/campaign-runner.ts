@@ -1,3 +1,4 @@
+import { processNameFinderQueue } from './name-finder-runner.js';
 import { randomUUID } from 'crypto';
 import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import {
@@ -566,6 +567,9 @@ export class CampaignRunner {
       const config = getLeadPipelineConfig();
       void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16))
         .catch((err) => console.warn('[lead-identity] background repair failed:', err instanceof Error ? err.message : String(err)));
+      // Name-finder queue, automatic research step only (email/call asks are queued for approval, never sent).
+      void processNameFinderQueue(Number(process.env.APEX_NAME_FINDER_BATCH ?? 4))
+        .catch((err) => console.warn('[name-finder] background research failed:', err instanceof Error ? err.message : String(err)));
       void this.enrichVerifiedContactsFromSearch(Number(process.env.LEAD_CONTACT_SEARCH_BATCH ?? 6))
         .catch((err) => console.warn('[lead-contact-search] background search failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();
@@ -1039,7 +1043,9 @@ export class CampaignRunner {
           const result = await registry.execute(
             'webSearch',
             {
-              query: `${query} official business website`,
+              // Media outlets are not "business websites"; the suffix pulled
+              // directories and agencies for news campaigns.
+              query: /\bnews|newspaper|radio|television|\btv\b|magazine|media\b/i.test(segment.industry) ? query : `${query} official business website`,
               maxResults,
               fast: true,
             },

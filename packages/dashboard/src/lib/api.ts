@@ -1619,6 +1619,19 @@ export interface ResearchedLead {
 export interface LeadStats {
   total: number;
   contactReady: number;
+  /** Old gate (verified + any email/phone); present from 2026-10-03. */
+  legacyContactReady?: number;
+  decisionMakerCantLocate?: number;
+  /** Separate set: verified + reachable, but no verified decision-maker name yet. */
+  needsName?: number;
+  sets?: { contactReady: number; needsName: number };
+  geoMismatch?: number;
+  nameFinder?: { total: number; byStatus: Record<string, number>; awaitingApproval: number };
+  promotedFromNeedsName?: Record<string, number>;
+  decisionMakerPending?: number;
+  contactUnvalidated?: number;
+  cantLocateCountsReady?: boolean;
+  readinessBuckets?: Record<string, number>;
   rawCandidates: number;
   pendingOrUnverified: number;
   rejected: number;

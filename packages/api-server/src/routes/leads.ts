@@ -3,6 +3,16 @@ import { Router } from 'express';
 import { eq, desc, and, ilike, sql } from 'drizzle-orm';
 import { broadcast } from '../websocket.js';
 import { mapImportRows, planLeadImport, recordsFromCsv, type ImportedLead } from '@workspace/core';
+import { cantLocateCountsReadyFromEnv, computeReadinessStats, isContactReady, leadDataSet } from '../lead-readiness.js';
+import {
+  NAME_FINDER_TASK_TYPE,
+  approveAction,
+  evaluateGate,
+  newNameFinderState,
+  promoteFoundName,
+  readNameFinderState,
+  rejectAction,
+} from '@workspace/background-jobs';
 
 export function createLeadsRouter(): Router {
   const router = Router();
@@ -204,14 +214,17 @@ export function createLeadsRouter(): Router {
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = Math.min(Number(req.query.limit) || 500, 5000);
 
-    const leads = await db
+    const set = req.query.set === 'contact_ready' || req.query.set === 'needs_name' ? req.query.set : null;
+    const rows = await db
       .select()
       .from(researchedLeads)
       .where(where)
       .orderBy(desc(researchedLeads.createdAt))
-      .limit(limit);
+      .limit(set ? 5000 : limit);
+    // ?set=contact_ready | needs_name selects one of the two data sets.
+    const leads = set ? rows.filter((lead) => leadDataSet(lead) === set).slice(0, limit) : rows;
 
-    res.json({ leads });
+    res.json({ leads, ...(set ? { set } : {}) });
   });
 
   // ─── GET /api/leads/export — CSV download ────────────────────────────────
@@ -277,14 +290,10 @@ export function createLeadsRouter(): Router {
       qualified: all.filter((l) => l.status === 'qualified').length,
       rejected: all.filter((l) => l.status === 'rejected').length,
     };
-    const visible = all.filter((lead) => {
-      if (lead.status === 'rejected') return false;
-      if (!lead.contactEmail && !lead.contactPhone) return false;
-      const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
-        | { status?: string }
-        | undefined;
-      return verification?.status === 'verified';
-    });
+    const options = { cantLocateCountsReady: cantLocateCountsReadyFromEnv() };
+    const readiness = computeReadinessStats(all, options);
+    // byIndustry/byPipelineState describe the contact-ready set (same set as `total`).
+    const visible = all.filter((lead) => isContactReady(lead, options));
     const byPipelineState: Record<string, number> = {};
     const byIndustry: Record<string, number> = {};
     for (const l of visible) {
@@ -294,15 +303,159 @@ export function createLeadsRouter(): Router {
     }
 
     res.json({
-      total: visible.length,
-      contactReady: visible.length,
+      total: readiness.contactReady,
+      contactReady: readiness.contactReady,
+      // Pre-2026-10-03 definition (verified + any email/phone), kept so the
+      // drop caused by the stricter gate is visible rather than silent.
+      legacyContactReady: readiness.legacyContactReady,
+      // Two separate data sets: named, verified decision maker vs. needs a name.
+      sets: {
+        contactReady: readiness.buckets.contact_ready,
+        needsName: readiness.needsName,
+      },
+      needsName: readiness.needsName,
+      // Back-compat alias of needsName for older dashboards.
+      decisionMakerCantLocate: readiness.needsName,
+      decisionMakerPending: readiness.buckets.decision_maker_pending,
+      geoMismatch: readiness.buckets.geo_mismatch,
+      nameFinder: readiness.nameFinder,
+      promotedFromNeedsName: readiness.promotedBySource,
+      contactUnvalidated: readiness.buckets.contact_unvalidated,
+      cantLocateCountsReady: readiness.cantLocateCountsReady,
+      readinessBuckets: readiness.buckets,
       rawCandidates: all.length,
-      pendingOrUnverified: Math.max(0, all.length - visible.length - byStatus.rejected),
+      pendingOrUnverified: Math.max(0, all.length - readiness.contactReady - byStatus.rejected),
       rejected: byStatus.rejected,
       byStatus,
       byPipelineState,
       byIndustry,
     });
+  });
+
+  // ─── Name-finder queue (needs-name set) ──────────────────────────────────
+  // Research runs automatically in the campaign tick. Email/call asks are
+  // queued here as awaiting_approval and NEVER sent by these routes: approval
+  // needs a named approver from APEX_NAME_FINDER_APPROVERS and re-evaluates
+  // the outbound gate (kill switch, mode, suppression, caps, window). No route
+  // here calls a sender.
+  const approverAllowed = (who: string): boolean => {
+    const list = (process.env.APEX_NAME_FINDER_APPROVERS ?? 'matthew,matthew reardon,matthew.reardon')
+      .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    return list.includes(who.trim().toLowerCase());
+  };
+  const actorOf = (req: { headers: Record<string, unknown>; body?: unknown }): string => {
+    const body = (req.body ?? {}) as { approver?: unknown; actor?: unknown };
+    const fromBody = typeof body.approver === 'string' ? body.approver : typeof body.actor === 'string' ? body.actor : '';
+    const header = req.headers['x-apex-actor'];
+    return (fromBody || (typeof header === 'string' ? header : '')).trim();
+  };
+
+  // GET /api/leads/name-finder/queue?status=awaiting_approval&limit=200
+  router.get('/name-finder/queue', async (req, res) => {
+    const { db, researchedLeads } = await import('@workspace/db');
+    const all = await db.select().from(researchedLeads);
+    const wanted = typeof req.query.status === 'string' ? req.query.status : null;
+    const limit = Math.min(Number(req.query.limit) || 200, 2000);
+    const items = all
+      .filter((lead) => leadDataSet(lead) === 'needs_name' || readNameFinderState(lead)?.status === 'found')
+      .map((lead) => {
+        const state = readNameFinderState(lead);
+        return {
+          leadId: lead.id,
+          companyName: lead.companyName,
+          website: lead.website,
+          industry: lead.industry,
+          city: lead.city,
+          dataSet: leadDataSet(lead),
+          taskType: NAME_FINDER_TASK_TYPE,
+          status: state?.status ?? 'queued',
+          nextResearchAt: state?.nextResearchAt ?? null,
+          researchRuns: state?.researchRuns.length ?? 0,
+          candidate: state?.candidate ?? (lead.enrichment?.['decisionMakerSearch'] as { outcome?: { candidate?: unknown } } | undefined)?.outcome?.candidate ?? null,
+          found: state?.found ?? null,
+          actions: state?.actions ?? [],
+        };
+      })
+      .filter((item) => !wanted || item.status === wanted || item.actions.some((a) => a.status === wanted))
+      .slice(0, limit);
+    res.json({ taskType: NAME_FINDER_TASK_TYPE, count: items.length, items });
+  });
+
+  // POST /api/leads/:id/name-finder/research — make the automatic research step due now (runs on the next tick).
+  router.post('/:id/name-finder/research', async (req, res) => {
+    const { db, researchedLeads } = await import('@workspace/db');
+    const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, req.params.id)).limit(1);
+    if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
+    if (leadDataSet(lead) !== 'needs_name') { res.status(409).json({ error: 'lead is not in the needs-name set' }); return; }
+    const now = new Date();
+    const state = readNameFinderState(lead) ?? newNameFinderState(now);
+    const next = { ...state, status: state.status === 'exhausted' ? 'queued' as const : state.status, nextResearchAt: now.toISOString(), updatedAt: now.toISOString() };
+    await db.update(researchedLeads).set({ enrichment: { ...(lead.enrichment ?? {}), nameFinder: next } }).where(eq(researchedLeads.id, lead.id));
+    res.json({ leadId: lead.id, nameFinder: next });
+  });
+
+  // POST /api/leads/:id/name-finder/actions/:actionId/approve  { approver }
+  router.post('/:id/name-finder/actions/:actionId/approve', async (req, res) => {
+    const approver = actorOf(req);
+    if (!approver || !approverAllowed(approver)) {
+      res.status(403).json({ error: 'approval requires a named approver listed in APEX_NAME_FINDER_APPROVERS' });
+      return;
+    }
+    const { db, researchedLeads, emailSuppressions } = await import('@workspace/db');
+    const { loadOutboundPolicy } = await import('@workspace/core');
+    const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, req.params.id)).limit(1);
+    if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
+    const state = readNameFinderState(lead);
+    const action = state?.actions.find((a) => a.id === req.params.actionId);
+    if (!state || !action) { res.status(404).json({ error: 'action not found' }); return; }
+    let suppressed = false;
+    if (action.email?.to) {
+      const [row] = await db.select({ email: emailSuppressions.email }).from(emailSuppressions)
+        .where(eq(emailSuppressions.email, action.email.to.trim().toLowerCase())).limit(1);
+      suppressed = Boolean(row);
+    }
+    const now = new Date();
+    const gate = evaluateGate(action, lead, await loadOutboundPolicy(now), { suppressed, now });
+    const result = approveAction(state, action.id, approver, gate, now);
+    if (result.error) { res.status(409).json({ error: result.error, action: result.action }); return; }
+    await db.update(researchedLeads).set({ enrichment: { ...(lead.enrichment ?? {}), nameFinder: result.state } }).where(eq(researchedLeads.id, lead.id));
+    // Nothing is sent here. ready_to_execute only means approved AND the gate allows it right now.
+    res.json({ leadId: lead.id, action: result.action, sent: false });
+  });
+
+  // POST /api/leads/:id/name-finder/actions/:actionId/reject  { reviewer?, note? }
+  router.post('/:id/name-finder/actions/:actionId/reject', async (req, res) => {
+    const { db, researchedLeads } = await import('@workspace/db');
+    const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, req.params.id)).limit(1);
+    if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
+    const state = readNameFinderState(lead);
+    if (!state) { res.status(404).json({ error: 'no name-finder state' }); return; }
+    const note = typeof (req.body as { note?: unknown })?.note === 'string' ? String((req.body as { note: string }).note).slice(0, 500) : undefined;
+    const result = rejectAction(state, req.params.actionId, actorOf(req) || 'operator', note, new Date());
+    if (result.error) { res.status(404).json({ error: result.error }); return; }
+    await db.update(researchedLeads).set({ enrichment: { ...(lead.enrichment ?? {}), nameFinder: result.state } }).where(eq(researchedLeads.id, lead.id));
+    res.json({ leadId: lead.id, action: result.action });
+  });
+
+  // POST /api/leads/:id/name-finder/name  { name, title, source: email_reply|phone_call|operator_entry, sourceUrl }
+  // A name the company gave us. Clears the bar → moves to contact-ready now; otherwise stays needs-name with the candidate.
+  router.post('/:id/name-finder/name', async (req, res) => {
+    const body = (req.body ?? {}) as { name?: unknown; title?: unknown; source?: unknown; sourceUrl?: unknown };
+    const source = body.source;
+    if (typeof body.name !== 'string' || typeof body.title !== 'string' || typeof body.sourceUrl !== 'string'
+      || (source !== 'email_reply' && source !== 'phone_call' && source !== 'operator_entry')) {
+      res.status(400).json({ error: 'name, title, sourceUrl and source (email_reply|phone_call|operator_entry) are required' });
+      return;
+    }
+    const { db, researchedLeads } = await import('@workspace/db');
+    const [lead] = await db.select().from(researchedLeads).where(eq(researchedLeads.id, req.params.id)).limit(1);
+    if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
+    const result = promoteFoundName(lead, { name: body.name, title: body.title, source, sourceUrl: body.sourceUrl }, new Date());
+    await db.update(researchedLeads).set({
+      enrichment: result.enrichment,
+      ...(result.promoted ? { decisionMakerName: result.decisionMakerName, title: result.title } : {}),
+    }).where(eq(researchedLeads.id, lead.id));
+    res.json({ leadId: lead.id, promoted: result.promoted, reasons: result.reasons, dataSet: leadDataSet({ ...lead, enrichment: result.enrichment }) });
   });
 
   // ─── POST /api/leads/import — CSV or JSON, preview unless commit=true ────

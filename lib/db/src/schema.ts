@@ -313,6 +313,16 @@ export const leadResearchCache = pgTable('lead_research_cache', {
   deepResearch: jsonb('deep_research').$type<Record<string, unknown>>(),
   campaignDraft: jsonb('campaign_draft').$type<Record<string, unknown>>(),
   hitCount: integer('hit_count').notNull().default(0),
+  // Per-domain research reused by the decision-maker ladder across roles and
+  // leads (migration 20261003_lead_research_cache_ladder.sql). Shapes are
+  // defined in packages/background-jobs/src/decision-maker-ladder.ts
+  // (DomainResearch). Bounded by CACHE_LIMITS there (pages, people, searches).
+  fetchedPages: jsonb('fetched_pages').$type<Record<string, unknown>>(),
+  people: jsonb('people').$type<Array<Record<string, unknown>>>(),
+  searchResults: jsonb('search_results').$type<Record<string, unknown>>(),
+  ladderSteps: jsonb('ladder_steps').$type<Record<string, unknown>>(),
+  layerStats: jsonb('layer_stats').$type<Record<string, unknown>>(),
+  researchUpdatedAt: timestamp('research_updated_at', { withTimezone: true, mode: 'date' }),
   expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),

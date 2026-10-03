@@ -142,6 +142,8 @@ export function LeadsPanel() {
           {stats && (
             <div style={{ marginTop: 3, fontSize: 10, color: 'var(--color-apex-muted)' }}>
               {stats.rawCandidates.toLocaleString()} raw candidates · {stats.pendingOrUnverified.toLocaleString()} pending verification/contact · {stats.rejected.toLocaleString()} rejected
+              {typeof (stats.needsName ?? stats.decisionMakerCantLocate) === 'number' && <> · {(stats.needsName ?? stats.decisionMakerCantLocate ?? 0).toLocaleString()} need a name{stats.nameFinder?.awaitingApproval ? ` (${stats.nameFinder.awaitingApproval} asks awaiting approval)` : ''}</>}
+              {typeof stats.legacyContactReady === 'number' && <> · {stats.legacyContactReady.toLocaleString()} under the old email/phone-only rule</>}
             </div>
           )}
         </div>
@@ -396,6 +398,15 @@ export function LeadsPanel() {
                   const verification = (lead.enrichment?.['businessVerification'] ?? null) as
                     | { status?: string; contactSourceUrl?: string | null }
                     | null;
+                  const dmOutcome = ((lead.enrichment?.['decisionMakerSearch'] ?? null) as
+                    | { outcome?: { status?: string; title?: string } }
+                    | null)?.outcome;
+                  const dmTitle = dmOutcome?.status === 'found' ? dmOutcome.title : undefined;
+                  const dmLabel = lead.decisionMakerName
+                    ? `${lead.decisionMakerName}${dmTitle ? ` · ${dmTitle}` : ''}`
+                    : dmOutcome?.status === 'cant_locate'
+                      ? 'Needs name: decision maker not publicly listed'
+                      : 'Decision maker pending';
                   return (
                     <>
                       <motion.tr
@@ -442,7 +453,7 @@ export function LeadsPanel() {
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>{lead.industry || '—'}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>{lead.city || '—'}</td>
                         <td style={{ padding: '8px 12px', color: 'var(--color-apex-muted)' }}>
-                          <div style={{ fontWeight: 600, color: 'var(--color-apex-text)' }}>{lead.decisionMakerName || 'Decision maker pending'}</div>
+                          <div style={{ fontWeight: 600, color: 'var(--color-apex-text)' }}>{dmLabel}</div>
                           {lead.contactEmail && <a href={`mailto:${lead.contactEmail}`} onClick={(e) => e.stopPropagation()} style={{ color: '#5a9eae', display: 'flex', gap: 4, alignItems: 'center' }}><Mail size={10} />{lead.contactEmail}</a>}
                           {lead.contactPhone && <a href={`tel:${lead.contactPhone}`} onClick={(e) => e.stopPropagation()} style={{ color: '#5a9eae', display: 'flex', gap: 4, alignItems: 'center' }}><Phone size={10} />{lead.contactPhone}</a>}
                           {lead.contactSourceUrl && (

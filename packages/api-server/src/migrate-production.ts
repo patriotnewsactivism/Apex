@@ -85,6 +85,12 @@ async function main(): Promise<void> {
     new URL('../../../lib/db/drizzle/20260928_lead_search_cache.sql', import.meta.url),
     'Persistent cache for paid and rate-limited lead discovery searches',
   );
+
+  await applySqlFile(
+    '20261003_lead_research_cache_ladder_v1',
+    new URL('../../../lib/db/drizzle/20261003_lead_research_cache_ladder.sql', import.meta.url),
+    'Per-domain decision-maker ladder research cache columns on lead_research_cache',
+  );
 }
 
 main()

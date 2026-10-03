@@ -385,6 +385,13 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS lead_research_cache_domain_idx
     ON lead_research_cache (normalized_domain)
   `;
+  // Decision-maker ladder per-domain research cache (20261003_lead_research_cache_ladder.sql).
+  await client`ALTER TABLE lead_research_cache ADD COLUMN IF NOT EXISTS fetched_pages jsonb`;
+  await client`ALTER TABLE lead_research_cache ADD COLUMN IF NOT EXISTS people jsonb`;
+  await client`ALTER TABLE lead_research_cache ADD COLUMN IF NOT EXISTS search_results jsonb`;
+  await client`ALTER TABLE lead_research_cache ADD COLUMN IF NOT EXISTS ladder_steps jsonb`;
+  await client`ALTER TABLE lead_research_cache ADD COLUMN IF NOT EXISTS layer_stats jsonb`;
+  await client`ALTER TABLE lead_research_cache ADD COLUMN IF NOT EXISTS research_updated_at timestamptz`;
   await client`
     CREATE TABLE IF NOT EXISTS lead_search_cache (
       cache_key text PRIMARY KEY,

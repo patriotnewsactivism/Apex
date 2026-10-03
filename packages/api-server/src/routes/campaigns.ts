@@ -138,7 +138,10 @@ export function createCampaignsRouter() {
       return;
     }
     try {
-      const created = await createCampaign(parsed.data);
+      // Provenance: campaigns started over REST previously recorded no creator.
+      const actorHeader = req.headers['x-apex-actor'];
+      const actor = typeof actorHeader === 'string' && actorHeader.trim() ? actorHeader.trim().slice(0, 120) : 'operator';
+      const created = await createCampaign({ ...parsed.data, createdByAgentId: `api:${actor}` });
       broadcast({
         type: 'campaign:started',
         campaignId: created.campaignId,

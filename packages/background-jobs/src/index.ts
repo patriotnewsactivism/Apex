@@ -50,3 +50,6 @@ export { createCampaignTools } from './campaign-tools.js';
 export { RevenueWorkforceRunner } from './revenue-workforce-runner.js';
 
 export * from './operator-activity.js';
+export * from './name-finder.js';
+export { processNameFinderQueue, nameFinderEnabled } from './name-finder-runner.js';
+export { classifyTitle, loadTitlePolicy, DEFAULT_ALLOW_RULES, DEFAULT_DENY_RULES } from './lead-quality/title-authority.js';

@@ -1,3 +1,5 @@
+import { registrableDomain } from './lead-quality/domain.js';
+import { cacheReuseAllowed, replaceCompanyNameText } from './lead-quality/cache-reuse.js';
 import { randomUUID } from 'crypto';
 import { and, asc, eq, inArray, isNull, like, lt, or, sql } from 'drizzle-orm';
 import {
@@ -7,6 +9,32 @@ import {
 } from '@workspace/db';
 import { emitApexEvent, normalizeIndustry } from '@workspace/core';
 import { recordOperatorActivity } from './operator-activity.js';
+import { jsonLdPostalAddress, type SiteAddress } from './lead-quality/html.js';
+import { publicContactsFromHtml } from './lead-quality/extract-contacts.js';
+import {
+  validateLeadContacts,
+  type ContactValidationResult,
+} from './lead-quality/contact-validation.js';
+import {
+  classifyIndustryFit,
+  copyLocationConflicts,
+  deriveLeadLocation,
+  industryCallOpener,
+  industryEmailSubject,
+  industryFitReason,
+  industryOutreachAngle,
+  type IndustryFit,
+  type LeadLocation,
+} from './lead-quality/industry.js';
+import {
+  defaultLadderDeps,
+  defaultRolesForIndustry,
+  runDecisionMakerLadder,
+  selectForRole,
+  type DecisionMakerSearch,
+  type PersonRecord,
+} from './decision-maker-ladder.js';
+import { PostgresDomainResearchStore } from './domain-research-store.js';
 
 export const LEAD_PIPELINE_STATES = [
   'DISCOVERED',
@@ -45,6 +73,9 @@ const SERVICE_SUBCATEGORIES: Record<string, string[]> = {
   dental: ['family dentist', 'cosmetic dentist', 'emergency dentist', 'dental implants'],
   medspa: ['medical spa', 'botox clinic', 'laser hair removal', 'aesthetic clinic'],
   legal: ['personal injury lawyer', 'family law attorney', 'criminal defense attorney', 'estate planning attorney'],
+  // "us news service Concord, NH" returned state agencies, universities and
+  // directories. Search for the outlet types we actually sell to.
+  news: ['local newspaper', 'tv news station', 'news radio station', 'local news website'],
   default: ['company', 'service provider', 'contractor', 'local business'],
 };
 
@@ -140,6 +171,8 @@ export function normalizeLeadDomain(url: string | null | undefined): string | nu
   }
 }
 
+export { registrableDomain } from './lead-quality/domain.js';
+
 export function canonicalHomepageUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   try {
@@ -227,58 +260,17 @@ function metaContent(html: string, key: string): string | null {
   return null;
 }
 
-function industryAffinity(industry: string | null | undefined, text: string): boolean {
-  const normalized = (normalizeIndustry(industry ?? '') ?? industry ?? '').toLowerCase();
-  if (!normalized) return true;
-  const haystack = text.toLowerCase();
-  const checks: Array<[RegExp, RegExp]> = [
-    [/roof/, /\broof(?:ing|er|ers| repair| replacement)?\b/],
-    [/bail/, /\bbail\b|bondsman/],
-    [/locksmith/, /\blocksmith\b|lock repair|lockout/],
-    [/hvac/, /\bhvac\b|air condition|heating|furnace/],
-    [/plumb/, /\bplumb(?:er|ing)?\b|water heater|drain/],
-    [/dental|dentist/, /\bdent(?:al|ist|istry)\b|orthodont/],
-    [/medspa|medical spa/, /med(?:ical)? spa|botox|aesthetic|laser hair/],
-    [/legal|law|attorney/, /\blaw\b|lawyer|attorney|legal/],
-  ];
-  for (const [industryPattern, contentPattern] of checks) if (industryPattern.test(normalized)) return contentPattern.test(haystack);
-  const meaningful = normalized.split(/\s+/).filter((token) => token.length >= 4 && !['business','company','service','services','emergency'].includes(token));
-  return meaningful.length === 0 || meaningful.some((token) => haystack.includes(token));
+/**
+ * Boolean view of the industry classifier, kept for callers that only need
+ * pass/fail. `uncertain` is NOT a pass: it leaves the lead unverified instead
+ * of letting any page that mentions the industry token through.
+ */
+export function industryAffinity(industry: string | null | undefined, html: string, url?: string | null): boolean {
+  if (!(normalizeIndustry(industry ?? '') ?? industry ?? '').trim()) return true;
+  return classifyIndustryFit({ industry, url, html }).verdict === 'match';
 }
 
-function normalizeBusinessEmail(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const email = value.trim().toLowerCase().replace(/^mailto:/i, '').split('?')[0] ?? '';
-  if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(email)) return null;
-  if (/(?:example\.com|example\.org|domain\.com|yourdomain|sentry|wixpress|cloudflare)/i.test(email)) return null;
-  if (/^(?:noreply|no-reply|donotreply|do-not-reply)@/i.test(email)) return null;
-  return email;
-}
-
-function normalizeUsBusinessPhone(value: string | null | undefined): string | null {
-  if (!value) return null;
-  const raw = value.trim().replace(/^tel:/i, '').split(/[;,?]/)[0] ?? '';
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (digits.length >= 8 && digits.length <= 15 && raw.startsWith('+')) return `+${digits}`;
-  return null;
-}
-
-function publicContactsFromHtml(html: string): { email: string | null; phone: string | null } {
-  const emails = [
-    ...Array.from(html.matchAll(/href=["']mailto:([^"'?#\s>]+)/gi), (m) => m[1] ?? ''),
-    ...Array.from(decodeHtmlText(html).matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi), (m) => m[0] ?? ''),
-  ];
-  const phones = [
-    ...Array.from(html.matchAll(/href=["']tel:([^"'?#>]+)/gi), (m) => m[1] ?? ''),
-    ...Array.from(decodeHtmlText(html).matchAll(/(?:\+?1[\s.()-]*)?(?:\d{3}[\s.()-]*){2}\d{4}/g), (m) => m[0] ?? ''),
-  ];
-  return {
-    email: emails.map(normalizeBusinessEmail).find((value): value is string => Boolean(value)) ?? null,
-    phone: phones.map(normalizeUsBusinessPhone).find((value): value is string => Boolean(value)) ?? null,
-  };
-}
+export { publicContactsFromHtml } from './lead-quality/extract-contacts.js';
 
 function structuredDecisionMakerFromHtml(html: string): { name: string; title: string } | null {
   const scripts = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) ?? [];
@@ -385,6 +377,10 @@ export interface BusinessWebsiteIdentity {
   decisionMakerName: string | null;
   decisionMakerTitle: string | null;
   decisionMakerSourceUrl: string | null;
+  /** Classifier evidence (added 2026-10-03; absent on older rows). */
+  industryFit?: IndustryFit | null;
+  /** The organisation's own PostalAddress from the verified site, if published. */
+  siteAddress?: SiteAddress | null;
 }
 
 export async function verifyBusinessWebsiteIdentity(input: {
@@ -476,14 +472,21 @@ export async function verifyBusinessWebsiteIdentity(input: {
       }
     }
 
-    const visible = decodeHtmlText(raw.slice(0, 150000));
-    if (!industryAffinity(input.industry, `${title} ${visible}`)) {
+    const industryFit = (normalizeIndustry(input.industry ?? '') ?? input.industry ?? '').trim()
+      ? classifyIndustryFit({ industry: input.industry, url: finalHomepage, html: raw })
+      : null;
+    const siteAddress = jsonLdPostalAddress(raw);
+    if (industryFit && industryFit.verdict !== 'match') {
       return {
-        status: 'mismatch',
+        status: industryFit.verdict === 'mismatch' ? 'mismatch' : 'unverified',
         canonicalName,
         homepage: finalHomepage,
         checkedAt,
-        reason: 'homepage_does_not_match_target_industry',
+        reason: industryFit.verdict === 'mismatch'
+          ? `homepage_does_not_match_target_industry:${industryFit.reason}`
+          : `industry_signals_insufficient:${industryFit.reason}`,
+        industryFit,
+        siteAddress,
         contactEmail,
         contactPhone,
         contactSourceUrl,
@@ -501,6 +504,8 @@ export async function verifyBusinessWebsiteIdentity(input: {
       homepage: finalHomepage,
       checkedAt,
       reason: 'homepage_and_industry_verified',
+      industryFit,
+      siteAddress,
       contactEmail,
       contactPhone,
       contactSourceUrl,
@@ -540,7 +545,8 @@ export function dedupeDiscoveredBusinesses<T extends { companyName: string; webs
   let duplicates = 0;
 
   for (const business of businesses) {
-    const domain = normalizeLeadDomain(business.website);
+    // Registrable domain, so edition.cnn.com and www.cnn.com are one company.
+    const domain = registrableDomain(business.website);
     const key = domain ?? makeResearchCacheKey(business);
     if (domain && knownDomains.has(domain)) {
       duplicates++;
@@ -561,7 +567,7 @@ export async function getKnownLeadDomains(): Promise<Set<string>> {
   const rows = await db.select({ website: researchedLeads.website }).from(researchedLeads);
   const domains = new Set<string>();
   for (const row of rows) {
-    const domain = normalizeLeadDomain(row.website);
+    const domain = registrableDomain(row.website);
     if (domain) domains.add(domain);
   }
   return domains;
@@ -605,15 +611,26 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
     contactResearchStatus?: 'pending' | 'partial' | 'complete' | 'unavailable';
   } | null;
 
+  // Per-domain ladder research is read at every lookup, including insert: a
+  // company already researched for another lead/role starts with its people.
+  const cachedPeople = Array.isArray(cached?.people) ? (cached.people as unknown as PersonRecord[]) : [];
+  const cachedRoleMatch = cachedPeople.length > 0
+    ? defaultRolesForIndustry(input.industry).map((role) => selectForRole(cachedPeople, role, { companyName: input.companyName, domain, now })).find(Boolean) ?? null
+    : null;
+
   const cachedCampaignDraft = cached?.campaignDraft as Record<string, unknown> | null;
   const cachedBasic = cached?.basicEnrichment as Record<string, unknown> | null;
   const cachedVerification = cachedBasic?.['businessVerification'] as { status?: string } | undefined;
   const cachedHasContact = Boolean(cachedContact?.contactEmail || cachedContact?.contactPhone || input.phone);
-  const readyFromCache = Boolean(
-    cachedCampaignDraft &&
-    cachedHasContact &&
-    cachedVerification?.status === 'verified',
-  );
+  // Same-city + verified < 14 days, else the cache only hydrates (see cache-reuse.ts).
+  const readyFromCache = cacheReuseAllowed({
+    cachedCity: cached?.city,
+    cachedHasCampaignDraft: Boolean(cachedCampaignDraft),
+    cachedHasContact,
+    cachedVerification: cachedVerification as { status?: string; checkedAt?: string } | undefined,
+    inputCity: input.city,
+    now,
+  });
   const state: LeadPipelineState = readyFromCache ? 'CAMPAIGN_READY' : 'DISCOVERED';
 
   const [lead] = await db
@@ -625,7 +642,8 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
       industry: normalizeIndustry(input.industry) ?? input.industry,
       city: input.city,
       contactPhone: input.phone ?? cachedContact?.contactPhone,
-      decisionMakerName: cachedContact?.decisionMakerName,
+      decisionMakerName: cachedContact?.decisionMakerName ?? cachedRoleMatch?.person.name,
+      title: cachedRoleMatch?.person.title,
       contactEmail: cachedContact?.contactEmail,
       contactSourceUrl: cachedContact?.contactSourceUrl,
       contactResearchStatus: cachedContact?.contactResearchStatus ?? (input.phone ? 'partial' : 'pending'),
@@ -655,7 +673,12 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
       pipelineMetadata: {
         ...input.metadata,
         normalizedDomain: domain,
+        registrableDomain: registrableDomain(input.website),
+        // The discovery shard's city. lead.city is later replaced by the city
+        // the verified site states; this keeps where we searched.
+        searchCity: input.city ?? null,
         cacheHit: Boolean(cached),
+        cacheReadyReuse: readyFromCache,
       },
       researchedByAgentId: input.researchedByAgentId,
       createdAt: now,
@@ -828,6 +851,12 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
     };
   }
 
+  let quality: VerifiedLeadQuality | null = null;
+  if (identity?.status === 'verified') {
+    quality = await assessVerifiedLead(stageLead, identity, cacheKey);
+    stageLead = quality.lead;
+  }
+
   const update = buildStageUpdate(next, stageLead, cached);
   if (identity) {
     update.companyName = stageLead.companyName;
@@ -841,8 +870,20 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
     update.enrichment = {
       ...((update.enrichment as Record<string, unknown> | null) ?? {}),
       businessVerification: identity,
+      ...(identity.industryFit ? { industryFit: identity.industryFit } : {}),
+      ...(quality ? {
+        contactValidation: quality.contactValidation,
+        decisionMakerSearch: quality.decisionMakerSearch,
+        locationCheck: quality.locationCheck,
+      } : {}),
       summary: `${stageLead.companyName} is a ${stageLead.industry ?? 'local'} business in ${stageLead.city ?? 'its market'}.`,
     };
+    if (quality) {
+      update.city = stageLead.city;
+      update.title = stageLead.title;
+      update.fitReason = stageLead.fitReason;
+      update.outreachAngle = stageLead.outreachAngle;
+    }
     if (identity.status === 'mismatch') {
       update.status = 'rejected';
       update.qualificationScore = 0;
@@ -870,6 +911,112 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
 
   await upsertResearchCache(cacheKey, stageLead, next, update);
   emitLeadState(lead.id, lead.campaignId ?? null, next, now);
+}
+
+type LeadRow = typeof researchedLeads.$inferSelect;
+
+export interface VerifiedLeadQuality {
+  lead: LeadRow;
+  contactValidation: ContactValidationResult;
+  decisionMakerSearch: DecisionMakerSearch | null;
+  locationCheck: LeadLocation & { copyConflicts: string[]; copyRegenerated: boolean };
+}
+
+const LEGACY_FIT_REASON = /fits the .* ICP in .*: inbound calls, slow response, and after-hours gaps/i;
+const LEGACY_OUTREACH_ANGLE = /^Show .* how to capture and follow up with .* leads in .* before competitors respond\.?$/i;
+
+/**
+ * Everything a verified lead needs before it can count as contact-ready:
+ * location from the verified site, validated contacts (format, MX, NANP,
+ * area code vs state), the decision-maker ladder, and copy that matches the
+ * lead's industry and location. Never throws: a ladder failure becomes
+ * `pending_retry`, which keeps the lead out of the contact-ready count.
+ */
+export async function assessVerifiedLead(
+  lead: LeadRow,
+  identity: BusinessWebsiteIdentity,
+  cacheKey: string,
+): Promise<VerifiedLeadQuality> {
+  // Compare against the shard city we searched in (pipelineMetadata.searchCity),
+  // not lead.city, which an earlier pass may already have replaced with the
+  // site's city — otherwise a re-run would hide a geo mismatch.
+  const searchCity = typeof (lead.pipelineMetadata as Record<string, unknown> | null)?.['searchCity'] === 'string'
+    ? String((lead.pipelineMetadata as Record<string, unknown>)['searchCity'])
+    : null;
+  const location = deriveLeadLocation({ leadCity: searchCity ?? lead.city, siteAddress: identity.siteAddress ?? null });
+  const city = location.city ?? lead.city;
+
+  const contactValidation = await validateLeadContacts({
+    email: lead.contactEmail,
+    phone: lead.contactPhone,
+    city,
+    checkMx: process.env.APEX_LEAD_EMAIL_MX_CHECK !== 'false',
+  });
+  const email = contactValidation.email;
+  const phone = contactValidation.phone;
+  const contactEmail = email && (email.status === 'valid' || email.status === 'dns_error') ? email.value : null;
+  const contactPhone = phone && (phone.status === 'valid' || phone.status === 'international') ? phone.e164 : null;
+
+  let decisionMakerSearch: DecisionMakerSearch | null = null;
+  const domain = normalizeLeadDomain(identity.homepage ?? lead.website);
+  if (process.env.APEX_DM_LADDER_ENABLED !== 'false' && domain) {
+    try {
+      const roles = defaultRolesForIndustry(lead.industry);
+      const { search } = await runDecisionMakerLadder(
+        {
+          companyName: lead.companyName,
+          website: identity.homepage ?? lead.website,
+          industry: lead.industry,
+          city,
+          cacheKey,
+          domain,
+          structuredScrape: {
+            name: identity.decisionMakerName,
+            title: identity.decisionMakerTitle,
+            sourceUrl: identity.decisionMakerSourceUrl,
+          },
+        },
+        roles,
+        new PostgresDomainResearchStore(),
+        defaultLadderDeps(),
+      );
+      decisionMakerSearch = search;
+    } catch (err) {
+      decisionMakerSearch = {
+        ladderVersion: 'unavailable',
+        outcome: { status: 'pending_retry', reason: `ladder_error:${err instanceof Error ? err.message.slice(0, 120) : String(err)}` },
+        reason: 'ladder_error',
+        exhaustedAt: null,
+        stepsTried: [],
+        primaryRole: defaultRolesForIndustry(lead.industry)[0] ?? 'owner_executive',
+        roles: {},
+      };
+    }
+  }
+  const found = decisionMakerSearch?.outcome.status === 'found' ? decisionMakerSearch.outcome : null;
+
+  const companyName = lead.companyName;
+  const copyConflicts = copyLocationConflicts(lead.outreachAngle, { state: location.state, city });
+  const regenerateAngle = !lead.outreachAngle || LEGACY_OUTREACH_ANGLE.test(lead.outreachAngle) || copyConflicts.length > 0;
+  const regenerateFit = !lead.fitReason || LEGACY_FIT_REASON.test(lead.fitReason)
+    || copyLocationConflicts(lead.fitReason, { state: location.state, city }).length > 0;
+
+  return {
+    lead: {
+      ...lead,
+      city,
+      contactEmail,
+      contactPhone,
+      decisionMakerName: found?.name ?? lead.decisionMakerName,
+      title: found?.title ?? lead.title,
+      contactResearchStatus: contactEmail && contactPhone ? 'complete' : contactEmail || contactPhone ? 'partial' : 'pending',
+      fitReason: regenerateFit ? industryFitReason(lead.industry, city, companyName) : lead.fitReason,
+      outreachAngle: regenerateAngle ? industryOutreachAngle(companyName, lead.industry, city) : lead.outreachAngle,
+    },
+    contactValidation,
+    decisionMakerSearch,
+    locationCheck: { ...location, copyConflicts, copyRegenerated: regenerateAngle },
+  };
 }
 
 function buildStageUpdate(
@@ -926,7 +1073,7 @@ function buildStageUpdate(
           generatedAt: new Date().toISOString(),
           notes: [
             'Confirm current services, service area, and leadership before live outreach.',
-            'Prioritize speed-to-lead, missed-call coverage, and after-hours response angles.',
+            industryOutreachAngle(lead.companyName, lead.industry, lead.city),
           ],
         },
       },
@@ -936,9 +1083,8 @@ function buildStageUpdate(
   if (next === 'CAMPAIGN_READY') {
     const draft = {
       firstTouch: lead.outreachAngle ?? makeShortOutreachAngle(lead.companyName, lead.industry, lead.city),
-      emailSubject: `${lead.companyName} speed-to-lead coverage`,
-      callOpener:
-        `Hi, this is Don's team. We found ${lead.companyName} while mapping ${lead.industry ?? 'local service'} operators in ${lead.city ?? 'your market'}, and wanted to compare notes on missed calls and after-hours lead capture.`,
+      emailSubject: industryEmailSubject(lead.companyName, lead.industry),
+      callOpener: industryCallOpener(lead.companyName, lead.industry, lead.city),
       nextBestAction: lead.contactEmail ? 'email' : lead.contactPhone ? 'call' : 'research_contact',
     };
     return {
@@ -978,10 +1124,11 @@ async function upsertResearchCache(
     })
     .onConflictDoUpdate({
       target: leadResearchCache.cacheKey,
+      // hitCount counts cache READS (insertDiscoveredLead/advanceLeadPipeline);
+      // bumping it on every write overstated reuse.
       set: {
         ...base,
         ...staged,
-        hitCount: sql`${leadResearchCache.hitCount} + 1`,
         updatedAt: now,
       },
     });
@@ -1027,12 +1174,14 @@ function emitLeadState(
   });
 }
 
+/** Per-industry fit reason (was one missed-calls sentence for every industry). */
 export function makeFastFitReason(industry: string | null | undefined, city: string | null | undefined, companyName: string): string {
-  return `${companyName} fits the ${industry ?? 'local service'} ICP in ${city ?? 'its market'}: inbound calls, slow response, and after-hours gaps are likely revenue leaks APEX and BuildMyBot can address.`;
+  return industryFitReason(industry, city, companyName);
 }
 
+/** Per-industry first-touch angle tied to the lead's own location. */
 export function makeShortOutreachAngle(companyName: string, industry?: string | null, city?: string | null): string {
-  return `Show ${companyName} how to capture and follow up with ${industry ?? 'service'} leads in ${city ?? 'their market'} before competitors respond.`;
+  return industryOutreachAngle(companyName, industry, city);
 }
 
 function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
@@ -1041,6 +1190,10 @@ function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
     | undefined;
   if (verification?.status !== 'verified') return 0;
   if (!lead.contactEmail && !lead.contactPhone) return 0;
+  const contactValidation = (lead.enrichment as Record<string, unknown> | null)?.['contactValidation'] as
+    | { validated?: boolean }
+    | undefined;
+  if (contactValidation && contactValidation.validated !== true) return 0;
 
   let score = 55;
   if (lead.website) score += 15;
@@ -1059,10 +1212,7 @@ function trimWords(text: string): string {
 
 let webIdentityRepairRunning = false;
 
-function replaceCompanyNameText(value: string | null | undefined, oldName: string, newName: string): string | null | undefined {
-  if (!value || oldName === newName) return value;
-  return value.split(oldName).join(newName);
-}
+export { replaceCompanyNameText } from './lead-quality/cache-reuse.js';
 
 export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked: number; renamed: number; mismatched: number; contactsAdded: number }> {
   if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0 };
