@@ -623,6 +623,15 @@ export function createCartesiaSalesRouter(): Router {
       const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, outcomeId(p.call_id))).limit(1);
       if (existing?.disposition === 'appointment_booked')
         return res.json({ booked: true, already_booked: true, start: existing.appointmentAt?.toISOString() });
+      const { ensureProductionSendSafeguard, gateOutboundSend } = await import('@workspace/core');
+      await ensureProductionSendSafeguard();
+      await gateOutboundSend({
+        channel: 'calendar',
+        recipient: p.prospect_email,
+        messageText: `calendar invite ${p.slot_time} ${p.timezone}`,
+        campaignKey: p.call_id,
+        createdBy: 'cartesia-book-consultation',
+      });
       const booking = await calRequest('bookings', config.key, { eventTypeId: config.eventTypeId,
         start: at.toISOString(), attendee: { name: p.prospect_name, email: p.prospect_email,
           phoneNumber: p.phone_number, timeZone: p.timezone },
@@ -705,6 +714,15 @@ export function createCartesiaSalesRouter(): Router {
         eq(providerEvents.provider, 'cartesia'), eq(providerEvents.externalEventId, eventId))).limit(1);
       if (prior) return res.json({ sent: true, already_sent: true, url });
       const text = `As requested, here is ${p.demo_type === 'buildmybot_live_demo' ? 'BuildMyBot' : 'APEX Work Solutions'}: ${url} Reply STOP to opt out.`;
+      const { ensureProductionSendSafeguard, gateOutboundSend } = await import('@workspace/core');
+      await ensureProductionSendSafeguard();
+      await gateOutboundSend({
+        channel: 'sms',
+        recipient: p.phone_number,
+        messageText: text,
+        campaignKey: p.call_id,
+        createdBy: 'cartesia-demo-link',
+      });
       const response = await fetch('https://api.telnyx.com/v2/messages', { method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ from, to: p.phone_number, text }), signal: AbortSignal.timeout(6000) });

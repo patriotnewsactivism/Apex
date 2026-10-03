@@ -291,6 +291,19 @@ export function createEmailCampaignsRouter() {
         return;
       }
 
+      if (next === 'cancelled') {
+        try {
+          const { ensureProductionSendSafeguard, cancelSendJobsForCampaign } = await import('@workspace/core');
+          await ensureProductionSendSafeguard();
+          await cancelSendJobsForCampaign(campaign.id);
+        } catch (error) {
+          console.error(
+            '[email-campaigns] safeguard cascade failed:',
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+
       res.json({ campaignId: campaign.id, status: updated.status });
     });
   }

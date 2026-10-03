@@ -172,6 +172,21 @@ export async function dialBridgeLeg(params: {
   if (!apiKey || !connectionId || !from) {
     return { error: `TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER} are required for outbound Telnyx calls.` };
   }
+  if (params.role === 'customer') {
+    try {
+      const { ensureProductionSendSafeguard, gateOutboundSend } = await import('@workspace/core');
+      await ensureProductionSendSafeguard();
+      await gateOutboundSend({
+        channel: 'call',
+        recipient: params.to,
+        messageText: `call-bridge customer dial session=${params.sessionId}`,
+        campaignKey: params.sessionId,
+        createdBy: 'call-bridge',
+      });
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   try {
     const res = await fetch('https://api.telnyx.com/v2/calls', {
       method: 'POST',

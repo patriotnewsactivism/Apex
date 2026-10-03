@@ -46,6 +46,7 @@ export * from './sales-suggestions.js';
 export * from './email-delivery.js';
 export * from './approval-packet.js';
 export * from './outbound-compliance-guard.js';
+export * from './send-safeguard.js';
 export * from './durable-work-tools.js';
 export * from './task-checkpoint.js';
 export * from './execution-budget.js';

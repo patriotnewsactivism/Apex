@@ -311,6 +311,15 @@ async function executeSendCheckoutLink(
           text: `Your BuildMyBot ${spec.name} checkout link: ${checkoutUrl}`,
         };
 
+        const { ensureProductionSendSafeguard, gateOutboundSend } = await import('@workspace/core');
+        await ensureProductionSendSafeguard();
+        await gateOutboundSend({
+          channel: 'sms',
+          recipient: smsTo,
+          messageText: smsBody.text,
+          createdBy: 'telnyx-voice-guardrails',
+        });
+
         const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
           method: 'POST',
           headers: {

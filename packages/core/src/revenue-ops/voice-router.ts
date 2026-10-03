@@ -276,6 +276,20 @@ export interface InitiateCallResult {
 }
 
 export async function initiateOutboundCall(input: InitiateCallInput): Promise<InitiateCallResult> {
+  try {
+    const { ensureProductionSendSafeguard, gateOutboundSend } = await import('../send-safeguard.js');
+    await ensureProductionSendSafeguard();
+    await gateOutboundSend({
+      channel: 'call',
+      recipient: input.toNumber,
+      messageText: `revenue-ops call_initiate contact=${input.contactId}`,
+      campaignKey: input.campaignId ?? input.missionId ?? null,
+      createdBy: 'call_initiate',
+    });
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+
   // 1. Select provider
   const selection = await selectVoiceProvider(input.organizationId, undefined, {});
   if (!selection.provider) {

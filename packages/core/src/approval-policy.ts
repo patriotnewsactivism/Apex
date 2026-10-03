@@ -16,23 +16,37 @@
 // scripts/verify-approval-policy.ts asserts no hard-gated tool can ever be
 // auto-approved.
 
+import { SALES_OUTBOUND_TOOLS } from './outbound-policy.js';
+
 /** Autonomy modes that may consider the autoapproveTools allowlist. */
 export const AUTONOMY_MODES = new Set(['full_autonomous', 'autonomous']);
 
 /**
- * Standing operator authorization. Don explicitly authorized APEX to approve
- * all approval-gated actions until further notice. Keep the old hard-gate
- * policy intact underneath this switch so setting the env var to false
- * immediately restores the previous fail-closed behavior without a code
- * rollback.
+ * Standing operator authorization for non-outbound gated tools. Fail closed
+ * when the env var is unset — an absent switch must never auto-approve.
+ * Explicit true-like values enable it; false-like values keep it off.
  *
- * Enabled by default until the operator revokes it. Explicit false-like values
- * are the kill switch.
+ * Outbound sales sends are never covered by this switch. See
+ * operatorMayAutoApproveTool / isOutboundSalesSendTool.
  */
 export function operatorAutoApproveAllEnabled(): boolean {
   const raw = process.env.APEX_OPERATOR_AUTO_APPROVE_ALL?.trim().toLowerCase();
-  if (!raw) return true;
+  if (!raw) return false;
   return !new Set(['0', 'false', 'off', 'no', 'disabled']).has(raw);
+}
+
+/** Tools that contact an outside person. Never auto-approvable. */
+export function isOutboundSalesSendTool(toolName: string): boolean {
+  return SALES_OUTBOUND_TOOLS.has(toolName);
+}
+
+/**
+ * Combined operator auto-approve check. Unset env fails closed, and outbound
+ * sales sends stay gated even when the env var is explicitly true.
+ */
+export function operatorMayAutoApproveTool(toolName: string): boolean {
+  if (isOutboundSalesSendTool(toolName)) return false;
+  return operatorAutoApproveAllEnabled();
 }
 
 /**

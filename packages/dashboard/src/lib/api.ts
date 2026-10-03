@@ -38,6 +38,10 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+  headers['X-APEX-Client'] = 'apex-dashboard';
+  headers['X-APEX-Session-Kind'] = 'operator';
+  const operatorSession = sessionStorage.getItem('apex_operator_session');
+  if (operatorSession) headers['X-APEX-Operator-Session'] = operatorSession;
 
   const res = await fetch(`${API}${path}`, {
     headers,
@@ -49,6 +53,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       // the login screen, rather than letting each panel render its own empty
       // state and leave the operator staring at a dashboard with no data.
       localStorage.removeItem('apex_token');
+      sessionStorage.removeItem('apex_operator_session');
       window.dispatchEvent(new Event('apex:unauthorized'));
     }
     const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
@@ -69,6 +74,7 @@ async function apiFetchBlob(path: string): Promise<Blob> {
   if (!res.ok) {
     if (res.status === 401) {
       localStorage.removeItem('apex_token');
+      sessionStorage.removeItem('apex_operator_session');
       window.dispatchEvent(new Event('apex:unauthorized'));
     }
     const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
@@ -90,6 +96,7 @@ async function apiFetchText(path: string): Promise<string> {
     // button silently dead instead of returning the operator to login.
     if (res.status === 401) {
       localStorage.removeItem('apex_token');
+      sessionStorage.removeItem('apex_operator_session');
       window.dispatchEvent(new Event('apex:unauthorized'));
     }
     throw new Error(`HTTP ${res.status}`);
@@ -832,7 +839,95 @@ export const api = {
       }),
     stats: () => apiFetch<MissionStats>('/missions/stats'),
   },
+
+  sendSafeguard: {
+    list: () => apiFetch<{ jobs: SendSafeguardJobListItem[] }>('/send-safeguard/jobs'),
+    get: (id: string) => apiFetch<SendSafeguardJobDetail>(`/send-safeguard/jobs/${encodeURIComponent(id)}`),
+    create: (body: {
+      recipients: Array<{ channel: 'email' | 'call' | 'sms' | 'calendar'; destination: string; messageText: string }>;
+      campaignKey?: string | null;
+      storyKey?: string | null;
+      messageText?: string;
+      fullAuto?: boolean;
+    }) => apiFetch<SendSafeguardJobDetail>('/send-safeguard/jobs', { method: 'POST', body: JSON.stringify(body) }),
+    confirm: (id: string, step: 1 | 2) =>
+      apiFetch<SendSafeguardJobDetail>(`/send-safeguard/jobs/${encodeURIComponent(id)}/confirm`, {
+        method: 'POST',
+        body: JSON.stringify({ step }),
+      }),
+    submitCode: (id: string, code: string) =>
+      apiFetch<SendSafeguardJobDetail>(`/send-safeguard/jobs/${encodeURIComponent(id)}/code`, {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      }),
+    stop: (id: string) =>
+      apiFetch<SendSafeguardJobDetail>(`/send-safeguard/jobs/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+    setFullAuto: (id: string, fullAuto: boolean) =>
+      apiFetch<SendSafeguardJobDetail>(`/send-safeguard/jobs/${encodeURIComponent(id)}/full-auto`, {
+        method: 'POST',
+        body: JSON.stringify({ fullAuto }),
+      }),
+    release: (id: string, recipientId: string) =>
+      apiFetch<SendSafeguardJobDetail>(
+        `/send-safeguard/jobs/${encodeURIComponent(id)}/release/${encodeURIComponent(recipientId)}`,
+        { method: 'POST' },
+      ),
+    settings: () => apiFetch<SendSafeguardSettings>('/send-safeguard/settings'),
+    setCode: (code: string, password: string) =>
+      apiFetch<SendSafeguardSettings>('/send-safeguard/settings/code', {
+        method: 'POST',
+        body: JSON.stringify({ code, password }),
+      }),
+    unlock: (password: string) =>
+      apiFetch<SendSafeguardSettings>('/send-safeguard/unlock', {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      }),
+  },
 };
+
+export interface SendSafeguardJobListItem {
+  job: {
+    id: string;
+    status: string;
+    channelSummary: string;
+    campaignKey: string | null;
+    storyKey: string | null;
+    messageText: string;
+    recipientCount: number;
+    fullAuto: boolean;
+    createdAt: string;
+  };
+  aggregatedCount: number;
+  codeRequired: boolean;
+  publicStatus: string;
+}
+
+export interface SendSafeguardJobDetail {
+  job: SendSafeguardJobListItem['job'] & {
+    confirm1At: string | null;
+    confirm2At: string | null;
+    codeVerifiedAt: string | null;
+    voidReason: string | null;
+  };
+  recipients: Array<{
+    id: string;
+    channel: string;
+    destination: string;
+    messageText: string;
+    status: string;
+  }>;
+  aggregatedCount: number;
+  codeRequired: boolean;
+  publicStatus: string;
+}
+
+export interface SendSafeguardSettings {
+  codeSet: boolean;
+  locked: boolean;
+  failedAttempts: number;
+  lockedAt: string | null;
+}
 
 // ─── Sales Ops Types ───────────────────────────────────────────────────────
 

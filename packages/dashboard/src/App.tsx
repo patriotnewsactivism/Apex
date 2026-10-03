@@ -32,9 +32,11 @@ import { PublicLanding } from './components/PublicLanding.js';
 import { WebinarDirector } from './components/WebinarDirector.js';
 import { WebinarRoom } from './components/WebinarRoom.js';
 import { VerifyScalePanel } from './components/VerifyScalePanel.js';
+import { PendingSendsPanel } from './components/PendingSendsPanel.js';
 import {
   Target,
   Rocket,
+  Send,
   Network,
   Kanban,
   Terminal,
@@ -240,6 +242,7 @@ function Sidebar({
         { id: 'command', label: 'Command Center', icon: <Target size={16} /> },
         { id: 'chat', label: 'Talk to APEX', icon: <MessageSquare size={16} /> },
         { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={16} /> },
+        { id: 'pending-sends', label: 'Pending Sends', icon: <Send size={16} /> },
         { id: 'verify-scale', label: 'Verify & Scale', icon: <Scale size={16} /> },
       ],
     },
@@ -700,6 +703,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
       </div>
     ),
     approvals: <ApprovalQueue />,
+    'pending-sends': <PendingSendsPanel />,
     'verify-scale': <VerifyScalePanel />,
     health: <HealthPanel />,
     learning: <LearningPanel />,
@@ -726,6 +730,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     suggestions: { title: 'Suggestions', kicker: 'Systems & tools' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },
     approvals: { title: 'Approval Queue', kicker: 'Command' },
+    'pending-sends': { title: 'Pending Sends', kicker: 'Command' },
     'verify-scale': { title: 'Verify & Scale', kicker: 'Growth control' },
     health: { title: 'System Health', kicker: 'Systems' },
     learning: { title: 'Intelligence', kicker: 'Systems' },
@@ -905,9 +910,13 @@ export default function App() {
       .then((res) => {
         if (cancelled) return;
         if (res.ok) {
+          void res.json().then((body: { operatorSession?: string }) => {
+            if (body.operatorSession) sessionStorage.setItem('apex_operator_session', body.operatorSession);
+          }).catch(() => undefined);
           setAuthed(true);
         } else if (res.status === 401) {
           localStorage.removeItem('apex_token');
+          sessionStorage.removeItem('apex_operator_session');
         } else {
           // Server trouble that is not a rejection — keep the session and let
           // the panels surface the real error.
@@ -941,6 +950,7 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('apex_token');
+    sessionStorage.removeItem('apex_operator_session');
     setAuthed(false);
     setShowLogin(true);
   };

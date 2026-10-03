@@ -1268,6 +1268,103 @@ export async function migrate() {
     ON CONFLICT (id) DO NOTHING
   `;
 
+  // ── Send safeguard (2026-10-03) ──────────────────────────────────────────
+  // Additive-only: jobs, recipients, append-only events, operator code row.
+  // Never drop. Hash + salt only — plaintext 4-digit code is never stored.
+  await client`
+    CREATE TABLE IF NOT EXISTS send_safeguard_jobs (
+      id text PRIMARY KEY,
+      status text NOT NULL DEFAULT 'waiting_confirm',
+      channel_summary text NOT NULL DEFAULT 'mixed',
+      campaign_key text,
+      story_key text,
+      message_text text NOT NULL,
+      message_fingerprint text NOT NULL,
+      recipient_count integer NOT NULL DEFAULT 0,
+      full_auto boolean NOT NULL DEFAULT false,
+      confirm1_at timestamptz,
+      confirm2_at timestamptz,
+      code_verified_at timestamptz,
+      created_by text NOT NULL DEFAULT 'system',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      stopped_at timestamptz,
+      voided_at timestamptz,
+      void_reason text
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS send_safeguard_jobs_campaign_idx
+    ON send_safeguard_jobs (campaign_key, created_at)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS send_safeguard_jobs_story_idx
+    ON send_safeguard_jobs (story_key, created_at)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS send_safeguard_jobs_status_idx
+    ON send_safeguard_jobs (status, created_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS send_safeguard_recipients (
+      id text PRIMARY KEY,
+      job_id text NOT NULL,
+      channel text NOT NULL,
+      destination text NOT NULL,
+      message_text text NOT NULL,
+      message_fingerprint text NOT NULL,
+      status text NOT NULL DEFAULT 'pending',
+      released_at timestamptz,
+      sent_at timestamptz,
+      cancelled_at timestamptz,
+      error_message text,
+      payload jsonb
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS send_safeguard_recipients_job_idx
+    ON send_safeguard_recipients (job_id, status)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS send_safeguard_recipients_dest_idx
+    ON send_safeguard_recipients (destination, channel)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS send_safeguard_events (
+      id text PRIMARY KEY,
+      job_id text,
+      recipient_id text,
+      event_type text NOT NULL,
+      detail text,
+      actor text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS send_safeguard_events_job_idx
+    ON send_safeguard_events (job_id, created_at)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS send_safeguard_events_type_idx
+    ON send_safeguard_events (event_type, created_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS send_safeguard_operator (
+      id text PRIMARY KEY,
+      code_hash text,
+      code_salt text,
+      failed_attempts integer NOT NULL DEFAULT 0,
+      locked boolean NOT NULL DEFAULT false,
+      locked_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    INSERT INTO send_safeguard_operator (id, failed_attempts, locked)
+    VALUES ('default', 0, false)
+    ON CONFLICT (id) DO NOTHING
+  `;
+
 }
 
 export { schema };

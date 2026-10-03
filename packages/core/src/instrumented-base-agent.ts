@@ -4,7 +4,7 @@ import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { BaseAgent as CoreBaseAgent, emitApexEvent } from './base-agent.js';
 import { getToolRegistry } from './tool-registry.js';
 import { getWorkspaceRoot } from './workspace-root.js';
-import { operatorAutoApproveAllEnabled } from './approval-policy.js';
+import { operatorAutoApproveAllEnabled, isOutboundSalesSendTool } from './approval-policy.js';
 import {
   ApprovalYieldSignal,
   approvalPayloadsEqual,
@@ -86,6 +86,17 @@ async function recoverResolvedApprovalWaits(): Promise<number> {
  */
 async function sweepOperatorAutoApprovals(): Promise<number> {
   if (!operatorAutoApproveAllEnabled()) return 0;
+  const pending = await db
+    .select({ id: approvals.id, toolName: approvals.toolName })
+    .from(approvals)
+    .where(and(
+      eq(approvals.kind, 'approval'),
+      eq(approvals.status, 'pending'),
+    ));
+  const eligibleIds = pending
+    .filter((row) => !isOutboundSalesSendTool(row.toolName))
+    .map((row) => row.id);
+  if (eligibleIds.length === 0) return 0;
   const approved = await db
     .update(approvals)
     .set({
@@ -96,6 +107,7 @@ async function sweepOperatorAutoApprovals(): Promise<number> {
     .where(and(
       eq(approvals.kind, 'approval'),
       eq(approvals.status, 'pending'),
+      inArray(approvals.id, eligibleIds),
     ))
     .returning({ id: approvals.id });
   return approved.length;

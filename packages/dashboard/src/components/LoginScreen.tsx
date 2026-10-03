@@ -40,8 +40,9 @@ export function LoginScreen({ onLogin, onBack }: LoginScreenProps) {
         throw new Error(data.error || 'Login failed');
       }
 
-      const data = (await res.json()) as { token: string };
+      const data = (await res.json()) as { token: string; operatorSession?: string };
       localStorage.setItem('apex_token', data.token);
+      if (data.operatorSession) sessionStorage.setItem('apex_operator_session', data.operatorSession);
       onLogin();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Authentication failed';

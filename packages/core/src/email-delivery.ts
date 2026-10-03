@@ -85,6 +85,9 @@ export interface DeliverEmailOptions {
   requireCompliance?: boolean;
   postalAddress?: string | null;
   unsubscribeEmail?: string | null;
+  campaignId?: string | null;
+  storyKey?: string | null;
+  safeguardJobId?: string | null;
 }
 
 export async function deliverQueuedEmailSend(
@@ -157,6 +160,26 @@ export async function deliverQueuedEmailSend(
     return fail('failed', 'Resend is not configured. Set RESEND_API_KEY and RESEND_FROM_EMAIL.');
   }
 
+  let safeguardJobId: string | null = options.safeguardJobId ?? null;
+  try {
+    const { ensureProductionSendSafeguard, gateOutboundSend } = await import('./send-safeguard.js');
+    await ensureProductionSendSafeguard();
+    const gated = await gateOutboundSend({
+      channel: 'email',
+      recipient: email,
+      messageText: `${subject}\n${bodyHtml}`,
+      campaignKey: options.campaignId ?? null,
+      storyKey: options.storyKey ?? null,
+      jobId: safeguardJobId,
+      createdBy: 'email-delivery',
+      payload: { emailSendId: sendId, leadId: options.leadId ?? null },
+    });
+    safeguardJobId = gated.jobId;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return fail('blocked', message);
+  }
+
   try {
     const res = await fetch(RESEND_API_URL, {
       method: 'POST',
@@ -180,9 +203,17 @@ export async function deliverQueuedEmailSend(
     await db.update(emailSends)
       .set({ status: 'sent', providerId: data.id, sentAt: new Date(), errorMessage: null })
       .where(eq(emailSends.id, sendId));
+    if (safeguardJobId) {
+      const { recordSendResult } = await import('./send-safeguard.js');
+      await recordSendResult(safeguardJobId, email, 'email', { ok: true }).catch(() => undefined);
+    }
     return { success: true, status: 'sent', providerId: data.id, complianceWarning };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (safeguardJobId) {
+      const { recordSendResult } = await import('./send-safeguard.js');
+      await recordSendResult(safeguardJobId, email, 'email', { ok: false, error: message }).catch(() => undefined);
+    }
     return fail('failed', message);
   }
 }

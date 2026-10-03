@@ -365,12 +365,12 @@ class ToolRegistry {
     // future tool with the same mismatch. A hard gate must not depend on a
     // second, independently-maintained flag agreeing with it -- so this now
     // checks HARD_GATED_TOOLS directly, first, unconditionally.
-    const { HARD_GATED_TOOLS, operatorAutoApproveAllEnabled } = await import('./approval-policy.js');
+    const { HARD_GATED_TOOLS, operatorMayAutoApproveTool } = await import('./approval-policy.js');
     let salesAuto: { rehearsal: boolean; reason: string; mode: string } | null = null;
-    if (operatorAutoApproveAllEnabled()) {
-      // Standing operator authorization: all approval-gated tools proceed
-      // without yielding. Set APEX_OPERATOR_AUTO_APPROVE_ALL=false to restore
-      // the ordinary hard-gate, then the outbound policy below.
+    if (operatorMayAutoApproveTool(name)) {
+      // Standing operator authorization for non-outbound tools. Unset
+      // APEX_OPERATOR_AUTO_APPROVE_ALL fails closed. Outbound sales sends
+      // (email/call) can never take this path.
     } else if (HARD_GATED_TOOLS.has(name)) {
       // APEX_SALES_OUTBOUND_GATE=closed is for the approval guard only. Do not
       // set it in production: it forces every sales send back through a human.
@@ -3915,6 +3915,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             requireCompliance: !rehearsal && policy?.mode === 'capped_live',
             postalAddress: policy?.postalAddress,
             unsubscribeEmail: policy?.unsubscribeEmail,
+            campaignId,
           });
           if (result.success) sent++;
           else if (result.status === 'suppressed') suppressed++;

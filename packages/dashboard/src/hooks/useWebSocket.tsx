@@ -32,7 +32,8 @@ export type ApexEvent =
       timestamp: string;
     }
   | { type: 'lead:state'; leadId: string; campaignId: string | null; pipelineState: string; timestamp: string }
-  | { type: 'lead:pipeline:metrics'; campaignId: string | null; advanced: number; byState: Record<string, number>; timestamp: string };
+  | { type: 'lead:pipeline:metrics'; campaignId: string | null; advanced: number; byState: Record<string, number>; timestamp: string }
+  | { type: 'send-safeguard:status'; jobId: string | null; status: string; message: string; count?: number; timestamp: string };
 
 // ─── WebSocket Context ───────────────────────────────────────────────────────
 

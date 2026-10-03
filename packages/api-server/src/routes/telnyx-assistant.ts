@@ -862,6 +862,14 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
               destination: toPhone,
               purpose: 'front_desk_confirmation',
             });
+            const { ensureProductionSendSafeguard, gateOutboundSend } = await import('@workspace/core');
+            await ensureProductionSendSafeguard();
+            await gateOutboundSend({
+              channel: 'sms',
+              recipient: toPhone,
+              messageText: text,
+              createdBy: 'telnyx-assistant',
+            });
             const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
               method: 'POST',
               headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
