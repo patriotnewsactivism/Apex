@@ -20,19 +20,32 @@
 export const AUTONOMY_MODES = new Set(['full_autonomous', 'autonomous']);
 
 /**
- * Standing operator authorization. Don explicitly authorized APEX to approve
- * all approval-gated actions until further notice. Keep the old hard-gate
- * policy intact underneath this switch so setting the env var to false
- * immediately restores the previous fail-closed behavior without a code
- * rollback.
- *
- * Enabled by default until the operator revokes it. Explicit false-like values
- * are the kill switch.
+ * Optional standing operator authorization. The hard-gate policy stays
+ * underneath this switch. Unset fails closed. An explicit true-like value is
+ * required to turn the override on, and outbound sales sends are excluded
+ * even then.
  */
 export function operatorAutoApproveAllEnabled(): boolean {
   const raw = process.env.APEX_OPERATOR_AUTO_APPROVE_ALL?.trim().toLowerCase();
-  if (!raw) return true;
-  return !new Set(['0', 'false', 'off', 'no', 'disabled']).has(raw);
+  if (!raw) return false;
+  return new Set(['1', 'true', 'on', 'yes', 'enabled']).has(raw);
+}
+
+/** Real messages and calls to people outside APEX. Never auto-approved. */
+export const OUTBOUND_SALES_SEND_TOOLS = new Set<string>([
+  'send_email',
+  'send_email_campaign_batch',
+  'make_outbound_call',
+  'call_initiate',
+]);
+
+export function isOutboundSalesSendTool(toolName: string): boolean {
+  return OUTBOUND_SALES_SEND_TOOLS.has(toolName);
+}
+
+/** Outbound sales sends stay on the human gate and the send safeguard. */
+export function outboundSalesSendCanAutoApprove(): boolean {
+  return false;
 }
 
 /**

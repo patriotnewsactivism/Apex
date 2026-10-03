@@ -535,11 +535,25 @@ export function createCartesiaSalesRouter(): Router {
         body: html,
         createdByAgentId: AGENT_ID,
       });
-      const result = await deliverQueuedEmailSend(sendId, normalizedEmail, subject, html, {
-        text,
-        leadId: lead?.id ?? null,
-        purpose: 'requested_followup_email',
-      });
+      let result: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+      try {
+        result = await deliverQueuedEmailSend(sendId, normalizedEmail, subject, html, {
+          text,
+          leadId: lead?.id ?? null,
+          purpose: 'requested_followup_email',
+        });
+      } catch (error) {
+        const { SendSafeguardError } = await import('@workspace/core');
+        if (error instanceof SendSafeguardError) {
+          return res.status(202).json({
+            sent: false,
+            awaitingSafeguard: true,
+            sendJobId: error.jobId,
+            error: 'Nothing was sent. Clear this send in Pending sends.',
+          });
+        }
+        throw error;
+      }
       if (!result.success) {
         return res.status(result.status === 'suppressed' ? 409 : 503).json({
           sent: false,
@@ -705,6 +719,32 @@ export function createCartesiaSalesRouter(): Router {
         eq(providerEvents.provider, 'cartesia'), eq(providerEvents.externalEventId, eventId))).limit(1);
       if (prior) return res.json({ sent: true, already_sent: true, url });
       const text = `As requested, here is ${p.demo_type === 'buildmybot_live_demo' ? 'BuildMyBot' : 'APEX Work Solutions'}: ${url} Reply STOP to opt out.`;
+      try {
+        const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
+        const opened = await openOutboundSendJob({
+          caller: 'voice',
+          createdBy: AGENT_ID,
+          storyKey: p.call_id,
+          recipients: [{
+            channel: 'sms',
+            destination: p.phone_number,
+            messageText: text,
+            payload: { kind: 'telnyx_sms', from, text },
+          }],
+        });
+        await assertSendAllowed(opened.jobId, p.phone_number, 'sms');
+      } catch (error) {
+        const { SendSafeguardError } = await import('@workspace/core');
+        if (error instanceof SendSafeguardError) {
+          return res.status(202).json({
+            sent: false,
+            awaitingSafeguard: true,
+            sendJobId: error.jobId,
+            error: 'Nothing was sent. Clear this send in Pending sends.',
+          });
+        }
+        throw error;
+      }
       const response = await fetch('https://api.telnyx.com/v2/messages', { method: 'POST',
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ from, to: p.phone_number, text }), signal: AbortSignal.timeout(6000) });

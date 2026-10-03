@@ -311,6 +311,19 @@ async function executeSendCheckoutLink(
           text: `Your BuildMyBot ${spec.name} checkout link: ${checkoutUrl}`,
         };
 
+        const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
+        const opened = await openOutboundSendJob({
+          caller: 'voice',
+          createdBy: 'voice-guardrails',
+          recipients: [{
+            channel: 'sms',
+            destination: smsTo,
+            messageText: smsBody.text,
+            payload: { kind: 'telnyx_sms', from: fromNumber, text: smsBody.text },
+          }],
+        });
+        await assertSendAllowed(opened.jobId, smsTo, 'sms');
+
         const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
           method: 'POST',
           headers: {
@@ -423,6 +436,20 @@ async function executeTransferToOwner(
   const messagingFrom = process.env.TELNYX_MESSAGING_NUMBER;
   if (ownerNumber && messagingKey && messagingFrom) {
     try {
+      // Owner notification SMS to TELNYX_OWNER_NUMBER still passes the send safeguard.
+      const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
+      const ownerText = `BuildMyBot: a caller needs you (live transfer unavailable). Reason: ${reason}. Call ${callControlId}.`;
+      const opened = await openOutboundSendJob({
+        caller: 'voice',
+        createdBy: 'voice-guardrails',
+        recipients: [{
+          channel: 'sms',
+          destination: ownerNumber,
+          messageText: ownerText,
+          payload: { kind: 'telnyx_sms', from: messagingFrom, text: ownerText },
+        }],
+      });
+      await assertSendAllowed(opened.jobId, ownerNumber, 'sms');
       const smsRes = await fetch('https://api.telnyx.com/v2/messages', {
         method: 'POST',
         headers: {

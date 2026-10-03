@@ -62,6 +62,7 @@ const BOTTOM = [
 ];
 const DRAWER = [
   { id: 'chat', label: 'Talk to APEX' },
+  { id: 'pending-sends', label: 'Pending sends' },
   { id: 'sales-ops', label: 'Revenue Operations' },
   { id: 'territories', label: 'Territories' },
   { id: 'webinars', label: 'Webinar Director' },
@@ -90,7 +91,7 @@ const DRAWER = [
 // A clean run that skipped a view is the same lie as a clean run that could not
 // see overflow, so an unknown id is FATAL rather than a warning.
 const NAV_ID_TO_LABEL = {
-  command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals',
+  command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals', 'pending-sends': 'Pending sends',
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
   'sales-ops': 'Revenue Operations', leads: 'Prospects', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', 'verify-scale': 'Verify & Scale', artifacts: 'Artifacts',

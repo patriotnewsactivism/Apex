@@ -15,6 +15,7 @@ import {
   buildSalesSuggestions,
   createQueuedEmailSend,
   deliverQueuedEmailSend,
+  SendSafeguardError,
   emptyOutboundPolicy,
   getSalesPlaybook,
   listSalesPlaybooks,
@@ -381,7 +382,22 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     subject: `[Practice] ${subject.text}`,
     createdByAgentId: 'operator',
   });
-  const email = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, `[Practice] ${subject.text}`, html.text, { text: text.text });
+  let email: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+  try {
+    email = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, `[Practice] ${subject.text}`, html.text, { text: text.text });
+  } catch (error) {
+    if (error instanceof SendSafeguardError) {
+      return {
+        status: 202,
+        body: {
+          awaitingSafeguard: true,
+          sendJobId: error.jobId,
+          email: { success: false, error: 'Nothing was sent. Clear this send in Pending sends.' },
+        },
+      };
+    }
+    throw error;
+  }
   await recordOutboundAudit({
     toolName: 'send_email',
     destination: policy.rehearsalEmail,
@@ -411,7 +427,14 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     createdByAgentId: 'operator',
   }).then(
     (started) => ({ success: true as const, ...started }),
-    (err: unknown) => ({ success: false as const, error: err instanceof Error ? err.message : String(err) }),
+    (err: unknown) => ({
+      success: false as const,
+      awaitingSafeguard: err instanceof SendSafeguardError,
+      sendJobId: err instanceof SendSafeguardError ? err.jobId : undefined,
+      error: err instanceof SendSafeguardError
+        ? 'Nothing was sent. Clear this send in Pending sends.'
+        : err instanceof Error ? err.message : String(err),
+    }),
   );
 
   await recordOutboundAudit({
