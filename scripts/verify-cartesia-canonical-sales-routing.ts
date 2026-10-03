@@ -221,12 +221,22 @@ check(
   'Cartesia STT keyterms bias first greetings plus common short sales-call replies and vocabulary',
   /keyterms:\s*\[[\s\S]{0,700}'I do'[\s\S]{0,700}'hello'[\s\S]{0,700}'hi'[\s\S]{0,700}'hey'[\s\S]{0,700}'voicemail'[\s\S]{0,700}'after hours'[\s\S]{0,700}'missed calls'/.test(reconciler),
 );
+// The reason-for-call line (playbook call.firstMessage) is spoken as
+// {{campaign_first_message}} AFTER the rapport/empathy step, so it must not
+// re-greet or re-name the callee, must ask the missed-call question, and must
+// fit the live agent's "one or two spoken sentences per turn" rule (Oct 1
+// voice hotfix). The exact approved copy is pinned: 95545b6 (Oct 1) shortened
+// it from "The reason I called is pretty simple. … What do you normally do when
+// a call comes in and nobody can answer?" so the question lands sooner.
+const buildMyBotCallLine = /firstMessage:\s*'([^']*)'/.exec(playbooks.slice(playbooks.indexOf('call: {')))?.[1] ?? '';
 check(
   'BuildMyBot sales pitch follows a first-name rapport and empathy step',
   Number(/version:\s*(\d+)/.exec(playbooks)?.[1]) >= 6 &&
-    /firstMessage:\s*'The reason I called is pretty simple\./.test(playbooks) &&
-    /acknowledge them by first name once, ask how their day is going, and give their answer a brief empathetic response/.test(playbooks) &&
-    /What do you normally do when a call comes in and nobody can answer\?/.test(playbooks) &&
+    buildMyBotCallLine === 'We help businesses like {{companyName}} catch missed calls before they turn into lost jobs. When a call comes in and nobody can answer, what happens to it?' &&
+    /When a call comes in and nobody can answer, what happens to it\?$/.test(buildMyBotCallLine) &&
+    (buildMyBotCallLine.match(/[.?!](?=\s|$)/g) ?? []).length <= 2 &&
+    !/\{\{buyerName\}\}|\b(?:hi|hello|hey)\b|how(?:’|')?s your day/i.test(buildMyBotCallLine) &&
+    /acknowledge them by first name once, ask how their day is going, and give their answer a brief empathetic response before moving into the reason for the call/.test(playbooks) &&
     /Speak English only/.test(playbooks) &&
     /Use complete sentences at a relaxed pace/.test(playbooks),
 );
