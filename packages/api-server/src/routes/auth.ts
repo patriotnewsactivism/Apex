@@ -9,6 +9,7 @@ import {
   type LoginAdmission,
 } from '../login-guard.js';
 import { validateAdminToken } from '../middleware/auth.js';
+import { issueOperatorDashboardSession } from '../operator-session.js';
 import { issueWebSocketTicket } from '../websocket-auth.js';
 
 /**
@@ -30,7 +31,7 @@ export function createAuthRouter(options?: { guard?: LoginAttemptGuard }) {
   const router = Router();
   const guard = options?.guard ?? new LoginAttemptGuard(loadLoginGuardConfig());
 
-  router.post('/login', (req, res): void => {
+  router.post('/login', async (req, res): Promise<void> => {
     const ip = clientAddress(req);
     const at = new Date().toISOString();
     try {
@@ -71,7 +72,15 @@ export function createAuthRouter(options?: { guard?: LoginAttemptGuard }) {
       }
 
       guard.recordSuccess(ip);
-      res.json({ token: configuredToken });
+      const declared = req.header('x-apex-caller') ?? '';
+      const { currentSendCaller } = await import('@workspace/core');
+      const runtime = currentSendCaller();
+      const blockedRuntime = runtime !== null && runtime !== 'operator-dashboard';
+      let operatorSession: string | undefined;
+      if (!blockedRuntime && declared === 'operator-dashboard') {
+        operatorSession = await issueOperatorDashboardSession(ip);
+      }
+      res.json({ token: configuredToken, ...(operatorSession ? { operatorSession } : {}) });
     } catch (err) {
       console.error('[auth] Login error:', err);
       res.status(500).json({ error: 'Authentication processing error' });

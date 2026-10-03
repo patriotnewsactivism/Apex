@@ -92,8 +92,9 @@ export class JobExecutor {
       }
 
       executionId = crypto.randomUUID();
-      abortController = new AbortController();
-      this.abortControllers.set(executionId, abortController);
+      const controller = new AbortController();
+      abortController = controller;
+      this.abortControllers.set(executionId, controller);
       const startedAt = new Date();
 
       await db.insert(jobExecutionLog).values({
@@ -108,16 +109,19 @@ export class JobExecutor {
           const timer = setTimeout(() => {
             // Abort first so cooperative handlers stop before the timeout is
             // recorded and the occurrence becomes eligible for retry.
+            // `abortController` is this execution's controller (assigned from
+            // `controller` above, never reassigned before `finally`).
             if (abortController && !abortController.signal.aborted) {
               abortController.abort();
             }
             reject(new JobTimeoutError(`Job timed out after ${this.defaultTimeoutMs}ms`));
           }, this.defaultTimeoutMs);
-          abortController?.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+          controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
         });
 
+        const { runWithSendCaller } = await import('@workspace/core');
         const result = await Promise.race([
-          handler.execute(job, abortController.signal),
+          runWithSendCaller('background-job', () => handler.execute(job, controller.signal)),
           timeoutPromise,
         ]);
 

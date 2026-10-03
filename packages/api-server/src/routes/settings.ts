@@ -4,6 +4,7 @@ import { and, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { getKnownApiKeyEnvs } from '@workspace/core';
 import { CronParser } from '@workspace/background-jobs';
 import { createModelSettingsRouter } from './model-settings.js';
+import { createOpenRouterBalanceRouter } from './openrouter-balance.js';
 
 type IntegrationCategory = 'ai' | 'search' | 'voice' | 'dev' | 'data' | 'business';
 type ProbeDefinition = { kind: 'openai-models'; baseUrl: string; extraHeaders?: Record<string, string> };
@@ -301,6 +302,9 @@ export function createSettingsRouter(): Router {
 
   // Live OpenRouter model catalog + durable operator routing policy.
   router.use('/models', createModelSettingsRouter());
+
+  // OpenRouter low-balance monitor: status, manual check, operator key-limit restore.
+  router.use('/openrouter-balance', createOpenRouterBalanceRouter());
 
   router.get('/integrations', async (_req, res) => {
     try {

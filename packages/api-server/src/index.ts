@@ -16,7 +16,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { getWebSocketTicketStats } from './websocket-auth.js';
@@ -36,6 +36,7 @@ import { createMemoryRouter } from './routes/memory.js';
 import { createToolsRouter } from './routes/tools.js';
 import { resolveTrustProxyHops } from './login-guard.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createSendSafeguardRouter } from './routes/send-safeguard.js';
 import { createHealthRouter } from './routes/health.js';
 import { sendPublicHealth } from './public-health.js';
 import { createDiagnosticsRouter } from './routes/diagnostics.js';
@@ -348,6 +349,9 @@ async function main() {
       // Provider account balance. The paid continuity route makes remaining
       // credit operational again, so keep it visible beside the routing state.
       providerCredits: getProviderCreditSnapshot(),
+      // Low-balance guard: thresholds, per-account level, paid-pause state,
+      // saved key limits (hash suffix only), and recent monitor events.
+      openRouterBalanceMonitor: getOpenRouterBalanceMonitorStatus(),
       // Paid LLM spend telemetry. For the unrestricted GLM 5.3 FlashX route,
       // this ledger is observational only (`enforced: false`); APEX spend,
       // request, emergency, and token governors do not remove FlashX from the
@@ -551,6 +555,7 @@ async function main() {
   app.use('/api/campaigns', createCampaignsRouter());
   app.use('/api/territories', createTerritoriesRouter());
   app.use('/api/email-campaigns', createEmailCampaignsRouter());
+  app.use('/api/send-safeguard', createSendSafeguardRouter());
   app.use('/api/artifacts', createArtifactsRouter());
   app.use('/api/autonomy', createAutonomyRouter());
   app.use('/api/governance', createGovernanceRouter());

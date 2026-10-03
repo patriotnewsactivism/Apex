@@ -1,10 +1,10 @@
 import { randomUUID } from 'crypto';
 import { db, approvals, tasks as tasksTable } from '@workspace/db';
-import { and, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, notInArray } from 'drizzle-orm';
 import { BaseAgent as CoreBaseAgent, emitApexEvent } from './base-agent.js';
 import { getToolRegistry } from './tool-registry.js';
 import { getWorkspaceRoot } from './workspace-root.js';
-import { operatorAutoApproveAllEnabled } from './approval-policy.js';
+import { operatorAutoApproveAllEnabled, OUTBOUND_SALES_SEND_TOOLS } from './approval-policy.js';
 import {
   ApprovalYieldSignal,
   approvalPayloadsEqual,
@@ -96,6 +96,7 @@ async function sweepOperatorAutoApprovals(): Promise<number> {
     .where(and(
       eq(approvals.kind, 'approval'),
       eq(approvals.status, 'pending'),
+      notInArray(approvals.toolName, [...OUTBOUND_SALES_SEND_TOOLS]),
     ))
     .returning({ id: approvals.id });
   return approved.length;
