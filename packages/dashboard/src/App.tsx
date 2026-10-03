@@ -36,6 +36,7 @@ import { PendingSendsPanel } from './components/PendingSendsPanel.js';
 import {
   Target,
   Rocket,
+  Send,
   Network,
   Kanban,
   Terminal,
@@ -910,6 +911,9 @@ export default function App() {
       .then((res) => {
         if (cancelled) return;
         if (res.ok) {
+          void res.json().then((body: { operatorSession?: string }) => {
+            if (body.operatorSession) sessionStorage.setItem('apex_operator_session', body.operatorSession);
+          }).catch(() => undefined);
           setAuthed(true);
         } else if (res.status === 401) {
           localStorage.removeItem('apex_token');

@@ -702,6 +702,84 @@ export const salesSuggestionDismissals = pgTable('sales_suggestion_dismissals', 
   dismissedAt: timestamp('dismissed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+// ─── Send safeguard (operator dual-confirm + 4-digit code) ──────────────────
+//
+// Every outbound contact (email, call, SMS, calendar invite) must pass through
+// a send job before the provider is called. Additive-only tables: jobs,
+// per-recipient rows, append-only events, and one operator-code row (hash +
+// salt only — never the plaintext code).
+
+export const sendSafeguardJobs = pgTable('send_safeguard_jobs', {
+  id: text('id').primaryKey(),
+  // draft | waiting_confirm | waiting_confirm_2 | waiting_code | cleared | sending | stopped | voided | completed | cancelled
+  status: text('status').notNull().default('waiting_confirm'),
+  channelSummary: text('channel_summary').notNull().default('mixed'),
+  campaignKey: text('campaign_key'),
+  storyKey: text('story_key'),
+  messageText: text('message_text').notNull(),
+  messageFingerprint: text('message_fingerprint').notNull(),
+  recipientCount: integer('recipient_count').notNull().default(0),
+  fullAuto: boolean('full_auto').notNull().default(false),
+  confirm1At: timestamp('confirm1_at', { withTimezone: true, mode: 'date' }),
+  confirm2At: timestamp('confirm2_at', { withTimezone: true, mode: 'date' }),
+  codeVerifiedAt: timestamp('code_verified_at', { withTimezone: true, mode: 'date' }),
+  createdBy: text('created_by').notNull().default('system'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  stoppedAt: timestamp('stopped_at', { withTimezone: true, mode: 'date' }),
+  voidedAt: timestamp('voided_at', { withTimezone: true, mode: 'date' }),
+  voidReason: text('void_reason'),
+}, (table) => ({
+  campaignIdx: index('send_safeguard_jobs_campaign_idx').on(table.campaignKey, table.createdAt),
+  storyIdx: index('send_safeguard_jobs_story_idx').on(table.storyKey, table.createdAt),
+  statusIdx: index('send_safeguard_jobs_status_idx').on(table.status, table.createdAt),
+}));
+
+export const sendSafeguardRecipients = pgTable('send_safeguard_recipients', {
+  id: text('id').primaryKey(),
+  jobId: text('job_id').notNull(),
+  // email | call | sms | calendar
+  channel: text('channel').notNull(),
+  destination: text('destination').notNull(),
+  messageText: text('message_text').notNull(),
+  messageFingerprint: text('message_fingerprint').notNull(),
+  // pending | released | sending | sent | failed | cancelled | blocked
+  status: text('status').notNull().default('pending'),
+  releasedAt: timestamp('released_at', { withTimezone: true, mode: 'date' }),
+  sentAt: timestamp('sent_at', { withTimezone: true, mode: 'date' }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true, mode: 'date' }),
+  errorMessage: text('error_message'),
+  payload: jsonb('payload').$type<Record<string, unknown>>(),
+}, (table) => ({
+  jobIdx: index('send_safeguard_recipients_job_idx').on(table.jobId, table.status),
+  destIdx: index('send_safeguard_recipients_dest_idx').on(table.destination, table.channel),
+}));
+
+export const sendSafeguardEvents = pgTable('send_safeguard_events', {
+  id: text('id').primaryKey(),
+  jobId: text('job_id'),
+  recipientId: text('recipient_id'),
+  // job_created | confirm_1 | confirm_2 | code_ok | code_failed | locked | unlocked
+  // | stop | voided | send_attempt | send_ok | send_blocked | full_auto | released
+  eventType: text('event_type').notNull(),
+  detail: text('detail'),
+  actor: text('actor'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+}, (table) => ({
+  jobIdx: index('send_safeguard_events_job_idx').on(table.jobId, table.createdAt),
+  typeIdx: index('send_safeguard_events_type_idx').on(table.eventType, table.createdAt),
+}));
+
+export const sendSafeguardOperator = pgTable('send_safeguard_operator', {
+  id: text('id').primaryKey(), // singleton 'default'
+  codeHash: text('code_hash'),
+  codeSalt: text('code_salt'),
+  failedAttempts: integer('failed_attempts').notNull().default(0),
+  locked: boolean('locked').notNull().default(false),
+  lockedAt: timestamp('locked_at', { withTimezone: true, mode: 'date' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 // ─── Health Metrics (time-series) ─────────────────────────────────────────────
 
 export const healthMetrics = pgTable('health_metrics', {

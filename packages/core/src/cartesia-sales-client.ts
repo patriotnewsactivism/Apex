@@ -334,6 +334,19 @@ export async function startCartesiaSalesCall(
   if (input.playbookId) dynamicVariables.apex_playbook_id = input.playbookId;
   if (input.createdByAgentId) dynamicVariables.apex_created_by_agent_id = input.createdByAgentId;
 
+  const { ensureProductionSendSafeguard, gateOutboundSend } = await import('./send-safeguard.js');
+  await ensureProductionSendSafeguard();
+  await gateOutboundSend({
+    channel: 'call',
+    recipient: toNumber,
+    messageText: firstMessage,
+    campaignKey: input.campaignId ?? null,
+    storyKey: input.playbookId ?? null,
+    jobId: input.safeguardJobId ?? null,
+    createdBy: input.createdByAgentId ?? 'cartesia-sales',
+    payload: { leadId: input.leadId ?? null, firstMessage },
+  });
+
   const response = await fetch(`${CARTESIA_API}/agents/calls`, {
     method: 'POST',
     headers: {

@@ -637,6 +637,15 @@ export function createCartesiaSalesRouter(): Router {
       const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, outcomeId(p.call_id))).limit(1);
       if (existing?.disposition === 'appointment_booked')
         return res.json({ booked: true, already_booked: true, start: existing.appointmentAt?.toISOString() });
+      const { ensureProductionSendSafeguard, gateOutboundSend } = await import('@workspace/core');
+      await ensureProductionSendSafeguard();
+      await gateOutboundSend({
+        channel: 'calendar',
+        recipient: p.prospect_email,
+        messageText: `calendar invite ${p.slot_time} ${p.timezone}`,
+        campaignKey: p.call_id,
+        createdBy: 'cartesia-book-consultation',
+      });
       const booking = await calRequest('bookings', config.key, { eventTypeId: config.eventTypeId,
         start: at.toISOString(), attendee: { name: p.prospect_name, email: p.prospect_email,
           phoneNumber: p.phone_number, timeZone: p.timezone },

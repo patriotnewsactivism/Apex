@@ -11,6 +11,7 @@ import {
 import { validateAdminToken } from '../middleware/auth.js';
 import { issueOperatorDashboardSession } from '../operator-session.js';
 import { issueWebSocketTicket } from '../websocket-auth.js';
+import { issueOperatorSession } from '../operator-session.js';
 
 /**
  * POST /api/auth/login — exchange APEX_ADMIN_PASSWORD for APEX_ADMIN_TOKEN.
@@ -101,7 +102,7 @@ export function createAuthRouter(options?: { guard?: LoginAttemptGuard }) {
    */
   router.get('/verify', (req, res): void => {
     if (validateAdminToken(req.headers.authorization)) {
-      res.json({ valid: true });
+      res.json({ valid: true, operatorSession: issueOperatorSession() });
       return;
     }
     res.status(401).json({ error: 'Invalid token' });

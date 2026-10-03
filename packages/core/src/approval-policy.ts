@@ -16,6 +16,8 @@
 // scripts/verify-approval-policy.ts asserts no hard-gated tool can ever be
 // auto-approved.
 
+import { SALES_OUTBOUND_TOOLS } from './outbound-policy.js';
+
 /** Autonomy modes that may consider the autoapproveTools allowlist. */
 export const AUTONOMY_MODES = new Set(['full_autonomous', 'autonomous']);
 
@@ -46,6 +48,20 @@ export function isOutboundSalesSendTool(toolName: string): boolean {
 /** Outbound sales sends stay on the human gate and the send safeguard. */
 export function outboundSalesSendCanAutoApprove(): boolean {
   return false;
+}
+
+/** Tools that contact an outside person. Never auto-approvable. */
+export function isOutboundSalesSendTool(toolName: string): boolean {
+  return SALES_OUTBOUND_TOOLS.has(toolName);
+}
+
+/**
+ * Combined operator auto-approve check. Unset env fails closed, and outbound
+ * sales sends stay gated even when the env var is explicitly true.
+ */
+export function operatorMayAutoApproveTool(toolName: string): boolean {
+  if (isOutboundSalesSendTool(toolName)) return false;
+  return operatorAutoApproveAllEnabled();
 }
 
 /**

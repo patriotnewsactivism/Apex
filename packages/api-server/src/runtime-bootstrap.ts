@@ -19,6 +19,7 @@
 
 import {
   getToolRegistry,
+  ensureProductionSendSafeguard,
   superviseAgentLoop,
   initializeTokenLedgerPersistence,
   initializeRequestLedgerPersistence,
@@ -78,6 +79,13 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // EVERY runtime, not only the one that happens to serve the dashboard.
   await loadSettingsIntoEnv();
   logProviderRoster();
+
+  try {
+    await ensureProductionSendSafeguard();
+    log('✅ Send safeguard configured');
+  } catch (error) {
+    warn(`⚠️  Send safeguard failed closed at boot: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   const durableTokenLedger = await initializeTokenLedgerPersistence();
   log(

@@ -62,6 +62,7 @@ import { createGovernanceRouter } from './routes/governance.js';
 import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { createPhoneLinesRouter } from './routes/phone-lines.js';
 import { createSalesFloorRouter } from './routes/sales-floor.js';
+import { createSendSafeguardRouter } from './routes/send-safeguard.js';
 import { createPublicWebinarRouter, createWebinarAdminRouter } from './routes/webinars.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
@@ -553,6 +554,7 @@ async function main() {
   app.use('/api/sales-ops', createSalesFloorRouter());
   app.use('/api/sales-ops', createPhoneLinesRouter());
   app.use('/api/call-bridge', createCallBridgeRouter());
+  app.use('/api/send-safeguard', createSendSafeguardRouter());
   app.use('/api/webinar/admin', createWebinarAdminRouter(ceo));
 
   // Token spend observability (token-ledger.ts). Before this, "are we about to
