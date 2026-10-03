@@ -35,6 +35,8 @@ export {
 
 export { CampaignRunner, createCampaign, computeCampaignProgress, countUsableCampaignLeads, STALL_AFTER_MS } from './campaign-runner.js';
 export type { CampaignProgress, CreateCampaignInput } from './campaign-runner.js';
+export { getLeadSearchPauseSnapshot } from './lead-search-capacity.js';
+export type { LeadSearchPauseSnapshot } from './lead-search-capacity.js';
 export { US_STATES, STATE_CITIES, citiesForStates, allStateCodes } from './us-geo.js';
 export {
   LEAD_PIPELINE_STATES,

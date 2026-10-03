@@ -262,11 +262,27 @@ function webSearchProviderReady(provider: string): boolean {
   return (webSearchProviderCooldowns.get(provider) ?? 0) <= Date.now();
 }
 
+/** How long to stop calling a web search provider after an HTTP failure.
+ *  Tavily answers 432 when the plan's usage limit is reached and 433 when the
+ *  pay-as-you-go limit is reached. Neither clears in seconds, so they wait as
+ *  long as a missing credit. */
+export function webSearchCooldownMs(status: number): number {
+  if (status === 401 || status === 402 || status === 403 || status === 432 || status === 433) return 30 * 60 * 1000;
+  if (status === 429) return 60 * 1000;
+  if (status >= 500) return 30 * 1000;
+  return 0;
+}
+
+/** BuildMyBot's Tavily proxy answers 502 and names Tavily's own status in the
+ *  body ("Tavily search failed with HTTP 432"). Breaker timing follows Tavily's
+ *  status, because a 432 behind a 502 is a used-up plan, not a blip. */
+export function proxiedUpstreamStatus(status: number, body: string): number {
+  const upstream = /\bHTTP (\d{3})\b/.exec(body);
+  return upstream ? Number(upstream[1]) : status;
+}
+
 function tripWebSearchProvider(provider: string, status: number, detail: string): void {
-  let cooldownMs = 0;
-  if (status === 402 || status === 401 || status === 403) cooldownMs = 30 * 60 * 1000;
-  else if (status === 429) cooldownMs = 60 * 1000;
-  else if (status >= 500) cooldownMs = 30 * 1000;
+  const cooldownMs = webSearchCooldownMs(status);
   if (cooldownMs <= 0) return;
 
   const until = Date.now() + cooldownMs;
@@ -1055,7 +1071,13 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         if (freeOnly && tavilyProxyUrl && tavilyProxySecret) {
           diagnostics.push('buildmybot-tavily: skipped by freeOnly mode');
         }
-        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret) {
+        // The proxy shares Tavily's quota, so it gets the same breaker. Without
+        // it, a used-up plan was hit once per query variant, every search.
+        const tavilyProxyReady = webSearchProviderReady('buildmybot-tavily');
+        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret && !tavilyProxyReady) {
+          diagnostics.push('buildmybot-tavily: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret && tavilyProxyReady) {
           try {
             const proxyRes = await fetch(tavilyProxyUrl, {
               method: 'POST',
@@ -1070,6 +1092,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
               const body = await proxyRes.text().catch(() => '');
               const detail = `buildmybot-tavily: HTTP ${proxyRes.status} ${body.slice(0, 200)}`.trim();
               diagnostics.push(detail);
+              tripWebSearchProvider('buildmybot-tavily', proxiedUpstreamStatus(proxyRes.status, body), body);
               console.warn(`[webSearch] ${detail} for "${query}"`);
             } else {
               const proxyData = await proxyRes.json() as {
@@ -1212,7 +1235,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           // it into a reword-and-retry loop that spends LLM capacity and never
           // recovers, which is exactly what happened in production.
           const providerFailure = diagnostics.some(
-            (d) => /HTTP \d|not set|timed out|aborted|fetch failed/i.test(d),
+            (d) => /HTTP \d|not set|timed out|aborted|fetch failed|circuit breaker/i.test(d),
           );
           return {
             query,
@@ -1753,6 +1776,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         const googleKey = process.env.GOOGLE_PLACES_API_KEY;
         const directoryTimeoutMs = process.env.LIVE_DEMO_MODE === 'true' || process.env.LIVE_DEMO_MODE === '1' ? 4_000 : 10_000;
 
+        // Why Yelp or Google produced nothing. A 429 or a billing error used to
+        // be reported as "returned nothing", which reads as an honest empty
+        // result and hides that the provider is out of capacity.
+        let yelpNote: string | null = null;
+        let googleNote: string | null = null;
+
         // ── Provider 1: Yelp Fusion API (free, no credit card, 50 results/call) ──
         if (yelpKey) {
           try {
@@ -1804,9 +1833,13 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
               if (businesses.length > 0) {
                 return { query, total: businesses.length, businesses, provider: 'yelp' };
               }
+            } else {
+              const body = await yelpRes.text().catch(() => '');
+              yelpNote = `yelp: HTTP ${yelpRes.status} ${body.slice(0, 160)}`.trim();
             }
-          } catch {
+          } catch (e) {
             // Fall through to next provider
+            yelpNote = `yelp: ${e instanceof Error ? e.message : String(e)}`;
           }
         }
 
@@ -1853,7 +1886,11 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 },
               );
 
-              if (!res.ok) break;
+              if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                googleNote = `google: HTTP ${res.status} ${body.slice(0, 160)}`.trim();
+                break;
+              }
 
               const data = await res.json() as {
                 places?: Array<{
@@ -1896,8 +1933,9 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 provider: 'google',
               };
             }
-          } catch {
+          } catch (e) {
             // Fall through to OSM fallback
+            googleNote = `google: ${e instanceof Error ? e.message : String(e)}`;
           }
         }
         // Why each remaining provider produced nothing, surfaced to the agent
@@ -2072,8 +2110,8 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           // these it reruns query variants against a source that structurally
           // cannot answer them.
           attempts: [
-            yelpKey ? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
-            googleKey ? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
+            yelpKey ? yelpNote ?? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
+            googleKey ? googleNote ?? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
             ...(tomtomKey ? [] : ['tomtom: TOMTOM_API_KEY not set']),
             ...providerNotes,
           ],

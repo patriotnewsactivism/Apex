@@ -12,6 +12,7 @@ import { Play, Pause, X, Plus, AlertTriangle, Target, ChevronDown, ChevronRight 
 
 const STATUS_COLOR: Record<string, string> = {
   running: '#5a9eae',
+  waiting_for_search: '#c9a84a',
   stalled: '#c45c66',
   paused: '#c9a84a',
   completed: '#6a9f78',
@@ -30,6 +31,7 @@ const SEGMENT_COLOR: Record<string, string> = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
+  waiting_for_search: 'waiting for search',
   completed_short: 'came up short',
   in_progress: 'researching',
   exhausted: 'nothing new',
@@ -162,6 +164,7 @@ function CampaignCard({ campaign }: { campaign: CampaignProgress }) {
   const color = STATUS_COLOR[campaign.displayStatus] ?? '#7d8a91';
   const isLive = campaign.status === 'running' || campaign.status === 'paused';
   const stalled = campaign.displayStatus === 'stalled';
+  const searchPause = campaign.displayStatus === 'waiting_for_search' ? campaign.searchPause ?? null : null;
 
   return (
     <motion.div
@@ -221,6 +224,32 @@ function CampaignCard({ campaign }: { campaign: CampaignProgress }) {
         >
           <AlertTriangle size={13} />
           No progress in over 15 minutes — the runner may be wedged, or every LLM provider may be down.
+        </div>
+      )}
+
+      {searchPause && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 8,
+            padding: '7px 10px',
+            marginBottom: 12,
+            background: 'rgba(201,168,74,0.10)',
+            border: '1px solid rgba(201,168,74,0.30)',
+            borderRadius: 6,
+            fontSize: 11,
+            color: '#c9a84a',
+            overflowWrap: 'anywhere',
+          }}
+        >
+          <Pause size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span>
+            Lead search is waiting: every search source is unavailable ({searchPause.summary}). No searches are being
+            closed. {searchPause.paused
+              ? `APEX tries one search at ${new Date(searchPause.resumeAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+              : 'APEX is trying one search now.'}
+          </span>
         </div>
       )}
 

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, campaignSegments, leadCampaigns, researchedLeads } from '@workspace/db';
-import { computeCampaignProgress, countUsableCampaignLeads, createCampaign } from '@workspace/background-jobs';
+import { computeCampaignProgress, countUsableCampaignLeads, createCampaign, getLeadSearchPauseSnapshot } from '@workspace/background-jobs';
 import { broadcast } from '../websocket.js';
 
 // Progress is always computed from campaign + segment rows at read time, never
@@ -82,6 +82,7 @@ export function createCampaignsRouter() {
           byCampaign.get(campaign.id) ?? [],
           Date.now(),
           usableByCampaign.get(campaign.id) ?? 0,
+          getLeadSearchPauseSnapshot(),
         ),
       ),
     });
@@ -103,7 +104,7 @@ export function createCampaignsRouter() {
     const usableLeadCount = await countUsableCampaignLeads(campaign.id);
     res.json({
       campaign: {
-        ...computeCampaignProgress(campaign, segments, Date.now(), usableLeadCount),
+        ...computeCampaignProgress(campaign, segments, Date.now(), usableLeadCount, getLeadSearchPauseSnapshot()),
         icp: campaign.icp,
         result: campaign.result,
       },

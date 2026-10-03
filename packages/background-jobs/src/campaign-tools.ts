@@ -3,6 +3,7 @@ import { desc, eq } from 'drizzle-orm';
 import { db, campaignSegments, leadCampaigns } from '@workspace/db';
 import type { ToolDefinition } from '@workspace/core';
 import { computeCampaignProgress, createCampaign } from './campaign-runner.js';
+import { getLeadSearchPauseSnapshot } from './lead-search-capacity.js';
 
 // ─── Campaign tools ───────────────────────────────────────────────────────────
 //
@@ -97,7 +98,7 @@ export function createCampaignTools(): ToolDefinition[] {
             .select()
             .from(campaignSegments)
             .where(eq(campaignSegments.campaignId, campaign.id));
-          const p = computeCampaignProgress(campaign, segments);
+          const p = computeCampaignProgress(campaign, segments, Date.now(), undefined, getLeadSearchPauseSnapshot());
           out.push({
             campaignId: p.campaignId,
             name: p.name,
@@ -114,9 +115,11 @@ export function createCampaignTools(): ToolDefinition[] {
             // Say it plainly. A stalled campaign reads as 'running' in the
             // table, and that is exactly the failure mode worth surfacing.
             warning:
-              p.displayStatus === 'stalled'
-                ? 'STALLED — no progress in over 15 minutes. The runner may be wedged or every provider may be down.'
-                : undefined,
+              p.displayStatus === 'waiting_for_search'
+                ? `WAITING FOR SEARCH — every search source is unavailable (${p.searchPause?.summary ?? 'no source answered'}). Searches are paused, not failing, and none are being closed. Next test search at ${p.searchPause?.resumeAt ?? 'the next runner tick'}.`
+                : p.displayStatus === 'stalled'
+                  ? 'STALLED — no progress in over 15 minutes. The runner may be wedged or every provider may be down.'
+                  : undefined,
           });
         }
         return campaignId ? out[0] : { campaigns: out };
