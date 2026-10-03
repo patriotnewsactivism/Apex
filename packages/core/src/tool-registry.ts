@@ -28,6 +28,7 @@ import { createCrmTools } from './crm/tools.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
+import { createCalendarTools } from './calendar/tools.js';
 
 const execAsync = promisify(exec);
 // Runtime-only dependencies owned by the API process. The tool registry lives
@@ -4373,6 +4374,11 @@ export function getToolRegistry(_workspaceRoot?: string): ToolRegistry {
     // queue steps, advance enrollments, get enrollment status.
     // Always registered — operates on campaigns/sequences/enrollments/interactions.
     for (const tool of createCampaignTools()) {
+      _registry.register(tool);
+    }
+    // Calendar reads and booking requests. Invites stay on sendUpdates=none
+    // until the operator releases them in Pending sends; these tools cannot skip that.
+    for (const tool of createCalendarTools()) {
       _registry.register(tool);
     }
     for (const tool of createCrmTools()) {

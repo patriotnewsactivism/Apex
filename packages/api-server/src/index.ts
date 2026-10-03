@@ -47,6 +47,7 @@ import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
 import { createCartesiaSalesRouter } from './routes/cartesia-sales.js';
+import { createCalendarPublicRouter, createCalendarRouter } from './routes/calendar.js';
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
@@ -509,6 +510,11 @@ async function main() {
   // Cartesia custom sales tools and call events verify independent secrets.
   app.use('/api/cartesia', createCartesiaSalesRouter());
 
+  // Cal.com signed webhooks and the Google OAuth browser redirect. Neither
+  // can present the admin bearer token. Operator calendar routes mount after
+  // requireAdminAuth on the same prefix.
+  app.use('/api/calendar', createCalendarPublicRouter());
+
   // Call Bridge webhook — Telnyx Call Control events for operator-bridged
   // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
   // mounted at the same /api/telnyx-assistant prefix (a different router,
@@ -539,6 +545,7 @@ async function main() {
   app.use('/api/tools', createToolsRouter());
   app.use('/api/health', createHealthRouter(healthMonitor, alertManager, () => buildRuntimeHealthDetail()));
   app.use('/api/jobs', createJobsRouter());
+  app.use('/api/calendar', createCalendarRouter());
   app.use('/api/learning', createLearningRouter(workforce));
   app.use('/api/suggestions', createSuggestionsRouter());
   app.use('/api/cicd', createCicdRouter());

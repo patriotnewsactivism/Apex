@@ -1,6 +1,7 @@
-// Calendar invites have no live provider in APEX. The scheduler panels are a
-// read-only agenda. This function is the only invite delivery path, and it
-// still has to clear the send safeguard before it can fail closed.
+// Google Calendar invites from the booking service are delivered by the
+// google_calendar_invite transport (calendar/invite-gate.ts). Any other
+// calendar recipient has no live provider: it still has to clear the send
+// safeguard here before it fails closed.
 
 import { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } from './send-safeguard.js';
 

@@ -673,6 +673,44 @@ export const meetingAttendees = pgTable('meeting_attendees', {
     .on(table.meetingId, table.contactId),
 }));
 
+// Active holds exclude each other with a btree_gist range constraint.
+// See lib/db/drizzle/20261003_calendar_booking.sql. Drizzle's table builder
+// does not emit EXCLUDE USING gist, so the SQL migration is authoritative.
+export const calendarSlotHolds = pgTable('calendar_slot_holds', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
+  endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
+  status: text('status').notNull().default('held'), // held | consumed | released | expired
+  holderAgentId: text('holder_agent_id'),
+  holderName: text('holder_name'),
+  contactId: uuid('contact_id'),
+  meetingId: uuid('meeting_id'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orgStatusIdx: index('calendar_slot_holds_org_status_idx').on(table.organizationId, table.status, table.startsAt),
+}));
+
+export const calendarBookingSettings = pgTable('calendar_booking_settings', {
+  organizationId: text('organization_id').primaryKey(),
+  timezone: text('timezone').notNull().default('America/Chicago'),
+  workingHours: jsonb('working_hours').$type<Array<{ day: number; start: string; end: string }>>().notNull(),
+  bufferBeforeMinutes: integer('buffer_before_minutes').notNull().default(10),
+  bufferAfterMinutes: integer('buffer_after_minutes').notNull().default(10),
+  noBookBlocks: jsonb('no_book_blocks').$type<Array<{ id: string; start: string; end: string; label?: string }>>().notNull().default([]),
+  maxMeetingsPerDay: integer('max_meetings_per_day').notNull().default(8),
+  minimumNoticeMinutes: integer('minimum_notice_minutes').notNull().default(60),
+  holdMinutes: integer('hold_minutes').notNull().default(10),
+  slotMinutes: integer('slot_minutes').notNull().default(30),
+  busyCalendarIds: jsonb('busy_calendar_ids').$type<string[]>().notNull().default([]),
+  bookingCalendarId: text('booking_calendar_id'),
+  agentColors: jsonb('agent_colors').$type<Record<string, { hex: string; googleColorId: string }>>().notNull().default({}),
+  operatorDisplayName: text('operator_display_name').notNull().default('Matthew'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const availabilityRules = pgTable('availability_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
   organizationId: text('organization_id').notNull(), // projects.id
@@ -1026,6 +1064,10 @@ export type Meeting = typeof meetings.$inferSelect;
 export type NewMeeting = typeof meetings.$inferInsert;
 export type MeetingAttendee = typeof meetingAttendees.$inferSelect;
 export type NewMeetingAttendee = typeof meetingAttendees.$inferInsert;
+export type CalendarSlotHold = typeof calendarSlotHolds.$inferSelect;
+export type NewCalendarSlotHold = typeof calendarSlotHolds.$inferInsert;
+export type CalendarBookingSetting = typeof calendarBookingSettings.$inferSelect;
+export type NewCalendarBookingSetting = typeof calendarBookingSettings.$inferInsert;
 export type AvailabilityRule = typeof availabilityRules.$inferSelect;
 export type NewAvailabilityRule = typeof availabilityRules.$inferInsert;
 export type PipelineStage = typeof pipelineStages.$inferSelect;

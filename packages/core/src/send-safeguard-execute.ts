@@ -6,6 +6,7 @@ import { commitCallOutcome } from './crm/store.js';
 import { deliverQueuedEmailSend } from './email-delivery.js';
 import { startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { deliverCalendarInvite } from './calendar-invite.js';
+import { GOOGLE_INVITE_KIND } from './calendar/invite-gate.js';
 import {
   getSendSafeguard,
   recordOutboundSendResult,
@@ -99,7 +100,7 @@ async function deliverRecipient(jobId: string, recipient: SendRecipientRecord): 
       }
       return true;
     }
-    if (recipient.channel === 'calendar') {
+    if (recipient.channel === 'calendar' && payload.kind !== GOOGLE_INVITE_KIND) {
       await deliverCalendarInvite({
         toEmail: recipient.destination,
         summary: String(payload.summary ?? 'Invite'),
@@ -108,7 +109,7 @@ async function deliverRecipient(jobId: string, recipient: SendRecipientRecord): 
       });
       return false;
     }
-    if (payload.kind === 'telnyx_sms' || payload.kind === 'telnyx_call') {
+    if (payload.kind === 'telnyx_sms' || payload.kind === 'telnyx_call' || payload.kind === GOOGLE_INVITE_KIND) {
       const delivered = await runTransportHook(payload.kind, jobId, recipient);
       return delivered;
     }

@@ -282,7 +282,7 @@ function Sidebar({
       items: [
         { id: 'control', label: 'Control Room', icon: <SlidersHorizontal size={16} /> },
         { id: 'artifacts', label: 'Artifacts', icon: <Package size={16} /> },
-        { id: 'scheduled', label: 'Cron Registry', icon: <CalendarClock size={16} /> },
+        { id: 'scheduled', label: 'Calendar / Scheduler', icon: <CalendarClock size={16} /> },
         { id: 'spend', label: 'Spend / Burn', icon: <CircleDollarSign size={16} /> },
         { id: 'health', label: 'Health', icon: <Activity size={16} /> },
         { id: 'learning', label: 'Intelligence', icon: <Brain size={16} /> },
@@ -730,7 +730,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     webinars: { title: 'Webinar Director', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
-    scheduled: { title: 'Cron Registry', kicker: 'Systems' },
+    scheduled: { title: 'Calendar / Scheduler', kicker: 'Systems' },
     spend: { title: 'Spend / Burn Rate', kicker: 'Systems' },
     suggestions: { title: 'Suggestions', kicker: 'Systems & tools' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },

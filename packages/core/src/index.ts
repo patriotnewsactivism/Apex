@@ -63,3 +63,23 @@ export { getTurnEconomySnapshot } from './turn-economy.js';
 
 export * from './specialists/index.js';
 export * from './crm/index.js';
+export {
+  getCalendarBookingService,
+  calendarBookingConfigured,
+  calendarOrganizationId,
+  saveGoogleCalendarConnection,
+  createCalendarTools,
+  GOOGLE_INVITE_KIND,
+  deliverReleasedCalendarInvite,
+  verifyCalWebhookSignature,
+  authorizeCalWebhook,
+  parseCalWebhook,
+  calWebhookSecret,
+  buildGoogleAuthUrl,
+  signOauthState,
+  verifyOauthState,
+  zonedTimeToUtc,
+  CalendarNotConnectedError,
+  DoNotContactError,
+  SlotUnavailableError,
+} from './calendar/index.js';

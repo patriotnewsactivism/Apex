@@ -740,6 +740,18 @@ export const api = {
       apiFetch(`/health/alerts/${alertId}/acknowledge`, { method: 'POST' }),
   },
 
+  calendar: {
+    agenda: (start: string, end: string) =>
+      apiFetch<{ items: CalendarAgendaItem[]; timezone: string }>(`/calendar/agenda?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+    settings: () => apiFetch<{ settings: CalendarSettingsPayload; status: CalendarConnectionStatus }>('/calendar/settings'),
+    saveSettings: (settings: CalendarSettingsPayload) =>
+      apiFetch<{ settings: CalendarSettingsPayload }>('/calendar/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+    googleStart: () => apiFetch<{ url: string }>('/calendar/google/start'),
+    googleCalendars: () => apiFetch<{ calendars: Array<{ id: string; summary: string; primary: boolean }> }>('/calendar/google/calendars'),
+    timeline: (contactId: string) =>
+      apiFetch<{ contactId: string; timezone: string; rows: CalendarTimelineRow[] }>(`/calendar/contacts/${contactId}/timeline`),
+  },
+
   jobs: {
     list: () => apiFetch<ScheduledJobRow[]>('/jobs'),
     create: (data: { name: string; jobType: string; cronExpression?: string; scheduledAt?: string; targetAgentId?: string; payload?: Record<string, unknown>; priority?: number }) =>
@@ -1574,6 +1586,72 @@ export interface AlertSummary {
 }
 
 // ─── Job Types ────────────────────────────────────────────────────────────────
+
+export interface CalendarAgendaItem {
+  id: string;
+  kind: 'event' | 'hold' | 'google';
+  title: string;
+  start: string;
+  end: string;
+  startLabel: string;
+  endLabel: string;
+  status: string;
+  agentId: string | null;
+  agentName: string | null;
+  color: string | null;
+  googleColorId: string | null;
+  contactId: string | null;
+  contactName: string | null;
+  meetingUrl: string | null;
+  inviteStage: string | null;
+}
+
+export interface CalendarTimelineRow {
+  id: string;
+  kind: string;
+  actorName: string;
+  actorKind: string;
+  occurredAt: string;
+  timezone: string;
+  summary: string;
+  meetingId: string | null;
+}
+
+export interface CalendarWorkingWindow {
+  day: number;
+  start: string;
+  end: string;
+}
+
+export interface CalendarSettingsPayload {
+  timezone: string;
+  workingHours: CalendarWorkingWindow[];
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  noBookBlocks: Array<{ id: string; start: string; end: string; label?: string }>;
+  maxMeetingsPerDay: number;
+  minimumNoticeMinutes: number;
+  holdMinutes: number;
+  slotMinutes: number;
+  busyCalendarIds: string[];
+  bookingCalendarId: string | null;
+  agentColors: Record<string, { hex: string; googleColorId: string }>;
+  operatorDisplayName: string;
+}
+
+export interface CalendarConnectionStatus {
+  googleConnected: boolean;
+  googleAccountEmail: string | null;
+  calConfigured: boolean;
+  calWebhookSecretSet: boolean;
+  oauthConfigured: boolean;
+  redirectUriConfigured: boolean;
+  busyCalendarIds: string[];
+  busyCalendarSource: 'configured' | 'primary-fallback';
+  timezone: string;
+  bookingCalendarId: string;
+  appointmentSchedules: 'manual-fallback';
+}
 
 export interface ScheduledJobRow {
   id: string;

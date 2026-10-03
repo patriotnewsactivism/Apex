@@ -3,7 +3,22 @@ import crypto from 'crypto';
 import { and, desc, eq, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, callOutcomes, providerEvents, researchedLeads, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
-import { SendBlockedError, assertContactSendable, commitSmsMessage, createQueuedEmailSend, deliverQueuedEmailSend, evaluateOutboundAction, markLineFree } from '@workspace/core';
+import {
+  assertContactSendable,
+  calendarBookingConfigured,
+  calendarOrganizationId,
+  CalendarNotConnectedError,
+  commitSmsMessage,
+  createQueuedEmailSend,
+  deliverQueuedEmailSend,
+  DoNotContactError,
+  evaluateOutboundAction,
+  getCalendarBookingService,
+  markLineFree,
+  SendBlockedError,
+  SlotUnavailableError,
+  zonedTimeToUtc,
+} from '@workspace/core';
 import { cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
 
 // Cartesia HTTP tools and lifecycle events are different credentials. Both
@@ -384,25 +399,6 @@ async function saveOutcome(input: {
   } });
 }
 
-function calConfig() {
-  const key = process.env.APEX_CAL_API_KEY;
-  const eventTypeId = Number(process.env.APEX_CAL_EVENT_TYPE_ID);
-  return key && Number.isSafeInteger(eventTypeId) && eventTypeId > 0 ? { key, eventTypeId } : null;
-}
-
-async function calRequest(path: string, key: string, body?: object) {
-  const response = await fetch(`https://api.cal.com/v2/${path}`, {
-    method: body ? 'POST' : 'GET',
-    headers: { Authorization: `Bearer ${key}`, 'cal-api-version': '2026-02-25',
-      'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(6000),
-  });
-  const data = await response.json().catch(() => ({})) as Record<string, any>;
-  if (!response.ok || data.status !== 'success') throw new Error(`Calendar returned ${response.status}`);
-  return data.data;
-}
-
 export function createCartesiaSalesRouter(): Router {
   const router = Router();
   router.use((req, res, next) => {
@@ -603,22 +599,28 @@ export function createCartesiaSalesRouter(): Router {
     const parsed = z.object({ start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       timezone: short(80), preferred_time_of_day: z.enum(['morning', 'afternoon', 'any']).default('any') }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Start/end dates and timezone required' });
-    const config = calConfig();
-    if (!config) return res.status(503).json({ error: 'Live calendar is not connected; offer a callback instead' });
+    if (!calendarBookingConfigured()) return res.status(503).json({ error: 'Live calendar is not connected; offer a callback instead' });
     try {
       new Intl.DateTimeFormat('en-US', { timeZone: parsed.data.timezone });
       const { start_date, end_date, timezone, preferred_time_of_day } = parsed.data;
       if (start_date > end_date || (Date.parse(end_date) - Date.parse(start_date)) > 14 * 86400_000)
         return res.status(400).json({ error: 'Use a date range of at most 14 days' });
-      const params = new URLSearchParams({ eventTypeId: String(config.eventTypeId), start: start_date,
-        end: end_date, timeZone: timezone });
-      const data = await calRequest(`slots?${params}`, config.key) as Record<string, Array<{ start: string }>>;
-      const slots = Object.values(data).flat().map((slot) => slot.start).filter((s) => {
-        const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: 'numeric', hourCycle: 'h23' }).format(new Date(s)));
+      const [startYear, startMonth, startDay] = start_date.split('-').map(Number);
+      const [endYear, endMonth, endDay] = end_date.split('-').map(Number);
+      const start = zonedTimeToUtc(startYear!, startMonth!, startDay!, 0, 0, timezone);
+      const end = zonedTimeToUtc(endYear!, endMonth!, endDay! + 1, 0, 0, timezone);
+      const found = await getCalendarBookingService().findSlots(calendarOrganizationId(), start, end);
+      const slots = found.map((slot) => slot.start.toISOString()).filter((value) => {
+        const hour = Number(new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: 'numeric', hourCycle: 'h23' }).format(new Date(value)));
         return preferred_time_of_day === 'any' || (preferred_time_of_day === 'morning' ? hour < 12 : hour >= 12);
       }).slice(0, 3);
-      return res.json({ slots, timezone });
-    } catch { return res.status(503).json({ error: 'Calendar unavailable; do not promise a time' }); }
+      return res.json({ slots, timezone, invite_sent: false });
+    } catch (err) {
+      if (err instanceof CalendarNotConnectedError) {
+        return res.status(503).json({ error: 'Live calendar is not connected; offer a callback instead' });
+      }
+      return res.status(503).json({ error: 'Calendar unavailable; do not promise a time' });
+    }
   });
 
   router.post('/tools/book-consultation', async (req, res) => {
@@ -626,8 +628,7 @@ export function createCartesiaSalesRouter(): Router {
       prospect_name: short(160), prospect_email: z.string().email(), slot_time: z.string().datetime({ offset: true }),
       timezone: short(80), scope_summary: optional(500) }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Confirmed slot, name, email, phone, timezone and call_id required' });
-    const config = calConfig();
-    if (!config) return res.status(503).json({ error: 'Live calendar is not connected; offer a callback instead' });
+    if (!calendarBookingConfigured()) return res.status(503).json({ error: 'Live calendar is not connected; offer a callback instead' });
     try {
       const p = parsed.data;
       new Intl.DateTimeFormat('en-US', { timeZone: p.timezone });
@@ -636,24 +637,40 @@ export function createCartesiaSalesRouter(): Router {
       if (at.getTime() <= Date.now()) return res.status(400).json({ error: 'Slot is in the past' });
       const [existing] = await db.select().from(callOutcomes).where(eq(callOutcomes.callId, outcomeId(p.call_id))).limit(1);
       if (existing?.disposition === 'appointment_booked')
-        return res.json({ booked: true, already_booked: true, start: existing.appointmentAt?.toISOString() });
-      const booking = await calRequest('bookings', config.key, { eventTypeId: config.eventTypeId,
-        start: at.toISOString(), attendee: { name: p.prospect_name, email: p.prospect_email,
-          phoneNumber: p.phone_number, timeZone: p.timezone },
-        metadata: { source: 'apex_cartesia', call_id: p.call_id },
-      }) as { uid?: string; status?: string; start?: string };
-      if (!booking.uid) throw new Error('Calendar did not confirm a booking');
-      const booked = booking.status === 'accepted';
+        return res.json({ booked: true, already_booked: true, invite_sent: false, start: existing.appointmentAt?.toISOString() });
+      const service = getCalendarBookingService();
+      const settings = await service.getSettings(calendarOrganizationId());
+      const result = await service.book({
+        organizationId: calendarOrganizationId(),
+        start: at,
+        end: new Date(at.getTime() + settings.slotMinutes * 60_000),
+        title: `Consultation with ${p.prospect_name}`,
+        attendeeEmail: p.prospect_email,
+        attendeeName: p.prospect_name,
+        notes: p.scope_summary ?? null,
+        actor: { kind: 'agent', id: AGENT_ID, name: 'Cartesia Sales' },
+      });
       let recorded = true;
       try {
         await saveOutcome({ callId: p.call_id, phone: p.phone_number, name: p.prospect_name,
-          leadId: (await findLead(p.phone_number))?.id, disposition: booked ? 'appointment_booked' : 'callback_requested',
-          appointmentAt: booked ? at : undefined, email: p.prospect_email,
-          notes: `Cal.com ${booking.uid}; ${p.scope_summary ?? ''}` });
+          leadId: (await findLead(p.phone_number))?.id, disposition: 'appointment_booked',
+          appointmentAt: at, email: p.prospect_email,
+          notes: `APEX meeting ${result.meeting.id}; invite waits for the send safeguard; ${p.scope_summary ?? ''}` });
       } catch { recorded = false; }
-      return res.json({ booked, recorded, booking_uid: booking.uid, booking_status: booking.status,
-        start: booking.start ?? at.toISOString(), message: booked ? 'Confirmed by calendar' : 'Awaiting host confirmation; do not claim it is booked' });
-    } catch { return res.status(503).json({ error: 'Booking failed; do not claim it is booked' }); }
+      return res.json({
+        booked: true,
+        invite_sent: false,
+        recorded,
+        meeting_id: result.meeting.id,
+        start: result.meeting.start.toISOString(),
+        message: 'Time is held. The invite is not sent until the send safeguard clears.',
+      });
+    } catch (err) {
+      if (err instanceof DoNotContactError) return res.status(409).json({ error: 'Contact opted out' });
+      if (err instanceof SlotUnavailableError) return res.status(409).json({ error: 'That time is not available; do not claim it is booked' });
+      if (err instanceof CalendarNotConnectedError) return res.status(503).json({ error: 'Live calendar is not connected; offer a callback instead' });
+      return res.status(503).json({ error: 'Booking failed; do not claim it is booked' });
+    }
   });
 
   router.post('/tools/record-outcome', async (req, res) => {

@@ -57,7 +57,13 @@ QA Director -- independent quality/oversight role
 
 The production workforce is 13 agents. Generic specialist classes may exist in source but are not part of the instantiated production organization unless the workforce definition changes explicitly.
 
-An optional Cartesia sales-agent webhook surface lives at `/api/cartesia` (implementation and configuration in `docs/CARTESIA_SALES_TOOLS.md`). It is separate from APEX's Telnyx outbound transport; exposing its routes does not mean the Cartesia agent, tools, calendar, or phone transfer has been configured or tested in production. The Cartesia tool bearer secret and call-event webhook secret are independent and required. APEX outbound caller ID remains `+18329757665`; owner escalation destination is `+18328804970` when configured.
+An optional Cartesia sales-agent webhook surface lives at `/api/cartesia` (implementation and configuration in `docs/CARTESIA_SALES_TOOLS.md`). It is separate from APEX's Telnyx outbound transport; exposing its routes does not mean the Cartesia agent, tools, calendar, or phone transfer has been configured or tested in production. The Cartesia tool bearer secret and call-event webhook secret are independent and required. APEX outbound caller ID remains `+18329757665`; owner escalation destination is `+18328804970` when configured. Cartesia availability and consultation booking go through the calendar booking service. They do not call the Cal.com bookings API.
+
+### Calendar booking
+
+Google Calendar is the master. `packages/core/src/calendar/` is the only booking path: free/busy across the busy calendars chosen in settings, then working hours, buffers, no-book blocks, the daily cap, and minimum notice (`America/Chicago` unless settings say otherwise), then a short slot hold, then the Google event. Holds use `calendar_slot_holds_no_overlap` (`btree_gist`) so two workers cannot keep the same time. Which Google account is connected, and which calendars count as busy, are settings and env (`APEX_GOOGLE_OAUTH_*`, `APEX_CALENDAR_BUSY_IDS`). Do not hardcode an account.
+
+Events are created with `sendUpdates=none`. Invites, reschedule notices, and cancellation notices to outside people are staged in the send safeguard (`calendar/invite-gate.ts`): a `calendar` recipient in Pending Sends under story key `calendar:<organization>`, so the operator code applies at 5 or more invites in 24 hours. Nothing reaches the attendee until the operator confirms twice and releases it; the `google_calendar_invite` transport then re-runs `assertSendAllowed` and tells Google to notify (`sendUpdates=all`, or delete with `all` for a cancellation). A released invite for a meeting that has since been cancelled is not sent. The outbound kill switch blocks both staging and delivery, and do-not-contact blocks the booking. Public booking links stay on Cal.com (`APEX_CAL_API_KEY`, `APEX_CAL_EVENT_TYPE_ID`, `APEX_CAL_WEBHOOK_SECRET` on `POST /api/calendar/cal/webhook`). Google appointment schedules are a manual fallback and have no API. Agent tools are `calendar_get_agenda`, `calendar_find_slots`, and `calendar_request_booking`. Timeline rows are appended to `interactions` (`TODO(feat/crm)` until that writer exists). Tokens are encrypted with `APEX_ENCRYPTION_KEY`.
 
 ### Virtual specialist departments
 
@@ -349,6 +355,7 @@ Production CI currently includes:
 - cron-governor guard (Phase 5: frequency floor, dynamic-ceiling constants, schedule_task enum);
 - approval-policy guard (Phase 5.5: hard-gated tools never auto-approvable; unset auto-approve fails closed);
 - send-safeguard guard (every channel blocked without clearance, dual confirm, 5+ code + 24h aggregation, bot code rejected, lockout, Stop, kill switch, suppression);
+- calendar booking guard (free/busy and every booking rule, one winner when bookings race, hold expiry, invites staged in the send safeguard with operator-only confirm, code, and release, kill switch at staging and at send, no invite for a meeting cancelled since, do-not-contact, Cal.com signatures);
 - BuildMyBot lead-ingest guard (authenticated HTTP handoff: not-configured, dry-run default, live-push approval gate, chunking, 401/503);
 - executor-dispatch guard (Phase 4: claim-by-id, runtime routing, dispatch wiring);
 - checkpoint/resume guard (ADR-014: checkpoint construction, ownership-guarded resume, executor-job dispatch-marker reset);

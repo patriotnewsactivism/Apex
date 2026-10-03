@@ -76,7 +76,7 @@ const DRAWER = [
   { id: 'control', label: 'Control Room' },
   { id: 'verify-scale', label: 'Verify & Scale' },
   { id: 'artifacts', label: 'Artifacts' },
-  { id: 'scheduled', label: 'Cron Registry' },
+  { id: 'scheduled', label: 'Calendar / Scheduler' },
   { id: 'health', label: 'Health' },
   { id: 'learning', label: 'Intelligence' },
   { id: 'pipeline', label: 'CI/CD' },
@@ -96,7 +96,7 @@ const NAV_ID_TO_LABEL = {
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
   'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', 'verify-scale': 'Verify & Scale', artifacts: 'Artifacts',
-  scheduled: 'Cron Registry', health: 'Health', learning: 'Intelligence',
+  scheduled: 'Calendar / Scheduler', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
 };
 
