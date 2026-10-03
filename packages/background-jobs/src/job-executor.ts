@@ -109,8 +109,10 @@ export class JobExecutor {
           const timer = setTimeout(() => {
             // Abort first so cooperative handlers stop before the timeout is
             // recorded and the occurrence becomes eligible for retry.
-            if (!controller.signal.aborted) {
-              controller.abort();
+            // `abortController` is this execution's controller (assigned from
+            // `controller` above, never reassigned before `finally`).
+            if (abortController && !abortController.signal.aborted) {
+              abortController.abort();
             }
             reject(new JobTimeoutError(`Job timed out after ${this.defaultTimeoutMs}ms`));
           }, this.defaultTimeoutMs);
