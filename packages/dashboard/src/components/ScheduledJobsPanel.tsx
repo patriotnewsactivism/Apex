@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CalendarClock, ListTree } from 'lucide-react';
-import { CalendarSchedulerAgenda } from './CalendarSchedulerAgenda.js';
+import { CalendarSchedulerPanel } from './CalendarSchedulerPanel.js';
 import { CronRegistryPanel } from './CronRegistryPanel.js';
 
 type SchedulerView = 'agenda' | 'registry';
@@ -16,7 +16,7 @@ export function ScheduledJobsPanel() {
             Calendar / Scheduler
           </div>
           <div className="apex-eyebrow" style={{ marginTop: 4 }}>
-            Future calls, appointments and autonomous scheduled work
+            Google events and APEX holds, plus the job registry
           </div>
         </div>
 
@@ -32,7 +32,7 @@ export function ScheduledJobsPanel() {
               cursor: 'pointer', fontFamily: 'var(--font-mono)', fontSize: 9,
             }}
           >
-            <CalendarClock size={13} /> Agenda
+            <CalendarClock size={13} /> Calendar
           </button>
           <button
             type="button"
@@ -50,7 +50,7 @@ export function ScheduledJobsPanel() {
         </div>
       </div>
 
-      {view === 'agenda' ? <CalendarSchedulerAgenda /> : <CronRegistryPanel />}
+      {view === 'agenda' ? <CalendarSchedulerPanel /> : <CronRegistryPanel />}
     </div>
   );
 }

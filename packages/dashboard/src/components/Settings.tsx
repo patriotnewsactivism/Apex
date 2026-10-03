@@ -24,6 +24,7 @@ import {
   type IntegrationProbeResult,
 } from '../lib/settingsApi.js';
 import { ModelRouterPanel } from './ModelRouterPanel.js';
+import { CalendarSettingsPanel } from './CalendarSettingsPanel.js';
 
 const CATEGORY_LABELS: Record<string, { label: string; color: string }> = {
   ai: { label: 'AI Models', color: '#8b7ec8' },
@@ -588,6 +589,8 @@ export function Settings() {
       </div>
 
       <ProjectAutonomyPanel />
+
+      <CalendarSettingsPanel />
 
       {/* Live model selection and role routing */}
       <ModelRouterPanel />

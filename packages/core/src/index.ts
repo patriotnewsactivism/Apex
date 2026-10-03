@@ -58,3 +58,22 @@ export * from './revenue-ops/compliance.js';
 export { getTurnEconomySnapshot } from './turn-economy.js';
 
 export * from './specialists/index.js';
+export {
+  getCalendarBookingService,
+  calendarBookingConfigured,
+  calendarOrganizationId,
+  saveGoogleCalendarConnection,
+  createCalendarTools,
+  assertCalendarSendAllowed,
+  verifyCalWebhookSignature,
+  authorizeCalWebhook,
+  parseCalWebhook,
+  calWebhookSecret,
+  buildGoogleAuthUrl,
+  signOauthState,
+  verifyOauthState,
+  zonedTimeToUtc,
+  CalendarNotConnectedError,
+  DoNotContactError,
+  SlotUnavailableError,
+} from './calendar/index.js';

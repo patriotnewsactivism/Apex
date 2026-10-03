@@ -26,6 +26,7 @@ import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } fro
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
+import { createCalendarTools } from './calendar/tools.js';
 
 const execAsync = promisify(exec);
 // Runtime-only dependencies owned by the API process. The tool registry lives
@@ -4241,6 +4242,11 @@ export function getToolRegistry(_workspaceRoot?: string): ToolRegistry {
     // queue steps, advance enrollments, get enrollment status.
     // Always registered — operates on campaigns/sequences/enrollments/interactions.
     for (const tool of createCampaignTools()) {
+      _registry.register(tool);
+    }
+    // Calendar reads and booking requests. Invites stay on sendUpdates=none
+    // until the send safeguard clears; these tools cannot skip that gate.
+    for (const tool of createCalendarTools()) {
       _registry.register(tool);
     }
     // Portfolio connectors register only when their env is configured, so a

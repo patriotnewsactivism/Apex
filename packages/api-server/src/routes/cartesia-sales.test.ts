@@ -99,6 +99,8 @@ describe('Cartesia sales webhook boundary', () => {
   it('does not claim calendar availability without a connected calendar', async () => {
     delete process.env.APEX_CAL_API_KEY;
     delete process.env.APEX_CAL_EVENT_TYPE_ID;
+    delete process.env.APEX_GOOGLE_OAUTH_CLIENT_ID;
+    delete process.env.APEX_GOOGLE_OAUTH_CLIENT_SECRET;
     const response = await fetch(base + '/tools/check-calendar-availability', {
       method: 'POST', headers: { Authorization: 'Bearer test-tool-secret', 'Content-Type': 'application/json' },
       body: JSON.stringify({ start_date: '2026-10-01', end_date: '2026-10-03', timezone: 'America/Chicago' }),
