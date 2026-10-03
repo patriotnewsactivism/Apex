@@ -5,7 +5,6 @@ import type {
   ContactSnapshot,
   HoldRecord,
   MeetingRecord,
-  SendJobRecord,
   TimelineRow,
 } from './types.js';
 
@@ -21,10 +20,6 @@ export interface CalendarRepository {
   findMeetingByExternal(provider: string, externalEventId: string): Promise<MeetingRecord | null>;
   appendTimeline(row: TimelineRow): Promise<void>;
   timelineForContact(organizationId: string, contactId: string): Promise<TimelineRow[]>;
-  insertSendJob(row: SendJobRecord): Promise<void>;
-  updateSendJob(id: string, patch: Partial<SendJobRecord>): Promise<void>;
-  getSendJob(id: string): Promise<SendJobRecord | null>;
-  listSendJobsSince(organizationId: string, since: Date): Promise<SendJobRecord[]>;
   getContact(organizationId: string, contactId: string): Promise<ContactSnapshot | null>;
   findContactByEmail(organizationId: string, email: string): Promise<ContactSnapshot | null>;
   claimEvent(provider: string, externalId: string): Promise<'new' | 'duplicate'>;
@@ -39,7 +34,6 @@ export class MemoryCalendarDb implements CalendarRepository {
   holds: HoldRecord[] = [];
   meetings: MeetingRecord[] = [];
   timeline: TimelineRow[] = [];
-  sendJobs: SendJobRecord[] = [];
   contacts = new Map<string, ContactSnapshot>();
   claimedEvents = new Set<string>();
   private tail: Promise<unknown> = Promise.resolve();
@@ -119,24 +113,6 @@ export class MemoryCalendarDb implements CalendarRepository {
 
   async timelineForContact(organizationId: string, contactId: string): Promise<TimelineRow[]> {
     return this.timeline.filter((row) => row.organizationId === organizationId && row.contactId === contactId);
-  }
-
-  async insertSendJob(row: SendJobRecord): Promise<void> {
-    this.sendJobs.push(row);
-  }
-
-  async updateSendJob(id: string, patch: Partial<SendJobRecord>): Promise<void> {
-    const job = this.sendJobs.find((item) => item.id === id);
-    if (!job) return;
-    Object.assign(job, patch);
-  }
-
-  async getSendJob(id: string): Promise<SendJobRecord | null> {
-    return this.sendJobs.find((item) => item.id === id) ?? null;
-  }
-
-  async listSendJobsSince(organizationId: string, since: Date): Promise<SendJobRecord[]> {
-    return this.sendJobs.filter((job) => job.organizationId === organizationId && job.createdAt.getTime() >= since.getTime());
   }
 
   async getContact(organizationId: string, contactId: string): Promise<ContactSnapshot | null> {

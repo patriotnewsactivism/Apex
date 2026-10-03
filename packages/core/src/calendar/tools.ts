@@ -85,7 +85,7 @@ export function createCalendarTools(): ToolDefinition[] {
 
   const request: ToolDefinition<z.infer<typeof requestSchema>> = {
     name: 'calendar_request_booking',
-    description: 'Request a booking on Matthew\'s Google calendar through the APEX booking service. Creates the event with sendUpdates=none. Does not send an invite; the send safeguard must clear first. Cannot bypass do-not-contact, the kill switch, or the confirmation ladder.',
+    description: 'Request a booking on Matthew\'s Google calendar through the APEX booking service. Creates the event with sendUpdates=none. Does not send an invite: the invite waits in Pending sends until Matthew clears and releases it. Cannot bypass do-not-contact, the kill switch, or the send safeguard.',
     schema: requestSchema,
     requiresApproval: false,
     async execute(input, context) {
@@ -107,9 +107,12 @@ export function createCalendarTools(): ToolDefinition[] {
           start: result.meeting.start.toISOString(),
           end: result.meeting.end.toISOString(),
           invite_sent: false,
-          invite_stage: result.sendJob?.stage ?? 'no_external_attendee',
+          invite_status: result.invite === null
+            ? 'no_external_attendee'
+            : result.invite.sendJobId ? 'waiting_in_pending_sends' : `not_queued:${result.invite.blockedReason ?? 'unknown'}`,
+          send_job_id: result.invite?.sendJobId ?? null,
           google_send_updates: result.googleSendUpdates,
-          message: 'Event created. The invite is not sent until the send safeguard clears.',
+          message: 'Event created. The invite is not sent until Matthew clears and releases it in Pending sends.',
         };
       } catch (err) {
         if (err instanceof DoNotContactError) return { booked: false, error: 'Contact opted out' };

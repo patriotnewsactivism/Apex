@@ -15,6 +15,13 @@ import {
   verifyOauthState,
 } from '@workspace/core';
 
+// A Google invite staged by the booking service goes out only when the
+// operator releases it in Pending sends; this transport delivers it then.
+void import('@workspace/core').then(({ registerSendTransport, deliverReleasedCalendarInvite, GOOGLE_INVITE_KIND }) => {
+  registerSendTransport(GOOGLE_INVITE_KIND, (jobId, recipient) =>
+    deliverReleasedCalendarInvite(getCalendarBookingService(), jobId, recipient));
+});
+
 /**
  * Public calendar surface. Cal.com cannot send the admin bearer token, and
  * Google's OAuth redirect is a browser navigation. Both are mounted before
@@ -201,7 +208,8 @@ export function createCalendarRouter(): Router {
       return res.json({
         meetingId: result.meeting.id,
         inviteSent: false,
-        inviteStage: result.sendJob?.stage ?? null,
+        inviteSendJobId: result.invite?.sendJobId ?? null,
+        inviteBlockedReason: result.invite?.blockedReason ?? null,
         googleSendUpdates: result.googleSendUpdates,
       });
     } catch (err) {
@@ -261,25 +269,6 @@ export function createCalendarRouter(): Router {
         { kind: 'operator', id: null, name: settings.operatorDisplayName || 'Matthew' },
       );
       return res.json({ meetingId: meeting.id, status: meeting.status });
-    } catch (err) {
-      return fail(res, err);
-    }
-  });
-
-  router.post('/invites/:id/advance', async (req, res) => {
-    const parsed = z.object({
-      action: z.enum(['initial_check', 'confirm', 'second_confirm', 'submit_code']),
-      code: z.string().regex(/^\d{4}$/).optional(),
-    }).safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'action is required' });
-    try {
-      const result = await getCalendarBookingService().advanceInvite(
-        calendarOrganizationId(),
-        req.params.id,
-        parsed.data.action,
-        parsed.data.code ?? null,
-      );
-      return res.json(result);
     } catch (err) {
       return fail(res, err);
     }

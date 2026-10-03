@@ -1391,35 +1391,6 @@ export async function migrate() {
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `;
-  await client`
-    CREATE TABLE IF NOT EXISTS calendar_send_jobs (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      organization_id text NOT NULL,
-      meeting_id uuid NOT NULL,
-      kind text NOT NULL,
-      recipient_emails jsonb NOT NULL DEFAULT '[]'::jsonb,
-      contact_id uuid,
-      stage text NOT NULL DEFAULT 'initial_check',
-      confirmations integer NOT NULL DEFAULT 0,
-      challenge_code text,
-      code_required boolean NOT NULL DEFAULT false,
-      external_event_id text,
-      google_calendar_id text,
-      blocked_reason text,
-      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      cleared_at timestamptz
-    )
-  `;
-  await client`
-    CREATE INDEX IF NOT EXISTS calendar_send_jobs_org_created_idx
-    ON calendar_send_jobs (organization_id, created_at)
-  `;
-  await client`
-    CREATE INDEX IF NOT EXISTS calendar_send_jobs_meeting_idx
-    ON calendar_send_jobs (meeting_id)
-  `;
 
 }
 

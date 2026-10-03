@@ -2,7 +2,6 @@ import { and, eq, gt, gte, lt, or, sql } from 'drizzle-orm';
 import {
   calendarBookingSettings,
   calendarConnections,
-  calendarSendJobs,
   calendarSlotHolds,
   contacts,
   db,
@@ -11,11 +10,12 @@ import {
   interactions,
   meetingAttendees,
   meetings,
-  outboundPolicies,
   providerEvents,
   suppressions,
 } from '@workspace/db';
+import { loadOutboundPolicy } from '../outbound-policy-store.js';
 import { CalendarBookingService, type SettingsPort } from './booking-service.js';
+import { sendSafeguardInviteGate } from './invite-gate.js';
 import { isCalendarExclusionError } from './errors.js';
 import { exchangeGoogleCode, HttpGoogleCalendar, readGoogleAccountEmail, type GoogleTokens } from './google.js';
 import type { CalendarRepository } from './memory.js';
@@ -26,7 +26,6 @@ import {
   type ContactSnapshot,
   type HoldRecord,
   type MeetingRecord,
-  type SendJobRecord,
   type TimelineRow,
 } from './types.js';
 
@@ -49,7 +48,8 @@ export function getCalendarBookingService(): CalendarBookingService {
         saveTokens: (tokens) => repo.saveTokens(calendarOrganizationId(), tokens),
       }),
       repo,
-      killSwitch: (organizationId) => killSwitchEnabled(organizationId),
+      invites: sendSafeguardInviteGate,
+      killSwitch: () => killSwitchEnabled(),
     });
   }
   return singleton;
@@ -288,53 +288,6 @@ export class PostgresCalendarRepository implements CalendarRepository {
     });
   }
 
-  async insertSendJob(row: SendJobRecord): Promise<void> {
-    await db.insert(calendarSendJobs).values({
-      id: row.id,
-      organizationId: row.organizationId,
-      meetingId: row.meetingId,
-      kind: row.kind,
-      recipientEmails: row.recipientEmails,
-      contactId: row.contactId,
-      stage: row.stage,
-      confirmations: row.confirmations,
-      challengeCode: row.challengeCode,
-      codeRequired: row.codeRequired,
-      externalEventId: row.externalEventId,
-      googleCalendarId: row.googleCalendarId,
-      blockedReason: row.blockedReason,
-      payload: row.payload,
-      createdAt: row.createdAt,
-      clearedAt: row.clearedAt,
-    });
-  }
-
-  async updateSendJob(id: string, patch: Partial<SendJobRecord>): Promise<void> {
-    await db.update(calendarSendJobs).set({
-      stage: patch.stage,
-      confirmations: patch.confirmations,
-      challengeCode: patch.challengeCode,
-      codeRequired: patch.codeRequired,
-      blockedReason: patch.blockedReason,
-      clearedAt: patch.clearedAt,
-      payload: patch.payload,
-      updatedAt: new Date(),
-    }).where(eq(calendarSendJobs.id, id));
-  }
-
-  async getSendJob(id: string): Promise<SendJobRecord | null> {
-    const [row] = await db.select().from(calendarSendJobs).where(eq(calendarSendJobs.id, id)).limit(1);
-    return row ? mapSendJob(row) : null;
-  }
-
-  async listSendJobsSince(organizationId: string, since: Date): Promise<SendJobRecord[]> {
-    const rows = await db.select().from(calendarSendJobs).where(and(
-      eq(calendarSendJobs.organizationId, organizationId),
-      gte(calendarSendJobs.createdAt, since),
-    ));
-    return rows.map(mapSendJob);
-  }
-
   async getContact(organizationId: string, contactId: string): Promise<ContactSnapshot | null> {
     const [row] = await db.select().from(contacts).where(and(
       eq(contacts.organizationId, organizationId),
@@ -451,11 +404,10 @@ export class PostgresCalendarRepository implements CalendarRepository {
   }
 }
 
-async function killSwitchEnabled(organizationId: string): Promise<boolean> {
-  if (process.env.APEX_CALENDAR_INVITE_KILL_SWITCH === 'true') return true;
-  const [row] = await db.select({ killSwitch: outboundPolicies.killSwitch }).from(outboundPolicies)
-    .where(eq(outboundPolicies.projectId, organizationId)).limit(1);
-  return Boolean(row?.killSwitch);
+// The send safeguard's kill switch is the only one. Delivery re-checks it at
+// release; this read only decides whether a cancellation is silent.
+async function killSwitchEnabled(): Promise<boolean> {
+  return (await loadOutboundPolicy())?.killSwitch === true;
 }
 
 function mapHold(row: typeof calendarSlotHolds.$inferSelect): HoldRecord {
@@ -494,27 +446,6 @@ function mapMeeting(row: typeof meetings.$inferSelect): MeetingRecord {
       name: typeof metadata.attendeeName === 'string' ? metadata.attendeeName : null,
       role: 'attendee',
     }] : [],
-  };
-}
-
-function mapSendJob(row: typeof calendarSendJobs.$inferSelect): SendJobRecord {
-  return {
-    id: row.id,
-    organizationId: row.organizationId,
-    meetingId: row.meetingId,
-    kind: row.kind as SendJobRecord['kind'],
-    recipientEmails: row.recipientEmails ?? [],
-    contactId: row.contactId,
-    stage: row.stage as SendJobRecord['stage'],
-    confirmations: row.confirmations,
-    challengeCode: row.challengeCode,
-    codeRequired: row.codeRequired,
-    externalEventId: row.externalEventId,
-    googleCalendarId: row.googleCalendarId,
-    blockedReason: row.blockedReason,
-    createdAt: row.createdAt,
-    clearedAt: row.clearedAt,
-    payload: row.payload ?? {},
   };
 }
 

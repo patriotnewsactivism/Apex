@@ -570,29 +570,6 @@ export const calendarBookingSettings = pgTable('calendar_booking_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const calendarSendJobs = pgTable('calendar_send_jobs', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  organizationId: text('organization_id').notNull(),
-  meetingId: uuid('meeting_id').notNull(),
-  kind: text('kind').notNull(), // invite | reschedule | cancellation
-  recipientEmails: jsonb('recipient_emails').$type<string[]>().notNull().default([]),
-  contactId: uuid('contact_id'),
-  stage: text('stage').notNull().default('initial_check'),
-  confirmations: integer('confirmations').notNull().default(0),
-  challengeCode: text('challenge_code'),
-  codeRequired: boolean('code_required').notNull().default(false),
-  externalEventId: text('external_event_id'),
-  googleCalendarId: text('google_calendar_id'),
-  blockedReason: text('blocked_reason'),
-  payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  clearedAt: timestamp('cleared_at', { withTimezone: true }),
-}, (table) => ({
-  orgCreatedIdx: index('calendar_send_jobs_org_created_idx').on(table.organizationId, table.createdAt),
-  meetingIdx: index('calendar_send_jobs_meeting_idx').on(table.meetingId),
-}));
-
 export const availabilityRules = pgTable('availability_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
   organizationId: text('organization_id').notNull(), // projects.id
@@ -947,8 +924,6 @@ export type CalendarSlotHold = typeof calendarSlotHolds.$inferSelect;
 export type NewCalendarSlotHold = typeof calendarSlotHolds.$inferInsert;
 export type CalendarBookingSetting = typeof calendarBookingSettings.$inferSelect;
 export type NewCalendarBookingSetting = typeof calendarBookingSettings.$inferInsert;
-export type CalendarSendJob = typeof calendarSendJobs.$inferSelect;
-export type NewCalendarSendJob = typeof calendarSendJobs.$inferInsert;
 export type AvailabilityRule = typeof availabilityRules.$inferSelect;
 export type NewAvailabilityRule = typeof availabilityRules.$inferInsert;
 export type PipelineStage = typeof pipelineStages.$inferSelect;

@@ -2,10 +2,13 @@
  * Calendar booking guard.
  *
  * Proves one booking service: free/busy plus every availability rule, a
- * single winner when two bookings race, hold expiry, the invite ladder,
- * kill switch, the 5-message code, do-not-contact, a rejected Cal.com
+ * single winner when two bookings race, hold expiry, invites staged in the
+ * send safeguard (operator-only confirm, code, and release; kill switch at
+ * staging and at send; the operator code at five invites in 24 hours; no
+ * stale invite for a cancelled meeting), do-not-contact, a rejected Cal.com
  * signature, a contact timeline row, and the agent color on the Google event.
- * Google and Cal.com are mocked. No production data is touched.
+ * Google and Cal.com are mocked; the send safeguard is its real engine on the
+ * in-memory store. No production data is touched.
  */
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -27,6 +30,17 @@ import {
   type MeetingRecord,
 } from '../packages/core/src/calendar/index.js';
 import { createCalendarPublicRouter } from '../packages/api-server/src/routes/calendar.js';
+import {
+  installSendSafeguardForTests,
+  MemorySendSafeguardStore,
+  SendSafeguard,
+  SendSafeguardError,
+} from '../packages/core/src/send-safeguard.js';
+import {
+  deliverReleasedCalendarInvite,
+  GOOGLE_INVITE_KIND,
+  sendSafeguardInviteGate,
+} from '../packages/core/src/calendar/invite-gate.js';
 
 let failures = 0;
 function check(label: string, ok: boolean, detail?: unknown): void {
@@ -87,19 +101,38 @@ function at(hour: number, minute = 0, day = 5): Date {
   return zonedTimeToUtc(2026, 10, day, hour, minute, TZ);
 }
 
+// Each harness installs its own send-safeguard engine; checks use one harness at a time.
 function harness(options?: { kill?: boolean; now?: Date }) {
   const google = new FakeGoogle();
   const repo = new MemoryCalendarDb();
   const settings = new MemorySettings();
   const now = options?.now ?? FIXED_NOW;
+  const store = new MemorySendSafeguardStore();
+  store.clock = now;
+  store.killSwitch = Boolean(options?.kill);
+  const engine = new SendSafeguard(store);
+  installSendSafeguardForTests(engine);
   const service = new CalendarBookingService({
     settings,
     google,
     repo,
-    killSwitch: async () => Boolean(options?.kill),
+    invites: sendSafeguardInviteGate,
+    killSwitch: async () => store.killSwitch,
     now: () => now,
   });
-  return { service, google, repo, settings, now };
+  return { service, google, repo, settings, now, store, engine };
+}
+
+type Harness = ReturnType<typeof harness>;
+
+/** The operator path in Pending sends: confirm twice, release, then the transport runs. */
+async function releaseInvite(h: Harness, jobId: string): Promise<boolean> {
+  await h.engine.confirm(jobId, 'operator-dashboard', 1);
+  await h.engine.confirm(jobId, 'operator-dashboard', 2);
+  const [recipient] = (await h.engine.describe(jobId)).recipients;
+  if (!recipient) return false;
+  const released = await h.engine.release(jobId, 'operator-dashboard', recipient.id);
+  return deliverReleasedCalendarInvite(h.service, jobId, released);
 }
 
 function openRules(settings: MemorySettings, patch: Partial<CalendarSettings> = {}): void {
@@ -144,7 +177,6 @@ async function main(): Promise<void> {
     APEX_CALENDAR_HOLD_MINUTES: process.env.APEX_CALENDAR_HOLD_MINUTES,
     APEX_CALENDAR_BOOKING_CALENDAR_ID: process.env.APEX_CALENDAR_BOOKING_CALENDAR_ID,
     APEX_CALENDAR_OPERATOR_NAME: process.env.APEX_CALENDAR_OPERATOR_NAME,
-    APEX_CALENDAR_INVITE_KILL_SWITCH: process.env.APEX_CALENDAR_INVITE_KILL_SWITCH,
     APEX_CAL_WEBHOOK_SECRET: process.env.APEX_CAL_WEBHOOK_SECRET,
   };
   delete process.env.APEX_CALENDAR_TIMEZONE;
@@ -152,7 +184,6 @@ async function main(): Promise<void> {
   delete process.env.APEX_CALENDAR_HOLD_MINUTES;
   delete process.env.APEX_CALENDAR_BOOKING_CALENDAR_ID;
   delete process.env.APEX_CALENDAR_OPERATOR_NAME;
-  delete process.env.APEX_CALENDAR_INVITE_KILL_SWITCH;
 
   try {
     const sql = readFileSync(new URL('../lib/db/drizzle/20261003_calendar_booking.sql', import.meta.url), 'utf8');
@@ -270,47 +301,113 @@ async function main(): Promise<void> {
     const booked = await bookSlot(invite.service, at(11, 0), at(11, 30));
     check('invite is not sent when the event is created',
       invite.google.creates[0]?.sendUpdates === 'none' && invite.google.patches.length === 0);
-    const jobId = booked.sendJob?.id;
-    check('booking opens an invite job', Boolean(jobId));
-    if (jobId) {
-      const first = await invite.service.advanceInvite(ORG, jobId, 'initial_check');
-      const second = await invite.service.advanceInvite(ORG, jobId, 'confirm');
-      check('first two confirms do not send', !first.allowed && !second.allowed && invite.google.patches.length === 0, { first, second });
-      const cleared = await invite.service.advanceInvite(ORG, jobId, 'second_confirm');
-      check('safeguard clear sends the invite',
-        cleared.allowed && cleared.sendUpdates === 'all' && invite.google.patches.length === 1 && invite.google.patches[0]?.sendUpdates === 'all');
+    const jobId = booked.invite?.sendJobId ?? null;
+    const staged = jobId ? await invite.engine.describe(jobId) : null;
+    check('booking stages the invite in Pending sends',
+      staged?.recipients.length === 1
+        && staged.recipients[0]?.channel === 'calendar'
+        && staged.recipients[0]?.payload.kind === GOOGLE_INVITE_KIND
+        && staged.job.storyKey === `calendar:${ORG}`,
+      staged);
+    if (jobId && staged?.recipients[0]) {
+      const early = await deliverReleasedCalendarInvite(invite.service, jobId, staged.recipients[0]);
+      check('an invite that was never released does not send', !early && invite.google.patches.length === 0);
+      let agentConfirm: unknown;
+      try {
+        await invite.engine.confirm(jobId, 'agent', 1);
+      } catch (err) {
+        agentConfirm = err;
+      }
+      check('an agent cannot confirm an invite', agentConfirm instanceof SendSafeguardError && agentConfirm.reason === 'operator_session_required');
+      const sent = await releaseInvite(invite, jobId);
+      check('the operator release sends the invite with sendUpdates all',
+        sent && invite.google.patches.length === 1 && invite.google.patches[0]?.sendUpdates === 'all');
+      const [after] = (await invite.engine.describe(jobId)).recipients;
+      check('the send is recorded on the safeguard job', after?.status === 'sent' && after.externalId === booked.meeting.externalEventId, after);
     }
 
     const killed = harness({ kill: true });
     openRules(killed.settings);
     const killedBook = await bookSlot(killed.service, at(15, 0), at(15, 30), { email: 'kill@example.com' });
-    check('kill switch still reserves the event without sending', killed.google.creates[0]?.sendUpdates === 'none' && killedBook.sendJob?.stage === 'blocked');
-    if (killedBook.sendJob) {
-      const advanced = await killed.service.advanceInvite(ORG, killedBook.sendJob.id, 'second_confirm');
-      check('kill switch blocks the invite', !advanced.allowed && advanced.reason === 'kill_switch' && killed.google.patches.length === 0);
+    check('kill switch still reserves the event but queues and sends nothing',
+      killed.google.creates[0]?.sendUpdates === 'none'
+        && killedBook.invite?.sendJobId === null
+        && killedBook.invite?.blockedReason === 'kill_switch'
+        && killed.store.jobs.size === 0
+        && killed.google.patches.length === 0,
+      killedBook.invite);
+
+    const late = harness();
+    openRules(late.settings);
+    const lateBook = await bookSlot(late.service, at(15, 0), at(15, 30), { email: 'late@example.com' });
+    const lateJob = lateBook.invite?.sendJobId;
+    if (lateJob) {
+      await late.engine.confirm(lateJob, 'operator-dashboard', 1);
+      await late.engine.confirm(lateJob, 'operator-dashboard', 2);
+      const [lateRecipient] = (await late.engine.describe(lateJob)).recipients;
+      const released = await late.engine.release(lateJob, 'operator-dashboard', lateRecipient?.id ?? '');
+      late.store.killSwitch = true;
+      const sent = await deliverReleasedCalendarInvite(late.service, lateJob, released);
+      check('the kill switch stops an invite released before it was turned on', !sent && late.google.patches.length === 0);
+    } else {
+      check('the kill switch stops an invite released before it was turned on', false, lateBook.invite);
     }
 
     const coded = harness();
     openRules(coded.settings);
+    await coded.engine.setCode('operator-dashboard', '4821', true);
     const emails = ['one@example.com', 'two@example.com', 'three@example.com', 'four@example.com', 'five@example.com'];
-    const jobs = [];
-    for (let index = 0; index < emails.length; index += 1) {
-      const startHour = 11 + index;
-      const result = await bookSlot(coded.service, at(startHour, 0), at(startHour, 30), { email: emails[index] });
-      jobs.push(result.sendJob);
+    let earlierSent = 0;
+    for (let index = 0; index < 4; index += 1) {
+      const result = await bookSlot(coded.service, at(11 + index, 0), at(11 + index, 30), { email: emails[index] });
+      if (result.invite?.sendJobId && await releaseInvite(coded, result.invite.sendJobId)) earlierSent += 1;
     }
-    const fifth = jobs[4];
-    check('the fifth invite in the window requires a code', Boolean(fifth?.codeRequired) && /^\d{4}$/.test(fifth?.challengeCode ?? ''));
-    check('earlier invites do not require a code', jobs.slice(0, 4).every((job) => job?.codeRequired === false));
-    if (fifth?.id) {
-      await coded.service.advanceInvite(ORG, fifth.id, 'initial_check');
-      await coded.service.advanceInvite(ORG, fifth.id, 'confirm');
-      const needsCode = await coded.service.advanceInvite(ORG, fifth.id, 'second_confirm');
-      const sentBeforeCode = coded.google.patches.some((patch) => patch.eventId === fifth.externalEventId && patch.sendUpdates === 'all');
-      check('code is required before the fifth invite sends', needsCode.stage === 'code_required' && !sentBeforeCode);
-      const withCode = await coded.service.advanceInvite(ORG, fifth.id, 'submit_code', fifth.challengeCode);
-      const sentAfterCode = coded.google.patches.some((patch) => patch.eventId === fifth.externalEventId && patch.sendUpdates === 'all');
-      check('the matching code sends the fifth invite', withCode.allowed && sentAfterCode);
+    check('the first four invites in 24 hours release without a code', earlierSent === 4, earlierSent);
+    const fifth = await bookSlot(coded.service, at(15, 0), at(15, 30), { email: emails[4] });
+    const fifthJob = fifth.invite?.sendJobId;
+    if (fifthJob) {
+      let needsCode: unknown;
+      try {
+        await releaseInvite(coded, fifthJob);
+      } catch (err) {
+        needsCode = err;
+      }
+      const sentBeforeCode = coded.google.patches.some((patch) => patch.eventId === fifth.meeting.externalEventId);
+      check('the fifth invite in 24 hours needs the operator code',
+        needsCode instanceof SendSafeguardError && needsCode.reason === 'awaiting_code' && !sentBeforeCode, needsCode);
+      let agentCode: unknown;
+      try {
+        await coded.engine.submitCode(fifthJob, 'agent', '4821');
+      } catch (err) {
+        agentCode = err;
+      }
+      check('an agent cannot submit the operator code', agentCode instanceof SendSafeguardError && agentCode.reason === 'code_source_rejected');
+      await coded.engine.submitCode(fifthJob, 'operator-dashboard', '4821');
+      const [fifthRecipient] = (await coded.engine.describe(fifthJob)).recipients;
+      const released = await coded.engine.release(fifthJob, 'operator-dashboard', fifthRecipient?.id ?? '');
+      const sent = await deliverReleasedCalendarInvite(coded.service, fifthJob, released);
+      check('the operator code releases the fifth invite',
+        sent && coded.google.patches.some((patch) => patch.eventId === fifth.meeting.externalEventId && patch.sendUpdates === 'all'));
+    } else {
+      check('the fifth invite in 24 hours needs the operator code', false, fifth.invite);
+    }
+
+    const afterCancel = harness();
+    openRules(afterCancel.settings);
+    const cancelledBook = await bookSlot(afterCancel.service, at(11, 0), at(11, 30), { email: 'cancelled@example.com' });
+    await afterCancel.service.cancel(ORG, cancelledBook.meeting.id, { kind: 'operator', id: null, name: 'Matthew' });
+    if (cancelledBook.invite?.sendJobId) {
+      const sent = await releaseInvite(afterCancel, cancelledBook.invite.sendJobId);
+      check('releasing an invite for a meeting cancelled since then does not send it',
+        !sent && !afterCancel.google.patches.some((patch) => patch.sendUpdates === 'all'));
+    }
+    const notice = [...afterCancel.store.recipients.values()].find((row) => row.payload.inviteKind === 'cancellation');
+    check('cancelling stages the cancellation notice and keeps the event until it is released',
+      Boolean(notice) && afterCancel.google.deletes.length === 0);
+    if (notice) {
+      const sent = await releaseInvite(afterCancel, notice.jobId);
+      check('the released cancellation deletes the event with sendUpdates all',
+        sent && afterCancel.google.deletes.length === 1 && afterCancel.google.deletes[0]?.sendUpdates === 'all');
     }
 
     const dnc = harness();

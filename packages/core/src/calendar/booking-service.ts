@@ -8,21 +8,19 @@ import {
 } from './errors.js';
 import type { GoogleCalendarPort, GoogleEventWrite } from './google.js';
 import type { CalendarRepository } from './memory.js';
-import { assertCalendarSendAllowed, randomChallengeCode } from './send-gate.js';
-import type { InviteAction } from './types.js';
+import type { InviteGatePort, StagedInvite } from './invite-gate.js';
 import { isRangeBookable, findAvailableSlots, type Slot } from './slots.js';
 import { formatInTimezone, zonedParts, zonedTimeToUtc } from './time.js';
 import {
   applyCalendarEnv,
   bookingFooter,
   resolveAgentColor,
-  SEND_WINDOW_MS,
   type AgendaItem,
   type CalendarActor,
   type CalendarSettings,
   type HoldRecord,
   type MeetingRecord,
-  type SendJobRecord,
+  type SendJobKind,
   type TimelineRow,
 } from './types.js';
 
@@ -35,6 +33,8 @@ export interface BookingDeps {
   settings: SettingsPort;
   google: GoogleCalendarPort;
   repo: CalendarRepository;
+  /** Where invites wait for the operator: the send safeguard in production. */
+  invites: InviteGatePort;
   killSwitch: (organizationId: string) => Promise<boolean>;
   now?: () => Date;
 }
@@ -54,8 +54,9 @@ export interface BookInput {
 export interface BookResult {
   meeting: MeetingRecord;
   hold: HoldRecord;
-  sendJob: SendJobRecord | null;
-  /** The create call always uses none. all only happens after the safeguard clears. */
+  /** Null when there is no external attendee to invite. */
+  invite: StagedInvite | null;
+  /** The create call always uses none. all only happens after the operator releases the invite. */
   googleSendUpdates: 'none';
 }
 
@@ -212,70 +213,52 @@ export class CalendarBookingService {
       hold.meetingId = meeting.id;
       await this.writeTimeline(input.organizationId, input.contactId ?? null, 'hold', actor, now, settings.timezone, `Held ${input.title}`, meeting.id);
       await this.writeTimeline(input.organizationId, input.contactId ?? null, 'booking', actor, now, settings.timezone, `Booked ${input.title}`, meeting.id);
-      const sendJob = input.attendeeEmail
-        ? await this.openSendJob({
-          organizationId: input.organizationId,
-          meeting,
-          kind: 'invite',
-          emails: [input.attendeeEmail],
-          contactId: input.contactId ?? null,
-          now,
-          payload: { description, summary: input.title },
-        })
+      const invite = input.attendeeEmail
+        ? await this.stageInvite('invite', meeting, input.attendeeEmail, actor, settings.timezone)
         : null;
-      return { meeting, hold, sendJob, googleSendUpdates: 'none' };
+      return { meeting, hold, invite, googleSendUpdates: 'none' };
     } catch (err) {
       await this.deps.repo.updateHold(hold.id, { status: 'released' });
       throw err;
     }
   }
 
-  async advanceInvite(organizationId: string, jobId: string, action: InviteAction, code?: string | null): Promise<{
-    allowed: boolean;
-    stage: string;
-    sendUpdates: 'none' | 'all';
-    reason: string;
-    codeRequired: boolean;
-  }> {
-    const job = await this.deps.repo.getSendJob(jobId);
-    if (!job || job.organizationId !== organizationId) throw new Error('Invite job not found');
-    const contact = job.contactId ? await this.deps.repo.getContact(organizationId, job.contactId) : null;
-    const emailContact = job.recipientEmails[0]
-      ? await this.deps.repo.findContactByEmail(organizationId, job.recipientEmails[0])
-      : null;
-    const doNotContact = Boolean(contact?.doNotContact || emailContact?.doNotContact);
-    const killSwitch = await this.deps.killSwitch(organizationId);
-    const since = new Date(this.now().getTime() - SEND_WINDOW_MS);
-    const recent = await this.deps.repo.listSendJobsSince(organizationId, since);
-    const outboundCountInWindow = recent.reduce((sum, item) => sum + item.recipientEmails.length, 0);
-    const decision = assertCalendarSendAllowed({
-      stage: job.stage,
-      action,
-      codeRequired: job.codeRequired,
-      suppliedCode: code,
-      expectedCode: job.challengeCode,
-      killSwitch,
-      doNotContact,
-      outboundCountInWindow,
+  /**
+   * Called by the send-safeguard transport after the operator released the
+   * invite, so the gate has already cleared it at the moment of send. Reads
+   * the meeting as it is now: a stale invite released after a cancellation,
+   * or after a later reschedule, must not notify with the old state.
+   * Returns the Google event id for the send record.
+   */
+  async deliverStagedInvite(input: { inviteKind: SendJobKind; organizationId: string; meetingId: string }): Promise<string> {
+    const meeting = await this.requireMeeting(input.organizationId, input.meetingId);
+    if (!meeting.externalEventId) throw new Error('This meeting has no Google event to notify about.');
+    const calendarId = String(meeting.metadata.googleCalendarId ?? 'primary');
+    if (input.inviteKind === 'cancellation') {
+      if (meeting.status !== 'cancelled') throw new Error(`The meeting is ${meeting.status}, not cancelled.`);
+      await this.deps.google.deleteEvent(calendarId, meeting.externalEventId, 'all');
+      return meeting.externalEventId;
+    }
+    if (meeting.status !== 'scheduled' && meeting.status !== 'proposed') {
+      throw new Error(`The meeting is ${meeting.status}; its invite was not sent.`);
+    }
+    const settings = await this.loadSettings(input.organizationId);
+    await this.deps.google.patchEvent({
+      ...eventWrite({
+        calendarId,
+        sendUpdates: 'all',
+        summary: meeting.title,
+        description: String(meeting.metadata.description ?? ''),
+        start: meeting.start,
+        end: meeting.end,
+        timeZone: settings.timezone,
+        attendees: attendeeList(attendeeEmail(meeting), typeof meeting.metadata.attendeeName === 'string' ? meeting.metadata.attendeeName : null),
+        colorId: typeof meeting.metadata.googleColorId === 'string' ? meeting.metadata.googleColorId : undefined,
+        privateProps: { apexInvite: 'sent' },
+      }),
+      eventId: meeting.externalEventId,
     });
-    job.stage = decision.stage;
-    job.confirmations = decision.confirmations;
-    if (!decision.allowed && (decision.reason === 'kill_switch' || decision.reason === 'do_not_contact')) {
-      job.blockedReason = decision.reason;
-    }
-    if (decision.allowed) {
-      job.clearedAt = this.now();
-      job.blockedReason = null;
-      await this.dispatchCleared(job);
-    }
-    await this.deps.repo.updateSendJob(job.id, job);
-    return {
-      allowed: decision.allowed,
-      stage: decision.stage,
-      sendUpdates: decision.sendUpdates,
-      reason: decision.reason,
-      codeRequired: decision.codeRequired,
-    };
+    return meeting.externalEventId;
   }
 
   async reschedule(organizationId: string, meetingId: string, start: Date, end: Date, actor: CalendarActor): Promise<MeetingRecord> {
@@ -334,15 +317,7 @@ export class CalendarBookingService {
     await this.deps.repo.updateHold(hold.id, { status: 'consumed', meetingId: meeting.id });
     await this.writeTimeline(organizationId, meeting.contactId, 'reschedule', resolved, now, settings.timezone, `Rescheduled ${meeting.title}`, meeting.id);
     if (email && meeting.externalEventId) {
-      await this.openSendJob({
-        organizationId,
-        meeting,
-        kind: 'reschedule',
-        emails: [email],
-        contactId: meeting.contactId,
-        now,
-        payload: { description, summary: meeting.title, start: start.toISOString(), end: end.toISOString() },
-      });
+      await this.stageInvite('reschedule', meeting, email, resolved, settings.timezone);
     }
     return meeting;
   }
@@ -368,29 +343,13 @@ export class CalendarBookingService {
     const calendarId = String(meeting.metadata.googleCalendarId ?? settings.bookingCalendarId ?? 'primary');
     if (!email || killSwitch || doNotContact) {
       await this.deps.google.deleteEvent(calendarId, meeting.externalEventId, 'none');
-      if (email) {
-        await this.openSendJob({
-          organizationId,
-          meeting,
-          kind: 'cancellation',
-          emails: [email],
-          contactId: meeting.contactId,
-          now,
-          payload: {},
-          forceBlocked: killSwitch ? 'kill_switch' : 'do_not_contact',
-        });
-      }
       return meeting;
     }
-    await this.openSendJob({
-      organizationId,
-      meeting,
-      kind: 'cancellation',
-      emails: [email],
-      contactId: meeting.contactId,
-      now,
-      payload: { calendarId },
-    });
+    // The event stays until the notice is released: deleting it with
+    // sendUpdates=all is the notice. If the safeguard will not even queue it,
+    // remove the event quietly so the calendar still shows the cancellation.
+    const notice = await this.stageInvite('cancellation', meeting, email, resolved, settings.timezone);
+    if (!notice.sendJobId) await this.deps.google.deleteEvent(calendarId, meeting.externalEventId, 'none');
     return meeting;
   }
 
@@ -597,76 +556,22 @@ export class CalendarBookingService {
     return { duplicate: false, meetingId: meeting.id, conflict };
   }
 
-  private async dispatchCleared(job: SendJobRecord): Promise<void> {
-    if (!job.externalEventId || !job.googleCalendarId) return;
-    const meeting = await this.deps.repo.getMeeting(job.meetingId);
-    if (!meeting) return;
-    const settings = await this.loadSettings(job.organizationId);
-    const description = typeof job.payload.description === 'string'
-      ? job.payload.description
-      : String(meeting.metadata.description ?? '');
-    const email = job.recipientEmails[0] ?? null;
-    if (job.kind === 'cancellation') {
-      await this.deps.google.deleteEvent(job.googleCalendarId, job.externalEventId, 'all');
-      return;
-    }
-    const start = typeof job.payload.start === 'string' ? new Date(job.payload.start) : meeting.start;
-    const end = typeof job.payload.end === 'string' ? new Date(job.payload.end) : meeting.end;
-    await this.deps.google.patchEvent({
-      ...eventWrite({
-        calendarId: job.googleCalendarId,
-        sendUpdates: 'all',
-        summary: typeof job.payload.summary === 'string' ? job.payload.summary : meeting.title,
-        description,
-        start,
-        end,
-        timeZone: settings.timezone,
-        attendees: attendeeList(email, typeof meeting.metadata.attendeeName === 'string' ? meeting.metadata.attendeeName : null),
-        colorId: typeof meeting.metadata.googleColorId === 'string' ? meeting.metadata.googleColorId : undefined,
-        privateProps: { apexInvite: 'sent' },
-      }),
-      eventId: job.externalEventId,
+  private async stageInvite(
+    kind: SendJobKind,
+    meeting: MeetingRecord,
+    email: string,
+    actor: CalendarActor,
+    timezone: string,
+  ): Promise<StagedInvite> {
+    const label = kind === 'invite' ? 'Invite' : kind === 'reschedule' ? 'Updated invite' : 'Cancellation';
+    return this.deps.invites.stage({
+      organizationId: meeting.organizationId,
+      meetingId: meeting.id,
+      inviteKind: kind,
+      email,
+      createdBy: actor.id ?? actor.name,
+      messageText: `${label}: ${meeting.title}, ${formatInTimezone(meeting.start, timezone)}`,
     });
-  }
-
-  private async openSendJob(input: {
-    organizationId: string;
-    meeting: MeetingRecord;
-    kind: SendJobRecord['kind'];
-    emails: string[];
-    contactId: string | null;
-    now: Date;
-    payload: Record<string, unknown>;
-    forceBlocked?: 'kill_switch' | 'do_not_contact';
-  }): Promise<SendJobRecord> {
-    const since = new Date(input.now.getTime() - SEND_WINDOW_MS);
-    const recent = await this.deps.repo.listSendJobsSince(input.organizationId, since);
-    const prior = recent.reduce((sum, job) => sum + job.recipientEmails.length, 0);
-    const codeRequired = prior + input.emails.length >= 5;
-    const killSwitch = input.forceBlocked === 'kill_switch' || await this.deps.killSwitch(input.organizationId);
-    const blockedReason = input.forceBlocked ?? (killSwitch ? 'kill_switch' : null);
-    const job: SendJobRecord = {
-      id: randomUUID(),
-      organizationId: input.organizationId,
-      meetingId: input.meeting.id,
-      kind: input.kind,
-      recipientEmails: input.emails,
-      contactId: input.contactId,
-      stage: blockedReason ? 'blocked' : 'initial_check',
-      confirmations: 0,
-      challengeCode: codeRequired ? randomChallengeCode() : null,
-      codeRequired,
-      externalEventId: input.meeting.externalEventId,
-      googleCalendarId: typeof input.meeting.metadata.googleCalendarId === 'string'
-        ? input.meeting.metadata.googleCalendarId
-        : null,
-      blockedReason,
-      createdAt: input.now,
-      clearedAt: null,
-      payload: input.payload,
-    };
-    await this.deps.repo.insertSendJob(job);
-    return job;
   }
 
   private async occupancy(organizationId: string, settings: CalendarSettings, rangeStart: Date, rangeEnd: Date, now: Date) {

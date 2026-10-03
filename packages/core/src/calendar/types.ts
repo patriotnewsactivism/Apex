@@ -4,8 +4,6 @@
 export const DEFAULT_CALENDAR_TIMEZONE = 'America/Chicago';
 export const DEFAULT_HOLD_MINUTES = 10;
 export const DEFAULT_SLOT_MINUTES = 30;
-export const SEND_CODE_THRESHOLD = 5;
-export const SEND_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export interface WorkingWindow {
   /** 0 = Sunday … 6 = Saturday, in the booking timezone. */
@@ -61,17 +59,7 @@ export interface CalendarActor {
   name: string;
 }
 
-export type SendStage =
-  | 'initial_check'
-  | 'confirm'
-  | 'second_confirm'
-  | 'code_required'
-  | 'cleared'
-  | 'blocked';
-
 export type SendJobKind = 'invite' | 'reschedule' | 'cancellation';
-
-export type InviteAction = 'initial_check' | 'confirm' | 'second_confirm' | 'submit_code';
 
 export interface HoldRecord {
   id: string;
@@ -123,25 +111,6 @@ export interface TimelineRow {
   meetingId: string | null;
 }
 
-export interface SendJobRecord {
-  id: string;
-  organizationId: string;
-  meetingId: string;
-  kind: SendJobKind;
-  recipientEmails: string[];
-  contactId: string | null;
-  stage: SendStage;
-  confirmations: number;
-  /** Set when this job is the one that crosses the 5-message threshold. Never returned to agents. */
-  challengeCode: string | null;
-  codeRequired: boolean;
-  externalEventId: string | null;
-  googleCalendarId: string | null;
-  blockedReason: string | null;
-  createdAt: Date;
-  clearedAt: Date | null;
-  payload: Record<string, unknown>;
-}
 
 export interface ContactSnapshot {
   id: string;
