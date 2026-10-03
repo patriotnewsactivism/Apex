@@ -296,6 +296,35 @@ async function databaseChecks(): Promise<void> {
   await applyDoNotContact(db, { contactId: complaintId, destination: `complaint-${stamp}@example.com`, reason: 'complaint', setBy: 'system', channel: 'email' });
   await assert.rejects(() => assertContactSendable({ channel: 'email', contactId: complaintId }), (error: unknown) => error instanceof SendBlockedError);
 
+  // A send already cleared and released in Pending sends re-checks at the moment
+  // of send. A STOP by text after release must still block the queued call.
+  const { getSendSafeguard, SendSafeguardError } = await import('../packages/core/src/send-safeguard.js');
+  const engine = await getSendSafeguard();
+  const heldPhone = `+1504556${stamp.slice(-4).padStart(4, '0')}`;
+  const heldContact = await findOrCreateContact(db, heldPhone, { name: 'Held Call' });
+  const releasedCall = async () => {
+    const { job, recipients } = await engine.createJob({
+      caller: 'tool',
+      createdBy: 'verify-crm',
+      recipients: [{ channel: 'phone', destination: heldPhone, messageText: 'held call', payload: { kind: 'cartesia_call' } }],
+    });
+    await engine.confirm(job.id, 'operator-dashboard', 1);
+    await engine.confirm(job.id, 'operator-dashboard', 2);
+    const recipientId = recipients[0]?.id ?? '';
+    await engine.release(job.id, 'operator-dashboard', recipientId);
+    return { jobId: job.id, recipientId };
+  };
+  const control = await releasedCall();
+  await engine.assertSendAllowed(control.jobId, heldPhone, 'phone');
+  await engine.recordSendResult(control.jobId, control.recipientId, 'sent', `verify-${stamp}`);
+  const held = await releasedCall();
+  await applyDoNotContact(db, { contactId: heldContact, destination: heldPhone, reason: 'stop', setBy: 'system', channel: 'sms' });
+  await assert.rejects(
+    () => engine.assertSendAllowed(held.jobId, heldPhone, 'phone'),
+    (error: unknown) => error instanceof SendSafeguardError && error.reason === 'suppressed',
+    'a released call to a contact who texted STOP is blocked at the moment of send',
+  );
+
   const replyEmail = `reply-${stamp}@newsroom.test`;
   const replyId = await findOrCreateContact(db, replyEmail, { name: 'Reply Person', organizationName: 'Reply Desk' });
   const [campaign] = await db.insert(campaigns).values({

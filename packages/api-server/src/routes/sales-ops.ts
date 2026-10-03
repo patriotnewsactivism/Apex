@@ -818,7 +818,7 @@ export function createSalesOpsRouter(ceo: ApexCEO): Router {
   return router;
 }
 
-void import('@workspace/core').then(({ registerSendTransport, assertSendAllowed, recordOutboundSendResult }) => {
+void import('@workspace/core').then(({ registerSendTransport, assertSendAllowed, recordOutboundSendResult, commitSmsMessage, getSendSafeguard, OPERATOR_ACTOR }) => {
   registerSendTransport('telnyx_sms', async (jobId, recipient) => {
     const from = typeof recipient.payload.from === 'string' ? recipient.payload.from : process.env.APEX_FRONT_DESK_NUMBER;
     const text = recipient.messageText;
@@ -839,6 +839,24 @@ void import('@workspace/core').then(({ registerSendTransport, assertSendAllowed,
     }
     const json = await smsRes.json().catch(() => null) as { data?: { id?: string } } | null;
     await recordOutboundSendResult(jobId, recipient.id, 'sent', json?.data?.id ?? null);
+    // The path that queued this text was held before sending, so it wrote no
+    // CRM row. A failure here must not mark a delivered text as failed.
+    try {
+      const { job } = await (await getSendSafeguard()).describe(jobId);
+      await commitSmsMessage({
+        id: crypto.randomUUID(),
+        direction: 'outbound',
+        counterpartyNumber: recipient.destination,
+        fromNumber: from,
+        toNumber: recipient.destination,
+        body: text,
+        status: 'sent',
+        providerId: json?.data?.id ?? null,
+        createdByAgentId: job.createdBy,
+      }, { actorType: 'operator', actorName: OPERATOR_ACTOR });
+    } catch (error) {
+      console.error(`[send-safeguard] SMS timeline record failed job=${jobId} reason=${error instanceof Error ? error.message : 'error'}`);
+    }
     return true;
   });
 });

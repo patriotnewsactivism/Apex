@@ -2,17 +2,17 @@
 
 One contact record per person or organization, and an append-only timeline of every interaction. The tables live with the existing revenue-ops schema. The migration is `lib/db/drizzle/20261003_crm.sql` (applied by `applyCrmMigration` at the end of `migrate()`).
 
-Every outbound path first calls `assertContactSendable`, which blocks a contact whose `do_not_contact` flag is set on any channel. It then goes through the send safeguard (`openOutboundSendJob` + `assertSendAllowed` in `packages/core/src/send-safeguard.ts`: two operator confirmations, the code at 5+ sends, the kill switch, and suppressions). Only after both does the provider call happen.
+Every outbound path first calls `assertContactSendable`, which blocks a contact whose `do_not_contact` flag is set on any channel. It then goes through the send safeguard (`openOutboundSendJob` + `assertSendAllowed` in `packages/core/src/send-safeguard.ts`: two operator confirmations, the code at 5+ sends, the kill switch, and suppressions). Only after both does the provider call happen. The send safeguard's suppression check also reads the contact's `do_not_contact` flag, so a send already released in Pending Sends is blocked if the contact opts out on any channel before it goes out.
 
 ## Contacts page
 
-The dashboard **Contacts** view (Revenue) searches name, organization, emails, phones, tags, notes, and message text. Filters cover tag, city, state, verified-only, do-not-contact, owner bot, last-contacted range, replied or not, and campaign. A contact opens to the profile, meetings, and a newest-first timeline. Times are stored in UTC and shown in America/Chicago. Matthew can set or clear do-not-contact from that page; the action is logged. Unmatched inbound mail and duplicate suggestions are on the same page. A merge happens only when Matthew clicks it, keeps both timelines, and is logged. Export CSV downloads the current filtered view.
+The dashboard **Contacts** view (Revenue) searches name, organization, emails, phones, tags, notes, and message text. Filters cover tag, city, state, verified-only, do-not-contact, owner bot, last-contacted range, replied or not, and campaign. A contact opens to the profile, meetings, and a newest-first timeline. Times are stored in UTC and shown in America/Chicago. Matthew can set or clear do-not-contact from that page; the action is logged. Clearing do-not-contact and merging contacts require the dashboard session minted at password login (`X-Apex-Operator-Session`); the admin bearer token alone gets a 403, because scripts and agents hold it too. Clearing lifts only the contact-level flag. A channel suppression recorded by an SMS STOP, a bounce, or a complaint stays, so that channel stays blocked for that address: a STOP is an opt-out from texts until the person opts back in. Unmatched inbound mail and duplicate suggestions are on the same page. A merge happens only when Matthew clicks it, keeps both timelines, and is logged. Export CSV downloads the current filtered view.
 
 ## Timeline
 
 `contact_timeline` rejects UPDATE and DELETE with a trigger (`crm_reject_timeline_mutation`, errcode 55000). Corrections are new rows. A merge does not rewrite `contact_id`; `contact_merges` links the loser, and the winner's timeline read includes both histories.
 
-Outbound email, SMS, calls, calendar invites, and provider call events write the timeline row in the same transaction as the send record. The provider HTTP call stays outside that transaction. `assertContactSendable` and the send safeguard both run before the provider call. A send held in Pending Sends writes no timeline row, because nothing was sent.
+Outbound email, SMS, calls, calendar invites, and provider call events write the timeline row in the same transaction as the send record. The provider HTTP call stays outside that transaction. `assertContactSendable` and the send safeguard both run before the provider call. A send held in Pending Sends writes no timeline row, because nothing was sent. Released email, texts, Cartesia calls, and call-bridge customer legs write it when they actually go out.
 
 ## Inbound mail and SMS
 
@@ -51,4 +51,4 @@ Both import and backfill refuse Railway, Supabase, and any non-local host. Do no
 
 ## Agent tools
 
-`crm_search_contacts`, `crm_get_contact`, and `crm_get_timeline` are read-only. There is no tool that clears do-not-contact or merges contacts.
+`crm_search_contacts`, `crm_get_contact`, and `crm_get_timeline` are read-only. There is no tool that clears do-not-contact or merges contacts, and the HTTP routes for both refuse a caller without an operator dashboard session.

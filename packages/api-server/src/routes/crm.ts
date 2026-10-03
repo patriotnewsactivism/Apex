@@ -2,7 +2,8 @@
  * Operator CRM. Mounted behind requireAdminAuth. Do-not-contact can be
  * cleared only as Matthew, and merges require an explicit confirmation.
  */
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
+import { operatorDashboardSessionValid } from '../operator-session.js';
 import {
   OPERATOR_ACTOR,
   attachUnmatched,
@@ -19,6 +20,16 @@ import {
   syncGmailReadonly,
 } from '@workspace/core';
 import { CRM_DISPLAY_TIMEZONE, formatChicago } from '@workspace/core';
+
+// Scripts and agents hold the admin bearer token too, so it alone cannot clear
+// do-not-contact or merge contacts as Matthew. Those need the session minted at
+// the dashboard password login, the same check the send safeguard uses.
+async function requireOperatorSession(req: Request, res: Response): Promise<boolean> {
+  const header = req.header('x-apex-operator-session');
+  if (await operatorDashboardSessionValid(typeof header === 'string' ? header : null)) return true;
+  res.status(403).json({ error: 'This needs an operator dashboard session. Sign in to the dashboard again.' });
+  return false;
+}
 
 function queryFlag(value: unknown): boolean | null {
   if (value === 'true' || value === '1') return true;
@@ -102,6 +113,8 @@ export function createCrmRouter(): Router {
     const reason = typeof (req.body as { reason?: string })?.reason === 'string'
       ? (req.body as { reason: string }).reason
       : null;
+    // Setting do-not-contact only ever blocks sends, so it stays open; clearing it does not.
+    if (!value && !(await requireOperatorSession(req, res))) return;
     try {
       await setDoNotContact({ contactId: req.params.id, value, actor: OPERATOR_ACTOR, reason });
       res.json({ ok: true, actor: OPERATOR_ACTOR, value });
@@ -138,6 +151,7 @@ export function createCrmRouter(): Router {
       res.status(400).json({ error: 'winnerId and loserId are required' });
       return;
     }
+    if (!(await requireOperatorSession(req, res))) return;
     try {
       await mergeContacts({
         winnerId: body.winnerId,
