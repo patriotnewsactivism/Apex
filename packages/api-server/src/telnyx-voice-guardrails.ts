@@ -11,7 +11,8 @@
 // APEX tool registry or the agent swarm. It runs only inside a live phone
 // session and is optimised for latency and side-effect clarity.
 
-import { assertOutboundAllowed } from '@workspace/core';
+import { assertOutboundAllowed, assertContactSendable, commitSmsMessage } from '@workspace/core';
+import crypto from 'crypto';
 
 // ─── Plan catalog ─────────────────────────────────────────────────────────────
 
@@ -311,6 +312,7 @@ async function executeSendCheckoutLink(
           text: `Your BuildMyBot ${spec.name} checkout link: ${checkoutUrl}`,
         };
 
+        await assertContactSendable({ channel: 'sms', destination: smsTo });
         const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
         const opened = await openOutboundSendJob({
           caller: 'voice',
@@ -333,12 +335,25 @@ async function executeSendCheckoutLink(
           body: JSON.stringify(smsBody),
         });
 
+        const smsJson = smsRes.ok ? await smsRes.clone().json().catch(() => null) as { data?: { id?: string } } | null : null;
         if (!smsRes.ok) {
           const errText = await smsRes.text().catch(() => '');
           console.warn(
             `[Voice Guardrails] SMS send failed (${smsRes.status}): ${errText.slice(0, 200)}`,
           );
         }
+        await commitSmsMessage({
+          id: crypto.randomUUID(),
+          direction: 'outbound',
+          counterpartyNumber: smsTo,
+          fromNumber,
+          toNumber: smsTo,
+          body: smsBody.text,
+          status: smsRes.ok ? 'sent' : 'failed',
+          providerId: smsJson?.data?.id ?? null,
+          errorMessage: smsRes.ok ? null : `Telnyx returned ${smsRes.status}`,
+          createdByAgentId: 'voice-guardrails',
+        }, { actorType: 'agent', actorName: 'voice-guardrails' });
       } catch (smsErr) {
         console.warn(
           '[Voice Guardrails] SMS send error:',
@@ -436,6 +451,7 @@ async function executeTransferToOwner(
   const messagingFrom = process.env.TELNYX_MESSAGING_NUMBER;
   if (ownerNumber && messagingKey && messagingFrom) {
     try {
+      await assertContactSendable({ channel: 'sms', destination: ownerNumber });
       // Owner notification SMS to TELNYX_OWNER_NUMBER still passes the send safeguard.
       const { assertSendAllowed, openOutboundSendJob } = await import('@workspace/core');
       const ownerText = `BuildMyBot: a caller needs you (live transfer unavailable). Reason: ${reason}. Call ${callControlId}.`;
@@ -459,10 +475,22 @@ async function executeTransferToOwner(
         body: JSON.stringify({
           from: messagingFrom,
           to: ownerNumber,
-          text: `BuildMyBot: a caller needs you (live transfer unavailable). Reason: ${reason}. Call ${callControlId}.`,
+          text: ownerText,
         }),
       });
       ownerNotified = smsRes.ok;
+      const ownerJson = smsRes.ok ? await smsRes.clone().json().catch(() => null) as { data?: { id?: string } } | null : null;
+      await commitSmsMessage({
+        id: crypto.randomUUID(),
+        direction: 'outbound',
+        counterpartyNumber: ownerNumber,
+        fromNumber: messagingFrom,
+        toNumber: ownerNumber,
+        body: ownerText,
+        status: smsRes.ok ? 'sent' : 'failed',
+        providerId: ownerJson?.data?.id ?? null,
+        createdByAgentId: 'voice-guardrails',
+      }, { actorType: 'agent', actorName: 'voice-guardrails' });
       if (!smsRes.ok) {
         const errText = await smsRes.text().catch(() => '');
         console.warn(

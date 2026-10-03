@@ -1,6 +1,7 @@
 export { db, schema } from './migrate.js';
 export * from './schema.js';
 export * from './schema-revenue-ops.js';
+export { encrypt, decrypt } from './crypto.js';
 
 // Phase 1.2 (compliance + capture + mission lifecycle) tables are re-exported
 // from schema-revenue-ops.js above. Keep the migrate barrel separate so the

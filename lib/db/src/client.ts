@@ -1,6 +1,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema.js';
+import { applyCrmMigration } from './crm-migration.js';
 
 const connectionString = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/apex';
 
@@ -1333,6 +1334,7 @@ export async function migrate() {
     )
   `;
 
+  await applyCrmMigration(client);
 }
 
 export { schema };

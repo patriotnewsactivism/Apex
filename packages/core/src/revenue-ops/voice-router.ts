@@ -23,6 +23,7 @@ import { db } from '@workspace/db';
 import { providerConnections, calls } from '@workspace/db';
 import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
+import { SendBlockedError, assertContactSendable, commitSendRecord } from '../crm/store.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -307,6 +308,14 @@ export async function initiateOutboundCall(input: InitiateCallInput): Promise<In
     }
   }
 
+  // A do-not-contact contact never becomes a Pending-sends job.
+  try {
+    await assertContactSendable({ channel: 'phone', destination: input.toNumber, contactId: input.contactId });
+  } catch (error) {
+    if (error instanceof SendBlockedError) return { success: false, error: error.message };
+    throw error;
+  }
+
   const { assertSendAllowed, openOutboundSendJob, SendSafeguardError } = await import('../send-safeguard.js');
   let sendJobId = input.sendJobId ?? null;
   try {
@@ -342,7 +351,8 @@ export async function initiateOutboundCall(input: InitiateCallInput): Promise<In
   const now = new Date();
 
   try {
-    await db.insert(calls).values({
+    await commitSendRecord(async (tx) => {
+      await tx.insert(calls).values({
       id: callId,
       organizationId: input.organizationId,
       missionId: input.missionId ?? null,
@@ -358,6 +368,22 @@ export async function initiateOutboundCall(input: InitiateCallInput): Promise<In
       status: 'requested',
       createdAt: now,
       updatedAt: now,
+    });
+      return callId;
+    }, {
+      contactId: input.contactId,
+      organizationId: input.organizationId,
+      destination: input.toNumber,
+      channel: 'call',
+      direction: 'outbound',
+      actorType: 'agent',
+      actorName: 'voice-router',
+      eventKind: 'call',
+      bodyText: `Outbound call requested to ${input.toNumber}`,
+      provider: 'voice-router',
+      providerMessageId: `voice:${callId}`,
+      sendRecordTable: 'calls',
+      sendRecordId: callId,
     });
   } catch (err) {
     return { success: false, error: `Failed to create call record: ${err instanceof Error ? err.message : String(err)}` };
