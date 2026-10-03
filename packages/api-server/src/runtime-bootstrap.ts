@@ -25,6 +25,10 @@ import {
   initializeSpendLedgerPersistence,
   initializeProviderCredits,
   initializeProviderAccountExclusions,
+  initializeOpenRouterBalanceMonitor,
+  startOpenRouterBalanceMonitor,
+  refreshProviderCredits,
+  paidLLMFallbackEnabled,
   logProviderRoster,
   startWorkerHeartbeat,
   type AgentSupervisorHandle,
@@ -101,7 +105,22 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
       : '⚠️  OpenRouter account exclusions are memory-only; restarts may readmit exhausted accounts',
   );
 
+  // Low-balance pauses survive restarts: re-apply them before the first probe
+  // so a container replacement cannot readmit paid routing on a drained account.
+  const balanceMonitorHydrated = await initializeOpenRouterBalanceMonitor();
+  if (!balanceMonitorHydrated) {
+    warn('⚠️  OpenRouter balance monitor state is memory-only; a restart forgets low-balance pauses until the next probe');
+  }
+
   const credits = await initializeProviderCredits();
+  // Recurring balance check: 60 s while paid routing is enabled, 5 min
+  // otherwise. Each round re-probes balances and runs the monitor.
+  startOpenRouterBalanceMonitor({
+    paidRoutingEnabled: paidLLMFallbackEnabled,
+    refresh: async () => {
+      await refreshProviderCredits();
+    },
+  });
   if (credits && credits.status !== 'ok') {
     warn(`⚠️  OpenRouter credits: ${credits.status} ($${credits.remaining} left) — ${credits.detail ?? ''}`);
   } else if (credits) {
