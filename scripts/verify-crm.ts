@@ -300,7 +300,9 @@ async function databaseChecks(): Promise<void> {
   // of send. A STOP by text after release must still block the queued call.
   const { getSendSafeguard, SendSafeguardError } = await import('../packages/core/src/send-safeguard.js');
   const engine = await getSendSafeguard();
-  const heldPhone = `+1504556${stamp.slice(-4).padStart(4, '0')}`;
+  // Digits only: `stamp` is base 36, and letters would shorten the number
+  // below what normalizePhone accepts.
+  const heldPhone = `+1504556${String(Date.now()).slice(-4)}`;
   const heldContact = await findOrCreateContact(db, heldPhone, { name: 'Held Call' });
   const releasedCall = async () => {
     const { job, recipients } = await engine.createJob({
