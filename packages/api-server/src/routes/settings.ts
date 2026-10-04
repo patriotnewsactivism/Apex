@@ -138,6 +138,8 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'TOMTOM_API_KEY', label: 'TomTom Search API Key', placeholder: 'TomTom Search API key', secret: true },
       { key: 'TAVILY_API_KEY', label: 'Tavily API Key', placeholder: 'tvly-...', secret: true },
       { key: 'BRAVE_SEARCH_API_KEY', label: 'Brave Search API Key', placeholder: 'Brave Search key', secret: true },
+      { key: 'BRIGHT_DATA_API_KEY', label: 'Bright Data API Key', placeholder: 'Bright Data key', secret: true },
+      { key: 'BRIGHT_DATA_ZONE', label: 'Bright Data SERP Zone', placeholder: 'serp_api1', secret: false },
     ],
   },
   {

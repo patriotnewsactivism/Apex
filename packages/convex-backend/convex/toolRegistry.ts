@@ -765,6 +765,44 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
         }
       }
 
+      // Bright Data SERP API — free tier (5,000 credits/mo, no card). Uses the
+      // /request endpoint with a SERP zone. Bing is the default target because
+      // Google throws captcha challenges on fresh zones; Bing returns parsed
+      // results reliably. Set BRIGHT_DATA_API_KEY and BRIGHT_DATA_ZONE in env.
+      const brightDataKey = process.env.BRIGHT_DATA_API_KEY;
+      const brightDataZone = process.env.BRIGHT_DATA_ZONE;
+      if (brightDataKey && brightDataZone) {
+        try {
+          const bdRes = await fetch('https://api.brightdata.com/request', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
+            body: JSON.stringify({
+              zone: brightDataZone,
+              url: `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+              format: 'json',
+              data_format: 'parsed',
+            }),
+          });
+          if (bdRes.ok) {
+            const bdData = (await bdRes.json()) as {
+              status_code?: number;
+              body?: string;
+            };
+            if (bdData.status_code === 200 && bdData.body) {
+              const parsed = JSON.parse(bdData.body) as {
+                organic?: Array<{ title: string; link: string; description?: string }>;
+              };
+              for (const r of parsed.organic ?? []) {
+                results.push({ title: r.title, url: r.link, snippet: r.description ?? '' });
+              }
+              if (results.length > 0) return { query, provider: 'brightdata', results: results.slice(0, n) };
+            }
+          }
+        } catch (e) {
+          console.warn(`[webSearch] Bright Data failed for "${query}": ${e}`);
+        }
+      }
+
       try {
         const ddgUrl = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
         const ddgRes = await fetch(ddgUrl, {
