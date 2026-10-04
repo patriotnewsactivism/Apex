@@ -366,6 +366,36 @@ async function main(): Promise<void> {
   check('approval sweep excludes outbound sales tools', sweep.includes('OUTBOUND_SALES_SEND_TOOLS'));
   const campaigns = read('packages/api-server/src/routes/email-campaigns.ts');
   check('campaign cancel cascades', campaigns.includes('cascadeCampaignCancellation'));
+  const rehearsalFloor = read('packages/api-server/src/routes/sales-floor.ts');
+  const holdMark = rehearsalFloor.indexOf('REHEARSAL_SAFEGUARD_HOLDS');
+  const dialMark = rehearsalFloor.indexOf('startCartesiaSalesCall({');
+  check(
+    'a held practice email still stages the outbound call',
+    holdMark > -1 && dialMark > holdMark && !/if \(error instanceof SendSafeguardError\) \{\s*return \{\s*status: 202/.test(rehearsalFloor),
+  );
+  const rehearsalUi = read('packages/dashboard/src/components/SalesFloor.tsx');
+  check('rehearsal result does not read call.id unconditionally', !rehearsalUi.includes('run.data.call.id'));
+  check('rehearsal result uses the safe summary', rehearsalUi.includes('describeRehearsalOutcome'));
+  const { describeRehearsalOutcome } = await import('../packages/dashboard/src/lib/rehearsal-outcome.ts');
+  const heldWithoutCall = describeRehearsalOutcome({
+    awaitingSafeguard: true,
+    email: { success: false, error: 'Nothing was sent. Clear this send in Pending sends.' },
+  });
+  check(
+    'a safeguard hold with no call object stays readable',
+    heldWithoutCall.includes('Call did not start.') && heldWithoutCall.includes('Pending sends') && !heldWithoutCall.includes('undefined'),
+  );
+  const placed = describeRehearsalOutcome({
+    email: { success: true, status: 'sent' },
+    call: { success: true, callId: 'ac_123' },
+  });
+  check('a placed rehearsal call is reported by its call id', placed.includes('ac_123') && placed.includes('Email sent'));
+  const heldCall = describeRehearsalOutcome({
+    awaitingSafeguard: true,
+    email: { success: false, status: 'pending', error: 'Nothing was sent. Clear this send in Pending sends.' },
+    call: { success: false, awaitingSafeguard: true, error: 'Nothing was sent. Clear this send in Pending sends.' },
+  });
+  check('a staged call tells the operator to release it', heldCall.includes('Nothing was dialed yet') && heldCall.includes('release the call'));
 
   installSendSafeguardForTests(null);
   console.log(failures === 0 ? '\nSend safeguard checks passed.' : `\n${failures} send safeguard check(s) failed.`);

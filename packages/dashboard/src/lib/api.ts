@@ -1297,10 +1297,14 @@ export interface RehearsalPreview {
 }
 
 export interface RehearsalResult {
-  email: { success: boolean; status: string; error?: string; providerId?: string };
-  call: { success?: boolean; id?: string; callId?: string; error?: string };
-  playbookId: string;
-  version: number;
+  email?: { success: boolean; status?: string; error?: string; providerId?: string };
+  call?: { success?: boolean; id?: string; callId?: string; error?: string; awaitingSafeguard?: boolean; sendJobId?: string | null };
+  playbookId?: string;
+  version?: number;
+  /** True when the phone call is sitting in Pending sends and has not been dialed. */
+  awaitingSafeguard?: boolean;
+  sendJobId?: string | null;
+  error?: string;
 }
 
 export interface SalesFloorSuggestion {

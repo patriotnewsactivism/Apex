@@ -315,6 +315,10 @@ type RehearsalTarget = {
 
 type RehearsalPolicy = NonNullable<Awaited<ReturnType<typeof loadOutboundPolicy>>>;
 
+/** Confirm / code / release holds. The call is still staged so Pending sends
+ *  can dial it. Kill switch and lock are not holds — they stop the call too. */
+const REHEARSAL_SAFEGUARD_HOLDS = new Set(['awaiting_confirm', 'awaiting_code', 'awaiting_release']);
+
 /**
  * Sends the designed email to the OPERATOR's rehearsal address and calls the
  * OPERATOR's rehearsal phone, written as if the target were the buyer. The
@@ -386,30 +390,47 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     createdByAgentId: 'operator',
   });
   let email: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
+  let emailHeld = false;
+  let emailJobId: string | null = null;
   try {
     email = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, `[Practice] ${subject.text}`, html.text, { text: text.text });
   } catch (error) {
-    if (error instanceof SendSafeguardError) {
-      return {
-        status: 202,
-        body: {
-          awaitingSafeguard: true,
-          sendJobId: error.jobId,
-          email: { success: false, error: 'Nothing was sent. Clear this send in Pending sends.' },
-        },
-      };
+    // A held practice email used to return here with no `call` object. The
+    // Revenue page then crashed on `call.id`, and the phone job was never
+    // staged, so releasing Pending sends could not dial. Hold reasons keep
+    // going and stage the call. A kill switch or lock still stops both.
+    if (!(error instanceof SendSafeguardError) || !REHEARSAL_SAFEGUARD_HOLDS.has(error.reason)) {
+      if (error instanceof SendSafeguardError) {
+        return {
+          status: error.reason === 'kill_switch' || error.reason === 'locked' ? 409 : 502,
+          body: {
+            email: { success: false, status: 'blocked', error: error.message },
+            call: { success: false, error: error.message },
+            error: error.message,
+          },
+        };
+      }
+      throw error;
     }
-    throw error;
+    emailHeld = true;
+    emailJobId = error.jobId;
+    email = {
+      success: false,
+      status: 'pending',
+      error: 'Nothing was sent. Clear this send in Pending sends.',
+    };
   }
-  await recordOutboundAudit({
-    toolName: 'send_email',
-    destination: policy.rehearsalEmail,
-    leadId: target.leadId,
-    policyMode: policy.mode,
-    providerId: email.providerId ?? null,
-    rehearsal: true,
-    detail: email.success ? 'rehearsal open email' : email.error ?? 'rehearsal email failed',
-  });
+  if (!emailHeld) {
+    await recordOutboundAudit({
+      toolName: 'send_email',
+      destination: policy.rehearsalEmail,
+      leadId: target.leadId,
+      policyMode: policy.mode,
+      providerId: email.providerId ?? null,
+      rehearsal: true,
+      detail: email.success ? 'rehearsal open email' : email.error ?? 'rehearsal email failed',
+    });
+  }
 
   const callOpening = renderPlaybookTemplate(playbook.call.firstMessage, fields);
   const callPrompt = renderPlaybookTemplate(playbook.call.assistantPrompt, fields);
@@ -439,27 +460,36 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     createdByAgentId: 'operator',
   }).then(
     (started) => ({ success: true as const, ...started }),
-    (err: unknown) => ({
-      success: false as const,
-      awaitingSafeguard: err instanceof SendSafeguardError,
-      sendJobId: err instanceof SendSafeguardError ? err.jobId : undefined,
-      error: err instanceof SendSafeguardError
-        ? 'Nothing was sent. Clear this send in Pending sends.'
-        : err instanceof Error ? err.message : String(err),
-    }),
+    (err: unknown) => {
+      const held = err instanceof SendSafeguardError && REHEARSAL_SAFEGUARD_HOLDS.has(err.reason);
+      return {
+        success: false as const,
+        awaitingSafeguard: held,
+        sendJobId: err instanceof SendSafeguardError ? err.jobId : undefined,
+        error: held
+          ? 'Nothing was sent. Clear this send in Pending sends.'
+          : err instanceof Error ? err.message : String(err),
+      };
+    },
   );
 
-  await commitCallOutcome({
-    id: crypto.randomUUID(),
-    callId: call.success ? `cartesia:${call.callId}` : `failed_${crypto.randomUUID()}`,
-    leadId: target.leadId,
-    customerNumber: policy.rehearsalPhone,
-    customerName: policy.personaName ?? target.buyerName,
-    disposition: call.success ? 'no_decision' : 'failed_to_dial',
-    summary: call.success ? 'Playbook rehearsal call initiated.' : `Playbook call failed: ${call.error}`,
-    createdByAgentId: 'operator',
-    conflictUpdate: call.success,
-  });
+  const callHeld = !call.success && call.awaitingSafeguard;
+  const failureError = call.success ? null : (call.error || email.error || 'The rehearsal call did not start.');
+  // A safeguard hold is not a failed dial. The release path writes the outcome
+  // when the operator actually lets the call go out.
+  if (!callHeld) {
+    await commitCallOutcome({
+      id: crypto.randomUUID(),
+      callId: call.success ? `cartesia:${call.callId}` : `failed_${crypto.randomUUID()}`,
+      leadId: target.leadId,
+      customerNumber: policy.rehearsalPhone,
+      customerName: policy.personaName ?? target.buyerName,
+      disposition: call.success ? 'no_decision' : 'failed_to_dial',
+      summary: call.success ? 'Playbook rehearsal call initiated.' : `Playbook call failed: ${call.error}`,
+      createdByAgentId: 'operator',
+      conflictUpdate: call.success,
+    });
+  }
 
   await recordOutboundAudit({
     toolName: 'make_outbound_call',
@@ -468,12 +498,26 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     policyMode: policy.mode,
     providerId: call.success ? call.callId : null,
     rehearsal: true,
-    detail: call.success ? 'canonical Cartesia rehearsal call' : call.error,
+    detail: call.success
+      ? 'canonical Cartesia rehearsal call'
+      : callHeld
+        ? 'rehearsal call waiting in Pending sends'
+        : call.error,
   });
 
+  const awaiting = !call.success && (emailHeld || callHeld);
+  const status = call.success ? 201 : awaiting ? 202 : email.success ? 201 : 502;
   return {
-    status: email.success || call.success ? 201 : 502,
-    body: { email, call, playbookId: playbook.id, version: playbook.version },
+    status,
+    body: {
+      email,
+      call,
+      playbookId: playbook.id,
+      version: playbook.version,
+      awaitingSafeguard: awaiting,
+      sendJobId: call.success ? emailJobId : (call.sendJobId ?? emailJobId),
+      ...(status >= 400 && failureError ? { error: failureError } : {}),
+    },
   };
 }
 

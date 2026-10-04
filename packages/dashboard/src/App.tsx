@@ -744,6 +744,15 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     settings: { title: 'Settings', kicker: 'Systems' },
   };
 
+  useEffect(() => {
+    const onNavigate = (event: Event) => {
+      const page = (event as CustomEvent<{ page?: string }>).detail?.page;
+      if (page === 'pending-sends') setActivePage(page);
+    };
+    window.addEventListener('apex:navigate', onNavigate);
+    return () => window.removeEventListener('apex:navigate', onNavigate);
+  }, []);
+
   const meta = pageTitles[activePage] ?? { title: activePage, kicker: '' };
 
   return (

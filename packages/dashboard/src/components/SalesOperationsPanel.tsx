@@ -10,6 +10,7 @@ import { CallBridgePanel } from './CallBridgePanel.js';
 import { CallLogPanel } from './CallLogPanel.js';
 import { LineLampsPanel } from './LineLampsPanel.js';
 import { Activity, PhoneCall, MessageSquare, Mail, Zap, Crosshair } from 'lucide-react';
+import { PanelErrorBoundary } from './PanelErrorBoundary.js';
 
 // ─── Sales Operations — the one-stop shop ──────────────────────────────────
 //
@@ -118,7 +119,11 @@ export function SalesOperationsPanel() {
       )}
 
       {(tab === 'overview' || tab === 'calls') && <LineLampsPanel />}
-      {tab === 'overview' && <SalesFloor />}
+      {tab === 'overview' && (
+        <PanelErrorBoundary name="Sales floor">
+          <SalesFloor />
+        </PanelErrorBoundary>
+      )}
       {tab === 'overview' && overview && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <UpcomingAppointments />
