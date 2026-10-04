@@ -293,6 +293,55 @@ async function main(): Promise<void> {
     check('suppressed recipient is marked blocked', after.recipients[0]?.status === 'blocked');
   }
 
+  console.log('── operator-started rehearsal skips both codes ──');
+  {
+    const { store, safeguard } = engine();
+    await expectBlocked(
+      'a tool cannot open an operator-direct send',
+      () => safeguard.createJob({
+        caller: 'tool',
+        createdBy: 'agent',
+        operatorDirect: true,
+        recipients: [{ channel: 'phone', destination: '+17135550199', messageText: 'test call' }],
+      }),
+      'operator_session_required',
+    );
+    store.killSwitch = true;
+    await expectBlocked(
+      'kill switch blocks an operator-direct send',
+      () => safeguard.createJob({
+        caller: 'operator-dashboard',
+        createdBy: 'operator',
+        operatorDirect: true,
+        recipients: [{ channel: 'phone', destination: '+17135550199', messageText: 'test call' }],
+      }),
+      'kill_switch',
+    );
+    store.killSwitch = false;
+    const direct = await safeguard.createJob({
+      caller: 'operator-dashboard',
+      createdBy: 'operator',
+      operatorDirect: true,
+      recipients: [{ channel: 'phone', destination: '+17135550199', messageText: 'test call' }],
+    });
+    check('operator-direct job is already sending', direct.job.status === 'sending' && direct.job.fullAuto === true);
+    check('operator-direct job records both confirmations without a typed code', Boolean(direct.job.confirm1At && direct.job.confirm2At && direct.job.codeVerifiedAt));
+    const cleared = await safeguard.assertSendAllowed(direct.job.id, '+17135550199', 'phone');
+    check('operator-direct call is cleared', cleared.status === 'sending');
+    const events = await store.listEvents(direct.job.id);
+    check('operator-direct send is audited', events.some((event) => event.eventType === 'operator_direct'));
+    const salesFloor = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../packages/api-server/src/routes/sales-floor.ts'), 'utf8');
+    const registry = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../packages/core/src/tool-registry.ts'), 'utf8');
+    const rehearsal = salesFloor.slice(salesFloor.indexOf('async function finishRehearsal'));
+    check(
+      'rehearsal dials only inside an operator session and only to the saved rehearsal phone',
+      salesFloor.includes("runWithSendCaller('operator-dashboard'") &&
+        rehearsal.includes('operatorDirect: true') &&
+        rehearsal.includes('toNumber: rehearsalPhone') &&
+        !registry.includes('operatorDirect'),
+    );
+  }
+
   console.log('── caller classification and auto-approve default ──');
   check(
     'admin token without a dashboard session is not the operator',
