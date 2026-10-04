@@ -428,3 +428,13 @@ When documentation conflicts with current runtime evidence, state the conflict, 
 - `APEX_ADMIN_TOKEN` is the only secret required at boot: `api-server/src/middleware/auth.ts` calls `requireEnv` at module load and the server crashes without it. Placeholders live in `.env.base44-defaults` (FIRST env_file); real values come from the platform-managed `/run/base44/app.env` (LAST env_file, always wins).
 - Vite config sets `server.allowedHosts: true` because the preview hostname changes when the sandbox is recreated.
 - Verify the stack: `docker compose -f docker-compose.base44.yml ps` (db healthy, app up), then `curl -sf -H "Host: x.example.com" http://localhost:3000/` for the dashboard and `curl -X POST .../api/auth/login` for the API through the proxy.
+
+## Cursor Cloud Agent
+
+Cloud Agent sessions for this repository use a local PostgreSQL 16 cluster and `pnpm run dev`. That environment is a development desk. Production remains Railway service `apex-backend`.
+
+- Install runs `pnpm install --frozen-lockfile` after PostgreSQL 16 is present (`pg_isready` on `PATH`).
+- On boot, Postgres listens on `127.0.0.1:5432`. The local role and database are both `apex`. `DATABASE_URL` defaults to `postgres://apex:apex_dev_password@127.0.0.1:5432/apex`, the same local password as `docker-compose.base44.yml`.
+- `pnpm run dev` serves the API on port 5000 and the Vite dashboard on port 3000. The dashboard proxies `/api` and `/ws` to the API.
+- `APEX_ADMIN_TOKEN` is required before the API module loads. When `APEX_ADMIN_TOKEN` and `APEX_ADMIN_PASSWORD` are unset, the Cloud Agent start script supplies local-only placeholders so the desk can log in. Override them with Cloud Agent secrets. Do not copy those placeholders into Railway or any shared environment.
+- Provider keys are optional here. `GET /health` and the dashboard boot without them; inference stays unconfigured.
