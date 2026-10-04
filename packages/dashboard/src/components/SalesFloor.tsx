@@ -118,7 +118,7 @@ function RehearsalCard({ preview }: { preview?: { subject: string; body: string;
     <div className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div className="apex-display" style={{ fontSize: 15 }}>Sell to me</div>
       <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>
-        Sends the designed intro to your email and calls your phone as if you were the client. Nothing else is contacted. If Pending sends is holding outbound work, the call is staged there instead of dialing immediately.
+        Calls your phone now, and emails the designed intro to you, as if you were the client. You do not enter the two confirmations or the send code for this practice call. Nothing else is contacted. The kill switch still stops it.
       </div>
       {preview && (
         <div style={{ fontSize: 12, color: 'var(--color-apex-text)', whiteSpace: 'pre-wrap' }}>

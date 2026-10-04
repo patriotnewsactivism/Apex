@@ -246,6 +246,12 @@ export interface StartCartesiaSalesCallInput {
   createdByAgentId?: string | null;
   ringingTimeoutSeconds?: number;
   sendJobId?: string | null;
+  /**
+   * Operator-started rehearsal or test call. Applied only when the
+   * surrounding caller is the operator dashboard, and only then does the
+   * call skip the two confirmations and the volume code.
+   */
+  operatorDirect?: boolean;
 }
 
 export interface StartCartesiaSalesCallResult {
@@ -262,13 +268,15 @@ export async function startCartesiaSalesCall(
 ): Promise<StartCartesiaSalesCallResult> {
   const toNumber = normalizeE164(input.toNumber);
   if (!toNumber) throw new Error('Destination phone number is invalid.');
-  const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
+  const { assertSendAllowed, currentSendCaller, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
   let sendJobId = input.sendJobId ?? null;
   let safeguardRecipientId: string | null = null;
   try {
     if (!sendJobId) {
+      const operatorDirect = input.operatorDirect === true && currentSendCaller() === 'operator-dashboard';
       const opened = await openOutboundSendJob({
-        caller: 'tool',
+        caller: operatorDirect ? 'operator-dashboard' : 'tool',
+        operatorDirect,
         createdBy: input.createdByAgentId ?? 'cartesia-sales',
         campaignKey: input.campaignId ?? null,
         recipients: [{

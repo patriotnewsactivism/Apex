@@ -46,6 +46,7 @@ export type RecipientStatus =
 
 export type SafeguardEventType =
   | 'job_created'
+  | 'operator_direct'
   | 'confirm_1'
   | 'confirm_2'
   | 'code_ok'
@@ -347,6 +348,13 @@ export interface CreateSendJobInput {
   campaignKey?: string | null;
   storyKey?: string | null;
   fullAuto?: boolean;
+  /**
+   * Operator-started rehearsal or test send. Honored only for caller
+   * `operator-dashboard`. It records both confirmations and waives the
+   * volume code for this job alone. The kill switch, lockout, and
+   * do-not-contact checks still run. Any other caller is rejected.
+   */
+  operatorDirect?: boolean;
   createdBy: string;
   recipients: Array<{
     channel: SendChannel;
@@ -466,6 +474,13 @@ export class SendSafeguard {
       await this.audit(null, 'send_attempt', { result: 'blocked', reason: 'kill_switch', phase: 'enqueue' });
       throw new SendSafeguardError('The outbound kill switch is on. Nothing was queued.', 'kill_switch');
     }
+    const direct = input.operatorDirect === true;
+    if (direct && input.caller !== 'operator-dashboard') {
+      throw new SendSafeguardError(
+        'Only an operator-started rehearsal or test send can go out without the confirmations.',
+        'operator_session_required',
+      );
+    }
     const now = this.iso();
     const normalized = input.recipients.map((recipient) => ({
       channel: recipient.channel,
@@ -477,11 +492,11 @@ export class SendSafeguard {
       id: randomUUID(),
       campaignKey: input.campaignKey?.trim() || null,
       storyKey: input.storyKey?.trim() || null,
-      fullAuto: input.caller === 'operator-dashboard' && input.fullAuto === true,
-      status: 'waiting_confirm',
-      confirm1At: null,
-      confirm2At: null,
-      codeVerifiedAt: null,
+      fullAuto: direct || (input.caller === 'operator-dashboard' && input.fullAuto === true),
+      status: direct ? 'sending' : 'waiting_confirm',
+      confirm1At: direct ? now : null,
+      confirm2At: direct ? now : null,
+      codeVerifiedAt: direct ? now : null,
       contentHash: hashSendContent(normalized),
       createdBy: input.createdBy,
       createdAt: now,
@@ -506,12 +521,13 @@ export class SendSafeguard {
       await this.store.saveRecipient(row);
       recipients.push(row);
     }
-    await this.audit(job.id, 'job_created', {
+    await this.audit(job.id, direct ? 'operator_direct' : 'job_created', {
       count: recipients.length,
       channels: [...new Set(recipients.map((row) => row.channel))],
       fullAuto: job.fullAuto,
+      operatorDirect: direct,
     });
-    emitStatus(job.id, job.status, 'waiting for confirm');
+    emitStatus(job.id, job.status, direct ? 'code entered, sending' : 'waiting for confirm');
     return { job, recipients };
   }
 

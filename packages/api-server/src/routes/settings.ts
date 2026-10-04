@@ -150,7 +150,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'CARTESIA_API_KEY', label: 'API Key', placeholder: 'sk_car_...', secret: true },
       { key: 'CARTESIA_TOOL_SECRET', label: 'APEX Tool Bearer Secret', placeholder: 'long random secret', secret: true },
       { key: 'CARTESIA_WEBHOOK_SECRET', label: 'Call Event Webhook Secret', placeholder: 'long random secret', secret: true },
-      { key: 'CARTESIA_SALES_MODEL_ID', label: 'Sales Agent Model', placeholder: 'gpt-5.4-mini' },
+      { key: 'CARTESIA_SALES_MODEL_ID', label: 'Sales Agent Model', placeholder: 'claude-haiku-4.5' },
       { key: 'CARTESIA_SALES_VOICE_ID', label: 'Sales Agent Voice ID', placeholder: 'Cartesia voice UUID' },
     ],
   },
