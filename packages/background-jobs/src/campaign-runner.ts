@@ -652,7 +652,7 @@ export class CampaignRunner {
     // provider is configured, do not issue guaranteed-fail searches for every
     // candidate on every interval; first-party crawling remains active in the
     // normal lead pipeline and this lane resumes automatically once a key is set.
-    if (!process.env.TAVILY_API_KEY && !process.env.BRAVE_SEARCH_API_KEY) return;
+    if (!process.env.TAVILY_API_KEY && !process.env.BRAVE_SEARCH_API_KEY && !process.env.SERPER_API_KEY && !process.env.BRIGHT_DATA_API_KEY) return;
     const nowMs = Date.now();
     const intervalMs = Math.max(15_000, Number(process.env.LEAD_CONTACT_SEARCH_INTERVAL_MS ?? 60_000));
     if (nowMs < this.contactSearchBackoffUntil) return;
@@ -1143,6 +1143,8 @@ export class CampaignRunner {
       const hasFastWeb = Boolean(
         process.env.TAVILY_API_KEY ||
         process.env.BRAVE_SEARCH_API_KEY ||
+        process.env.SERPER_API_KEY ||
+        process.env.BRIGHT_DATA_API_KEY ||
         (process.env.BUILDMYBOT_TAVILY_PROXY_URL && process.env.BUILDMYBOT_TAVILY_PROXY_SECRET),
       );
       const hasFastStructured = Boolean(process.env.YELP_API_KEY || process.env.GOOGLE_PLACES_API_KEY);

@@ -1176,6 +1176,94 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           }
         }
 
+        // ── Strategy 1b: Serper.dev (Google results, free 2,500 queries/mo) ──
+        const serperKey = process.env.SERPER_API_KEY;
+        if (!serperKey) diagnostics.push('serper: SERPER_API_KEY not set');
+        if (freeOnly && serperKey) diagnostics.push('serper: skipped by freeOnly mode');
+        if (!freeOnly && serperKey && !webSearchProviderReady('serper')) {
+          diagnostics.push('serper: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && serperKey && webSearchProviderReady('serper')) {
+          try {
+            const serperRes = await fetch('https://google.serper.dev/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-API-KEY': serperKey },
+              body: JSON.stringify({ q: query, num: n }),
+              signal: AbortSignal.timeout(20_000),
+            });
+            if (!serperRes.ok) {
+              const body = await serperRes.text().catch(() => '');
+              const detail = `serper: HTTP ${serperRes.status} ${body.slice(0, 200)}`.trim();
+              diagnostics.push(detail);
+              tripWebSearchProvider('serper', serperRes.status, body);
+              console.warn(`[webSearch] ${detail} for "${query}"`);
+            }
+            if (serperRes.ok) {
+              const serperData = await serperRes.json() as {
+                organic?: Array<{ title: string; link: string; snippet?: string }>;
+              };
+              for (const r of serperData.organic ?? []) {
+                results.push({ title: r.title, url: r.link, snippet: r.snippet ?? '' });
+              }
+              if (results.length > 0) return { query, provider: 'serper', results: results.slice(0, n) };
+              diagnostics.push('serper: 200 but zero results');
+            }
+          } catch (e) {
+            diagnostics.push(`serper: ${e instanceof Error ? e.message : String(e)}`);
+            console.warn(`[webSearch] Serper failed for "${query}": ${e}`);
+          }
+        }
+
+        // ── Strategy 1c: Bright Data SERP API (free 5,000 credits/mo, no card) ──
+        // Uses the /request endpoint with a SERP zone. Bing is the default target
+        // because Google throws captcha challenges on fresh zones; Bing returns
+        // parsed results reliably.
+        const brightDataKey = process.env.BRIGHT_DATA_API_KEY;
+        const brightDataZone = process.env.BRIGHT_DATA_ZONE;
+        if (!brightDataKey) diagnostics.push('brightdata: BRIGHT_DATA_API_KEY not set');
+        if (brightDataKey && !brightDataZone) diagnostics.push('brightdata: BRIGHT_DATA_ZONE not set');
+        if (freeOnly && brightDataKey) diagnostics.push('brightdata: skipped by freeOnly mode');
+        if (!freeOnly && brightDataKey && !webSearchProviderReady('brightdata')) {
+          diagnostics.push('brightdata: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && brightDataKey && brightDataZone && webSearchProviderReady('brightdata')) {
+          try {
+            const bdRes = await fetch('https://api.brightdata.com/request', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
+              body: JSON.stringify({
+                zone: brightDataZone,
+                url: `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+                format: 'json',
+                data_format: 'parsed',
+              }),
+              signal: AbortSignal.timeout(25_000),
+            });
+            if (!bdRes.ok) {
+              const body = await bdRes.text().catch(() => '');
+              const detail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
+              diagnostics.push(detail);
+              tripWebSearchProvider('brightdata', bdRes.status, body);
+              console.warn(`[webSearch] ${detail} for "${query}"`);
+            } else {
+              const bdData = await bdRes.json() as { status_code?: number; body?: string };
+              if (bdData.status_code === 200 && bdData.body) {
+                const parsed = JSON.parse(bdData.body) as {
+                  organic?: Array<{ title: string; link: string; description?: string }>;
+                };
+                for (const r of parsed.organic ?? []) {
+                  results.push({ title: r.title, url: r.link, snippet: r.description ?? '' });
+                }
+                if (results.length > 0) return { query, provider: 'brightdata', results: results.slice(0, n) };
+                diagnostics.push('brightdata: 200 but zero results');
+              }
+            }
+          } catch (e) {
+            diagnostics.push(`brightdata: ${e instanceof Error ? e.message : String(e)}`);
+            console.warn(`[webSearch] Bright Data failed for "${query}": ${e}`);
+          }
+        }
+
         // ── Strategy 2: DuckDuckGo HTML search (lite version) ──
         try {
           const ddgUrl = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
