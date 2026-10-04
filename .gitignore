@@ -44,3 +44,10 @@ system_prompt_*.txt
 
 # Machine-local / runtime state
 .config
+
+# Installed dependencies and local TypeScript build cache.
+# lib/db/dist is already tracked; this does not untrack it.
+node_modules/
+*.tsbuildinfo
+packages/dashboard/dist/
+.tmp-grok-workspace/
