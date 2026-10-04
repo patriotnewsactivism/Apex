@@ -438,7 +438,8 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
             const thinkPrompt =
               `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
               `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
-              `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
+              `no bullet lists, no markdown. Answer every part of what he just said before you move on; do not ` +
+              `drop a second question, a correction, or a detail. Reply as soon as he finishes. If he approves/rejects/acknowledges something, actually call the ` +
               `tool — don't just say you will. For multi-step, long-running, debugging, deployment, research, or ` +
               `architecture work, create_goal immediately and keep the live conversation responsive instead of ` +
               `trying to complete the heavy work inside this realtime turn. Acknowledge briefly, dispatch it, and ` +

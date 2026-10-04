@@ -91,6 +91,11 @@ export interface DeliverEmailOptions {
   sendJobId?: string | null;
   campaignKey?: string | null;
   storyKey?: string | null;
+  /**
+   * Operator-started rehearsal email. Applied only when the surrounding
+   * caller is the operator dashboard. Otherwise the normal gate stays.
+   */
+  operatorDirect?: boolean;
 }
 
 // A staged or released job whose recipient is refused before the gate runs
@@ -120,7 +125,7 @@ export async function deliverQueuedEmailSend(
   const { appendComplianceFooter } = await import('./outbound-policy.js');
   const email = toEmail.trim().toLowerCase();
 
-  const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
+  const { assertSendAllowed, currentSendCaller, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
   let sendJobId = options.sendJobId ?? null;
   let safeguardRecipientId: string | null = null;
 
@@ -173,8 +178,10 @@ export async function deliverQueuedEmailSend(
   // clears the operator gate before Resend is called.
   try {
     if (!sendJobId) {
+      const operatorDirect = options.operatorDirect === true && currentSendCaller() === 'operator-dashboard';
       const opened = await openOutboundSendJob({
-        caller: 'tool',
+        caller: operatorDirect ? 'operator-dashboard' : 'tool',
+        operatorDirect,
         createdBy: 'email-delivery',
         campaignKey: options.campaignKey ?? null,
         storyKey: options.storyKey ?? null,

@@ -26,6 +26,7 @@ import {
   recordOutboundAudit,
   rehearsalPersonaFields,
   renderPlaybookTemplate,
+  runWithSendCaller,
   sameEmail,
   startCartesiaSalesCall,
 } from '@workspace/core';
@@ -389,11 +390,35 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     subject: `[Practice] ${subject.text}`,
     createdByAgentId: 'operator',
   });
+  // The operator already asked for this rehearsal. Dial and mail their own
+  // profile without the two confirmations or the volume code. A held email
+  // must not skip the call.
+  return runWithSendCaller('operator-dashboard', () => finishRehearsal(policy, target, playbook, fields, sendId, subject.text, html.text, text.text));
+}
+
+async function finishRehearsal(
+  policy: RehearsalPolicy,
+  target: RehearsalTarget,
+  playbook: NonNullable<ReturnType<typeof getSalesPlaybook>>,
+  fields: ReturnType<typeof rehearsalPersonaFields>,
+  sendId: string,
+  subjectText: string,
+  htmlText: string,
+  textBody: string,
+) {
+  if (!policy.rehearsalEmail || !policy.rehearsalPhone) {
+    return { status: 400, body: { error: 'Rehearsal email and phone are required.' } };
+  }
+  const rehearsalEmail = policy.rehearsalEmail;
+  const rehearsalPhone = policy.rehearsalPhone;
   let email: Awaited<ReturnType<typeof deliverQueuedEmailSend>>;
   let emailHeld = false;
   let emailJobId: string | null = null;
   try {
-    email = await deliverQueuedEmailSend(sendId, policy.rehearsalEmail, `[Practice] ${subject.text}`, html.text, { text: text.text });
+    email = await deliverQueuedEmailSend(sendId, rehearsalEmail, `[Practice] ${subjectText}`, htmlText, {
+      text: textBody,
+      operatorDirect: true,
+    });
   } catch (error) {
     // A held practice email used to return here with no `call` object. The
     // Revenue page then crashed on `call.id`, and the phone job was never
@@ -423,7 +448,7 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
   if (!emailHeld) {
     await recordOutboundAudit({
       toolName: 'send_email',
-      destination: policy.rehearsalEmail,
+      destination: rehearsalEmail,
       leadId: target.leadId,
       policyMode: policy.mode,
       providerId: email.providerId ?? null,
@@ -442,7 +467,7 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
   }
 
   try {
-    await assertContactSendable({ channel: 'phone', destination: policy.rehearsalPhone });
+    await assertContactSendable({ channel: 'phone', destination: rehearsalPhone });
   } catch (error) {
     if (error instanceof SendBlockedError) {
       return { status: 409, body: { email, error: error.message, doNotContact: true } };
@@ -451,13 +476,14 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
   }
 
   const call = await startCartesiaSalesCall({
-    toNumber: policy.rehearsalPhone,
+    toNumber: rehearsalPhone,
     customerName: policy.personaName ?? target.buyerName,
     firstMessage: callOpening.text,
     assistantPrompt: callPrompt.text,
     playbookId: playbook.id,
     leadId: target.leadId,
     createdByAgentId: 'operator',
+    operatorDirect: true,
   }).then(
     (started) => ({ success: true as const, ...started }),
     (err: unknown) => {
@@ -482,7 +508,7 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
       id: crypto.randomUUID(),
       callId: call.success ? `cartesia:${call.callId}` : `failed_${crypto.randomUUID()}`,
       leadId: target.leadId,
-      customerNumber: policy.rehearsalPhone,
+      customerNumber: rehearsalPhone,
       customerName: policy.personaName ?? target.buyerName,
       disposition: call.success ? 'no_decision' : 'failed_to_dial',
       summary: call.success ? 'Playbook rehearsal call initiated.' : `Playbook call failed: ${call.error}`,
@@ -493,7 +519,7 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
 
   await recordOutboundAudit({
     toolName: 'make_outbound_call',
-    destination: policy.rehearsalPhone,
+    destination: rehearsalPhone,
     leadId: target.leadId,
     policyMode: policy.mode,
     providerId: call.success ? call.callId : null,

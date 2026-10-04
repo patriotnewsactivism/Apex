@@ -176,7 +176,8 @@ check(
     !/initial_silence_timeout_secs\s*:/.test(reconciler) &&
     /inactivity_check_in_secs:\s*5/.test(reconciler) &&
     /do not speak immediately when the call connects/.test(reconciler) &&
-    /Give the callee about 1–2 seconds to answer first/.test(reconciler) &&
+    /Wait until the callee speaks, then answer immediately/.test(reconciler) &&
+    /ANSWER THE WHOLE TURN/.test(reconciler) &&
     /Never talk over their hello/.test(reconciler) &&
     /full name is for the initial identity check only/.test(reconciler) &&
     /Thanks, \{\{customer_first_name\}\}\. How’s your day going\?/.test(reconciler) &&
@@ -203,8 +204,9 @@ check(
     /Never switch to Spanish/.test(reconciler) &&
     /VOICE PACING: speak at a calm American conversational pace/.test(reconciler) &&
     /temperature:\s*0\.12/.test(reconciler) &&
-    /max_output_tokens:\s*144/.test(reconciler) &&
-    /one or two complete sentences per turn/.test(reconciler),
+    /max_output_tokens:\s*320/.test(reconciler) &&
+    /claude-haiku-4\.5/.test(reconciler) &&
+    /usually one to three, then stop/.test(reconciler),
 );
 check(
   'short uncertain transcripts are clarified instead of guessed or used to hang up',
@@ -236,7 +238,8 @@ check(
     /When a call comes in and nobody can answer, what happens to it\?$/.test(buildMyBotCallLine) &&
     (buildMyBotCallLine.match(/[.?!](?=\s|$)/g) ?? []).length <= 2 &&
     !/\{\{buyerName\}\}|\b(?:hi|hello|hey)\b|how(?:’|')?s your day/i.test(buildMyBotCallLine) &&
-    /acknowledge them by first name once, ask how their day is going, and give their answer a brief empathetic response before moving into the reason for the call/.test(playbooks) &&
+    /answer every part of what they just said before you continue/.test(playbooks) &&
+    /use their first name once/.test(playbooks) &&
     /Speak English only/.test(playbooks) &&
     /Use complete sentences at a relaxed pace/.test(playbooks),
 );
