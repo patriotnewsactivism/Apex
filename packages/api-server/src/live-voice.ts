@@ -29,14 +29,9 @@ import {
 // the default because Gemini's native audio voice cannot use the owned
 // Cartesia clone. Telephone voice is separate and continues through Telnyx.
 //
-// The "think" (LLM) step runs on Groq rather than Deepgram's own OpenAI
-// integration: Groq is one of Deepgram's explicitly documented "bring your
-// own" 3rd-party think providers (custom endpoint + Bearer key, OpenAI-
-// compatible request shape) — unlike OpenRouter, which isn't a documented
-// option at all. Apex holds no OpenAI/Anthropic key of its own, Matthew
-// already runs a working GROQ_API_KEY on other services, and Groq's low
-// latency is a genuine fit for a live spoken conversation specifically,
-// not just the safe fallback.
+// The "think" (LLM) step is an ordered fallback chain; see
+// buildLiveVoiceThink() below for the order and the reasons. Groq comes first
+// because it is free and its latency suits a live spoken conversation.
 //
 // The "speak" (TTS) step is Cartesia Sonic using the owned Don Matthews voice
 // clone. Deepgram's Voice Agent API supports Cartesia as a third-party speak
@@ -76,13 +71,74 @@ import {
 
 const DEEPGRAM_AGENT_URL = 'wss://agent.deepgram.com/v1/agent/converse';
 const GROQ_ENDPOINT_URL = 'https://api.groq.com/openai/v1/chat/completions';
-// llama-3.3-70b-versatile (the original choice) turned out to be deprecated on
-// Groq — confirmed live: Deepgram reached this exact endpoint with valid auth
-// and got back a clean 404 model_not_found, closing the session with
-// FAILED_TO_THINK. openai/gpt-oss-120b is Groq's current production model
-// with confirmed native tool-calling via the standard OpenAI `tools` format,
-// which is what this file's function-call relay depends on.
-const GROQ_THINK_MODEL = 'openai/gpt-oss-120b';
+
+/**
+ * The think step as an ordered fallback chain. Deepgram sends each turn to the
+ * first entry and moves to the next on an error or timeout. Only when every
+ * entry fails does it raise FAILED_TO_THINK, and it closes the session when it
+ * does.
+ *
+ * Groq limits each model separately for the whole organization: 8,000 tokens
+ * a minute on the on-demand tier. APEX's workforce sends requests of up to
+ * 7,600 tokens to openai/gpt-oss-120b on the same organization (llm-client.ts,
+ * through both GROQ_API_KEY and GROQ_API_KEY_2). With 120b as the only think
+ * model, a live call lost to background work. On 2026-10-04 every turn came
+ * back "Rate limit reached ... Used 7169", and the call dropped every 10 to 20
+ * seconds. A second key in the same organization does not help, because the
+ * limit belongs to the organization.
+ *
+ *   1. openai/gpt-oss-20b on Groq. Its budget is separate from 120b's, and
+ *      nothing else in APEX uses it. It is the Groq model Deepgram documents.
+ *   2. openai/gpt-oss-120b on Groq. Shared with the workforce, still free.
+ *   3. gpt-4o-mini managed by Deepgram. Billed through the Deepgram account,
+ *      like the phone receptionist's think step (telnyx-deepgram-agent.ts),
+ *      and independent of Groq.
+ *
+ * Every entry carries the full prompt and tools. Deepgram treats each entry as
+ * a complete think configuration, so an entry without them would answer with
+ * no instructions.
+ *
+ * (llama-3.3-70b-versatile, the first choice, was retired by Groq: Deepgram
+ * got a 404 model_not_found. Both gpt-oss models call tools through the
+ * standard OpenAI `tools` format that the function relay below depends on.)
+ */
+export const LIVE_VOICE_GROQ_THINK_MODELS = ['openai/gpt-oss-20b', 'openai/gpt-oss-120b'] as const;
+export const LIVE_VOICE_MANAGED_THINK_MODEL = 'gpt-4o-mini';
+
+export function buildLiveVoiceThink(groqKey: string, prompt: string, functions: unknown[]): Array<Record<string, unknown>> {
+  const groq = LIVE_VOICE_GROQ_THINK_MODELS.map((model) => ({
+    provider: { type: 'groq', model },
+    endpoint: { url: GROQ_ENDPOINT_URL, headers: { Authorization: `Bearer ${groqKey}` } },
+    prompt,
+    functions,
+  }));
+  return [...groq, { provider: { type: 'open_ai', model: LIVE_VOICE_MANAGED_THINK_MODEL }, prompt, functions }];
+}
+
+/**
+ * What a reconnect hands back to Deepgram so the agent does not forget the
+ * conversation. Every abnormal close starts a fresh agent session, and before
+ * this each one began with no memory of the call. Keeps the most recent turns
+ * that fit in maxChars, oldest dropped first, in Deepgram's History format.
+ */
+export const LIVE_VOICE_HISTORY_MAX_MESSAGES = 12;
+export const LIVE_VOICE_HISTORY_MAX_CHARS = 3_000;
+
+export function liveVoiceHistoryContext(
+  turns: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>,
+): Array<{ type: 'History'; role: 'user' | 'assistant'; content: string }> {
+  const kept: Array<{ type: 'History'; role: 'user' | 'assistant'; content: string }> = [];
+  let chars = 0;
+  for (let i = turns.length - 1; i >= 0 && kept.length < LIVE_VOICE_HISTORY_MAX_MESSAGES; i--) {
+    const content = turns[i].content.trim();
+    if (!content) continue;
+    if (chars + content.length > LIVE_VOICE_HISTORY_MAX_CHARS) break;
+    chars += content.length;
+    kept.unshift({ type: 'History', role: turns[i].role, content });
+  }
+  return kept;
+}
+
 const CARTESIA_LIVE_TTS_MODEL = 'sonic-2';
 /** Deepgram closes an idle agent session without a periodic nudge. */
 const KEEPALIVE_INTERVAL_MS = 5_000;
@@ -206,11 +262,11 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     }
 
     const deepgramKey = process.env.DEEPGRAM_API_KEY;
-    // GROQ_API_KEY is an account-level credential reused by other services on
-    // this Groq account, so its shared per-minute token budget could starve a
-    // live call regardless of what Apex itself sends. GROQ_API_KEY_2 is a
-    // dedicated key provisioned for live-voice specifically — prefer it, and
-    // only fall back to the shared key where the dedicated one isn't set.
+    // GROQ_API_KEY_2 is preferred, but it does not buy a separate budget when
+    // it belongs to the same Groq organization as GROQ_API_KEY: Groq limits
+    // the organization, per model. The workforce uses both keys too. What
+    // keeps a live call answering is the per-model fallback chain in
+    // buildLiveVoiceThink().
     const groqKey = process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY;
     if ((!deepgramKey || !groqKey) && !geminiStarted) {
       const missing = [!deepgramKey && 'DEEPGRAM_API_KEY', !groqKey && 'GROQ_API_KEY_2 or GROQ_API_KEY'].filter(Boolean).join(' and ');
@@ -282,6 +338,9 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
     // InjectUserMessage we sent ourselves. Track exactly what we injected so
     // its echo can be dropped instead of relayed to the client as a caption.
     const pendingContextEchoes = new Set<string>();
+    // Spoken turns of this call, restored into a reconnect's Settings so the
+    // agent keeps the conversation (liveVoiceHistoryContext).
+    const conversationTurns: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
     // Reconnect state, shared across every connectToDeepgram() attempt for
     // this one client session.
@@ -376,6 +435,20 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
             } catch (err) {
               console.error('[live-voice] buildLiveSnapshot failed:', err);
             }
+            const thinkPrompt =
+              `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
+              `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
+              `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
+              `tool — don't just say you will. For multi-step, long-running, debugging, deployment, research, or ` +
+              `architecture work, create_goal immediately and keep the live conversation responsive instead of ` +
+              `trying to complete the heavy work inside this realtime turn. Acknowledge briefly, dispatch it, and ` +
+              `stay available for another instruction while the swarm works.${currentPageNote}` +
+              `You will receive "[screen context]" updates whenever Don moves to a different Apex page. ` +
+              `Use them to understand what "this" or "that" refers to — NEVER read a screen update aloud, ` +
+              `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`;
+            // A reconnect is a new agent session. Without this it starts with
+            // no memory of what was just said.
+            const history = liveVoiceHistoryContext(conversationTurns);
             safeSendDeepgram({
               type: 'Settings',
               audio: {
@@ -384,23 +457,9 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               },
               agent: {
                 language: 'en',
+                ...(history.length > 0 ? { context: { messages: history } } : {}),
                 listen: { provider: { type: 'deepgram', model: 'nova-3-general' } },
-                think: {
-                  provider: { type: 'groq', model: GROQ_THINK_MODEL },
-                  endpoint: { url: GROQ_ENDPOINT_URL, headers: { Authorization: `Bearer ${groqKey}` } },
-                  prompt:
-                    `${CHAT_SYSTEM_PROMPT}\n\nThis is a LIVE VOICE call, not text chat — Don is talking to you out ` +
-                    `loud in real time. Speak naturally and conversationally, like a real phone call: shorter turns, ` +
-                    `no bullet lists, no markdown. If he approves/rejects/acknowledges something, actually call the ` +
-                    `tool — don't just say you will. For multi-step, long-running, debugging, deployment, research, or ` +
-                    `architecture work, create_goal immediately and keep the live conversation responsive instead of ` +
-                    `trying to complete the heavy work inside this realtime turn. Acknowledge briefly, dispatch it, and ` +
-                    `stay available for another instruction while the swarm works.${currentPageNote}` +
-                    `You will receive "[screen context]" updates whenever Don moves to a different Apex page. ` +
-                    `Use them to understand what "this" or "that" refers to — NEVER read a screen update aloud, ` +
-                    `comment on it, or reply to it.\n\nCurrent live snapshot:\n${snapshot}`,
-                  functions: CHAT_TOOLS,
-                },
+                think: buildLiveVoiceThink(groqKey, thinkPrompt, CHAT_TOOLS),
                 speak: {
                   provider: {
                     type: 'cartesia',
@@ -448,7 +507,7 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               pendingDeepgramContext = null;
             }
 
-            safeSendClient({ type: 'ready', provider: 'deepgram-fallback', model: GROQ_THINK_MODEL });
+            safeSendClient({ type: 'ready', provider: 'deepgram-fallback', model: LIVE_VOICE_GROQ_THINK_MODELS[0] });
             stopKeepAlive();
             keepAliveTimer = setInterval(() => safeSendDeepgram({ type: 'KeepAlive' }), KEEPALIVE_INTERVAL_MS);
             console.log('[live-voice] Settings applied');
@@ -491,6 +550,8 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
               }
               safeSendClient({ type: 'transcript', role, text });
               persistTurn(role, text);
+              conversationTurns.push({ role, content: text });
+              if (conversationTurns.length > LIVE_VOICE_HISTORY_MAX_MESSAGES * 2) conversationTurns.splice(0, conversationTurns.length - LIVE_VOICE_HISTORY_MAX_MESSAGES);
               if (role === 'user' && isExplicitLiveVoiceHangup(text)) {
                 intentionallyClosed = true;
                 void (async () => {
@@ -560,23 +621,24 @@ export function setupLiveVoice(server: Server, ceo: ApexCEO) {
             break;
           }
 
+          // One line each: Railway splits a multi-line entry, and the 429 that
+          // explained the 2026-10-04 drops was on the third line of every one.
           case 'Warning':
-            console.warn('[live-voice] Deepgram warning:', event);
+            console.warn('[live-voice] Deepgram warning:', JSON.stringify(event));
             break;
 
           case 'Error': {
-            console.error('[live-voice] Deepgram error:', event);
-            // FAILED_TO_THINK means Deepgram's request to Groq (the think
-            // provider) failed — most often a 429 on Groq's per-minute token
-            // budget for whichever account groqKey belongs to. Deepgram closes
-            // the whole agent session on this error regardless, so the 'close'
+            console.error('[live-voice] Deepgram error:', JSON.stringify(event));
+            // FAILED_TO_THINK means every think provider in the chain failed
+            // for this turn (buildLiveVoiceThink). Deepgram closes the whole
+            // agent session on this error regardless, so the 'close'
             // handler below is what decides whether to retry — this only
             // records the reason. It deliberately does NOT tell the client
             // yet: doing so here would flip the call to an error state before
             // a same-second reconnect even gets a chance to succeed.
             lastFailureReason =
               event.code === 'FAILED_TO_THINK'
-                ? "the assistant's AI provider is temporarily rate-limited"
+                ? "every AI provider for the assistant is rate-limited or unavailable"
                 : 'a voice provider error';
             break;
           }

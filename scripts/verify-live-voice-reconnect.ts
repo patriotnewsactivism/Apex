@@ -255,6 +255,76 @@ async function main(): Promise<void> {
       activationMarkActive > activationCredentialGuard,
   );
 
+  // ── The think step falls back instead of dropping the call ───────────────
+  // 2026-10-04: every turn hit Groq's 8,000 tokens/minute limit on
+  // openai/gpt-oss-120b, which the workforce saturates on the same Groq
+  // organization, and each FAILED_TO_THINK closed the session.
+  const tools = [{ name: 'create_goal', description: 'guard', parameters: { type: 'object', properties: {} } }];
+  const chain = mod.buildLiveVoiceThink('guard-key', 'guard prompt', tools) as Array<{
+    provider: { type: string; model: string };
+    endpoint?: { url: string; headers: Record<string, string> };
+    prompt?: string;
+    functions?: unknown[];
+  }>;
+  const llmClient = read('packages/core/src/llm-client.ts');
+  const workforceGroqModel = /name: 'groq-gpt-oss-120b-byok',\s*model: '([^']+)'/.exec(llmClient)?.[1];
+  check(
+    'think is an ordered chain: Groq gpt-oss-20b, Groq gpt-oss-120b, then Deepgram-managed gpt-4o-mini',
+    chain.map((entry) => `${entry.provider.type}:${entry.provider.model}`).join(' > ') ===
+      'groq:openai/gpt-oss-20b > groq:openai/gpt-oss-120b > open_ai:gpt-4o-mini',
+    chain.map((entry) => entry.provider),
+  );
+  check(
+    "the first think model is not the one the workforce saturates on the same Groq organization",
+    Boolean(workforceGroqModel) && chain[0].provider.model !== workforceGroqModel,
+    { first: chain[0].provider.model, workforce: workforceGroqModel },
+  );
+  check(
+    'every entry carries the full prompt and tools, so a fallback never answers without instructions',
+    chain.every((entry) => entry.prompt === 'guard prompt' && entry.functions === tools),
+  );
+  check(
+    'Groq entries send the key to the Groq endpoint; the managed entry has no endpoint and no key',
+    chain.slice(0, 2).every((entry) => entry.endpoint?.headers.Authorization === 'Bearer guard-key' && /api\.groq\.com/.test(entry.endpoint.url)) &&
+      chain[2].endpoint === undefined,
+  );
+  check(
+    'the Settings message uses the chain rather than a single provider',
+    /think: buildLiveVoiceThink\(groqKey, thinkPrompt, CHAT_TOOLS\)/.test(source) && !/think: \{\s*provider:/.test(source),
+  );
+
+  // ── A reconnect remembers the conversation ───────────────────────────────
+  const turns = Array.from({ length: 20 }, (_, i) => ({ role: (i % 2 ? 'assistant' : 'user') as 'user' | 'assistant', content: `turn ${i}` }));
+  const history = mod.liveVoiceHistoryContext([...turns, { role: 'user', content: '   ' }]);
+  check(
+    'history keeps the most recent turns, oldest first, in Deepgram History format, skipping blanks',
+    history.length === mod.LIVE_VOICE_HISTORY_MAX_MESSAGES &&
+      history[0].content === 'turn 8' &&
+      history[history.length - 1].content === 'turn 19' &&
+      history.every((message) => message.type === 'History'),
+    history.slice(0, 2),
+  );
+  const long = mod.liveVoiceHistoryContext([
+    { role: 'user', content: 'x'.repeat(2_000) },
+    { role: 'assistant', content: 'y'.repeat(1_500) },
+    { role: 'user', content: 'latest' },
+  ]);
+  check(
+    'history stays under the character cap by dropping the oldest turns',
+    long.length === 2 && long[1].content === 'latest' && long[0].content.startsWith('y'),
+    long.map((message) => message.content.length),
+  );
+  check(
+    'the Settings message restores history only when there is some',
+    /\.\.\.\(history\.length > 0 \? \{ context: \{ messages: history \} \} : \{\}\)/.test(source) &&
+      /conversationTurns\.push\(\{ role, content: text \}\)/.test(source),
+  );
+  check(
+    'Deepgram warnings and errors are logged on one line',
+    /console\.warn\('\[live-voice\] Deepgram warning:', JSON\.stringify\(event\)\)/.test(source) &&
+      /console\.error\('\[live-voice\] Deepgram error:', JSON\.stringify\(event\)\)/.test(source),
+  );
+
   if (failures > 0) {
     console.error(`\n${failures} live-voice-reconnect check(s) failed.`);
     process.exit(1);
