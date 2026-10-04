@@ -33,6 +33,14 @@ import {
   inspectFirstPartyContactUrl,
 } from './lead-pipeline.js';
 import { recordOperatorActivity } from './operator-activity.js';
+import {
+  classifyLeadDiscoveryFailure,
+  describeUnavailableSources,
+  discoveryZeroMessage,
+  leadSearchCapacityPause,
+  type LeadSearchCapacityPause,
+  type LeadSearchPauseSnapshot,
+} from './lead-search-capacity.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
 //
@@ -74,8 +82,11 @@ export interface CampaignProgress {
   campaignId: string;
   name: string;
   status: string;
-  /** running | stalled | paused | completed | completed_short | cancelled | failed */
+  /** running | waiting_for_search | stalled | paused | completed | completed_short | cancelled | failed */
   displayStatus: string;
+  /** Set while lead search is paused because every search source is
+   *  unavailable. Only on running campaigns. */
+  searchPause: LeadSearchPauseSnapshot | null;
   targetLeads: number;
   leadsSaved: number;
   /** 0-1, capped at 1 so an over-delivering campaign never renders past full. */
@@ -109,6 +120,7 @@ export function computeCampaignProgress(
   segments: Array<typeof campaignSegments.$inferSelect>,
   now: number = Date.now(),
   usableLeadCount?: number,
+  searchPause: LeadSearchPauseSnapshot | null = null,
 ): CampaignProgress {
   const done = segments.filter((s) => s.status === 'done' || s.status === 'exhausted');
   const failed = segments.filter((s) => s.status === 'failed');
@@ -140,12 +152,15 @@ export function computeCampaignProgress(
     campaign.status === 'running' &&
     campaign.lastProgressAt != null &&
     now - campaign.lastProgressAt.getTime() > STALL_AFTER_MS;
+  // No progress during a search outage is expected, not a wedged runner.
+  const waitingForSearch = campaign.status === 'running' && searchPause !== null;
 
   return {
     campaignId: campaign.id,
     name: campaign.name,
     status: campaign.status,
-    displayStatus: stalled ? 'stalled' : campaign.status,
+    displayStatus: waitingForSearch ? 'waiting_for_search' : stalled ? 'stalled' : campaign.status,
+    searchPause: waitingForSearch ? searchPause : null,
     targetLeads: campaign.targetLeads,
     leadsSaved,
     leadProgress: campaign.targetLeads > 0
@@ -399,9 +414,14 @@ export function templateCopyFor(
 }
 
 /** A failure the same inputs will reproduce exactly, so a retry is pure
- *  waste. Right now that means a tool rejecting our arguments: the registry
- *  validates every call against the tool's Zod schema before executing it,
- *  and a payload that fails that check fails it every time. */
+ *  waste. That means a tool rejecting our arguments (the registry validates
+ *  every call against the tool's Zod schema before executing it, and a payload
+ *  that fails that check fails it every time), or a search no source can ever
+ *  answer: no direct keys and no OSM category.
+ *
+ *  The second case never covers an outage. The BuildMyBot Tavily proxy is a
+ *  source too, and on 2026-10-03 its Tavily plan limit made this rule close
+ *  799 searches that only needed to wait. */
 export function isDeterministicFailure(message: string): boolean {
   const allDiscoveryProvidersMissing =
     message.includes('YELP_API_KEY not set') &&
@@ -414,8 +434,35 @@ export function isDeterministicFailure(message: string): boolean {
   return (
     message.startsWith('Invalid args for ') ||
     message.startsWith('Unknown tool: ') ||
-    (allDiscoveryProvidersMissing && osmCannotAnswer)
+    (allDiscoveryProvidersMissing && osmCannotAnswer && !classifyLeadDiscoveryFailure(message).providerOutage)
   );
+}
+
+export type SegmentFailureDecision =
+  /** Every keyed search source was unavailable. Back in line, attempt returned. */
+  | { kind: 'capacity_pause'; attempts: number }
+  /** Back in line; the attempt counts toward maxAttempts. */
+  | { kind: 'retry'; attempts: number }
+  /** Terminal. */
+  | { kind: 'closed'; attempts: number; deterministic: boolean };
+
+/** What a failed segment becomes. `attempts` is the segment's value after the
+ *  claim that started this run. */
+export function decideSegmentFailure(input: {
+  message: string;
+  attempts: number;
+  maxAttempts: number;
+}): SegmentFailureDecision {
+  // An outage says nothing about this segment, and AGENTS.md is explicit that
+  // a capacity pause must not consume the ordinary retry budget.
+  if (classifyLeadDiscoveryFailure(input.message).providerOutage) {
+    return { kind: 'capacity_pause', attempts: Math.max(0, input.attempts - 1) };
+  }
+  const deterministic = isDeterministicFailure(input.message);
+  if (deterministic || input.attempts >= input.maxAttempts) {
+    return { kind: 'closed', attempts: input.attempts, deterministic };
+  }
+  return { kind: 'retry', attempts: input.attempts };
 }
 
 /** Strip to a comparable hostname so "https://www.acme.com/" and
@@ -523,6 +570,7 @@ export class CampaignRunner {
       process.env.LEAD_CAMPAIGN_INTERVAL_MS ??
       (getLeadPipelineConfig().liveDemoMode ? 2_000 : 5_000),
     ),
+    private readonly searchPause: LeadSearchCapacityPause = leadSearchCapacityPause,
   ) {
     this.toolContext = {
       agentId: 'apex-campaign-runner',
@@ -569,7 +617,10 @@ export class CampaignRunner {
       void this.enrichVerifiedContactsFromSearch(Number(process.env.LEAD_CONTACT_SEARCH_BATCH ?? 6))
         .catch((err) => console.warn('[lead-contact-search] background search failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();
-      const claimed = await this.claimSegments(config.segmentBatchSize);
+      // While every search source is down, claim nothing; after the wait,
+      // claim one segment as a test before sending a full batch.
+      const claimLimit = this.searchPause.claimLimit(config.segmentBatchSize);
+      const claimed = claimLimit > 0 ? await this.claimSegments(claimLimit) : [];
       if (claimed.length === 0) {
         await processLeadPipelineBacklog({
           stageConcurrency: config.stageConcurrency,
@@ -1126,11 +1177,11 @@ export class CampaignRunner {
 
       const chosen = first.businesses.length > 0 ? first : second;
       if (!chosen || chosen.businesses.length === 0) {
-        const reasons = [...first.diagnostics, ...(second?.diagnostics ?? [])].filter(Boolean);
-        throw new Error(
-          `All lead discovery sources returned zero for "${query}". ${reasons.slice(0, 10).join(' | ') || 'No provider diagnostics were returned.'}`,
-        );
+        throw new Error(discoveryZeroMessage(query, [...first.diagnostics, ...(second?.diagnostics ?? [])]));
       }
+
+      // A source answered with businesses, so any search outage is over.
+      await this.noteSearchAnswered();
 
       const provider = chosen.provider;
       const raw = chosen.businesses.slice(0, maxResults);
@@ -1246,14 +1297,34 @@ export class CampaignRunner {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const attempts = segment.attempts ?? 1;
+      const decision = decideSegmentFailure({ message, attempts, maxAttempts: segment.maxAttempts ?? 3 });
+
+      if (decision.kind === 'capacity_pause') {
+        await db
+          .update(campaignSegments)
+          .set({
+            status: 'pending',
+            leasedAt: null,
+            attempts: decision.attempts,
+            lastError: `Waiting for search capacity. ${message}`.slice(0, 500),
+            completedAt: null,
+          })
+          .where(eq(campaignSegments.id, segment.id));
+        console.warn(
+          `[campaigns] ${campaign.name} · ${label}: every search source was unavailable — back in line, attempt not counted`,
+        );
+        await this.noteSearchOutage(campaign, segment, message);
+        return;
+      }
+      await this.noteSearchAnswered();
+
       // A schema rejection is deterministic: the same producer building the
       // same payload will be rejected identically next tick, so retrying it
       // buys nothing and costs another qualification model call per attempt.
       // Live on 2026-09-21 that was 3x the spend on every city in the
       // territory for a payload that could never be accepted. Retries are for
-      // flaky directories and provider outages, not for our own bugs.
-      const exhaustedRetries =
-        isDeterministicFailure(message) || attempts >= (segment.maxAttempts ?? 3);
+      // flaky directories, not for our own bugs; outages are handled above.
+      const exhaustedRetries = decision.kind === 'closed';
       await db
         .update(campaignSegments)
         .set({
@@ -1267,8 +1338,8 @@ export class CampaignRunner {
         .where(eq(campaignSegments.id, segment.id));
       console.warn(
         `[campaigns] ${campaign.name} · ${label} attempt ${attempts} failed: ${message}` +
-          (isDeterministicFailure(message)
-            ? ' — not retryable (the payload itself is rejected), segment marked failed'
+          (decision.kind === 'closed' && decision.deterministic
+            ? ' — not retryable (the same inputs fail the same way), segment marked failed'
             : exhaustedRetries
               ? ' — retries exhausted, segment marked failed'
               : ' — will retry'),
@@ -1283,6 +1354,46 @@ export class CampaignRunner {
         data: { campaignId: campaign.id, segmentId: segment.id, attempts, exhaustedRetries, error: message.slice(0, 500) },
       });
     }
+  }
+
+  /** Start or extend the search pause. Announced once per pause: segments that
+   *  were in flight together fail together, and one line says it all. */
+  private async noteSearchOutage(
+    campaign: typeof leadCampaigns.$inferSelect,
+    segment: typeof campaignSegments.$inferSelect,
+    message: string,
+  ): Promise<void> {
+    const { unavailable } = classifyLeadDiscoveryFailure(message);
+    const pause = this.searchPause.recordOutage(unavailable);
+    if (!pause.started) return;
+    const minutes = Math.max(1, Math.round(pause.waitMs / 60_000));
+    const resumeAt = new Date(pause.resumeAt).toISOString();
+    const sources = this.searchPause.snapshot()?.summary ?? describeUnavailableSources(unavailable);
+    console.warn(`[campaigns] Lead search paused for ${minutes} min (pause ${pause.pauses}): ${sources}`);
+    await recordOperatorActivity({
+      category: 'lead_search',
+      level: 'warn',
+      agentId: 'apex-campaign-runner',
+      message:
+        pause.pauses === 1
+          ? `Lead search paused for ${minutes} minute${minutes === 1 ? '' : 's'} because every search source APEX can use is unavailable (${sources}). The search for ${segment.industry} in ${segment.city} went back in line without using a retry, and no searches are being closed. APEX will try one search at ${resumeAt.slice(11, 16)} UTC.`
+          : `Lead search is still paused: the test search found every search source unavailable (${sources}). Next test search at ${resumeAt.slice(11, 16)} UTC, in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+      data: { campaignId: campaign.id, segmentId: segment.id, pauses: pause.pauses, resumeAt, unavailable },
+    });
+  }
+
+  /** A source answered. Ends a search pause if one was running. */
+  private async noteSearchAnswered(): Promise<void> {
+    const resumed = this.searchPause.recordAnswer();
+    if (!resumed.resumed) return;
+    const minutes = Math.max(1, Math.round(resumed.outageMs / 60_000));
+    console.log(`[campaigns] Lead search resumed after ${minutes} min: a search source answered again`);
+    await recordOperatorActivity({
+      category: 'lead_search',
+      agentId: 'apex-campaign-runner',
+      message: `Lead search resumed. A search source answered again after about ${minutes} minute${minutes === 1 ? '' : 's'}, and searches that were waiting are back in the normal queue.`,
+      data: { outageMs: resumed.outageMs },
+    });
   }
 
   /**

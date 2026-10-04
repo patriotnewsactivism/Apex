@@ -284,6 +284,7 @@ See `SECURITY.md` for the repository-wide security contract.
 - A task is not complete because an agent says what it intends to do. The non-completion guard must continue catching announced-but-not-taken tool work.
 - Scheduled delegation must remain deduplicated so multiple scheduler passes do not create the same live LLM task repeatedly.
 - Provider-capacity pauses must release leases and defer work without consuming ordinary task retry budgets.
+- The lead campaign runner applies the same rule to search providers. When every keyed search source a segment tried was unavailable (quota, rate limit, out of credits, 5xx, timeout, rejected key, or an open webSearch circuit breaker) and none answered, the segment goes back to pending with its attempt handed back and segment claiming pauses: 2 minutes, doubling to 60, then one test search. The first answer resumes it. Keyless OSM and DuckDuckGo failures never pause search. `isDeterministicFailure` closes a segment early only when no source can answer at all, never during an outage. See `packages/background-jobs/src/lead-search-capacity.ts`.
 - Managers must follow delegated work through to a measurable result rather than treating delegation itself as completion.
 - Repeated current failures are engineering defects until evidence shows they are transient/recovered.
 - Never manufacture metrics, status, deploy evidence, test results, or external side effects.
@@ -357,6 +358,7 @@ Production CI currently includes:
 - send-safeguard guard (every channel blocked without clearance, dual confirm, 5+ code + 24h aggregation, bot code rejected, lockout, Stop, kill switch, suppression);
 - calendar booking guard (free/busy and every booking rule, one winner when bookings race, hold expiry, invites staged in the send safeguard with operator-only confirm, code, and release, kill switch at staging and at send, no invite for a meeting cancelled since, do-not-contact, Cal.com signatures);
 - BuildMyBot lead-ingest guard (authenticated HTTP handoff: not-configured, dry-run default, live-push approval gate, chunking, 401/503);
+- lead-search capacity-pause guard (the 2026-10-03 Tavily plan-limit messages pause instead of closing, attempts handed back, backoff and single test search, honest empties and keyless flakiness still retry or close, Tavily 432/433 and the BuildMyBot proxy trip the webSearch breaker, Yelp/Google HTTP failures are reported as failures);
 - executor-dispatch guard (Phase 4: claim-by-id, runtime routing, dispatch wiring);
 - checkpoint/resume guard (ADR-014: checkpoint construction, ownership-guarded resume, executor-job dispatch-marker reset);
 - soft-deadline yield guard (hard/soft timeout resolution, no silent drift between start() and executeTask());
@@ -369,6 +371,7 @@ Production CI currently includes:
 - dashboard build;
 - mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across every nav view (including Pending Sends and Contacts) at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.
 - CRM postgres guard (`crm-postgres` job): contact book, append-only timeline, inbound matching, and do-not-contact against a throwaway Postgres. It is not part of `production-checks` because that job has no database.
+- lead-search postgres guard (`lead-search-postgres` job): the real `CampaignRunner` against a throwaway Postgres with stubbed search tools and a fake clock — an outage hands every segment back, claims nothing while paused, sends one test search, and resumes on the first answer.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
 

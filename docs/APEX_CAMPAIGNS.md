@@ -15,6 +15,23 @@ The agent no longer has to invent a campaign at send time. `buildmybot-intro` in
 - **Agent responsibility**: `LeadResearchAgent` (real outbound research against the configured ICP) and `SalesAgent` (pipeline review/prioritization — explicitly instructed to report when outreach isn't actually automated rather than fabricate activity, per its system prompt) own this domain, both under `COO`.
 - **Email campaigns** (`emailCampaigns`/`emailSends`/`emailSuppressions` tables, added 2026-09-06): agent tools `start_email_campaign` (enqueue only), `send_email_campaign_batch` (paced, approval-gated sending), `get_email_campaign_status`. Delivery status (`sent`/`delivered`/`opened`/`clicked`/`bounced`/`complained`/`failed`) updates live via the Resend webhook (`routes/resend-webhook.ts`), with automatic bounce/complaint suppression. Until 2026-09-15 this had no human-facing surface at all — no route, no dashboard — despite `send_email_campaign_batch` already checking for and refusing to send a `paused` campaign. `/api/email-campaigns` (`routes/email-campaigns.ts`) and the **Email Campaigns** dashboard panel now expose list/detail with a full delivery funnel, and pause/resume/cancel, mirroring the `/api/campaigns` pattern above. The route only ever reads `emailSends` and flips `emailCampaigns.status`; it never sends anything itself.
 
+## Search provider outages (2026-10-03)
+
+At 20:34 UTC on 2026-10-03 the Tavily plan behind BuildMyBot's proxy reached its usage limit. APEX had no search key of its own, so every search came back empty. The runner treated each empty search as that segment's failure and closed 799 "US News" searches across 73 cities in 13 minutes.
+
+The runner now tells an outage apart from an empty result (`packages/background-jobs/src/lead-search-capacity.ts`):
+
+- **Outage:** a segment counts as an outage when every keyed source it tried was unavailable and none answered. Keyed sources are Tavily, the BuildMyBot proxy, Brave, Yelp, Google Places and TomTom. Unavailable means quota (402, 429, Tavily 432/433), a 5xx, a timeout, a rejected key, or an open circuit breaker.
+- **Pause:** an outage puts the segment back to pending, hands its attempt back, and pauses claiming for 2 minutes, doubling up to 60. After each wait the runner sends one test search, and the first answer resumes normal batches.
+- **Activity feed:** one line when a pause starts, one per failed test search, and one on resume.
+- **Not an outage:** a source that answered with nothing is an honest empty. Keyless OSM or DuckDuckGo failures never pause search.
+- **Dashboard:** the campaign card shows "waiting for search" and the cause, instead of "stalled".
+- **Restarts:** the pause is process-local. After a restart, the first batch can hit a provider that is still down; those segments are handed back too.
+
+The webSearch circuit breaker now covers the BuildMyBot proxy. It treats Tavily's 432 and 433 as a used-up plan and waits 30 minutes.
+
+Searches closed before this change stay closed. Reopening them is a production data change.
+
 ## Lifecycle mapping
 
 The originating brief's suggested lifecycle (`DRAFT → RESEARCH → TARGETING → CONTENT → READY → ACTIVE → FOLLOW_UP → ANALYSIS → OPTIMIZING → COMPLETED`) does not have a literal 1:1 status-enum match in the current schema — this audit did not invent one to force a match, since doing so without touching the actual state machine would just create a second, unenforced vocabulary layered on top of the real one. What exists instead: `campaignSegments` tracks per-segment progress with stall detection, and the campaign/lead API supports the underlying operations (research, targeting via segment definition, outreach via the runner, follow-up via lead patch/stats) without a single top-level campaign status field driving all of them. **Recommendation, not implemented in this audit**: if a single visible campaign-status field would help operators (rather than inferring status from segment states), add it as a small, additive schema change — not a rewrite of the runner.

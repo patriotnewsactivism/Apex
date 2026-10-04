@@ -1459,13 +1459,27 @@ export interface CampaignIcp {
   notes?: string;
 }
 
+/** Lead search paused because every search source APEX can use is down. */
+export interface CampaignSearchPause {
+  /** True while waiting; false while the single test search is due. */
+  paused: boolean;
+  resumeAt: string;
+  since: string;
+  pauses: number;
+  unavailable: Array<{ source: string; reason: string | null }>;
+  summary: string;
+}
+
 export interface CampaignProgress {
   campaignId: string;
   name: string;
   status: string;
   /** What to render. 'stalled' is derived from lastProgressAt, not stored —
-   *  a campaign whose runner died still reads as 'running' in the table. */
+   *  a campaign whose runner died still reads as 'running' in the table.
+   *  'waiting_for_search' means every search source is unavailable and the
+   *  runner is waiting; see searchPause. */
   displayStatus: string;
+  searchPause?: CampaignSearchPause | null;
   targetLeads: number;
   leadsSaved: number;
   leadProgress: number;

@@ -81,6 +81,7 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-outreach-angle-required.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-source-tools.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-campaign-runner-lead-payload.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-search-capacity-pause.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-call-outcome-capture.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-cartesia-canonical-sales-routing.ts"
           pnpm --filter @workspace/api-server exec vitest run src/routes/cartesia-sales.test.ts
@@ -282,6 +283,37 @@ jobs:
         env:
           APEX_TURN_ECONOMY_TEST_DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5433/turn_economy_test
         run: pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-turn-economy-postgres.ts"
+
+  lead-search-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: lead_search_test
+        ports:
+          - 5436:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify the campaign runner pauses lead search on a provider outage against PostgreSQL
+        env:
+          LEAD_SEARCH_TEST_DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5436/lead_search_test
+          CI: true
+        run: pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-search-pause-postgres.ts"
 
   crm-postgres:
     runs-on: ubuntu-latest
