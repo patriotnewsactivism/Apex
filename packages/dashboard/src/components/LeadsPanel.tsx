@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { api, type ResearchedLead } from '../lib/api.js';
 import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter, Mail, Phone, Upload } from 'lucide-react';
+import { describeRehearsalOutcome } from '../lib/rehearsal-outcome.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -81,9 +82,7 @@ export function LeadsPanel() {
     mutationFn: (leadId: string) => api.salesFloor.rehearseLead(leadId),
     onMutate: (leadId) => setPracticeNote((n) => ({ ...n, [leadId]: 'Calling you…' })),
     onSuccess: (result, leadId) => {
-      const emailPart = result.email?.success ? 'email sent' : `email failed${result.email?.error ? `: ${result.email.error}` : ''}`;
-      const callPart = result.call?.success ? 'calling your phone' : `call failed${result.call?.error ? `: ${result.call.error}` : ''}`;
-      setPracticeNote((n) => ({ ...n, [leadId]: `${emailPart}; ${callPart}` }));
+      setPracticeNote((n) => ({ ...n, [leadId]: describeRehearsalOutcome(result) }));
     },
     onError: (err, leadId) =>
       setPracticeNote((n) => ({ ...n, [leadId]: err instanceof Error ? err.message : 'Practice failed' })),

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type OutboundPolicyView, type SalesFloorSnapshot } from '../lib/api.js';
+import { describeRehearsalOutcome } from '../lib/rehearsal-outcome.js';
 import { Headphones, MessageSquare, Phone, ShieldAlert } from 'lucide-react';
 
 const fieldStyle: React.CSSProperties = {
@@ -117,7 +118,7 @@ function RehearsalCard({ preview }: { preview?: { subject: string; body: string;
     <div className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div className="apex-display" style={{ fontSize: 15 }}>Sell to me</div>
       <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>
-        Sends the designed intro to your email and calls your phone as if you were the client. Nothing else is contacted.
+        Sends the designed intro to your email and calls your phone as if you were the client. Nothing else is contacted. If Pending sends is holding outbound work, the call is staged there instead of dialing immediately.
       </div>
       {preview && (
         <div style={{ fontSize: 12, color: 'var(--color-apex-text)', whiteSpace: 'pre-wrap' }}>
@@ -132,8 +133,17 @@ function RehearsalCard({ preview }: { preview?: { subject: string; body: string;
       {run.isError && <div style={{ color: 'var(--color-apex-red)', fontSize: 12 }}>{run.error instanceof Error ? run.error.message : 'Rehearsal failed'}</div>}
       {run.data && (
         <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>
-          Email {run.data.email.status}{run.data.email.error ? `: ${run.data.email.error}` : ''}. Call {run.data.call.id ?? run.data.call.error ?? 'not started'}.
+          {describeRehearsalOutcome(run.data)}
         </div>
+      )}
+      {run.data?.awaitingSafeguard && (
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => window.dispatchEvent(new CustomEvent('apex:navigate', { detail: { page: 'pending-sends' } }))}
+        >
+          Open Pending sends
+        </button>
       )}
     </div>
   );

@@ -409,7 +409,7 @@ export function SingleCallLauncher() {
   const [name, setName] = useState('');
   const [firstMessage, setFirstMessage] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; text: string; awaitingSafeguard?: boolean } | null>(null);
 
   const place = useMutation({
     mutationFn: () =>
@@ -421,7 +421,14 @@ export function SingleCallLauncher() {
       }),
     onSuccess: (res: SalesOpsCallResult) => {
       if (res && res.success === false) {
-        setResult({ ok: false, text: res.error ?? 'Call was rejected.' });
+        const awaiting = res.awaitingSafeguard === true;
+        setResult({
+          ok: false,
+          awaitingSafeguard: awaiting,
+          text: awaiting
+            ? 'Nothing was dialed. Open Pending sends, confirm the job twice, then release the call.'
+            : (res.error ?? 'Call was rejected.'),
+        });
       } else {
         setResult({ ok: true, text: `Call placed${res?.callId ? ` (id ${res.callId})` : ''}. Dialing now.` });
         setNumber('');
@@ -458,8 +465,8 @@ export function SingleCallLauncher() {
       >
         <AlertTriangle size={15} color="var(--color-apex-orange)" style={{ marginTop: 1, flexShrink: 0 }} />
         <span style={{ fontSize: 11.5, color: 'var(--color-apex-muted)', lineHeight: 1.5 }}>
-          This dials right away with no approval step. You are responsible for consent and Do-Not-Call
-          compliance for any number you enter here.
+          This places the call through the send safeguard. Nothing is dialed until you confirm the job twice in Pending sends and release it.
+          You are responsible for consent and Do-Not-Call compliance for any number you enter here.
         </span>
       </div>
 
@@ -526,6 +533,15 @@ export function SingleCallLauncher() {
           >
             {result.text}
           </span>
+        )}
+        {result?.awaitingSafeguard && (
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => window.dispatchEvent(new CustomEvent('apex:navigate', { detail: { page: 'pending-sends' } }))}
+          >
+            Open Pending sends
+          </button>
         )}
       </div>
     </div>
