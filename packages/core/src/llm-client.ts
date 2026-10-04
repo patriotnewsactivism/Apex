@@ -2368,6 +2368,7 @@ export function getKnownApiKeyEnvs(): string[] {
     'HUNTER_API_KEY',
     'TAVILY_API_KEY',
     'BRAVE_SEARCH_API_KEY',
+    'SERPER_API_KEY',
     'BRIGHT_DATA_API_KEY',
     'BRIGHT_DATA_ZONE',
     'VAPI_API_KEY',

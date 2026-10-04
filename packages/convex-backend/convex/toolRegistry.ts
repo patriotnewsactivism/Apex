@@ -765,6 +765,31 @@ export const TOOL_DEFS: Record<string, ToolDef> = {
         }
       }
 
+
+      // Serper.dev — Google Search API. Free tier: 2,500 queries/month, no card.
+      // Set SERPER_API_KEY in env. Returns real Google organic results.
+      const serperKey = process.env.SERPER_API_KEY;
+      if (serperKey) {
+        try {
+          const serRes = await fetch('https://google.serper.dev/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-KEY': serperKey },
+            body: JSON.stringify({ q: query, num: n }),
+          });
+          if (serRes.ok) {
+            const serData = (await serRes.json()) as {
+              organic?: Array<{ title: string; link: string; snippet?: string }>;
+            };
+            for (const r of serData.organic ?? []) {
+              results.push({ title: r.title, url: r.link, snippet: r.snippet ?? '' });
+            }
+            if (results.length > 0) return { query, provider: 'serper', results: results.slice(0, n) };
+          }
+        } catch (e) {
+          console.warn(`[webSearch] Serper failed for "${query}": ${e}`);
+        }
+      }
+
       // Bright Data SERP API — free tier (5,000 credits/mo, no card). Uses the
       // /request endpoint with a SERP zone. Bing is the default target because
       // Google throws captcha challenges on fresh zones; Bing returns parsed
