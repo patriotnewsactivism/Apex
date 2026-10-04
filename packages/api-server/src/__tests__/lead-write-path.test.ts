@@ -419,6 +419,31 @@ suite('lead write path (researched_leads writes)', () => {
     if (rows[0]?.id) createdLeadIds.push(String(rows[0].id));
   });
 
+  it('AC1/AC3 a website repeated inside one batch is saved once, with or without lookupOnly', async () => {
+    const website = websiteFor('acme-repeat');
+    const repeated = { leads: [leadPayload({ website }), leadPayload({ website, companyName: 'ACME Repeat Copy' })] };
+
+    const lookup = await runTool('saveResearchedLeadsBatch', { ...repeated, lookupOnly: true }, 'apex-lead-research-001', 'task-producer-3');
+    expect(lookup.lookupOnly).toBe(true);
+    expect(Number(lookup.saved)).toBe(0);
+    expect(Number(lookup.wouldSave)).toBe(1);
+    expect(Number(lookup.duplicates)).toBe(1);
+    const lookupRows = await db.select().from(researchedLeads).where(eq(researchedLeads.website, website));
+    expect(lookupRows.length, 'lookupOnly must never insert a row').toBe(0);
+
+    const batch = await runTool('saveResearchedLeadsBatch', repeated, 'apex-lead-research-001', 'task-producer-3');
+    expect(Number(batch.saved)).toBe(1);
+    expect(Number(batch.duplicates)).toBe(1);
+    expect(Number(batch.failed)).toBe(0);
+    const savedLeads = batch.savedLeads as Array<{ leadId: string }>;
+    for (const lead of savedLeads) createdLeadIds.push(lead.leadId);
+    const details = batch.duplicateDetails as Array<{ existingLeadId?: string; companyName?: string }>;
+    expect(details[0]?.existingLeadId, 'the copy names the row the first lead just created').toBe(savedLeads[0]?.leadId);
+    expect(details[0]?.companyName).toBe('ACME Repeat Copy');
+    const rows = await db.select().from(researchedLeads).where(eq(researchedLeads.website, website));
+    expect(rows.length).toBe(1);
+  });
+
   it('AC3 lookupOnly reports the dedup answer and writes nothing', async () => {
     const website = websiteFor('acme-lookup');
     const saved = await runTool('saveResearchedLead', leadPayload({ website }), 'apex-lead-research-001', 'task-producer-1');

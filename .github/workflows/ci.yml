@@ -73,12 +73,13 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-model-routing-policy.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-model-intelligence.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-agent-model-display.ts"
-          pnpm --filter @workspace/api-server exec vitest run src/__tests__/login-guard.test.ts src/__tests__/runtime-provenance.test.ts src/__tests__/llm-provider-health.test.ts src/__tests__/openrouter-account-exclusions.test.ts src/__tests__/public-health.test.ts src/__tests__/crm-operator-session.test.ts
+          pnpm --filter @workspace/api-server exec vitest run src/__tests__/login-guard.test.ts src/__tests__/runtime-provenance.test.ts src/__tests__/llm-provider-health.test.ts src/__tests__/openrouter-account-exclusions.test.ts src/__tests__/public-health.test.ts src/__tests__/crm-operator-session.test.ts src/__tests__/lead-write-path.test.ts
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-websocket-auth.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-websocket-lifecycle.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-live-voice-reconnect.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-tool-call-log-truncation.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-outreach-angle-required.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-geography.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-source-tools.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-campaign-runner-lead-payload.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-search-capacity-pause.ts"
@@ -394,3 +395,11 @@ jobs:
           DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
           APEX_ADMIN_TOKEN: ci-lead-status-test-token
         run: pnpm exec vitest run src/__tests__/lead-status-transition.test.ts
+      - name: Lead write-path integration suite
+        # saveResearchedLead(sBatch) against real rows: duplicateDetails,
+        # lookupOnly writes nothing, OUT_OF_SCOPE_GEOGRAPHY never reaches the
+        # table, and the producing task is recorded on the row.
+        working-directory: packages/api-server
+        env:
+          DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
+        run: pnpm exec vitest run src/__tests__/lead-write-path.test.ts

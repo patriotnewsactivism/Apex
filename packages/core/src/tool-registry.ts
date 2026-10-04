@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { normalizeIndustry } from './industry-taxonomy.js';
+import { OUT_OF_SCOPE_GEOGRAPHY, checkLeadGeography } from './lead-geography.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector.js';
 import { createOrchestrationTools } from './orchestration-tools.js';
@@ -859,6 +860,29 @@ export const researchedLeadInputSchema = z.object({
 /** Exactly what a producer must hand saveResearchedLead(sBatch). */
 export type ResearchedLeadInput = z.infer<typeof researchedLeadInputSchema>;
 
+type ResearchedLeadRow = typeof import('@workspace/db').researchedLeads.$inferSelect;
+
+/**
+ * What the save tools report about the row that already holds a website. A
+ * bare `duplicate: true` did not say which pipeline owned the row, who saved
+ * it, or whether it had been worked, so an agent could not tell a lead it had
+ * already saved from one another producer had put there.
+ */
+function describeExistingLead(row: ResearchedLeadRow) {
+  const metadata = row.pipelineMetadata ?? {};
+  return {
+    existingLeadId: row.id,
+    existingCompanyName: row.companyName,
+    researchedByAgentId: row.researchedByAgentId,
+    taskRef: typeof metadata.taskRef === 'string' ? metadata.taskRef : null,
+    status: row.status,
+    pipelineState: row.pipelineState,
+    campaignId: row.campaignId ?? null,
+    source: row.source ?? null,
+    savedAt: row.createdAt.toISOString(),
+  };
+}
+
 function toolWorkspaceRoot(context: ToolContext): string {
   const canonicalRoot = getWorkspaceRoot();
   const contextRoot = context.workspaceRoot?.trim();
@@ -1413,15 +1437,34 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
     {
       name: 'saveResearchedLead',
       description:
-        "Save a qualified outbound lead to the researched_leads table. Call this once per qualifying company found via web search — do NOT just describe leads in your final answer, they must be persisted here to count as pipeline output. Checks for an existing row with the same website first and skips the insert if found (returns duplicate: true) so the team never double-works a company.",
+        "Save a qualified outbound lead to the researched_leads table. Call this once per qualifying company found via web search — do NOT just describe leads in your final answer, they must be persisted here to count as pipeline output. Leads must be in the United States: give city as 'City, ST' (e.g. 'Austin, TX'). Anything else is refused with OUT_OF_SCOPE_GEOGRAPHY and nothing is saved. Checks for an existing row with the same website first and skips the insert if found (returns duplicate: true, with duplicateDetails naming the existing row, who saved it, and its status) so the team never double-works a company. Pass lookupOnly: true to get the same duplicate and geography answer without saving anything. A saved lead can be changed with updateLeadStatus and updateLeadContactInfo; there is no delete.",
       schema: researchedLeadInputSchema.extend({
         campaignId: z.string().optional().describe('Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.'),
+        lookupOnly: z.boolean().optional().describe('true: report whether this lead would be saved, is a duplicate, or is out of scope, and write nothing.'),
       }),
       requiresApproval: false,
-      async execute({ companyName, website, industry, city, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus, fitReason, outreachAngle, campaignId }, ctx) {
+      async execute({ lookupOnly, campaignId, ...lead }, ctx) {
         const { randomUUID } = await import('crypto');
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
+        const { companyName, website, industry, city, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus, fitReason, outreachAngle } = lead;
+        const lookup = lookupOnly ? { lookupOnly: true } : {};
+
+        // US only. The answer depends on the lead alone, so it is the same
+        // whether or not lookupOnly is set, and no argument can switch it off.
+        const geography = checkLeadGeography(lead);
+        if (!geography.inScope) {
+          return {
+            saved: false,
+            refusedGeography: true,
+            code: OUT_OF_SCOPE_GEOGRAPHY,
+            reason: geography.reason,
+            error: geography.message,
+            companyName,
+            city: city ?? null,
+            ...lookup,
+          };
+        }
 
         if (website) {
           const existing = await db
@@ -1430,10 +1473,24 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             .where(eq(researchedLeads.website, website))
             .limit(1);
           if (existing.length > 0) {
-            return { duplicate: true, existingLeadId: existing[0].id, companyName };
+            return {
+              duplicate: true,
+              saved: false,
+              existingLeadId: existing[0].id,
+              companyName,
+              duplicateDetails: describeExistingLead(existing[0]),
+              ...lookup,
+            };
           }
         }
 
+        if (lookupOnly) {
+          return { duplicate: false, saved: false, lookupOnly: true, wouldSave: true, companyName, website: website ?? null, city: city ?? null };
+        }
+
+        // Provenance: the seat comes from ctx.agentId, the task it was working
+        // on from ctx.taskId. Both come from the caller, never a fixed id.
+        const taskRef = ctx.taskId ?? null;
         const id = randomUUID();
         await db.insert(researchedLeads).values({
           id,
@@ -1453,11 +1510,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           outreachAngle,
           status: 'new',
           researchedByAgentId: ctx.agentId,
+          pipelineMetadata: { taskRef, producingTaskId: taskRef, producingTool: 'saveResearchedLead' },
           campaignId,
           createdAt: new Date(),
         });
 
-        return { saved: true, leadId: id, companyName };
+        return { saved: true, leadId: id, companyName, taskRef };
       },
     },
 
@@ -2124,23 +2182,48 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
     // Batch save multiple researched leads in one tool call (saves iterations)
     {
       name: 'saveResearchedLeadsBatch',
-      description: 'Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.',
+      description: "Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Leads must be in the United States: give city as 'City, ST' (e.g. 'Austin, TX'); others are refused with OUT_OF_SCOPE_GEOGRAPHY. Skips duplicates by website automatically. The result counts saved, duplicates, refusedGeography and failed separately, lists each new lead id in savedLeads (use those ids with updateLeadStatus), and explains every duplicate and refusal. Pass lookupOnly: true to get that answer without saving anything. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.",
       schema: z.object({
         leads: z.array(researchedLeadInputSchema).describe('Array of leads to save (10-20 at a time is ideal)'),
         campaignId: z.string().optional().describe('Attribute every lead in this batch to a lead campaign. Omit for ad-hoc research.'),
+        lookupOnly: z.boolean().optional().describe('true: report which leads would be saved, which are duplicates, and which are out of scope, and write nothing.'),
       }),
       requiresApproval: false,
-      async execute({ leads, campaignId }, ctx) {
+      async execute({ leads, campaignId, lookupOnly }, ctx) {
         const { randomUUID } = await import('crypto');
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
 
+        // Every row this call writes carries the producing task, prefixed with
+        // agent_research_batch so a batch cohort can be told apart from leads
+        // saved one at a time, and traced to the run that produced it.
+        const producingTaskId = ctx.taskId ?? null;
+        const batchId = randomUUID();
+        const taskRef = `agent_research_batch:${producingTaskId ?? batchId}`;
+
+        // Four outcomes, counted separately: a refusal or a duplicate is not a
+        // failure, and none of them is a save.
         let saved = 0;
         let duplicates = 0;
+        let refusedGeography = 0;
         let failed = 0;
-        const savedNames: string[] = [];
+        const savedLeads: Array<{ leadId: string; companyName: string }> = [];
+        const wouldSaveLeads: Array<{ companyName: string; website: string | null }> = [];
+        const duplicateDetails: Array<Record<string, unknown>> = [];
+        const refusedDetails: Array<{ companyName: string; city: string | null; reason: string; error: string }> = [];
+        const failedDetails: Array<{ companyName: string; error: string }> = [];
+        // A saved row makes a later copy in the same batch a duplicate through
+        // the database read. lookupOnly saves nothing, so it tracks them here.
+        const websitesInBatch = new Set<string>();
 
         for (const lead of leads) {
+          const geography = checkLeadGeography(lead);
+          if (!geography.inScope) {
+            refusedGeography++;
+            refusedDetails.push({ companyName: lead.companyName, city: lead.city ?? null, reason: geography.reason, error: geography.message });
+            continue;
+          }
+
           try {
             if (lead.website) {
               const existing = await db
@@ -2150,12 +2233,25 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 .limit(1);
               if (existing.length > 0) {
                 duplicates++;
+                duplicateDetails.push({ companyName: lead.companyName, website: lead.website, ...describeExistingLead(existing[0]) });
                 continue;
               }
             }
 
+            if (lookupOnly) {
+              if (lead.website && websitesInBatch.has(lead.website)) {
+                duplicates++;
+                duplicateDetails.push({ companyName: lead.companyName, website: lead.website, existingLeadId: null, sameBatch: true });
+                continue;
+              }
+              if (lead.website) websitesInBatch.add(lead.website);
+              wouldSaveLeads.push({ companyName: lead.companyName, website: lead.website ?? null });
+              continue;
+            }
+
+            const leadId = randomUUID();
             await db.insert(researchedLeads).values({
-              id: randomUUID(),
+              id: leadId,
               companyName: lead.companyName,
               website: lead.website,
               industry: normalizeIndustry(lead.industry),
@@ -2182,17 +2278,31 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 nextBestAction: lead.contactEmail ? 'email' : lead.contactPhone ? 'call' : 'research_contact',
               },
               researchedByAgentId: ctx.agentId,
+              pipelineMetadata: { taskRef, producingTaskId, producingTool: 'saveResearchedLeadsBatch', batchId },
               campaignId,
               createdAt: new Date(),
             });
             saved++;
-            savedNames.push(lead.companyName);
-          } catch {
+            savedLeads.push({ leadId, companyName: lead.companyName });
+          } catch (err) {
             failed++;
+            failedDetails.push({ companyName: lead.companyName, error: (err instanceof Error ? err.message : String(err)).slice(0, 200) });
           }
         }
 
-        return { saved, duplicates, failed, total: leads.length, savedNames };
+        const outcome = {
+          duplicates,
+          refusedGeography,
+          failed,
+          total: leads.length,
+          duplicateDetails,
+          refusedDetails,
+          failedDetails,
+        };
+        if (lookupOnly) {
+          return { lookupOnly: true, saved: 0, wouldSave: wouldSaveLeads.length, wouldSaveLeads, ...outcome };
+        }
+        return { saved, savedLeads, taskRef, ...outcome };
       },
     },
 

@@ -32,6 +32,20 @@ The webSearch circuit breaker now covers the BuildMyBot proxy. It treats Tavily'
 
 Searches closed before this change stay closed. Reopening them is a production data change.
 
+## Saving researched leads (2026-10-04)
+
+The campaign runner writes discovered leads itself. The Lead Researcher saves the leads it finds with `saveResearchedLead` and `saveResearchedLeadsBatch`. On 2026-10-04, those two tools changed:
+
+- **US only.** A lead's city must name a US state or territory ("Lima, OH"), be a state on its own, or be a well-known US city ("Austin"). Anything else is refused with `OUT_OF_SCOPE_GEOGRAPHY` and nothing is saved. That covers a foreign place, a bare name that could be either ("Lima"), a missing city, and a contact phone with a country code other than +1. The refusal tells the agent to resubmit as "City, ST". The rule is in `packages/core/src/lead-geography.ts`, and no tool argument turns it off.
+- **Duplicates explained.** A website already on file comes back with `duplicateDetails`: the existing lead id, which agent saved it, its producing task, status, pipeline state, and campaign.
+- **Check without saving.** `lookupOnly: true` returns the same duplicate and geography answer and writes nothing.
+- **Four outcomes.** A batch counts `saved`, `duplicates`, `refusedGeography` and `failed` separately and explains each one. `savedLeads` lists the new lead ids so the agent can mark them with `updateLeadStatus`.
+- **Provenance.** Every saved row records its producing task in `pipeline_metadata.taskRef`. A batch save prefixes it with `agent_research_batch:` and adds a `batchId`.
+
+Lead records can be updated (`updateLeadStatus`, `updateLeadContactInfo`, and `PATCH /api/leads/:id` for the operator). They cannot be deleted: there is no delete tool and no delete route. A lead that does not fit is marked `rejected`.
+
+Rows saved before this change keep their old shape and are not re-checked.
+
 ## Lifecycle mapping
 
 The originating brief's suggested lifecycle (`DRAFT → RESEARCH → TARGETING → CONTENT → READY → ACTIVE → FOLLOW_UP → ANALYSIS → OPTIMIZING → COMPLETED`) does not have a literal 1:1 status-enum match in the current schema — this audit did not invent one to force a match, since doing so without touching the actual state machine would just create a second, unenforced vocabulary layered on top of the real one. What exists instead: `campaignSegments` tracks per-segment progress with stall detection, and the campaign/lead API supports the underlying operations (research, targeting via segment definition, outreach via the runner, follow-up via lead patch/stats) without a single top-level campaign status field driving all of them. **Recommendation, not implemented in this audit**: if a single visible campaign-status field would help operators (rather than inferring status from segment states), add it as a small, additive schema change — not a rewrite of the runner.

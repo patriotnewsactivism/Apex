@@ -51,14 +51,16 @@ export async function seedDefaultJobs(): Promise<void> {
         targetAgentId: 'apex-lead-research-001' as string | null,
         priority: 1,
         payload: {
-          systemDefinitionVersion: 3,
+          systemDefinitionVersion: 4,
           // A dead task must not suppress every future sweep forever. The
           // scheduler uses updatedAt inactivity and an atomic cutoff guard, so
           // a task that has just resumed remains protected from replacement.
           staleOpenTaskMinutes: 60,
           title: 'Lead generation sweep',
+          // Version 4 limits the sweep to the US, which the save tools now
+          // require (packages/core/src/lead-geography.ts).
           description:
-            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry/region you have NOT recently covered. Use searchBusinessDirectory and webSearch to find real qualifying businesses. For every lead, inspect public contact/about/team sources and attempt to find the decision maker, business email, and phone; never guess. Save the source and honest contact research status with saveResearchedLeadsBatch. Every saved lead must retain at least its verified company website as a contact path. Quality over quantity.',
+            'AUTONOMOUS LEAD-GEN SWEEP — run a research session now. Call listResearchedLeads first to see what is already in the pipeline and avoid duplicates. Then pick an industry and a US region you have NOT recently covered; BuildMyBot sells to US businesses only. Use searchBusinessDirectory and webSearch to find real qualifying businesses. For every lead, inspect public contact/about/team sources and attempt to find the decision maker, business email, and phone; never guess. Save the source and honest contact research status with saveResearchedLeadsBatch, giving each city as "City, ST" (for example "Austin, TX"). Every saved lead must retain at least its verified company website as a contact path. Quality over quantity.',
         },
       },
       {
