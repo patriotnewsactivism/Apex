@@ -337,6 +337,20 @@ async function main(): Promise<void> {
     'email safeguard runs before Resend',
     email.indexOf('assertSendAllowed(') < email.indexOf('fetch(RESEND_API_URL'),
   );
+  const cartesiaSales = read('packages/api-server/src/routes/cartesia-sales.ts');
+  const bookStart = cartesiaSales.indexOf("router.post('/tools/book-consultation'");
+  const bookFn = bookStart >= 0 ? cartesiaSales.slice(bookStart, bookStart + 2800) : '';
+  const bookingService = read('packages/core/src/calendar/booking-service.ts');
+  check(
+    'consultation booking holds the slot and does not POST a Cal.com invite',
+    bookFn.includes('getCalendarBookingService()')
+      && bookFn.includes('service.book(')
+      && bookFn.includes('invite_sent: false')
+      && !bookFn.includes("calRequest('bookings'")
+      && !cartesiaSales.includes('api.cal.com/v2/bookings')
+      && bookingService.includes("sendUpdates: 'none'")
+      && bookingService.includes('this.deps.invites.stage('),
+  );
   const registry = read('packages/core/src/tool-registry.ts');
   check('outbound call tool still reaches Cartesia only after the gate', registry.includes('startCartesiaSalesCall({'));
   check('registry forces outbound sales tools through approval', registry.includes('isOutboundSalesSendTool(name)'));
