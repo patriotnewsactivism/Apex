@@ -73,8 +73,13 @@ lose a customer by missing a call or message — they're a potential lead.
   website, or detail not directly supported by a real search result.
 - If a result is a directory/listicle rather than an actual business, skip it.
 - If nothing qualifies from a search, say so — return nothing rather than padding the list.
-- Call listResearchedLeads first to check what's already in the pipeline (the save tool also
-  auto-skips duplicates by website).
+- Call listResearchedLeads first to check what's already in the pipeline. The save tools also skip
+  duplicates by website and return duplicateDetails naming the existing row and who saved it. Pass
+  lookupOnly: true to check a lead without saving it.
+- United States only. BuildMyBot sells to US businesses, so every lead must be one, with its city
+  given as 'City, ST' (for example 'Austin, TX'). The save tools refuse anything else with
+  OUT_OF_SCOPE_GEOGRAPHY and save nothing. A refused lead that is in the US can be resubmitted with
+  its state.
 - Contact research is mandatory for every lead. Before saving, inspect the company website's
   contact/about/team pages and use targeted web searches to find, when publicly available: (1) the
   relevant decision maker's real name, (2) a business email, and (3) a business phone. Never guess
@@ -99,7 +104,10 @@ your answer without that call does not create a qualified cohort and will be rep
 non-completion. updateLeadStatus changes metadata only — it never emails, calls, or creates a
 campaign, and it is not a consent record. Use status='rejected' with a note for anything that turns
 out not to fit, so the pass leaves a trace of why.
-Each lead needs: company name, website, industry, city, contact-research result, why it's a good fit
+- Lead records are updatable, not deletable. updateLeadStatus changes status and qualification
+notes; updateLeadContactInfo records contact research. There is no delete API: a lead that does not
+fit is marked rejected, never removed.
+Each lead needs: company name, website, industry, city ('City, ST'), contact-research result, why it's a good fit
 (specific pain point), and a suggested outreach angle (how to pitch BuildMyBot to them).
 Aim for 20-50 qualified leads per research session. Use searchBusinessDirectory FIRST (returns 20
 businesses per call), then webSearch for additional coverage. Never give up after one search.`,

@@ -3,6 +3,8 @@
 
 import { unresolvedMergeTokens } from './outbound-policy.js';
 import { emailGreetingName } from './sales-playbooks.js';
+import { assertContactSendable, commitSendRecord } from './crm/store.js';
+import { SendBlockedError, newReplyToken, replyDomain, replyToAddress } from './crm/pure.js';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
@@ -91,6 +93,21 @@ export interface DeliverEmailOptions {
   storyKey?: string | null;
 }
 
+// A staged or released job whose recipient is refused before the gate runs
+// would otherwise stay open in Pending sends with nothing left to send.
+async function openEmailRecipientId(jobId: string, email: string): Promise<string | null> {
+  try {
+    const { getSendSafeguard, normalizeDestination } = await import('./send-safeguard.js');
+    const { recipients } = await (await getSendSafeguard()).describe(jobId);
+    const destination = normalizeDestination('email', email);
+    return recipients.find((row) => row.channel === 'email'
+      && row.destination === destination
+      && (row.status === 'queued' || row.status === 'released'))?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function deliverQueuedEmailSend(
   sendId: string,
   toEmail: string,
@@ -106,6 +123,54 @@ export async function deliverQueuedEmailSend(
   const { assertSendAllowed, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
   let sendJobId = options.sendJobId ?? null;
   let safeguardRecipientId: string | null = null;
+
+  const token = newReplyToken();
+  const domain = replyDomain();
+  const replyTo = replyToAddress(token, domain);
+  const emailMessageId = `<${token}@${domain ?? 'apex.local'}>`;
+
+  const fail = async (status: string, error: string) => {
+    await commitSendRecord(async (tx) => {
+      await tx.update(emailSends)
+        .set({ status, errorMessage: error.slice(0, 500) })
+        .where(eq(emailSends.id, sendId));
+      return sendId;
+    }, {
+      destination: email,
+      channel: 'email',
+      direction: 'outbound',
+      actorType: 'agent',
+      actorName: 'email-delivery',
+      eventKind: 'email_failed',
+      subject,
+      bodyText: error,
+      bodyHtml: html,
+      provider: 'resend',
+      replyToken: token,
+      emailMessageId,
+      sendRecordTable: 'email_sends',
+      sendRecordId: sendId,
+    });
+    const recipientId = safeguardRecipientId ?? (sendJobId ? await openEmailRecipientId(sendJobId, email) : null);
+    if (sendJobId && recipientId) {
+      await recordOutboundSendResult(sendJobId, recipientId, 'failed', null).catch(() => undefined);
+    }
+    return { success: false, status, error };
+  };
+
+  if (await isEmailSuppressed(email)) {
+    return fail('suppressed', 'Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).');
+  }
+
+  try {
+    await assertContactSendable({ channel: 'email', destination: email });
+  } catch (error) {
+    if (error instanceof SendBlockedError) return fail('blocked', error.message);
+    return fail('failed', error instanceof Error ? error.message : String(error));
+  }
+
+  // A recipient refused above never opens a Pending-sends job. Everything else
+  // clears the operator gate before Resend is called.
   try {
     if (!sendJobId) {
       const opened = await openOutboundSendJob({
@@ -128,20 +193,6 @@ export async function deliverQueuedEmailSend(
     if (error instanceof SendSafeguardError) throw error;
     console.error(`[send-safeguard] blocked job=${sendJobId ?? 'none'} channel=email reason=safeguard_error`);
     throw new SendSafeguardError('Send safeguard failed closed.', 'safeguard_error', sendJobId, 'email');
-  }
-
-  const fail = async (status: string, error: string) => {
-    await db.update(emailSends)
-      .set({ status, errorMessage: error.slice(0, 500) })
-      .where(eq(emailSends.id, sendId));
-    if (sendJobId && safeguardRecipientId) {
-      await recordOutboundSendResult(sendJobId, safeguardRecipientId, 'failed', null).catch(() => undefined);
-    }
-    return { success: false, status, error };
-  };
-
-  if (await isEmailSuppressed(email)) {
-    return fail('suppressed', 'Recipient is on the suppression list (prior bounce, complaint, or manual opt-out).');
   }
 
   try {
@@ -201,6 +252,8 @@ export async function deliverQueuedEmailSend(
         subject,
         html: bodyHtml,
         text: bodyText,
+        ...(replyTo ? { reply_to: replyTo } : {}),
+        headers: { 'Message-ID': emailMessageId },
         tags: [{ name: 'apex_send_id', value: sendId }],
       }),
     });
@@ -211,10 +264,29 @@ export async function deliverQueuedEmailSend(
     }
 
     const data = await res.json() as { id: string };
-    await db.update(emailSends)
-      .set({ status: 'sent', providerId: data.id, sentAt: new Date(), errorMessage: null })
-      .where(eq(emailSends.id, sendId));
-    if (safeguardRecipientId) {
+    await commitSendRecord(async (tx) => {
+      await tx.update(emailSends)
+        .set({ status: 'sent', providerId: data.id, sentAt: new Date(), errorMessage: null })
+        .where(eq(emailSends.id, sendId));
+      return sendId;
+    }, {
+      destination: email,
+      channel: 'email',
+      direction: 'outbound',
+      actorType: 'agent',
+      actorName: 'email-delivery',
+      eventKind: 'email',
+      subject,
+      bodyText,
+      bodyHtml,
+      provider: 'resend',
+      providerMessageId: data.id,
+      replyToken: token,
+      emailMessageId,
+      sendRecordTable: 'email_sends',
+      sendRecordId: sendId,
+    });
+    if (sendJobId && safeguardRecipientId) {
       await recordOutboundSendResult(sendJobId, safeguardRecipientId, 'sent', data.id);
     }
     return { success: true, status: 'sent', providerId: data.id, complianceWarning };

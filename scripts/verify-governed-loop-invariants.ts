@@ -130,12 +130,18 @@ check(
   telnyxVoice.includes('assertSendAllowed') &&
     telnyxVoice.indexOf('assertSendAllowed') < telnyxVoice.indexOf("fetch('https://api.telnyx.com/v2/messages'"),
 );
-const bookingFnStart = cartesia.indexOf('async function submitCalBooking');
-const bookingFn = bookingFnStart >= 0 ? cartesia.slice(bookingFnStart) : '';
+const bookStart = cartesia.indexOf("router.post('/tools/book-consultation'");
+const bookFn = bookStart >= 0 ? cartesia.slice(bookStart, bookStart + 2800) : '';
+const bookingService = read('packages/core/src/calendar/booking-service.ts');
 check(
-  'Cal.com consultation booking asserts before the bookings POST',
-  bookingFn.includes('assertSendAllowed') &&
-    bookingFn.indexOf('assertSendAllowed') < bookingFn.indexOf("calRequest('bookings'"),
+  'consultation booking holds the slot and does not POST a Cal.com invite',
+  bookFn.includes('getCalendarBookingService()') &&
+    bookFn.includes('service.book(') &&
+    bookFn.includes('invite_sent: false') &&
+    !bookFn.includes("calRequest('bookings'") &&
+    !cartesia.includes('api.cal.com/v2/bookings') &&
+    bookingService.includes("sendUpdates: 'none'") &&
+    bookingService.includes('this.deps.invites.stage('),
 );
 
 console.log('\n── irreversible send paths cannot bypass the evaluator ──');

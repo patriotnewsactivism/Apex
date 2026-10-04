@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 import { normalizeIndustry } from './industry-taxonomy.js';
+import { OUT_OF_SCOPE_GEOGRAPHY, checkLeadGeography } from './lead-geography.js';
 import { buildMyBotConfigured, createBuildMyBotTools } from './buildmybot-connector.js';
 import { caseBuddyConfigured, createCaseBuddyTools } from './casebuddy-connector.js';
 import { createOrchestrationTools } from './orchestration-tools.js';
@@ -20,12 +21,15 @@ import { defaultDepartmentActivation, getSpecialistDepartment, getSpecialistProf
 import { getNextRunTimes } from './cron-utils.js';
 import { getWorkspaceRoot, pathWithin, resolveInWorkspace } from './workspace-root.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
-import { db, messages, callOutcomes, callBridgeSessions, leadSearchCache } from '@workspace/db';
+import { db, messages, callBridgeSessions, leadSearchCache } from '@workspace/db';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
+import { SendBlockedError, assertContactSendable, commitCallOutcome } from './crm/store.js';
+import { createCrmTools } from './crm/tools.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
+import { createCalendarTools } from './calendar/tools.js';
 
 const execAsync = promisify(exec);
 // Runtime-only dependencies owned by the API process. The tool registry lives
@@ -259,11 +263,27 @@ function webSearchProviderReady(provider: string): boolean {
   return (webSearchProviderCooldowns.get(provider) ?? 0) <= Date.now();
 }
 
+/** How long to stop calling a web search provider after an HTTP failure.
+ *  Tavily answers 432 when the plan's usage limit is reached and 433 when the
+ *  pay-as-you-go limit is reached. Neither clears in seconds, so they wait as
+ *  long as a missing credit. */
+export function webSearchCooldownMs(status: number): number {
+  if (status === 401 || status === 402 || status === 403 || status === 432 || status === 433) return 30 * 60 * 1000;
+  if (status === 429) return 60 * 1000;
+  if (status >= 500) return 30 * 1000;
+  return 0;
+}
+
+/** BuildMyBot's Tavily proxy answers 502 and names Tavily's own status in the
+ *  body ("Tavily search failed with HTTP 432"). Breaker timing follows Tavily's
+ *  status, because a 432 behind a 502 is a used-up plan, not a blip. */
+export function proxiedUpstreamStatus(status: number, body: string): number {
+  const upstream = /\bHTTP (\d{3})\b/.exec(body);
+  return upstream ? Number(upstream[1]) : status;
+}
+
 function tripWebSearchProvider(provider: string, status: number, detail: string): void {
-  let cooldownMs = 0;
-  if (status === 402 || status === 401 || status === 403) cooldownMs = 30 * 60 * 1000;
-  else if (status === 429) cooldownMs = 60 * 1000;
-  else if (status >= 500) cooldownMs = 30 * 1000;
+  const cooldownMs = webSearchCooldownMs(status);
   if (cooldownMs <= 0) return;
 
   const until = Date.now() + cooldownMs;
@@ -840,6 +860,29 @@ export const researchedLeadInputSchema = z.object({
 /** Exactly what a producer must hand saveResearchedLead(sBatch). */
 export type ResearchedLeadInput = z.infer<typeof researchedLeadInputSchema>;
 
+type ResearchedLeadRow = typeof import('@workspace/db').researchedLeads.$inferSelect;
+
+/**
+ * What the save tools report about the row that already holds a website. A
+ * bare `duplicate: true` did not say which pipeline owned the row, who saved
+ * it, or whether it had been worked, so an agent could not tell a lead it had
+ * already saved from one another producer had put there.
+ */
+function describeExistingLead(row: ResearchedLeadRow) {
+  const metadata = row.pipelineMetadata ?? {};
+  return {
+    existingLeadId: row.id,
+    existingCompanyName: row.companyName,
+    researchedByAgentId: row.researchedByAgentId,
+    taskRef: typeof metadata.taskRef === 'string' ? metadata.taskRef : null,
+    status: row.status,
+    pipelineState: row.pipelineState,
+    campaignId: row.campaignId ?? null,
+    source: row.source ?? null,
+    savedAt: row.createdAt.toISOString(),
+  };
+}
+
 function toolWorkspaceRoot(context: ToolContext): string {
   const canonicalRoot = getWorkspaceRoot();
   const contextRoot = context.workspaceRoot?.trim();
@@ -1052,7 +1095,13 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         if (freeOnly && tavilyProxyUrl && tavilyProxySecret) {
           diagnostics.push('buildmybot-tavily: skipped by freeOnly mode');
         }
-        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret) {
+        // The proxy shares Tavily's quota, so it gets the same breaker. Without
+        // it, a used-up plan was hit once per query variant, every search.
+        const tavilyProxyReady = webSearchProviderReady('buildmybot-tavily');
+        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret && !tavilyProxyReady) {
+          diagnostics.push('buildmybot-tavily: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret && tavilyProxyReady) {
           try {
             const proxyRes = await fetch(tavilyProxyUrl, {
               method: 'POST',
@@ -1067,6 +1116,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
               const body = await proxyRes.text().catch(() => '');
               const detail = `buildmybot-tavily: HTTP ${proxyRes.status} ${body.slice(0, 200)}`.trim();
               diagnostics.push(detail);
+              tripWebSearchProvider('buildmybot-tavily', proxiedUpstreamStatus(proxyRes.status, body), body);
               console.warn(`[webSearch] ${detail} for "${query}"`);
             } else {
               const proxyData = await proxyRes.json() as {
@@ -1209,7 +1259,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           // it into a reword-and-retry loop that spends LLM capacity and never
           // recovers, which is exactly what happened in production.
           const providerFailure = diagnostics.some(
-            (d) => /HTTP \d|not set|timed out|aborted|fetch failed/i.test(d),
+            (d) => /HTTP \d|not set|timed out|aborted|fetch failed|circuit breaker/i.test(d),
           );
           return {
             query,
@@ -1387,15 +1437,34 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
     {
       name: 'saveResearchedLead',
       description:
-        "Save a qualified outbound lead to the researched_leads table. Call this once per qualifying company found via web search — do NOT just describe leads in your final answer, they must be persisted here to count as pipeline output. Checks for an existing row with the same website first and skips the insert if found (returns duplicate: true) so the team never double-works a company.",
+        "Save a qualified outbound lead to the researched_leads table. Call this once per qualifying company found via web search — do NOT just describe leads in your final answer, they must be persisted here to count as pipeline output. Leads must be in the United States: give city as 'City, ST' (e.g. 'Austin, TX'). Anything else is refused with OUT_OF_SCOPE_GEOGRAPHY and nothing is saved. Checks for an existing row with the same website first and skips the insert if found (returns duplicate: true, with duplicateDetails naming the existing row, who saved it, and its status) so the team never double-works a company. Pass lookupOnly: true to get the same duplicate and geography answer without saving anything. A saved lead can be changed with updateLeadStatus and updateLeadContactInfo; there is no delete.",
       schema: researchedLeadInputSchema.extend({
         campaignId: z.string().optional().describe('Attribute this lead to a lead campaign (see start_lead_campaign). Omit for ad-hoc research.'),
+        lookupOnly: z.boolean().optional().describe('true: report whether this lead would be saved, is a duplicate, or is out of scope, and write nothing.'),
       }),
       requiresApproval: false,
-      async execute({ companyName, website, industry, city, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus, fitReason, outreachAngle, campaignId }, ctx) {
+      async execute({ lookupOnly, campaignId, ...lead }, ctx) {
         const { randomUUID } = await import('crypto');
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
+        const { companyName, website, industry, city, decisionMakerName, contactEmail, contactPhone, contactSourceUrl, contactResearchStatus, fitReason, outreachAngle } = lead;
+        const lookup = lookupOnly ? { lookupOnly: true } : {};
+
+        // US only. The answer depends on the lead alone, so it is the same
+        // whether or not lookupOnly is set, and no argument can switch it off.
+        const geography = checkLeadGeography(lead);
+        if (!geography.inScope) {
+          return {
+            saved: false,
+            refusedGeography: true,
+            code: OUT_OF_SCOPE_GEOGRAPHY,
+            reason: geography.reason,
+            error: geography.message,
+            companyName,
+            city: city ?? null,
+            ...lookup,
+          };
+        }
 
         if (website) {
           const existing = await db
@@ -1404,10 +1473,24 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             .where(eq(researchedLeads.website, website))
             .limit(1);
           if (existing.length > 0) {
-            return { duplicate: true, existingLeadId: existing[0].id, companyName };
+            return {
+              duplicate: true,
+              saved: false,
+              existingLeadId: existing[0].id,
+              companyName,
+              duplicateDetails: describeExistingLead(existing[0]),
+              ...lookup,
+            };
           }
         }
 
+        if (lookupOnly) {
+          return { duplicate: false, saved: false, lookupOnly: true, wouldSave: true, companyName, website: website ?? null, city: city ?? null };
+        }
+
+        // Provenance: the seat comes from ctx.agentId, the task it was working
+        // on from ctx.taskId. Both come from the caller, never a fixed id.
+        const taskRef = ctx.taskId ?? null;
         const id = randomUUID();
         await db.insert(researchedLeads).values({
           id,
@@ -1427,11 +1510,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           outreachAngle,
           status: 'new',
           researchedByAgentId: ctx.agentId,
+          pipelineMetadata: { taskRef, producingTaskId: taskRef, producingTool: 'saveResearchedLead' },
           campaignId,
           createdAt: new Date(),
         });
 
-        return { saved: true, leadId: id, companyName };
+        return { saved: true, leadId: id, companyName, taskRef };
       },
     },
 
@@ -1750,6 +1834,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         const googleKey = process.env.GOOGLE_PLACES_API_KEY;
         const directoryTimeoutMs = process.env.LIVE_DEMO_MODE === 'true' || process.env.LIVE_DEMO_MODE === '1' ? 4_000 : 10_000;
 
+        // Why Yelp or Google produced nothing. A 429 or a billing error used to
+        // be reported as "returned nothing", which reads as an honest empty
+        // result and hides that the provider is out of capacity.
+        let yelpNote: string | null = null;
+        let googleNote: string | null = null;
+
         // ── Provider 1: Yelp Fusion API (free, no credit card, 50 results/call) ──
         if (yelpKey) {
           try {
@@ -1801,9 +1891,13 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
               if (businesses.length > 0) {
                 return { query, total: businesses.length, businesses, provider: 'yelp' };
               }
+            } else {
+              const body = await yelpRes.text().catch(() => '');
+              yelpNote = `yelp: HTTP ${yelpRes.status} ${body.slice(0, 160)}`.trim();
             }
-          } catch {
+          } catch (e) {
             // Fall through to next provider
+            yelpNote = `yelp: ${e instanceof Error ? e.message : String(e)}`;
           }
         }
 
@@ -1850,7 +1944,11 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 },
               );
 
-              if (!res.ok) break;
+              if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                googleNote = `google: HTTP ${res.status} ${body.slice(0, 160)}`.trim();
+                break;
+              }
 
               const data = await res.json() as {
                 places?: Array<{
@@ -1893,8 +1991,9 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 provider: 'google',
               };
             }
-          } catch {
+          } catch (e) {
             // Fall through to OSM fallback
+            googleNote = `google: ${e instanceof Error ? e.message : String(e)}`;
           }
         }
         // Why each remaining provider produced nothing, surfaced to the agent
@@ -2069,8 +2168,8 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           // these it reruns query variants against a source that structurally
           // cannot answer them.
           attempts: [
-            yelpKey ? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
-            googleKey ? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
+            yelpKey ? yelpNote ?? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
+            googleKey ? googleNote ?? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
             ...(tomtomKey ? [] : ['tomtom: TOMTOM_API_KEY not set']),
             ...providerNotes,
           ],
@@ -2083,23 +2182,48 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
     // Batch save multiple researched leads in one tool call (saves iterations)
     {
       name: 'saveResearchedLeadsBatch',
-      description: 'Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Skips duplicates by website automatically. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.',
+      description: "Save multiple qualified leads to the researched_leads table in ONE call. Much faster than calling saveResearchedLead individually for each lead. Pass an array of lead objects with company name, website, industry, city, fit reason, and outreach angle. Leads must be in the United States: give city as 'City, ST' (e.g. 'Austin, TX'); others are refused with OUT_OF_SCOPE_GEOGRAPHY. Skips duplicates by website automatically. The result counts saved, duplicates, refusedGeography and failed separately, lists each new lead id in savedLeads (use those ids with updateLeadStatus), and explains every duplicate and refusal. Pass lookupOnly: true to get that answer without saving anything. Use this after searchBusinessDirectory to save 10-20 leads at once. Include email when you found one — only leads with an email on file can ever be targeted by start_email_campaign.",
       schema: z.object({
         leads: z.array(researchedLeadInputSchema).describe('Array of leads to save (10-20 at a time is ideal)'),
         campaignId: z.string().optional().describe('Attribute every lead in this batch to a lead campaign. Omit for ad-hoc research.'),
+        lookupOnly: z.boolean().optional().describe('true: report which leads would be saved, which are duplicates, and which are out of scope, and write nothing.'),
       }),
       requiresApproval: false,
-      async execute({ leads, campaignId }, ctx) {
+      async execute({ leads, campaignId, lookupOnly }, ctx) {
         const { randomUUID } = await import('crypto');
         const { db, researchedLeads } = await import('@workspace/db');
         const { eq } = await import('drizzle-orm');
 
+        // Every row this call writes carries the producing task, prefixed with
+        // agent_research_batch so a batch cohort can be told apart from leads
+        // saved one at a time, and traced to the run that produced it.
+        const producingTaskId = ctx.taskId ?? null;
+        const batchId = randomUUID();
+        const taskRef = `agent_research_batch:${producingTaskId ?? batchId}`;
+
+        // Four outcomes, counted separately: a refusal or a duplicate is not a
+        // failure, and none of them is a save.
         let saved = 0;
         let duplicates = 0;
+        let refusedGeography = 0;
         let failed = 0;
-        const savedNames: string[] = [];
+        const savedLeads: Array<{ leadId: string; companyName: string }> = [];
+        const wouldSaveLeads: Array<{ companyName: string; website: string | null }> = [];
+        const duplicateDetails: Array<Record<string, unknown>> = [];
+        const refusedDetails: Array<{ companyName: string; city: string | null; reason: string; error: string }> = [];
+        const failedDetails: Array<{ companyName: string; error: string }> = [];
+        // A saved row makes a later copy in the same batch a duplicate through
+        // the database read. lookupOnly saves nothing, so it tracks them here.
+        const websitesInBatch = new Set<string>();
 
         for (const lead of leads) {
+          const geography = checkLeadGeography(lead);
+          if (!geography.inScope) {
+            refusedGeography++;
+            refusedDetails.push({ companyName: lead.companyName, city: lead.city ?? null, reason: geography.reason, error: geography.message });
+            continue;
+          }
+
           try {
             if (lead.website) {
               const existing = await db
@@ -2109,12 +2233,25 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 .limit(1);
               if (existing.length > 0) {
                 duplicates++;
+                duplicateDetails.push({ companyName: lead.companyName, website: lead.website, ...describeExistingLead(existing[0]) });
                 continue;
               }
             }
 
+            if (lookupOnly) {
+              if (lead.website && websitesInBatch.has(lead.website)) {
+                duplicates++;
+                duplicateDetails.push({ companyName: lead.companyName, website: lead.website, existingLeadId: null, sameBatch: true });
+                continue;
+              }
+              if (lead.website) websitesInBatch.add(lead.website);
+              wouldSaveLeads.push({ companyName: lead.companyName, website: lead.website ?? null });
+              continue;
+            }
+
+            const leadId = randomUUID();
             await db.insert(researchedLeads).values({
-              id: randomUUID(),
+              id: leadId,
               companyName: lead.companyName,
               website: lead.website,
               industry: normalizeIndustry(lead.industry),
@@ -2141,17 +2278,31 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 nextBestAction: lead.contactEmail ? 'email' : lead.contactPhone ? 'call' : 'research_contact',
               },
               researchedByAgentId: ctx.agentId,
+              pipelineMetadata: { taskRef, producingTaskId, producingTool: 'saveResearchedLeadsBatch', batchId },
               campaignId,
               createdAt: new Date(),
             });
             saved++;
-            savedNames.push(lead.companyName);
-          } catch {
+            savedLeads.push({ leadId, companyName: lead.companyName });
+          } catch (err) {
             failed++;
+            failedDetails.push({ companyName: lead.companyName, error: (err instanceof Error ? err.message : String(err)).slice(0, 200) });
           }
         }
 
-        return { saved, duplicates, failed, total: leads.length, savedNames };
+        const outcome = {
+          duplicates,
+          refusedGeography,
+          failed,
+          total: leads.length,
+          duplicateDetails,
+          refusedDetails,
+          failedDetails,
+        };
+        if (lookupOnly) {
+          return { lookupOnly: true, saved: 0, wouldSave: wouldSaveLeads.length, wouldSaveLeads, ...outcome };
+        }
+        return { saved, savedLeads, taskRef, ...outcome };
       },
     },
 
@@ -3492,6 +3643,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
       async execute({ customerNumber, customerName, assistantPrompt, firstMessage, leadId, campaignId, playbookId }, ctx) {
         const { assertOutboundAllowed } = await import('./outbound-compliance-guard.js');
         await assertOutboundAllowed({ channel: 'phone', destination: customerNumber, leadId, purpose: 'make_outbound_call' });
+        try {
+          await assertContactSendable({ channel: 'phone', destination: customerNumber });
+        } catch (error) {
+          if (error instanceof SendBlockedError) return { success: false, error: error.message, doNotContact: true };
+          throw error;
+        }
 
         // Phase 2.3: budget guard — check mission budget before placing call.
         try {
@@ -3545,30 +3702,18 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           });
 
           try {
-            await db
-              .insert(callOutcomes)
-              .values({
-                id: randomUUID(),
-                callId: `cartesia:${call.callId}`,
-                leadId: leadId ?? null,
-                customerNumber: call.toNumber,
-                customerName: customerName ?? null,
-                disposition: 'no_decision',
-                summary: 'Outbound call initiated.',
-                nextAction: 'Await call outcome.',
-                createdByAgentId: ctx.agentId,
-                createdAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .onConflictDoUpdate({
-                target: callOutcomes.callId,
-                set: {
-                  leadId: leadId ?? null,
-                  customerNumber: call.toNumber,
-                  customerName: customerName ?? null,
-                  updatedAt: new Date(),
-                },
-              });
+            await commitCallOutcome({
+              id: randomUUID(),
+              callId: `cartesia:${call.callId}`,
+              leadId: leadId ?? null,
+              customerNumber: call.toNumber,
+              customerName: customerName ?? null,
+              disposition: 'no_decision',
+              summary: 'Outbound call initiated.',
+              nextAction: 'Await call outcome.',
+              createdByAgentId: ctx.agentId,
+              conflictUpdate: true,
+            });
           } catch (logErr) {
             console.error('[make_outbound_call] failed to persist Cartesia dialing outcome:', logErr instanceof Error ? logErr.message : String(logErr));
           }
@@ -3595,7 +3740,7 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           }
           const errorMsg = err instanceof Error ? err.message : String(err);
           try {
-            await db.insert(callOutcomes).values({
+            await commitCallOutcome({
               id: randomUUID(),
               callId: `failed_${randomUUID()}`,
               leadId: leadId ?? null,
@@ -3606,8 +3751,6 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
               nextAction: 'Inspect the provider error and correct the dialing/configuration issue before retrying.',
               endedReason: errorMsg.slice(0, 500),
               createdByAgentId: ctx.agentId,
-              createdAt: new Date(),
-              updatedAt: new Date(),
             });
           } catch (logErr) {
             console.error('[make_outbound_call] failed to persist failed_to_dial outcome:', logErr instanceof Error ? logErr.message : String(logErr));
@@ -4379,6 +4522,14 @@ export function getToolRegistry(_workspaceRoot?: string): ToolRegistry {
     // queue steps, advance enrollments, get enrollment status.
     // Always registered — operates on campaigns/sequences/enrollments/interactions.
     for (const tool of createCampaignTools()) {
+      _registry.register(tool);
+    }
+    // Calendar reads and booking requests. Invites stay on sendUpdates=none
+    // until the operator releases them in Pending sends; these tools cannot skip that.
+    for (const tool of createCalendarTools()) {
+      _registry.register(tool);
+    }
+    for (const tool of createCrmTools()) {
       _registry.register(tool);
     }
     // Portfolio connectors register only when their env is configured, so a

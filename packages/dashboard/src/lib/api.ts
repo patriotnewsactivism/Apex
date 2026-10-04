@@ -368,6 +368,100 @@ export interface WebinarAdminDashboard {
   };
 }
 
+export interface CrmContactFilters {
+  q?: string;
+  tag?: string;
+  city?: string;
+  state?: string;
+  verifiedOnly?: boolean;
+  doNotContact?: boolean | null;
+  ownerBot?: string;
+  lastContactedFrom?: string;
+  lastContactedTo?: string;
+  replied?: boolean | null;
+  campaignId?: string;
+}
+
+export interface CrmContact {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  organizationName: string | null;
+  title: string | null;
+  email: string | null;
+  phoneE164: string | null;
+  website: string | null;
+  city: string | null;
+  state: string | null;
+  tags: string[] | null;
+  notes: string | null;
+  ownerBot: string | null;
+  doNotContact: boolean;
+  doNotContactReason: string | null;
+  doNotContactSetBy: string | null;
+  lastContactedAt: string | null;
+  lastReplyAt: string | null;
+  nextFollowUpAt: string | null;
+  followUpPaused: boolean;
+  lastContactedChicago?: string | null;
+  lastReplyChicago?: string | null;
+}
+
+export interface CrmIdentifier {
+  id: string;
+  kind: string;
+  value: string;
+  verified: boolean;
+  sourceUrl: string | null;
+  foundAt: string | null;
+}
+
+export interface CrmTimelineRow {
+  id: string;
+  occurredAt: string;
+  occurredChicago: string;
+  channel: string;
+  direction: string;
+  actorName: string;
+  eventKind: string;
+  subject: string | null;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  provider: string | null;
+  providerMessageId: string | null;
+  attachments: Array<{ filename?: string; storageKey?: string; contentType?: string; sizeBytes?: number }>;
+}
+
+export interface CrmMeeting {
+  id: string;
+  title: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  status: string | null;
+}
+
+export interface CrmContactDetail {
+  timezone: string;
+  contact: CrmContact;
+  identifiers: CrmIdentifier[];
+  meetings: CrmMeeting[];
+  timeline: CrmTimelineRow[];
+}
+
+export interface CrmUnmatched {
+  id: string;
+  fromAddress: string | null;
+  subject: string | null;
+  bodyText: string | null;
+  receivedAt: string;
+}
+
+export interface CrmDuplicate {
+  kind: 'email' | 'phone' | 'domain';
+  value: string;
+  contactIds: string[];
+}
+
 export const api = {
   auth: {
     websocketTicket: () => apiFetch<{ ticket: string }>('/auth/websocket-ticket', { method: 'POST' }),
@@ -646,6 +740,18 @@ export const api = {
       apiFetch(`/health/alerts/${alertId}/acknowledge`, { method: 'POST' }),
   },
 
+  calendar: {
+    agenda: (start: string, end: string) =>
+      apiFetch<{ items: CalendarAgendaItem[]; timezone: string }>(`/calendar/agenda?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+    settings: () => apiFetch<{ settings: CalendarSettingsPayload; status: CalendarConnectionStatus }>('/calendar/settings'),
+    saveSettings: (settings: CalendarSettingsPayload) =>
+      apiFetch<{ settings: CalendarSettingsPayload }>('/calendar/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+    googleStart: () => apiFetch<{ url: string }>('/calendar/google/start'),
+    googleCalendars: () => apiFetch<{ calendars: Array<{ id: string; summary: string; primary: boolean }> }>('/calendar/google/calendars'),
+    timeline: (contactId: string) =>
+      apiFetch<{ contactId: string; timezone: string; rows: CalendarTimelineRow[] }>(`/calendar/contacts/${contactId}/timeline`),
+  },
+
   jobs: {
     list: () => apiFetch<ScheduledJobRow[]>('/jobs'),
     create: (data: { name: string; jobType: string; cronExpression?: string; scheduledAt?: string; targetAgentId?: string; payload?: Record<string, unknown>; priority?: number }) =>
@@ -745,6 +851,66 @@ export const api = {
       apiFetch<LeadImportResult>('/leads/import', { method: 'POST', body: JSON.stringify({ ...body, commit: false }) }),
     importCommit: (body: { csv?: string; rows?: Array<Record<string, string>>; provider?: string; overwrite?: boolean }) =>
       apiFetch<LeadImportResult>('/leads/import', { method: 'POST', body: JSON.stringify({ ...body, commit: true }) }),
+  },
+
+  crm: {
+    list: (params?: CrmContactFilters) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      if (params?.tag) qs.set('tag', params.tag);
+      if (params?.city) qs.set('city', params.city);
+      if (params?.state) qs.set('state', params.state);
+      if (params?.verifiedOnly) qs.set('verified', 'true');
+      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
+      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
+      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
+      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
+      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
+      if (params?.replied === true) qs.set('replied', 'true');
+      if (params?.replied === false) qs.set('replied', 'false');
+      if (params?.campaignId) qs.set('campaignId', params.campaignId);
+      const query = qs.toString();
+      return apiFetch<{ timezone: string; contacts: CrmContact[] }>(`/crm/contacts${query ? `?${query}` : ''}`);
+    },
+    get: (id: string) => apiFetch<CrmContactDetail>(`/crm/contacts/${encodeURIComponent(id)}`),
+    setDoNotContact: (id: string, value: boolean, reason?: string) =>
+      apiFetch<{ ok: boolean }>(`/crm/contacts/${encodeURIComponent(id)}/do-not-contact`, {
+        method: 'POST',
+        body: JSON.stringify({ value, reason }),
+      }),
+    unmatched: () => apiFetch<CrmUnmatched[]>('/crm/unmatched'),
+    attachUnmatched: (id: string, contactId: string) =>
+      apiFetch<{ ok: boolean; timelineId: string }>(`/crm/unmatched/${encodeURIComponent(id)}/attach`, {
+        method: 'POST',
+        body: JSON.stringify({ contactId }),
+      }),
+    duplicates: () => apiFetch<CrmDuplicate[]>('/crm/duplicates'),
+    merge: (winnerId: string, loserId: string) =>
+      apiFetch<{ ok: boolean }>('/crm/merge', {
+        method: 'POST',
+        body: JSON.stringify({ winnerId, loserId, explicit: true }),
+      }),
+    exportCsv: (params?: CrmContactFilters) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      if (params?.tag) qs.set('tag', params.tag);
+      if (params?.city) qs.set('city', params.city);
+      if (params?.state) qs.set('state', params.state);
+      if (params?.verifiedOnly) qs.set('verified', 'true');
+      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
+      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
+      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
+      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
+      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
+      if (params?.replied === true) qs.set('replied', 'true');
+      if (params?.replied === false) qs.set('replied', 'false');
+      if (params?.campaignId) qs.set('campaignId', params.campaignId);
+      const query = qs.toString();
+      const token = localStorage.getItem('apex_token');
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      return fetch(`${API}/crm/contacts/export${query ? `?${query}` : ''}`, { headers }).then((r) => r.blob());
+    },
   },
 
   suggestions: {
@@ -1293,13 +1459,27 @@ export interface CampaignIcp {
   notes?: string;
 }
 
+/** Lead search paused because every search source APEX can use is down. */
+export interface CampaignSearchPause {
+  /** True while waiting; false while the single test search is due. */
+  paused: boolean;
+  resumeAt: string;
+  since: string;
+  pauses: number;
+  unavailable: Array<{ source: string; reason: string | null }>;
+  summary: string;
+}
+
 export interface CampaignProgress {
   campaignId: string;
   name: string;
   status: string;
   /** What to render. 'stalled' is derived from lastProgressAt, not stored —
-   *  a campaign whose runner died still reads as 'running' in the table. */
+   *  a campaign whose runner died still reads as 'running' in the table.
+   *  'waiting_for_search' means every search source is unavailable and the
+   *  runner is waiting; see searchPause. */
   displayStatus: string;
+  searchPause?: CampaignSearchPause | null;
   targetLeads: number;
   leadsSaved: number;
   leadProgress: number;
@@ -1420,6 +1600,72 @@ export interface AlertSummary {
 }
 
 // ─── Job Types ────────────────────────────────────────────────────────────────
+
+export interface CalendarAgendaItem {
+  id: string;
+  kind: 'event' | 'hold' | 'google';
+  title: string;
+  start: string;
+  end: string;
+  startLabel: string;
+  endLabel: string;
+  status: string;
+  agentId: string | null;
+  agentName: string | null;
+  color: string | null;
+  googleColorId: string | null;
+  contactId: string | null;
+  contactName: string | null;
+  meetingUrl: string | null;
+  inviteStage: string | null;
+}
+
+export interface CalendarTimelineRow {
+  id: string;
+  kind: string;
+  actorName: string;
+  actorKind: string;
+  occurredAt: string;
+  timezone: string;
+  summary: string;
+  meetingId: string | null;
+}
+
+export interface CalendarWorkingWindow {
+  day: number;
+  start: string;
+  end: string;
+}
+
+export interface CalendarSettingsPayload {
+  timezone: string;
+  workingHours: CalendarWorkingWindow[];
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  noBookBlocks: Array<{ id: string; start: string; end: string; label?: string }>;
+  maxMeetingsPerDay: number;
+  minimumNoticeMinutes: number;
+  holdMinutes: number;
+  slotMinutes: number;
+  busyCalendarIds: string[];
+  bookingCalendarId: string | null;
+  agentColors: Record<string, { hex: string; googleColorId: string }>;
+  operatorDisplayName: string;
+}
+
+export interface CalendarConnectionStatus {
+  googleConnected: boolean;
+  googleAccountEmail: string | null;
+  calConfigured: boolean;
+  calWebhookSecretSet: boolean;
+  oauthConfigured: boolean;
+  redirectUriConfigured: boolean;
+  busyCalendarIds: string[];
+  busyCalendarSource: 'configured' | 'primary-fallback';
+  timezone: string;
+  bookingCalendarId: string;
+  appointmentSchedules: 'manual-fallback';
+}
 
 export interface ScheduledJobRow {
   id: string;

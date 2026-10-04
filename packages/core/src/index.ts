@@ -24,6 +24,7 @@ export * from './request-ledger.js';
 export * from './spend-ledger.js';
 export * from './provider-credits.js';
 export * from './provider-account-exclusions.js';
+export * from './openrouter-balance-monitor.js';
 export * from './runtime-health.js';
 export * from './workspace-root.js';
 export * from './agent-supervisor.js';
@@ -34,6 +35,7 @@ export { optimizePrompt, evaluateCandidate, preservesImmutableRules } from './pr
 export type { OptimizePromptInput, OptimizePromptResult, PromptCandidateResult } from './prompt-forge.js';
 export * from './context-budget.js';
 export * from './industry-taxonomy.js';
+export * from './lead-geography.js';
 export * from './artifact-store.js';
 export * from './workspace-sync.js';
 export * from './approval-policy.js';
@@ -61,3 +63,24 @@ export * from './revenue-ops/compliance.js';
 export { getTurnEconomySnapshot } from './turn-economy.js';
 
 export * from './specialists/index.js';
+export * from './crm/index.js';
+export {
+  getCalendarBookingService,
+  calendarBookingConfigured,
+  calendarOrganizationId,
+  saveGoogleCalendarConnection,
+  createCalendarTools,
+  GOOGLE_INVITE_KIND,
+  deliverReleasedCalendarInvite,
+  verifyCalWebhookSignature,
+  authorizeCalWebhook,
+  parseCalWebhook,
+  calWebhookSecret,
+  buildGoogleAuthUrl,
+  signOauthState,
+  verifyOauthState,
+  zonedTimeToUtc,
+  CalendarNotConnectedError,
+  DoNotContactError,
+  SlotUnavailableError,
+} from './calendar/index.js';

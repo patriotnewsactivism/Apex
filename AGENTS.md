@@ -57,7 +57,13 @@ QA Director -- independent quality/oversight role
 
 The production workforce is 13 agents. Generic specialist classes may exist in source but are not part of the instantiated production organization unless the workforce definition changes explicitly.
 
-An optional Cartesia sales-agent webhook surface lives at `/api/cartesia` (implementation and configuration in `docs/CARTESIA_SALES_TOOLS.md`). It is separate from APEX's Telnyx outbound transport; exposing its routes does not mean the Cartesia agent, tools, calendar, or phone transfer has been configured or tested in production. The Cartesia tool bearer secret and call-event webhook secret are independent and required. APEX outbound caller ID remains `+18329757665`; owner escalation destination is `+18328804970` when configured.
+An optional Cartesia sales-agent webhook surface lives at `/api/cartesia` (implementation and configuration in `docs/CARTESIA_SALES_TOOLS.md`). It is separate from APEX's Telnyx outbound transport; exposing its routes does not mean the Cartesia agent, tools, calendar, or phone transfer has been configured or tested in production. The Cartesia tool bearer secret and call-event webhook secret are independent and required. APEX outbound caller ID remains `+18329757665`; owner escalation destination is `+18328804970` when configured. Cartesia availability and consultation booking go through the calendar booking service. They do not call the Cal.com bookings API.
+
+### Calendar booking
+
+Google Calendar is the master. `packages/core/src/calendar/` is the only booking path: free/busy across the busy calendars chosen in settings, then working hours, buffers, no-book blocks, the daily cap, and minimum notice (`America/Chicago` unless settings say otherwise), then a short slot hold, then the Google event. Holds use `calendar_slot_holds_no_overlap` (`btree_gist`) so two workers cannot keep the same time. Which Google account is connected, and which calendars count as busy, are settings and env (`APEX_GOOGLE_OAUTH_*`, `APEX_CALENDAR_BUSY_IDS`). Do not hardcode an account.
+
+Events are created with `sendUpdates=none`. Invites, reschedule notices, and cancellation notices to outside people are staged in the send safeguard (`calendar/invite-gate.ts`): a `calendar` recipient in Pending Sends under story key `calendar:<organization>`, so the operator code applies at 5 or more invites in 24 hours. Nothing reaches the attendee until the operator confirms twice and releases it; the `google_calendar_invite` transport then re-runs `assertSendAllowed` and tells Google to notify (`sendUpdates=all`, or delete with `all` for a cancellation). A released invite for a meeting that has since been cancelled is not sent. The outbound kill switch blocks both staging and delivery, and do-not-contact blocks the booking. Public booking links stay on Cal.com (`APEX_CAL_API_KEY`, `APEX_CAL_EVENT_TYPE_ID`, `APEX_CAL_WEBHOOK_SECRET` on `POST /api/calendar/cal/webhook`). Google appointment schedules are a manual fallback and have no API. Agent tools are `calendar_get_agenda`, `calendar_find_slots`, and `calendar_request_booking`. Timeline rows are appended to `interactions` (`TODO(feat/crm)` until that writer exists). Tokens are encrypted with `APEX_ENCRYPTION_KEY`.
 
 ### Virtual specialist departments
 
@@ -202,6 +208,12 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 `scripts/verify-provider-routing.ts`, `scripts/verify-provider-backpressure.ts`, `scripts/verify-model-routing-policy.ts`, and `scripts/verify-model-intelligence.ts` are deterministic guards and must stay aligned with the production OpenRouter stack.
 
+## CRM contact book
+
+The operator contact book lives in the revenue-ops tables (`lib/db/src/schema-revenue-ops.ts`) plus the additive migration `lib/db/drizzle/20261003_crm.sql`. `contact_timeline` is append-only: a trigger rejects UPDATE and DELETE, and corrections are new rows. `audit_events` may hold many rows per entity. Every outbound send first passes the CRM do-not-contact check (`assertContactSendable`, contact-level, all channels), then the send safeguard (`openOutboundSendJob` + `assertSendAllowed`: operator confirm/code, kill switch, suppressions), then the provider call, and only then writes the CRM timeline row. A send held in Pending Sends writes no timeline row, because nothing was sent; released email, texts, and calls write it when they go out. The send safeguard's suppression check also reads contact-level do-not-contact, so a released send is blocked if the contact opted out on any channel after release. Clearing do-not-contact and merging contacts require the operator dashboard session (`X-Apex-Operator-Session`), not just the admin bearer. Clearing lifts only the contact flag: suppressions from an SMS STOP, a bounce, or a complaint keep that channel blocked.
+
+Inbound email is `POST /api/resend/inbound` (Svix). Reply-To uses `r+<token>@APEX_REPLY_DOMAIN` when that host is set. Inbound Telnyx SMS requires an ed25519 signature from `TELNYX_PUBLIC_KEY`; `TELNYX_SMS_QUERY_KEY_FALLBACK` defaults off. BCC capture (`APEX_CRM_BCC_CAPTURE`) and Gmail read-only sync (`APEX_CRM_GMAIL_SYNC`, scope `gmail.readonly`) both default off. Agents may call `crm_search_contacts`, `crm_get_contact`, and `crm_get_timeline`. They cannot merge contacts or clear do-not-contact, through a tool or the HTTP routes. `scripts/import-contacts-csv.ts` and `scripts/backfill-crm.ts` are dry-run by default and refuse non-local databases. See `docs/CRM.md`.
+
 ## Turn Economy
 
 `docs/TURN_ECONOMY.md` describes opt-in durable queue bundles, the read-only
@@ -272,6 +284,8 @@ See `SECURITY.md` for the repository-wide security contract.
 - A task is not complete because an agent says what it intends to do. The non-completion guard must continue catching announced-but-not-taken tool work.
 - Scheduled delegation must remain deduplicated so multiple scheduler passes do not create the same live LLM task repeatedly.
 - Provider-capacity pauses must release leases and defer work without consuming ordinary task retry budgets.
+- The lead campaign runner applies the same rule to search providers. When every keyed search source a segment tried was unavailable (quota, rate limit, out of credits, 5xx, timeout, rejected key, or an open webSearch circuit breaker) and none answered, the segment goes back to pending with its attempt handed back and segment claiming pauses: 2 minutes, doubling to 60, then one test search. The first answer resumes it. Keyless OSM and DuckDuckGo failures never pause search. `isDeterministicFailure` closes a segment early only when no source can answer at all, never during an outage. See `packages/background-jobs/src/lead-search-capacity.ts`.
+- `saveResearchedLead` and `saveResearchedLeadsBatch` save US leads only. The city must name a US state or territory or be a well-known US city. Anything else, a missing city, or a contact phone with a country code other than +1 is refused with `OUT_OF_SCOPE_GEOGRAPHY` and nothing is written (`packages/core/src/lead-geography.ts`). No argument switches the check off. A duplicate comes back with `duplicateDetails`, `lookupOnly: true` answers without writing, and every saved row records its producing task in `pipeline_metadata.taskRef` (`agent_research_batch:<task>` for a batch). Lead records are updatable through `updateLeadStatus` and `updateLeadContactInfo`. There is no delete API.
 - Managers must follow delegated work through to a measurable result rather than treating delegation itself as completion.
 - Repeated current failures are engineering defects until evidence shows they are transient/recovered.
 - Never manufacture metrics, status, deploy evidence, test results, or external side effects.
@@ -343,7 +357,11 @@ Production CI currently includes:
 - cron-governor guard (Phase 5: frequency floor, dynamic-ceiling constants, schedule_task enum);
 - approval-policy guard (Phase 5.5: hard-gated tools never auto-approvable; unset auto-approve fails closed);
 - send-safeguard guard (every channel blocked without clearance, dual confirm, 5+ code + 24h aggregation, bot code rejected, lockout, Stop, kill switch, suppression);
+- calendar booking guard (free/busy and every booking rule, one winner when bookings race, hold expiry, invites staged in the send safeguard with operator-only confirm, code, and release, kill switch at staging and at send, no invite for a meeting cancelled since, do-not-contact, Cal.com signatures);
 - BuildMyBot lead-ingest guard (authenticated HTTP handoff: not-configured, dry-run default, live-push approval gate, chunking, 401/503);
+- lead-search capacity-pause guard (the 2026-10-03 Tavily plan-limit messages pause instead of closing, attempts handed back, backoff and single test search, honest empties and keyless flakiness still retry or close, Tavily 432/433 and the BuildMyBot proxy trip the webSearch breaker, Yelp/Google HTTP failures are reported as failures);
+- lead geography guard (US-only saves need positive evidence: a state, a territory, or a well-known US city; foreign places, bare ambiguous names, a missing city, and non-+1 phones are refused; every us-geo.ts campaign city passes; a refusal never reads the database);
+- lead write-path suite (`lead-write-path.test.ts`: duplicateDetails, typed lookupOnly, OUT_OF_SCOPE_GEOGRAPHY kept apart from duplicates and failures, producing-task provenance, no delete API; its database half runs in the `lead-status-postgres` job);
 - executor-dispatch guard (Phase 4: claim-by-id, runtime routing, dispatch wiring);
 - checkpoint/resume guard (ADR-014: checkpoint construction, ownership-guarded resume, executor-job dispatch-marker reset);
 - soft-deadline yield guard (hard/soft timeout resolution, no silent drift between start() and executeTask());
@@ -354,7 +372,9 @@ Production CI currently includes:
 - call-outcome-capture guard (DST-correct appointment timezone resolution, upsert never lets end-of-call-report overwrite a disposition the mid-call function already recorded);
 - crash-recovery integration guard (create → claim → disappear → resume → exactly-one-side-effect → complete);
 - dashboard build;
-- mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across every nav view (including Pending Sends) at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.
+- mobile layout guard (`mobile-layout` job, separate from `production-checks`): drives the built dashboard in Chromium across every nav view (including Pending Sends and Contacts) at 360/390/430px and fails on horizontal overflow, on a view that renders blank, or on a nav view the harness does not visit.
+- CRM postgres guard (`crm-postgres` job): contact book, append-only timeline, inbound matching, and do-not-contact against a throwaway Postgres. It is not part of `production-checks` because that job has no database.
+- lead-search postgres guard (`lead-search-postgres` job): the real `CampaignRunner` against a throwaway Postgres with stubbed search tools and a fake clock — an outage hands every segment back, claims nothing while paused, sends one test search, and resumes on the first answer.
 
 Experimental Convex checks must not silently become production authority merely because they pass.
 

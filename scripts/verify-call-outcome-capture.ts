@@ -243,9 +243,23 @@ async function main(): Promise<void> {
       /callId: `cartesia:\$\{call\.callId\}`/.test(mocBody) &&
         /disposition: 'no_decision'/.test(mocBody),
     );
+    // The success-path write lives either inline or in the CRM commitCallOutcome
+    // helper make_outbound_call calls. Follow it, then check the conflict update
+    // itself: the webhook can land first, and its disposition must survive.
+    const crmStoreSource = fs.readFileSync(path.join(root, 'packages/core/src/crm/store.ts'), 'utf8');
+    const helperStart = crmStoreSource.indexOf('export async function commitCallOutcome');
+    const helperBody = helperStart > -1 ? crmStoreSource.slice(helperStart, crmStoreSource.indexOf('\n}\n', helperStart)) : '';
+    const viaHelper = /commitCallOutcome\(\{[\s\S]*?callId: `cartesia:\$\{call\.callId\}`[\s\S]*?conflictUpdate: true/.test(mocBody);
+    const conflictSet = /\.onConflictDoUpdate\(\{\s*target: callOutcomes\.callId,\s*set: \{([\s\S]*?)\}/
+      .exec(viaHelper ? helperBody : mocBody)?.[1] ?? null;
     check(
       'the success-path insert upserts rather than racing the Cartesia webhook',
-      /\.onConflictDoUpdate\(\{\s*target: callOutcomes\.callId/.test(mocBody),
+      conflictSet !== null,
+    );
+    check(
+      "the success-path upsert's conflict update never overwrites the webhook's disposition, summary, or next action",
+      conflictSet !== null && !/\b(disposition|summary|nextAction|appointmentAt)\s*:/.test(conflictSet),
+      conflictSet,
     );
     check(
       'both call_outcomes writes are wrapped so logging cannot mask the real provider result',

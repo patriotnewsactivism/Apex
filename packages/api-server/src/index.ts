@@ -16,7 +16,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { getWebSocketTicketStats } from './websocket-auth.js';
@@ -47,12 +47,14 @@ import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
 import { createCartesiaSalesRouter } from './routes/cartesia-sales.js';
+import { createCalendarPublicRouter, createCalendarRouter } from './routes/calendar.js';
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
 import { createLeadsRouter } from './routes/leads.js';
+import { createCrmRouter } from './routes/crm.js';
 import { createCampaignsRouter } from './routes/campaigns.js';
 import { createTerritoriesRouter } from './routes/territories.js';
 import { createEmailCampaignsRouter } from './routes/email-campaigns.js';
@@ -348,6 +350,9 @@ async function main() {
       // Provider account balance. The paid continuity route makes remaining
       // credit operational again, so keep it visible beside the routing state.
       providerCredits: getProviderCreditSnapshot(),
+      // Low-balance guard: thresholds, per-account level, paid-pause state,
+      // saved key limits (hash suffix only), and recent monitor events.
+      openRouterBalanceMonitor: getOpenRouterBalanceMonitorStatus(),
       // Paid LLM spend telemetry. For the unrestricted GLM 5.3 FlashX route,
       // this ledger is observational only (`enforced: false`); APEX spend,
       // request, emergency, and token governors do not remove FlashX from the
@@ -505,6 +510,11 @@ async function main() {
   // Cartesia custom sales tools and call events verify independent secrets.
   app.use('/api/cartesia', createCartesiaSalesRouter());
 
+  // Cal.com signed webhooks and the Google OAuth browser redirect. Neither
+  // can present the admin bearer token. Operator calendar routes mount after
+  // requireAdminAuth on the same prefix.
+  app.use('/api/calendar', createCalendarPublicRouter());
+
   // Call Bridge webhook — Telnyx Call Control events for operator-bridged
   // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
   // mounted at the same /api/telnyx-assistant prefix (a different router,
@@ -535,6 +545,7 @@ async function main() {
   app.use('/api/tools', createToolsRouter());
   app.use('/api/health', createHealthRouter(healthMonitor, alertManager, () => buildRuntimeHealthDetail()));
   app.use('/api/jobs', createJobsRouter());
+  app.use('/api/calendar', createCalendarRouter());
   app.use('/api/learning', createLearningRouter(workforce));
   app.use('/api/suggestions', createSuggestionsRouter());
   app.use('/api/cicd', createCicdRouter());
@@ -542,6 +553,7 @@ async function main() {
   app.use('/api/predictive', createPredictiveRouter());
   app.use('/api/settings', createSettingsRouter());
   app.use('/api/leads', createLeadsRouter());
+  app.use('/api/crm', createCrmRouter());
   app.use('/api/campaigns', createCampaignsRouter());
   app.use('/api/territories', createTerritoriesRouter());
   app.use('/api/email-campaigns', createEmailCampaignsRouter());

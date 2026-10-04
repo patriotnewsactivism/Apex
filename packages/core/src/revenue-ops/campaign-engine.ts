@@ -13,6 +13,7 @@
 // until the response is classified.
 
 import { db } from '@workspace/db';
+import { SendBlockedError, assertContactSendable, commitSendRecord } from '../crm/store.js';
 import {
   campaigns,
   sequences,
@@ -454,29 +455,53 @@ async function upsertRevenueOpportunity(input: {
   )).limit(1);
   if (existingMeeting) return;
 
-  const [meeting] = await db.insert(meetings).values({
-    id: randomUUID(),
-    organizationId: input.organizationId,
-    contactId: input.contactId,
-    provider: 'manual',
-    title: 'Revenue qualification meeting',
-    startsAt,
-    endsAt,
-    status: 'scheduled',
-    meetingUrl: input.meetingUrl,
-    metadata,
-    createdAt: input.now,
-    updatedAt: input.now,
-  }).returning({ id: meetings.id });
-  if (meeting) {
-    await db.insert(meetingAttendees).values({
-      id: randomUUID(),
-      meetingId: meeting.id,
-      contactId: input.contactId,
-      role: 'attendee',
-      createdAt: input.now,
-    }).onConflictDoNothing();
+  try {
+    await assertContactSendable({ channel: 'calendar', contactId: input.contactId });
+  } catch (error) {
+    if (error instanceof SendBlockedError) return;
+    throw error;
   }
+  const meetingId = randomUUID();
+  await commitSendRecord(async (tx) => {
+    const [created] = await tx.insert(meetings).values({
+      id: meetingId,
+      organizationId: input.organizationId,
+      contactId: input.contactId,
+      provider: 'manual',
+      title: 'Revenue qualification meeting',
+      startsAt,
+      endsAt,
+      status: 'scheduled',
+      meetingUrl: input.meetingUrl,
+      metadata,
+      createdAt: input.now,
+      updatedAt: input.now,
+    }).returning({ id: meetings.id });
+    if (created) {
+      await tx.insert(meetingAttendees).values({
+        id: randomUUID(),
+        meetingId: created.id,
+        contactId: input.contactId,
+        role: 'attendee',
+        createdAt: input.now,
+      }).onConflictDoNothing();
+    }
+    return created;
+  }, {
+    contactId: input.contactId,
+    organizationId: input.organizationId,
+    channel: 'calendar',
+    direction: 'outbound',
+    actorType: 'agent',
+    actorName: 'campaign-engine',
+    eventKind: 'meeting',
+    subject: 'Revenue qualification meeting',
+    bodyText: `Meeting ${startsAt.toISOString()} to ${endsAt.toISOString()}`,
+    provider: 'manual',
+    providerMessageId: `meeting:${meetingId}`,
+    sendRecordTable: 'meetings',
+    sendRecordId: meetingId,
+  });
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────────

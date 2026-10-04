@@ -37,8 +37,14 @@
  */
 
 import { createHash } from 'crypto';
-import { accountFingerprint, setObservedAccounts } from './request-ledger.js';
+import { accountFingerprint, observedAccountFor, setObservedAccounts } from './request-ledger.js';
 import { reconcileOpenRouterCreditBalances } from './provider-account-exclusions.js';
+import {
+  restoreOpenRouterKeyLimit,
+  runOpenRouterBalanceMonitor,
+  type BalanceAccountCredentials,
+  type BalanceObservation,
+} from './openrouter-balance-monitor.js';
 
 const CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
 const KEY_URL = 'https://openrouter.ai/api/v1/key';
@@ -518,6 +524,83 @@ async function fetchCredits(): Promise<void> {
   );
   reconcileOpenRouterCreditBalances(accountsWithBalances);
   cached = summarize(accountsWithBalances, management, identities);
+
+  // Low-balance guard: warn / critical / paid auto-pause per account. Runs
+  // after `cached` is set so a slow alert sink never delays health detail.
+  const observations = balanceObservations(accountsWithBalances);
+  const credentials = balanceCredentials(
+    inference.map((entry, index) => ({
+      key: entry.key,
+      account: accountsWithKnownIdentities[index].account,
+    })),
+    management,
+  );
+  try {
+    await runOpenRouterBalanceMonitor(observations, credentials);
+  } catch {
+    // The monitor must never break the credit probe.
+  }
+}
+
+/** One observation per OpenRouter account (several env names may share one). */
+export function balanceObservations(
+  accounts: ReadonlyArray<ProviderAccountSnapshot>,
+): BalanceObservation[] {
+  const byAccount = new Map<string, BalanceObservation>();
+  for (const row of accounts) {
+    if (!row.account.startsWith('oracct_')) continue;
+    const existing = byAccount.get(row.account);
+    if (existing) {
+      existing.env = `${existing.env} + ${row.env}`;
+      if (existing.remaining === null) existing.remaining = row.remaining;
+      continue;
+    }
+    byAccount.set(row.account, { account: row.account, env: row.env, remaining: row.remaining });
+  }
+  return [...byAccount.values()];
+}
+
+function balanceCredentials(
+  inference: ReadonlyArray<{ key: string; account: string }>,
+  management: ReadonlyArray<ProviderManagementSnapshot>,
+): Map<string, BalanceAccountCredentials> {
+  const out = new Map<string, BalanceAccountCredentials>();
+  for (const entry of inference) {
+    if (!entry.account.startsWith('oracct_') || out.has(entry.account)) continue;
+    const mgmt = management.find((row) => row.account === entry.account);
+    const managementKey = mgmt ? process.env[mgmt.env.split(' + ')[0]] ?? null : null;
+    out.set(entry.account, { inferenceKey: entry.key, managementKey: managementKey || null });
+  }
+  return out;
+}
+
+/** Force a fresh balance probe (and monitor round). Used by the monitor timer. */
+export async function refreshProviderCredits(): Promise<ProviderCreditSnapshot | null> {
+  if (inFlight) {
+    await inFlight;
+    return cached;
+  }
+  lastAttemptAt = Date.now();
+  inFlight = fetchCredits().finally(() => {
+    inFlight = null;
+  });
+  await inFlight;
+  return cached;
+}
+
+/**
+ * Operator action behind POST /api/settings/openrouter-balance/:account/restore-key-limit.
+ * Resolves the account's live inference + management key from process.env at
+ * call time; neither value leaves this function.
+ */
+export async function restoreOpenRouterKeyLimitForAccount(
+  account: string,
+  operator = 'operator',
+): Promise<{ ok: boolean; detail: string }> {
+  const inference = configuredInferenceCredentials()
+    .map((entry) => ({ key: entry.key, account: observedAccountFor(entry.fingerprint) ?? `keyfp_${entry.fingerprint}` }));
+  const credentials = balanceCredentials(inference, cached?.management ?? []);
+  return restoreOpenRouterKeyLimit(account, credentials.get(account), operator);
 }
 
 /**

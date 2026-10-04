@@ -34,9 +34,17 @@ import {
   primaryKey,
   varchar,
   numeric,
+  customType,
 } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 import { projects, goals } from './schema.js';
+
+/** Postgres tsvector. Maintained by triggers in the CRM migration, not by app updates. */
+export const tsvector = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PROVIDER CONNECTIONS
@@ -120,6 +128,25 @@ export const contacts = pgTable('contacts', {
   location: jsonb('location'),
   source: text('source'), // research | import | enrichment | manual
   status: text('status').notNull().default('active'), // active | suppressed | archived
+  /** Display organization when the contact is not linked to a companies row (newsrooms, outlets). */
+  organizationName: text('organization_name'),
+  website: text('website'),
+  socialHandles: jsonb('social_handles').$type<Record<string, string>>().notNull().default({}),
+  city: varchar('city', { length: 120 }),
+  state: varchar('state', { length: 80 }),
+  tags: text('tags').array().notNull().default(sql`ARRAY[]::text[]`),
+  notes: text('notes'),
+  ownerBot: text('owner_bot'),
+  doNotContact: boolean('do_not_contact').notNull().default(false),
+  doNotContactReason: text('do_not_contact_reason'),
+  doNotContactSetBy: text('do_not_contact_set_by'),
+  doNotContactSetAt: timestamp('do_not_contact_set_at', { withTimezone: true }),
+  lastContactedAt: timestamp('last_contacted_at', { withTimezone: true }),
+  lastReplyAt: timestamp('last_reply_at', { withTimezone: true }),
+  nextFollowUpAt: timestamp('next_follow_up_at', { withTimezone: true }),
+  followUpPaused: boolean('follow_up_paused').notNull().default(false),
+  /** Maintained by crm_contacts_search_vector_refresh. Do not write from application code. */
+  searchVector: tsvector('search_vector'),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -387,7 +414,15 @@ export const interactions = pgTable('interactions', {
   externalId: text('external_id'), // provider's id for this interaction
   status: text('status'), // queued | sent | delivered | answered | completed | failed | responded
   subject: varchar('subject', { length: 500 }),
-  bodySummary: text('body_summary'), // AI-generated summary, not full content
+  bodySummary: text('body_summary'), // short summary; full text lives in body_text / body_html
+  bodyText: text('body_text'),
+  bodyHtml: text('body_html'),
+  providerMessageId: text('provider_message_id'),
+  emailMessageId: text('email_message_id'),
+  inReplyTo: text('in_reply_to'),
+  referencesHeader: text('references_header'),
+  actorType: text('actor_type'), // operator | agent | system | provider
+  actorName: text('actor_name'),
   structuredOutcome: jsonb('structured_outcome'), // AI-classified outcome (interested, not_interested, etc.)
   occurredAt: timestamp('occurred_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -406,6 +441,112 @@ export const interactionRelations = relations(interactions, ({ one }) => ({
   campaign: one(campaigns, { fields: [interactions.campaignId], references: [campaigns.id] }),
   contact: one(contacts, { fields: [interactions.contactId], references: [contacts.id] }),
   company: one(companies, { fields: [interactions.companyId], references: [companies.id] }),
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CRM CONTACT BOOK
+// Multiple emails/phones, append-only timeline, unmatched inbound, merges.
+// contact_timeline rejects UPDATE and DELETE via crm_reject_timeline_mutation.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export const contactIdentifiers = pgTable('contact_identifiers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  contactId: uuid('contact_id').notNull(),
+  kind: text('kind').notNull(), // email | phone
+  value: text('value').notNull(),
+  verified: boolean('verified').notNull().default(false),
+  sourceUrl: text('source_url'),
+  foundAt: timestamp('found_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  contactIdx: index('contact_identifiers_contact_id_idx').on(table.contactId),
+  kindValueIdx: index('contact_identifiers_kind_value_idx').on(table.kind, table.value),
+}));
+
+export const contactTimeline = pgTable('contact_timeline', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  contactId: uuid('contact_id'),
+  channel: text('channel').notNull(),
+  direction: text('direction').notNull(), // inbound | outbound | internal
+  actorType: text('actor_type').notNull(), // operator | agent | system | provider
+  actorName: text('actor_name').notNull(),
+  eventKind: text('event_kind').notNull(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  subject: text('subject'),
+  bodyText: text('body_text'),
+  bodyHtml: text('body_html'),
+  provider: text('provider'),
+  providerMessageId: text('provider_message_id'),
+  emailMessageId: text('email_message_id'),
+  inReplyTo: text('in_reply_to'),
+  referencesHeader: text('references_header'),
+  replyToken: text('reply_token'),
+  interactionId: uuid('interaction_id'),
+  sendRecordTable: text('send_record_table'),
+  sendRecordId: text('send_record_id'),
+  attachments: jsonb('attachments').$type<Array<{ filename: string; contentType: string; sizeBytes: number; storageKey: string }>>().notNull().default([]),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  searchVector: tsvector('search_vector'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  contactOccurredIdx: index('contact_timeline_contact_occurred_idx').on(table.contactId, table.occurredAt),
+  orgIdx: index('contact_timeline_organization_id_idx').on(table.organizationId),
+}));
+
+export const inboundUnmatched = pgTable('inbound_unmatched', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  channel: text('channel').notNull().default('email'),
+  fromAddress: text('from_address'),
+  toAddresses: jsonb('to_addresses').$type<string[]>().notNull().default([]),
+  subject: text('subject'),
+  bodyText: text('body_text'),
+  bodyHtml: text('body_html'),
+  emailMessageId: text('email_message_id'),
+  inReplyTo: text('in_reply_to'),
+  referencesHeader: text('references_header'),
+  providerMessageId: text('provider_message_id'),
+  attachments: jsonb('attachments').$type<Array<{ filename: string; contentType: string; sizeBytes: number; storageKey: string }>>().notNull().default([]),
+  status: text('status').notNull().default('unmatched'), // unmatched | attached
+  attachedContactId: uuid('attached_contact_id'),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  statusIdx: index('inbound_unmatched_status_idx').on(table.status, table.receivedAt),
+}));
+
+export const contactMerges = pgTable('contact_merges', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  winnerId: uuid('winner_id').notNull(),
+  loserId: uuid('loser_id').notNull(),
+  actor: text('actor').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  loserUnique: uniqueIndex('contact_merges_loser_unique').on(table.loserId),
+  winnerIdx: index('contact_merges_winner_idx').on(table.winnerId),
+}));
+
+export const crmLegacyLinks = pgTable('crm_legacy_links', {
+  sourceTable: text('source_table').notNull(),
+  sourceId: text('source_id').notNull(),
+  contactId: uuid('contact_id'),
+  timelineId: uuid('timeline_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.sourceTable, table.sourceId] }),
+}));
+
+export const crmOauthTokens = pgTable('crm_oauth_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  provider: text('provider').notNull(),
+  accountEmail: text('account_email').notNull(),
+  encryptedToken: text('encrypted_token').notNull(),
+  scope: text('scope').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  providerEmailUnique: uniqueIndex('crm_oauth_tokens_provider_email_unique').on(table.provider, table.accountEmail),
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -531,6 +672,44 @@ export const meetingAttendees = pgTable('meeting_attendees', {
   meetingContactUnique: uniqueIndex('meeting_attendees_meeting_contact_unique')
     .on(table.meetingId, table.contactId),
 }));
+
+// Active holds exclude each other with a btree_gist range constraint.
+// See lib/db/drizzle/20261003_calendar_booking.sql. Drizzle's table builder
+// does not emit EXCLUDE USING gist, so the SQL migration is authoritative.
+export const calendarSlotHolds = pgTable('calendar_slot_holds', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  startsAt: timestamp('starts_at', { withTimezone: true }).notNull(),
+  endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
+  status: text('status').notNull().default('held'), // held | consumed | released | expired
+  holderAgentId: text('holder_agent_id'),
+  holderName: text('holder_name'),
+  contactId: uuid('contact_id'),
+  meetingId: uuid('meeting_id'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orgStatusIdx: index('calendar_slot_holds_org_status_idx').on(table.organizationId, table.status, table.startsAt),
+}));
+
+export const calendarBookingSettings = pgTable('calendar_booking_settings', {
+  organizationId: text('organization_id').primaryKey(),
+  timezone: text('timezone').notNull().default('America/Chicago'),
+  workingHours: jsonb('working_hours').$type<Array<{ day: number; start: string; end: string }>>().notNull(),
+  bufferBeforeMinutes: integer('buffer_before_minutes').notNull().default(10),
+  bufferAfterMinutes: integer('buffer_after_minutes').notNull().default(10),
+  noBookBlocks: jsonb('no_book_blocks').$type<Array<{ id: string; start: string; end: string; label?: string }>>().notNull().default([]),
+  maxMeetingsPerDay: integer('max_meetings_per_day').notNull().default(8),
+  minimumNoticeMinutes: integer('minimum_notice_minutes').notNull().default(60),
+  holdMinutes: integer('hold_minutes').notNull().default(10),
+  slotMinutes: integer('slot_minutes').notNull().default(30),
+  busyCalendarIds: jsonb('busy_calendar_ids').$type<string[]>().notNull().default([]),
+  bookingCalendarId: text('booking_calendar_id'),
+  agentColors: jsonb('agent_colors').$type<Record<string, { hex: string; googleColorId: string }>>().notNull().default({}),
+  operatorDisplayName: text('operator_display_name').notNull().default('Matthew'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const availabilityRules = pgTable('availability_rules', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -688,9 +867,8 @@ export const auditEvents = pgTable('audit_events', {
   actionIdx: index('audit_events_action_idx').on(table.action),
   entityTypeIdx: index('audit_events_entity_type_idx').on(table.entityType),
   createdAtIdx: index('audit_events_created_at_idx').on(table.createdAt),
-  entityUnique: uniqueIndex('audit_events_entity_unique')
-    .on(table.entityType, table.entityId)
-    .where(sql`${table.entityType} IS NOT NULL AND ${table.entityId} IS NOT NULL`),
+  // Non-unique: one entity accumulates many audit rows (DNC flips, merges, sends).
+  entityIdx: index('audit_events_entity_idx').on(table.entityType, table.entityId),
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -872,6 +1050,10 @@ export type SequenceStepExecution = typeof sequenceStepExecutions.$inferSelect;
 export type NewSequenceStepExecution = typeof sequenceStepExecutions.$inferInsert;
 export type Interaction = typeof interactions.$inferSelect;
 export type NewInteraction = typeof interactions.$inferInsert;
+export type ContactIdentifier = typeof contactIdentifiers.$inferSelect;
+export type ContactTimelineRow = typeof contactTimeline.$inferSelect;
+export type InboundUnmatched = typeof inboundUnmatched.$inferSelect;
+export type ContactMerge = typeof contactMerges.$inferSelect;
 export type Call = typeof calls.$inferSelect;
 export type NewCall = typeof calls.$inferInsert;
 export type ProviderEvent = typeof providerEvents.$inferSelect;
@@ -882,6 +1064,10 @@ export type Meeting = typeof meetings.$inferSelect;
 export type NewMeeting = typeof meetings.$inferInsert;
 export type MeetingAttendee = typeof meetingAttendees.$inferSelect;
 export type NewMeetingAttendee = typeof meetingAttendees.$inferInsert;
+export type CalendarSlotHold = typeof calendarSlotHolds.$inferSelect;
+export type NewCalendarSlotHold = typeof calendarSlotHolds.$inferInsert;
+export type CalendarBookingSetting = typeof calendarBookingSettings.$inferSelect;
+export type NewCalendarBookingSetting = typeof calendarBookingSettings.$inferInsert;
 export type AvailabilityRule = typeof availabilityRules.$inferSelect;
 export type NewAvailabilityRule = typeof availabilityRules.$inferInsert;
 export type PipelineStage = typeof pipelineStages.$inferSelect;

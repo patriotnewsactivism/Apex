@@ -1,306 +1,269 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api, type ScheduledJobRow } from '../lib/api.js';
-import {
-  CalendarDays,
-  Clock3,
-  Phone,
-  RefreshCw,
-  CalendarCheck,
-  ListTodo,
-} from 'lucide-react';
+import { api, type CalendarAgendaItem } from '../lib/api.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
+import { CalendarDays, ChevronLeft, ChevronRight, Clock3, RefreshCw } from 'lucide-react';
 
-type ScheduleKind = 'call' | 'appointment' | 'task';
-type FilterKind = 'all' | ScheduleKind;
+type ViewMode = 'day' | 'week' | 'agenda';
 
-type AgendaItem = {
-  job: ScheduledJobRow;
-  at: Date;
-  kind: ScheduleKind;
-  contact: string | null;
-  phone: string | null;
-};
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function scheduleTime(job: ScheduledJobRow): Date | null {
-  const raw = job.nextRunAt ?? job.scheduledAt;
-  if (!raw) return null;
-  const at = new Date(raw);
-  return Number.isNaN(at.getTime()) ? null : at;
-}
-
-function payloadText(job: ScheduledJobRow): string {
-  try {
-    return JSON.stringify(job.payload ?? {}).toLowerCase();
-  } catch {
-    return '';
-  }
-}
-
-function classify(job: ScheduledJobRow): ScheduleKind {
-  const haystack = `${job.name} ${job.jobType} ${payloadText(job)}`.toLowerCase();
-  if (/(call|dial|phone|telnyx|voice|callback|outbound)/.test(haystack)) return 'call';
-  if (/(appointment|meeting|calendar|interview|demo|consultation|conference)/.test(haystack)) return 'appointment';
-  return 'task';
-}
-
-function stringFromPayload(payload: Record<string, unknown> | null, keys: string[]): string | null {
-  if (!payload) return null;
-  for (const key of keys) {
-    const value = payload[key];
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function details(job: ScheduledJobRow): Pick<AgendaItem, 'contact' | 'phone'> {
-  return {
-    contact: stringFromPayload(job.payload, [
-      'contactName', 'leadName', 'customerName', 'prospectName', 'attendeeName', 'name',
-    ]),
-    phone: stringFromPayload(job.payload, [
-      'phone', 'phoneNumber', 'contactPhone', 'customerPhone', 'to', 'destination',
-    ]),
-  };
-}
-
-function startOfDay(date: Date): Date {
+function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-function dayKey(date: Date): string {
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
 }
 
-function dayLabel(date: Date, now: Date): string {
-  const today = startOfDay(now).getTime();
-  const target = startOfDay(date).getTime();
-  const delta = Math.round((target - today) / DAY_MS);
-  if (delta === 0) return 'Today';
-  if (delta === 1) return 'Tomorrow';
-  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+function rangeFor(view: ViewMode, anchor: Date): { start: Date; end: Date } {
+  const start = startOfLocalDay(anchor);
+  if (view === 'day') return { start, end: addDays(start, 1) };
+  if (view === 'agenda') return { start, end: addDays(start, 14) };
+  const weekStart = addDays(start, -start.getDay());
+  return { start: weekStart, end: addDays(weekStart, 7) };
 }
 
-function kindMeta(kind: ScheduleKind) {
-  if (kind === 'call') return { label: 'Call', icon: <Phone size={14} />, color: 'var(--color-apex-green)' };
-  if (kind === 'appointment') return { label: 'Appointment', icon: <CalendarCheck size={14} />, color: 'var(--color-apex-signal)' };
-  return { label: 'Task', icon: <ListTodo size={14} />, color: 'var(--color-apex-muted)' };
+function sameDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function dayHeading(date: Date): string {
+  return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 export function CalendarSchedulerPanel() {
-  const [filter, setFilter] = useState<FilterKind>('all');
-  const [clock, setClock] = useState(() => Date.now());
+  const isMobile = useIsMobile();
+  const [view, setView] = useState<ViewMode>('agenda');
+  const [anchor, setAnchor] = useState(() => new Date());
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const range = useMemo(() => rangeFor(view, anchor), [view, anchor]);
 
-  const {
-    data: jobs = [],
-    isLoading,
-    isFetching,
-    dataUpdatedAt,
-    refetch,
-  } = useQuery({
-    queryKey: ['jobs', 'calendar'],
-    queryFn: () => api.jobs.list(),
-    refetchInterval: 10_000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: true,
+  const agendaQuery = useQuery({
+    queryKey: ['calendar', 'agenda', range.start.toISOString(), range.end.toISOString()],
+    queryFn: () => api.calendar.agenda(range.start.toISOString(), range.end.toISOString()),
+    refetchInterval: 30_000,
   });
 
-  // Recompute "future" as time passes even between network refreshes.
-  useMemo(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const items = agendaQuery.data?.items ?? [];
+  const selected = items.find((item) => item.id === selectedId) ?? null;
+  const timelineQuery = useQuery({
+    queryKey: ['calendar', 'timeline', selected?.contactId],
+    queryFn: () => api.calendar.timeline(selected!.contactId!),
+    enabled: Boolean(selected?.contactId),
+  });
 
-  const items = useMemo<AgendaItem[]>(() => {
-    return jobs
-      .filter((job) => job.enabled && !['completed', 'failed', 'cancelled'].includes(job.status))
-      .map((job) => {
-        const at = scheduleTime(job);
-        if (!at || at.getTime() < clock) return null;
-        const extra = details(job);
-        return { job, at, kind: classify(job), ...extra } satisfies AgendaItem;
-      })
-      .filter((item): item is AgendaItem => Boolean(item))
-      .sort((a, b) => a.at.getTime() - b.at.getTime());
-  }, [jobs, clock]);
-
-  const filtered = filter === 'all' ? items : items.filter((item) => item.kind === filter);
-  const now = new Date(clock);
-  const grouped = useMemo(() => {
-    const groups = new Map<string, AgendaItem[]>();
-    for (const item of filtered) {
-      const key = dayKey(item.at);
-      const bucket = groups.get(key) ?? [];
-      bucket.push(item);
-      groups.set(key, bucket);
-    }
-    return [...groups.entries()].map(([key, group]) => ({ key, items: group, date: group[0].at }));
-  }, [filtered]);
-
-  const nextSevenDays = useMemo(() => {
-    const start = startOfDay(now);
-    return Array.from({ length: 7 }, (_, index) => {
-      const date = new Date(start.getTime() + index * DAY_MS);
-      const count = items.filter((item) => dayKey(item.at) === dayKey(date)).length;
-      return { date, count };
-    });
-  }, [items, clock]);
-
-  const counts = {
-    all: items.length,
-    call: items.filter((item) => item.kind === 'call').length,
-    appointment: items.filter((item) => item.kind === 'appointment').length,
-    task: items.filter((item) => item.kind === 'task').length,
-  };
+  const step = view === 'week' ? 7 : view === 'agenda' ? 14 : 1;
 
   return (
-    <div style={{ maxWidth: 1180, margin: '0 auto' }}>
-      <div className="apex-toolbar" style={{ marginBottom: 18, gap: 12, flexWrap: 'wrap' }}>
-        <div>
-          <div className="apex-display" style={{ fontSize: 18, color: 'var(--color-apex-text)' }}>
-            Calendar & Scheduler
-          </div>
-          <div className="apex-eyebrow" style={{ marginTop: 4 }}>
-            Future appointments, calls, reminders and scheduled APEX work
-          </div>
+    <div style={{ minWidth: 0, maxWidth: '100%' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12, minWidth: 0 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {(['day', 'week', 'agenda'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setView(mode)}
+              style={chipStyle(view === mode)}
+            >
+              {mode === 'day' ? 'Day' : mode === 'week' ? 'Week' : 'Agenda'}
+            </button>
+          ))}
         </div>
-        <button
-          type="button"
-          onClick={() => void refetch()}
-          disabled={isFetching}
-          className="glass-card"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '8px 11px',
-            color: 'var(--color-apex-muted)',
-            border: '1px solid var(--color-apex-line)',
-            cursor: isFetching ? 'default' : 'pointer',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-          }}
-          title="Refresh schedule now"
-        >
-          <RefreshCw size={13} style={{ animation: isFetching ? 'spin 1s linear infinite' : 'none' }} />
-          {isFetching ? 'SYNCING' : 'LIVE · 10S'}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" onClick={() => setAnchor((current) => addDays(current, -step))} style={chipStyle(false)} aria-label="Previous">
+            <ChevronLeft size={14} />
+          </button>
+          <button type="button" onClick={() => setAnchor(new Date())} style={chipStyle(false)}>Today</button>
+          <button type="button" onClick={() => setAnchor((current) => addDays(current, step))} style={chipStyle(false)} aria-label="Next">
+            <ChevronRight size={14} />
+          </button>
+          <span style={{ fontSize: 12, color: 'var(--color-apex-text)' }}>{dayHeading(range.start)}</span>
+        </div>
+        <button type="button" onClick={() => void agendaQuery.refetch()} style={chipStyle(false)} aria-label="Refresh calendar">
+          <RefreshCw size={13} />
         </button>
       </div>
 
-      <div
-        className="glass-card"
-        style={{
-          padding: 12,
-          marginBottom: 14,
-          display: 'grid',
-          gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
-          gap: 6,
-          overflowX: 'auto',
-        }}
-      >
-        {nextSevenDays.map(({ date, count }) => (
-          <div key={dayKey(date)} style={{ minWidth: 72, padding: '8px 6px', textAlign: 'center' }}>
-            <div className="apex-eyebrow" style={{ fontSize: 9 }}>{date.toLocaleDateString(undefined, { weekday: 'short' })}</div>
-            <div className="apex-display" style={{ fontSize: 18, marginTop: 3, color: 'var(--color-apex-text)' }}>{date.getDate()}</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, marginTop: 3, color: count ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)' }}>
-              {count ? `${count} item${count === 1 ? '' : 's'}` : 'clear'}
+      {agendaQuery.isLoading && <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>Loading calendar…</div>}
+      {agendaQuery.isError && (
+        <div style={{ fontSize: 12, color: 'var(--color-apex-red)', marginBottom: 8 }}>
+          {agendaQuery.error instanceof Error ? agendaQuery.error.message : 'Calendar unavailable'}
+        </div>
+      )}
+
+      {view === 'agenda' && <AgendaList items={items} selectedId={selectedId} onSelect={setSelectedId} />}
+      {view === 'day' && <DayList day={startOfLocalDay(anchor)} items={items} selectedId={selectedId} onSelect={setSelectedId} />}
+      {view === 'week' && (
+        <WeekGrid
+          start={range.start}
+          items={items}
+          stacked={isMobile}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+        />
+      )}
+
+      {selected && (
+        <div style={{ marginTop: 14, padding: 14, borderRadius: 10, border: '1px solid var(--color-apex-line)', minWidth: 0 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 99, background: selected.color ?? 'var(--color-apex-brass)', flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 650, color: 'var(--color-apex-text)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{selected.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>{selected.startLabel} – {selected.endLabel}</div>
             </div>
           </div>
-        ))}
-      </div>
-
-      <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 14 }}>
-        {([
-          ['all', 'All'],
-          ['call', 'Calls'],
-          ['appointment', 'Appointments'],
-          ['task', 'Other'],
-        ] as Array<[FilterKind, string]>).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setFilter(id)}
-            style={{
-              border: `1px solid ${filter === id ? 'var(--color-apex-brass)' : 'var(--color-apex-line)'}`,
-              background: filter === id ? 'var(--color-apex-brass-soft)' : 'rgba(255,255,255,0.025)',
-              color: filter === id ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)',
-              borderRadius: 5,
-              padding: '7px 10px',
-              cursor: 'pointer',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 10,
-            }}
-          >
-            {label} {counts[id]}
-          </button>
-        ))}
-      </div>
-
-      <div className="glass-card" style={{ overflow: 'hidden' }}>
-        {isLoading ? (
-          <div className="apex-eyebrow" style={{ padding: 28 }}>Loading schedule…</div>
-        ) : grouped.length === 0 ? (
-          <div style={{ padding: '44px 20px', textAlign: 'center', color: 'var(--color-apex-muted)' }}>
-            <CalendarDays size={34} style={{ margin: '0 auto 12px', opacity: 0.55 }} />
-            <div className="apex-display" style={{ fontSize: 15 }}>No future {filter === 'all' ? 'scheduled items' : `${filter}s`}</div>
-            <div style={{ marginTop: 6, fontSize: 11, fontFamily: 'var(--font-mono)' }}>
-              This view updates from APEX's durable scheduler every 10 seconds.
-            </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-apex-muted)', lineHeight: 1.45 }}>
+            {selected.kind === 'hold' ? 'APEX hold' : selected.agentName ? `Booked by ${selected.agentName}` : 'Google event'}
+            {selected.contactName ? ` · ${selected.contactName}` : ''}
+            {selected.status ? ` · ${selected.status}` : ''}
           </div>
-        ) : (
-          grouped.map((group) => (
-            <section key={group.key}>
-              <div style={{ padding: '9px 14px', background: 'rgba(255,255,255,0.025)', borderBottom: '1px solid var(--color-apex-line)' }}>
-                <span className="apex-eyebrow">{dayLabel(group.date, now)}</span>
-              </div>
-              {group.items.map((item) => {
-                const meta = kindMeta(item.kind);
-                return (
-                  <div
-                    key={item.job.id}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '72px minmax(0, 1fr)',
-                      gap: 12,
-                      padding: '13px 14px',
-                      borderBottom: '1px solid var(--color-apex-line)',
-                    }}
-                  >
-                    <div style={{ color: 'var(--color-apex-text)' }}>
-                      <div className="apex-display" style={{ fontSize: 13 }}>
-                        {item.at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: meta.color, fontSize: 9, fontFamily: 'var(--font-mono)', marginTop: 5 }}>
-                        {meta.icon}{meta.label.toUpperCase()}
-                      </div>
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ color: 'var(--color-apex-text)', fontWeight: 600, fontSize: 13, overflowWrap: 'anywhere' }}>{item.job.name}</div>
-                      {(item.contact || item.phone) && (
-                        <div style={{ marginTop: 4, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)', fontSize: 10, overflowWrap: 'anywhere' }}>
-                          {[item.contact, item.phone].filter(Boolean).join(' · ')}
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)', fontSize: 9 }}>
-                        <span>{item.job.jobType}</span>
-                        {item.job.cronExpression && <span>recurring · {item.job.cronExpression}</span>}
-                        <span>status {item.job.status}</span>
-                        {item.job.targetAgentId && <span>agent {item.job.targetAgentId}</span>}
-                      </div>
-                    </div>
+          {selected.contactId ? (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 650, color: 'var(--color-apex-text)', marginBottom: 6 }}>Contact timeline</div>
+              {timelineQuery.isLoading && <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>Loading contact…</div>}
+              {(timelineQuery.data?.rows ?? []).map((row) => (
+                <div key={row.id} style={{ fontSize: 12, color: 'var(--color-apex-text)', padding: '6px 0', borderTop: '1px solid var(--color-apex-line)' }}>
+                  <div>{row.summary}</div>
+                  <div style={{ color: 'var(--color-apex-muted)' }}>
+                    {row.actorName} · {new Date(row.occurredAt).toLocaleString(undefined, { timeZone: row.timezone || 'America/Chicago' })}
                   </div>
-                );
-              })}
-            </section>
-          ))
-        )}
-      </div>
+                </div>
+              ))}
+              {timelineQuery.data && timelineQuery.data.rows.length === 0 && (
+                <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>No timeline rows for this contact yet.</div>
+              )}
+            </div>
+          ) : (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--color-apex-muted)' }}>No CRM contact is linked to this item.</div>
+          )}
+        </div>
+      )}
 
-      <div style={{ marginTop: 9, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)', fontSize: 9, display: 'flex', alignItems: 'center', gap: 5 }}>
-        <Clock3 size={10} />
-        Last synced {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleTimeString() : 'not yet'} · source: durable APEX scheduler
+      {!agendaQuery.isLoading && items.length === 0 && !agendaQuery.isError && (
+        <div style={{ marginTop: 16, fontSize: 13, color: 'var(--color-apex-muted)', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <CalendarDays size={16} /> Nothing on the calendar in this range.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgendaList({ items, selectedId, onSelect }: { items: CalendarAgendaItem[]; selectedId: string | null; onSelect: (id: string) => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+      {items.map((item) => (
+        <EventButton key={item.id} item={item} selected={item.id === selectedId} onSelect={onSelect} />
+      ))}
+    </div>
+  );
+}
+
+function DayList({ day, items, selectedId, onSelect }: { day: Date; items: CalendarAgendaItem[]; selectedId: string | null; onSelect: (id: string) => void }) {
+  const todays = items.filter((item) => sameDay(new Date(item.start), day));
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 13, marginBottom: 8, color: 'var(--color-apex-text)' }}>{dayHeading(day)}</div>
+      {todays.length === 0 && <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>Open day.</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {todays.map((item) => (
+          <EventButton key={item.id} item={item} selected={item.id === selectedId} onSelect={onSelect} />
+        ))}
       </div>
     </div>
   );
+}
+
+function WeekGrid({
+  start,
+  items,
+  stacked,
+  selectedId,
+  onSelect,
+}: {
+  start: Date;
+  items: CalendarAgendaItem[];
+  stacked: boolean;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const days = Array.from({ length: 7 }, (_, index) => addDays(start, index));
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: stacked ? 'minmax(0, 1fr)' : 'repeat(7, minmax(0, 1fr))',
+      gap: 8,
+      minWidth: 0,
+    }}>
+      {days.map((day) => {
+        const todays = items.filter((item) => sameDay(new Date(item.start), day));
+        return (
+          <div key={day.toISOString()} style={{ minWidth: 0, border: '1px solid var(--color-apex-line)', borderRadius: 8, padding: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginBottom: 6 }}>{dayHeading(day)}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {todays.map((item) => (
+                <EventButton key={item.id} item={item} selected={item.id === selectedId} onSelect={onSelect} compact />
+              ))}
+              {todays.length === 0 && <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>—</div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function EventButton({
+  item,
+  selected,
+  onSelect,
+  compact = false,
+}: {
+  item: CalendarAgendaItem;
+  selected: boolean;
+  onSelect: (id: string) => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(item.id)}
+      style={{
+        textAlign: 'left',
+        minWidth: 0,
+        width: '100%',
+        borderRadius: 8,
+        border: `1px solid ${selected ? 'var(--color-apex-brass)' : 'var(--color-apex-line)'}`,
+        background: 'rgba(255,255,255,0.03)',
+        padding: compact ? '6px 8px' : '10px 12px',
+        cursor: 'pointer',
+        color: 'inherit',
+      }}
+    >
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', minWidth: 0 }}>
+        <span style={{ width: 8, height: 8, borderRadius: 99, background: item.color ?? (item.kind === 'hold' ? 'var(--color-apex-signal)' : 'var(--color-apex-brass)'), flexShrink: 0 }} />
+        <span style={{ fontSize: compact ? 11 : 13, color: 'var(--color-apex-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+      </div>
+      <div style={{ marginTop: 4, fontSize: 11, color: 'var(--color-apex-muted)', display: 'flex', gap: 4, alignItems: 'center' }}>
+        <Clock3 size={11} />
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.startLabel}</span>
+      </div>
+    </button>
+  );
+}
+
+function chipStyle(active: boolean): CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 32,
+    padding: '6px 10px',
+    borderRadius: 6,
+    border: `1px solid ${active ? 'var(--color-apex-brass)' : 'var(--color-apex-line)'}`,
+    background: active ? 'var(--color-apex-brass-soft)' : 'transparent',
+    color: active ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)',
+    cursor: 'pointer',
+    fontSize: 12,
+  };
 }

@@ -338,12 +338,18 @@ async function main(): Promise<void> {
     email.indexOf('assertSendAllowed(') < email.indexOf('fetch(RESEND_API_URL'),
   );
   const cartesiaSales = read('packages/api-server/src/routes/cartesia-sales.ts');
-  const bookingFnStart = cartesiaSales.indexOf('async function submitCalBooking');
-  const bookingFn = bookingFnStart >= 0 ? cartesiaSales.slice(bookingFnStart) : '';
+  const bookStart = cartesiaSales.indexOf("router.post('/tools/book-consultation'");
+  const bookFn = bookStart >= 0 ? cartesiaSales.slice(bookStart, bookStart + 2800) : '';
+  const bookingService = read('packages/core/src/calendar/booking-service.ts');
   check(
-    'Cal.com booking asserts before the bookings POST',
-    bookingFn.includes('assertSendAllowed(')
-      && bookingFn.indexOf('assertSendAllowed(') < bookingFn.indexOf("calRequest('bookings'"),
+    'consultation booking holds the slot and does not POST a Cal.com invite',
+    bookFn.includes('getCalendarBookingService()')
+      && bookFn.includes('service.book(')
+      && bookFn.includes('invite_sent: false')
+      && !bookFn.includes("calRequest('bookings'")
+      && !cartesiaSales.includes('api.cal.com/v2/bookings')
+      && bookingService.includes("sendUpdates: 'none'")
+      && bookingService.includes('this.deps.invites.stage('),
   );
   const registry = read('packages/core/src/tool-registry.ts');
   check('outbound call tool still reaches Cartesia only after the gate', registry.includes('startCartesiaSalesCall({'));

@@ -19,6 +19,7 @@ import { LearningPanel } from './components/LearningPanel.js';
 import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
+import { ContactsPanel } from './components/ContactsPanel.js';
 import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
 import { TerritoryAvailabilityPanel } from './components/TerritoryAvailabilityPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
@@ -59,6 +60,7 @@ import {
   MapPinned,
   Presentation,
   Scale,
+  BookUser,
   Send,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
@@ -251,6 +253,7 @@ function Sidebar({
       items: [
         { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
         { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
+        { id: 'contacts', label: 'Contacts', icon: <BookUser size={16} /> },
         { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
         { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
       ],
@@ -279,7 +282,7 @@ function Sidebar({
       items: [
         { id: 'control', label: 'Control Room', icon: <SlidersHorizontal size={16} /> },
         { id: 'artifacts', label: 'Artifacts', icon: <Package size={16} /> },
-        { id: 'scheduled', label: 'Cron Registry', icon: <CalendarClock size={16} /> },
+        { id: 'scheduled', label: 'Calendar / Scheduler', icon: <CalendarClock size={16} /> },
         { id: 'spend', label: 'Spend / Burn', icon: <CircleDollarSign size={16} /> },
         { id: 'health', label: 'Health', icon: <Activity size={16} /> },
         { id: 'learning', label: 'Intelligence', icon: <Brain size={16} /> },
@@ -684,6 +687,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     tasks: <TaskBoard />,
     'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
+    contacts: <ContactsPanel />,
     territories: <TerritoryAvailabilityPanel />,
     webinars: <WebinarDirector />,
     control: <ControlRoom />,
@@ -721,11 +725,12 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     tasks: { title: 'Task Board', kicker: 'Workforce' },
     'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
     leads: { title: 'Prospects', kicker: 'Revenue' },
+    contacts: { title: 'Contacts', kicker: 'Revenue' },
     territories: { title: 'Territory Availability', kicker: 'Revenue' },
     webinars: { title: 'Webinar Director', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
-    scheduled: { title: 'Cron Registry', kicker: 'Systems' },
+    scheduled: { title: 'Calendar / Scheduler', kicker: 'Systems' },
     spend: { title: 'Spend / Burn Rate', kicker: 'Systems' },
     suggestions: { title: 'Suggestions', kicker: 'Systems & tools' },
     logs: { title: 'Log Stream', kicker: 'Workforce' },

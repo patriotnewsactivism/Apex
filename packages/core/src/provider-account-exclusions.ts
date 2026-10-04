@@ -14,7 +14,13 @@ export type OpenRouterAccountExclusionKind =
   | "credit_exhausted"
   | "credit_balance"
   | "daily_quota"
-  | "rate_limit";
+  | "rate_limit"
+  /** Operator-configured low-balance pause set by the OpenRouter balance
+   * monitor (openrouter-balance-monitor.ts). Always scope "paid": the account
+   * keeps serving :free models. Held separately from failure exclusions so a
+   * daily-quota or rate-limit exclusion can never overwrite (and, on expiry,
+   * silently lift) a balance pause. */
+  | "balance_pause";
 
 export interface OpenRouterAccountExclusion {
   account: string;
@@ -43,6 +49,12 @@ type ProviderAccountHealthMetadata = {
 
 const exclusions = new Map<string, StoredExclusion>();
 let persistenceReady = false;
+
+type BalancePause = { reason: string; since: number };
+/** Paid-only pauses owned by the OpenRouter balance monitor, keyed by the
+ *  public account id (`oracct_…`). The monitor persists its own state and
+ *  re-applies these at boot, so this map is intentionally memory-only. */
+const balancePauses = new Map<string, BalancePause>();
 
 function accountIdForKey(apiKey: string): string {
   const fingerprint = accountFingerprint(apiKey);
@@ -287,14 +299,62 @@ export function excludeOpenRouterAccountForFailure(
   return publicExclusion(entry);
 }
 
+function publicBalancePause(
+  account: string,
+  pause: BalancePause,
+): OpenRouterAccountExclusion {
+  return {
+    account,
+    scope: "paid",
+    kind: "balance_pause",
+    status: null,
+    reason: pause.reason,
+    excludedAt: new Date(pause.since).toISOString(),
+    resumeAt: null,
+  };
+}
+
 export function getOpenRouterAccountExclusion(
   apiKey: string,
   options: { paid?: boolean; now?: number } = {},
 ): OpenRouterAccountExclusion | null {
   const entry = exclusionForKey(apiKey, options.now ?? Date.now());
-  if (!entry) return null;
-  if (entry.scope === "paid" && options.paid !== true) return null;
-  return publicExclusion(entry);
+  if (entry && (entry.scope === "all" || options.paid === true)) {
+    return publicExclusion(entry);
+  }
+  if (options.paid === true) {
+    const account = accountIdForKey(apiKey);
+    const pause = balancePauses.get(account);
+    if (pause) return publicBalancePause(account, pause);
+  }
+  return null;
+}
+
+/**
+ * Block PAID routing through one OpenRouter account while leaving its :free
+ * routing untouched. Idempotent: re-pausing keeps the original `since`.
+ */
+export function setOpenRouterPaidBalancePause(
+  account: string,
+  reason: string,
+  now: number = Date.now(),
+): void {
+  const existing = balancePauses.get(account);
+  balancePauses.set(account, {
+    reason: sanitizeReason(reason),
+    since: existing?.since ?? now,
+  });
+}
+
+/** Lift a balance pause. Returns true when a pause was actually removed. */
+export function clearOpenRouterPaidBalancePause(account: string): boolean {
+  return balancePauses.delete(account);
+}
+
+export function getOpenRouterPaidBalancePauses(): OpenRouterAccountExclusion[] {
+  return [...balancePauses.entries()].map(([account, pause]) =>
+    publicBalancePause(account, pause),
+  );
 }
 
 export function reconcileOpenRouterCreditBalances(
@@ -335,15 +395,23 @@ export function getOpenRouterAccountExclusionReport(
   const active = [...exclusions.values()]
     .map((entry) => activeExclusionByAccount(entry.account, now))
     .filter((entry): entry is StoredExclusion => entry !== null);
+  const credentialsFor = (account: string): string[] =>
+    credentials
+      .filter(({ key }) => accountIdForKey(key) === account)
+      .map(({ env }) => env)
+      .sort();
   return {
     persistence: persistenceReady ? "postgres+memory" : "memory-only",
-    exclusions: active.map((entry) => ({
-      ...publicExclusion(entry),
-      credentials: credentials
-        .filter(({ key }) => accountIdForKey(key) === entry.account)
-        .map(({ env }) => env)
-        .sort(),
-    })),
+    exclusions: [
+      ...active.map((entry) => ({
+        ...publicExclusion(entry),
+        credentials: credentialsFor(entry.account),
+      })),
+      ...getOpenRouterPaidBalancePauses().map((entry) => ({
+        ...entry,
+        credentials: credentialsFor(entry.account),
+      })),
+    ],
   };
 }
 
@@ -383,5 +451,6 @@ export async function initializeProviderAccountExclusions(
 /** Test-only reset for deterministic process-state isolation. */
 export function __resetOpenRouterAccountExclusionsForTest(): void {
   exclusions.clear();
+  balancePauses.clear();
   persistenceReady = false;
 }
