@@ -19,12 +19,13 @@ export function CopilotOverlay({ state }: { state: CopilotOverlayState | null })
   const [rect, setRect] = useState<HighlightRect | null>(null);
 
   useEffect(() => {
-    if (!state?.selector) {
+    const selector = state?.selector;
+    if (!selector) {
       setRect(null);
       return;
     }
     const update = () => {
-      const element = document.querySelector(state.selector);
+      const element = document.querySelector(selector);
       if (!(element instanceof HTMLElement)) {
         setRect(null);
         return;
