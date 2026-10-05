@@ -21,6 +21,10 @@ interface LedgerState {
   day: string;
   /** Micro-dollars spent today, by provider. */
   providers: Record<string, number>;
+  /** Prompt tokens served from provider-side prefix cache today, by provider.
+   *  Nous caches automatically (input_cache_read pricing); tracking the hit
+   *  rate shows how much paid input is being avoided. */
+  cachedTokens: Record<string, number>;
 }
 
 const LEDGER_PATH =
@@ -36,7 +40,7 @@ function utcDay(at: number = Date.now()): string {
 }
 
 function emptyState(day = utcDay()): LedgerState {
-  return { day, providers: {} };
+  return { day, providers: {}, cachedTokens: {} };
 }
 
 function load(): LedgerState {
@@ -297,6 +301,18 @@ export function recordSpend(provider: string, usd: number): void {
   }
 }
 
+export function recordCachedTokens(provider: string, tokens: number): void {
+  try {
+    rolloverIfNeeded();
+    const n = Number.isFinite(tokens) ? Math.max(0, Math.round(tokens)) : 0;
+    if (n === 0) return;
+    state.cachedTokens[provider] = (state.cachedTokens[provider] ?? 0) + n;
+    persist();
+  } catch {
+    // Cached-token accounting must never take inference down.
+  }
+}
+
 export function spentMicrosToday(): number {
   rolloverIfNeeded();
   let sum = 0;
@@ -384,6 +400,8 @@ export interface SpendLedgerSnapshot {
    *  extrapolation to mean anything. */
   projectedUsd: number | null;
   providers: Array<{ provider: string; spentUsd: number }>;
+  /** Prompt tokens served from provider-side prefix cache today, by provider. */
+  cachedTokens: Array<{ provider: string; tokens: number }>;
 }
 
 function usd(micros: number): number {
@@ -413,6 +431,9 @@ export function getSpendLedgerSnapshot(at: number = Date.now()): SpendLedgerSnap
     providers: Object.entries(state.providers)
       .map(([provider, micros]) => ({ provider, spentUsd: usd(micros) }))
       .sort((a, b) => b.spentUsd - a.spentUsd),
+    cachedTokens: Object.entries(state.cachedTokens)
+      .map(([provider, tokens]) => ({ provider, tokens }))
+      .sort((a, b) => b.tokens - a.tokens),
   };
 }
 

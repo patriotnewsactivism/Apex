@@ -39,7 +39,7 @@ import {
   getOpenRouterAccountExclusion,
   getOpenRouterAccountExclusionReport as buildOpenRouterAccountExclusionReport,
 } from './provider-account-exclusions.js';
-import { recordSpend } from './spend-ledger.js';
+import { recordSpend, recordCachedTokens } from './spend-ledger.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
   getActiveOpenRouterModelPolicy,
@@ -159,8 +159,8 @@ export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
  *  content (finish_reason: length)": the reasoning filled the budget. */
 export const PAID_MIN_OUTPUT_TOKENS = 16_384;
 export const PAID_FALLBACK_PROVIDER_NAMES = [
-  'openrouter-deepseek-v4-flash-paid',
   'nous-deepseek-v4-flash-paid',
+  'openrouter-deepseek-v4-flash-paid',
 ] as const satisfies readonly ApexProviderName[];
 /** The first paid route in the deterministic order (the split alternates it). */
 export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName = PAID_FALLBACK_PROVIDER_NAMES[0];
@@ -387,8 +387,10 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // No providerRouting: Nous Portal decides routing per model and rejects a
     // caller-supplied `provider` object with HTTP 400.
     // deepseek/deepseek-v4-flash-0731 via Nous Portal.
-    usdPerMillionPrompt: 0.14,
-    usdPerMillionCompletion: 0.28,
+    // Verified against live Nous pricing 2026-10-05: $0.07/1M prompt,
+    // $0.14/1M completion, $0.014/1M cached input (automatic prefix cache).
+    usdPerMillionPrompt: 0.07,
+    usdPerMillionCompletion: 0.14,
   },
 ];
 
@@ -466,7 +468,11 @@ export function requestProviderOrder(role?: string, pacingEnabled?: boolean): Ap
   const first = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[0]);
   const second = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[1]);
   paidRotation += 1;
-  if (first >= 0 && second >= 0 && paidRotation % 2 === 0) {
+  // 90/10 Nous/OpenRouter split (operator decision 2026-10-05): Nous is ~10x
+  // cheaper for this output-heavy workload, so it is primary and OpenRouter is
+  // only tried first 10% of the time. Either is the other's immediate fallback
+  // when in cooldown.
+  if (first >= 0 && second >= 0 && paidRotation % 10 === 0) {
     [order[first], order[second]] = [order[second], order[first]];
   }
   return order;
@@ -1835,6 +1841,7 @@ class MultiProviderClient {
                     provider.name,
                     result.costUsd ?? estimatedCostUsd(provider, result.usage),
                   );
+                  recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                 }
                 clearCredentialCooldown(credentialId);
                 recordTokenUsage(provider.name, result.usage);
@@ -2001,6 +2008,7 @@ class MultiProviderClient {
                         provider.name,
                         result.costUsd ?? estimatedCostUsd(provider, result.usage),
                       );
+                      recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                     }
                     clearCredentialCooldown(credentialId);
                     recordTokenUsage(provider.name, result.usage);
