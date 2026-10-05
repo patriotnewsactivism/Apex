@@ -113,11 +113,11 @@ export function createOrchestrationTools(): ToolDefinition[] {
       schema: z.object({
         taskId: z
           .string()
-          .optional()
+          .nullish()
           .describe('Parent task ID. Omit to inspect the children of the task you are currently working on.'),
         goalId: z
           .string()
-          .optional()
+          .nullish()
           .describe('Instead of one parent task, inspect every task belonging to this goal.'),
       }),
       requiresApproval: false,
@@ -181,9 +181,9 @@ export function createOrchestrationTools(): ToolDefinition[] {
       schema: z.object({
         status: z
           .enum(['active', 'paused', 'completed', 'cancelled', 'all'])
-          .optional()
+          .nullish()
           .describe("Filter by goal status. Defaults to 'active'."),
-        limit: z.number().optional().describe('Max goals to return (default 25).'),
+        limit: z.number().nullish().describe('Max goals to return (default 25).'),
       }),
       requiresApproval: false,
       async execute({ status, limit }) {
@@ -266,7 +266,7 @@ export function createOrchestrationTools(): ToolDefinition[] {
         status: z.enum(['active', 'paused', 'completed', 'cancelled']).describe('New goal status.'),
         result: z
           .string()
-          .optional()
+          .nullish()
           .describe('What was actually delivered (or why the goal was paused/cancelled). Required when completing.'),
       }),
       requiresApproval: false,
@@ -364,10 +364,10 @@ export function createOrchestrationTools(): ToolDefinition[] {
         detail: z
           .string()
           .describe('Full context: what you found, what you already tried, the options as you see them, and your recommendation.'),
-        urgency: z.enum(['low', 'normal', 'high', 'critical']).optional().describe("Defaults to 'normal'."),
+        urgency: z.enum(['low', 'normal', 'high', 'critical']).nullish().describe("Defaults to 'normal'."),
         category: z
           .enum(['budget', 'legal', 'strategy', 'anomaly', 'other'])
-          .optional()
+          .nullish()
           .describe('Which charter escalation trigger this falls under.'),
       }),
       requiresApproval: false,
