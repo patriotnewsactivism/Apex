@@ -339,7 +339,8 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
     maxOutputTokens: 131_072,
-    providerRouting: { sort: 'latency' },
+    // No providerRouting: Nous Portal decides routing per model and rejects a
+    // caller-supplied `provider` object with HTTP 400.
     // deepseek/deepseek-v4-flash-0731 via Nous Portal.
     usdPerMillionPrompt: 0.14,
     usdPerMillionCompletion: 0.28,
@@ -843,8 +844,16 @@ export function getProviderBackpressureSnapshot(): {
  *  cycle from all 13 agents. A true answer means "worth attempting", not a
  *  guarantee -- the real reservation still happens inside complete().
  */
+/**
+ * Only routes that name the OpenRouter pool get OpenRouter's request fields
+ * (`provider`, `usage`), headers, and account handling. This used to default
+ * an unset pool to OpenRouter, so when the paid route moved to Nous Portal
+ * without a pool, every request carried OpenRouter's `provider` object and
+ * Nous refused it with HTTP 400. That 400 also counted as a non-capacity
+ * failure, so tasks failed instead of waiting out the free-pool cooldowns.
+ */
 function isOpenRouterProvider(provider: ProviderSpec): boolean {
-  return (provider.requestPool ?? 'openrouter') === 'openrouter';
+  return provider.requestPool === 'openrouter';
 }
 
 /** FlashX bypasses APEX governors entirely. QwenCloud does not, but its
