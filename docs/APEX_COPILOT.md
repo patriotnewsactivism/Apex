@@ -40,6 +40,9 @@ approval/confirmation/code entry, kill-switch or outbound-policy changes,
 secrets, billing/payments, deletes, merges, user/permission changes, deploys,
 and rollbacks are denied. Sensitive pages are not Copilot navigation targets.
 The normal chat's mutation tools are removed while Copilot mode is active.
+Copilot status, action generation, and audit writes also require the separate
+operator session minted by a dashboard password login; the admin bearer alone
+cannot activate the mode.
 
 Accepted and completed actions are written to `audit_events` as
 `actorId=copilot`, on behalf of Matthew. Audit failure is surfaced as an action

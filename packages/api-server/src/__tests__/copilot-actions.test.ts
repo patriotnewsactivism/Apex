@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   COPILOT_HARD_DENY_ACTIONS,
   isCopilotChatToolAllowed,
@@ -21,6 +22,16 @@ describe('Apex Copilot feature flag', () => {
     expect(isCopilotClientFeatureEnabled('false')).toBe(false);
     expect(isCopilotClientFeatureEnabled('1')).toBe(false);
     expect(isCopilotClientFeatureEnabled('true')).toBe(true);
+  });
+
+  it('requires the password-minted operator session on every Copilot API path', () => {
+    const chatSource = readFileSync(new URL('../routes/chat.ts', import.meta.url), 'utf8');
+    expect(chatSource).toContain("router.get('/copilot/status', async");
+    expect(chatSource).toContain("router.post('/copilot/audit', async");
+    expect(chatSource).toContain("router.post('/copilot/session-audit', async");
+    expect(
+      chatSource.match(/requireCopilotOperatorSession\(req, res\)/g)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(4);
   });
 });
 

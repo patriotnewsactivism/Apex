@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto';
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { db, goals, tasks, approvals, logs, agents as agentsTable, auditEvents, voiceChatSessions, voiceChatTurns } from '@workspace/db';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMIntentionalPause } from '@workspace/core';
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
+import { operatorDashboardSessionValid } from '../operator-session.js';
 import {
   COPILOT_SAFE_PAGES,
   COPILOT_READ_ONLY_CHAT_TOOL_NAMES,
@@ -74,6 +75,15 @@ const copilotSessionAuditRequestSchema = z.object({
   event: z.enum(['started', 'stopped']),
   reason: z.string().max(500).optional(),
 }).strict();
+
+async function requireCopilotOperatorSession(req: Request, res: Response): Promise<boolean> {
+  const header = req.header('x-apex-operator-session');
+  if (await operatorDashboardSessionValid(typeof header === 'string' ? header : null)) return true;
+  res.status(403).json({
+    error: 'Apex Copilot requires an operator dashboard session. Sign in to the dashboard again.',
+  });
+  return false;
+}
 
 export const CHAT_SYSTEM_PROMPT = `You are Apex, talking directly with Don — the founder who built you and the whole
 portfolio you run operations for. This is his Chat window: a real conversation, not a command line.
@@ -556,14 +566,17 @@ export function createChatRouter(ceo: ApexCEO) {
   const router = Router();
   const llm = createLLMClient(getDefaultLLMConfig('CEO'));
 
-  router.get('/copilot/status', (_req, res) => {
-    return res.json({ enabled: isCopilotFeatureEnabled() });
+  router.get('/copilot/status', async (req, res) => {
+    if (!isCopilotFeatureEnabled()) return res.json({ enabled: false });
+    if (!(await requireCopilotOperatorSession(req, res))) return;
+    return res.json({ enabled: true });
   });
 
   router.post('/copilot/audit', async (req, res) => {
     if (!isCopilotFeatureEnabled()) {
       return res.status(404).json({ error: 'Apex Copilot is disabled.' });
     }
+    if (!(await requireCopilotOperatorSession(req, res))) return;
     const parsed = copilotAuditRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.flatten() });
@@ -585,6 +598,7 @@ export function createChatRouter(ceo: ApexCEO) {
     if (!isCopilotFeatureEnabled()) {
       return res.status(404).json({ error: 'Apex Copilot is disabled.' });
     }
+    if (!(await requireCopilotOperatorSession(req, res))) return;
     const parsed = copilotSessionAuditRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.flatten() });
@@ -616,7 +630,9 @@ export function createChatRouter(ceo: ApexCEO) {
       return res.status(400).json({ error: parsed.error.flatten() });
     }
     const { message, history, page, copilot } = parsed.data;
-    const copilotEnabled = copilot?.enabled === true && isCopilotFeatureEnabled();
+    const copilotRequested = copilot?.enabled === true;
+    const copilotEnabled = copilotRequested && isCopilotFeatureEnabled();
+    if (copilotEnabled && !(await requireCopilotOperatorSession(req, res))) return;
 
     try {
       const snapshot = await buildLiveSnapshot();
