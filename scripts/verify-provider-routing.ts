@@ -4,7 +4,9 @@ import {
   FREE_POLICY_GATEWAY_NAME,
   PAID_FALLBACK_MODEL,
   PAID_FALLBACK_PROVIDER_NAME,
+  PAID_FALLBACK_PROVIDER_NAMES,
   getProviderCatalog,
+  requestProviderOrder,
   getProviderOrderForRole,
   getDefaultLLMConfig,
   paidLLMFallbackEnabled,
@@ -42,31 +44,28 @@ const byokProviders = [
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ] as const;
-// Operator-funded paid BYOK, governed but tried first (ADR-017) — distinct
-// from the unrestricted FlashX continuity route, which stays last.
-const primaryPaidBYOKProvider = 'qwen-dashscope-byok' as const;
-const automaticProviders = [primaryPaidBYOKProvider, ...openRouterProviders, ...byokProviders];
-const explicitPaidProviders = [...automaticProviders, PAID_FALLBACK_PROVIDER_NAME];
+// 2026-10-05 operator decision: Qwen is out of the chain (its plan is
+// exhausted). Free capacity first, then the paid DeepSeek V4 Flash 0731 split
+// between OpenRouter and Nous Portal.
+const automaticProviders = [...openRouterProviders, ...byokProviders];
+const paidProviders = ['openrouter-deepseek-v4-flash-paid', 'nous-deepseek-v4-flash-paid'] as const;
+const explicitPaidProviders = [...automaticProviders, ...paidProviders];
 
 const catalog = getProviderCatalog();
-const primaryCatalogEntry = catalog[0];
-const openRouterCatalog = catalog.slice(1, 1 + openRouterProviders.length);
-const byokCatalog = catalog.slice(1 + openRouterProviders.length);
+const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
+const byokCatalog = catalog.slice(openRouterProviders.length);
 
 console.log('── Multi-pool automatic provider order ──');
-check('nine automatic routes exist: Qwen primary + six OpenRouter + two BYOK', catalog.length === 9, catalog);
+check('eight automatic routes exist: six OpenRouter free + two BYOK', catalog.length === 8, catalog);
 check(
   'automatic provider order is exact',
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(automaticProviders),
   catalog.map((provider) => provider.name),
 );
 check(
-  'Qwen3.8 Flash is the primary route: paid for spend accounting, but not free-credentialed',
-  primaryCatalogEntry?.name === 'qwen-dashscope-byok' &&
-    primaryCatalogEntry?.model === 'qwen3.8-flash' &&
-    primaryCatalogEntry?.paid === true &&
-    primaryCatalogEntry?.usesFreeCredentials === false,
-  primaryCatalogEntry,
+  'Qwen is not in the automatic chain',
+  catalog.every((provider) => provider.name !== 'qwen-dashscope-byok'),
+  catalog.map((provider) => provider.name),
 );
 check(
   'the next six models remain the reviewed OpenRouter free chain',
@@ -125,10 +124,19 @@ check(
   catalog.every((provider) => !provider.model.includes('minimax')),
 );
 check(
-  // 2026-10-05 operator change: the paid continuity route moved from
-  // OpenRouter GLM FlashX (OPENROUTER_API_KEY_4) to Nous Portal (NOUS_API_KEY).
-  'paid credentials remain isolated to the funded Nous Portal key (NOUS_API_KEY)',
-  /OPENROUTER_PAID_KEY_ENVS = \['NOUS_API_KEY'\]/.test(clientSource),
+  // 2026-10-05 operator change: DeepSeek V4 Flash 0731 on two providers.
+  'paid credentials stay isolated: OpenRouter on the funded OPENROUTER_API_KEY_4, Nous on NOUS_API_KEY',
+  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY_4'\]/.test(clientSource) &&
+    /NOUS_PAID_KEY_ENVS = \['NOUS_API_KEY'\]/.test(clientSource),
+);
+check(
+  // Each OpenRouter account keeps its own :free allowance, so the funded
+  // account is in the free roster too. A free-quota 429 on it must not stop
+  // its paid routing; only a credit/balance exclusion does.
+  'a free-scope account exclusion does not block paid routing on the same key',
+  /scope: freeRoute && kind !== "credit_exhausted" \? "free" : "all"/.test(accountExclusionSource) &&
+    /if \(options\.paid !== true\) \{\s*const free = exclusionForKey\(apiKey, now, \{ free: true \}\)/.test(accountExclusionSource) &&
+    /excludeOpenRouterAccountForFailure\([\s\S]{0,200}provider\.paid !== true,\s*\)/.test(clientSource),
 );
 check(
   'free credential roster holds exactly one key per OpenRouter account (no duplicate OPENROUTER_API_KEY_3)',
@@ -160,8 +168,18 @@ check(
     /const emergencyAttemptWindow = independentPlanRoute\(provider\)[\s\S]{0,80}\? null[\s\S]{0,80}: emergencyRequestCapacityWindow/.test(clientSource),
 );
 check(
-  'FlashX is marked unrestricted from APEX token/request/spend governors',
-  /name: PAID_FALLBACK_PROVIDER_NAME[\s\S]{0,260}unrestricted: true/.test(clientSource),
+  'both paid routes are marked unrestricted from APEX token/request/spend governors',
+  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource) &&
+    /name: 'nous-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource),
+);
+check(
+  'the OpenRouter paid route is an OpenRouter route sorted by latency; the Nous route is not',
+  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,200}baseURL: 'https:\/\/openrouter\.ai\/api\/v1'[\s\S]{0,200}requestPool: 'openrouter'[\s\S]{0,700}providerRouting: \{ sort: 'latency' \}/.test(clientSource) &&
+    (() => {
+      const start = clientSource.indexOf("name: 'nous-deepseek-v4-flash-paid'");
+      const body = clientSource.slice(start, clientSource.indexOf('\n  },', start));
+      return start > -1 && !/^\s*requestPool:/m.test(body) && !/^\s*providerRouting:/m.test(body);
+    })(),
 );
 check(
   'unrestricted FlashX receives full history rather than the free-route trim',
@@ -170,7 +188,8 @@ check(
 );
 check(
   'FlashX can use its native 131072-token completion envelope while smaller routes stay clamped',
-  /name: PAID_FALLBACK_PROVIDER_NAME[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
+  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
+    /name: 'nous-deepseek-v4-flash-paid'[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
     /maxOutputTokens: 16_384/.test(clientSource) &&
     /Math\.min\(131_072, Math\.max/.test(clientSource),
 );
@@ -229,13 +248,15 @@ check(
   paidLLMFallbackEnabled(undefined) === false,
 );
 check(
-  'an unset paid-fallback flag leaves only Qwen/free/BYOK routes',
+  'an unset paid-fallback flag leaves only free/BYOK routes',
   JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(automaticProviders),
   getProviderOrderForRole('CEO'),
 );
 check(
-  'paid continuity model is DeepSeek V4 Flash on Nous Portal',
-  PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731',
+  'paid continuity model is DeepSeek V4 Flash 0731, on OpenRouter and Nous Portal',
+  PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731' &&
+    JSON.stringify(PAID_FALLBACK_PROVIDER_NAMES) === JSON.stringify(paidProviders) &&
+    PAID_FALLBACK_PROVIDER_NAME === paidProviders[0],
 );
 
 // The operator's off switch. Before it existed the route was appended
@@ -252,7 +273,7 @@ check(
 );
 check(
   'APEX_PAID_FALLBACK_ENABLED=false removes the paid route from the chain entirely',
-  !getProviderOrderForRole('CEO').includes(PAID_FALLBACK_PROVIDER_NAME),
+  paidProviders.every((name) => !getProviderOrderForRole('CEO').includes(name)),
   getProviderOrderForRole('CEO'),
 );
 check(
@@ -262,10 +283,35 @@ check(
 );
 process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
 check(
-  'APEX_PAID_FALLBACK_ENABLED=true explicitly restores the paid route, still last',
+  'APEX_PAID_FALLBACK_ENABLED=true appends both paid routes, still last',
   JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(explicitPaidProviders),
   getProviderOrderForRole('CEO'),
 );
+{
+  // The split: each request swaps which paid provider goes first, and the
+  // other is its immediate fallback. Free/BYOK order never moves.
+  const firstPaid: string[] = [];
+  let freeOrderStable = true;
+  for (let i = 0; i < 10; i++) {
+    const order = requestProviderOrder('CEO');
+    freeOrderStable &&= JSON.stringify(order.slice(0, automaticProviders.length)) === JSON.stringify(automaticProviders);
+    const tail = order.slice(automaticProviders.length);
+    freeOrderStable &&= tail.length === 2 && new Set(tail).size === 2 && tail.every((name) => (paidProviders as readonly string[]).includes(name));
+    firstPaid.push(tail[0] ?? '');
+  }
+  check('per-request order keeps every free/BYOK route first and both paid routes last', freeOrderStable);
+  check(
+    'paid traffic alternates evenly: OpenRouter first on half the requests, Nous on the other half',
+    firstPaid.filter((name) => name === paidProviders[0]).length === 5 &&
+      firstPaid.filter((name) => name === paidProviders[1]).length === 5 &&
+      firstPaid.every((name, i) => i === 0 || name !== firstPaid[i - 1]),
+    firstPaid,
+  );
+  check(
+    'complete() dispatches in the per-request order',
+    /for \(const providerName of requestProviderOrder\(this\.config\.role, pacingOverride\)\)/.test(clientSource),
+  );
+}
 if (previousPaidFlag === undefined) delete process.env.APEX_PAID_FALLBACK_ENABLED;
 else process.env.APEX_PAID_FALLBACK_ENABLED = previousPaidFlag;
 
@@ -281,10 +327,9 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   explorationRate: 0,
 });
 check(
-  'a custom FREE OpenRouter policy keeps Qwen primary, then selected policy, then unselected default free fallbacks, then BYOK continuity',
+  'a custom FREE OpenRouter policy tries the selected policy first, then unselected default free fallbacks, then BYOK continuity',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
     JSON.stringify([
-      primaryPaidBYOKProvider,
       FREE_POLICY_GATEWAY_NAME,
       'openrouter-nex-n2-5-pro-free',
       'openrouter-nemotron-super',
@@ -295,6 +340,12 @@ check(
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
+check(
+  'under a custom policy the default config advertises the gateway and the role\'s first selected model',
+  getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
+    getDefaultLLMConfig('CEO').model === 'nex-agi/nex-n2.5-mini:free',
+  getDefaultLLMConfig('CEO'),
+);
 if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
 else process.env[OPENROUTER_MODEL_POLICY_ENV] = previousPolicy;
 
@@ -306,15 +357,15 @@ for (const role of [
 ]) {
   const order = getProviderOrderForRole(role);
   check(
-    `${role} defaults to Qwen/free/BYOK only unless paid continuity is explicitly enabled`,
+    `${role} defaults to free/BYOK only unless paid continuity is explicitly enabled`,
     JSON.stringify(order) === JSON.stringify(automaticProviders),
     order,
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} still defaults to Qwen3.8 Flash, the operator-funded primary route`,
-    config.provider === 'qwen-dashscope-byok' &&
-      config.model === 'qwen3.8-flash',
+    `${role} defaults to Nex N2.5 Mini Free, the head of the free chain`,
+    config.provider === 'openrouter-nex-n2-5-mini-free' &&
+      config.model === 'nex-agi/nex-n2.5-mini:free',
     config,
   );
 }

@@ -251,7 +251,7 @@ export function ModelRouterPanel() {
 
   const toggleModel = (modelId: string) => {
     if (!isProductionEligible(modelId)) {
-      setSavedMessage('Arbitrary paid OpenRouter models are comparison-only and cannot be saved into the operator roster. z-ai/glm-5.3-flashx is the dedicated runtime continuity exception managed outside the saved free roster.');
+      setSavedMessage('Arbitrary paid OpenRouter models are comparison-only and cannot be saved into the operator roster. Paid continuity (deepseek/deepseek-v4-flash-0731 on OpenRouter and Nous Portal) is a dedicated runtime exception managed outside the saved free roster.');
       return;
     }
     setPolicy((previous) => {
@@ -311,7 +311,7 @@ export function ModelRouterPanel() {
             <ModelBadge>FREE-FIRST + GLM CONTINUITY</ModelBadge>
           </div>
           <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '6px 0 0', lineHeight: 1.45, maxWidth: 820 }}>
-            Nex N2.5 Mini Free remains the primary model and saved operator rosters stay free-only. When free/BYOK capacity is unavailable, APEX can continue through z-ai/glm-5.3-flashx using the funded OpenRouter key. FlashX is not subject to APEX spend, request, token, emergency-cap, or model-specific pacing limits; provider-side limits and reliability backoff still apply.
+            Nex N2.5 Mini Free remains the primary model and saved operator rosters stay free-only. When free/BYOK capacity is unavailable and paid continuity is enabled, APEX continues through deepseek/deepseek-v4-flash-0731, alternating each request between OpenRouter and Nous Portal so neither carries the whole load. The paid routes are not subject to APEX spend, request, token, emergency-cap, or model-specific pacing limits; provider-side limits and reliability backoff still apply.
           </p>
         </div>
         <button
@@ -465,7 +465,7 @@ export function ModelRouterPanel() {
                         disabled={!isProductionEligible(model.id)}
                         onChange={() => toggleModel(model.id)}
                         aria-label={`Select ${model.name}`}
-                        title={!isProductionEligible(model.id) ? 'Arbitrary paid models cannot join the saved free roster; FlashX continuity is managed separately' : undefined}
+                        title={!isProductionEligible(model.id) ? 'Arbitrary paid models cannot join the saved free roster; paid continuity is managed separately' : undefined}
                       />
                     </td>
                     <td style={{ padding: 9, maxWidth: 300 }}>
@@ -630,7 +630,7 @@ export function ModelRouterPanel() {
 
       {ineligibleSelected && (
         <div style={{ color: '#c45c66', fontSize: 11 }}>
-          Remove arbitrary paid models from the saved roster. FlashX continuity is a dedicated runtime exception and is managed separately.
+          Remove arbitrary paid models from the saved roster. Paid continuity is a dedicated runtime exception and is managed separately.
         </div>
       )}
       {(saveMutation.error || resetMutation.error) && (

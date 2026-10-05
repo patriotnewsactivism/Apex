@@ -8,12 +8,19 @@
  * and Gemini already exhausted, the paid route was the only one left, and
  * every task failed: 156 "All LLM providers failed" errors in two hours.
  *
+ * Later the same day the operator removed Qwen and split the paid model,
+ * deepseek/deepseek-v4-flash-0731, between OpenRouter (OPENROUTER_API_KEY_4)
+ * and Nous so neither takes the whole load.
+ *
  * This drives the real MultiProviderClient.complete() with fetch stubbed, so
  * it checks the request that actually leaves APEX, not the source text:
- *   - the paid route alone: Nous gets no `provider`, no `usage`, no OpenRouter
- *     headers, and the reply is used;
- *   - an OpenRouter route alone: it still gets OpenRouter's fields, so the
- *     fix did not strip them from the routes that need them.
+ *   - the Nous route alone: no `provider`, no `usage`, no OpenRouter headers,
+ *     and the reply is used;
+ *   - an OpenRouter free route alone: it still gets OpenRouter's fields;
+ *   - the split: once the free pool answers 429, paid requests alternate
+ *     between OpenRouter and Nous, on the same account whose free quota ran out;
+ *   - an unfunded Nous key: OpenRouter answers instead, no task fails;
+ *   - Nous alone and unfunded: a capacity pause, not a failed task.
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +54,7 @@ async function main(): Promise<void> {
 
   const sent: Sent[] = [];
   let nousUnfunded = false;
+  let freeQuotaExhausted = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (!url.endsWith('/chat/completions')) return new Response('{}', { status: 404 });
@@ -55,6 +63,14 @@ async function main(): Promise<void> {
       body: JSON.parse(String(init?.body ?? '{}')),
       headers: Object.fromEntries(new Headers(init?.headers).entries()),
     });
+    const model = String(sent.at(-1)?.body.model ?? '');
+    if (freeQuotaExhausted && url.includes('openrouter.ai') && (model.endsWith(':free') || model === 'openrouter/free')) {
+      // OpenRouter's answer once an account's daily free-model quota is spent.
+      return new Response(
+        JSON.stringify({ error: { code: 429, message: 'Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day' } }),
+        { status: 429, headers: { 'content-type': 'application/json' } },
+      );
+    }
     if (nousUnfunded && url.includes('nousresearch.com')) {
       // Nous Portal's exact answer for an unfunded key on 2026-10-05.
       return new Response(
@@ -117,9 +133,79 @@ async function main(): Promise<void> {
     { body: free?.body, headers: free?.headers },
   );
 
-  // 3. An unfunded Nous key is a capacity pause, not a failed task: the work
-  //    waits, and the route is tried again after the credit cooldown.
+  // 3. The split. Only the funded OpenRouter account (also in the free roster)
+  //    and Nous are configured, and that account's free quota is spent.
   delete process.env.OPENROUTER_FREE_API_KEY;
+  process.env.OPENROUTER_API_KEY_4 = 'guard-not-a-real-funded-openrouter-key';
+  process.env.NOUS_API_KEY = 'guard-not-a-real-key';
+  process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
+  freeQuotaExhausted = true;
+  const splitStart = sent.length;
+  const splitReplies: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const reply = await ask().catch((err: unknown) => ({ content: `error: ${err instanceof Error ? err.message : String(err)}` }));
+    splitReplies.push(String((reply as { content?: string }).content));
+  }
+  const splitSent = sent.slice(splitStart);
+  const paidSent = splitSent.filter((req) => req.body.model === llm.PAID_FALLBACK_MODEL);
+  const viaOpenRouter = paidSent.filter((req) => req.url.startsWith('https://openrouter.ai/'));
+  const viaNous = paidSent.filter((req) => req.url.startsWith('https://inference-api.nousresearch.com/'));
+  const freeAttempts = splitSent.filter((req) => req.body.model !== llm.PAID_FALLBACK_MODEL);
+  check('every request is answered once the free pool is spent', splitReplies.every((r) => r === 'guard reply'), splitReplies);
+  check(
+    'paid load splits evenly: 3 of 6 requests on OpenRouter, 3 on Nous',
+    viaOpenRouter.length === 3 && viaNous.length === 3 && paidSent.length === 6,
+    { openrouter: viaOpenRouter.length, nous: viaNous.length, paid: paidSent.length },
+  );
+  check(
+    "a free-quota 429 does not block the same account's paid OpenRouter route",
+    viaOpenRouter.length > 0 && viaOpenRouter.every((req) => req.headers.authorization === 'Bearer guard-not-a-real-funded-openrouter-key'),
+    viaOpenRouter.map((req) => req.headers.authorization?.slice(0, 12)),
+  );
+  check(
+    'the spent free pool is not retried on every request',
+    freeAttempts.length === 1,
+    freeAttempts.map((req) => req.body.model),
+  );
+  const orPaid = viaOpenRouter[0];
+  check(
+    'the OpenRouter paid request asks for DeepSeek V4 Flash 0731 sorted by latency, with usage accounting',
+    orPaid?.body.model === 'deepseek/deepseek-v4-flash-0731' &&
+      (orPaid?.body.provider as { sort?: string } | undefined)?.sort === 'latency' &&
+      'usage' in (orPaid?.body ?? {}),
+    orPaid?.body,
+  );
+  check(
+    'the Nous half still carries no OpenRouter fields',
+    viaNous.length > 0 && viaNous.every((req) => !('provider' in req.body) && !('usage' in req.body)),
+  );
+
+  // 4. Nous runs out of funds mid-split: OpenRouter answers at once, every
+  //    request still succeeds.
+  nousUnfunded = true;
+  const fallbackStart = sent.length;
+  const fallbackReplies: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    const reply = await ask().catch((err: unknown) => ({ content: `error: ${err instanceof Error ? err.message : String(err)}` }));
+    fallbackReplies.push(String((reply as { content?: string }).content));
+  }
+  const fallbackPaid = sent.slice(fallbackStart).filter((req) => req.body.model === llm.PAID_FALLBACK_MODEL);
+  check(
+    'an unfunded Nous key falls to OpenRouter immediately; no request fails',
+    fallbackReplies.every((r) => r === 'guard reply'),
+    fallbackReplies,
+  );
+  check(
+    'after one 401, Nous is left alone and OpenRouter takes the load',
+    fallbackPaid.filter((req) => req.url.includes('nousresearch.com')).length <= 1 &&
+      fallbackPaid.filter((req) => req.url.startsWith('https://openrouter.ai/')).length === 4,
+    fallbackPaid.map((req) => new URL(req.url).host),
+  );
+
+  // 5. Nous alone and unfunded is a capacity pause, not a failed task: the
+  //    work waits, and the route is tried again after the credit cooldown.
+  delete process.env.OPENROUTER_API_KEY_4;
+  freeQuotaExhausted = false;
   process.env.NOUS_API_KEY = 'guard-not-a-real-key-unfunded';
   process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
   nousUnfunded = true;
@@ -141,7 +227,7 @@ async function main(): Promise<void> {
 
   console.log(
     failures === 0
-      ? '\n✅ The paid continuity route sends a request its API accepts.\n'
+      ? '\n✅ The paid continuity routes send requests their APIs accept, and share the load.\n'
       : `\n❌ ${failures} check(s) failed.\n`,
   );
   process.exit(failures === 0 ? 0 : 1);

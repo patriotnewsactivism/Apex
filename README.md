@@ -32,22 +32,23 @@ See:
 
 `packages/core/src/llm-client.ts` is the production source of truth for LLM routing.
 
-APEX tries an operator-funded, governed Qwen route first, then a free-first runtime chain, with one dedicated *unrestricted* paid continuity exception last:
+APEX runs a free-first chain, with one *unrestricted* paid continuity model last (ADR-020, 2026-10-05):
 
-1. Qwen3.8 Flash (`qwen3.8-flash`, via QwenCloud/qwencloud.com Token Plan — a distinct product from Alibaba Cloud Model Studio/DashScope) — primary, operator-funded, governed by its own capped/paced pool (ADR-017)
-2. Nex N2.5 Mini Free (`nex-agi/nex-n2.5-mini:free`) — primary of the free chain
-3. Nex N2.5 Pro Free (`nex-agi/nex-n2.5-pro:free`)
-4. NVIDIA Nemotron 3 Super Free
-5. NVIDIA Nemotron 3.5 Lightning Free
-6. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
-7. NVIDIA Nemotron 3 Ultra Free
-8. direct Groq GPT-OSS 120B BYOK when enabled
-9. direct Gemini 3.8 Flash BYOK when enabled
-10. GLM 5.3 FlashX (`z-ai/glm-5.3-flashx`) — paid, unrestricted continuity, last resort
+1. Nex N2.5 Mini Free (`nex-agi/nex-n2.5-mini:free`) — primary
+2. Nex N2.5 Pro Free (`nex-agi/nex-n2.5-pro:free`)
+3. NVIDIA Nemotron 3 Super Free
+4. NVIDIA Nemotron 3.5 Lightning Free
+5. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
+6. NVIDIA Nemotron 3 Ultra Free
+7. direct Groq GPT-OSS 120B BYOK when enabled
+8. direct Gemini 3.8 Flash BYOK when enabled
+9. DeepSeek V4 Flash 0731 (`deepseek/deepseek-v4-flash-0731`) — paid, unrestricted continuity, last resort, split between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`): each request alternates which provider goes first and the other is its immediate fallback
 
-The operator-persisted OpenRouter model roster remains free-only; Qwen sits outside that roster as a separate direct BYOK route, exactly like Groq/Gemini, just tried first instead of as overflow. Set `APEX_QWEN_BYOK_ENABLED=false` (or leave `QWEN_API_KEY` unset) to remove Qwen from the chain — routing then falls through to the free chain unchanged. FlashX is a separate runtime continuity route and is eligible by default when the funded `OPENROUTER_API_KEY` is configured. Set `APEX_PAID_FALLBACK_ENABLED=false` to remove it from the chain; APEX then parks the workforce when Qwen/free/BYOK capacity are spent rather than spending further. Every free and BYOK provider is unaffected — do not unset `OPENROUTER_API_KEY` to stop paid spend, because it is also a free-pool account. Unlike FlashX, Qwen is **not** unrestricted. It keeps its own `APEX_QWEN_REQUEST_CAP` / `APEX_QWEN_REQUEST_RATE_PER_MIN` / pacing burst. An exhausted OpenRouter free pool, the emergency all-provider ceiling, and the workspace token cap do not stop calls from landing on `QWEN_API_KEY`. APEX does not apply those same governors to FlashX specifically. Upstream OpenRouter/Z.ai/QwenCloud billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply to every route.
+Qwen (QwenCloud Token Plan) led this chain under ADR-017. Its plan is exhausted and the operator removed it on 2026-10-05; the route is defined but never called.
 
-FlashX also receives the full available conversation history rather than APEX's smaller free-route history trim, allowing the runtime to use its large upstream context window.
+The operator-persisted OpenRouter model roster remains free-only. The paid routes run only when `APEX_PAID_FALLBACK_ENABLED=true` and at least one of their keys is set (Settings → Paid Continuity, or the platform environment); unset or `false` removes both and APEX parks the workforce when free/BYOK capacity is spent rather than spending further. Every free and BYOK provider is unaffected — do not unset `OPENROUTER_API_KEY_4` to stop paid spend, because it is also a free-pool account. APEX does not apply its spend, token, request, emergency-cap, or pacing governors to the paid routes. A free-model 429 on the funded OpenRouter account blocks only that account's free routing, not its paid route. Upstream OpenRouter/Nous billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply to every route.
+
+The paid routes also receive the full available conversation history rather than APEX's smaller free-route history trim, allowing the runtime to use the model's large upstream context window.
 
 Qualifying free credentials include `OPENROUTER_FREE_API_KEY`, `OPENROUTER_API_KEY`, `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, and `OPENROUTER_API_KEY_4`. Multiple keys on one OpenRouter account do not create separate free quota. Authenticated `GET /api/health/detail` `providerCredits.uniqueAccounts` is the account-level check. See `docs/FREE_ONLY_MODEL_POLICY.md` for the free-roster policy and FlashX continuity exception.
 

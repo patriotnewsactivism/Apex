@@ -135,7 +135,7 @@ function ensureDefaultChainInCatalog<T extends { id: string }>(models: T[]): T[]
     .map((id) => ({
       id,
       name: DEFAULT_CHAIN_LABELS[id] ?? id,
-      description: 'Free-roster production default. If free/BYOK capacity is unavailable, the dedicated GLM FlashX continuity route may continue runtime inference.',
+      description: 'Free-roster production default. If free/BYOK capacity is unavailable and paid continuity is enabled, the dedicated paid continuity route (formerly FlashX; now DeepSeek V4 Flash 0731 split between OpenRouter and Nous Portal) may continue runtime inference.',
       contextLength: 0,
       pricing: { inputPerMillion: 0, outputPerMillion: 0, request: 0 },
       capabilities: {
