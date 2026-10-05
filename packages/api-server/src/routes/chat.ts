@@ -8,6 +8,8 @@ import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 import {
   COPILOT_SAFE_PAGES,
+  COPILOT_READ_ONLY_CHAT_TOOL_NAMES,
+  isCopilotChatToolAllowed,
   isCopilotFeatureEnabled,
   validateCopilotAction,
   validateCopilotActions,
@@ -67,6 +69,12 @@ const copilotAuditRequestSchema = z.object({
   reason: z.string().max(500).optional(),
 }).strict();
 
+const copilotSessionAuditRequestSchema = z.object({
+  sessionId: z.string().uuid(),
+  event: z.enum(['started', 'stopped']),
+  reason: z.string().max(500).optional(),
+}).strict();
+
 export const CHAT_SYSTEM_PROMPT = `You are Apex, talking directly with Don — the founder who built you and the whole
 portfolio you run operations for. This is his Chat window: a real conversation, not a command line.
 
@@ -97,7 +105,7 @@ const COPILOT_SYSTEM_PROMPT = `
 
 Apex Copilot is active for this turn. You may control ONLY the authenticated APEX dashboard through
 the control_dashboard tool. Use that tool when the operator explicitly asks you to open a safe page,
-search leads/contacts, set one of the tool's listed filters, or open a lead/contact by exact id.
+search leads/contacts, set one of the tool's listed filters, or open a contact by exact id.
 Never narrate a raw click or claim the UI moved without using the tool.
 
 The tool is an allow-list. It cannot send email/SMS/calls/invites; release pending sends; approve,
@@ -128,8 +136,8 @@ const COPILOT_TOOL: LLMTool = {
               description: 'leads: status, pipelineState, industry. contacts: q, tag, city, state, verifiedOnly, ownerBot, replied, campaignId.',
             },
             value: { description: 'Filter value: string, boolean, or null.' },
-            recordType: { type: 'string', enum: ['lead', 'contact'] },
-            id: { type: 'string', description: 'Exact UUID of the lead or contact.' },
+            recordType: { type: 'string', enum: ['contact'] },
+            id: { type: 'string', description: 'Exact UUID of the contact.' },
           },
           required: ['type'],
         },
@@ -244,7 +252,7 @@ export const CHAT_TOOLS: LLMTool[] = [
 ];
 
 const COPILOT_READ_ONLY_CHAT_TOOLS = CHAT_TOOLS.filter((tool) =>
-  ['get_pending_approvals', 'get_recent_goals', 'get_recent_activity', 'get_goal_progress'].includes(tool.name),
+  (COPILOT_READ_ONLY_CHAT_TOOL_NAMES as readonly string[]).includes(tool.name),
 );
 
 export async function buildLiveSnapshot(): Promise<string> {
@@ -573,6 +581,35 @@ export function createChatRouter(ceo: ApexCEO) {
     }
   });
 
+  router.post('/copilot/session-audit', async (req, res) => {
+    if (!isCopilotFeatureEnabled()) {
+      return res.status(404).json({ error: 'Apex Copilot is disabled.' });
+    }
+    const parsed = copilotSessionAuditRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+    try {
+      await db.insert(auditEvents).values({
+        organizationId: 'apex',
+        actorType: 'agent',
+        actorId: 'copilot',
+        action: `copilot.session.${parsed.data.event}`,
+        entityType: 'copilot_session',
+        entityId: parsed.data.sessionId,
+        metadata: {
+          actor: 'copilot',
+          onBehalfOf: 'Matthew',
+          reason: parsed.data.reason,
+        },
+      });
+      return res.json({ logged: true });
+    } catch (err) {
+      console.error('[copilot] session audit write failed:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Could not write Apex Copilot session audit event.' });
+    }
+  });
+
   router.post('/message', async (req, res) => {
     const parsed = chatRequestSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -628,20 +665,34 @@ export function createChatRouter(ceo: ApexCEO) {
         for (const call of response.toolCalls) {
           let result: Record<string, unknown>;
           try {
-            if (call.name === 'control_dashboard') {
+            if (copilotEnabled && !isCopilotChatToolAllowed(call.name)) {
+              result = { error: `"${call.name}" is unavailable while Apex Copilot is active.` };
+            } else if (call.name === 'control_dashboard') {
               if (!copilotEnabled || !copilot) {
                 result = { error: 'Apex Copilot is disabled.' };
               } else {
                 const validated = validateCopilotActions(call.args.actions);
-                copilotActions.push(...validated.actions);
-                await Promise.all(validated.actions.map((action) =>
-                  writeCopilotAudit(copilot.sessionId, action, 'queued').catch((err) => {
+                const auditedActions: CopilotAction[] = [];
+                const auditRejected: Array<{ code: string; reason: string }> = [];
+                for (const action of validated.actions) {
+                  try {
+                    await writeCopilotAudit(copilot.sessionId, action, 'queued');
+                    auditedActions.push(action);
+                  } catch (err) {
                     console.warn('[copilot] queued audit failed:', err instanceof Error ? err.message : err);
-                  }),
-                ));
+                    auditRejected.push({
+                      code: 'audit_failed',
+                      reason: `Could not queue ${action.type} because its audit event was not recorded.`,
+                    });
+                  }
+                }
+                copilotActions.push(...auditedActions);
                 result = {
-                  queued: validated.actions,
-                  rejected: validated.rejected.map((item) => ({ code: item.code, reason: item.reason })),
+                  queued: auditedActions,
+                  rejected: [
+                    ...validated.rejected.map((item) => ({ code: item.code, reason: item.reason })),
+                    ...auditRejected,
+                  ],
                   note: 'Queued actions still run through the browser registry. Do not claim completion until the UI reports it.',
                 };
               }

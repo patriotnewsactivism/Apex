@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type CrmContactFilters } from '../lib/api.js';
-import { COPILOT_PANEL_EVENT, type CopilotPanelAction } from '../copilot/actions.js';
+import { COPILOT_PANEL_EVENT, type CopilotPanelEventDetail } from '../copilot/actions.js';
 
 const wrap: CSSProperties = {
   overflowWrap: 'anywhere',
@@ -72,14 +72,17 @@ export function ContactsPanel() {
 
   useEffect(() => {
     const handleCopilotAction = (event: Event) => {
-      const action = (event as CustomEvent<CopilotPanelAction>).detail;
+      const detail = (event as CustomEvent<CopilotPanelEventDetail>).detail;
+      const action = detail?.action;
       if (!action) return;
       if (action.type === 'search' && action.page === 'contacts') {
         setFilters((current) => ({ ...current, q: action.query }));
+        detail.acknowledge({ ok: true });
         return;
       }
       if (action.type === 'openRecord' && action.recordType === 'contact') {
         setSelectedId(action.id);
+        detail.acknowledge({ ok: true });
         return;
       }
       if (action.type !== 'setFilter' || action.page !== 'contacts') return;
@@ -92,14 +95,22 @@ export function ContactsPanel() {
         case 'campaignId':
           if (typeof action.value === 'string') {
             setFilters((current) => ({ ...current, [action.field]: action.value || undefined }));
+            detail.acknowledge({ ok: true });
+          } else {
+            detail.acknowledge({ ok: false, reason: `Filter ${action.field} requires text.` });
           }
           break;
         case 'verifiedOnly':
         case 'replied':
           if (typeof action.value === 'boolean' || action.value === null) {
             setFilters((current) => ({ ...current, [action.field]: action.value }));
+            detail.acknowledge({ ok: true });
+          } else {
+            detail.acknowledge({ ok: false, reason: `Filter ${action.field} requires true, false, or null.` });
           }
           break;
+        default:
+          detail.acknowledge({ ok: false, reason: `Filter ${action.field} is not registered.` });
       }
     };
     window.addEventListener(COPILOT_PANEL_EVENT, handleCopilotAction);

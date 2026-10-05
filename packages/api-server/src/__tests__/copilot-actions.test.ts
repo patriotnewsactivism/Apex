@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   COPILOT_HARD_DENY_ACTIONS,
+  isCopilotChatToolAllowed,
   isCopilotFeatureEnabled,
   validateCopilotAction,
 } from '../copilot-actions.js';
@@ -47,5 +48,13 @@ describe('Apex Copilot action registry', () => {
     expect(validateCopilotAction({ type: 'click', selector: '#anything' }).ok).toBe(false);
     expect(validateCopilotAction({ type: 'navigate', page: 'settings' }).ok).toBe(false);
     expect(validateCopilotAction({ type: 'navigate', page: 'pending-sends' }).ok).toBe(false);
+  });
+
+  it('does not execute hidden mutating chat tools while Copilot is active', () => {
+    expect(isCopilotChatToolAllowed('control_dashboard')).toBe(true);
+    expect(isCopilotChatToolAllowed('get_recent_goals')).toBe(true);
+    expect(isCopilotChatToolAllowed('create_goal')).toBe(false);
+    expect(isCopilotChatToolAllowed('approve_pending_approval')).toBe(false);
+    expect(isCopilotChatToolAllowed('cancel_goal')).toBe(false);
   });
 });

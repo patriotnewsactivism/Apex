@@ -2,12 +2,22 @@ export type CopilotAction =
   | { type: 'navigate'; page: string }
   | { type: 'search'; page: 'leads' | 'contacts'; query: string }
   | { type: 'setFilter'; page: 'leads' | 'contacts'; field: string; value: string | boolean | null }
-  | { type: 'openRecord'; recordType: 'lead' | 'contact'; id: string };
+  | { type: 'openRecord'; recordType: 'contact'; id: string };
 
 export type CopilotPanelAction =
   Extract<CopilotAction, { type: 'search' | 'setFilter' | 'openRecord' }>;
 
 export const COPILOT_PANEL_EVENT = 'apex:copilot-panel-action';
+
+export interface CopilotPanelActionResult {
+  ok: boolean;
+  reason?: string;
+}
+
+export interface CopilotPanelEventDetail {
+  action: CopilotPanelAction;
+  acknowledge: (result: CopilotPanelActionResult) => void;
+}
 
 export interface CopilotUiController {
   available: boolean;

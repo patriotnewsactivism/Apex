@@ -621,7 +621,7 @@ export function ChatPanel({
   }, [messages, chatMut.isPending]);
   const handleSubmit = () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || (copilot.active && copilot.busy)) return;
     setMessages((prev) => [
       ...prev,
       { id: `usr-${Date.now()}`, role: 'user', text, timestamp: Date.now() },
@@ -1316,7 +1316,7 @@ export function ChatPanel({
               <motion.button
                 className="btn-primary"
                 onClick={handleSubmit}
-                disabled={!input.trim() || chatMut.isPending}
+                disabled={!input.trim() || chatMut.isPending || (copilot.active && copilot.busy)}
                 aria-label="Send chat message"
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}

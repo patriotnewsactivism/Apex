@@ -37,13 +37,18 @@ export function CopilotOverlay({ state }: { state: CopilotOverlayState | null })
         width: bounds.width + 10,
         height: bounds.height + 10,
       });
-      element.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     };
-    const frame = requestAnimationFrame(update);
+    const element = document.querySelector(selector);
+    if (element instanceof HTMLElement) {
+      element.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+    const frame = requestAnimationFrame(() => requestAnimationFrame(update));
     window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
     };
   }, [state]);
 

@@ -87,8 +87,47 @@ function waitForCopilotPaint(): Promise<void> {
 }
 
 function copilotActionPage(action: CopilotAction): string {
-  if (action.type === 'openRecord') return action.recordType === 'contact' ? 'contacts' : 'leads';
+  if (action.type === 'openRecord') return 'contacts';
   return action.page;
+}
+
+function waitForCopilotPage(page: string, timeoutMs = 1200): Promise<boolean> {
+  const startedAt = performance.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (document.querySelector(`[data-copilot-page="${CSS.escape(page)}"]`)) {
+        resolve(true);
+        return;
+      }
+      if (performance.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
+function dispatchCopilotPanelAction(action: Exclude<CopilotAction, { type: 'navigate' }>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (!settled) reject(new Error(`The ${copilotActionPage(action)} panel did not accept the action.`));
+    }, 800);
+    window.dispatchEvent(new CustomEvent(COPILOT_PANEL_EVENT, {
+      detail: {
+        action,
+        acknowledge: (result: { ok: boolean; reason?: string }) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          if (result.ok) resolve();
+          else reject(new Error(result.reason ?? 'The dashboard action was refused.'));
+        },
+      },
+    }));
+  });
 }
 
 // ─── Mobile detection ─────────────────────────────────────────────────────────
@@ -699,6 +738,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
   const [copilotOverlay, setCopilotOverlay] = useState<CopilotOverlayState | null>(null);
   const copilotSessionRef = useRef(crypto.randomUUID());
   const copilotRunRef = useRef(0);
+  const copilotActiveRef = useRef(false);
   const isMobile = useIsMobile();
   const copilotStatus = useQuery({
     queryKey: ['copilot-status'],
@@ -708,8 +748,14 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
   });
   const copilotAvailable = COPILOT_CLIENT_FLAG_ENABLED && copilotStatus.data?.enabled === true;
 
-  const stopCopilot = useCallback((_reason?: string) => {
+  const stopCopilot = useCallback((reason?: string) => {
     copilotRunRef.current += 1;
+    if (copilotActiveRef.current) {
+      copilotActiveRef.current = false;
+      void api.chat.auditCopilotSession(
+        copilotSessionRef.current, 'stopped', reason,
+      ).catch(() => undefined);
+    }
     setCopilotActive(false);
     setCopilotBusy(false);
     setCopilotOverlay(null);
@@ -719,6 +765,10 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     if (!copilotAvailable) return;
     copilotSessionRef.current = crypto.randomUUID();
     copilotRunRef.current += 1;
+    copilotActiveRef.current = true;
+    void api.chat.auditCopilotSession(
+      copilotSessionRef.current, 'started',
+    ).catch(() => undefined);
     setCopilotActive(true);
   }, [copilotAvailable]);
 
@@ -736,13 +786,16 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           if (action.type === 'navigate') {
             setCopilotOverlay({ selector: initialTarget, label: description, sequence: Date.now() });
           }
-          setActivePage(copilotActionPage(action));
+          const actionPage = copilotActionPage(action);
+          setActivePage(actionPage);
           setMobileMenuOpen(false);
           await waitForCopilotPaint();
+          const pageReady = await waitForCopilotPage(actionPage);
+          if (!pageReady) throw new Error(`The ${actionPage} panel did not become ready.`);
           if (copilotRunRef.current !== run) break;
 
           if (action.type !== 'navigate') {
-            window.dispatchEvent(new CustomEvent(COPILOT_PANEL_EVENT, { detail: action }));
+            await dispatchCopilotPanelAction(action);
             await waitForCopilotPaint();
             setCopilotOverlay({
               selector: copilotActionTarget(action),
@@ -762,7 +815,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           narrate(`Apex Copilot · Could not complete that step: ${reason}`);
           break;
         } finally {
-          setCopilotOverlay(null);
+          if (copilotRunRef.current === run) setCopilotOverlay(null);
         }
       }
       if (copilotRunRef.current === run) setCopilotBusy(false);
@@ -996,6 +1049,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           <AnimatePresence mode="wait">
             <motion.div
               key={activePage}
+              data-copilot-page={activePage}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}

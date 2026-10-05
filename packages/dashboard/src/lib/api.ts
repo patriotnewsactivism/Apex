@@ -577,6 +577,15 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ sessionId, action, status, reason }),
       }),
+    auditCopilotSession: (
+      sessionId: string,
+      event: 'started' | 'stopped',
+      reason?: string,
+    ) =>
+      apiFetch<{ logged: true }>('/chat/copilot/session-audit', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId, event, reason }),
+      }),
     // Durable history of live browser voice calls (live-voice.ts) — every
     // attempt, including ones that never connected, since the session row is
     // written before Deepgram is even contacted.

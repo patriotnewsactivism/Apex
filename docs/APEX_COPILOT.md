@@ -24,7 +24,7 @@ tool, action validation, and audit endpoint.
 1. Log in to the operator dashboard.
 2. Open APEX Command and turn on **Apex Copilot**.
 3. Ask Apex to open a safe dashboard page, search contacts/prospects, apply an
-   allowed filter, or open a lead/contact using its exact record id.
+   allowed filter, or open a contact using its exact record id.
 4. Watch the highlighted target and narrated steps in chat.
 5. Press **Stop** or `Esc` at any time. The mode also turns off after ten
    minutes without operator/Copilot activity, on logout, or when the tab ends.

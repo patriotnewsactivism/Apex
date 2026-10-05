@@ -44,7 +44,7 @@ const setFilterActionSchema = z.object({
 
 const openRecordActionSchema = z.object({
   type: z.literal('openRecord'),
-  recordType: z.enum(['lead', 'contact']),
+  recordType: z.literal('contact'),
   id: z.string().uuid(),
 }).strict();
 
@@ -61,6 +61,18 @@ const CONTACT_FILTERS = new Set([
   'q', 'tag', 'city', 'state', 'verifiedOnly', 'ownerBot', 'replied', 'campaignId',
 ]);
 const LEAD_FILTERS = new Set(['status', 'pipelineState', 'industry']);
+
+export const COPILOT_READ_ONLY_CHAT_TOOL_NAMES = [
+  'get_pending_approvals',
+  'get_recent_goals',
+  'get_recent_activity',
+  'get_goal_progress',
+] as const;
+
+export function isCopilotChatToolAllowed(toolName: string): boolean {
+  return toolName === 'control_dashboard'
+    || (COPILOT_READ_ONLY_CHAT_TOOL_NAMES as readonly string[]).includes(toolName);
+}
 
 export const COPILOT_HARD_DENY_ACTIONS = [
   'send', 'sendEmail', 'sendSms', 'sendInvite', 'makeOutboundCall', 'releaseSend',

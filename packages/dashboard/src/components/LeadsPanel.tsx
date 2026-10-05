@@ -5,7 +5,7 @@ import { api, type ResearchedLead } from '../lib/api.js';
 import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter, Mail, Phone, Upload } from 'lucide-react';
 import { describeRehearsalOutcome } from '../lib/rehearsal-outcome.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
-import { COPILOT_PANEL_EVENT, type CopilotPanelAction } from '../copilot/actions.js';
+import { COPILOT_PANEL_EVENT, type CopilotPanelEventDetail } from '../copilot/actions.js';
 
 const STATUS_COLORS: Record<string, string> = {
   new: '#5a9eae',
@@ -109,25 +109,30 @@ export function LeadsPanel() {
 
   useEffect(() => {
     const handleCopilotAction = (event: Event) => {
-      const action = (event as CustomEvent<CopilotPanelAction>).detail;
+      const detail = (event as CustomEvent<CopilotPanelEventDetail>).detail;
+      const action = detail?.action;
       if (!action) return;
       if (action.type === 'search' && action.page === 'leads') {
         setSearchQuery(action.query);
-        return;
-      }
-      if (action.type === 'openRecord' && action.recordType === 'lead') {
-        setExpandedId(action.id);
+        detail.acknowledge({ ok: true });
         return;
       }
       if (action.type !== 'setFilter' || action.page !== 'leads') return;
-      if (typeof action.value !== 'string' && action.value !== null) return;
+      if (typeof action.value !== 'string' && action.value !== null) {
+        detail.acknowledge({ ok: false, reason: `Filter ${action.field} requires text or null.` });
+        return;
+      }
       const value = action.value ?? '';
       switch (action.field) {
         case 'status': setStatusFilter(value); break;
         case 'pipelineState': setPipelineFilter(value); break;
         case 'industry': setIndustryFilter(value); break;
+        default:
+          detail.acknowledge({ ok: false, reason: `Filter ${action.field} is not registered.` });
+          return;
       }
       setShowFilters(true);
+      detail.acknowledge({ ok: true });
     };
     window.addEventListener(COPILOT_PANEL_EVENT, handleCopilotAction);
     return () => window.removeEventListener(COPILOT_PANEL_EVENT, handleCopilotAction);
