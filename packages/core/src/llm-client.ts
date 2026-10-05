@@ -108,7 +108,7 @@ export type ApexProviderName =
   | 'openrouter-free-policy'
   | 'groq-gpt-oss-120b-byok'
   | 'gemini-3-8-flash-byok'
-  | 'openrouter-glm-5-3-flashx-paid';
+  | 'nous-deepseek-v4-flash-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
 export const FREE_POLICY_GATEWAY_NAME: ApexProviderName = 'openrouter-free-policy';
@@ -145,10 +145,10 @@ export const OPENROUTER_FREE_KEY_ENVS = [
  * the other three accounts are overdrawn, so the previous paid key
  * (OPENROUTER_API_KEY) failed every FlashX request with 402.
  */
-export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_4'] as const;
+export const OPENROUTER_PAID_KEY_ENVS = ['NOUS_API_KEY'] as const;
 export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName =
-  'openrouter-glm-5-3-flashx-paid';
-export const PAID_FALLBACK_MODEL = 'z-ai/glm-5.3-flashx';
+  'nous-deepseek-v4-flash-paid';
+export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -330,30 +330,19 @@ const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: PAID_FALLBACK_PROVIDER_NAME,
     model: PAID_FALLBACK_MODEL,
-    baseURL: 'https://openrouter.ai/api/v1',
+    baseURL: 'https://inference-api.nousresearch.com/v1',
     apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
     paid: true,
     unrestricted: true,
-    requestPool: 'openrouter',
     protocol: 'openai-compatible',
     minIntervalMs: 0,
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
-    // FlashX supports up to 131,072 completion tokens. This is an upstream
-    // model envelope, not an APEX spend/request throttle.
     maxOutputTokens: 131_072,
-    // `sort: 'price'` pinned every request to whichever upstream host was
-    // cheapest for this model — confirmed live 2026-09-17 to be a host with a
-    // 60s p99 (Inceptron) or 31s p99 (Relace), both past LLM_REQUEST_TIMEOUT_MS.
-    // That produced a sustained 100% "request timed out" failure across the
-    // whole workforce even though the model itself, and this account's paid
-    // balance, were both fine. `sort: 'latency'` optimizes for the thing this
-    // route actually needs — answering inside the timeout — not raw price.
     providerRouting: { sort: 'latency' },
-    // z-ai/glm-5.3-flashx OpenRouter list price as of 2026-09-20.
-    // Actual settled cost from OpenRouter's response remains authoritative.
-    usdPerMillionPrompt: 0.37,
-    usdPerMillionCompletion: 1.25,
+    // deepseek/deepseek-v4-flash-0731 via Nous Portal.
+    usdPerMillionPrompt: 0.14,
+    usdPerMillionCompletion: 0.28,
   },
 ];
 

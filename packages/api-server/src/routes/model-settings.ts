@@ -286,7 +286,7 @@ export function createModelSettingsRouter(): Router {
       const candidate = parseOpenRouterModelPolicy(JSON.stringify(req.body));
       if (!candidate) {
         res.status(400).json({
-          error: 'Invalid saved model policy. Select 1-500 free OpenRouter model IDs ending in :free, or exactly openrouter/free. Arbitrary paid model IDs cannot be persisted. z-ai/glm-5.3-flashx is the dedicated paid runtime continuity exception and is managed outside the saved roster.',
+          error: 'Invalid saved model policy. Select 1-500 free OpenRouter model IDs ending in :free, or exactly openrouter/free. Arbitrary paid model IDs cannot be persisted. deepseek/deepseek-v4-flash-0731 is the dedicated paid runtime continuity exception and is managed outside the saved roster.',
         });
         return;
       }
