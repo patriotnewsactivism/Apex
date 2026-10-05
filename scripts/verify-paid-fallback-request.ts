@@ -20,7 +20,10 @@
  *   - the split: once the free pool answers 429, paid requests alternate
  *     between OpenRouter and Nous, on the same account whose free quota ran out;
  *   - an unfunded Nous key: OpenRouter answers instead, no task fails;
- *   - Nous alone and unfunded: a capacity pause, not a failed task.
+ *   - Nous alone and unfunded: a capacity pause, not a failed task;
+ *   - a paid answer slower than the default request timeout still arrives:
+ *     the paid routes wait PAID_REQUEST_TIMEOUT_MS, free routes keep the
+ *     default (here lowered to its 10s floor so the check stays fast).
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,16 +48,23 @@ const ROUTE_ENVS = [
   'OPENROUTER_FREE_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY_3', 'OPENROUTER_API_KEY_4',
   'QWEN_API_KEY', 'APEX_QWEN_BYOK_ENABLED', 'GROQ_API_KEY', 'GROQ_API_KEY_2', 'APEX_GROQ_BYOK_ENABLED',
   'GEMINI_API_KEY', 'APEX_GEMINI_BYOK_ENABLED', 'NOUS_API_KEY', 'APEX_PAID_FALLBACK_ENABLED', 'APEX_OPENROUTER_MODEL_POLICY',
+  'APEX_LLM_REQUEST_TIMEOUT_MS',
 ];
+/** Default request timeout for this guard: the configurable floor, so a paid
+ *  answer slower than it can be checked in seconds rather than minutes. */
+const GUARD_DEFAULT_TIMEOUT_MS = 10_000;
+const SLOW_PAID_ANSWER_MS = 11_000;
 
 async function main(): Promise<void> {
   // No database: telemetry and ledgers are best-effort and must not matter.
   process.env.DATABASE_URL = 'postgres://guard:guard@127.0.0.1:9/no_database';
   for (const env of ROUTE_ENVS) delete process.env[env];
+  process.env.APEX_LLM_REQUEST_TIMEOUT_MS = String(GUARD_DEFAULT_TIMEOUT_MS);
 
   const sent: Sent[] = [];
   let nousUnfunded = false;
   let freeQuotaExhausted = false;
+  let slowPaidAnswer = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (!url.endsWith('/chat/completions')) return new Response('{}', { status: 404 });
@@ -64,6 +74,16 @@ async function main(): Promise<void> {
       headers: Object.fromEntries(new Headers(init?.headers).entries()),
     });
     const model = String(sent.at(-1)?.body.model ?? '');
+    if (slowPaidAnswer && model === 'deepseek/deepseek-v4-flash-0731') {
+      // Answer after the default timeout has passed, unless APEX aborts first.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, SLOW_PAID_ANSWER_MS);
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+        });
+      });
+    }
     if (freeQuotaExhausted && url.includes('openrouter.ai') && (model.endsWith(':free') || model === 'openrouter/free')) {
       // OpenRouter's answer once an account's daily free-model quota is spent.
       return new Response(
@@ -218,6 +238,35 @@ async function main(): Promise<void> {
     fallbackPaid.filter((req) => req.url.includes('nousresearch.com')).length <= 1 &&
       fallbackPaid.filter((req) => req.url.startsWith('https://openrouter.ai/')).length === 4,
     fallbackPaid.map((req) => new URL(req.url).host),
+  );
+
+  // 4b. A paid answer slower than the default request timeout still arrives.
+  //     2026-10-05: deepseek-v4-flash-0731 often needed more than 30s on large
+  //     agent contexts; every timeout became a capacity pause and a restart.
+  check(
+    'paid routes wait longer than the default request timeout; free routes keep it',
+    llm.getProviderRequestTimeoutMs('openrouter-deepseek-v4-flash-paid') === llm.PAID_REQUEST_TIMEOUT_MS &&
+      llm.getProviderRequestTimeoutMs('nous-deepseek-v4-flash-paid') === llm.PAID_REQUEST_TIMEOUT_MS &&
+      llm.getProviderRequestTimeoutMs('openrouter-nex-n2-5-mini-free') === llm.LLM_REQUEST_TIMEOUT_MS &&
+      llm.LLM_REQUEST_TIMEOUT_MS === GUARD_DEFAULT_TIMEOUT_MS &&
+      llm.PAID_REQUEST_TIMEOUT_MS > SLOW_PAID_ANSWER_MS,
+    {
+      paid: llm.getProviderRequestTimeoutMs('openrouter-deepseek-v4-flash-paid'),
+      free: llm.getProviderRequestTimeoutMs('openrouter-nex-n2-5-mini-free'),
+      defaultTimeout: llm.LLM_REQUEST_TIMEOUT_MS,
+    },
+  );
+  slowPaidAnswer = true;
+  const slowStart = Date.now();
+  const slowReply = await ask().then(
+    (reply) => String((reply as { content?: string }).content),
+    (err: unknown) => `error: ${err instanceof Error ? err.message : String(err)}`,
+  );
+  slowPaidAnswer = false;
+  check(
+    `a paid answer that takes ${SLOW_PAID_ANSWER_MS / 1000}s (past the ${GUARD_DEFAULT_TIMEOUT_MS / 1000}s default timeout) is received, not aborted`,
+    slowReply === 'guard reply' && Date.now() - slowStart >= SLOW_PAID_ANSWER_MS,
+    { reply: slowReply.slice(0, 300), elapsedMs: Date.now() - slowStart },
   );
 
   // 5. Nous alone and unfunded is a capacity pause, not a failed task: the

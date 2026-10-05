@@ -704,6 +704,24 @@ ceiling costs nothing when the answer is short; it only stops paying for
 reasoning that ends without an answer. Free routes keep the role budget.
 `verify-paid-fallback-request.ts` pins both; removing the floor fails it.
 
+**Addendum 2 (2026-10-05, 07:51 check).** With the floor live, the length
+failures stopped (none from 07:07 to 07:51), but the workforce logged about 50
+capacity pauses in those 44 minutes, roughly one a minute, each with a 5-second
+resume (`COOLDOWN_TIMEOUT_MS`). The 5-second block is what the client records
+when a request times out, and the timings matched the 30-second default
+`LLM_REQUEST_TIMEOUT_MS`: the COO's task started at 07:50:19 and was deferred
+at 07:50:51 with no tool call between. DeepSeek V4 Flash answers on
+25-35K-token agent contexts often take longer than 30 seconds. Each timeout
+deferred the task, which restarted from its last checkpoint, and the aborted
+generation was presumably still billed. The CEO's goal review was deferred 17
+times. Both paid routes now carry
+`requestTimeoutMs = PAID_REQUEST_TIMEOUT_MS` (120 seconds, inside the existing
+180-second cap). Free routes keep the default so a hung free model still fails
+over fast. `verify-paid-fallback-request.ts` lowers the default to its
+10-second floor and checks that an 11-second paid answer arrives; with the old
+call site it aborts at 10 seconds and becomes the same capacity pause seen in
+production.
+
 ## How to change an architecture decision
 
 A proposed change should include:
