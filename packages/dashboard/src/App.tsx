@@ -1,4 +1,4 @@
-import { useState, type ReactNode, useEffect, useMemo } from 'react';
+import { useState, type ReactNode, useEffect, useMemo, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api.js';
@@ -64,10 +64,32 @@ import {
   Send,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
+import {
+  COPILOT_PANEL_EVENT,
+  copilotActionTarget,
+  describeCopilotAction,
+  type CopilotAction,
+  type CopilotUiController,
+} from './copilot/actions.js';
+import { CopilotOverlay, type CopilotOverlayState } from './copilot/CopilotOverlay.js';
+import { isCopilotClientFeatureEnabled } from './copilot/feature-flag.js';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 10_000, retry: 2 } },
 });
+
+const COPILOT_CLIENT_FLAG_ENABLED = isCopilotClientFeatureEnabled(import.meta.env.VITE_FEATURE_COPILOT);
+
+function waitForCopilotPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
+function copilotActionPage(action: CopilotAction): string {
+  if (action.type === 'openRecord') return action.recordType === 'contact' ? 'contacts' : 'leads';
+  return action.page;
+}
 
 // ─── Mobile detection ─────────────────────────────────────────────────────────
 
@@ -672,7 +694,114 @@ function MobileBottomBar({
 function AppContent({ onLogout }: { onLogout: () => void }) {
   const [activePage, setActivePage] = useState('command');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [copilotActive, setCopilotActive] = useState(false);
+  const [copilotBusy, setCopilotBusy] = useState(false);
+  const [copilotOverlay, setCopilotOverlay] = useState<CopilotOverlayState | null>(null);
+  const copilotSessionRef = useRef(crypto.randomUUID());
+  const copilotRunRef = useRef(0);
   const isMobile = useIsMobile();
+  const copilotStatus = useQuery({
+    queryKey: ['copilot-status'],
+    queryFn: () => api.chat.copilotStatus(),
+    enabled: COPILOT_CLIENT_FLAG_ENABLED,
+    staleTime: 60_000,
+  });
+  const copilotAvailable = COPILOT_CLIENT_FLAG_ENABLED && copilotStatus.data?.enabled === true;
+
+  const stopCopilot = useCallback((_reason?: string) => {
+    copilotRunRef.current += 1;
+    setCopilotActive(false);
+    setCopilotBusy(false);
+    setCopilotOverlay(null);
+  }, []);
+
+  const startCopilot = useCallback(() => {
+    if (!copilotAvailable) return;
+    copilotSessionRef.current = crypto.randomUUID();
+    copilotRunRef.current += 1;
+    setCopilotActive(true);
+  }, [copilotAvailable]);
+
+  const executeCopilotActions = useCallback(
+    async (actions: CopilotAction[], narrate: (message: string) => void) => {
+      if (!copilotActive || !copilotAvailable || actions.length === 0) return;
+      const run = ++copilotRunRef.current;
+      setCopilotBusy(true);
+      for (const action of actions) {
+        if (copilotRunRef.current !== run) break;
+        const description = describeCopilotAction(action);
+        narrate(`Apex Copilot · ${description}…`);
+        try {
+          const initialTarget = copilotActionTarget(action);
+          if (action.type === 'navigate') {
+            setCopilotOverlay({ selector: initialTarget, label: description, sequence: Date.now() });
+          }
+          setActivePage(copilotActionPage(action));
+          setMobileMenuOpen(false);
+          await waitForCopilotPaint();
+          if (copilotRunRef.current !== run) break;
+
+          if (action.type !== 'navigate') {
+            window.dispatchEvent(new CustomEvent(COPILOT_PANEL_EVENT, { detail: action }));
+            await waitForCopilotPaint();
+            setCopilotOverlay({
+              selector: copilotActionTarget(action),
+              label: description,
+              sequence: Date.now(),
+            });
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 650));
+          if (copilotRunRef.current !== run) break;
+          await api.chat.auditCopilotAction(copilotSessionRef.current, action, 'executed');
+          narrate(`Apex Copilot · Done: ${description.toLowerCase()}.`);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'Action failed';
+          await api.chat.auditCopilotAction(
+            copilotSessionRef.current, action, 'failed', reason,
+          ).catch(() => undefined);
+          narrate(`Apex Copilot · Could not complete that step: ${reason}`);
+          break;
+        } finally {
+          setCopilotOverlay(null);
+        }
+      }
+      if (copilotRunRef.current === run) setCopilotBusy(false);
+    },
+    [copilotActive, copilotAvailable],
+  );
+
+  useEffect(() => {
+    if (!copilotAvailable && copilotActive) stopCopilot('Feature became unavailable');
+  }, [copilotActive, copilotAvailable, stopCopilot]);
+
+  useEffect(() => {
+    if (!copilotActive) return;
+    const stopForManualInput = (event: Event) => {
+      if (!event.isTrusted) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest('[data-copilot-control]')) return;
+      stopCopilot('Paused because Matthew took manual control');
+    };
+    window.addEventListener('pointerdown', stopForManualInput, true);
+    window.addEventListener('keydown', stopForManualInput, true);
+    return () => {
+      window.removeEventListener('pointerdown', stopForManualInput, true);
+      window.removeEventListener('keydown', stopForManualInput, true);
+    };
+  }, [copilotActive, stopCopilot]);
+
+  const copilotController = useMemo<CopilotUiController>(() => ({
+    available: copilotAvailable,
+    active: copilotActive,
+    busy: copilotBusy,
+    sessionId: copilotSessionRef.current,
+    start: startCopilot,
+    stop: stopCopilot,
+    execute: executeCopilotActions,
+  }), [
+    copilotActive, copilotAvailable, copilotBusy, executeCopilotActions, startCopilot, stopCopilot,
+  ]);
+
   const { data: agents = [] } = useQuery({
     queryKey: ['agents'],
     queryFn: () => api.agents.list(),
@@ -893,7 +1022,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           unmounts when activePage changes, so the conversation and any live
           voice call survive navigation. It receives the page Don is viewing
           so the agent knows what's on his screen. */}
-      <FloatingChat pageId={activePage} pageTitle={meta.title} />
+      <FloatingChat pageId={activePage} pageTitle={meta.title} copilot={copilotController} />
+      <CopilotOverlay state={copilotOverlay} />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { MessageSquare, Phone } from 'lucide-react';
 import { ChatPanel } from './QuickChat.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
 import type { LiveVoiceStatus } from '../hooks/useLiveVoiceCall.js';
+import type { CopilotUiController } from '../copilot/actions.js';
 
 // FloatingChat mounts ChatPanel ONCE, outside the page swap in App.tsx.
 // That is the whole point: the chat (and any live voice call) survives
@@ -25,9 +26,10 @@ import type { LiveVoiceStatus } from '../hooks/useLiveVoiceCall.js';
 interface FloatingChatProps {
   pageId: string;
   pageTitle: string;
+  copilot: CopilotUiController;
 }
 
-export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
+export function FloatingChat({ pageId, pageTitle, copilot }: FloatingChatProps) {
   const isMobile = useIsMobile();
   // Desktop starts open; mobile starts minimized so it doesn't cover
   // content on arrival (the Chat nav item or the FAB expands it).
@@ -191,6 +193,7 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
         onMinimize={() => setOpen(false)}
         onHeaderPointerDown={onHeaderPointerDown}
         onVoiceStatus={setVoiceStatus}
+        copilot={copilot}
       />
     </div>
   );

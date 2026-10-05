@@ -7,6 +7,7 @@ import type {
   MissionStats,
   UpdateMissionResponse,
 } from './missions.js';
+import type { CopilotAction } from '../copilot/actions.js';
 
 const API = '/api';
 
@@ -146,6 +147,7 @@ export interface ChatTurn {
 export interface ChatResponse {
   reply: string;
   goalCreated?: { id: string; title: string };
+  copilot?: { enabled: boolean; actions: CopilotAction[] };
 }
 
 export interface VoiceChatTurn {
@@ -554,10 +556,26 @@ export const api = {
     // directly or deploy a goal. See packages/api-server/src/routes/chat.ts.
     // `page` = the Apex screen Don is currently viewing, sent so the model
     // can resolve "this/that" references to what's on his screen.
-    message: (message: string, history: ChatTurn[], page?: string) =>
+    message: (
+      message: string,
+      history: ChatTurn[],
+      page?: string,
+      copilot?: { enabled: boolean; pageId?: string; sessionId: string },
+    ) =>
       apiFetch<ChatResponse>('/chat/message', {
         method: 'POST',
-        body: JSON.stringify({ message, history, page }),
+        body: JSON.stringify({ message, history, page, copilot }),
+      }),
+    copilotStatus: () => apiFetch<{ enabled: boolean }>('/chat/copilot/status'),
+    auditCopilotAction: (
+      sessionId: string,
+      action: CopilotAction,
+      status: 'executed' | 'failed' | 'stopped',
+      reason?: string,
+    ) =>
+      apiFetch<{ logged: true }>('/chat/copilot/audit', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId, action, status, reason }),
       }),
     // Durable history of live browser voice calls (live-voice.ts) — every
     // attempt, including ones that never connected, since the session row is

@@ -1,6 +1,7 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type CrmContactFilters } from '../lib/api.js';
+import { COPILOT_PANEL_EVENT, type CopilotPanelAction } from '../copilot/actions.js';
 
 const wrap: CSSProperties = {
   overflowWrap: 'anywhere',
@@ -69,6 +70,42 @@ export function ContactsPanel() {
     setFilters((current) => ({ ...current, [key]: value || undefined }));
   };
 
+  useEffect(() => {
+    const handleCopilotAction = (event: Event) => {
+      const action = (event as CustomEvent<CopilotPanelAction>).detail;
+      if (!action) return;
+      if (action.type === 'search' && action.page === 'contacts') {
+        setFilters((current) => ({ ...current, q: action.query }));
+        return;
+      }
+      if (action.type === 'openRecord' && action.recordType === 'contact') {
+        setSelectedId(action.id);
+        return;
+      }
+      if (action.type !== 'setFilter' || action.page !== 'contacts') return;
+      switch (action.field) {
+        case 'q':
+        case 'tag':
+        case 'city':
+        case 'state':
+        case 'ownerBot':
+        case 'campaignId':
+          if (typeof action.value === 'string') {
+            setFilters((current) => ({ ...current, [action.field]: action.value || undefined }));
+          }
+          break;
+        case 'verifiedOnly':
+        case 'replied':
+          if (typeof action.value === 'boolean' || action.value === null) {
+            setFilters((current) => ({ ...current, [action.field]: action.value }));
+          }
+          break;
+      }
+    };
+    window.addEventListener(COPILOT_PANEL_EVENT, handleCopilotAction);
+    return () => window.removeEventListener(COPILOT_PANEL_EVENT, handleCopilotAction);
+  }, []);
+
   const exportCsv = async () => {
     const blob = await api.crm.exportCsv(filters);
     const url = URL.createObjectURL(blob);
@@ -94,6 +131,7 @@ export function ContactsPanel() {
           <button type="button" onClick={exportCsv} style={{ padding: '8px 12px' }}>Export CSV</button>
         </div>
         <input
+          data-copilot-target="contacts-search"
           aria-label="Search contacts"
           placeholder="Search name, organization, email, phone, tags, notes, or message text"
           value={filters.q ?? ''}
@@ -101,15 +139,15 @@ export function ContactsPanel() {
           style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}
         />
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          <input aria-label="Tag" placeholder="Tag" value={filters.tag ?? ''} onChange={(e) => field('tag', e.target.value)} style={{ flex: '1 1 120px', minWidth: 0 }} />
-          <input aria-label="City" placeholder="City" value={filters.city ?? ''} onChange={(e) => field('city', e.target.value)} style={{ flex: '1 1 120px', minWidth: 0 }} />
-          <input aria-label="State" placeholder="State" value={filters.state ?? ''} onChange={(e) => field('state', e.target.value)} style={{ flex: '1 1 80px', minWidth: 0 }} />
-          <input aria-label="Owner bot" placeholder="Owner bot" value={filters.ownerBot ?? ''} onChange={(e) => field('ownerBot', e.target.value)} style={{ flex: '1 1 120px', minWidth: 0 }} />
-          <input aria-label="Campaign" placeholder="Campaign id" value={filters.campaignId ?? ''} onChange={(e) => field('campaignId', e.target.value)} style={{ flex: '1 1 140px', minWidth: 0 }} />
+          <input data-copilot-target="contacts-filter-tag" aria-label="Tag" placeholder="Tag" value={filters.tag ?? ''} onChange={(e) => field('tag', e.target.value)} style={{ flex: '1 1 120px', minWidth: 0 }} />
+          <input data-copilot-target="contacts-filter-city" aria-label="City" placeholder="City" value={filters.city ?? ''} onChange={(e) => field('city', e.target.value)} style={{ flex: '1 1 120px', minWidth: 0 }} />
+          <input data-copilot-target="contacts-filter-state" aria-label="State" placeholder="State" value={filters.state ?? ''} onChange={(e) => field('state', e.target.value)} style={{ flex: '1 1 80px', minWidth: 0 }} />
+          <input data-copilot-target="contacts-filter-ownerBot" aria-label="Owner bot" placeholder="Owner bot" value={filters.ownerBot ?? ''} onChange={(e) => field('ownerBot', e.target.value)} style={{ flex: '1 1 120px', minWidth: 0 }} />
+          <input data-copilot-target="contacts-filter-campaignId" aria-label="Campaign" placeholder="Campaign id" value={filters.campaignId ?? ''} onChange={(e) => field('campaignId', e.target.value)} style={{ flex: '1 1 140px', minWidth: 0 }} />
           <input aria-label="Last contacted from" type="date" value={filters.lastContactedFrom?.slice(0, 10) ?? ''} onChange={(e) => field('lastContactedFrom', e.target.value)} style={{ flex: '1 1 140px', minWidth: 0 }} />
           <input aria-label="Last contacted to" type="date" value={filters.lastContactedTo?.slice(0, 10) ?? ''} onChange={(e) => field('lastContactedTo', e.target.value)} style={{ flex: '1 1 140px', minWidth: 0 }} />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-            <input type="checkbox" checked={filters.verifiedOnly === true} onChange={(e) => setFilters((c) => ({ ...c, verifiedOnly: e.target.checked }))} />
+            <input data-copilot-target="contacts-filter-verifiedOnly" type="checkbox" checked={filters.verifiedOnly === true} onChange={(e) => setFilters((c) => ({ ...c, verifiedOnly: e.target.checked }))} />
             Verified only
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
@@ -117,6 +155,7 @@ export function ContactsPanel() {
             Do not contact
           </label>
           <select
+            data-copilot-target="contacts-filter-replied"
             aria-label="Reply filter"
             value={filters.replied === true ? 'yes' : filters.replied === false ? 'no' : ''}
             onChange={(e) => setFilters((c) => ({ ...c, replied: e.target.value === 'yes' ? true : e.target.value === 'no' ? false : null }))}
@@ -136,6 +175,7 @@ export function ContactsPanel() {
           {contacts.map((row) => (
             <button
               key={row.id}
+              data-copilot-record={row.id}
               type="button"
               onClick={() => setSelectedId(row.id)}
               style={{
