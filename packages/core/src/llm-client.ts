@@ -158,6 +158,14 @@ export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
  *  role budget) failed on deepseek-v4-flash-0731 with "empty completion
  *  content (finish_reason: length)": the reasoning filled the budget. */
 export const PAID_MIN_OUTPUT_TOKENS = 16_384;
+/** Request timeout for the paid routes. The default request timeout (30s,
+ *  APEX_LLM_REQUEST_TIMEOUT_MS) keeps free-route failover fast, but on
+ *  2026-10-05 deepseek-v4-flash-0731 regularly needed longer than 30s on
+ *  25-35K-token agent contexts. Each timeout became a 5s capacity pause, the
+ *  task restarted from its last checkpoint, and the aborted generation was
+ *  likely still billed: about one pause a minute with the paid route as the only
+ *  route. The paid route is the last resort, so it waits longer. */
+export const PAID_REQUEST_TIMEOUT_MS = 120_000;
 export const PAID_FALLBACK_PROVIDER_NAMES = [
   'nous-deepseek-v4-flash-paid',
   'openrouter-deepseek-v4-flash-paid',
@@ -199,6 +207,8 @@ type ProviderSpec = {
    * network call instead of learning the limit by burning a 413 attempt. */
   maxRequestTokens?: number;
   maxOutputTokens?: number;
+  /** Per-route request timeout, above the default LLM_REQUEST_TIMEOUT_MS. */
+  requestTimeoutMs?: number;
   /** Floor on max_tokens, above the role's output budget. Reasoning models
    *  can spend a 4,096-token budget thinking and return no content
    *  (finish_reason: length), which fails the task after the reasoning was
@@ -362,6 +372,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     supportsParallelToolCalls: true,
     maxOutputTokens: 131_072,
     minOutputTokens: PAID_MIN_OUTPUT_TOKENS,
+    requestTimeoutMs: PAID_REQUEST_TIMEOUT_MS,
     // `sort: 'price'` once pinned the paid route to a host with a 60s p99,
     // past LLM_REQUEST_TIMEOUT_MS (2026-09-17). Latency is what this route
     // needs: an answer inside the timeout.
@@ -384,6 +395,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     supportsParallelToolCalls: true,
     maxOutputTokens: 131_072,
     minOutputTokens: PAID_MIN_OUTPUT_TOKENS,
+    requestTimeoutMs: PAID_REQUEST_TIMEOUT_MS,
     // No providerRouting: Nous Portal decides routing per model and rejects a
     // caller-supplied `provider` object with HTTP 400.
     // deepseek/deepseek-v4-flash-0731 via Nous Portal.
@@ -716,6 +728,18 @@ const configuredRequestTimeoutMs = Number(process.env.APEX_LLM_REQUEST_TIMEOUT_M
 export const LLM_REQUEST_TIMEOUT_MS = Number.isFinite(configuredRequestTimeoutMs)
   ? Math.min(180_000, Math.max(10_000, Math.floor(configuredRequestTimeoutMs)))
   : 30_000;
+
+/** The request timeout for one route: the default, or the route's own longer
+ *  timeout, never above the 180s ceiling. */
+function providerRequestTimeoutMs(provider: ProviderSpec): number {
+  return Math.min(180_000, Math.max(LLM_REQUEST_TIMEOUT_MS, provider.requestTimeoutMs ?? 0));
+}
+
+export function getProviderRequestTimeoutMs(providerName: ApexProviderName): number {
+  const provider = PROVIDER_BY_NAME.get(providerName);
+  if (!provider) throw new Error(`Unknown APEX provider: ${providerName}`);
+  return providerRequestTimeoutMs(provider);
+}
 
 const COOLDOWN_429_MS = 30_000;
 /** A request that timed out says nothing about the credential's quota, so it
@@ -1322,7 +1346,7 @@ async function callCompatibleProvider(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), LLM_REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), providerRequestTimeoutMs(provider));
   const startedAt = Date.now();
   let routedModels = [provider.model];
 
@@ -1528,7 +1552,7 @@ async function callProvider(
       tools,
       config: providerConfig,
       execution,
-      timeoutMs: LLM_REQUEST_TIMEOUT_MS,
+      timeoutMs: providerRequestTimeoutMs(provider),
     });
   }
   return callCompatibleProvider(provider, key, messages, tools, providerConfig, execution);
