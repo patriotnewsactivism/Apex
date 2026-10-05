@@ -7,6 +7,19 @@ import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMInte
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 
+/** Re-dispatch a task that was blocked awaiting approval immediately after the
+ *  human resolves it, instead of waiting for the durable recovery sweep's next
+ *  tick. Mirrors approvals.ts: only a task still actually `awaiting_approval` is
+ *  touched, so this can never resurrect a task the operator cancelled. */
+async function requeueResolvedApprovalTask(taskId: string | null | undefined): Promise<void> {
+  if (!taskId) return;
+  await db.update(tasks).set({ status: 'pending', leasedAt: null, updatedAt: new Date() })
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'awaiting_approval')))
+    .catch((err) => {
+      console.warn('[chat] requeue after approval failed (sweep will retry):', err instanceof Error ? err.message : err);
+    });
+}
+
 // ─── Don's Chat: a real conversation with Apex, not a ticket window ─────
 //
 // The old QuickChat behavior treated every message typed here as a work
@@ -393,7 +406,9 @@ export async function executeTool(
         .where(and(eq(approvals.id, id), eq(approvals.kind, 'approval'), eq(approvals.status, 'pending')))
         .returning({ id: approvals.id });
       if (!resolved) return { error: 'That approval is not pending (already resolved, or wrong id).' };
-      return { approved: true, id };
+      const [approvalRow] = await db.select({ taskId: approvals.taskId }).from(approvals).where(eq(approvals.id, id)).limit(1);
+      if (approvalRow?.taskId) await requeueResolvedApprovalTask(approvalRow.taskId);
+      return { approved: true, id, requeued: Boolean(approvalRow?.taskId) };
     }
     case 'reject_pending_approval': {
       const id = String(call.args.id ?? '');
@@ -403,7 +418,9 @@ export async function executeTool(
         .where(and(eq(approvals.id, id), eq(approvals.kind, 'approval'), eq(approvals.status, 'pending')))
         .returning({ id: approvals.id });
       if (!resolved) return { error: 'That approval is not pending (already resolved, or wrong id).' };
-      return { rejected: true, id };
+      const [approvalRow] = await db.select({ taskId: approvals.taskId }).from(approvals).where(eq(approvals.id, id)).limit(1);
+      if (approvalRow?.taskId) await requeueResolvedApprovalTask(approvalRow.taskId);
+      return { rejected: true, id, requeued: Boolean(approvalRow?.taskId) };
     }
     case 'acknowledge_escalation': {
       const id = String(call.args.id ?? '');
