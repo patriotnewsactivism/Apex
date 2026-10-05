@@ -43,15 +43,26 @@ function emptyState(day = utcDay()): LedgerState {
   return { day, providers: {}, cachedTokens: {} };
 }
 
+function isCountMap(value: unknown): value is Record<string, number> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function load(): LedgerState {
   try {
     if (!existsSync(LEDGER_PATH)) return emptyState();
-    const parsed = JSON.parse(readFileSync(LEDGER_PATH, 'utf8')) as LedgerState;
-    if (!parsed || typeof parsed.day !== 'string' || typeof parsed.providers !== 'object') {
+    const parsed = JSON.parse(readFileSync(LEDGER_PATH, 'utf8')) as Partial<LedgerState> | null;
+    if (!parsed || typeof parsed.day !== 'string' || !isCountMap(parsed.providers)) {
       return emptyState();
     }
     if (parsed.day !== utcDay()) return emptyState();
-    return parsed;
+    // A same-day file written before cachedTokens existed has no such map.
+    // Kept as-is, every recordCachedTokens call would throw into its catch and
+    // getSpendLedgerSnapshot() would throw on Object.entries(undefined).
+    return {
+      day: parsed.day,
+      providers: parsed.providers,
+      cachedTokens: isCountMap(parsed.cachedTokens) ? parsed.cachedTokens : {},
+    };
   } catch {
     return emptyState();
   }

@@ -9,22 +9,28 @@
  * every task failed: 156 "All LLM providers failed" errors in two hours.
  *
  * Later the same day the operator removed Qwen and split the paid model,
- * deepseek/deepseek-v4-flash-0731, between OpenRouter (OPENROUTER_API_KEY_4)
- * and Nous so neither takes the whole load.
+ * deepseek/deepseek-v4-flash-0731, between Nous and OpenRouter
+ * (OPENROUTER_API_KEY_4). Nous, the cheaper host, goes first on 9 requests in
+ * 10 and OpenRouter on the tenth; each is the other's fallback.
  *
  * This drives the real MultiProviderClient.complete() with fetch stubbed, so
  * it checks the request that actually leaves APEX, not the source text:
  *   - the Nous route alone: no `provider`, no `usage`, no OpenRouter headers,
  *     and the reply is used;
  *   - an OpenRouter free route alone: it still gets OpenRouter's fields;
- *   - the split: once the free pool answers 429, paid requests alternate
- *     between OpenRouter and Nous, on the same account whose free quota ran out;
+ *   - the split: once the free pool answers 429, paid requests go 9 to Nous
+ *     and 1 to OpenRouter in every 10, and the OpenRouter one runs on the
+ *     same account whose free quota ran out;
  *   - an unfunded Nous key: OpenRouter answers instead, no task fails;
  *   - Nous alone and unfunded: a capacity pause, not a failed task;
  *   - a paid answer slower than the default request timeout still arrives:
  *     the paid routes wait PAID_REQUEST_TIMEOUT_MS, free routes keep the
- *     default (here lowered to its 10s floor so the check stays fast).
+ *     default (here lowered to its 10s floor so the check stays fast);
+ *   - the spend ledger loads a same-day file written before it tracked cached
+ *     tokens, records the paid route's cache hits, and still reports.
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -54,12 +60,22 @@ const ROUTE_ENVS = [
  *  answer slower than it can be checked in seconds rather than minutes. */
 const GUARD_DEFAULT_TIMEOUT_MS = 10_000;
 const SLOW_PAID_ANSWER_MS = 11_000;
+/** Prompt tokens the stubbed Nous answer reports as served from its cache. */
+const NOUS_CACHED_TOKENS = 8;
 
 async function main(): Promise<void> {
   // No database: telemetry and ledgers are best-effort and must not matter.
   process.env.DATABASE_URL = 'postgres://guard:guard@127.0.0.1:9/no_database';
   for (const env of ROUTE_ENVS) delete process.env[env];
   process.env.APEX_LLM_REQUEST_TIMEOUT_MS = String(GUARD_DEFAULT_TIMEOUT_MS);
+  // Today's ledger as a build from before cached-token tracking wrote it: no
+  // cachedTokens map. The ledger reads its file once, at import.
+  const ledgerDir = mkdtempSync(path.join(tmpdir(), 'apex-spend-ledger-'));
+  process.env.APEX_SPEND_LEDGER_PATH = path.join(ledgerDir, 'spend-ledger.json');
+  writeFileSync(
+    process.env.APEX_SPEND_LEDGER_PATH,
+    JSON.stringify({ day: new Date().toISOString().slice(0, 10), providers: { 'earlier-build-route': 1_000 } }),
+  );
 
   const sent: Sent[] = [];
   let nousUnfunded = false;
@@ -106,7 +122,12 @@ async function main(): Promise<void> {
         id: 'guard',
         model: 'guard-model',
         choices: [{ index: 0, message: { role: 'assistant', content: 'guard reply' }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 },
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 3,
+          total_tokens: 15,
+          ...(url.includes('nousresearch.com') ? { prompt_tokens_details: { cached_tokens: NOUS_CACHED_TOKENS } } : {}),
+        },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
@@ -114,6 +135,7 @@ async function main(): Promise<void> {
 
   console.log('Verifying the paid continuity route sends a request its API accepts...\n');
   const llm = (await import(path.join(root, 'packages/core/src/llm-client.ts'))) as typeof import('../packages/core/src/llm-client.js');
+  const ledger = (await import(path.join(root, 'packages/core/src/spend-ledger.ts'))) as typeof import('../packages/core/src/spend-ledger.js');
   const tools = [{ name: 'noop', description: 'guard tool', parameters: { type: 'object', properties: {} } }];
   const ask = () => llm.createLLMClient(llm.getDefaultLLMConfig('CEO')).complete([{ role: 'user', content: 'ping' }], tools as never);
   const roleBudget = llm.getDefaultLLMConfig('CEO').maxTokens ?? 0;
@@ -146,6 +168,23 @@ async function main(): Promise<void> {
     (paidReply as { content?: string }).content === 'guard reply',
     paidReply,
   );
+  let snapshot: ReturnType<typeof ledger.getSpendLedgerSnapshot> | { error: string };
+  try {
+    snapshot = ledger.getSpendLedgerSnapshot();
+  } catch (err) {
+    snapshot = { error: err instanceof Error ? err.message : String(err) };
+  }
+  check(
+    "the spend ledger reports from a same-day file written before it tracked cached tokens, keeping that file's spend",
+    'providers' in snapshot && snapshot.providers.some((row) => row.provider === 'earlier-build-route' && row.spentUsd === 0.001),
+    snapshot,
+  );
+  check(
+    "the paid route's cached prompt tokens are recorded",
+    'cachedTokens' in snapshot &&
+      snapshot.cachedTokens.some((row) => row.provider === 'nous-deepseek-v4-flash-paid' && row.tokens === NOUS_CACHED_TOKENS),
+    snapshot,
+  );
 
   // 2. An OpenRouter route keeps OpenRouter's fields.
   delete process.env.NOUS_API_KEY;
@@ -167,7 +206,9 @@ async function main(): Promise<void> {
   );
 
   // 3. The split. Only the funded OpenRouter account (also in the free roster)
-  //    and Nous are configured, and that account's free quota is spent.
+  //    and Nous are configured, and that account's free quota is spent. The
+  //    rotation counter is process-wide, so any 10 consecutive requests hold
+  //    exactly one OpenRouter-first request, whatever ran before.
   delete process.env.OPENROUTER_FREE_API_KEY;
   process.env.OPENROUTER_API_KEY_4 = 'guard-not-a-real-funded-openrouter-key';
   process.env.NOUS_API_KEY = 'guard-not-a-real-key';
@@ -175,7 +216,7 @@ async function main(): Promise<void> {
   freeQuotaExhausted = true;
   const splitStart = sent.length;
   const splitReplies: string[] = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 10; i++) {
     const reply = await ask().catch((err: unknown) => ({ content: `error: ${err instanceof Error ? err.message : String(err)}` }));
     splitReplies.push(String((reply as { content?: string }).content));
   }
@@ -186,8 +227,8 @@ async function main(): Promise<void> {
   const freeAttempts = splitSent.filter((req) => req.body.model !== llm.PAID_FALLBACK_MODEL);
   check('every request is answered once the free pool is spent', splitReplies.every((r) => r === 'guard reply'), splitReplies);
   check(
-    'paid load splits evenly: 3 of 6 requests on OpenRouter, 3 on Nous',
-    viaOpenRouter.length === 3 && viaNous.length === 3 && paidSent.length === 6,
+    'paid load splits 90/10: 9 of 10 requests on Nous, 1 on OpenRouter',
+    viaNous.length === 9 && viaOpenRouter.length === 1 && paidSent.length === 10,
     { openrouter: viaOpenRouter.length, nous: viaNous.length, paid: paidSent.length },
   );
   check(
@@ -292,6 +333,7 @@ async function main(): Promise<void> {
     { resumeAt: Number.isFinite(resumeAt) ? new Date(resumeAt).toISOString() : null },
   );
 
+  rmSync(ledgerDir, { recursive: true, force: true });
   console.log(
     failures === 0
       ? '\n✅ The paid continuity routes send requests their APIs accept, and share the load.\n'

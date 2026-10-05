@@ -651,7 +651,8 @@ on two providers:
   fields (Nous answers a `provider` object with HTTP 400).
 
 `requestProviderOrder()` swaps the two on every `complete()` call, so paid load
-alternates and each is the other's immediate fallback. A route in cooldown or
+alternates and each is the other's immediate fallback (superseded the same day
+by addendum 3: Nous first on 9 requests in 10). A route in cooldown or
 credit exclusion is skipped and the other carries the load.
 `getProviderOrderForRole()` stays deterministic for health and guards.
 `APEX_PAID_FALLBACK_ENABLED` remains the single switch for both. Qwen is removed
@@ -675,7 +676,8 @@ also lists `deepseek/deepseek-v4.1-flash` at a higher prompt price; it is not
 used.
 
 **Consequences.** With both keys configured and funded, paid traffic splits
-about evenly. With one, that provider carries everything, as before.
+about evenly (90/10 Nous/OpenRouter since addendum 3). With one, that provider
+carries everything, as before.
 Authenticated `GET /api/health/detail` → `llmCapacity.paidFallback.routes`
 lists the configured paid providers. `getDefaultLLMConfig()` now advertises the
 route actually tried first: Nex N2.5 Mini Free, or the free-policy gateway with
@@ -683,7 +685,8 @@ the role's first selected model under a saved operator policy.
 
 **Verification.** `scripts/verify-paid-fallback-request.ts` drives the real
 client with fetch stubbed: 6 requests after the free pool answers 429 land 3/3
-on OpenRouter and Nous, on the account whose free quota ran out; an unfunded
+on OpenRouter and Nous (10 requests, 9 on Nous and 1 on OpenRouter, since
+addendum 3), on the account whose free quota ran out; an unfunded
 Nous key falls to OpenRouter with no failed request; Nous alone and unfunded is
 a capacity pause. Reverting either the alternation or the `free` scope fails it.
 `scripts/verify-provider-routing.ts` and `scripts/verify-model-routing-policy.ts`
@@ -721,6 +724,38 @@ over fast. `verify-paid-fallback-request.ts` lowers the default to its
 10-second floor and checks that an 11-second paid answer arrives; with the old
 call site it aborts at 10 seconds and becomes the same capacity pause seen in
 production.
+
+**Addendum 3 (2026-10-05, operator, commit c10b9f2).** Nous Portal is now the
+primary paid host and OpenRouter the secondary. `PAID_FALLBACK_PROVIDER_NAMES`
+lists Nous first, and `requestProviderOrder()` puts OpenRouter first only on
+every tenth call, so paid traffic splits about 90/10 Nous/OpenRouter. Each is
+still the other's immediate fallback, and a route in cooldown or credit
+exclusion is skipped. The Nous rates in the spec were corrected to live Nous
+pricing: $0.07 per million prompt tokens and $0.14 per million completion
+tokens ($0.014 per million cached prompt tokens; Nous caches prefixes
+automatically). OpenRouter's public catalog on the same day lists this model at
+$0.0152 prompt and $1.28 completion, with cache reads at the prompt price, so
+Nous is cheaper for any realistic mix. The margin grows with the output share,
+which DeepSeek's reasoning tokens drive up. The spend ledger now also counts
+prompt tokens served from the provider's cache, per provider
+(`getSpendLedgerSnapshot().cachedTokens`).
+
+The guards still asserted the 50/50 alternation, so `production-checks` failed
+on the merge that carried this commit, and Railway deployed it anyway because
+Wait for CI is off on the service. The guards now pin the 90/10 order:
+`verify-provider-routing.ts` checks that 20 consecutive orders put OpenRouter
+first exactly twice, ten calls apart, and `verify-paid-fallback-request.ts`
+checks that 10 paid requests land 9 on Nous and 1 on OpenRouter, the OpenRouter
+one on the account whose free quota ran out. The ledger also had a latent
+defect. A same-day ledger file written by an earlier build has no
+`cachedTokens` map, and loading it as-is made every cached-token record throw
+into its catch and `getSpendLedgerSnapshot()` throw. That snapshot feeds
+authenticated `GET /api/health/detail` and the Sales Ops overview. The default
+ledger path is under `/tmp`, and each Railway deploy starts a new container, so
+production probably never read such a file. `load()` now fills in the missing
+map, and the paid-request guard loads exactly such a file. With the old
+`load()` the two ledger checks fail; with a 50/50 rotation the split checks
+fail.
 
 ## How to change an architecture decision
 

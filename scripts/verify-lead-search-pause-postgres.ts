@@ -8,8 +8,11 @@
  * records one activity line per pause, and resumes when a source answers.
  *
  * webSearch and searchBusinessDirectory are replaced with stubs that return
- * the 2026-10-03 production diagnostics, then real results. The pause runs on
- * a fake clock, so nothing here depends on how fast the machine is.
+ * the 2026-10-03 incident's shape, then real results. That incident ran
+ * through BuildMyBot's Tavily proxy, which the operator took out of the stack
+ * on 2026-10-05 (c7a61fc); the stub now reports Serper, the keyed web source
+ * production uses, rate limited. The pause runs on a fake clock, so nothing
+ * here depends on how fast the machine is.
  *
  * Needs LEAD_SEARCH_TEST_DATABASE_URL pointing at a throwaway local database
  * named lead_search_test*. It runs migrate() and writes campaigns and logs.
@@ -39,8 +42,7 @@ function assertLocalTestDatabase(target: string): void {
   }
 }
 
-const PROXY_432 =
-  'buildmybot-tavily: HTTP 502 {"error":"Tavily search failed with HTTP 432","detail":"{\\"detail\\":{\\"error\\":\\"This request exceeds your plan\'s set usage limit. Please upgrade your plan or contact support@tavily.com\\"}}"}';
+const SERPER_429 = 'serper: HTTP 429 {"message":"Too many requests","statusCode":429}';
 
 async function main(): Promise<void> {
   const target = process.env.LEAD_SEARCH_TEST_DATABASE_URL;
@@ -51,13 +53,12 @@ async function main(): Promise<void> {
   }
   assertLocalTestDatabase(target);
   process.env.DATABASE_URL = target;
-  // The production shape on 2026-10-03: no direct search keys, BuildMyBot's
-  // Tavily proxy configured, OSM as the keyless fallback.
-  for (const key of ['TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TOMTOM_API_KEY']) {
+  // One keyed web source (Serper), no directory keys, OSM as the keyless
+  // fallback. A keyed web source is what makes the runner call webSearch.
+  for (const key of ['BRAVE_SEARCH_API_KEY', 'BRIGHT_DATA_API_KEY', 'BRIGHT_DATA_ZONE', 'YELP_API_KEY', 'GOOGLE_PLACES_API_KEY', 'TOMTOM_API_KEY']) {
     delete process.env[key];
   }
-  process.env.BUILDMYBOT_TAVILY_PROXY_URL = 'https://proxy.example.test/search';
-  process.env.BUILDMYBOT_TAVILY_PROXY_SECRET = 'guard-only-not-a-secret';
+  process.env.SERPER_API_KEY = 'guard-only-not-a-key';
   process.env.LEAD_IDENTITY_REPAIR_BATCH = '0';
   // The persistent search cache would answer a re-run's "outage" searches with
   // the previous run's results and never reach the stubs.
@@ -94,14 +95,18 @@ async function main(): Promise<void> {
     description: 'guard stub',
     schema: passThrough,
     requiresApproval: false,
-    async execute(args: { query: string }) {
+    async execute(args: { query: string; freeOnly?: boolean }) {
+      // With a keyed source set, the contact-recovery lane searches too
+      // (freeOnly). It is not what this guard measures: answer it empty and do
+      // not count it.
+      if (args.freeOnly === true) return { query: args.query, provider: 'none', results: [] };
       webCalls += 1;
       if (mode === 'outage') {
         return {
           query: args.query,
           provider: 'none',
           results: [],
-          diagnostics: ['tavily: TAVILY_API_KEY not set', PROXY_432, 'brave: BRAVE_SEARCH_API_KEY not set'],
+          diagnostics: ['brave: BRAVE_SEARCH_API_KEY not set', SERPER_429, 'brightdata: BRIGHT_DATA_API_KEY not set'],
           suggestion:
             'Every search provider failed or is unconfigured — this is NOT a query problem. Rewording will not help. Report this and use another tool.',
         };
@@ -109,7 +114,7 @@ async function main(): Promise<void> {
       const slug = args.query.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
       return {
         query: args.query,
-        provider: 'buildmybot-tavily-proxy',
+        provider: 'serper',
         results: [{ title: `Daily Ledger ${slug}`, url: `https://${slug}-${runId}.guard.test/`, snippet: 'Local news' }],
       };
     },
@@ -176,7 +181,7 @@ async function main(): Promise<void> {
   check(
     'it names the cause and the wait',
     lines[0]?.startsWith('Lead search paused for 2 minutes') === true &&
-      lines[0].includes('buildmybot-tavily: plan usage limit reached (HTTP 432)'),
+      lines[0].includes('serper: rate limited (HTTP 429)'),
     lines[0],
   );
 
