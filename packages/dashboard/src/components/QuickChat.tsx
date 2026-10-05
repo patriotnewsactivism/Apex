@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { useLiveVoiceCall } from "../hooks/useLiveVoiceCall";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api.js";
-import type { Goal, Agent, LogEntry, VoiceChatSession } from "../lib/api.js";
-import { useWebSocket } from "../hooks/useWebSocket.js";
+import { useState, useRef, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useLiveVoiceCall } from '../hooks/useLiveVoiceCall';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api } from '../lib/api.js';
+import type { Goal, Agent, LogEntry, VoiceChatSession } from '../lib/api.js';
+import { useWebSocket } from '../hooks/useWebSocket.js';
 import {
   Send,
   ChevronUp,
@@ -28,12 +28,9 @@ import {
   Minus,
   ChevronDown,
   History,
-  MousePointer2,
-  Octagon,
-} from "lucide-react";
+} from 'lucide-react';
 
-import { useIsMobile } from "../hooks/useIsMobile.js";
-import type { CopilotUiController } from "../copilot/actions.js";
+import { useIsMobile } from '../hooks/useIsMobile.js';
 
 /* ── Past voice calls ─────────────────────────────────────────────────────────
  * Durable history of live-voice sessions (packages/api-server/src/
@@ -44,7 +41,7 @@ import type { CopilotUiController } from "../copilot/actions.js";
  * flow) and only fetches once actually opened. */
 function formatVoiceCallWhen(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return "just now";
+  if (ms < 60_000) return 'just now';
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
   return `${Math.round(ms / 86_400_000)}d ago`;
@@ -56,83 +53,43 @@ function PastVoiceCallRow({ session }: { session: VoiceChatSession }) {
   const failed = session.endedAt && !hasTurns;
 
   return (
-    <div style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+    <div style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
       <button
         onClick={() => hasTurns && setOpen(!open)}
         disabled={!hasTurns}
         style={{
-          display: "flex",
-          width: "100%",
-          justifyContent: "space-between",
-          alignItems: "center",
+          display: 'flex',
+          width: '100%',
+          justifyContent: 'space-between',
+          alignItems: 'center',
           gap: 8,
           fontSize: 11,
-          padding: "5px 0",
-          background: "none",
-          border: "none",
-          color: "var(--color-apex-muted)",
-          cursor: hasTurns ? "pointer" : "default",
-          textAlign: "left",
+          padding: '5px 0',
+          background: 'none',
+          border: 'none',
+          color: 'var(--color-apex-muted)',
+          cursor: hasTurns ? 'pointer' : 'default',
+          textAlign: 'left',
         }}
       >
-        <span
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            minWidth: 0,
-            flex: 1,
-          }}
-        >
-          {hasTurns && (
-            <ChevronDown
-              size={11}
-              style={{
-                transform: open ? "none" : "rotate(-90deg)",
-                flex: "none",
-              }}
-            />
-          )}
-          <span
-            style={{
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {session.startPage ? `From ${session.startPage}` : "Voice call"}
-            {failed && " — no answer / connection failed"}
-            {!session.endedAt && !failed && " — in progress"}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+          {hasTurns && <ChevronDown size={11} style={{ transform: open ? 'none' : 'rotate(-90deg)', flex: 'none' }} />}
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {session.startPage ? `From ${session.startPage}` : 'Voice call'}
+            {failed && ' — no answer / connection failed'}
+            {!session.endedAt && !failed && ' — in progress'}
           </span>
         </span>
-        <span style={{ flex: "none", fontFamily: "var(--font-mono)" }}>
-          {formatVoiceCallWhen(session.startedAt)}
-        </span>
+        <span style={{ flex: 'none', fontFamily: 'var(--font-mono)' }}>{formatVoiceCallWhen(session.startedAt)}</span>
       </button>
       {open && hasTurns && (
-        <div
-          style={{
-            margin: "2px 0 8px",
-            padding: 8,
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            borderRadius: 6,
-            maxHeight: 200,
-            overflowY: "auto",
-          }}
-        >
+        <div style={{ margin: '2px 0 8px', padding: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, maxHeight: 200, overflowY: 'auto' }}>
           {session.turns.map((t) => (
             <div key={t.id} style={{ fontSize: 11, marginBottom: 4 }}>
-              <strong
-                style={{
-                  color:
-                    t.role === "user" ? "var(--color-apex-text)" : "#5a9eae",
-                }}
-              >
-                {t.role === "user" ? "Don: " : "Apex: "}
+              <strong style={{ color: t.role === 'user' ? 'var(--color-apex-text)' : '#5a9eae' }}>
+                {t.role === 'user' ? 'Don: ' : 'Apex: '}
               </strong>
-              <span style={{ color: "var(--color-apex-muted)" }}>{t.text}</span>
+              <span style={{ color: 'var(--color-apex-muted)' }}>{t.text}</span>
             </div>
           ))}
         </div>
@@ -144,7 +101,7 @@ function PastVoiceCallRow({ session }: { session: VoiceChatSession }) {
 function PastVoiceCalls() {
   const [open, setOpen] = useState(false);
   const { data: sessions = [], isLoading } = useQuery({
-    queryKey: ["voice-chat-sessions"],
+    queryKey: ['voice-chat-sessions'],
     queryFn: () => api.chat.voiceSessions(20),
     enabled: open,
   });
@@ -154,38 +111,27 @@ function PastVoiceCalls() {
       <button
         onClick={() => setOpen(!open)}
         style={{
-          display: "flex",
-          alignItems: "center",
+          display: 'flex',
+          alignItems: 'center',
           gap: 6,
           fontSize: 11,
-          color: "var(--color-apex-muted)",
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          padding: "2px 12px",
+          color: 'var(--color-apex-muted)',
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '2px 12px',
         }}
       >
         <History size={12} /> Past calls
-        <ChevronDown
-          size={11}
-          style={{ transform: open ? "none" : "rotate(-90deg)" }}
-        />
+        <ChevronDown size={11} style={{ transform: open ? 'none' : 'rotate(-90deg)' }} />
       </button>
       {open && (
-        <div style={{ padding: "4px 12px 0" }}>
-          {isLoading && (
-            <div style={{ fontSize: 11, color: "var(--color-apex-muted)" }}>
-              Loading…
-            </div>
-          )}
+        <div style={{ padding: '4px 12px 0' }}>
+          {isLoading && <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>Loading…</div>}
           {!isLoading && sessions.length === 0 && (
-            <div style={{ fontSize: 11, color: "var(--color-apex-muted)" }}>
-              No past calls yet.
-            </div>
+            <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>No past calls yet.</div>
           )}
-          {sessions.map((s) => (
-            <PastVoiceCallRow key={s.id} session={s} />
-          ))}
+          {sessions.map((s) => <PastVoiceCallRow key={s.id} session={s} />)}
         </div>
       )}
     </div>
@@ -215,46 +161,39 @@ function StatCard({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
       style={{
-        padding: "16px 18px",
+        padding: '16px 18px',
         borderRadius: 14,
         background: `linear-gradient(135deg, ${color}08, ${color}03)`,
         border: `1px solid ${color}20`,
-        position: "relative",
-        overflow: "hidden",
+        position: 'relative',
+        overflow: 'hidden',
       }}
     >
       {/* subtle glow */}
       {glow && (
         <div
           style={{
-            position: "absolute",
+            position: 'absolute',
             top: -40,
             right: -40,
             width: 100,
             height: 100,
-            borderRadius: "50%",
+            borderRadius: '50%',
             background: `radial-gradient(circle, ${glow}15, transparent)`,
-            pointerEvents: "none",
+            pointerEvents: 'none',
           }}
         />
       )}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          marginBottom: 10,
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <div
           style={{
             width: 32,
             height: 32,
             borderRadius: 8,
             background: `${color}15`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
             color,
           }}
         >
@@ -264,9 +203,9 @@ function StatCard({
           style={{
             fontSize: 11,
             fontWeight: 600,
-            color: "var(--color-apex-muted)",
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
+            color: 'var(--color-apex-muted)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
           }}
         >
           {label}
@@ -277,22 +216,14 @@ function StatCard({
           fontSize: 28,
           fontWeight: 800,
           color,
-          fontFamily: "var(--font-mono)",
+          fontFamily: 'var(--font-mono)',
           lineHeight: 1,
         }}
       >
         {value}
       </div>
       {sub && (
-        <div
-          style={{
-            fontSize: 10,
-            color: "var(--color-apex-muted)",
-            marginTop: 4,
-          }}
-        >
-          {sub}
-        </div>
+        <div style={{ fontSize: 10, color: 'var(--color-apex-muted)', marginTop: 4 }}>{sub}</div>
       )}
     </motion.div>
   );
@@ -302,51 +233,48 @@ function StatCard({
 
 function AgentPill({ agent }: { agent: Agent }) {
   const statusColors: Record<string, string> = {
-    idle: "#64748b",
-    active: "#5a9eae",
-    working: "#5a9eae",
-    thinking: "#8b7ec8",
-    error: "#c45c66",
+    idle: '#64748b',
+    active: '#5a9eae',
+    working: '#5a9eae',
+    thinking: '#8b7ec8',
+    error: '#c45c66',
   };
-  const c = statusColors[agent.liveStatus || agent.status] || "#64748b";
-  const isActive =
-    agent.liveStatus === "working" ||
-    agent.liveStatus === "active" ||
-    agent.liveStatus === "thinking";
+  const c = statusColors[agent.liveStatus || agent.status] || '#64748b';
+  const isActive = agent.liveStatus === 'working' || agent.liveStatus === 'active' || agent.liveStatus === 'thinking';
 
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.9 }}
       animate={{ opacity: 1, scale: 1 }}
       style={{
-        display: "flex",
-        alignItems: "center",
+        display: 'flex',
+        alignItems: 'center',
         gap: 8,
-        padding: "8px 12px",
+        padding: '8px 12px',
         borderRadius: 10,
-        background: isActive ? `${c}0a` : "rgba(255,255,255,0.02)",
-        border: `1px solid ${isActive ? `${c}25` : "rgba(255,255,255,0.05)"}`,
-        transition: "all 0.2s",
+        background: isActive ? `${c}0a` : 'rgba(255,255,255,0.02)',
+        border: `1px solid ${isActive ? `${c}25` : 'rgba(255,255,255,0.05)'}`,
+        transition: 'all 0.2s',
       }}
     >
-      <div style={{ position: "relative" }}>
+      <div style={{ position: 'relative' }}>
         <div
           style={{
             width: 8,
             height: 8,
-            borderRadius: "50%",
+            borderRadius: '50%',
             background: c,
-            boxShadow: isActive ? `0 0 8px ${c}80` : "none",
+            boxShadow: isActive ? `0 0 8px ${c}80` : 'none',
           }}
         />
         {isActive && (
           <div
             style={{
-              position: "absolute",
+              position: 'absolute',
               inset: -3,
-              borderRadius: "50%",
+              borderRadius: '50%',
               border: `1px solid ${c}40`,
-              animation: "pulse 2s ease-in-out infinite",
+              animation: 'pulse 2s ease-in-out infinite',
             }}
           />
         )}
@@ -356,23 +284,15 @@ function AgentPill({ agent }: { agent: Agent }) {
           style={{
             fontSize: 12,
             fontWeight: 600,
-            color: isActive
-              ? "var(--color-apex-text)"
-              : "var(--color-apex-muted)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
+            color: isActive ? 'var(--color-apex-text)' : 'var(--color-apex-muted)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
           }}
         >
           {agent.name}
         </div>
-        <div
-          style={{
-            fontSize: 9,
-            color: "var(--color-apex-muted)",
-            fontFamily: "var(--font-mono)",
-          }}
-        >
+        <div style={{ fontSize: 9, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
           {agent.role}
         </div>
       </div>
@@ -384,16 +304,16 @@ function AgentPill({ agent }: { agent: Agent }) {
 
 function LogLine({ entry }: { entry: LogEntry }) {
   const levelColors: Record<string, string> = {
-    info: "#5a9eae",
-    warn: "#c9a84a",
-    error: "#c45c66",
-    debug: "#64748b",
+    info: '#5a9eae',
+    warn: '#c9a84a',
+    error: '#c45c66',
+    debug: '#64748b',
   };
-  const c = levelColors[entry.level] || "#64748b";
-  const time = new Date(entry.timestamp).toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
+  const c = levelColors[entry.level] || '#64748b';
+  const time = new Date(entry.timestamp).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
   });
 
   return (
@@ -401,28 +321,20 @@ function LogLine({ entry }: { entry: LogEntry }) {
       initial={{ opacity: 0, x: -8 }}
       animate={{ opacity: 1, x: 0 }}
       style={{
-        display: "flex",
+        display: 'flex',
         gap: 8,
-        padding: "6px 0",
+        padding: '6px 0',
         fontSize: 11,
-        fontFamily: "var(--font-mono)",
-        borderBottom: "1px solid rgba(255,255,255,0.03)",
+        fontFamily: 'var(--font-mono)',
+        borderBottom: '1px solid rgba(255,255,255,0.03)',
       }}
     >
-      <span
-        style={{
-          color: "var(--color-apex-muted)",
-          flexShrink: 0,
-          fontSize: 10,
-        }}
-      >
-        {time}
-      </span>
+      <span style={{ color: 'var(--color-apex-muted)', flexShrink: 0, fontSize: 10 }}>{time}</span>
       <span
         style={{
           color: c,
           fontWeight: 600,
-          textTransform: "uppercase",
+          textTransform: 'uppercase',
           fontSize: 9,
           flexShrink: 0,
           minWidth: 32,
@@ -432,11 +344,11 @@ function LogLine({ entry }: { entry: LogEntry }) {
       </span>
       <span
         style={{
-          color: "var(--color-apex-text)",
+          color: 'var(--color-apex-text)',
           opacity: 0.8,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
         }}
       >
         {entry.message}
@@ -448,29 +360,26 @@ function LogLine({ entry }: { entry: LogEntry }) {
 /* ── Goal card ─────────────────────────────────────────────────────────── */
 
 function GoalCard({ goal }: { goal: Goal }) {
-  const statusConfig: Record<
-    string,
-    { color: string; icon: React.ReactNode; bg: string }
-  > = {
+  const statusConfig: Record<string, { color: string; icon: React.ReactNode; bg: string }> = {
     active: {
-      color: "#5a9eae",
+      color: '#5a9eae',
       icon: <Loader size={12} />,
-      bg: "rgba(90,158,174,0.06)",
+      bg: 'rgba(90,158,174,0.06)',
     },
     completed: {
-      color: "#6a9f78",
+      color: '#6a9f78',
       icon: <CheckCircle2 size={12} />,
-      bg: "rgba(106,159,120,0.06)",
+      bg: 'rgba(106,159,120,0.06)',
     },
     paused: {
-      color: "#c9a84a",
+      color: '#c9a84a',
       icon: <AlertTriangle size={12} />,
-      bg: "rgba(201,168,74,0.06)",
+      bg: 'rgba(201,168,74,0.06)',
     },
     cancelled: {
-      color: "#c45c66",
+      color: '#c45c66',
       icon: <AlertTriangle size={12} />,
-      bg: "rgba(196,92,102,0.06)",
+      bg: 'rgba(196,92,102,0.06)',
     },
   };
   const cfg = statusConfig[goal.status] || statusConfig.active;
@@ -488,56 +397,37 @@ function GoalCard({ goal }: { goal: Goal }) {
       animate={{ opacity: 1, y: 0 }}
       whileHover={{ x: 3, transition: { duration: 0.15 } }}
       style={{
-        padding: "12px 14px",
+        padding: '12px 14px',
         borderRadius: 10,
         background: cfg.bg,
         border: `1px solid ${cfg.color}18`,
         borderLeft: `3px solid ${cfg.color}`,
-        cursor: "default",
+        cursor: 'default',
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          marginBottom: 4,
-        }}
-      >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
         <span
           style={{
-            display: "inline-flex",
-            alignItems: "center",
+            display: 'inline-flex',
+            alignItems: 'center',
             gap: 4,
             fontSize: 9,
-            padding: "2px 7px",
+            padding: '2px 7px',
             borderRadius: 4,
             background: `${cfg.color}18`,
             color: cfg.color,
             fontWeight: 600,
-            fontFamily: "var(--font-mono)",
-            textTransform: "uppercase",
+            fontFamily: 'var(--font-mono)',
+            textTransform: 'uppercase',
           }}
         >
           {cfg.icon}
           {goal.status}
         </span>
-        <span
-          style={{
-            fontSize: 9,
-            color: "var(--color-apex-muted)",
-            fontFamily: "var(--font-mono)",
-          }}
-        >
+        <span style={{ fontSize: 9, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
           P{goal.priority}
         </span>
-        <span
-          style={{
-            marginLeft: "auto",
-            fontSize: 9,
-            color: "var(--color-apex-muted)",
-          }}
-        >
+        <span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--color-apex-muted)' }}>
           {ageStr}
         </span>
       </div>
@@ -545,10 +435,10 @@ function GoalCard({ goal }: { goal: Goal }) {
         style={{
           fontSize: 13,
           fontWeight: 600,
-          color: "var(--color-apex-text)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          color: 'var(--color-apex-text)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
         }}
       >
         {goal.title}
@@ -557,16 +447,16 @@ function GoalCard({ goal }: { goal: Goal }) {
         <div
           style={{
             fontSize: 10,
-            color: "#6a9f78",
-            fontFamily: "var(--font-mono)",
+            color: '#6a9f78',
+            fontFamily: 'var(--font-mono)',
             marginTop: 6,
-            padding: "4px 8px",
-            background: "rgba(106,159,120,0.05)",
+            padding: '4px 8px',
+            background: 'rgba(106,159,120,0.05)',
             borderRadius: 4,
-            overflowWrap: "anywhere",
+            overflowWrap: 'anywhere',
             // Wraps instead of nowrap: a nowrap line is a ~900px min-content
             // item that previously stretched the whole mobile page sideways.
-            whiteSpace: "normal",
+            whiteSpace: 'normal',
           }}
         >
           ✓ {goal.result.slice(0, 120)}
@@ -580,7 +470,7 @@ function GoalCard({ goal }: { goal: Goal }) {
 
 interface ChatMessage {
   id: string;
-  role: "user" | "system";
+  role: 'user' | 'system';
   text: string;
   goalCreated?: { id: string; title: string };
   timestamp: number;
@@ -601,10 +491,7 @@ export interface ChatPanelProps {
   pageTitle?: string;
   onMinimize?: () => void;
   onHeaderPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
-  onVoiceStatus?: (
-    status: import("../hooks/useLiveVoiceCall.js").LiveVoiceStatus,
-  ) => void;
-  copilot: CopilotUiController;
+  onVoiceStatus?: (status: import('../hooks/useLiveVoiceCall.js').LiveVoiceStatus) => void;
 }
 
 export function ChatPanel({
@@ -613,14 +500,13 @@ export function ChatPanel({
   onMinimize,
   onHeaderPointerDown,
   onVoiceStatus,
-  copilot,
 }: ChatPanelProps) {
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
-      id: "welcome",
-      role: "system",
+      id: 'welcome',
+      role: 'system',
       text: "Talk to me — ask what's going on, catch up on approvals, or just hand me something to run with. I'll answer for real, not just log it.",
       timestamp: Date.now(),
     },
@@ -628,7 +514,6 @@ export function ChatPanel({
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [copilotActivityAt, setCopilotActivityAt] = useState(() => Date.now());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -657,9 +542,9 @@ export function ChatPanel({
   const handleMessagesScroll = () => {
     const el = messagesScrollRef.current;
     if (!el) return;
-    nearBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
+
 
   // A real conversational turn: send the message + recent history to
   // /api/chat/message and let Apex decide whether to answer directly or
@@ -670,54 +555,24 @@ export function ChatPanel({
   const chatMut = useMutation({
     mutationFn: (text: string) => {
       const history = messages
-        .filter((m) => m.id !== "welcome")
+        .filter((m) => m.id !== 'welcome')
         .slice(-20)
-        .map((m) => ({
-          role: (m.role === "user" ? "user" : "assistant") as
-            | "user"
-            | "assistant",
-          content: m.text,
-        }));
-      return api.chat.message(
-        text,
-        history,
-        pageTitle,
-        copilot.active
-          ? {
-              enabled: true,
-              pageId,
-              sessionId: copilot.sessionId,
-            }
-          : undefined,
-      );
+        .map((m) => ({ role: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }));
+      return api.chat.message(text, history, pageTitle);
     },
     onSuccess: (result) => {
       setMessages((prev) => [
         ...prev,
         {
           id: `sys-${Date.now()}`,
-          role: "system",
+          role: 'system',
           text: result.reply,
           goalCreated: result.goalCreated,
           timestamp: Date.now(),
         },
       ]);
       if (result.goalCreated) {
-        qc.invalidateQueries({ queryKey: ["goals"] });
-      }
-      if (copilot.active && result.copilot?.actions.length) {
-        setCopilotActivityAt(Date.now());
-        void copilot.execute(result.copilot.actions, (text) => {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `copilot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-              role: "system",
-              text,
-              timestamp: Date.now(),
-            },
-          ]);
-        });
+        qc.invalidateQueries({ queryKey: ['goals'] });
       }
     },
     onError: (err: Error) => {
@@ -725,13 +580,14 @@ export function ChatPanel({
         ...prev,
         {
           id: `err-${Date.now()}`,
-          role: "system",
+          role: 'system',
           text: `❌ Couldn't get a response: ${err.message}`,
           timestamp: Date.now(),
         },
       ]);
     },
   });
+
 
   // Follow-the-tail: keep the newest message in view when the user is at
   // (or near) the bottom; never yank the view if they scrolled up to re-read.
@@ -743,59 +599,18 @@ export function ChatPanel({
     if (!text) return;
     setMessages((prev) => [
       ...prev,
-      { id: `usr-${Date.now()}`, role: "user", text, timestamp: Date.now() },
+      { id: `usr-${Date.now()}`, role: 'user', text, timestamp: Date.now() },
     ]);
-    setInput("");
-    if (copilot.active) setCopilotActivityAt(Date.now());
+    setInput('');
     chatMut.mutate(text);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
   };
-
-  useEffect(() => {
-    if (!copilot.active) return;
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      copilot.stop("Stopped with Esc");
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `copilot-stop-${Date.now()}`,
-          role: "system",
-          text: "Apex Copilot stopped with Esc.",
-          timestamp: Date.now(),
-        },
-      ]);
-    };
-    window.addEventListener("keydown", onEscape, true);
-    return () => window.removeEventListener("keydown", onEscape, true);
-  }, [copilot.active, copilot.stop]);
-
-  useEffect(() => {
-    if (!copilot.active) return;
-    const remaining = Math.max(
-      0,
-      10 * 60_000 - (Date.now() - copilotActivityAt),
-    );
-    const timeout = window.setTimeout(() => {
-      copilot.stop("Stopped after 10 minutes of inactivity");
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `copilot-idle-${Date.now()}`,
-          role: "system",
-          text: "Apex Copilot turned off after 10 minutes of inactivity.",
-          timestamp: Date.now(),
-        },
-      ]);
-    }, remaining);
-    return () => window.clearTimeout(timeout);
-  }, [copilot.active, copilot.stop, copilotActivityAt]);
 
   // ── Push-to-talk voice input ────────────────────────────────────────────
   // Records a clip with MediaRecorder, POSTs it to /api/transcribe
@@ -806,9 +621,7 @@ export function ChatPanel({
     setVoiceError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm")
-        ? "audio/webm"
-        : "audio/ogg";
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
       const recorder = new MediaRecorder(stream, { mimeType });
       audioChunksRef.current = [];
       recorder.ondataavailable = (e) => {
@@ -820,32 +633,25 @@ export function ChatPanel({
         if (blob.size === 0) return;
         setIsTranscribing(true);
         try {
-          const token = localStorage.getItem("apex_token");
-          const res = await fetch("/api/transcribe", {
-            method: "POST",
+          const token = localStorage.getItem('apex_token');
+          const res = await fetch('/api/transcribe', {
+            method: 'POST',
             headers: {
-              "Content-Type": mimeType,
+              'Content-Type': mimeType,
               ...(token ? { Authorization: `Bearer ${token}` } : {}),
             },
             body: blob,
           });
-          const data = (await res.json()) as {
-            transcript?: string;
-            error?: string;
-          };
+          const data = (await res.json()) as { transcript?: string; error?: string };
           if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
           if (data.transcript) {
-            setInput((prev) =>
-              prev ? `${prev} ${data.transcript}` : data.transcript!,
-            );
+            setInput((prev) => (prev ? `${prev} ${data.transcript}` : data.transcript!));
             inputRef.current?.focus();
           } else {
             setVoiceError("Didn't catch that — try again.");
           }
         } catch (err) {
-          setVoiceError(
-            err instanceof Error ? err.message : "Transcription failed.",
-          );
+          setVoiceError(err instanceof Error ? err.message : 'Transcription failed.');
         } finally {
           setIsTranscribing(false);
         }
@@ -854,7 +660,7 @@ export function ChatPanel({
       recorder.start();
       setIsRecording(true);
     } catch {
-      setVoiceError("Microphone access denied or unavailable.");
+      setVoiceError('Microphone access denied or unavailable.');
     }
   };
 
@@ -865,10 +671,7 @@ export function ChatPanel({
 
   // ── Live voice call (Deepgram Voice Agent + Groq + ElevenLabs, real-time, same tools as text chat) ──
   const [liveActivity, setLiveActivity] = useState<string | null>(null);
-  const [liveProvider, setLiveProvider] = useState<{
-    provider: string;
-    model?: string;
-  } | null>(null);
+  const [liveProvider, setLiveProvider] = useState<{ provider: string; model?: string } | null>(null);
   const [liveLatency, setLiveLatency] = useState<Record<string, number>>({});
   // Tracks the id of the currently-open voice caption bubble so streaming
   // transcript fragments merge INTO it instead of each fragment becoming
@@ -883,10 +686,7 @@ export function ChatPanel({
         const last = prev[prev.length - 1];
         if (open && last && last.id === open.id && open.role === role) {
           // Same turn, same speaker: merge the fragment into the bubble.
-          return [
-            ...prev.slice(0, -1),
-            { ...last, text: `${last.text}${last.text ? " " : ""}${text}` },
-          ];
+          return [...prev.slice(0, -1), { ...last, text: `${last.text}${last.text ? ' ' : ''}${text}` }];
         }
         const id = `voice-${role}-${Date.now()}`;
         openVoiceBubbleRef.current = { id, role };
@@ -894,7 +694,7 @@ export function ChatPanel({
           ...prev,
           {
             id,
-            role: role === "user" ? "user" : "system",
+            role: role === 'user' ? 'user' : 'system',
             text,
             timestamp: Date.now(),
           },
@@ -912,18 +712,18 @@ export function ChatPanel({
         ...prev,
         {
           id: `voice-goal-${Date.now()}`,
-          role: "system",
+          role: 'system',
           text: `Deployed via voice call.`,
           goalCreated: goal,
           timestamp: Date.now(),
         },
       ]);
-      qc.invalidateQueries({ queryKey: ["goals"] });
+      qc.invalidateQueries({ queryKey: ['goals'] });
     },
     onApprovalResolved: () => {
-      qc.invalidateQueries({ queryKey: ["approvals"] });
+      qc.invalidateQueries({ queryKey: ['approvals'] });
     },
-    onToolActivity: (name) => setLiveActivity(name.replace(/_/g, " ")),
+    onToolActivity: (name) => setLiveActivity(name.replace(/_/g, ' ')),
     onProvider: (provider, model) => setLiveProvider({ provider, model }),
     onLatency: ({ stage, ms }) => {
       setLiveLatency((prev) => ({ ...prev, [stage]: Math.round(ms) }));
@@ -931,12 +731,7 @@ export function ChatPanel({
     onError: (message) => {
       setMessages((prev) => [
         ...prev,
-        {
-          id: `voice-err-${Date.now()}`,
-          role: "system",
-          text: `❌ Voice call: ${message}`,
-          timestamp: Date.now(),
-        },
+        { id: `voice-err-${Date.now()}`, role: 'system', text: `❌ Voice call: ${message}`, timestamp: Date.now() },
       ]);
     },
   });
@@ -951,17 +746,17 @@ export function ChatPanel({
   // Refresh durable history immediately so a just-ended call cannot stay
   // labelled "in progress" from a stale React Query cache.
   useEffect(() => {
-    if (liveVoice.status !== "ended") return;
+    if (liveVoice.status !== 'ended') return;
     openVoiceBubbleRef.current = null;
     setLiveActivity(null);
     setLiveProvider(null);
     setLiveLatency({});
-    void qc.invalidateQueries({ queryKey: ["voice-chat-sessions"] });
+    void qc.invalidateQueries({ queryKey: ['voice-chat-sessions'] });
     // The UI ends immediately, while the server may still be committing
     // endedAt. Refresh once more after the hangup grace window so Past calls
     // cannot preserve a stale "in progress" row.
     const refreshTimer = setTimeout(() => {
-      void qc.invalidateQueries({ queryKey: ["voice-chat-sessions"] });
+      void qc.invalidateQueries({ queryKey: ['voice-chat-sessions'] });
     }, 1200);
     return () => clearTimeout(refreshTimer);
   }, [liveVoice.status, qc]);
@@ -973,601 +768,443 @@ export function ChatPanel({
   // at a goal/agent/log and be understood.
   useEffect(() => {
     if (!pageTitle) return;
-    if (liveVoice.status !== "live") return;
-    liveVoice.sendContext(
-      `Don just switched to the "${pageTitle}" screen (${pageId ?? "unknown page"}).`,
-    );
+    if (liveVoice.status !== 'live') return;
+    liveVoice.sendContext(`Don just switched to the "${pageTitle}" screen (${pageId ?? 'unknown page'}).`);
   }, [pageTitle, pageId, liveVoice.status]);
 
   return (
     <div
-      data-copilot-control
       style={{
-        display: "flex",
-        flexDirection: "column",
+        display: 'flex',
+        flexDirection: 'column',
         gap: 10,
         minWidth: 0,
-        height: "100%",
+        height: '100%',
         minHeight: 0,
       }}
     >
-      {/* Chat area */}
-      <div
-        style={{
-          // Mobile: flex:none + explicit height. CRITICAL: `flex: 1`
-          // (flex-basis: 0%) OVERRIDES the height property on a flex
-          // item, so the panel used to grow with its message content and
-          // reflow the whole page on every exchange. flex:none pins the
-          // panel and the messages scroll inside it instead.
-          flex: 1,
-          minHeight: 0,
-          borderRadius: 14,
-          background: "rgba(13,17,23,0.6)",
-          border: "1px solid rgba(90,158,174,0.08)",
-          backdropFilter: "blur(8px)",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-      >
-        {/* Chat header — doubles as the drag handle on desktop */}
-        <div
-          onPointerDown={onHeaderPointerDown}
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid rgba(90,158,174,0.06)",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            cursor: onHeaderPointerDown ? "grab" : undefined,
-            touchAction: "none",
-          }}
-        >
+          {/* Chat area */}
           <div
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              background: "linear-gradient(135deg, #5a9eae20, #8b7ec820)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
+              // Mobile: flex:none + explicit height. CRITICAL: `flex: 1`
+              // (flex-basis: 0%) OVERRIDES the height property on a flex
+              // item, so the panel used to grow with its message content and
+              // reflow the whole page on every exchange. flex:none pins the
+              // panel and the messages scroll inside it instead.
+              flex: 1,
+              minHeight: 0,
+              borderRadius: 14,
+              background: 'rgba(13,17,23,0.6)',
+              border: '1px solid rgba(90,158,174,0.08)',
+              backdropFilter: 'blur(8px)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
             }}
           >
-            <Sparkles size={14} color="#5a9eae" />
-          </div>
-          <div style={{ minWidth: 0 }}>
+            {/* Chat header — doubles as the drag handle on desktop */}
             <div
+              onPointerDown={onHeaderPointerDown}
               style={{
-                fontSize: 13,
-                fontWeight: 700,
-                color: "var(--color-apex-text)",
+                padding: '12px 16px',
+                borderBottom: '1px solid rgba(90,158,174,0.06)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                cursor: onHeaderPointerDown ? 'grab' : undefined,
+                touchAction: 'none',
               }}
             >
-              APEX Command
-            </div>
-            <div style={{ fontSize: 9, color: "var(--color-apex-muted)" }}>
-              Sees your screen: {pageTitle ?? "—"}
-            </div>
-          </div>
-          <div
-            data-copilot-control
-            style={{
-              marginLeft: "auto",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              flexShrink: 0,
-            }}
-          >
-            {copilot.available && (
-              <button
-                type="button"
-                role="switch"
-                aria-checked={copilot.active}
-                aria-label="Toggle Apex Copilot"
-                onClick={() => {
-                  if (copilot.active) {
-                    copilot.stop("Stopped from the chat toggle");
-                    setMessages((prev) => [
-                      ...prev,
-                      {
-                        id: `copilot-toggle-${Date.now()}`,
-                        role: "system",
-                        text: "Apex Copilot is off.",
-                        timestamp: Date.now(),
-                      },
-                    ]);
-                  } else {
-                    setCopilotActivityAt(Date.now());
-                    copilot.start();
-                    setMessages((prev) => [
-                      ...prev,
-                      {
-                        id: `copilot-toggle-${Date.now()}`,
-                        role: "system",
-                        text: "Apex Copilot is on. I can navigate and work inside this APEX dashboard only. Press Esc or Stop at any time.",
-                        timestamp: Date.now(),
-                      },
-                    ]);
-                  }
-                }}
+              <div
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 5,
-                  padding: "4px 7px",
-                  borderRadius: 999,
-                  border: `1px solid ${copilot.active ? "rgba(215,182,106,0.55)" : "rgba(90,158,174,0.18)"}`,
-                  background: copilot.active
-                    ? "rgba(215,182,106,0.15)"
-                    : "transparent",
-                  color: copilot.active ? "#d7b66a" : "var(--color-apex-muted)",
-                  fontSize: 9,
-                  fontFamily: "var(--font-mono)",
-                  cursor: "pointer",
+                  width: 28,
+                  height: 28,
+                  borderRadius: 8,
+                  background: 'linear-gradient(135deg, #5a9eae20, #8b7ec820)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                <MousePointer2 size={11} />
-                Apex Copilot {copilot.active ? "ON" : "OFF"}
-              </button>
-            )}
-            {onMinimize && (
-              <button
-                onClick={onMinimize}
-                aria-label="Minimize chat"
-                title="Minimize — chat and calls keep running"
-                style={{
-                  background: "transparent",
-                  border: "1px solid rgba(90,158,174,0.15)",
-                  borderRadius: 6,
-                  padding: "4px 6px",
-                  cursor: "pointer",
-                  color: "var(--color-apex-muted)",
-                  display: "flex",
-                }}
-              >
-                <Minus size={13} />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {copilot.available && copilot.active && (
-          <div
-            data-copilot-control
-            style={{
-              padding: "7px 12px",
-              borderBottom: "1px solid rgba(215,182,106,0.2)",
-              background: "rgba(215,182,106,0.07)",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              color: "#d7b66a",
-              fontSize: 10,
-            }}
-          >
-            <MousePointer2 size={13} />
-            <span style={{ flex: 1 }}>
-              {copilot.busy
-                ? "Acting inside APEX…"
-                : "Dashboard control active · Esc stops"}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                copilot.stop("Stopped by Matthew");
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: `copilot-stop-${Date.now()}`,
-                    role: "system",
-                    text: "Apex Copilot stopped.",
-                    timestamp: Date.now(),
-                  },
-                ]);
-              }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                borderRadius: 6,
-                border: "1px solid rgba(196,92,102,0.45)",
-                background: "rgba(196,92,102,0.15)",
-                color: "#e47780",
-                padding: "5px 9px",
-                cursor: "pointer",
-                fontSize: 10,
-                fontWeight: 700,
-              }}
-            >
-              <Octagon size={12} /> Stop
-            </button>
-          </div>
-        )}
-
-        {/* Messages */}
-        <div
-          ref={messagesScrollRef}
-          onScroll={handleMessagesScroll}
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            overscrollBehavior: "contain",
-            padding: 16,
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          }}
-        >
-          <AnimatePresence>
-            {messages.map((msg) => (
-              <motion.div
-                key={msg.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                style={{
-                  display: "flex",
-                  justifyContent:
-                    msg.role === "user" ? "flex-end" : "flex-start",
-                }}
-              >
-                <div
+                <Sparkles size={14} color="#5a9eae" />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-apex-text)' }}>
+                  APEX Command
+                </div>
+                <div style={{ fontSize: 9, color: 'var(--color-apex-muted)' }}>
+                  Sees your screen: {pageTitle ?? '—'}
+                </div>
+              </div>
+              {onMinimize && (
+                <button
+                  onClick={onMinimize}
+                  aria-label="Minimize chat"
+                  title="Minimize — chat and calls keep running"
                   style={{
-                    maxWidth: "85%",
-                    padding: "10px 14px",
-                    borderRadius:
-                      msg.role === "user"
-                        ? "14px 14px 4px 14px"
-                        : "14px 14px 14px 4px",
-                    background:
-                      msg.role === "user"
-                        ? "linear-gradient(135deg, rgba(90,158,174,0.15), rgba(139,126,200,0.08))"
-                        : "rgba(255,255,255,0.03)",
-                    border: `1px solid ${msg.role === "user" ? "rgba(90,158,174,0.18)" : "rgba(255,255,255,0.05)"}`,
-                    fontSize: 13,
-                    lineHeight: 1.5,
-                    color: "var(--color-apex-text)",
-                    whiteSpace: "pre-wrap",
-                    overflowWrap: "anywhere",
-                    wordBreak: "break-word",
-                    minWidth: 0,
+                    marginLeft: 'auto',
+                    background: 'transparent',
+                    border: '1px solid rgba(90,158,174,0.15)',
+                    borderRadius: 6,
+                    padding: '4px 6px',
+                    cursor: 'pointer',
+                    color: 'var(--color-apex-muted)',
+                    display: 'flex',
+                    flexShrink: 0,
                   }}
                 >
-                  {msg.text}
-                  {msg.goalCreated && (
+                  <Minus size={13} />
+                </button>
+              )}
+            </div>
+
+            {/* Messages */}
+            <div
+              ref={messagesScrollRef}
+              onScroll={handleMessagesScroll}
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                overscrollBehavior: 'contain',
+                padding: 16,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+              }}
+            >
+              <AnimatePresence>
+                {messages.map((msg) => (
+                  <motion.div
+                    key={msg.id}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    style={{
+                      display: 'flex',
+                      justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                    }}
+                  >
                     <div
                       style={{
-                        marginTop: 8,
-                        padding: "5px 9px",
-                        borderRadius: 6,
-                        background: "rgba(106,159,120,0.1)",
-                        border: "1px solid rgba(106,159,120,0.25)",
-                        fontSize: 10,
-                        color: "#6a9f78",
-                        fontFamily: "var(--font-mono)",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 5,
+                        maxWidth: '85%',
+                        padding: '10px 14px',
+                        borderRadius:
+                          msg.role === 'user' ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                        background:
+                          msg.role === 'user'
+                            ? 'linear-gradient(135deg, rgba(90,158,174,0.15), rgba(139,126,200,0.08))'
+                            : 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${msg.role === 'user' ? 'rgba(90,158,174,0.18)' : 'rgba(255,255,255,0.05)'}`,
+                        fontSize: 13,
+                        lineHeight: 1.5,
+                        color: 'var(--color-apex-text)',
+                        whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
+                        wordBreak: 'break-word',
+                        minWidth: 0,
                       }}
                     >
-                      <Target size={10} />
-                      Deployed goal: {msg.goalCreated.title}
+                      {msg.text}
+                      {msg.goalCreated && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            padding: '5px 9px',
+                            borderRadius: 6,
+                            background: 'rgba(106,159,120,0.1)',
+                            border: '1px solid rgba(106,159,120,0.25)',
+                            fontSize: 10,
+                            color: '#6a9f78',
+                            fontFamily: 'var(--font-mono)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                          }}
+                        >
+                          <Target size={10} />
+                          Deployed goal: {msg.goalCreated.title}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-          {chatMut.isPending && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                color: "#5a9eae",
-                fontSize: 12,
-              }}
-            >
-              <Loader
-                size={14}
-                style={{ animation: "spin 1s linear infinite" }}
-              />
-              Thinking...
-            </motion.div>
-          )}
-          {voiceError && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              style={{ color: "#c45c66", fontSize: 11 }}
-            >
-              {voiceError}
-            </motion.div>
-          )}
-        </div>
-      </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+              {chatMut.isPending && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    color: '#5a9eae',
+                    fontSize: 12,
+                  }}
+                >
+                  <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                  Thinking...
+                </motion.div>
+              )}
+              {voiceError && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  style={{ color: '#c45c66', fontSize: 11 }}
+                >
+                  {voiceError}
+                </motion.div>
+              )}
+            </div>
+          </div>
 
-      {/* Live voice call bar */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: 10,
-          padding: "8px 12px",
-          marginBottom: 8,
-          borderRadius: 10,
-          background:
-            liveVoice.status === "live" || liveVoice.status === "connecting"
-              ? "rgba(106,159,120,0.06)"
-              : "rgba(90,158,174,0.03)",
-          border: `1px solid ${
-            liveVoice.status === "live"
-              ? "rgba(106,159,120,0.25)"
-              : "rgba(90,158,174,0.08)"
-          }`,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            fontSize: 12,
-            color: "var(--color-apex-muted)",
-            flex: 1,
-            minWidth: 0,
-          }}
-        >
-          {liveVoice.status === "live" && (
-            <motion.span
-              animate={{ opacity: [1, 0.3, 1] }}
-              transition={{ repeat: Infinity, duration: 1.4 }}
+          {/* Live voice call bar */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 10,
+              padding: '8px 12px',
+              marginBottom: 8,
+              borderRadius: 10,
+              background:
+                liveVoice.status === 'live' || liveVoice.status === 'connecting'
+                  ? 'rgba(106,159,120,0.06)'
+                  : 'rgba(90,158,174,0.03)',
+              border: `1px solid ${
+                liveVoice.status === 'live' ? 'rgba(106,159,120,0.25)' : 'rgba(90,158,174,0.08)'
+              }`,
+            }}
+          >
+            <div
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: "#6a9f78",
-                display: "inline-block",
-              }}
-            />
-          )}
-          {liveVoice.status === "idle" || liveVoice.status === "ended"
-            ? "Live voice call — talk to Apex directly"
-            : liveVoice.status === "connecting"
-              ? "Connecting..."
-              : liveVoice.status === "live"
-                ? liveActivity
-                  ? `On the call — ${liveActivity}...`
-                  : "On the call — full duplex / interrupt anytime"
-                : "Call error"}
-          {liveVoice.status === "live" && liveProvider && (
-            <span
-              title={
-                liveProvider.model
-                  ? `${liveProvider.provider}: ${liveProvider.model}`
-                  : liveProvider.provider
-              }
-              style={{
-                marginLeft: 6,
-                padding: "1px 5px",
-                borderRadius: 4,
-                border: "1px solid rgba(90,158,174,0.18)",
-                fontSize: 9,
-                fontFamily: "var(--font-mono)",
-                color:
-                  liveProvider.provider === "gemini" ? "#6a9f78" : "#c9a84a",
-                whiteSpace: "nowrap",
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+                color: 'var(--color-apex-muted)',
+                flex: 1,
+                minWidth: 0,
               }}
             >
-              {liveProvider.provider === "gemini"
-                ? "Gemini Live"
-                : "Deepgram fallback"}
-            </span>
-          )}
-          {liveVoice.status === "live" &&
-            Object.keys(liveLatency).length > 0 && (
-              <span
-                title="Live Talk latency chain"
+              {liveVoice.status === 'live' && (
+                <motion.span
+                  animate={{ opacity: [1, 0.3, 1] }}
+                  transition={{ repeat: Infinity, duration: 1.4 }}
+                  style={{ width: 7, height: 7, borderRadius: '50%', background: '#6a9f78', display: 'inline-block' }}
+                />
+              )}
+              {liveVoice.status === 'idle' || liveVoice.status === 'ended'
+                ? 'Live voice call — talk to Apex directly'
+                : liveVoice.status === 'connecting'
+                  ? 'Connecting...'
+                  : liveVoice.status === 'live'
+                    ? liveActivity
+                      ? `On the call — ${liveActivity}...`
+                      : 'On the call — full duplex / interrupt anytime'
+                    : 'Call error'}
+              {liveVoice.status === 'live' && liveProvider && (
+                <span
+                  title={liveProvider.model ? `${liveProvider.provider}: ${liveProvider.model}` : liveProvider.provider}
+                  style={{
+                    marginLeft: 6,
+                    padding: '1px 5px',
+                    borderRadius: 4,
+                    border: '1px solid rgba(90,158,174,0.18)',
+                    fontSize: 9,
+                    fontFamily: 'var(--font-mono)',
+                    color: liveProvider.provider === 'gemini' ? '#6a9f78' : '#c9a84a',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {liveProvider.provider === 'gemini' ? 'Gemini Live' : 'Deepgram fallback'}
+                </span>
+              )}
+              {liveVoice.status === 'live' && Object.keys(liveLatency).length > 0 && (
+                <span
+                  title="Live Talk latency chain"
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 9,
+                    fontFamily: 'var(--font-mono)',
+                    color: 'var(--color-apex-muted)',
+                    opacity: 0.85,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {[
+                    ['VAD', liveLatency.speech_vad],
+                    ['stop', liveLatency.barge_in_playback_stop],
+                    ['STT', liveLatency.transcript_ready],
+                    ['classify', liveLatency.command_classification],
+                    ['tool', liveLatency.tool_dispatch],
+                    ['tool done', liveLatency.tool_complete],
+                    ['audio', liveLatency.first_audio],
+                  ]
+                    .filter(([, value]) => typeof value === 'number')
+                    .map(([label, value]) => `${label} ${value}ms`)
+                    .join(' · ')}
+                </span>
+              )}
+            </div>
+            {liveVoice.status === 'live' || liveVoice.status === 'connecting' ? (
+              <motion.button
+                onClick={() => liveVoice.stop()}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
                 style={{
-                  marginLeft: 6,
-                  fontSize: 9,
-                  fontFamily: "var(--font-mono)",
-                  color: "var(--color-apex-muted)",
-                  opacity: 0.85,
-                  whiteSpace: "nowrap",
+                  padding: '7px 12px',
+                  borderRadius: 8,
+                  border: '1px solid rgba(196,92,102,0.35)',
+                  background: 'rgba(196,92,102,0.12)',
+                  color: '#c45c66',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  cursor: 'pointer',
                 }}
               >
-                {[
-                  ["VAD", liveLatency.speech_vad],
-                  ["stop", liveLatency.barge_in_playback_stop],
-                  ["STT", liveLatency.transcript_ready],
-                  ["classify", liveLatency.command_classification],
-                  ["tool", liveLatency.tool_dispatch],
-                  ["tool done", liveLatency.tool_complete],
-                  ["audio", liveLatency.first_audio],
-                ]
-                  .filter(([, value]) => typeof value === "number")
-                  .map(([label, value]) => `${label} ${value}ms`)
-                  .join(" · ")}
-              </span>
-            )}
-        </div>
-        {liveVoice.status === "live" || liveVoice.status === "connecting" ? (
-          <motion.button
-            onClick={() => liveVoice.stop()}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            style={{
-              padding: "7px 12px",
-              borderRadius: 8,
-              border: "1px solid rgba(196,92,102,0.35)",
-              background: "rgba(196,92,102,0.12)",
-              color: "#c45c66",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-          >
-            <PhoneOff size={14} /> Hang up
-          </motion.button>
-        ) : (
-          <motion.button
-            onClick={() =>
-              liveVoice.start(
-                pageTitle ? `${pageTitle} (${pageId ?? "chat"})` : undefined,
-              )
-            }
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            style={{
-              padding: "7px 12px",
-              borderRadius: 8,
-              border: "1px solid rgba(90,158,174,0.25)",
-              background: "rgba(90,158,174,0.1)",
-              color: "#5a9eae",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-          >
-            <Phone size={14} /> Start call
-          </motion.button>
-        )}
-      </div>
-
-      <PastVoiceCalls />
-
-      {/* Input area */}
-      <div>
-        {expanded && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            style={{
-              fontSize: 10,
-              color: "var(--color-apex-muted)",
-              marginBottom: 6,
-              padding: "8px 12px",
-              background: "rgba(90,158,174,0.03)",
-              border: "1px solid rgba(90,158,174,0.08)",
-              borderRadius: 8,
-            }}
-          >
-            <strong style={{ color: "#5a9eae" }}>Tips:</strong> Ask questions,
-            check on approvals, or just talk it through — I'll only deploy a
-            goal when you're actually giving an order. Shift+Enter for newlines.
-            Tap the mic for voice input.
-          </motion.div>
-        )}
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-          <button
-            onClick={() => setExpanded(!expanded)}
-            style={{
-              background: "rgba(13,17,23,0.6)",
-              border: "1px solid rgba(90,158,174,0.12)",
-              borderRadius: 10,
-              padding: "11px",
-              cursor: "pointer",
-              color: expanded ? "#5a9eae" : "var(--color-apex-muted)",
-              display: "flex",
-              alignItems: "center",
-              transition: "all 0.15s",
-              flexShrink: 0,
-            }}
-          >
-            <ChevronUp
-              size={16}
-              style={{
-                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
-                transition: "transform 0.2s",
-              }}
-            />
-          </button>
-          <textarea
-            ref={inputRef}
-            className="apex-input"
-            aria-label="Chat message"
-            placeholder="Ask me anything, or tell me what to do..."
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              if (copilot.active) setCopilotActivityAt(Date.now());
-            }}
-            onKeyDown={handleKeyDown}
-            rows={expanded ? 4 : 1}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              resize: "none",
-              minHeight: expanded ? 100 : 44,
-              transition: "min-height 0.2s",
-              fontSize: 14,
-            }}
-          />
-          <motion.button
-            onClick={isRecording ? stopRecording : startRecording}
-            disabled={isTranscribing || chatMut.isPending}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            title={isRecording ? "Stop recording" : "Voice input"}
-            aria-label={isRecording ? "Stop recording" : "Voice input"}
-            style={{
-              padding: "11px",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              flexShrink: 0,
-              borderRadius: 10,
-              border: `1px solid ${isRecording ? "rgba(196,92,102,0.4)" : "rgba(90,158,174,0.12)"}`,
-              background: isRecording
-                ? "rgba(196,92,102,0.12)"
-                : "rgba(13,17,23,0.6)",
-              color: isRecording ? "#c45c66" : "var(--color-apex-muted)",
-              cursor: isTranscribing ? "wait" : "pointer",
-            }}
-          >
-            {isTranscribing ? (
-              <Loader
-                size={16}
-                style={{ animation: "spin 1s linear infinite" }}
-              />
-            ) : isRecording ? (
-              <Square size={16} />
+                <PhoneOff size={14} /> Hang up
+              </motion.button>
             ) : (
-              <Mic size={16} />
+              <motion.button
+                onClick={() => liveVoice.start(pageTitle ? `${pageTitle} (${pageId ?? 'chat'})` : undefined)}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                style={{
+                  padding: '7px 12px',
+                  borderRadius: 8,
+                  border: '1px solid rgba(90,158,174,0.25)',
+                  background: 'rgba(90,158,174,0.1)',
+                  color: '#5a9eae',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                <Phone size={14} /> Start call
+              </motion.button>
             )}
-          </motion.button>
-          <motion.button
-            className="btn-primary"
-            onClick={handleSubmit}
-            disabled={!input.trim() || chatMut.isPending}
-            aria-label="Send chat message"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            style={{
-              padding: "11px 16px",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              flexShrink: 0,
-              borderRadius: 10,
-            }}
-          >
-            <Send size={16} />
-          </motion.button>
-        </div>
-      </div>
+          </div>
+
+          <PastVoiceCalls />
+
+          {/* Input area */}
+          <div>
+            {expanded && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                style={{
+                  fontSize: 10,
+                  color: 'var(--color-apex-muted)',
+                  marginBottom: 6,
+                  padding: '8px 12px',
+                  background: 'rgba(90,158,174,0.03)',
+                  border: '1px solid rgba(90,158,174,0.08)',
+                  borderRadius: 8,
+                }}
+              >
+                <strong style={{ color: '#5a9eae' }}>Tips:</strong> Ask questions, check on approvals,
+                or just talk it through — I'll only deploy a goal when you're actually giving an
+                order. Shift+Enter for newlines. Tap the mic for voice input.
+              </motion.div>
+            )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+              <button
+                onClick={() => setExpanded(!expanded)}
+                style={{
+                  background: 'rgba(13,17,23,0.6)',
+                  border: '1px solid rgba(90,158,174,0.12)',
+                  borderRadius: 10,
+                  padding: '11px',
+                  cursor: 'pointer',
+                  color: expanded ? '#5a9eae' : 'var(--color-apex-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  transition: 'all 0.15s',
+                  flexShrink: 0,
+                }}
+              >
+                <ChevronUp
+                  size={16}
+                  style={{
+                    transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.2s',
+                  }}
+                />
+              </button>
+              <textarea
+                ref={inputRef}
+                className="apex-input"
+                aria-label="Chat message"
+                placeholder="Ask me anything, or tell me what to do..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                rows={expanded ? 4 : 1}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  resize: 'none',
+                  minHeight: expanded ? 100 : 44,
+                  transition: 'min-height 0.2s',
+                  fontSize: 14,
+                }}
+              />
+              <motion.button
+                onClick={isRecording ? stopRecording : startRecording}
+                disabled={isTranscribing || chatMut.isPending}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                title={isRecording ? 'Stop recording' : 'Voice input'}
+                aria-label={isRecording ? 'Stop recording' : 'Voice input'}
+                style={{
+                  padding: '11px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexShrink: 0,
+                  borderRadius: 10,
+                  border: `1px solid ${isRecording ? 'rgba(196,92,102,0.4)' : 'rgba(90,158,174,0.12)'}`,
+                  background: isRecording ? 'rgba(196,92,102,0.12)' : 'rgba(13,17,23,0.6)',
+                  color: isRecording ? '#c45c66' : 'var(--color-apex-muted)',
+                  cursor: isTranscribing ? 'wait' : 'pointer',
+                }}
+              >
+                {isTranscribing ? (
+                  <Loader size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                ) : isRecording ? (
+                  <Square size={16} />
+                ) : (
+                  <Mic size={16} />
+                )}
+              </motion.button>
+              <motion.button
+                className="btn-primary"
+                onClick={handleSubmit}
+                disabled={!input.trim() || chatMut.isPending}
+                aria-label="Send chat message"
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                style={{
+                  padding: '11px 16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexShrink: 0,
+                  borderRadius: 10,
+                }}
+              >
+                <Send size={16} />
+              </motion.button>
+            </div>
+          </div>
     </div>
   );
 }
@@ -1581,44 +1218,34 @@ export function QuickChat() {
   const { connected, agentStatuses } = useWebSocket();
 
   const { data: goals = [] } = useQuery({
-    queryKey: ["goals"],
+    queryKey: ['goals'],
     queryFn: () => api.goals.list(),
     refetchInterval: 10000,
   });
 
   const { data: agents = [] } = useQuery({
-    queryKey: ["agents"],
+    queryKey: ['agents'],
     queryFn: () => api.agents.list(),
     refetchInterval: 15000,
   });
 
   const { data: logs = [] } = useQuery({
-    queryKey: ["logs-recent"],
+    queryKey: ['logs-recent'],
     queryFn: () => api.logs.list(8),
     refetchInterval: 8000,
   });
 
-  const activeGoals = goals.filter((g) => g.status === "active").length;
-  const completedGoals = goals.filter((g) => g.status === "completed").length;
-  const activeAgentCount = Object.values(agentStatuses).filter(
-    (st) => st !== "idle",
-  ).length;
+  const activeGoals = goals.filter((g) => g.status === 'active').length;
+  const completedGoals = goals.filter((g) => g.status === 'completed').length;
+  const activeAgentCount = Object.values(agentStatuses).filter((st) => st !== 'idle').length;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: isMobile ? 16 : 20,
-      }}
-    >
+    <div style={{ display: 'flex', flexDirection: 'column', gap: isMobile ? 16 : 20 }}>
       {/* ── Top Stats Row ─────────────────────────────────────────────── */}
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: isMobile
-            ? "repeat(2, minmax(0, 1fr))"
-            : "repeat(4, minmax(0, 1fr))",
+          display: 'grid',
+          gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(4, minmax(0, 1fr))',
           gap: isMobile ? 10 : 14,
         }}
       >
@@ -1643,15 +1270,15 @@ export function QuickChat() {
           icon={<Users size={16} />}
           color="#8b7ec8"
           glow="#8b7ec8"
-          sub={activeAgentCount > 0 ? "working" : "standing by"}
+          sub={activeAgentCount > 0 ? 'working' : 'standing by'}
         />
         <StatCard
           label="Status"
-          value={connected ? "LIVE" : "OFF"}
+          value={connected ? 'LIVE' : 'OFF'}
           icon={<Zap size={16} />}
-          color={connected ? "#6a9f78" : "#c45c66"}
-          glow={connected ? "#6a9f78" : "#c45c66"}
-          sub={connected ? "WebSocket connected" : "Reconnecting..."}
+          color={connected ? '#6a9f78' : '#c45c66'}
+          glow={connected ? '#6a9f78' : '#c45c66'}
+          sub={connected ? 'WebSocket connected' : 'Reconnecting...'}
         />
       </div>
 
@@ -1661,43 +1288,42 @@ export function QuickChat() {
       <div
         style={{
           fontSize: 11,
-          color: "var(--color-apex-muted)",
-          padding: "8px 12px",
-          background: "rgba(90,158,174,0.03)",
-          border: "1px solid rgba(90,158,174,0.08)",
+          color: 'var(--color-apex-muted)',
+          padding: '8px 12px',
+          background: 'rgba(90,158,174,0.03)',
+          border: '1px solid rgba(90,158,174,0.08)',
           borderRadius: 8,
         }}
       >
-        Chat floats with you now — open the corner panel (or tap Chat) and jump
-        around Apex; it sees whichever screen you're on.
+        Chat floats with you now — open the corner panel (or tap Chat) and jump around Apex;
+        it sees whichever screen you're on.
       </div>
 
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: isMobile
-            ? "minmax(0, 1fr)"
-            : "repeat(auto-fit, minmax(320px, 1fr))",
+          display: 'grid',
+          gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'repeat(auto-fit, minmax(320px, 1fr))',
           gap: isMobile ? 16 : 20,
-          alignItems: "start",
+          alignItems: 'start',
         }}
       >
+
         {/* Agent roster */}
         <div
           style={{
             borderRadius: 14,
-            background: "rgba(13,17,23,0.6)",
-            border: "1px solid rgba(139,126,200,0.08)",
-            backdropFilter: "blur(8px)",
-            overflow: "hidden",
+            background: 'rgba(13,17,23,0.6)',
+            border: '1px solid rgba(139,126,200,0.08)',
+            backdropFilter: 'blur(8px)',
+            overflow: 'hidden',
           }}
         >
           <div
             style={{
-              padding: "12px 14px",
-              borderBottom: "1px solid rgba(139,126,200,0.06)",
-              display: "flex",
-              alignItems: "center",
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(139,126,200,0.06)',
+              display: 'flex',
+              alignItems: 'center',
               gap: 8,
             }}
           >
@@ -1706,17 +1332,17 @@ export function QuickChat() {
               style={{
                 fontSize: 12,
                 fontWeight: 700,
-                color: "var(--color-apex-text)",
+                color: 'var(--color-apex-text)',
               }}
             >
               Agent Roster
             </span>
             <span
               style={{
-                marginLeft: "auto",
+                marginLeft: 'auto',
                 fontSize: 9,
-                color: "var(--color-apex-muted)",
-                fontFamily: "var(--font-mono)",
+                color: 'var(--color-apex-muted)',
+                fontFamily: 'var(--font-mono)',
               }}
             >
               {agents.length} registered
@@ -1724,20 +1350,20 @@ export function QuickChat() {
           </div>
           <div
             style={{
-              padding: "8px 10px",
-              display: "flex",
-              flexDirection: "column",
+              padding: '8px 10px',
+              display: 'flex',
+              flexDirection: 'column',
               gap: 4,
               maxHeight: isMobile ? 200 : 240,
-              overflowY: "auto",
+              overflowY: 'auto',
             }}
           >
             {agents.length === 0 ? (
               <div
                 style={{
-                  padding: "20px 12px",
-                  textAlign: "center",
-                  color: "var(--color-apex-muted)",
+                  padding: '20px 12px',
+                  textAlign: 'center',
+                  color: 'var(--color-apex-muted)',
                   fontSize: 11,
                 }}
               >
@@ -1753,37 +1379,31 @@ export function QuickChat() {
         <div
           style={{
             borderRadius: 14,
-            background: "rgba(13,17,23,0.6)",
-            border: "1px solid rgba(90,158,174,0.08)",
-            backdropFilter: "blur(8px)",
-            overflow: "hidden",
+            background: 'rgba(13,17,23,0.6)',
+            border: '1px solid rgba(90,158,174,0.08)',
+            backdropFilter: 'blur(8px)',
+            overflow: 'hidden',
           }}
         >
           <div
             style={{
-              padding: "12px 14px",
-              borderBottom: "1px solid rgba(90,158,174,0.06)",
-              display: "flex",
-              alignItems: "center",
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(90,158,174,0.06)',
+              display: 'flex',
+              alignItems: 'center',
               gap: 8,
             }}
           >
             <Target size={14} color="#5a9eae" />
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: "var(--color-apex-text)",
-              }}
-            >
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
               Recent Goals
             </span>
             <span
               style={{
-                marginLeft: "auto",
+                marginLeft: 'auto',
                 fontSize: 9,
-                color: "var(--color-apex-muted)",
-                fontFamily: "var(--font-mono)",
+                color: 'var(--color-apex-muted)',
+                fontFamily: 'var(--font-mono)',
               }}
             >
               {activeGoals} active
@@ -1791,20 +1411,20 @@ export function QuickChat() {
           </div>
           <div
             style={{
-              padding: "8px 10px",
-              display: "flex",
-              flexDirection: "column",
+              padding: '8px 10px',
+              display: 'flex',
+              flexDirection: 'column',
               gap: 6,
               maxHeight: isMobile ? 250 : 300,
-              overflowY: "auto",
+              overflowY: 'auto',
             }}
           >
             {goals.length === 0 ? (
               <div
                 style={{
-                  padding: "24px 12px",
-                  textAlign: "center",
-                  color: "var(--color-apex-muted)",
+                  padding: '24px 12px',
+                  textAlign: 'center',
+                  color: 'var(--color-apex-muted)',
                   fontSize: 11,
                 }}
               >
@@ -1821,59 +1441,53 @@ export function QuickChat() {
         <div
           style={{
             borderRadius: 14,
-            background: "rgba(13,17,23,0.6)",
-            border: "1px solid rgba(106,159,120,0.08)",
-            backdropFilter: "blur(8px)",
-            overflow: "hidden",
+            background: 'rgba(13,17,23,0.6)',
+            border: '1px solid rgba(106,159,120,0.08)',
+            backdropFilter: 'blur(8px)',
+            overflow: 'hidden',
             flex: 1,
             minHeight: 0,
           }}
         >
           <div
             style={{
-              padding: "12px 14px",
-              borderBottom: "1px solid rgba(106,159,120,0.06)",
-              display: "flex",
-              alignItems: "center",
+              padding: '12px 14px',
+              borderBottom: '1px solid rgba(106,159,120,0.06)',
+              display: 'flex',
+              alignItems: 'center',
               gap: 8,
             }}
           >
             <Terminal size={14} color="#6a9f78" />
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: "var(--color-apex-text)",
-              }}
-            >
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-apex-text)' }}>
               Live Feed
             </span>
             <div
               style={{
-                marginLeft: "auto",
+                marginLeft: 'auto',
                 width: 6,
                 height: 6,
-                borderRadius: "50%",
-                background: connected ? "#6a9f78" : "#c45c66",
-                boxShadow: connected ? "0 0 6px #6a9f7880" : "none",
+                borderRadius: '50%',
+                background: connected ? '#6a9f78' : '#c45c66',
+                boxShadow: connected ? '0 0 6px #6a9f7880' : 'none',
               }}
             />
           </div>
           <div
             style={{
-              padding: "6px 12px",
+              padding: '6px 12px',
               maxHeight: isMobile ? 160 : 200,
-              overflowY: "auto",
+              overflowY: 'auto',
             }}
           >
             {logs.length === 0 ? (
               <div
                 style={{
-                  padding: "16px 8px",
-                  textAlign: "center",
-                  color: "var(--color-apex-muted)",
+                  padding: '16px 8px',
+                  textAlign: 'center',
+                  color: 'var(--color-apex-muted)',
                   fontSize: 10,
-                  fontFamily: "var(--font-mono)",
+                  fontFamily: 'var(--font-mono)',
                 }}
               >
                 Waiting for activity...

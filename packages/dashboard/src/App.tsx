@@ -1,46 +1,39 @@
-import {
-  useState,
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useCallback,
-  useRef,
-} from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
-import { api } from "./lib/api.js";
-import { WebSocketProvider, useWebSocket } from "./hooks/useWebSocket.js";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MissionControl } from "./components/MissionControl.js";
-import { MissionsDashboard } from "./components/MissionsDashboard.js";
-import { AgentNetwork } from "./components/AgentNetwork.js";
-import { TaskBoard } from "./components/TaskBoard.js";
-import { LogStream } from "./components/LogStream.js";
-import { ApprovalQueue } from "./components/ApprovalQueue.js";
-import { QuickChat } from "./components/QuickChat.js";
-import { FloatingChat } from "./components/FloatingChat.js";
-import { Settings } from "./components/Settings.js";
-import { HealthPanel } from "./components/HealthPanel.js";
-import { PanelErrorBoundary } from "./components/PanelErrorBoundary.js";
-import { LearningPanel } from "./components/LearningPanel.js";
-import { PipelinePanel } from "./components/PipelinePanel.js";
-import { MultiAppPanel } from "./components/MultiAppPanel.js";
-import { LeadsPanel } from "./components/LeadsPanel.js";
-import { ContactsPanel } from "./components/ContactsPanel.js";
-import { SalesOperationsPanel } from "./components/SalesOperationsPanel.js";
-import { TerritoryAvailabilityPanel } from "./components/TerritoryAvailabilityPanel.js";
-import { ControlRoom } from "./components/ControlRoom.js";
-import { SuggestionsPanel } from "./components/SuggestionsPanel.js";
-import { ArtifactsPanel } from "./components/ArtifactsPanel.js";
-import { ScheduledJobsPanel } from "./components/ScheduledJobsPanel.js";
-import { SpendBurnPanel } from "./components/SpendBurnPanel.js";
-import { CommandCenter } from "./components/CommandCenter.js";
-import { LoginScreen } from "./components/LoginScreen.js";
-import { PublicLanding } from "./components/PublicLanding.js";
-import { WebinarDirector } from "./components/WebinarDirector.js";
-import { WebinarRoom } from "./components/WebinarRoom.js";
-import { VerifyScalePanel } from "./components/VerifyScalePanel.js";
-import { PendingSendsPanel } from "./components/PendingSendsPanel.js";
+import { useState, type ReactNode, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useQuery } from '@tanstack/react-query';
+import { api } from './lib/api.js';
+import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket.js';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MissionControl } from './components/MissionControl.js';
+import { MissionsDashboard } from './components/MissionsDashboard.js';
+import { AgentNetwork } from './components/AgentNetwork.js';
+import { TaskBoard } from './components/TaskBoard.js';
+import { LogStream } from './components/LogStream.js';
+import { ApprovalQueue } from './components/ApprovalQueue.js';
+import { QuickChat } from './components/QuickChat.js';
+import { FloatingChat } from './components/FloatingChat.js';
+import { Settings } from './components/Settings.js';
+import { HealthPanel } from './components/HealthPanel.js';
+import { PanelErrorBoundary } from './components/PanelErrorBoundary.js';
+import { LearningPanel } from './components/LearningPanel.js';
+import { PipelinePanel } from './components/PipelinePanel.js';
+import { MultiAppPanel } from './components/MultiAppPanel.js';
+import { LeadsPanel } from './components/LeadsPanel.js';
+import { ContactsPanel } from './components/ContactsPanel.js';
+import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
+import { TerritoryAvailabilityPanel } from './components/TerritoryAvailabilityPanel.js';
+import { ControlRoom } from './components/ControlRoom.js';
+import { SuggestionsPanel } from './components/SuggestionsPanel.js';
+import { ArtifactsPanel } from './components/ArtifactsPanel.js';
+import { ScheduledJobsPanel } from './components/ScheduledJobsPanel.js';
+import { SpendBurnPanel } from './components/SpendBurnPanel.js';
+import { CommandCenter } from './components/CommandCenter.js';
+import { LoginScreen } from './components/LoginScreen.js';
+import { PublicLanding } from './components/PublicLanding.js';
+import { WebinarDirector } from './components/WebinarDirector.js';
+import { WebinarRoom } from './components/WebinarRoom.js';
+import { VerifyScalePanel } from './components/VerifyScalePanel.js';
+import { PendingSendsPanel } from './components/PendingSendsPanel.js';
 import {
   Target,
   Rocket,
@@ -69,56 +62,28 @@ import {
   Scale,
   BookUser,
   Send,
-} from "lucide-react";
-import { useIsMobile } from "./hooks/useIsMobile.js";
-import {
-  COPILOT_PANEL_EVENT,
-  copilotActionTarget,
-  describeCopilotAction,
-  type CopilotAction,
-  type CopilotUiController,
-} from "./copilot/actions.js";
-import {
-  CopilotOverlay,
-  type CopilotOverlayState,
-} from "./copilot/CopilotOverlay.js";
-import { isCopilotClientFeatureEnabled } from "./copilot/feature-flag.js";
+} from 'lucide-react';
+import { useIsMobile } from './hooks/useIsMobile.js';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 10_000, retry: 2 } },
 });
-
-const COPILOT_CLIENT_FLAG_ENABLED = isCopilotClientFeatureEnabled(
-  import.meta.env.VITE_FEATURE_COPILOT,
-);
-
-function waitForCopilotPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-  });
-}
-
-function copilotActionPage(action: CopilotAction): string {
-  if (action.type === "openRecord")
-    return action.recordType === "contact" ? "contacts" : "leads";
-  return action.page;
-}
 
 // ─── Mobile detection ─────────────────────────────────────────────────────────
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
 
 const STATUS_DOT: Record<string, string> = {
-  idle: "var(--color-apex-muted)",
-  thinking: "var(--color-apex-signal)",
-  acting: "var(--color-apex-purple)",
-  blocked: "var(--color-apex-orange)",
-  error: "var(--color-apex-red)",
-  done: "var(--color-apex-green)",
+  idle: 'var(--color-apex-muted)',
+  thinking: 'var(--color-apex-signal)',
+  acting: 'var(--color-apex-purple)',
+  blocked: 'var(--color-apex-orange)',
+  error: 'var(--color-apex-red)',
+  done: 'var(--color-apex-green)',
 };
 
 function liveColor(status: string | undefined): string {
-  return STATUS_DOT[status ?? "idle"] ?? STATUS_DOT.idle;
+  return STATUS_DOT[status ?? 'idle'] ?? STATUS_DOT.idle;
 }
 
 // ─── Signature: live hierarchy spine ──────────────────────────────────────────
@@ -132,18 +97,17 @@ function HierarchySpine({
   agentStatuses: Record<string, string>;
 }) {
   const byRole = useMemo(() => {
-    const map: Record<string, { id: string; name: string; status: string }> =
-      {};
+    const map: Record<string, { id: string; name: string; status: string }> = {};
     for (const a of agents) {
-      const status = agentStatuses[a.id] ?? "idle";
+      const status = agentStatuses[a.id] ?? 'idle';
       map[a.role] = { id: a.id, name: a.name, status };
     }
     return map;
   }, [agents, agentStatuses]);
 
-  const ceo = byRole["CEO"];
-  const cto = byRole["CTO"];
-  const coo = byRole["COO"];
+  const ceo = byRole['CEO'];
+  const cto = byRole['CTO'];
+  const coo = byRole['COO'];
 
   const Node = ({
     label,
@@ -155,12 +119,12 @@ function HierarchySpine({
     accent?: boolean;
   }) => {
     const color = liveColor(status);
-    const active = status === "thinking" || status === "acting";
+    const active = status === 'thinking' || status === 'acting';
     return (
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
+          display: 'flex',
+          alignItems: 'center',
           gap: 8,
           minWidth: 0,
         }}
@@ -170,25 +134,23 @@ function HierarchySpine({
           style={{
             width: accent ? 9 : 7,
             height: accent ? 9 : 7,
-            borderRadius: "50%",
+            borderRadius: '50%',
             background: color,
             flexShrink: 0,
-            boxShadow: active ? `0 0 0 3px ${color}33` : "none",
-            animation: active ? "pulse-live 1.8s ease-in-out infinite" : "none",
+            boxShadow: active ? `0 0 0 3px ${color}33` : 'none',
+            animation: active ? 'pulse-live 1.8s ease-in-out infinite' : 'none',
           }}
         />
         <span
           style={{
-            fontFamily: "var(--font-mono)",
+            fontFamily: 'var(--font-mono)',
             fontSize: 10,
-            letterSpacing: "0.06em",
-            color: accent
-              ? "var(--color-apex-brass)"
-              : "var(--color-apex-muted)",
+            letterSpacing: '0.06em',
+            color: accent ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)',
             fontWeight: accent ? 600 : 500,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
           }}
         >
           {label}
@@ -201,24 +163,24 @@ function HierarchySpine({
     <div
       style={{
         marginTop: 14,
-        padding: "10px 12px",
+        padding: '10px 12px',
         borderRadius: 6,
-        background: "rgba(0,0,0,0.22)",
-        border: "1px solid var(--color-apex-line)",
+        background: 'rgba(0,0,0,0.22)',
+        border: '1px solid var(--color-apex-line)',
       }}
     >
       <div className="apex-eyebrow" style={{ marginBottom: 10 }}>
         Org spine
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <Node label="CEO" status={ceo?.status} accent />
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
             gap: 8,
             paddingLeft: 4,
-            borderLeft: "1px solid var(--color-apex-line)",
+            borderLeft: '1px solid var(--color-apex-line)',
             marginLeft: 3,
           }}
         >
@@ -227,16 +189,14 @@ function HierarchySpine({
         </div>
         <div
           style={{
-            fontFamily: "var(--font-mono)",
+            fontFamily: 'var(--font-mono)',
             fontSize: 9,
-            color: "var(--color-apex-muted)",
+            color: 'var(--color-apex-muted)',
             paddingLeft: 12,
             marginTop: 2,
           }}
         >
-          {agents.length > 0
-            ? `${agents.length} agents seated`
-            : "Waiting for roster"}
+          {agents.length > 0 ? `${agents.length} agents seated` : 'Waiting for roster'}
         </div>
       </div>
     </div>
@@ -279,99 +239,55 @@ function Sidebar({
 
   const groups: NavGroup[] = [
     {
-      label: "Command",
+      label: 'Command',
       items: [
-        { id: "command", label: "Command Center", icon: <Target size={16} /> },
-        {
-          id: "chat",
-          label: "Talk to APEX",
-          icon: <MessageSquare size={16} />,
-        },
-        {
-          id: "approvals",
-          label: "Approvals",
-          icon: <ShieldCheck size={16} />,
-        },
-        {
-          id: "pending-sends",
-          label: "Pending sends",
-          icon: <Send size={16} />,
-        },
-        {
-          id: "verify-scale",
-          label: "Verify & Scale",
-          icon: <Scale size={16} />,
-        },
+        { id: 'command', label: 'Command Center', icon: <Target size={16} /> },
+        { id: 'chat', label: 'Talk to APEX', icon: <MessageSquare size={16} /> },
+        { id: 'approvals', label: 'Approvals', icon: <ShieldCheck size={16} /> },
+        { id: 'pending-sends', label: 'Pending sends', icon: <Send size={16} /> },
+        { id: 'verify-scale', label: 'Verify & Scale', icon: <Scale size={16} /> },
       ],
     },
     {
-      label: "Revenue",
+      label: 'Revenue',
       items: [
-        {
-          id: "sales-ops",
-          label: "Revenue Operations",
-          icon: <Rocket size={16} />,
-        },
-        { id: "leads", label: "Prospects", icon: <Search size={16} /> },
-        { id: "contacts", label: "Contacts", icon: <BookUser size={16} /> },
-        {
-          id: "territories",
-          label: "Territories",
-          icon: <MapPinned size={16} />,
-        },
-        {
-          id: "webinars",
-          label: "Webinar Director",
-          icon: <Presentation size={16} />,
-        },
+        { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
+        { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
+        { id: 'contacts', label: 'Contacts', icon: <BookUser size={16} /> },
+        { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
+        { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
       ],
     },
     {
-      label: "Workforce",
+      label: 'Workforce',
       items: [
-        { id: "agents", label: "Agent Network", icon: <Network size={16} /> },
-        { id: "tasks", label: "Work Queue", icon: <Kanban size={16} /> },
-        { id: "logs", label: "Activity Log", icon: <Terminal size={16} /> },
+        { id: 'agents', label: 'Agent Network', icon: <Network size={16} /> },
+        { id: 'tasks', label: 'Work Queue', icon: <Kanban size={16} /> },
+        { id: 'logs', label: 'Activity Log', icon: <Terminal size={16} /> },
       ],
     },
   ];
 
   const moreGroups: NavGroup[] = [
     {
-      label: "Additional workspace",
+      label: 'Additional workspace',
       items: [
-        { id: "mission", label: "Mission Control", icon: <Target size={16} /> },
-        {
-          id: "suggestions",
-          label: "Suggestions",
-          icon: <MessageSquare size={16} />,
-        },
-        { id: "multiapp", label: "Portfolio", icon: <Package size={16} /> },
+        { id: 'mission', label: 'Mission Control', icon: <Target size={16} /> },
+        { id: 'suggestions', label: 'Suggestions', icon: <MessageSquare size={16} /> },
+        { id: 'multiapp', label: 'Portfolio', icon: <Package size={16} /> },
       ],
     },
     {
-      label: "Systems & tools",
+      label: 'Systems & tools',
       items: [
-        {
-          id: "control",
-          label: "Control Room",
-          icon: <SlidersHorizontal size={16} />,
-        },
-        { id: "artifacts", label: "Artifacts", icon: <Package size={16} /> },
-        {
-          id: "scheduled",
-          label: "Calendar / Scheduler",
-          icon: <CalendarClock size={16} />,
-        },
-        {
-          id: "spend",
-          label: "Spend / Burn",
-          icon: <CircleDollarSign size={16} />,
-        },
-        { id: "health", label: "Health", icon: <Activity size={16} /> },
-        { id: "learning", label: "Intelligence", icon: <Brain size={16} /> },
-        { id: "pipeline", label: "CI/CD", icon: <GitBranch size={16} /> },
-        { id: "settings", label: "Settings", icon: <SettingsIcon size={16} /> },
+        { id: 'control', label: 'Control Room', icon: <SlidersHorizontal size={16} /> },
+        { id: 'artifacts', label: 'Artifacts', icon: <Package size={16} /> },
+        { id: 'scheduled', label: 'Calendar / Scheduler', icon: <CalendarClock size={16} /> },
+        { id: 'spend', label: 'Spend / Burn', icon: <CircleDollarSign size={16} /> },
+        { id: 'health', label: 'Health', icon: <Activity size={16} /> },
+        { id: 'learning', label: 'Intelligence', icon: <Brain size={16} /> },
+        { id: 'pipeline', label: 'CI/CD', icon: <GitBranch size={16} /> },
+        { id: 'settings', label: 'Settings', icon: <SettingsIcon size={16} /> },
       ],
     },
   ];
@@ -392,9 +308,9 @@ function Sidebar({
           exit={{ opacity: 0 }}
           onClick={onMobileClose}
           style={{
-            position: "fixed",
+            position: 'fixed',
             inset: 0,
-            background: "rgba(8,10,14,0.72)",
+            background: 'rgba(8,10,14,0.72)',
             zIndex: 40,
           }}
         />
@@ -404,47 +320,41 @@ function Sidebar({
         style={{
           width: isMobile ? 272 : 236,
           flexShrink: 0,
-          background: "var(--color-apex-surface)",
-          borderRight: "1px solid var(--color-apex-line)",
-          display: "flex",
-          flexDirection: "column",
-          height: "100vh",
-          position: isMobile ? "fixed" : "sticky",
+          background: 'var(--color-apex-surface)',
+          borderRight: '1px solid var(--color-apex-line)',
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100vh',
+          position: isMobile ? 'fixed' : 'sticky',
           top: 0,
           left: 0,
-          zIndex: isMobile ? 50 : "auto",
-          ...(isMobile ? { boxShadow: "8px 0 40px rgba(0,0,0,0.45)" } : {}),
+          zIndex: isMobile ? 50 : 'auto',
+          ...(isMobile ? { boxShadow: '8px 0 40px rgba(0,0,0,0.45)' } : {}),
         }}
       >
         {/* Brand */}
         <div
           style={{
-            padding: "18px 16px 14px",
-            borderBottom: "1px solid var(--color-apex-line)",
+            padding: '18px 16px 14px',
+            borderBottom: '1px solid var(--color-apex-line)',
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div
                 style={{
                   width: 32,
                   height: 32,
                   borderRadius: 6,
-                  background: "var(--color-apex-brass)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontFamily: "var(--font-display)",
+                  background: 'var(--color-apex-brass)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontFamily: 'var(--font-display)',
                   fontWeight: 800,
                   fontSize: 13,
-                  color: "#14120f",
-                  letterSpacing: "0.02em",
+                  color: '#14120f',
+                  letterSpacing: '0.02em',
                 }}
               >
                 A
@@ -454,7 +364,7 @@ function Sidebar({
                   className="apex-display"
                   style={{
                     fontSize: 16,
-                    color: "var(--color-apex-text)",
+                    color: 'var(--color-apex-text)',
                     lineHeight: 1.1,
                   }}
                 >
@@ -463,8 +373,8 @@ function Sidebar({
                 <div
                   style={{
                     fontSize: 10,
-                    color: "var(--color-apex-muted)",
-                    fontFamily: "var(--font-mono)",
+                    color: 'var(--color-apex-muted)',
+                    fontFamily: 'var(--font-mono)',
                     marginTop: 1,
                   }}
                 >
@@ -477,10 +387,10 @@ function Sidebar({
                 onClick={onMobileClose}
                 aria-label="Close menu"
                 style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--color-apex-muted)",
-                  cursor: "pointer",
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--color-apex-muted)',
+                  cursor: 'pointer',
                   padding: 4,
                 }}
               >
@@ -492,16 +402,14 @@ function Sidebar({
           {/* Link status */}
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
+              display: 'flex',
+              alignItems: 'center',
               gap: 6,
               marginTop: 12,
-              padding: "5px 10px",
+              padding: '5px 10px',
               borderRadius: 4,
-              background: connected
-                ? "rgba(106,159,120,0.1)"
-                : "rgba(196,92,102,0.1)",
-              border: `1px solid ${connected ? "rgba(106,159,120,0.28)" : "rgba(196,92,102,0.28)"}`,
+              background: connected ? 'rgba(106,159,120,0.1)' : 'rgba(196,92,102,0.1)',
+              border: `1px solid ${connected ? 'rgba(106,159,120,0.28)' : 'rgba(196,92,102,0.28)'}`,
             }}
           >
             {connected ? (
@@ -513,14 +421,12 @@ function Sidebar({
               style={{
                 fontSize: 10,
                 fontWeight: 600,
-                fontFamily: "var(--font-mono)",
-                letterSpacing: "0.08em",
-                color: connected
-                  ? "var(--color-apex-green)"
-                  : "var(--color-apex-red)",
+                fontFamily: 'var(--font-mono)',
+                letterSpacing: '0.08em',
+                color: connected ? 'var(--color-apex-green)' : 'var(--color-apex-red)',
               }}
             >
-              {connected ? "LIVE" : "RECONNECTING"}
+              {connected ? 'LIVE' : 'RECONNECTING'}
             </span>
           </div>
 
@@ -532,19 +438,22 @@ function Sidebar({
         <nav
           style={{
             flex: 1,
-            padding: "10px 8px 16px",
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
+            padding: '10px 8px 16px',
+            overflowY: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
             gap: 14,
           }}
         >
           {groups.map((group) => (
             <div key={group.label}>
-              <div className="apex-eyebrow" style={{ padding: "0 10px 6px" }}>
+              <div
+                className="apex-eyebrow"
+                style={{ padding: '0 10px 6px' }}
+              >
                 {group.label}
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                 {group.items.map((item) => {
                   const isActive = active === item.id;
                   return (
@@ -553,42 +462,35 @@ function Sidebar({
                       id={`nav-${item.id}`}
                       onClick={() => handleNav(item.id)}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
+                        display: 'flex',
+                        alignItems: 'center',
                         gap: 10,
-                        padding: isMobile ? "11px 12px" : "8px 12px",
+                        padding: isMobile ? '11px 12px' : '8px 12px',
                         borderRadius: 5,
-                        border: "none",
-                        cursor: "pointer",
-                        background: isActive
-                          ? "var(--color-apex-brass-soft)"
-                          : "transparent",
-                        color: isActive
-                          ? "var(--color-apex-brass)"
-                          : "var(--color-apex-muted)",
-                        fontFamily: "var(--font-sans)",
+                        border: 'none',
+                        cursor: 'pointer',
+                        background: isActive ? 'var(--color-apex-brass-soft)' : 'transparent',
+                        color: isActive ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)',
+                        fontFamily: 'var(--font-sans)',
                         fontSize: isMobile ? 14 : 13,
                         fontWeight: isActive ? 600 : 450,
-                        transition: "background 0.12s, color 0.12s",
-                        width: "100%",
-                        textAlign: "left",
+                        transition: 'background 0.12s, color 0.12s',
+                        width: '100%',
+                        textAlign: 'left',
                         borderLeft: isActive
-                          ? "2px solid var(--color-apex-brass)"
-                          : "2px solid transparent",
+                          ? '2px solid var(--color-apex-brass)'
+                          : '2px solid transparent',
                       }}
                       onMouseEnter={(e) => {
                         if (!isActive) {
-                          e.currentTarget.style.background =
-                            "rgba(255,255,255,0.03)";
-                          e.currentTarget.style.color =
-                            "var(--color-apex-text)";
+                          e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
+                          e.currentTarget.style.color = 'var(--color-apex-text)';
                         }
                       }}
                       onMouseLeave={(e) => {
                         if (!isActive) {
-                          e.currentTarget.style.background = "transparent";
-                          e.currentTarget.style.color =
-                            "var(--color-apex-muted)";
+                          e.currentTarget.style.background = 'transparent';
+                          e.currentTarget.style.color = 'var(--color-apex-muted)';
                         }
                       }}
                     >
@@ -603,114 +505,92 @@ function Sidebar({
           <button
             onClick={() => setShowMore((open) => !open)}
             style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
               gap: 8,
-              margin: "2px 10px 0",
-              padding: "8px 0",
-              color: "var(--color-apex-muted)",
+              margin: '2px 10px 0',
+              padding: '8px 0',
+              color: 'var(--color-apex-muted)',
               border: 0,
-              borderTop: "1px solid var(--color-apex-line)",
-              background: "transparent",
-              fontFamily: "var(--font-mono)",
+              borderTop: '1px solid var(--color-apex-line)',
+              background: 'transparent',
+              fontFamily: 'var(--font-mono)',
               fontSize: 9,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              cursor: "pointer",
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              cursor: 'pointer',
             }}
           >
             More systems
-            <ChevronDown
-              size={14}
-              style={{ transform: showMore ? "rotate(180deg)" : "none" }}
-            />
+            <ChevronDown size={14} style={{ transform: showMore ? 'rotate(180deg)' : 'none' }} />
           </button>
-          {showMore &&
-            moreGroups.map((group) => (
-              <div key={group.label}>
-                <div className="apex-eyebrow" style={{ padding: "0 10px 6px" }}>
-                  {group.label}
-                </div>
-                <div
-                  style={{ display: "flex", flexDirection: "column", gap: 1 }}
-                >
-                  {group.items.map((item) => {
-                    const isActive = active === item.id;
-                    return (
-                      <button
-                        key={item.id}
-                        id={`nav-${item.id}`}
-                        onClick={() => handleNav(item.id)}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          padding: isMobile ? "11px 12px" : "8px 12px",
-                          borderRadius: 5,
-                          border: "none",
-                          cursor: "pointer",
-                          background: isActive
-                            ? "var(--color-apex-brass-soft)"
-                            : "transparent",
-                          color: isActive
-                            ? "var(--color-apex-brass)"
-                            : "var(--color-apex-muted)",
-                          fontFamily: "var(--font-sans)",
-                          fontSize: isMobile ? 14 : 13,
-                          fontWeight: isActive ? 600 : 450,
-                          width: "100%",
-                          textAlign: "left",
-                          borderLeft: isActive
-                            ? "2px solid var(--color-apex-brass)"
-                            : "2px solid transparent",
-                        }}
-                      >
-                        {item.icon}
-                        {item.label}
-                      </button>
-                    );
-                  })}
-                </div>
+          {showMore && moreGroups.map((group) => (
+            <div key={group.label}>
+              <div className="apex-eyebrow" style={{ padding: '0 10px 6px' }}>{group.label}</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {group.items.map((item) => {
+                  const isActive = active === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      id={`nav-${item.id}`}
+                      onClick={() => handleNav(item.id)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: isMobile ? '11px 12px' : '8px 12px',
+                        borderRadius: 5, border: 'none', cursor: 'pointer',
+                        background: isActive ? 'var(--color-apex-brass-soft)' : 'transparent',
+                        color: isActive ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)',
+                        fontFamily: 'var(--font-sans)', fontSize: isMobile ? 14 : 13,
+                        fontWeight: isActive ? 600 : 450, width: '100%', textAlign: 'left',
+                        borderLeft: isActive ? '2px solid var(--color-apex-brass)' : '2px solid transparent',
+                      }}
+                    >
+                      {item.icon}{item.label}
+                    </button>
+                  );
+                })}
               </div>
-            ))}
+            </div>
+          ))}
         </nav>
 
         {/* Footer */}
         <div
           style={{
-            padding: "12px 14px",
-            borderTop: "1px solid var(--color-apex-line)",
+            padding: '12px 14px',
+            borderTop: '1px solid var(--color-apex-line)',
             fontSize: 10,
-            color: "var(--color-apex-muted)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
+            color: 'var(--color-apex-muted)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
           }}
         >
-          <div style={{ fontFamily: "var(--font-mono)" }}>v1.0 · desk</div>
+          <div style={{ fontFamily: 'var(--font-mono)' }}>v1.0 · desk</div>
           <button
             onClick={onLogout}
             title="Log out"
             aria-label="Log out"
             style={{
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              color: "var(--color-apex-muted)",
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--color-apex-muted)',
               padding: 6,
               borderRadius: 5,
-              display: "flex",
-              alignItems: "center",
-              transition: "all 0.15s",
+              display: 'flex',
+              alignItems: 'center',
+              transition: 'all 0.15s',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(196,92,102,0.12)";
-              e.currentTarget.style.color = "var(--color-apex-red)";
+              e.currentTarget.style.background = 'rgba(196,92,102,0.12)';
+              e.currentTarget.style.color = 'var(--color-apex-red)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = "transparent";
-              e.currentTarget.style.color = "var(--color-apex-muted)";
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = 'var(--color-apex-muted)';
             }}
           >
             <LogOut size={15} />
@@ -731,26 +611,26 @@ function MobileBottomBar({
   onNavigate: (id: string) => void;
 }) {
   const quickNav = [
-    { id: "command", icon: <Target size={20} />, label: "Command" },
-    { id: "sales-ops", icon: <Rocket size={20} />, label: "Revenue" },
-    { id: "approvals", icon: <ShieldCheck size={20} />, label: "Approvals" },
-    { id: "agents", icon: <Network size={20} />, label: "Workforce" },
-    { id: "settings", icon: <SettingsIcon size={20} />, label: "Settings" },
+    { id: 'command', icon: <Target size={20} />, label: 'Command' },
+    { id: 'sales-ops', icon: <Rocket size={20} />, label: 'Revenue' },
+    { id: 'approvals', icon: <ShieldCheck size={20} />, label: 'Approvals' },
+    { id: 'agents', icon: <Network size={20} />, label: 'Workforce' },
+    { id: 'settings', icon: <SettingsIcon size={20} />, label: 'Settings' },
   ];
 
   return (
     <div
       style={{
-        position: "fixed",
+        position: 'fixed',
         bottom: 0,
         left: 0,
         right: 0,
-        background: "rgba(17,19,24,0.96)",
-        backdropFilter: "blur(12px)",
-        borderTop: "1px solid var(--color-apex-line)",
-        display: "flex",
-        justifyContent: "space-around",
-        padding: "6px 0 max(6px, env(safe-area-inset-bottom))",
+        background: 'rgba(17,19,24,0.96)',
+        backdropFilter: 'blur(12px)',
+        borderTop: '1px solid var(--color-apex-line)',
+        display: 'flex',
+        justifyContent: 'space-around',
+        padding: '6px 0 max(6px, env(safe-area-inset-bottom))',
         zIndex: 30,
       }}
     >
@@ -761,21 +641,19 @@ function MobileBottomBar({
             key={item.id}
             onClick={() => onNavigate(item.id)}
             style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
               gap: 2,
-              padding: "6px 12px",
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              color: isActive
-                ? "var(--color-apex-brass)"
-                : "var(--color-apex-muted)",
-              fontFamily: "var(--font-sans)",
+              padding: '6px 12px',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              color: isActive ? 'var(--color-apex-brass)' : 'var(--color-apex-muted)',
+              fontFamily: 'var(--font-sans)',
               fontSize: 9,
               fontWeight: isActive ? 600 : 400,
-              transition: "color 0.15s",
+              transition: 'color 0.15s',
               minWidth: 48,
             }}
           >
@@ -792,152 +670,11 @@ function MobileBottomBar({
 
 /** Compose the authenticated dashboard shell and its navigable panels. */
 function AppContent({ onLogout }: { onLogout: () => void }) {
-  const [activePage, setActivePage] = useState("command");
+  const [activePage, setActivePage] = useState('command');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [copilotActive, setCopilotActive] = useState(false);
-  const [copilotBusy, setCopilotBusy] = useState(false);
-  const [copilotOverlay, setCopilotOverlay] =
-    useState<CopilotOverlayState | null>(null);
-  const copilotSessionRef = useRef(crypto.randomUUID());
-  const copilotRunRef = useRef(0);
   const isMobile = useIsMobile();
-  const copilotStatus = useQuery({
-    queryKey: ["copilot-status"],
-    queryFn: () => api.chat.copilotStatus(),
-    enabled: COPILOT_CLIENT_FLAG_ENABLED,
-    staleTime: 60_000,
-  });
-  const copilotAvailable =
-    COPILOT_CLIENT_FLAG_ENABLED && copilotStatus.data?.enabled === true;
-
-  const stopCopilot = useCallback((_reason?: string) => {
-    copilotRunRef.current += 1;
-    setCopilotActive(false);
-    setCopilotBusy(false);
-    setCopilotOverlay(null);
-  }, []);
-
-  const startCopilot = useCallback(() => {
-    if (!copilotAvailable) return;
-    copilotSessionRef.current = crypto.randomUUID();
-    copilotRunRef.current += 1;
-    setCopilotActive(true);
-  }, [copilotAvailable]);
-
-  const executeCopilotActions = useCallback(
-    async (actions: CopilotAction[], narrate: (message: string) => void) => {
-      if (!copilotActive || !copilotAvailable || actions.length === 0) return;
-      const run = ++copilotRunRef.current;
-      setCopilotBusy(true);
-
-      for (const action of actions) {
-        if (copilotRunRef.current !== run) break;
-        const description = describeCopilotAction(action);
-        narrate(`Apex Copilot · ${description}…`);
-        const page = copilotActionPage(action);
-
-        try {
-          const initialTarget = copilotActionTarget(action);
-          if (action.type === "navigate") {
-            setCopilotOverlay({
-              selector: initialTarget,
-              label: description,
-              sequence: Date.now(),
-            });
-          }
-
-          setActivePage(page);
-          setMobileMenuOpen(false);
-          await waitForCopilotPaint();
-          if (copilotRunRef.current !== run) break;
-
-          if (action.type !== "navigate") {
-            window.dispatchEvent(
-              new CustomEvent(COPILOT_PANEL_EVENT, { detail: action }),
-            );
-            await waitForCopilotPaint();
-            setCopilotOverlay({
-              selector: copilotActionTarget(action),
-              label: description,
-              sequence: Date.now(),
-            });
-          }
-
-          await new Promise((resolve) => window.setTimeout(resolve, 650));
-          if (copilotRunRef.current !== run) break;
-          await api.chat.auditCopilotAction(
-            copilotSessionRef.current,
-            action,
-            "executed",
-          );
-          narrate(`Apex Copilot · Done: ${description.toLowerCase()}.`);
-        } catch (error) {
-          const reason =
-            error instanceof Error ? error.message : "Action failed";
-          await api.chat
-            .auditCopilotAction(
-              copilotSessionRef.current,
-              action,
-              "failed",
-              reason,
-            )
-            .catch(() => undefined);
-          narrate(`Apex Copilot · Could not complete that step: ${reason}`);
-          break;
-        } finally {
-          setCopilotOverlay(null);
-        }
-      }
-
-      if (copilotRunRef.current === run) setCopilotBusy(false);
-    },
-    [copilotActive, copilotAvailable],
-  );
-
-  useEffect(() => {
-    if (!copilotAvailable && copilotActive)
-      stopCopilot("Feature became unavailable");
-  }, [copilotActive, copilotAvailable, stopCopilot]);
-
-  useEffect(() => {
-    if (!copilotActive) return;
-    const stopForManualInput = (event: Event) => {
-      if (!event.isTrusted) return;
-      const target = event.target;
-      if (target instanceof Element && target.closest("[data-copilot-control]"))
-        return;
-      stopCopilot("Paused because Matthew took manual control");
-    };
-    window.addEventListener("pointerdown", stopForManualInput, true);
-    window.addEventListener("keydown", stopForManualInput, true);
-    return () => {
-      window.removeEventListener("pointerdown", stopForManualInput, true);
-      window.removeEventListener("keydown", stopForManualInput, true);
-    };
-  }, [copilotActive, stopCopilot]);
-
-  const copilotController = useMemo<CopilotUiController>(
-    () => ({
-      available: copilotAvailable,
-      active: copilotActive,
-      busy: copilotBusy,
-      sessionId: copilotSessionRef.current,
-      start: startCopilot,
-      stop: stopCopilot,
-      execute: executeCopilotActions,
-    }),
-    [
-      copilotActive,
-      copilotAvailable,
-      copilotBusy,
-      executeCopilotActions,
-      startCopilot,
-      stopCopilot,
-    ],
-  );
-
   const { data: agents = [] } = useQuery({
-    queryKey: ["agents"],
+    queryKey: ['agents'],
     queryFn: () => api.agents.list(),
     refetchInterval: 15000,
   });
@@ -948,7 +685,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     mission: <MissionsDashboard />,
     agents: <AgentNetwork agents={agents} />,
     tasks: <TaskBoard />,
-    "sales-ops": <SalesOperationsPanel />,
+    'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
     contacts: <ContactsPanel />,
     territories: <TerritoryAvailabilityPanel />,
@@ -962,16 +699,16 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
       <div
         className="glass-card"
         style={{
-          height: isMobile ? "calc(100vh - 160px)" : "calc(100vh - 120px)",
-          overflow: "hidden",
+          height: isMobile ? 'calc(100vh - 160px)' : 'calc(100vh - 120px)',
+          overflow: 'hidden',
         }}
       >
         <LogStream />
       </div>
     ),
     approvals: <ApprovalQueue />,
-    "pending-sends": <PendingSendsPanel />,
-    "verify-scale": <VerifyScalePanel />,
+    'pending-sends': <PendingSendsPanel />,
+    'verify-scale': <VerifyScalePanel />,
     health: <HealthPanel />,
     learning: <LearningPanel />,
     pipeline: <PipelinePanel />,
@@ -981,49 +718,49 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
 
   // Plain titles — no emoji decoration
   const pageTitles: Record<string, { title: string; kicker: string }> = {
-    command: { title: "Command Center", kicker: "APEX" },
-    chat: { title: "Talk to APEX", kicker: "Command" },
-    mission: { title: "Mission Control", kicker: "Command" },
-    agents: { title: "Agent Network", kicker: "Workforce" },
-    tasks: { title: "Task Board", kicker: "Workforce" },
-    "sales-ops": { title: "Revenue Operations", kicker: "Revenue" },
-    leads: { title: "Prospects", kicker: "Revenue" },
-    contacts: { title: "Contacts", kicker: "Revenue" },
-    territories: { title: "Territory Availability", kicker: "Revenue" },
-    webinars: { title: "Webinar Director", kicker: "Revenue" },
-    control: { title: "Control Room", kicker: "Systems" },
-    artifacts: { title: "Artifacts", kicker: "Systems" },
-    scheduled: { title: "Calendar / Scheduler", kicker: "Systems" },
-    spend: { title: "Spend / Burn Rate", kicker: "Systems" },
-    suggestions: { title: "Suggestions", kicker: "Systems & tools" },
-    logs: { title: "Log Stream", kicker: "Workforce" },
-    approvals: { title: "Approval Queue", kicker: "Command" },
-    "pending-sends": { title: "Pending sends", kicker: "Command" },
-    "verify-scale": { title: "Verify & Scale", kicker: "Growth control" },
-    health: { title: "System Health", kicker: "Systems" },
-    learning: { title: "Intelligence", kicker: "Systems" },
-    pipeline: { title: "CI/CD Pipeline", kicker: "Systems" },
-    multiapp: { title: "Portfolio", kicker: "Systems & tools" },
-    settings: { title: "Settings", kicker: "Systems" },
+    command: { title: 'Command Center', kicker: 'APEX' },
+    chat: { title: 'Talk to APEX', kicker: 'Command' },
+    mission: { title: 'Mission Control', kicker: 'Command' },
+    agents: { title: 'Agent Network', kicker: 'Workforce' },
+    tasks: { title: 'Task Board', kicker: 'Workforce' },
+    'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
+    leads: { title: 'Prospects', kicker: 'Revenue' },
+    contacts: { title: 'Contacts', kicker: 'Revenue' },
+    territories: { title: 'Territory Availability', kicker: 'Revenue' },
+    webinars: { title: 'Webinar Director', kicker: 'Revenue' },
+    control: { title: 'Control Room', kicker: 'Systems' },
+    artifacts: { title: 'Artifacts', kicker: 'Systems' },
+    scheduled: { title: 'Calendar / Scheduler', kicker: 'Systems' },
+    spend: { title: 'Spend / Burn Rate', kicker: 'Systems' },
+    suggestions: { title: 'Suggestions', kicker: 'Systems & tools' },
+    logs: { title: 'Log Stream', kicker: 'Workforce' },
+    approvals: { title: 'Approval Queue', kicker: 'Command' },
+    'pending-sends': { title: 'Pending sends', kicker: 'Command' },
+    'verify-scale': { title: 'Verify & Scale', kicker: 'Growth control' },
+    health: { title: 'System Health', kicker: 'Systems' },
+    learning: { title: 'Intelligence', kicker: 'Systems' },
+    pipeline: { title: 'CI/CD Pipeline', kicker: 'Systems' },
+    multiapp: { title: 'Portfolio', kicker: 'Systems & tools' },
+    settings: { title: 'Settings', kicker: 'Systems' },
   };
 
   useEffect(() => {
     const onNavigate = (event: Event) => {
       const page = (event as CustomEvent<{ page?: string }>).detail?.page;
-      if (page === "pending-sends") setActivePage(page);
+      if (page === 'pending-sends') setActivePage(page);
     };
-    window.addEventListener("apex:navigate", onNavigate);
-    return () => window.removeEventListener("apex:navigate", onNavigate);
+    window.addEventListener('apex:navigate', onNavigate);
+    return () => window.removeEventListener('apex:navigate', onNavigate);
   }, []);
 
-  const meta = pageTitles[activePage] ?? { title: activePage, kicker: "" };
+  const meta = pageTitles[activePage] ?? { title: activePage, kicker: '' };
 
   return (
     <div
       style={{
-        display: "flex",
-        minHeight: "100vh",
-        background: "var(--color-apex-bg)",
+        display: 'flex',
+        minHeight: '100vh',
+        background: 'var(--color-apex-bg)',
       }}
     >
       <AnimatePresence>
@@ -1043,28 +780,28 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           // Without an explicit min-width a flex item defaults to min-width:auto,
           // so wide chat content pushes <main> past the viewport on mobile.
           minWidth: 0,
-          maxWidth: "100%",
+          maxWidth: '100%',
           // overflowY only: `overflow: auto` also enabled a horizontal swipe
           // inside <main> whenever any content ran wide, which read as the
           // page "running off the side" of the phone. Vertical scrolling still
           // works; stray wide content is clipped instead of swipeable.
-          overflowY: "auto",
-          overflowX: "hidden",
+          overflowY: 'auto',
+          overflowX: 'hidden',
           paddingBottom: isMobile ? 72 : 0,
         }}
       >
         <header
           style={{
-            position: "sticky",
+            position: 'sticky',
             top: 0,
             zIndex: 10,
-            padding: isMobile ? "12px 16px" : "14px 28px",
-            background: "rgba(17,19,24,0.92)",
-            backdropFilter: "blur(10px)",
-            borderBottom: "1px solid var(--color-apex-line)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
+            padding: isMobile ? '12px 16px' : '14px 28px',
+            background: 'rgba(17,19,24,0.92)',
+            backdropFilter: 'blur(10px)',
+            borderBottom: '1px solid var(--color-apex-line)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
             gap: 12,
           }}
         >
@@ -1073,14 +810,14 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
               onClick={() => setMobileMenuOpen(true)}
               aria-label="Open menu"
               style={{
-                background: "transparent",
-                border: "1px solid var(--color-apex-line)",
+                background: 'transparent',
+                border: '1px solid var(--color-apex-line)',
                 borderRadius: 6,
                 padding: 8,
-                cursor: "pointer",
-                color: "var(--color-apex-text)",
-                display: "flex",
-                alignItems: "center",
+                cursor: 'pointer',
+                color: 'var(--color-apex-text)',
+                display: 'flex',
+                alignItems: 'center',
                 flexShrink: 0,
               }}
             >
@@ -1098,12 +835,12 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
               style={{
                 margin: 0,
                 fontSize: isMobile ? 16 : 20,
-                color: "var(--color-apex-text)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                color: 'var(--color-apex-text)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
                 fontWeight: 700,
-                letterSpacing: "0.02em",
+                letterSpacing: '0.02em',
               }}
             >
               {meta.title}
@@ -1112,21 +849,21 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           <div
             style={{
               fontSize: 11,
-              color: "var(--color-apex-muted)",
-              fontFamily: "var(--font-mono)",
+              color: 'var(--color-apex-muted)',
+              fontFamily: 'var(--font-mono)',
               flexShrink: 0,
-              display: isMobile ? "none" : "block",
+              display: isMobile ? 'none' : 'block',
             }}
           >
-            {new Date().toLocaleDateString("en-US", {
-              weekday: "short",
-              month: "short",
-              day: "numeric",
+            {new Date().toLocaleDateString('en-US', {
+              weekday: 'short',
+              month: 'short',
+              day: 'numeric',
             })}
           </div>
         </header>
 
-        <div style={{ padding: isMobile ? "16px" : "24px 28px" }}>
+        <div style={{ padding: isMobile ? '16px' : '24px 28px' }}>
           <AnimatePresence mode="wait">
             <motion.div
               key={activePage}
@@ -1156,29 +893,20 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           unmounts when activePage changes, so the conversation and any live
           voice call survive navigation. It receives the page Don is viewing
           so the agent knows what's on his screen. */}
-      <FloatingChat
-        pageId={activePage}
-        pageTitle={meta.title}
-        copilot={copilotController}
-      />
-      <CopilotOverlay state={copilotOverlay} />
+      <FloatingChat pageId={activePage} pageTitle={meta.title} />
     </div>
   );
 }
 
 export default function App() {
-  const publicWebinarMatch = window.location.pathname.match(
-    /^\/webinar\/([^/?#]+)/,
-  );
-  const publicWebinarSlug = publicWebinarMatch?.[1]
-    ? decodeURIComponent(publicWebinarMatch[1])
-    : null;
+  const publicWebinarMatch = window.location.pathname.match(/^\/webinar\/([^/?#]+)/);
+  const publicWebinarSlug = publicWebinarMatch?.[1] ? decodeURIComponent(publicWebinarMatch[1]) : null;
   const [authed, setAuthed] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [showLogin, setShowLogin] = useState<boolean>(false);
 
   useEffect(() => {
-    const token = localStorage.getItem("apex_token");
+    const token = localStorage.getItem('apex_token');
     if (!token) {
       setLoading(false);
       return;
@@ -1190,7 +918,7 @@ export default function App() {
     // rendered in full and then every data call came back 401, which looks
     // like "loaded but empty" rather than "logged out".
     let cancelled = false;
-    fetch("/api/auth/verify", {
+    fetch('/api/auth/verify', {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => {
@@ -1198,8 +926,8 @@ export default function App() {
         if (res.ok) {
           setAuthed(true);
         } else if (res.status === 401) {
-          localStorage.removeItem("apex_token");
-          localStorage.removeItem("apex_operator_session");
+          localStorage.removeItem('apex_token');
+          localStorage.removeItem('apex_operator_session');
         } else {
           // Server trouble that is not a rejection — keep the session and let
           // the panels surface the real error.
@@ -1227,14 +955,13 @@ export default function App() {
       setAuthed(false);
       setShowLogin(true);
     };
-    window.addEventListener("apex:unauthorized", onUnauthorized);
-    return () =>
-      window.removeEventListener("apex:unauthorized", onUnauthorized);
+    window.addEventListener('apex:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('apex:unauthorized', onUnauthorized);
   }, []);
 
   const handleLogout = () => {
-    localStorage.removeItem("apex_token");
-    localStorage.removeItem("apex_operator_session");
+    localStorage.removeItem('apex_token');
+    localStorage.removeItem('apex_operator_session');
     setAuthed(false);
     setShowLogin(true);
   };
@@ -1247,19 +974,19 @@ export default function App() {
     return (
       <div
         style={{
-          minHeight: "100vh",
-          background: "var(--color-apex-bg)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          minHeight: '100vh',
+          background: 'var(--color-apex-bg)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
         }}
       >
         <div
           style={{
-            color: "var(--color-apex-brass)",
-            fontFamily: "var(--font-mono)",
+            color: 'var(--color-apex-brass)',
+            fontFamily: 'var(--font-mono)',
             fontSize: 13,
-            letterSpacing: "0.08em",
+            letterSpacing: '0.08em',
           }}
         >
           Opening desk…
