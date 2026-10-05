@@ -258,6 +258,25 @@ function envPositiveInt(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+/** Default output budget for callers that do not set `config.maxTokens`.
+ *  Historically this was a hard-coded 2048, which silently under-requested
+ *  paid providers that advertise a 131,072-token completion envelope: the
+ *  clamp below sent min(2048, maxOutputTokens) and a reasoning model could
+ *  burn the entire 2,048-token budget thinking, then return content:null.
+ *
+ *  The unset path now defers to the provider's own ceiling, bounded by an
+ *  operator-tunable default (8,192) so we never ask a small free provider
+ *  for more than its envelope, and never default every call to a huge
+ *  paid budget. An explicit `config.maxTokens` is still honored verbatim
+ *  and clamped only to the provider's ceiling — this only changes the
+ *  case where the caller specified nothing. */
+function defaultMaxOutputTokens(providerMaxOutputTokens: number | undefined): number {
+  const boundedDefault = envPositiveInt('APEX_LLM_DEFAULT_MAX_OUTPUT_TOKENS', 8_192);
+  return providerMaxOutputTokens
+    ? Math.min(providerMaxOutputTokens, boundedDefault)
+    : boundedDefault;
+}
+
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'qwen-dashscope-byok',
@@ -713,6 +732,10 @@ type ProviderRequestError = Error & {
   requestedModels?: string[];
   latencyMs?: number;
   routerMetadata?: LLMRouterMetadata;
+  /** Typed failure code. 'length_truncation' marks a response that exhausted
+   *  its output budget (finish_reason 'length' with empty content) — a
+   *  recoverable token-budget artifact, not a provider/credential fault. */
+  code?: 'length_truncation';
 };
 const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
@@ -1289,6 +1312,10 @@ type CompatibleResponse = {
     message?: {
       content?: string | null;
       tool_calls?: unknown;
+      /** OpenRouter reasoning trace for thinking models (e.g. GLM-5.3-FlashX
+       *  `reasoning_content`). Present when the model spent its output budget
+       *  reasoning and returned little or no visible content. */
+      reasoning_content?: string | null;
     };
     finish_reason?: string;
   }>;
@@ -1485,15 +1512,48 @@ async function callCompatibleProvider(
     const toolCalls = parseToolCalls(choice.tool_calls);
     const content = choice.content ?? '';
     // Reasoning models can spend the whole max_tokens budget thinking and
-    // max_tokens budget thinking and return content: null. That must be
-    // treated as a failure so the chain falls through to the next provider —
-    // never as a silent empty success. Tool-call-only turns are exempt.
+    // return content: null. That must be treated as a failure so the chain
+    // falls through to the next provider — never as a silent empty success.
+    // Tool-call-only turns are exempt.
+    const finishReason = parsed.choices?.[0]?.finish_reason;
+    const reasoningContent =
+      typeof choice.reasoning_content === 'string' && choice.reasoning_content.trim()
+        ? choice.reasoning_content
+        : undefined;
     if (!content.trim() && toolCalls.length === 0) {
-      throw new Error(
-        `empty completion content (finish_reason: ${
-          parsed.choices?.[0]?.finish_reason ?? 'unknown'
-        })`,
-      );
+      // finish_reason 'length' with empty content is a token-budget artifact:
+      // the model reasoned until the requested max_tokens ran out. It is NOT
+      // a provider fault, so it must not cool the credential (Part C). When a
+      // reasoning trace is present, keep the turn as a flagged, truncated
+      // response instead of discarding it (Part D).
+      if (finishReason === 'length' && reasoningContent) {
+        return {
+          content: reasoningContent,
+          reasoningContent,
+          truncated: true,
+          toolCalls,
+          usage: {
+            promptTokens: parsed.usage?.prompt_tokens ?? 0,
+            completionTokens: parsed.usage?.completion_tokens ?? 0,
+          },
+          model: `${provider.name}/${servedModel}`,
+          servedModel,
+          requestedModels: [...routedModels],
+          routerMetadata,
+          latencyMs: Date.now() - startedAt,
+          costUsd: Number.isFinite(rawCost) && rawCost >= 0 ? rawCost : null,
+          cachedTokens: Math.max(0, parsed.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+          reasoningTokens: Math.max(0, parsed.usage?.completion_tokens_details?.reasoning_tokens ?? 0),
+        };
+      }
+      const err = Object.assign(
+        new Error(
+          `empty completion content (finish_reason: ${finishReason ?? 'unknown'})`,
+        ),
+        { status: 200 },
+      ) as ProviderRequestError;
+      if (finishReason === 'length') err.code = 'length_truncation';
+      throw err;
     }
 
     return {
@@ -1533,8 +1593,14 @@ async function callProvider(
   const providerConfig: LLMClientConfig = provider.maxOutputTokens
     ? {
         ...config,
+        // Root cause fix (Part B): an unset caller budget used to collapse to
+        // min(2048, maxOutputTokens), silently under-requesting paid providers
+        // that advertise up to 131,072 completion tokens. The unset path now
+        // defers to the provider ceiling bounded by a sane default; an
+        // explicit caller cap is still honored and only clamped to the
+        // provider's own ceiling. Never lower a provider's native envelope.
         maxTokens: Math.min(
-          config.maxTokens ?? 2048,
+          config.maxTokens ?? defaultMaxOutputTokens(provider.maxOutputTokens),
           provider.maxOutputTokens,
         ),
       }
@@ -2024,6 +2090,76 @@ class MultiProviderClient {
                       emergency.messages,
                       tools,
                       this.config,
+                      execution,
+                    );
+                    markProviderAttemptSucceeded(provider, credential.key);
+                    if (provider.paid) {
+                      recordSpend(
+                        provider.name,
+                        result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                      );
+                      recordCachedTokens(provider.name, result.cachedTokens ?? 0);
+                    }
+                    clearCredentialCooldown(credentialId);
+                    recordTokenUsage(provider.name, result.usage);
+                    await recordResponseTelemetry({
+                      response: result,
+                      provider: provider.name,
+                      requestedModels: result.requestedModels ?? [provider.model],
+                      execution: {
+                        ...execution,
+                        role: execution?.role ?? this.config.role,
+                      },
+                      hadTools: Boolean(tools?.length),
+                    });
+                    return result;
+                  } catch {
+                    // The retry was already reserved and therefore correctly
+                    // counted even when it fails. Continue to the next route.
+                  }
+                }
+
+                // Part C (blast-radius control): an empty-content response with
+                // finish_reason 'length' is a token-budget artifact, not a
+                // provider fault — the model reasoned until the requested
+                // max_tokens ran out. Retry the SAME provider/credential once
+                // at the provider's full native envelope before falling
+                // through to the next route (which would cool the paid
+                // credential and dump load onto the free tier).
+                if (err.code === 'length_truncation' && provider.maxOutputTokens) {
+                  try {
+                    const allWindow = independentPlanRoute(provider)
+                      ? null
+                      : emergencyRequestCapacityWindow(Date.now());
+                    const poolWindow = requestWindowForProvider(
+                      provider,
+                      Date.now(),
+                      pacingOverride,
+                    );
+                    const retryAccountWindow =
+                      isOpenRouterProvider(provider) && !provider.paid
+                        ? accountCapacityWindow(credential.key)
+                        : null;
+                    if (
+                      (allWindow && !allWindow.allowed) ||
+                      !poolWindow.allowed ||
+                      (retryAccountWindow && !retryAccountWindow.allowed)
+                    ) {
+                      continue;
+                    }
+
+                    reserveProviderAttempt(provider, credential.key);
+                    const result = await callProvider(
+                      provider,
+                      credential.key,
+                      messages,
+                      tools,
+                      {
+                        ...this.config,
+                        // Retry at the full native envelope so a long
+                        // reasoning chain is not truncated a second time.
+                        maxTokens: provider.maxOutputTokens,
+                      },
                       execution,
                     );
                     markProviderAttemptSucceeded(provider, credential.key);

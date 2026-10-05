@@ -64,6 +64,17 @@ export interface LLMResponse {
   costUsd?: number | null;
   cachedTokens?: number;
   reasoningTokens?: number;
+  /** Reasoning trace returned by the provider (e.g. OpenRouter
+   *  `message.reasoning_content`) when the visible `content` is empty. A
+   *  thinking-only turn is still a valid turn: without this, a model that
+   *  spends its whole output budget reasoning returns content:null and the
+   *  response is discarded even though the chain produced a usable trace. */
+  reasoningContent?: string;
+  /** True when the provider stopped with finish_reason 'length' — the output
+   *  budget was exhausted mid-turn. The agent loop should treat the response
+   *  as partial (retry at a larger budget or surface the truncation) rather
+   *  than as a complete answer. */
+  truncated?: boolean;
   // Set when the response was served by a provider that does not reliably
   // emit structured tool calls. The agent loop can use this to prompt again.
   degraded?: boolean;
