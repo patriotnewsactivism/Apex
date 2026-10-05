@@ -692,6 +692,18 @@ pin the order. Not yet production-verified.
 **Rollback.** Revert the commit. Setting `APEX_PAID_FALLBACK_ENABLED=false`
 removes both paid routes without a deploy.
 
+**Addendum (2026-10-05, after deploy).** Production showed the split working
+(tasks ran on `openrouter-deepseek-v4-flash-paid`) and one failure mode: a
+DevOps task, whose role output budget is 4,096 tokens, failed with "empty
+completion content (finish_reason: length)" — DeepSeek's reasoning filled the
+budget before any answer, and with Nous unfunded and the free pool governed
+there was no route left. Both paid routes now request at least
+`PAID_MIN_OUTPUT_TOKENS` (16,384) output tokens (`minOutputTokens` on the spec,
+applied in `prepareProviderRequest`). Billing is per generated token, so the
+ceiling costs nothing when the answer is short; it only stops paying for
+reasoning that ends without an answer. Free routes keep the role budget.
+`verify-paid-fallback-request.ts` pins both; removing the floor fails it.
+
 ## How to change an architecture decision
 
 A proposed change should include:
