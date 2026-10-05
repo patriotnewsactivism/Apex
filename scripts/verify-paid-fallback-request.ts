@@ -46,6 +46,7 @@ async function main(): Promise<void> {
   for (const env of ROUTE_ENVS) delete process.env[env];
 
   const sent: Sent[] = [];
+  let nousUnfunded = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (!url.endsWith('/chat/completions')) return new Response('{}', { status: 404 });
@@ -54,6 +55,16 @@ async function main(): Promise<void> {
       body: JSON.parse(String(init?.body ?? '{}')),
       headers: Object.fromEntries(new Headers(init?.headers).entries()),
     });
+    if (nousUnfunded && url.includes('nousresearch.com')) {
+      // Nous Portal's exact answer for an unfunded key on 2026-10-05.
+      return new Response(
+        JSON.stringify({
+          status: 401,
+          message: 'Your API key is invalid, blocked or out of funds. Please go visit the portal to sort that out: https://portal.nousresearch.com ',
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      );
+    }
     return new Response(
       JSON.stringify({
         id: 'guard',
@@ -104,6 +115,28 @@ async function main(): Promise<void> {
     'it still sends the `usage` extension and OpenRouter headers',
     free !== undefined && 'usage' in free.body && 'x-openrouter-metadata' in free.headers,
     { body: free?.body, headers: free?.headers },
+  );
+
+  // 3. An unfunded Nous key is a capacity pause, not a failed task: the work
+  //    waits, and the route is tried again after the credit cooldown.
+  delete process.env.OPENROUTER_FREE_API_KEY;
+  process.env.NOUS_API_KEY = 'guard-not-a-real-key-unfunded';
+  process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
+  nousUnfunded = true;
+  const unfunded = await ask().then(
+    () => 'no error',
+    (err: unknown) => (err instanceof Error ? err.message : String(err)),
+  );
+  const resumeAt = Date.parse(/resume-at=(\S+)/.exec(unfunded)?.[1] ?? '');
+  check(
+    'an "out of funds" 401 from Nous pauses for capacity instead of failing the task',
+    unfunded.startsWith('APEX LLM capacity paused.'),
+    unfunded.slice(0, 300),
+  );
+  check(
+    'the paid route is tried again within hours, not only at the next free-pool reset',
+    Number.isFinite(resumeAt) && resumeAt - Date.now() > 5 * 3_600_000 && resumeAt - Date.now() <= 6 * 3_600_000 + 60_000,
+    { resumeAt: Number.isFinite(resumeAt) ? new Date(resumeAt).toISOString() : null },
   );
 
   console.log(
