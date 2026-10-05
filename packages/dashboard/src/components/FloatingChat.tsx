@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
-import { MessageSquare, Phone } from 'lucide-react';
-import { ChatPanel } from './QuickChat.js';
-import { useIsMobile } from '../hooks/useIsMobile.js';
-import type { LiveVoiceStatus } from '../hooks/useLiveVoiceCall.js';
+import { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { MessageSquare, Phone } from "lucide-react";
+import { ChatPanel } from "./QuickChat.js";
+import { useIsMobile } from "../hooks/useIsMobile.js";
+import type { LiveVoiceStatus } from "../hooks/useLiveVoiceCall.js";
+import type { CopilotUiController } from "../copilot/actions.js";
 
 // FloatingChat mounts ChatPanel ONCE, outside the page swap in App.tsx.
 // That is the whole point: the chat (and any live voice call) survives
@@ -25,22 +26,32 @@ import type { LiveVoiceStatus } from '../hooks/useLiveVoiceCall.js';
 interface FloatingChatProps {
   pageId: string;
   pageTitle: string;
+  copilot: CopilotUiController;
 }
 
-export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
+export function FloatingChat({
+  pageId,
+  pageTitle,
+  copilot,
+}: FloatingChatProps) {
   const isMobile = useIsMobile();
   // Desktop starts open; mobile starts minimized so it doesn't cover
   // content on arrival (the Chat nav item or the FAB expands it).
   const [open, setOpen] = useState(!isMobile);
-  const [voiceStatus, setVoiceStatus] = useState<LiveVoiceStatus>('idle');
+  const [voiceStatus, setVoiceStatus] = useState<LiveVoiceStatus>("idle");
   const shellRef = useRef<HTMLDivElement>(null);
   // Position once dragged: {left, top} in px. null = default docked corner.
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  const dragRef = useRef<{ startX: number; startY: number; origLeft: number; origTop: number } | null>(null);
+  const dragRef = useRef<{
+    startX: number;
+    startY: number;
+    origLeft: number;
+    origTop: number;
+  } | null>(null);
 
   // Navigating to the Chat page brings the panel up.
   useEffect(() => {
-    if (pageId === 'chat') setOpen(true);
+    if (pageId === "chat") setOpen(true);
   }, [pageId]);
 
   // Keep the shell inside the viewport across resizes.
@@ -54,26 +65,37 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
       setPos((prev) =>
         prev
           ? {
-              left: Math.min(Math.max(8, prev.left), Math.max(8, window.innerWidth - w - 8)),
-              top: Math.min(Math.max(8, prev.top), Math.max(8, window.innerHeight - h - 8)),
+              left: Math.min(
+                Math.max(8, prev.left),
+                Math.max(8, window.innerWidth - w - 8),
+              ),
+              top: Math.min(
+                Math.max(8, prev.top),
+                Math.max(8, window.innerHeight - h - 8),
+              ),
             }
           : prev,
       );
     };
-    window.addEventListener('resize', clamp);
+    window.addEventListener("resize", clamp);
     clamp();
-    return () => window.removeEventListener('resize', clamp);
+    return () => window.removeEventListener("resize", clamp);
   }, [pos]);
 
   const onHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (isMobile) return; // touch scrolling owns pointer events on mobile
-    if ((e.target as HTMLElement).closest('button')) return; // don't drag from a control
+    if ((e.target as HTMLElement).closest("button")) return; // don't drag from a control
     const el = shellRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const origLeft = pos ? pos.left : rect.left;
     const origTop = pos ? pos.top : rect.top;
-    dragRef.current = { startX: e.clientX, startY: e.clientY, origLeft, origTop };
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origLeft,
+      origTop,
+    };
     setPos({ left: origLeft, top: origTop });
 
     const onMove = (ev: PointerEvent) => {
@@ -93,14 +115,14 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
     };
     const onUp = () => {
       dragRef.current = null;
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
     };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
-  const liveCall = voiceStatus === 'live' || voiceStatus === 'connecting';
+  const liveCall = voiceStatus === "live" || voiceStatus === "connecting";
 
   if (!open) {
     return (
@@ -110,7 +132,7 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
         whileTap={{ scale: 0.94 }}
         aria-label="Open chat"
         style={{
-          position: 'fixed',
+          position: "fixed",
           right: 16,
           bottom: isMobile ? 84 : 24,
           // The mobile drawer is z-index 50. Keep chat above the bottom bar
@@ -118,16 +140,17 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
           zIndex: isMobile ? 35 : 60,
           width: 54,
           height: 54,
-          borderRadius: '50%',
-          border: '1px solid rgba(90,158,174,0.3)',
-          background: 'linear-gradient(135deg, rgba(90,158,174,0.25), rgba(139,126,200,0.18))',
-          backdropFilter: 'blur(10px)',
-          color: 'var(--color-apex-text)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          boxShadow: '0 6px 24px rgba(0,0,0,0.35)',
+          borderRadius: "50%",
+          border: "1px solid rgba(90,158,174,0.3)",
+          background:
+            "linear-gradient(135deg, rgba(90,158,174,0.25), rgba(139,126,200,0.18))",
+          backdropFilter: "blur(10px)",
+          color: "var(--color-apex-text)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          boxShadow: "0 6px 24px rgba(0,0,0,0.35)",
         }}
       >
         {liveCall ? <Phone size={20} /> : <MessageSquare size={20} />}
@@ -136,14 +159,14 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
             animate={{ opacity: [1, 0.25, 1] }}
             transition={{ repeat: Infinity, duration: 1.4 }}
             style={{
-              position: 'absolute',
+              position: "absolute",
               top: 4,
               right: 4,
               width: 10,
               height: 10,
-              borderRadius: '50%',
-              background: '#6a9f78',
-              boxShadow: '0 0 8px #6a9f78',
+              borderRadius: "50%",
+              background: "#6a9f78",
+              boxShadow: "0 0 8px #6a9f78",
             }}
           />
         )}
@@ -153,20 +176,20 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
 
   const shellStyle: React.CSSProperties = isMobile
     ? {
-        position: 'fixed',
+        position: "fixed",
         left: 8,
         right: 8,
         bottom: 76, // above the bottom nav
-        height: 'min(58vh, 500px)',
+        height: "min(58vh, 500px)",
         // The mobile drawer is z-index 50. Keep chat above the bottom bar
         // (30) but below that drawer so navigation remains usable.
         zIndex: isMobile ? 35 : 60,
       }
     : {
-        position: 'fixed',
+        position: "fixed",
         ...(pos ? { left: pos.left, top: pos.top } : { right: 24, bottom: 24 }),
         width: 420,
-        height: 'min(72vh, 640px)',
+        height: "min(72vh, 640px)",
         zIndex: 60,
       };
 
@@ -176,13 +199,13 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
       style={{
         ...shellStyle,
         borderRadius: 16,
-        background: 'rgba(13,17,23,0.94)',
-        border: '1px solid rgba(90,158,174,0.22)',
-        backdropFilter: 'blur(14px)',
-        boxShadow: '0 18px 60px rgba(0,0,0,0.5)',
-        overflow: 'hidden',
-        display: 'flex',
-        flexDirection: 'column',
+        background: "rgba(13,17,23,0.94)",
+        border: "1px solid rgba(90,158,174,0.22)",
+        backdropFilter: "blur(14px)",
+        boxShadow: "0 18px 60px rgba(0,0,0,0.5)",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
       }}
     >
       <ChatPanel
@@ -191,6 +214,7 @@ export function FloatingChat({ pageId, pageTitle }: FloatingChatProps) {
         onMinimize={() => setOpen(false)}
         onHeaderPointerDown={onHeaderPointerDown}
         onVoiceStatus={setVoiceStatus}
+        copilot={copilot}
       />
     </div>
   );

@@ -6,9 +6,10 @@ import type {
   MissionListResponse,
   MissionStats,
   UpdateMissionResponse,
-} from './missions.js';
+} from "./missions.js";
+import type { CopilotAction } from "../copilot/actions.js";
 
-const API = '/api';
+const API = "/api";
 
 export interface SendJobView {
   id: string;
@@ -40,28 +41,28 @@ type ApiErrorBody = {
   };
 };
 
-function formatApiErrorDetails(details: ApiErrorBody['details']): string {
-  if (!details) return '';
+function formatApiErrorDetails(details: ApiErrorBody["details"]): string {
+  if (!details) return "";
   const messages = [...(details.formErrors ?? [])];
   for (const [field, errors] of Object.entries(details.fieldErrors ?? {})) {
     for (const error of errors ?? []) messages.push(`${field}: ${error}`);
   }
-  return messages.join('; ');
+  return messages.join("; ");
 }
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('apex_token');
+  const token = localStorage.getItem("apex_token");
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...options?.headers as Record<string, string>,
+    "Content-Type": "application/json",
+    ...(options?.headers as Record<string, string>),
   };
 
   if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+    headers["Authorization"] = `Bearer ${token}`;
   }
-  const operatorSession = localStorage.getItem('apex_operator_session');
-  if (operatorSession) headers['X-Apex-Operator-Session'] = operatorSession;
-  headers['X-Apex-Caller'] = 'operator-dashboard';
+  const operatorSession = localStorage.getItem("apex_operator_session");
+  if (operatorSession) headers["X-Apex-Operator-Session"] = operatorSession;
+  headers["X-Apex-Caller"] = "operator-dashboard";
 
   const res = await fetch(`${API}${path}`, {
     headers,
@@ -72,11 +73,13 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       // The token is no longer the configured one. Drop it and tell App to show
       // the login screen, rather than letting each panel render its own empty
       // state and leave the operator staring at a dashboard with no data.
-      localStorage.removeItem('apex_token');
-      localStorage.removeItem('apex_operator_session');
-      window.dispatchEvent(new Event('apex:unauthorized'));
+      localStorage.removeItem("apex_token");
+      localStorage.removeItem("apex_operator_session");
+      window.dispatchEvent(new Event("apex:unauthorized"));
     }
-    const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
+    const err = (await res
+      .json()
+      .catch(() => ({ error: res.statusText }))) as ApiErrorBody;
     const summary = err.error ?? err.message ?? `HTTP ${res.status}`;
     const details = formatApiErrorDetails(err.details);
     throw new Error(details ? `${summary}: ${details}` : summary);
@@ -87,17 +90,19 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 /** Authenticated binary fetch. An <audio src> cannot send the bearer token, so
  *  call recordings are pulled here and handed to the player as an object URL. */
 async function apiFetchBlob(path: string): Promise<Blob> {
-  const token = localStorage.getItem('apex_token');
+  const token = localStorage.getItem("apex_token");
   const headers: Record<string, string> = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API}${path}`, { headers });
   if (!res.ok) {
     if (res.status === 401) {
-      localStorage.removeItem('apex_token');
-      localStorage.removeItem('apex_operator_session');
-      window.dispatchEvent(new Event('apex:unauthorized'));
+      localStorage.removeItem("apex_token");
+      localStorage.removeItem("apex_operator_session");
+      window.dispatchEvent(new Event("apex:unauthorized"));
     }
-    const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
+    const err = (await res
+      .json()
+      .catch(() => ({ error: res.statusText }))) as ApiErrorBody;
     throw new Error(err.error ?? err.message ?? `HTTP ${res.status}`);
   }
   return res.blob();
@@ -107,17 +112,17 @@ async function apiFetchBlob(path: string): Promise<Blob> {
  *  answers in plain text on purpose — it is meant to be pasted into an issue or a
  *  chat, so parsing it into JSON and re-rendering it would defeat the point. */
 async function apiFetchText(path: string): Promise<string> {
-  const token = localStorage.getItem('apex_token');
+  const token = localStorage.getItem("apex_token");
   const headers: Record<string, string> = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API}${path}`, { headers });
   if (!res.ok) {
     // Same 401 handling as apiFetch — otherwise an expired token leaves the
     // button silently dead instead of returning the operator to login.
     if (res.status === 401) {
-      localStorage.removeItem('apex_token');
-      localStorage.removeItem('apex_operator_session');
-      window.dispatchEvent(new Event('apex:unauthorized'));
+      localStorage.removeItem("apex_token");
+      localStorage.removeItem("apex_operator_session");
+      window.dispatchEvent(new Event("apex:unauthorized"));
     }
     throw new Error(`HTTP ${res.status}`);
   }
@@ -139,19 +144,23 @@ export interface Goal {
 }
 
 export interface ChatTurn {
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
 }
 
 export interface ChatResponse {
   reply: string;
   goalCreated?: { id: string; title: string };
+  copilot?: {
+    enabled: boolean;
+    actions: CopilotAction[];
+  };
 }
 
 export interface VoiceChatTurn {
   id: string;
   sessionId: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   text: string;
   createdAt: string;
 }
@@ -166,7 +175,7 @@ export interface VoiceChatSession {
 
 // ─── Diagnostics ──────────────────────────────────────────────────────────────
 
-export type DiagnosticSeverity = 'critical' | 'warning' | 'ok';
+export type DiagnosticSeverity = "critical" | "warning" | "ok";
 
 export interface DiagnosticFinding {
   severity: DiagnosticSeverity;
@@ -178,19 +187,28 @@ export interface DiagnosticFinding {
 
 export interface SpendSnapshot {
   turnEconomy?: {
-    scope: 'process'; since: string; requests: number; successfulTools: number; failedTools: number;
-    bundlesCreated: number; itemsCoalesced: number; deterministicTasks: number; completedTasks: number;
-    successfulToolsPerRequest: number | null; requestsPerCompletedTask: number | null;
-    bundlingEnabled: boolean; bundleWindowMs: number;
+    scope: "process";
+    since: string;
+    requests: number;
+    successfulTools: number;
+    failedTools: number;
+    bundlesCreated: number;
+    itemsCoalesced: number;
+    deterministicTasks: number;
+    completedTasks: number;
+    successfulToolsPerRequest: number | null;
+    requestsPerCompletedTask: number | null;
+    bundlingEnabled: boolean;
+    bundleWindowMs: number;
   };
   day: string;
-  persistence: 'postgres+memory' | 'memory-only';
+  persistence: "postgres+memory" | "memory-only";
   spentUsd: number;
   capUsd: number;
   releasedUsd: number;
   remainingUsd: number;
   pacingEnabled: boolean;
-  state: 'disabled' | 'available' | 'paced' | 'daily_cap';
+  state: "disabled" | "available" | "paced" | "daily_cap";
   resumeAt: string | null;
   projectedUsd: number | null;
   hourlyBurnUsd: number | null;
@@ -208,13 +226,20 @@ export interface SpendSnapshot {
     ratePerMinute: number;
     pacingEnabled: boolean;
     releasedSoFar: number;
-    persistence: 'postgres+memory' | 'memory-only';
-    accounts?: Array<{ account: string; openRouterAccount: string | null; requests: number;
-      accountRequests: number; cap: number; capReached: boolean; percentOfCap: number | null }>;
+    persistence: "postgres+memory" | "memory-only";
+    accounts?: Array<{
+      account: string;
+      openRouterAccount: string | null;
+      requests: number;
+      accountRequests: number;
+      cap: number;
+      capReached: boolean;
+      percentOfCap: number | null;
+    }>;
     allProviderUsed: number;
     emergencyCap: number;
     directProviders: Array<{
-      pool: 'groq' | 'gemini';
+      pool: "groq" | "gemini";
       requests: number;
       cap: number;
       remaining: number | null;
@@ -228,7 +253,7 @@ export interface SpendSnapshot {
         pacingAllowance: number;
         availableRequests: number | null;
         allowed: boolean;
-        reason: 'uncapped' | 'available' | 'paced' | 'daily_cap';
+        reason: "uncapped" | "available" | "paced" | "daily_cap";
         resumeAt: string | null;
       };
     }>;
@@ -237,8 +262,16 @@ export interface SpendSnapshot {
 }
 
 export interface GovernanceStatus {
-  loop: Array<'observe' | 'hypothesize' | 'verify' | 'implement' | 'monitor' | 'learn' | 'scale'>;
-  implementationGate: 'ready' | 'blocked';
+  loop: Array<
+    | "observe"
+    | "hypothesize"
+    | "verify"
+    | "implement"
+    | "monitor"
+    | "learn"
+    | "scale"
+  >;
+  implementationGate: "ready" | "blocked";
   runtime: {
     repoRoot: string;
     buildSha: string;
@@ -260,13 +293,18 @@ export interface GovernanceStatus {
     } | null;
   };
   outbound: {
-    mode: 'fail_closed';
+    mode: "fail_closed";
     evaluator: string;
     channels: string[];
     requiresConsent: boolean;
     requiresAllowedGate: boolean;
     gateCounts: { allowed: number; pending: number; denied: number };
-    consentCounts: { granted: number; unknown: number; denied: number; revoked: number };
+    consentCounts: {
+      granted: number;
+      unknown: number;
+      denied: number;
+      revoked: number;
+    };
     scalingRule: string;
   };
   configuration: {
@@ -285,7 +323,12 @@ export interface GovernanceStatus {
 export interface DiagnosticsReport {
   status: DiagnosticSeverity;
   generatedAt: string;
-  build: { sha: string | null; builtAt: string | null; startedAt: string; uptimeSeconds: number };
+  build: {
+    sha: string | null;
+    builtAt: string | null;
+    startedAt: string;
+    uptimeSeconds: number;
+  };
   agents: { total: number; statuses: Record<string, number> };
   taskQueue: {
     attempts: number;
@@ -296,7 +339,11 @@ export interface DiagnosticsReport {
     lastFailureMessage: string | null;
   };
   capacity: {
-    deferrals: { lastMinute: number; last15Minutes: number; parkedForMs: number };
+    deferrals: {
+      lastMinute: number;
+      last15Minutes: number;
+      parkedForMs: number;
+    };
     pausedProviders: string[];
     configuredProviders: number;
   };
@@ -304,15 +351,14 @@ export interface DiagnosticsReport {
   findings: DiagnosticFinding[];
 }
 
-
 export interface WebinarAdminSession {
   id: string;
   slug: string;
   title: string;
   description: string | null;
   host_name: string;
-  mode: 'autonomous' | 'cohost';
-  status: 'draft' | 'live' | 'paused' | 'ended';
+  mode: "autonomous" | "cohost";
+  status: "draft" | "live" | "paused" | "ended";
   autonomous: boolean;
   current_segment: number;
   segment_started_at: string | null;
@@ -357,7 +403,7 @@ export interface WebinarAdminDashboard {
     answered_at: string | null;
   }>;
   producer: {
-    timing: 'waiting' | 'on_track' | 'move_on' | 'human_floor' | 'complete';
+    timing: "waiting" | "on_track" | "move_on" | "human_floor" | "complete";
     elapsedSeconds: number;
     targetSeconds: number;
     secondsRemaining: number;
@@ -429,7 +475,12 @@ export interface CrmTimelineRow {
   bodyHtml: string | null;
   provider: string | null;
   providerMessageId: string | null;
-  attachments: Array<{ filename?: string; storageKey?: string; contentType?: string; sizeBytes?: number }>;
+  attachments: Array<{
+    filename?: string;
+    storageKey?: string;
+    contentType?: string;
+    sizeBytes?: number;
+  }>;
 }
 
 export interface CrmMeeting {
@@ -457,96 +508,161 @@ export interface CrmUnmatched {
 }
 
 export interface CrmDuplicate {
-  kind: 'email' | 'phone' | 'domain';
+  kind: "email" | "phone" | "domain";
   value: string;
   contactIds: string[];
 }
 
 export const api = {
   auth: {
-    websocketTicket: () => apiFetch<{ ticket: string }>('/auth/websocket-ticket', { method: 'POST' }),
+    websocketTicket: () =>
+      apiFetch<{ ticket: string }>("/auth/websocket-ticket", {
+        method: "POST",
+      }),
   },
 
   sendSafeguard: {
-    list: () => apiFetch<{ locked: boolean; jobs: SendJobView[] }>('/send-safeguard/jobs'),
-    status: () => apiFetch<{ locked: boolean }>('/send-safeguard/status'),
-    confirm: (id: string, step: 1 | 2) => apiFetch<{ job: { id: string; status: string } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/confirm`, {
-      method: 'POST',
-      body: JSON.stringify({ step, source: 'operator-dashboard' }),
-    }),
-    code: (id: string, code: string) => apiFetch<{ job: { id: string; status: string } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/code`, {
-      method: 'POST',
-      body: JSON.stringify({ code, source: 'operator-dashboard' }),
-    }),
-    release: (id: string, recipientId: string) => apiFetch<{ dispatched: { sent: boolean } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/release`, {
-      method: 'POST',
-      body: JSON.stringify({ recipientId, source: 'operator-dashboard' }),
-    }),
-    stop: (id: string) => apiFetch<{ job: { status: string } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/stop`, {
-      method: 'POST',
-      body: JSON.stringify({ source: 'operator-dashboard' }),
-    }),
-    fullAuto: (id: string, fullAuto: boolean) => apiFetch<{ job: { fullAuto: boolean } }>(`/send-safeguard/jobs/${encodeURIComponent(id)}/full-auto`, {
-      method: 'POST',
-      body: JSON.stringify({ fullAuto, source: 'operator-dashboard' }),
-    }),
-    setCode: (code: string, password: string) => apiFetch<{ ok: boolean }>('/send-safeguard/code', {
-      method: 'POST',
-      body: JSON.stringify({ code, password, source: 'operator-dashboard' }),
-    }),
-    unlock: (password: string) => apiFetch<{ ok: boolean }>('/send-safeguard/unlock', {
-      method: 'POST',
-      body: JSON.stringify({ password, source: 'operator-dashboard' }),
-    }),
+    list: () =>
+      apiFetch<{ locked: boolean; jobs: SendJobView[] }>(
+        "/send-safeguard/jobs",
+      ),
+    status: () => apiFetch<{ locked: boolean }>("/send-safeguard/status"),
+    confirm: (id: string, step: 1 | 2) =>
+      apiFetch<{ job: { id: string; status: string } }>(
+        `/send-safeguard/jobs/${encodeURIComponent(id)}/confirm`,
+        {
+          method: "POST",
+          body: JSON.stringify({ step, source: "operator-dashboard" }),
+        },
+      ),
+    code: (id: string, code: string) =>
+      apiFetch<{ job: { id: string; status: string } }>(
+        `/send-safeguard/jobs/${encodeURIComponent(id)}/code`,
+        {
+          method: "POST",
+          body: JSON.stringify({ code, source: "operator-dashboard" }),
+        },
+      ),
+    release: (id: string, recipientId: string) =>
+      apiFetch<{ dispatched: { sent: boolean } }>(
+        `/send-safeguard/jobs/${encodeURIComponent(id)}/release`,
+        {
+          method: "POST",
+          body: JSON.stringify({ recipientId, source: "operator-dashboard" }),
+        },
+      ),
+    stop: (id: string) =>
+      apiFetch<{ job: { status: string } }>(
+        `/send-safeguard/jobs/${encodeURIComponent(id)}/stop`,
+        {
+          method: "POST",
+          body: JSON.stringify({ source: "operator-dashboard" }),
+        },
+      ),
+    fullAuto: (id: string, fullAuto: boolean) =>
+      apiFetch<{ job: { fullAuto: boolean } }>(
+        `/send-safeguard/jobs/${encodeURIComponent(id)}/full-auto`,
+        {
+          method: "POST",
+          body: JSON.stringify({ fullAuto, source: "operator-dashboard" }),
+        },
+      ),
+    setCode: (code: string, password: string) =>
+      apiFetch<{ ok: boolean }>("/send-safeguard/code", {
+        method: "POST",
+        body: JSON.stringify({ code, password, source: "operator-dashboard" }),
+      }),
+    unlock: (password: string) =>
+      apiFetch<{ ok: boolean }>("/send-safeguard/unlock", {
+        method: "POST",
+        body: JSON.stringify({ password, source: "operator-dashboard" }),
+      }),
   },
-
 
   webinars: {
     list: () =>
-      apiFetch<{ sessions: WebinarAdminSession[] }>('/webinar/admin/sessions').then((r) => r.sessions),
-    create: (body?: { title?: string; description?: string; mode?: 'autonomous' | 'cohost'; ctaLabel?: string; ctaUrl?: string }) =>
-      apiFetch<{ session: WebinarAdminSession }>('/webinar/admin/sessions', {
-        method: 'POST',
+      apiFetch<{ sessions: WebinarAdminSession[] }>(
+        "/webinar/admin/sessions",
+      ).then((r) => r.sessions),
+    create: (body?: {
+      title?: string;
+      description?: string;
+      mode?: "autonomous" | "cohost";
+      ctaLabel?: string;
+      ctaUrl?: string;
+    }) =>
+      apiFetch<{ session: WebinarAdminSession }>("/webinar/admin/sessions", {
+        method: "POST",
         body: JSON.stringify(body ?? {}),
       }).then((r) => r.session),
     dashboard: (id: string) =>
-      apiFetch<WebinarAdminDashboard>(`/webinar/admin/${encodeURIComponent(id)}/dashboard`),
+      apiFetch<WebinarAdminDashboard>(
+        `/webinar/admin/${encodeURIComponent(id)}/dashboard`,
+      ),
     start: (id: string) =>
-      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/start`, { method: 'POST' }).then((r) => r.session),
+      apiFetch<{ session: WebinarAdminSession }>(
+        `/webinar/admin/${encodeURIComponent(id)}/start`,
+        { method: "POST" },
+      ).then((r) => r.session),
     pause: (id: string) =>
-      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/pause`, { method: 'POST' }).then((r) => r.session),
+      apiFetch<{ session: WebinarAdminSession }>(
+        `/webinar/admin/${encodeURIComponent(id)}/pause`,
+        { method: "POST" },
+      ).then((r) => r.session),
     resume: (id: string) =>
-      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/resume`, { method: 'POST' }).then((r) => r.session),
+      apiFetch<{ session: WebinarAdminSession }>(
+        `/webinar/admin/${encodeURIComponent(id)}/resume`,
+        { method: "POST" },
+      ).then((r) => r.session),
     end: (id: string) =>
-      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/end`, { method: 'POST' }).then((r) => r.session),
+      apiFetch<{ session: WebinarAdminSession }>(
+        `/webinar/admin/${encodeURIComponent(id)}/end`,
+        { method: "POST" },
+      ).then((r) => r.session),
     segment: (id: string, segment: number) =>
-      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/segment`, {
-        method: 'POST',
-        body: JSON.stringify({ segment }),
-      }).then((r) => r.session),
+      apiFetch<{ session: WebinarAdminSession }>(
+        `/webinar/admin/${encodeURIComponent(id)}/segment`,
+        {
+          method: "POST",
+          body: JSON.stringify({ segment }),
+        },
+      ).then((r) => r.session),
     mode: (id: string, autonomous: boolean) =>
-      apiFetch<{ session: WebinarAdminSession }>(`/webinar/admin/${encodeURIComponent(id)}/mode`, {
-        method: 'POST',
-        body: JSON.stringify({ autonomous }),
-      }).then((r) => r.session),
+      apiFetch<{ session: WebinarAdminSession }>(
+        `/webinar/admin/${encodeURIComponent(id)}/mode`,
+        {
+          method: "POST",
+          body: JSON.stringify({ autonomous }),
+        },
+      ).then((r) => r.session),
     message: (id: string, message: string) =>
-      apiFetch<{ ok: boolean }>(`/webinar/admin/${encodeURIComponent(id)}/message`, {
-        method: 'POST',
-        body: JSON.stringify({ message }),
-      }),
+      apiFetch<{ ok: boolean }>(
+        `/webinar/admin/${encodeURIComponent(id)}/message`,
+        {
+          method: "POST",
+          body: JSON.stringify({ message }),
+        },
+      ),
     followup: (id: string) =>
       apiFetch<{ goalId: string; qualifiedAttendees: number }>(
         `/webinar/admin/${encodeURIComponent(id)}/followup`,
-        { method: 'POST' },
+        { method: "POST" },
       ),
   },
   goals: {
-    list: () => apiFetch<{ goals: Goal[] }>('/goals').then((r) => r.goals),
-    get: (id: string) => apiFetch<{ goal: Goal }>(`/goals/${id}`).then((r) => r.goal),
+    list: () => apiFetch<{ goals: Goal[] }>("/goals").then((r) => r.goals),
+    get: (id: string) =>
+      apiFetch<{ goal: Goal }>(`/goals/${id}`).then((r) => r.goal),
     submit: (data: { title: string; description: string; priority?: number }) =>
-      apiFetch<{ goalId: string }>('/goals', { method: 'POST', body: JSON.stringify(data) }),
+      apiFetch<{ goalId: string }>("/goals", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
     updateStatus: (id: string, status: string) =>
-      apiFetch(`/goals/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+      apiFetch(`/goals/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }),
   },
 
   chat: {
@@ -554,42 +670,77 @@ export const api = {
     // directly or deploy a goal. See packages/api-server/src/routes/chat.ts.
     // `page` = the Apex screen Don is currently viewing, sent so the model
     // can resolve "this/that" references to what's on his screen.
-    message: (message: string, history: ChatTurn[], page?: string) =>
-      apiFetch<ChatResponse>('/chat/message', {
-        method: 'POST',
-        body: JSON.stringify({ message, history, page }),
+    message: (
+      message: string,
+      history: ChatTurn[],
+      page?: string,
+      copilot?: { enabled: boolean; pageId?: string; sessionId: string },
+    ) =>
+      apiFetch<ChatResponse>("/chat/message", {
+        method: "POST",
+        body: JSON.stringify({ message, history, page, copilot }),
+      }),
+    copilotStatus: () => apiFetch<{ enabled: boolean }>("/chat/copilot/status"),
+    auditCopilotAction: (
+      sessionId: string,
+      action: CopilotAction,
+      status: "executed" | "failed" | "stopped",
+      reason?: string,
+    ) =>
+      apiFetch<{ logged: true }>("/chat/copilot/audit", {
+        method: "POST",
+        body: JSON.stringify({ sessionId, action, status, reason }),
       }),
     // Durable history of live browser voice calls (live-voice.ts) — every
     // attempt, including ones that never connected, since the session row is
     // written before Deepgram is even contacted.
     voiceSessions: (limit = 20) =>
-      apiFetch<{ sessions: VoiceChatSession[] }>(`/chat/voice-sessions?limit=${limit}`).then((r) => r.sessions),
+      apiFetch<{ sessions: VoiceChatSession[] }>(
+        `/chat/voice-sessions?limit=${limit}`,
+      ).then((r) => r.sessions),
   },
 
   tasks: {
     list: (params?: { status?: string; agentId?: string; goalId?: string }) => {
-      const qs = new URLSearchParams(params as Record<string, string>).toString();
-      return apiFetch<{ tasks: Task[] }>(`/tasks${qs ? `?${qs}` : ''}`).then((r) => r.tasks);
+      const qs = new URLSearchParams(
+        params as Record<string, string>,
+      ).toString();
+      return apiFetch<{ tasks: Task[] }>(`/tasks${qs ? `?${qs}` : ""}`).then(
+        (r) => r.tasks,
+      );
     },
-    get: (id: string) => apiFetch<{ task: Task }>(`/tasks/${id}`).then((r) => r.task),
+    get: (id: string) =>
+      apiFetch<{ task: Task }>(`/tasks/${id}`).then((r) => r.task),
     update: (id: string, data: Partial<Task>) =>
-      apiFetch(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+      apiFetch(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   },
 
   agents: {
-    list: () => apiFetch<{ agents: Agent[] }>('/agents').then((r) => r.agents),
-    get: (id: string) => apiFetch<{ agent: Agent }>(`/agents/${id}`).then((r) => r.agent),
-    memory: (id: string) => apiFetch<{ memories: Memory[] }>(`/agents/${id}/memory`).then((r) => r.memories),
-    reconfigure: (id: string, data: { concurrency?: number; maxIterations?: number }) =>
-      apiFetch<{ success: boolean; applied: Record<string, unknown> }>(`/agents/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(data),
-      }),
+    list: () => apiFetch<{ agents: Agent[] }>("/agents").then((r) => r.agents),
+    get: (id: string) =>
+      apiFetch<{ agent: Agent }>(`/agents/${id}`).then((r) => r.agent),
+    memory: (id: string) =>
+      apiFetch<{ memories: Memory[] }>(`/agents/${id}/memory`).then(
+        (r) => r.memories,
+      ),
+    reconfigure: (
+      id: string,
+      data: { concurrency?: number; maxIterations?: number },
+    ) =>
+      apiFetch<{ success: boolean; applied: Record<string, unknown> }>(
+        `/agents/${id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(data),
+        },
+      ),
   },
 
   logs: {
     list: (limit?: number) =>
-      apiFetch<{ logs: LogEntry[] }>(`/logs${limit ? `?limit=${limit}` : ''}`).then((r) => r.logs),
+      apiFetch<{ logs: LogEntry[] }>(
+        `/logs${limit ? `?limit=${limit}` : ""}`,
+      ).then((r) => r.logs),
     activity: (limit = 2000) =>
       apiFetch<{ logs: LogEntry[] }>(
         `/logs?kind=operator_activity&limit=${Math.max(1, Math.min(limit, 5000))}`,
@@ -599,42 +750,75 @@ export const api = {
   approvals: {
     // kind defaults server-side to 'approval' — gated calls where an agent is
     // actually blocked. Pass 'escalation' for the ask-Don messages.
-    list: (status = 'pending', kind: ApprovalKind = 'approval') =>
+    list: (status = "pending", kind: ApprovalKind = "approval") =>
       apiFetch<{ approvals: Approval[] }>(
         `/approvals?status=${encodeURIComponent(status)}&kind=${encodeURIComponent(kind)}`,
       ).then((r) => r.approvals),
-    counts: () => apiFetch<{ approval: number; escalation: number }>('/approvals/counts'),
+    counts: () =>
+      apiFetch<{ approval: number; escalation: number }>("/approvals/counts"),
     approve: (id: string, note?: string) =>
-      apiFetch(`/approvals/${id}/approve`, { method: 'POST', body: JSON.stringify({ note }) }),
-    reject: (id: string, note?: string) =>
-      apiFetch(`/approvals/${id}/reject`, { method: 'POST', body: JSON.stringify({ note }) }),
-    acknowledge: (id: string, note?: string) =>
-      apiFetch(`/approvals/${id}/acknowledge`, { method: 'POST', body: JSON.stringify({ note }) }),
-    batch: (ids: string[], action: 'approve' | 'reject' | 'acknowledge', note?: string) =>
-      apiFetch<{ resolved: number; failed: string[]; action: string }>('/approvals/batch', {
-        method: 'POST',
-        body: JSON.stringify({ ids, action, note }),
+      apiFetch(`/approvals/${id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ note }),
       }),
+    reject: (id: string, note?: string) =>
+      apiFetch(`/approvals/${id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ note }),
+      }),
+    acknowledge: (id: string, note?: string) =>
+      apiFetch(`/approvals/${id}/acknowledge`, {
+        method: "POST",
+        body: JSON.stringify({ note }),
+      }),
+    batch: (
+      ids: string[],
+      action: "approve" | "reject" | "acknowledge",
+      note?: string,
+    ) =>
+      apiFetch<{ resolved: number; failed: string[]; action: string }>(
+        "/approvals/batch",
+        {
+          method: "POST",
+          body: JSON.stringify({ ids, action, note }),
+        },
+      ),
   },
 
   projects: {
-    list: () => apiFetch<{ projects: ProjectRow[] }>('/projects').then((r) => r.projects),
-    policy: () => apiFetch<AutonomyPolicyCatalog>('/projects/autonomy-policy'),
-    update: (id: string, data: { autonomyLevel?: string; autoapproveTools?: string[] }) =>
-      apiFetch<{ updated: boolean; project: ProjectRow }>(`/projects/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify(data),
-      }),
+    list: () =>
+      apiFetch<{ projects: ProjectRow[] }>("/projects").then((r) => r.projects),
+    policy: () => apiFetch<AutonomyPolicyCatalog>("/projects/autonomy-policy"),
+    update: (
+      id: string,
+      data: { autonomyLevel?: string; autoapproveTools?: string[] },
+    ) =>
+      apiFetch<{ updated: boolean; project: ProjectRow }>(
+        `/projects/${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(data),
+        },
+      ),
   },
 
   campaigns: {
-    list: () => apiFetch<{ campaigns: CampaignProgress[] }>('/campaigns').then((r) => r.campaigns),
-    get: (id: string) =>
-      apiFetch<{ campaign: CampaignProgress & { icp: CampaignIcp; result: string | null }; segments: CampaignSegment[] }>(
-        `/campaigns/${id}`,
+    list: () =>
+      apiFetch<{ campaigns: CampaignProgress[] }>("/campaigns").then(
+        (r) => r.campaigns,
       ),
+    get: (id: string) =>
+      apiFetch<{
+        campaign: CampaignProgress & {
+          icp: CampaignIcp;
+          result: string | null;
+        };
+        segments: CampaignSegment[];
+      }>(`/campaigns/${id}`),
     leads: (id: string) =>
-      apiFetch<{ leads: ResearchedLead[] }>(`/campaigns/${id}/leads`).then((r) => r.leads),
+      apiFetch<{ leads: ResearchedLead[] }>(`/campaigns/${id}/leads`).then(
+        (r) => r.leads,
+      ),
     create: (body: {
       name: string;
       industries: string[];
@@ -644,419 +828,724 @@ export const api = {
       targetLeads?: number;
       pushToBuildmybot?: boolean;
       notes?: string;
-    }) => apiFetch<{ campaignId: string; segments: number }>('/campaigns', { method: 'POST', body: JSON.stringify(body) }),
-    control: (id: string, action: 'pause' | 'resume' | 'cancel') =>
-      apiFetch<{ status: string }>(`/campaigns/${id}/${action}`, { method: 'POST' }),
+    }) =>
+      apiFetch<{ campaignId: string; segments: number }>("/campaigns", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    control: (id: string, action: "pause" | "resume" | "cancel") =>
+      apiFetch<{ status: string }>(`/campaigns/${id}/${action}`, {
+        method: "POST",
+      }),
   },
 
   territories: {
-    list: (params?: { status?: string; exclusivityType?: string; industry?: string; geography?: string; limit?: number }) => {
+    list: (params?: {
+      status?: string;
+      exclusivityType?: string;
+      industry?: string;
+      geography?: string;
+      limit?: number;
+    }) => {
       const qs = new URLSearchParams();
-      if (params?.status) qs.set('status', params.status);
-      if (params?.exclusivityType) qs.set('exclusivityType', params.exclusivityType);
-      if (params?.industry) qs.set('industry', params.industry);
-      if (params?.geography) qs.set('geography', params.geography);
-      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.status) qs.set("status", params.status);
+      if (params?.exclusivityType)
+        qs.set("exclusivityType", params.exclusivityType);
+      if (params?.industry) qs.set("industry", params.industry);
+      if (params?.geography) qs.set("geography", params.geography);
+      if (params?.limit) qs.set("limit", String(params.limit));
       const query = qs.toString();
-      return apiFetch<{ territories: TerritoryExclusivity[]; byStatus: Record<string, number> }>(
-        `/territories${query ? `?${query}` : ''}`,
-      );
+      return apiFetch<{
+        territories: TerritoryExclusivity[];
+        byStatus: Record<string, number>;
+      }>(`/territories${query ? `?${query}` : ""}`);
     },
     create: (body: Partial<TerritoryExclusivity>) =>
-      apiFetch<{ territory: TerritoryExclusivity }>('/territories', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id: string, body: Partial<TerritoryExclusivity>) =>
-      apiFetch<{ territory: TerritoryExclusivity }>(`/territories/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
+      apiFetch<{ territory: TerritoryExclusivity }>("/territories", {
+        method: "POST",
         body: JSON.stringify(body),
       }),
+    update: (id: string, body: Partial<TerritoryExclusivity>) =>
+      apiFetch<{ territory: TerritoryExclusivity }>(
+        `/territories/${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        },
+      ),
   },
 
   emailCampaigns: {
-    list: () => apiFetch<{ campaigns: EmailCampaignProgress[] }>('/email-campaigns').then((r) => r.campaigns),
-    sends: (params?: { limit?: number; scope?: 'all' | 'campaign' | 'one-off'; status?: string }) => {
+    list: () =>
+      apiFetch<{ campaigns: EmailCampaignProgress[] }>("/email-campaigns").then(
+        (r) => r.campaigns,
+      ),
+    sends: (params?: {
+      limit?: number;
+      scope?: "all" | "campaign" | "one-off";
+      status?: string;
+    }) => {
       const qs = new URLSearchParams();
-      if (params?.limit) qs.set('limit', String(params.limit));
-      if (params?.scope && params.scope !== 'all') qs.set('scope', params.scope);
-      if (params?.status) qs.set('status', params.status);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      if (params?.scope && params.scope !== "all")
+        qs.set("scope", params.scope);
+      if (params?.status) qs.set("status", params.status);
       const query = qs.toString();
-      return apiFetch<{ sends: EmailSendRow[] }>(`/email-campaigns/sends${query ? `?${query}` : ''}`).then((r) => r.sends);
+      return apiFetch<{ sends: EmailSendRow[] }>(
+        `/email-campaigns/sends${query ? `?${query}` : ""}`,
+      ).then((r) => r.sends);
     },
     get: (id: string) =>
-      apiFetch<{ campaign: EmailCampaignProgress & { subjectTemplate: string; bodyTemplate: string; result: string | null; failureGroups?: Array<{ reason: string; count: number }>; lastDeliveryEventAt?: string | null }; sends: EmailSendRow[] }>(
-        `/email-campaigns/${id}`,
-      ),
-    control: (id: string, action: 'pause' | 'resume' | 'cancel') =>
-      apiFetch<{ status: string }>(`/email-campaigns/${id}/${action}`, { method: 'POST' }),
-    fromPlaybook: (playbookId: string) =>
-      apiFetch<{ campaignId: string; totalTargets: number; message: string }>('/email-campaigns/from-playbook', {
-        method: 'POST',
-        body: JSON.stringify({ playbookId }),
+      apiFetch<{
+        campaign: EmailCampaignProgress & {
+          subjectTemplate: string;
+          bodyTemplate: string;
+          result: string | null;
+          failureGroups?: Array<{ reason: string; count: number }>;
+          lastDeliveryEventAt?: string | null;
+        };
+        sends: EmailSendRow[];
+      }>(`/email-campaigns/${id}`),
+    control: (id: string, action: "pause" | "resume" | "cancel") =>
+      apiFetch<{ status: string }>(`/email-campaigns/${id}/${action}`, {
+        method: "POST",
       }),
+    fromPlaybook: (playbookId: string) =>
+      apiFetch<{ campaignId: string; totalTargets: number; message: string }>(
+        "/email-campaigns/from-playbook",
+        {
+          method: "POST",
+          body: JSON.stringify({ playbookId }),
+        },
+      ),
   },
 
   tools: {
-    list: () => apiFetch<{ tools: ToolInfo[] }>('/tools').then((r) => r.tools),
+    list: () => apiFetch<{ tools: ToolInfo[] }>("/tools").then((r) => r.tools),
     invoke: (name: string, args: Record<string, unknown>) =>
-      apiFetch<unknown>(`/tools/${name}`, { method: 'POST', body: JSON.stringify(args) }),
+      apiFetch<unknown>(`/tools/${name}`, {
+        method: "POST",
+        body: JSON.stringify(args),
+      }),
   },
 
   settings: {
     // Never returns plaintext values — status only (configured: boolean).
     listIntegrations: () =>
-      apiFetch<{ integrations: { key: string; configured: boolean }[] }>('/settings/integrations').then((r) => r.integrations),
+      apiFetch<{ integrations: { key: string; configured: boolean }[] }>(
+        "/settings/integrations",
+      ).then((r) => r.integrations),
     saveIntegration: (key: string, value: string) =>
-      apiFetch<{ ok: boolean; key: string; configured: boolean }>('/settings/integrations', {
-        method: 'POST',
-        body: JSON.stringify({ key, value }),
-      }),
+      apiFetch<{ ok: boolean; key: string; configured: boolean }>(
+        "/settings/integrations",
+        {
+          method: "POST",
+          body: JSON.stringify({ key, value }),
+        },
+      ),
     clearIntegration: (key: string) =>
-      apiFetch<{ ok: boolean; key: string; configured: boolean }>(`/settings/integrations/${encodeURIComponent(key)}`, {
-        method: 'DELETE',
-      }),
+      apiFetch<{ ok: boolean; key: string; configured: boolean }>(
+        `/settings/integrations/${encodeURIComponent(key)}`,
+        {
+          method: "DELETE",
+        },
+      ),
   },
 
   diagnostics: {
-    get: () => apiFetch<DiagnosticsReport>('/diagnostics'),
-    text: () => apiFetchText('/diagnostics?format=text'),
+    get: () => apiFetch<DiagnosticsReport>("/diagnostics"),
+    text: () => apiFetchText("/diagnostics?format=text"),
   },
 
   governance: {
-    status: () => apiFetch<GovernanceStatus>('/governance/status'),
+    status: () => apiFetch<GovernanceStatus>("/governance/status"),
   },
 
   spend: {
-    live: () => apiFetch<SpendSnapshot>('/spend'),
+    live: () => apiFetch<SpendSnapshot>("/spend"),
   },
 
   health: {
     // Component report from the authenticated HealthMonitor route (/api/health).
     // Capacity, spend, accounts, and workers are `detail` (/api/health/detail).
     // Public GET /health is status + build only; this client does not call it.
-    report: () => apiFetch<HealthReport>('/health'),
-    detail: () => apiFetch<Record<string, unknown>>('/health/detail'),
-    components: () => apiFetch<ComponentHealthRow[]>('/health/components'),
-    alerts: () => apiFetch<{ alerts: HealthAlert[]; summary: AlertSummary }>('/health/alerts'),
+    report: () => apiFetch<HealthReport>("/health"),
+    detail: () => apiFetch<Record<string, unknown>>("/health/detail"),
+    components: () => apiFetch<ComponentHealthRow[]>("/health/components"),
+    alerts: () =>
+      apiFetch<{ alerts: HealthAlert[]; summary: AlertSummary }>(
+        "/health/alerts",
+      ),
     acknowledge: (alertId: string) =>
-      apiFetch(`/health/alerts/${alertId}/acknowledge`, { method: 'POST' }),
+      apiFetch(`/health/alerts/${alertId}/acknowledge`, { method: "POST" }),
   },
 
   calendar: {
     agenda: (start: string, end: string) =>
-      apiFetch<{ items: CalendarAgendaItem[]; timezone: string }>(`/calendar/agenda?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
-    settings: () => apiFetch<{ settings: CalendarSettingsPayload; status: CalendarConnectionStatus }>('/calendar/settings'),
+      apiFetch<{ items: CalendarAgendaItem[]; timezone: string }>(
+        `/calendar/agenda?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+      ),
+    settings: () =>
+      apiFetch<{
+        settings: CalendarSettingsPayload;
+        status: CalendarConnectionStatus;
+      }>("/calendar/settings"),
     saveSettings: (settings: CalendarSettingsPayload) =>
-      apiFetch<{ settings: CalendarSettingsPayload }>('/calendar/settings', { method: 'PUT', body: JSON.stringify(settings) }),
-    googleStart: () => apiFetch<{ url: string }>('/calendar/google/start'),
-    googleCalendars: () => apiFetch<{ calendars: Array<{ id: string; summary: string; primary: boolean }> }>('/calendar/google/calendars'),
+      apiFetch<{ settings: CalendarSettingsPayload }>("/calendar/settings", {
+        method: "PUT",
+        body: JSON.stringify(settings),
+      }),
+    googleStart: () => apiFetch<{ url: string }>("/calendar/google/start"),
+    googleCalendars: () =>
+      apiFetch<{
+        calendars: Array<{ id: string; summary: string; primary: boolean }>;
+      }>("/calendar/google/calendars"),
     timeline: (contactId: string) =>
-      apiFetch<{ contactId: string; timezone: string; rows: CalendarTimelineRow[] }>(`/calendar/contacts/${contactId}/timeline`),
+      apiFetch<{
+        contactId: string;
+        timezone: string;
+        rows: CalendarTimelineRow[];
+      }>(`/calendar/contacts/${contactId}/timeline`),
   },
 
   jobs: {
-    list: () => apiFetch<ScheduledJobRow[]>('/jobs'),
-    create: (data: { name: string; jobType: string; cronExpression?: string; scheduledAt?: string; targetAgentId?: string; payload?: Record<string, unknown>; priority?: number }) =>
-      apiFetch<ScheduledJobRow>('/jobs', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { cronExpression?: string; payload?: Record<string, unknown>; priority?: number; enabled?: boolean }) =>
-      apiFetch<ScheduledJobRow>(`/jobs/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-    toggle: (id: string) => apiFetch<ScheduledJobRow>(`/jobs/${id}/toggle`, { method: 'POST' }),
-    remove: (id: string) => apiFetch(`/jobs/${id}`, { method: 'DELETE' }),
+    list: () => apiFetch<ScheduledJobRow[]>("/jobs"),
+    create: (data: {
+      name: string;
+      jobType: string;
+      cronExpression?: string;
+      scheduledAt?: string;
+      targetAgentId?: string;
+      payload?: Record<string, unknown>;
+      priority?: number;
+    }) =>
+      apiFetch<ScheduledJobRow>("/jobs", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    update: (
+      id: string,
+      data: {
+        cronExpression?: string;
+        payload?: Record<string, unknown>;
+        priority?: number;
+        enabled?: boolean;
+      },
+    ) =>
+      apiFetch<ScheduledJobRow>(`/jobs/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    toggle: (id: string) =>
+      apiFetch<ScheduledJobRow>(`/jobs/${id}/toggle`, { method: "POST" }),
+    remove: (id: string) => apiFetch(`/jobs/${id}`, { method: "DELETE" }),
     history: (id: string) => apiFetch<JobExecutionRow[]>(`/jobs/${id}/history`),
   },
 
   artifacts: {
-    list: (params?: { project?: string; task?: string; kind?: string; limit?: number }) => {
-      const qs = new URLSearchParams(params as Record<string, string>).toString();
-      return apiFetch<ArtifactRow[]>(`/artifacts${qs ? `?${qs}` : ''}`);
+    list: (params?: {
+      project?: string;
+      task?: string;
+      kind?: string;
+      limit?: number;
+    }) => {
+      const qs = new URLSearchParams(
+        params as Record<string, string>,
+      ).toString();
+      return apiFetch<ArtifactRow[]>(`/artifacts${qs ? `?${qs}` : ""}`);
     },
     downloadUrl: (id: string) => `${API}/artifacts/${id}/download`,
-    upload: (data: { fileName: string; content: string; mimeType?: string; kind?: string; projectId?: string; taskId?: string }) =>
-      apiFetch<{ id: string; objectName: string; sizeBytes: number; sha256: string }>('/artifacts', {
-        method: 'POST',
+    upload: (data: {
+      fileName: string;
+      content: string;
+      mimeType?: string;
+      kind?: string;
+      projectId?: string;
+      taskId?: string;
+    }) =>
+      apiFetch<{
+        id: string;
+        objectName: string;
+        sizeBytes: number;
+        sha256: string;
+      }>("/artifacts", {
+        method: "POST",
         body: JSON.stringify(data),
       }),
   },
 
   learning: {
-    outcomes: (role?: string) => apiFetch<TaskOutcomeRow[]>(`/learning/outcomes${role ? `?role=${role}` : ''}`),
-    insights: () => apiFetch<LearningInsightRow[]>('/learning/insights'),
-    recommendations: (params?: { status?: string; page?: number; pageSize?: number; search?: string; type?: string }) => {
+    outcomes: (role?: string) =>
+      apiFetch<TaskOutcomeRow[]>(
+        `/learning/outcomes${role ? `?role=${role}` : ""}`,
+      ),
+    insights: () => apiFetch<LearningInsightRow[]>("/learning/insights"),
+    recommendations: (params?: {
+      status?: string;
+      page?: number;
+      pageSize?: number;
+      search?: string;
+      type?: string;
+    }) => {
       const query = new URLSearchParams();
-      if (params?.status) query.set('status', params.status);
-      if (params?.page) query.set('page', String(params.page));
-      if (params?.pageSize) query.set('pageSize', String(params.pageSize));
-      if (params?.search) query.set('search', params.search);
-      if (params?.type) query.set('type', params.type);
-      return apiFetch<PaginatedStrategyRecommendations>(`/learning/recommendations?${query.toString()}`);
+      if (params?.status) query.set("status", params.status);
+      if (params?.page) query.set("page", String(params.page));
+      if (params?.pageSize) query.set("pageSize", String(params.pageSize));
+      if (params?.search) query.set("search", params.search);
+      if (params?.type) query.set("type", params.type);
+      return apiFetch<PaginatedStrategyRecommendations>(
+        `/learning/recommendations?${query.toString()}`,
+      );
     },
-    respondRecommendation: (id: string, action: 'approve' | 'reject') =>
-      apiFetch(`/learning/recommendations/${id}/respond`, { method: 'POST', body: JSON.stringify({ action }) }),
+    respondRecommendation: (id: string, action: "approve" | "reject") =>
+      apiFetch(`/learning/recommendations/${id}/respond`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      }),
     applyRecommendation: (id: string) =>
-      apiFetch<{ success: boolean; status: string; changes: Record<string, unknown> }>(`/learning/recommendations/${id}/apply`, { method: 'POST' }),
-    analyze: () => apiFetch<{ success: boolean; patternsCreated: number }>('/learning/analyze', { method: 'POST' }),
-    cleanupRecommendations: (execute: boolean) => apiFetch<StrategyCleanupSummary>('/learning/recommendations/cleanup', {
-      method: 'POST',
-      body: JSON.stringify({ execute, confirm: execute ? 'CLEAN_DUPLICATE_STRATEGIES' : undefined }),
-    }),
-    baselines: () => apiFetch<PerformanceBaselineRow[]>('/learning/baselines'),
+      apiFetch<{
+        success: boolean;
+        status: string;
+        changes: Record<string, unknown>;
+      }>(`/learning/recommendations/${id}/apply`, { method: "POST" }),
+    analyze: () =>
+      apiFetch<{ success: boolean; patternsCreated: number }>(
+        "/learning/analyze",
+        { method: "POST" },
+      ),
+    cleanupRecommendations: (execute: boolean) =>
+      apiFetch<StrategyCleanupSummary>("/learning/recommendations/cleanup", {
+        method: "POST",
+        body: JSON.stringify({
+          execute,
+          confirm: execute ? "CLEAN_DUPLICATE_STRATEGIES" : undefined,
+        }),
+      }),
+    baselines: () => apiFetch<PerformanceBaselineRow[]>("/learning/baselines"),
   },
 
   cicd: {
-    status: () => apiFetch<CicdStatusSummary>('/cicd/status'),
-    runTest: () => apiFetch<TestRunReportRow>('/cicd/test', { method: 'POST' }),
-    runLint: () => apiFetch<LintRunReportRow>('/cicd/lint', { method: 'POST' }),
-    build: () => apiFetch<BuildResultRow>('/cicd/build', { method: 'POST' }),
+    status: () => apiFetch<CicdStatusSummary>("/cicd/status"),
+    runTest: () => apiFetch<TestRunReportRow>("/cicd/test", { method: "POST" }),
+    runLint: () => apiFetch<LintRunReportRow>("/cicd/lint", { method: "POST" }),
+    build: () => apiFetch<BuildResultRow>("/cicd/build", { method: "POST" }),
     deploy: (environment?: string, platform?: string) =>
-      apiFetch<DeploymentRow>('/cicd/deploy', { method: 'POST', body: JSON.stringify({ environment, platform }) }),
+      apiFetch<DeploymentRow>("/cicd/deploy", {
+        method: "POST",
+        body: JSON.stringify({ environment, platform }),
+      }),
     rollback: (deploymentId: string) =>
-      apiFetch<{ success: boolean; rolledBackId: string }>('/cicd/rollback', { method: 'POST', body: JSON.stringify({ deploymentId }) }),
-    history: () => apiFetch<PipelineRunRow[]>('/cicd/history'),
+      apiFetch<{ success: boolean; rolledBackId: string }>("/cicd/rollback", {
+        method: "POST",
+        body: JSON.stringify({ deploymentId }),
+      }),
+    history: () => apiFetch<PipelineRunRow[]>("/cicd/history"),
   },
 
   multiapp: {
-    list: () => apiFetch<ApplicationRow[]>('/applications'),
+    list: () => apiFetch<ApplicationRow[]>("/applications"),
     register: (id: string, name: string, repoUrl: string) =>
-      apiFetch<{ success: boolean }>('/applications', { method: 'POST', body: JSON.stringify({ id, name, repoUrl }) }),
-    health: (id: string) => apiFetch<{ status: string; healthScore: number }>(`/applications/${id}/health`),
+      apiFetch<{ success: boolean }>("/applications", {
+        method: "POST",
+        body: JSON.stringify({ id, name, repoUrl }),
+      }),
+    health: (id: string) =>
+      apiFetch<{ status: string; healthScore: number }>(
+        `/applications/${id}/health`,
+      ),
     delegate: (id: string, taskName: string) =>
-      apiFetch<{ taskId: number; appId: string }>(`/applications/${id}/delegate`, { method: 'POST', body: JSON.stringify({ taskName }) }),
-    sharedInsights: () => apiFetch<Array<{ id: string; key: string; value: string }>>('/applications/shared-insights'),
+      apiFetch<{ taskId: number; appId: string }>(
+        `/applications/${id}/delegate`,
+        { method: "POST", body: JSON.stringify({ taskName }) },
+      ),
+    sharedInsights: () =>
+      apiFetch<Array<{ id: string; key: string; value: string }>>(
+        "/applications/shared-insights",
+      ),
   },
 
   predictive: {
-    forecast: () => apiFetch<PredictiveForecastRow>('/predictive/tasks-forecast'),
-    risks: () => apiFetch<{ latestAssessment: RiskAssessmentRow; riskHistory: RiskAssessmentRow[] }>('/predictive/risks'),
+    forecast: () =>
+      apiFetch<PredictiveForecastRow>("/predictive/tasks-forecast"),
+    risks: () =>
+      apiFetch<{
+        latestAssessment: RiskAssessmentRow;
+        riskHistory: RiskAssessmentRow[];
+      }>("/predictive/risks"),
   },
 
   leads: {
-    list: (params?: { status?: string; pipelineState?: string; industry?: string; city?: string; limit?: number }) => {
+    list: (params?: {
+      status?: string;
+      pipelineState?: string;
+      industry?: string;
+      city?: string;
+      limit?: number;
+    }) => {
       const qs = new URLSearchParams();
-      if (params?.status) qs.set('status', params.status);
-      if (params?.pipelineState) qs.set('pipelineState', params.pipelineState);
-      if (params?.industry) qs.set('industry', params.industry);
-      if (params?.city) qs.set('city', params.city);
-      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.status) qs.set("status", params.status);
+      if (params?.pipelineState) qs.set("pipelineState", params.pipelineState);
+      if (params?.industry) qs.set("industry", params.industry);
+      if (params?.city) qs.set("city", params.city);
+      if (params?.limit) qs.set("limit", String(params.limit));
       const query = qs.toString();
-      return apiFetch<{ leads: ResearchedLead[] }>(`/leads${query ? `?${query}` : ''}`).then((r) => r.leads);
+      return apiFetch<{ leads: ResearchedLead[] }>(
+        `/leads${query ? `?${query}` : ""}`,
+      ).then((r) => r.leads);
     },
-    stats: () => apiFetch<LeadStats>('/leads/stats'),
+    stats: () => apiFetch<LeadStats>("/leads/stats"),
     exportCsv: () => {
-      const token = localStorage.getItem('apex_token');
+      const token = localStorage.getItem("apex_token");
       const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       return fetch(`${API}/leads/export`, { headers }).then((r) => r.blob());
     },
     updateStatus: (id: string, status: string) =>
-      apiFetch(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-    importPreview: (body: { csv?: string; rows?: Array<Record<string, string>>; provider?: string; overwrite?: boolean }) =>
-      apiFetch<LeadImportResult>('/leads/import', { method: 'POST', body: JSON.stringify({ ...body, commit: false }) }),
-    importCommit: (body: { csv?: string; rows?: Array<Record<string, string>>; provider?: string; overwrite?: boolean }) =>
-      apiFetch<LeadImportResult>('/leads/import', { method: 'POST', body: JSON.stringify({ ...body, commit: true }) }),
+      apiFetch(`/leads/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }),
+    importPreview: (body: {
+      csv?: string;
+      rows?: Array<Record<string, string>>;
+      provider?: string;
+      overwrite?: boolean;
+    }) =>
+      apiFetch<LeadImportResult>("/leads/import", {
+        method: "POST",
+        body: JSON.stringify({ ...body, commit: false }),
+      }),
+    importCommit: (body: {
+      csv?: string;
+      rows?: Array<Record<string, string>>;
+      provider?: string;
+      overwrite?: boolean;
+    }) =>
+      apiFetch<LeadImportResult>("/leads/import", {
+        method: "POST",
+        body: JSON.stringify({ ...body, commit: true }),
+      }),
   },
 
   crm: {
     list: (params?: CrmContactFilters) => {
       const qs = new URLSearchParams();
-      if (params?.q) qs.set('q', params.q);
-      if (params?.tag) qs.set('tag', params.tag);
-      if (params?.city) qs.set('city', params.city);
-      if (params?.state) qs.set('state', params.state);
-      if (params?.verifiedOnly) qs.set('verified', 'true');
-      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
-      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
-      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
-      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
-      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
-      if (params?.replied === true) qs.set('replied', 'true');
-      if (params?.replied === false) qs.set('replied', 'false');
-      if (params?.campaignId) qs.set('campaignId', params.campaignId);
+      if (params?.q) qs.set("q", params.q);
+      if (params?.tag) qs.set("tag", params.tag);
+      if (params?.city) qs.set("city", params.city);
+      if (params?.state) qs.set("state", params.state);
+      if (params?.verifiedOnly) qs.set("verified", "true");
+      if (params?.doNotContact === true) qs.set("doNotContact", "true");
+      if (params?.doNotContact === false) qs.set("doNotContact", "false");
+      if (params?.ownerBot) qs.set("ownerBot", params.ownerBot);
+      if (params?.lastContactedFrom)
+        qs.set("lastContactedFrom", params.lastContactedFrom);
+      if (params?.lastContactedTo)
+        qs.set("lastContactedTo", params.lastContactedTo);
+      if (params?.replied === true) qs.set("replied", "true");
+      if (params?.replied === false) qs.set("replied", "false");
+      if (params?.campaignId) qs.set("campaignId", params.campaignId);
       const query = qs.toString();
-      return apiFetch<{ timezone: string; contacts: CrmContact[] }>(`/crm/contacts${query ? `?${query}` : ''}`);
+      return apiFetch<{ timezone: string; contacts: CrmContact[] }>(
+        `/crm/contacts${query ? `?${query}` : ""}`,
+      );
     },
-    get: (id: string) => apiFetch<CrmContactDetail>(`/crm/contacts/${encodeURIComponent(id)}`),
+    get: (id: string) =>
+      apiFetch<CrmContactDetail>(`/crm/contacts/${encodeURIComponent(id)}`),
     setDoNotContact: (id: string, value: boolean, reason?: string) =>
-      apiFetch<{ ok: boolean }>(`/crm/contacts/${encodeURIComponent(id)}/do-not-contact`, {
-        method: 'POST',
-        body: JSON.stringify({ value, reason }),
-      }),
-    unmatched: () => apiFetch<CrmUnmatched[]>('/crm/unmatched'),
+      apiFetch<{ ok: boolean }>(
+        `/crm/contacts/${encodeURIComponent(id)}/do-not-contact`,
+        {
+          method: "POST",
+          body: JSON.stringify({ value, reason }),
+        },
+      ),
+    unmatched: () => apiFetch<CrmUnmatched[]>("/crm/unmatched"),
     attachUnmatched: (id: string, contactId: string) =>
-      apiFetch<{ ok: boolean; timelineId: string }>(`/crm/unmatched/${encodeURIComponent(id)}/attach`, {
-        method: 'POST',
-        body: JSON.stringify({ contactId }),
-      }),
-    duplicates: () => apiFetch<CrmDuplicate[]>('/crm/duplicates'),
+      apiFetch<{ ok: boolean; timelineId: string }>(
+        `/crm/unmatched/${encodeURIComponent(id)}/attach`,
+        {
+          method: "POST",
+          body: JSON.stringify({ contactId }),
+        },
+      ),
+    duplicates: () => apiFetch<CrmDuplicate[]>("/crm/duplicates"),
     merge: (winnerId: string, loserId: string) =>
-      apiFetch<{ ok: boolean }>('/crm/merge', {
-        method: 'POST',
+      apiFetch<{ ok: boolean }>("/crm/merge", {
+        method: "POST",
         body: JSON.stringify({ winnerId, loserId, explicit: true }),
       }),
     exportCsv: (params?: CrmContactFilters) => {
       const qs = new URLSearchParams();
-      if (params?.q) qs.set('q', params.q);
-      if (params?.tag) qs.set('tag', params.tag);
-      if (params?.city) qs.set('city', params.city);
-      if (params?.state) qs.set('state', params.state);
-      if (params?.verifiedOnly) qs.set('verified', 'true');
-      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
-      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
-      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
-      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
-      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
-      if (params?.replied === true) qs.set('replied', 'true');
-      if (params?.replied === false) qs.set('replied', 'false');
-      if (params?.campaignId) qs.set('campaignId', params.campaignId);
+      if (params?.q) qs.set("q", params.q);
+      if (params?.tag) qs.set("tag", params.tag);
+      if (params?.city) qs.set("city", params.city);
+      if (params?.state) qs.set("state", params.state);
+      if (params?.verifiedOnly) qs.set("verified", "true");
+      if (params?.doNotContact === true) qs.set("doNotContact", "true");
+      if (params?.doNotContact === false) qs.set("doNotContact", "false");
+      if (params?.ownerBot) qs.set("ownerBot", params.ownerBot);
+      if (params?.lastContactedFrom)
+        qs.set("lastContactedFrom", params.lastContactedFrom);
+      if (params?.lastContactedTo)
+        qs.set("lastContactedTo", params.lastContactedTo);
+      if (params?.replied === true) qs.set("replied", "true");
+      if (params?.replied === false) qs.set("replied", "false");
+      if (params?.campaignId) qs.set("campaignId", params.campaignId);
       const query = qs.toString();
-      const token = localStorage.getItem('apex_token');
+      const token = localStorage.getItem("apex_token");
       const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      return fetch(`${API}/crm/contacts/export${query ? `?${query}` : ''}`, { headers }).then((r) => r.blob());
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      return fetch(`${API}/crm/contacts/export${query ? `?${query}` : ""}`, {
+        headers,
+      }).then((r) => r.blob());
     },
   },
 
   suggestions: {
-    list: () => apiFetch<SuggestionsResponse>('/suggestions'),
-    discover: () => apiFetch<{ success: boolean; message: string }>('/suggestions/discover', { method: 'POST' }),
+    list: () => apiFetch<SuggestionsResponse>("/suggestions"),
+    discover: () =>
+      apiFetch<{ success: boolean; message: string }>("/suggestions/discover", {
+        method: "POST",
+      }),
     implement: (id: string) =>
-      apiFetch<{ success: boolean; goalId: string }>(`/suggestions/${id}/implement`, { method: 'POST' }),
+      apiFetch<{ success: boolean; goalId: string }>(
+        `/suggestions/${id}/implement`,
+        { method: "POST" },
+      ),
     dismiss: (id: string, reason?: string) =>
       apiFetch<{ success: boolean }>(`/suggestions/${id}/dismiss`, {
-        method: 'POST',
+        method: "POST",
         body: JSON.stringify({ reason }),
       }),
   },
 
   system: {
-    get: () => apiFetch<{ settings: Record<string, string> }>('/settings/system'),
+    get: () =>
+      apiFetch<{ settings: Record<string, string> }>("/settings/system"),
     update: (data: { autonomy_level?: string }) =>
-      apiFetch<{ ok: boolean }>('/settings/system', { method: 'PUT', body: JSON.stringify(data) }),
+      apiFetch<{ ok: boolean }>("/settings/system", {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
   },
 
   salesOps: {
     /** Fetch the current spend, outreach, campaign, and pipeline summary. */
-    overview: () => apiFetch<SalesOpsOverview>('/sales-ops/overview'),
+    overview: () => apiFetch<SalesOpsOverview>("/sales-ops/overview"),
     /** Structured disposition/appointment records from outbound calls.
      *  upcoming=true narrows to booked appointments not yet in the past. */
     callOutcomes: (params?: { upcoming?: boolean; limit?: number }) => {
       const qs = new URLSearchParams();
-      if (params?.upcoming) qs.set('upcoming', 'true');
-      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.upcoming) qs.set("upcoming", "true");
+      if (params?.limit) qs.set("limit", String(params.limit));
       const query = qs.toString();
-      return apiFetch<{ outcomes: CallOutcome[] }>(`/sales-ops/call-outcomes${query ? `?${query}` : ''}`);
+      return apiFetch<{ outcomes: CallOutcome[] }>(
+        `/sales-ops/call-outcomes${query ? `?${query}` : ""}`,
+      );
     },
     /** Every owned phone line with busy/idle state, plus the main-lamp rollup. */
-    lines: () => apiFetch<PhoneLinesResponse>('/sales-ops/lines'),
+    lines: () => apiFetch<PhoneLinesResponse>("/sales-ops/lines"),
     /** Call audio as a Blob (fresh signed Telnyx link resolved server-side). */
-    recordingBlob: (callId: string) => apiFetchBlob(`/sales-ops/calls/${encodeURIComponent(callId)}/recording`),
+    recordingBlob: (callId: string) =>
+      apiFetchBlob(`/sales-ops/calls/${encodeURIComponent(callId)}/recording`),
     /** Full transcript + summary for one call. */
     transcript: (callId: string) =>
-      apiFetch<CallTranscript>(`/sales-ops/calls/${encodeURIComponent(callId)}/transcript`),
+      apiFetch<CallTranscript>(
+        `/sales-ops/calls/${encodeURIComponent(callId)}/transcript`,
+      ),
     /** Place one operator-initiated outbound call. */
     placeCall: (body: SalesOpsCallRequest) =>
-      apiFetch<SalesOpsCallResult>('/sales-ops/call', { method: 'POST', body: JSON.stringify(body) }),
+      apiFetch<SalesOpsCallResult>("/sales-ops/call", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
     /** Launch autonomous sales work for a pipeline, campaign, or lead. */
     automate: (body: SalesOpsAutomateRequest) =>
-      apiFetch<SalesOpsAutomateResult>('/sales-ops/automate', { method: 'POST', body: JSON.stringify(body) }),
+      apiFetch<SalesOpsAutomateResult>("/sales-ops/automate", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
     /** One row per SMS conversation, most recent first. */
-    smsThreads: () => apiFetch<SmsThreadSummary[]>('/sales-ops/sms/threads'),
+    smsThreads: () => apiFetch<SmsThreadSummary[]>("/sales-ops/sms/threads"),
     /** The full two-way thread with one contact number. */
     smsThread: (number: string) =>
-      apiFetch<SmsMessage[]>(`/sales-ops/sms/threads/${encodeURIComponent(number)}`),
+      apiFetch<SmsMessage[]>(
+        `/sales-ops/sms/threads/${encodeURIComponent(number)}`,
+      ),
     /** Send one operator-initiated outbound SMS immediately. */
     sendSms: (body: { toNumber: string; body: string }) =>
-      apiFetch<SmsSendResult>('/sales-ops/sms/send', { method: 'POST', body: JSON.stringify(body) }),
+      apiFetch<SmsSendResult>("/sales-ops/sms/send", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   },
 
   salesFloor: {
-    floor: () => apiFetch<SalesFloorSnapshot>('/sales-ops/floor'),
-    playbooks: () => apiFetch<{ playbooks: SalesPlaybookSummary[] }>('/sales-ops/playbooks'),
-    preview: () => apiFetch<RehearsalPreview>('/sales-ops/rehearsal/preview'),
-    rehearse: () => apiFetch<RehearsalResult>('/sales-ops/rehearsal', { method: 'POST' }),
+    floor: () => apiFetch<SalesFloorSnapshot>("/sales-ops/floor"),
+    playbooks: () =>
+      apiFetch<{ playbooks: SalesPlaybookSummary[] }>("/sales-ops/playbooks"),
+    preview: () => apiFetch<RehearsalPreview>("/sales-ops/rehearsal/preview"),
+    rehearse: () =>
+      apiFetch<RehearsalResult>("/sales-ops/rehearsal", { method: "POST" }),
     rehearseLead: (leadId: string) =>
-      apiFetch<RehearsalResult & { leadId?: string; leadCompany?: string }>(`/sales-ops/rehearsal/lead/${encodeURIComponent(leadId)}`, { method: 'POST' }),
+      apiFetch<RehearsalResult & { leadId?: string; leadCompany?: string }>(
+        `/sales-ops/rehearsal/lead/${encodeURIComponent(leadId)}`,
+        { method: "POST" },
+      ),
     savePolicy: (body: OutboundPolicyInput) =>
-      apiFetch<{ policy: OutboundPolicyView }>('/sales-ops/outbound-policy', { method: 'PUT', body: JSON.stringify(body) }),
+      apiFetch<{ policy: OutboundPolicyView }>("/sales-ops/outbound-policy", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
     killSwitch: (on: boolean) =>
-      apiFetch<{ killSwitch: boolean }>('/sales-ops/kill-switch', { method: 'POST', body: JSON.stringify({ on }) }),
+      apiFetch<{ killSwitch: boolean }>("/sales-ops/kill-switch", {
+        method: "POST",
+        body: JSON.stringify({ on }),
+      }),
     dismissSuggestion: (fingerprint: string) =>
-      apiFetch<{ ok: boolean }>('/sales-ops/suggestions/dismiss', { method: 'POST', body: JSON.stringify({ fingerprint }) }),
+      apiFetch<{ ok: boolean }>("/sales-ops/suggestions/dismiss", {
+        method: "POST",
+        body: JSON.stringify({ fingerprint }),
+      }),
   },
 
   callBridge: {
     /** Dial the operator; the customer is dialed once they answer. */
     start: (body: { operatorNumber: string; customerNumber: string }) =>
-      apiFetch<{ id: string; status: string; error?: string }>('/call-bridge/start', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      }),
+      apiFetch<{ id: string; status: string; error?: string }>(
+        "/call-bridge/start",
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+      ),
     /** Poll the live status of a call bridge session. */
-    status: (id: string) => apiFetch<CallBridgeSession>(`/call-bridge/${encodeURIComponent(id)}`),
+    status: (id: string) =>
+      apiFetch<CallBridgeSession>(`/call-bridge/${encodeURIComponent(id)}`),
     /** Dial the Apex Front Desk AI assistant into an already-active call. */
     bringInAi: (id: string) =>
-      apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/bring-in-ai`, { method: 'POST' }),
-    join: (id: string, role: 'monitor' | 'whisper' | 'barge') =>
-      apiFetch<{ ok: boolean; role: string; error?: string }>(`/call-bridge/${encodeURIComponent(id)}/join`, {
-        method: 'POST',
-        body: JSON.stringify({ role }),
-      }),
+      apiFetch<{ ok: boolean; status: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/bring-in-ai`,
+        { method: "POST" },
+      ),
+    join: (id: string, role: "monitor" | "whisper" | "barge") =>
+      apiFetch<{ ok: boolean; role: string; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/join`,
+        {
+          method: "POST",
+          body: JSON.stringify({ role }),
+        },
+      ),
     coach: (id: string, note: string) =>
-      apiFetch<{ ok: boolean }>(`/call-bridge/${encodeURIComponent(id)}/coach`, {
-        method: 'POST',
-        body: JSON.stringify({ note }),
-      }),
+      apiFetch<{ ok: boolean }>(
+        `/call-bridge/${encodeURIComponent(id)}/coach`,
+        {
+          method: "POST",
+          body: JSON.stringify({ note }),
+        },
+      ),
     /** Hang up every leg of the session. */
-    end: (id: string) => apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/end`, { method: 'POST' }),
+    end: (id: string) =>
+      apiFetch<{ ok: boolean; status: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/end`,
+        { method: "POST" },
+      ),
   },
 
   missions: {
-    list: (params?: { status?: string; projectId?: string; limit?: number; offset?: number }) => {
+    list: (params?: {
+      status?: string;
+      projectId?: string;
+      limit?: number;
+      offset?: number;
+    }) => {
       const qs = new URLSearchParams();
-      if (params?.status) qs.set('status', params.status);
-      if (params?.projectId) qs.set('projectId', params.projectId);
-      if (params?.limit) qs.set('limit', String(params.limit));
-      if (params?.offset) qs.set('offset', String(params.offset));
+      if (params?.status) qs.set("status", params.status);
+      if (params?.projectId) qs.set("projectId", params.projectId);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      if (params?.offset) qs.set("offset", String(params.offset));
       const query = qs.toString();
-      return apiFetch<MissionListResponse>(`/missions${query ? `?${query}` : ''}`);
+      return apiFetch<MissionListResponse>(
+        `/missions${query ? `?${query}` : ""}`,
+      );
     },
     get: (missionId: string) =>
       apiFetch<MissionDetail>(`/missions/${encodeURIComponent(missionId)}`),
     create: (data: CreateMissionRequest) =>
-      apiFetch<CreateMissionResponse>('/missions', { method: 'POST', body: JSON.stringify(data) }),
-    pause: (missionId: string, reason?: string) =>
-      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/pause`, {
-        method: 'POST',
-        body: JSON.stringify({ reason }),
-      }),
-    resume: (missionId: string, reason?: string) =>
-      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/resume`, {
-        method: 'POST',
-        body: JSON.stringify({ reason }),
-      }),
-    cancel: (missionId: string, reason: string) =>
-      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/cancel`, {
-        method: 'POST',
-        body: JSON.stringify({ reason }),
-      }),
-    submit: (missionId: string, reason?: string) =>
-      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/submit`, {
-        method: 'POST',
-        body: JSON.stringify({ reason }),
-      }),
-    budgetExhaust: (missionId: string, spentCents: number) =>
-      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/budget-exhaust`, {
-        method: 'POST',
-        body: JSON.stringify({ spentCents }),
-      }),
-    budgetIncrease: (missionId: string, newBudgetCents: number, approvedBy?: string) =>
-      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/budget-increase`, {
-        method: 'POST',
-        body: JSON.stringify({ newBudgetCents, approvedBy }),
-      }),
-    update: (missionId: string, data: { title?: string; deadlineAt?: string; budgetCents?: number; allowedChannels?: string[] }) =>
-      apiFetch<UpdateMissionResponse>(`/missions/${encodeURIComponent(missionId)}`, {
-        method: 'PATCH',
+      apiFetch<CreateMissionResponse>("/missions", {
+        method: "POST",
         body: JSON.stringify(data),
       }),
-    stats: () => apiFetch<MissionStats>('/missions/stats'),
+    pause: (missionId: string, reason?: string) =>
+      apiFetch<MissionActionResponse>(
+        `/missions/${encodeURIComponent(missionId)}/pause`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason }),
+        },
+      ),
+    resume: (missionId: string, reason?: string) =>
+      apiFetch<MissionActionResponse>(
+        `/missions/${encodeURIComponent(missionId)}/resume`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason }),
+        },
+      ),
+    cancel: (missionId: string, reason: string) =>
+      apiFetch<MissionActionResponse>(
+        `/missions/${encodeURIComponent(missionId)}/cancel`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason }),
+        },
+      ),
+    submit: (missionId: string, reason?: string) =>
+      apiFetch<MissionActionResponse>(
+        `/missions/${encodeURIComponent(missionId)}/submit`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason }),
+        },
+      ),
+    budgetExhaust: (missionId: string, spentCents: number) =>
+      apiFetch<MissionActionResponse>(
+        `/missions/${encodeURIComponent(missionId)}/budget-exhaust`,
+        {
+          method: "POST",
+          body: JSON.stringify({ spentCents }),
+        },
+      ),
+    budgetIncrease: (
+      missionId: string,
+      newBudgetCents: number,
+      approvedBy?: string,
+    ) =>
+      apiFetch<MissionActionResponse>(
+        `/missions/${encodeURIComponent(missionId)}/budget-increase`,
+        {
+          method: "POST",
+          body: JSON.stringify({ newBudgetCents, approvedBy }),
+        },
+      ),
+    update: (
+      missionId: string,
+      data: {
+        title?: string;
+        deadlineAt?: string;
+        budgetCents?: number;
+        allowedChannels?: string[];
+      },
+    ) =>
+      apiFetch<UpdateMissionResponse>(
+        `/missions/${encodeURIComponent(missionId)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(data),
+        },
+      ),
+    stats: () => apiFetch<MissionStats>("/missions/stats"),
   },
 };
 
@@ -1086,7 +1575,16 @@ export interface CallOutcome {
   leadId: string | null;
   customerNumber: string;
   customerName: string | null;
-  disposition: 'appointment_booked' | 'qualified' | 'callback_requested' | 'not_interested' | 'dnc' | 'voicemail' | 'no_answer' | 'no_decision' | 'failed_to_dial';
+  disposition:
+    | "appointment_booked"
+    | "qualified"
+    | "callback_requested"
+    | "not_interested"
+    | "dnc"
+    | "voicemail"
+    | "no_answer"
+    | "no_decision"
+    | "failed_to_dial";
   appointmentAt: string | null;
   appointmentDateRaw: string | null;
   appointmentTimeRaw: string | null;
@@ -1105,10 +1603,10 @@ export interface CallOutcome {
 export interface PhoneLineStatus {
   number: string;
   label: string;
-  kind: 'outbound-sales' | 'inbound' | 'voice';
+  kind: "outbound-sales" | "inbound" | "voice";
   busy: boolean;
   current: {
-    direction: 'inbound' | 'outbound';
+    direction: "inbound" | "outbound";
     remoteNumber: string | null;
     remoteName: string | null;
     callId: string | null;
@@ -1190,7 +1688,7 @@ export interface SalesOpsCallResult {
 
 export interface SalesOpsAutomateRequest {
   autonomyLevel?: string;
-  target: { type: 'lead' | 'campaign' | 'pipeline'; id?: string };
+  target: { type: "lead" | "campaign" | "pipeline"; id?: string };
 }
 
 export interface SalesOpsAutomateResult {
@@ -1204,14 +1702,14 @@ export interface SalesOpsAutomateResult {
 export interface SmsThreadSummary {
   counterpartyNumber: string;
   body: string;
-  direction: 'inbound' | 'outbound';
+  direction: "inbound" | "outbound";
   status: string;
   createdAt: string;
 }
 
 export interface SmsMessage {
   id: string;
-  direction: 'inbound' | 'outbound';
+  direction: "inbound" | "outbound";
   counterpartyNumber: string;
   fromNumber: string;
   toNumber: string;
@@ -1230,13 +1728,13 @@ export interface SmsSendResult {
 }
 
 export type CallBridgeStatus =
-  | 'dialing_operator'
-  | 'dialing_customer'
-  | 'active'
-  | 'ai_dialing'
-  | 'ai_joined'
-  | 'ended'
-  | 'failed';
+  | "dialing_operator"
+  | "dialing_customer"
+  | "active"
+  | "ai_dialing"
+  | "ai_joined"
+  | "ended"
+  | "failed";
 
 export interface CallBridgeSession {
   id: string;
@@ -1258,7 +1756,7 @@ export interface CallBridgeSession {
 }
 
 export interface OutboundPolicyView {
-  mode: 'off' | 'rehearsal_only' | 'capped_live';
+  mode: "off" | "rehearsal_only" | "capped_live";
   killSwitch: boolean;
   rehearsalEmail: string | null;
   rehearsalPhone: string | null;
@@ -1297,8 +1795,20 @@ export interface RehearsalPreview {
 }
 
 export interface RehearsalResult {
-  email?: { success: boolean; status?: string; error?: string; providerId?: string };
-  call?: { success?: boolean; id?: string; callId?: string; error?: string; awaitingSafeguard?: boolean; sendJobId?: string | null };
+  email?: {
+    success: boolean;
+    status?: string;
+    error?: string;
+    providerId?: string;
+  };
+  call?: {
+    success?: boolean;
+    id?: string;
+    callId?: string;
+    error?: string;
+    awaitingSafeguard?: boolean;
+    sendJobId?: string | null;
+  };
   playbookId?: string;
   version?: number;
   /** True when the phone call is sitting in Pending sends and has not been dialed. */
@@ -1311,7 +1821,12 @@ export interface SalesFloorSuggestion {
   fingerprint: string;
   title: string;
   detail: string;
-  action: 'sell-to-me' | 'open-email' | 'listen' | 'resume-outbound' | 'review-imported';
+  action:
+    | "sell-to-me"
+    | "open-email"
+    | "listen"
+    | "resume-outbound"
+    | "review-imported";
   actionRef?: string;
 }
 
@@ -1343,7 +1858,15 @@ export interface SalesFloorSnapshot {
 }
 
 export interface LeadImportResult {
-  preview: Array<{ action: string; reason: string; lead: { companyName: string; contactEmail: string | null; contactPhone: string | null } }>;
+  preview: Array<{
+    action: string;
+    reason: string;
+    lead: {
+      companyName: string;
+      contactEmail: string | null;
+      contactPhone: string | null;
+    };
+  }>;
   counts: { created: number; updated: number; skipped: number };
   committed: boolean;
   written?: number;
@@ -1405,7 +1928,7 @@ export interface LogEntry {
   timestamp: string;
 }
 
-export type ApprovalKind = 'approval' | 'escalation' | 'all';
+export type ApprovalKind = "approval" | "escalation" | "all";
 
 export interface ApprovalDecisionPacket {
   action: string;
@@ -1413,7 +1936,7 @@ export interface ApprovalDecisionPacket {
   evidence: string[];
   blastRadius: string;
   rollback: string;
-  recommendation: 'approve' | 'reject' | 'review';
+  recommendation: "approve" | "reject" | "review";
   hardGated: boolean;
   eligibleForAutonomy: boolean;
   batchKey: string;
@@ -1567,13 +2090,13 @@ export interface ToolInfo {
 // ─── Health Types ─────────────────────────────────────────────────────────────
 
 export interface ComponentCheck {
-  status: 'healthy' | 'degraded' | 'critical';
+  status: "healthy" | "degraded" | "critical";
   detail: string;
   ms?: number;
 }
 
 export interface HealthReport {
-  overall: 'healthy' | 'degraded' | 'critical';
+  overall: "healthy" | "degraded" | "critical";
   checks: Record<string, ComponentCheck>;
   timestamp: string;
 }
@@ -1589,7 +2112,7 @@ export interface ComponentHealthRow {
 export interface HealthAlert {
   id: string;
   rule: string;
-  severity: 'warning' | 'critical';
+  severity: "warning" | "critical";
   message: string;
   component: string;
   firedAt: string;
@@ -1607,7 +2130,7 @@ export interface AlertSummary {
 
 export interface CalendarAgendaItem {
   id: string;
-  kind: 'event' | 'hold' | 'google';
+  kind: "event" | "hold" | "google";
   title: string;
   start: string;
   end: string;
@@ -1646,7 +2169,12 @@ export interface CalendarSettingsPayload {
   workingHours: CalendarWorkingWindow[];
   bufferBeforeMinutes: number;
   bufferAfterMinutes: number;
-  noBookBlocks: Array<{ id: string; start: string; end: string; label?: string }>;
+  noBookBlocks: Array<{
+    id: string;
+    start: string;
+    end: string;
+    label?: string;
+  }>;
   maxMeetingsPerDay: number;
   minimumNoticeMinutes: number;
   holdMinutes: number;
@@ -1665,10 +2193,10 @@ export interface CalendarConnectionStatus {
   oauthConfigured: boolean;
   redirectUriConfigured: boolean;
   busyCalendarIds: string[];
-  busyCalendarSource: 'configured' | 'primary-fallback';
+  busyCalendarSource: "configured" | "primary-fallback";
   timezone: string;
   bookingCalendarId: string;
-  appointmentSchedules: 'manual-fallback';
+  appointmentSchedules: "manual-fallback";
 }
 
 export interface ScheduledJobRow {
@@ -1744,7 +2272,7 @@ export interface TaskOutcomeRow {
 
 export interface LearningInsightRow {
   id: string;
-  insightType: 'pattern' | 'improvement' | 'warning';
+  insightType: "pattern" | "improvement" | "warning";
   title: string;
   description: string;
   confidence: number;
@@ -1761,7 +2289,7 @@ export interface StrategyRecommendationRow {
   text: string;
   expectedImpact: string;
   confidence: number;
-  status: 'pending' | 'approved' | 'rejected' | 'applied' | 'superseded';
+  status: "pending" | "approved" | "rejected" | "applied" | "superseded";
   reviewedAt: string | null;
   reviewerNote: string | null;
   createdAt: string;
@@ -1774,7 +2302,12 @@ export interface StrategyRecommendationRow {
 
 export interface PaginatedStrategyRecommendations {
   items: StrategyRecommendationRow[];
-  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
 }
 
 export interface StrategyCleanupSummary {
@@ -1786,7 +2319,11 @@ export interface StrategyCleanupSummary {
   unsafeConcurrencyItemsRejected: number;
   pendingCountBefore: number;
   pendingCountAfter: number;
-  uniquePendingForReview: Array<{ id: string; title: string; fingerprint: string }>;
+  uniquePendingForReview: Array<{
+    id: string;
+    title: string;
+    fingerprint: string;
+  }>;
 }
 
 export interface PerformanceBaselineRow {
@@ -1904,14 +2441,20 @@ export interface ResearchedLead {
   contactEmail: string | null;
   contactPhone: string | null;
   contactSourceUrl: string | null;
-  contactResearchStatus: 'pending' | 'partial' | 'complete' | 'unavailable';
+  contactResearchStatus: "pending" | "partial" | "complete" | "unavailable";
   contactResearchedAt: string | null;
   source: string | null;
   enrichment: Record<string, unknown> | null;
   fitReason: string;
   outreachAngle: string | null;
   status: string;
-  pipelineState: 'DISCOVERED' | 'BASIC_ENRICHMENT' | 'CONTACT_FOUND' | 'QUALIFIED' | 'DEEP_RESEARCH' | 'CAMPAIGN_READY';
+  pipelineState:
+    | "DISCOVERED"
+    | "BASIC_ENRICHMENT"
+    | "CONTACT_FOUND"
+    | "QUALIFIED"
+    | "DEEP_RESEARCH"
+    | "CAMPAIGN_READY";
   pipelineStateChangedAt: string | null;
   discoveredAt: string | null;
   basicEnrichedAt: string | null;
@@ -1932,7 +2475,12 @@ export interface LeadStats {
   rawCandidates: number;
   pendingOrUnverified: number;
   rejected: number;
-  byStatus: { new: number; contacted: number; qualified: number; rejected: number };
+  byStatus: {
+    new: number;
+    contacted: number;
+    qualified: number;
+    rejected: number;
+  };
   byPipelineState: Record<string, number>;
   byIndustry: Record<string, number>;
 }
@@ -1940,12 +2488,12 @@ export interface LeadStats {
 export interface TerritoryExclusivity {
   id: string;
   name: string;
-  exclusivityType: 'industry' | 'territory';
+  exclusivityType: "industry" | "territory";
   industry: string | null;
-  geographyType: 'zip' | 'county' | 'metro' | 'dma' | 'radius' | 'custom';
+  geographyType: "zip" | "county" | "metro" | "dma" | "radius" | "custom";
   geographyValue: string;
   geographyDefinition: Record<string, unknown>;
-  status: 'available' | 'reserved' | 'sold' | 'released';
+  status: "available" | "reserved" | "sold" | "released";
   reservedForCompany: string | null;
   reservedByLeadId: string | null;
   soldToCompany: string | null;
@@ -1964,9 +2512,21 @@ export interface SuggestionRow {
   projectId: string | null;
   projectName: string;
   source: string;
-  category: 'product_growth' | 'revenue' | 'efficiency' | 'reliability' | 'user_experience' | 'security' | 'prompt_improvement' | 'cost_optimization' | 'automation' | 'distribution' | 'consolidation' | 'self_improvement';
-  impact: 'high' | 'medium' | 'low';
-  difficulty: 'easy' | 'medium' | 'hard';
+  category:
+    | "product_growth"
+    | "revenue"
+    | "efficiency"
+    | "reliability"
+    | "user_experience"
+    | "security"
+    | "prompt_improvement"
+    | "cost_optimization"
+    | "automation"
+    | "distribution"
+    | "consolidation"
+    | "self_improvement";
+  impact: "high" | "medium" | "low";
+  difficulty: "easy" | "medium" | "hard";
   rationale: string;
   evidence: Record<string, unknown>;
   proposedPlan: Record<string, unknown>;

@@ -1,22 +1,51 @@
-import { randomUUID } from 'crypto';
-import { Router } from 'express';
-import { z } from 'zod';
-import { db, goals, tasks, approvals, logs, agents as agentsTable, voiceChatSessions, voiceChatTurns } from '@workspace/db';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMIntentionalPause } from '@workspace/core';
-import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
-import type { ApexCEO } from '@workspace/agents';
+import { randomUUID } from "crypto";
+import { Router } from "express";
+import { z } from "zod";
+import {
+  db,
+  goals,
+  tasks,
+  approvals,
+  logs,
+  agents as agentsTable,
+  auditEvents,
+  voiceChatSessions,
+  voiceChatTurns,
+} from "@workspace/db";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  createLLMClient,
+  getDefaultLLMConfig,
+  getLLMCapacityResumeAt,
+  isLLMIntentionalPause,
+} from "@workspace/core";
+import type { LLMMessage, LLMTool, LLMToolCall } from "@workspace/core";
+import type { ApexCEO } from "@workspace/agents";
+import {
+  COPILOT_SAFE_PAGES,
+  isCopilotFeatureEnabled,
+  validateCopilotAction,
+  validateCopilotActions,
+  type CopilotAction,
+} from "../copilot-actions.js";
 
 /** Re-dispatch a task that was blocked awaiting approval immediately after the
  *  human resolves it, instead of waiting for the durable recovery sweep's next
  *  tick. Mirrors approvals.ts: only a task still actually `awaiting_approval` is
  *  touched, so this can never resurrect a task the operator cancelled. */
-async function requeueResolvedApprovalTask(taskId: string | null | undefined): Promise<void> {
+async function requeueResolvedApprovalTask(
+  taskId: string | null | undefined,
+): Promise<void> {
   if (!taskId) return;
-  await db.update(tasks).set({ status: 'pending', leasedAt: null, updatedAt: new Date() })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, 'awaiting_approval')))
+  await db
+    .update(tasks)
+    .set({ status: "pending", leasedAt: null, updatedAt: new Date() })
+    .where(and(eq(tasks.id, taskId), eq(tasks.status, "awaiting_approval")))
     .catch((err) => {
-      console.warn('[chat] requeue after approval failed (sweep will retry):', err instanceof Error ? err.message : err);
+      console.warn(
+        "[chat] requeue after approval failed (sweep will retry):",
+        err instanceof Error ? err.message : err,
+      );
     });
 }
 
@@ -36,7 +65,7 @@ async function requeueResolvedApprovalTask(taskId: string | null | undefined): P
 // whether a message is a question (answer it) or an order (deploy it).
 
 const chatTurnSchema = z.object({
-  role: z.enum(['user', 'assistant']),
+  role: z.enum(["user", "assistant"]),
   content: z.string(),
 });
 
@@ -46,7 +75,24 @@ const chatRequestSchema = z.object({
   // The Apex screen Don is currently viewing, so "this", "that graph", "the
   // thing on my screen" resolve against what he is actually looking at.
   page: z.string().max(120).optional(),
+  copilot: z
+    .object({
+      enabled: z.boolean(),
+      pageId: z.string().max(80).optional(),
+      sessionId: z.string().uuid(),
+    })
+    .strict()
+    .optional(),
 });
+
+const copilotAuditRequestSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    action: z.unknown(),
+    status: z.enum(["executed", "failed", "stopped"]),
+    reason: z.string().max(500).optional(),
+  })
+  .strict();
 
 export const CHAT_SYSTEM_PROMPT = `You are Apex, talking directly with Don — the founder who built you and the whole
 portfolio you run operations for. This is his Chat window: a real conversation, not a command line.
@@ -74,139 +120,259 @@ You are a capable agent in your own right, not a dispatcher. Handle things yours
 - Keep replies conversational length — a few sentences to a few short paragraphs, not a wall of bullet points,
   unless he's asked for a list.`;
 
+const COPILOT_SYSTEM_PROMPT = `
+
+Apex Copilot is active for this turn. You may control ONLY the authenticated APEX dashboard through
+the control_dashboard tool. Use that tool when the operator explicitly asks you to open a safe page,
+search leads/contacts, set one of the tool's listed filters, or open a lead/contact by exact id.
+Never narrate a raw click or claim the UI moved without using the tool.
+
+The tool is an allow-list. It cannot send email/SMS/calls/invites; release pending sends; approve,
+confirm, or enter codes; change kill switches/outbound policy; access secrets, billing, or payments;
+delete or merge data; change users/permissions; deploy or roll back. Do not try synonyms or another
+tool to bypass those limits. Sensitive pages are not valid navigation destinations. If asked for a
+blocked action, explain that Matthew must do it himself. Campaign edits, bulk edits, merges, and
+other medium-risk changes require a separate visible “Do it?” confirmation that you cannot click;
+this MVP registry intentionally does not expose those actions.`;
+
+const COPILOT_TOOL: LLMTool = {
+  name: "control_dashboard",
+  description:
+    "Queue one or more allow-listed in-app APEX dashboard actions. This never controls the OS or desktop.",
+  parameters: {
+    type: "object",
+    properties: {
+      actions: {
+        type: "array",
+        maxItems: 10,
+        items: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: ["navigate", "search", "setFilter", "openRecord"],
+            },
+            page: {
+              type: "string",
+              enum: [...COPILOT_SAFE_PAGES],
+            },
+            query: { type: "string" },
+            field: {
+              type: "string",
+              description:
+                "leads: status, pipelineState, industry. contacts: q, tag, city, state, verifiedOnly, ownerBot, replied, campaignId.",
+            },
+            value: {
+              description: "Filter value: string, boolean, or null.",
+            },
+            recordType: { type: "string", enum: ["lead", "contact"] },
+            id: {
+              type: "string",
+              description: "Exact UUID of the lead or contact.",
+            },
+          },
+          required: ["type"],
+        },
+      },
+    },
+    required: ["actions"],
+  },
+};
+
 export const CHAT_TOOLS: LLMTool[] = [
   {
-    name: 'create_goal',
+    name: "create_goal",
     description:
-      'Deploy a new work order to the Apex agent swarm. Only call this when Don is clearly instructing action to be taken — never for a question or a status check.',
+      "Deploy a new work order to the Apex agent swarm. Only call this when Don is clearly instructing action to be taken — never for a question or a status check.",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
-        title: { type: 'string', description: 'Short (<80 char) title for the goal.' },
-        description: { type: 'string', description: 'Full description of what should be done.' },
-        priority: { type: 'number', description: '1 (most urgent) to 10 (least). Default 5.' },
+        title: {
+          type: "string",
+          description: "Short (<80 char) title for the goal.",
+        },
+        description: {
+          type: "string",
+          description: "Full description of what should be done.",
+        },
+        priority: {
+          type: "number",
+          description: "1 (most urgent) to 10 (least). Default 5.",
+        },
       },
-      required: ['title', 'description'],
+      required: ["title", "description"],
     },
   },
   {
-    name: 'get_pending_approvals',
+    name: "get_pending_approvals",
     description:
       "Get the real current count and detail of pending approvals (agents genuinely blocked waiting on a decision) and escalations (an agent flagged something for Don's attention but kept working).",
-    parameters: { type: 'object', properties: {} },
+    parameters: { type: "object", properties: {} },
   },
   {
-    name: 'get_recent_goals',
-    description: 'List the most recent goals/work orders and their current status.',
-    parameters: {
-      type: 'object',
-      properties: { limit: { type: 'number', description: 'Max rows, default 10, max 25.' } },
-    },
-  },
-  {
-    name: 'get_recent_activity',
+    name: "get_recent_goals",
     description:
-      'Get the most recent warning/error-level log lines across the whole swarm, to explain what has actually been happening operationally.',
+      "List the most recent goals/work orders and their current status.",
     parameters: {
-      type: 'object',
-      properties: { limit: { type: 'number', description: 'Max rows, default 15, max 40.' } },
-    },
-  },
-  {
-    name: 'get_goal_progress',
-    description:
-      'Get real progress for one deployed APEX goal, including child-task status counts and recent task detail. Use this when Don asks how a running job is going.',
-    parameters: {
-      type: 'object',
+      type: "object",
       properties: {
-        goalId: { type: 'string', description: 'Goal id from create_goal or get_recent_goals.' },
+        limit: { type: "number", description: "Max rows, default 10, max 25." },
       },
-      required: ['goalId'],
     },
   },
   {
-    name: 'cancel_goal',
+    name: "get_recent_activity",
     description:
-      'Cancel a deployed APEX goal and its still-open child tasks. Only call this when Don explicitly says to cancel/stop that specific running job. If the goal id is not known, call get_recent_goals first.',
+      "Get the most recent warning/error-level log lines across the whole swarm, to explain what has actually been happening operationally.",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
-        goalId: { type: 'string', description: 'Goal id to cancel.' },
-        reason: { type: 'string', description: 'Brief operator reason for cancellation.' },
+        limit: { type: "number", description: "Max rows, default 15, max 40." },
       },
-      required: ['goalId', 'reason'],
     },
   },
   {
-    name: 'approve_pending_approval',
+    name: "get_goal_progress",
     description:
-      'Approve a pending gated approval (an agent is genuinely BLOCKED waiting on this — e.g. runShell, deploy_to_environment, create_pull_request). Only call this when Don has clearly said yes/approve/go ahead for a SPECIFIC approval you already told him about via get_pending_approvals.',
+      "Get real progress for one deployed APEX goal, including child-task status counts and recent task detail. Use this when Don asks how a running job is going.",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
-        id: { type: 'string', description: 'The approval id from get_pending_approvals.' },
-        note: { type: 'string', description: 'Optional short note on why it was approved.' },
+        goalId: {
+          type: "string",
+          description: "Goal id from create_goal or get_recent_goals.",
+        },
       },
-      required: ['id'],
+      required: ["goalId"],
     },
   },
   {
-    name: 'reject_pending_approval',
+    name: "cancel_goal",
     description:
-      'Reject a pending gated approval. Only call this when Don has clearly said no/reject/deny for a SPECIFIC approval you already told him about via get_pending_approvals.',
+      "Cancel a deployed APEX goal and its still-open child tasks. Only call this when Don explicitly says to cancel/stop that specific running job. If the goal id is not known, call get_recent_goals first.",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
-        id: { type: 'string', description: 'The approval id from get_pending_approvals.' },
-        note: { type: 'string', description: 'Optional short note on why it was rejected.' },
+        goalId: { type: "string", description: "Goal id to cancel." },
+        reason: {
+          type: "string",
+          description: "Brief operator reason for cancellation.",
+        },
       },
-      required: ['id'],
+      required: ["goalId", "reason"],
     },
   },
   {
-    name: 'acknowledge_escalation',
+    name: "approve_pending_approval",
+    description:
+      "Approve a pending gated approval (an agent is genuinely BLOCKED waiting on this — e.g. runShell, deploy_to_environment, create_pull_request). Only call this when Don has clearly said yes/approve/go ahead for a SPECIFIC approval you already told him about via get_pending_approvals.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The approval id from get_pending_approvals.",
+        },
+        note: {
+          type: "string",
+          description: "Optional short note on why it was approved.",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "reject_pending_approval",
+    description:
+      "Reject a pending gated approval. Only call this when Don has clearly said no/reject/deny for a SPECIFIC approval you already told him about via get_pending_approvals.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The approval id from get_pending_approvals.",
+        },
+        note: {
+          type: "string",
+          description: "Optional short note on why it was rejected.",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "acknowledge_escalation",
     description:
       "Acknowledge/clear a pending escalation (an FYI ask — nothing is blocked, an agent just flagged something). Use this once Don has heard about it and doesn't need it left in the queue.",
     parameters: {
-      type: 'object',
+      type: "object",
       properties: {
-        id: { type: 'string', description: 'The escalation id from get_pending_approvals.' },
-        note: { type: 'string', description: 'Optional short note.' },
+        id: {
+          type: "string",
+          description: "The escalation id from get_pending_approvals.",
+        },
+        note: { type: "string", description: "Optional short note." },
       },
-      required: ['id'],
+      required: ["id"],
     },
   },
 ];
 
+const COPILOT_READ_ONLY_CHAT_TOOLS = CHAT_TOOLS.filter((tool) =>
+  [
+    "get_pending_approvals",
+    "get_recent_goals",
+    "get_recent_activity",
+    "get_goal_progress",
+  ].includes(tool.name),
+);
+
 export async function buildLiveSnapshot(): Promise<string> {
-  const [approvalRows, escalationRows, activeGoalRows, agentRows] = await Promise.all([
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(approvals)
-      .where(and(eq(approvals.status, 'pending'), eq(approvals.kind, 'approval'))),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(approvals)
-      .where(and(eq(approvals.status, 'pending'), eq(approvals.kind, 'escalation'))),
-    db.select().from(goals).where(eq(goals.status, 'active')).orderBy(desc(goals.createdAt)).limit(5),
-    db.select().from(agentsTable),
-  ]);
+  const [approvalRows, escalationRows, activeGoalRows, agentRows] =
+    await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(approvals)
+        .where(
+          and(eq(approvals.status, "pending"), eq(approvals.kind, "approval")),
+        ),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(approvals)
+        .where(
+          and(
+            eq(approvals.status, "pending"),
+            eq(approvals.kind, "escalation"),
+          ),
+        ),
+      db
+        .select()
+        .from(goals)
+        .where(eq(goals.status, "active"))
+        .orderBy(desc(goals.createdAt))
+        .limit(5),
+      db.select().from(agentsTable),
+    ]);
 
   const pendingApprovals = approvalRows[0]?.count ?? 0;
   const pendingEscalations = escalationRows[0]?.count ?? 0;
-  const workingAgents = agentRows.filter((a) => a.status === 'thinking' || a.status === 'acting');
+  const workingAgents = agentRows.filter(
+    (a) => a.status === "thinking" || a.status === "acting",
+  );
 
   const lines = [
     `Pending gated approvals (agents blocked, need a decision): ${pendingApprovals}`,
     `Pending escalations (FYI asks, nothing blocked): ${pendingEscalations}`,
     `Agents currently working: ${workingAgents.length}/${agentRows.length}${
-      workingAgents.length ? ' — ' + workingAgents.map((a) => `${a.name} (${a.role})`).join(', ') : ''
+      workingAgents.length
+        ? " — " + workingAgents.map((a) => `${a.name} (${a.role})`).join(", ")
+        : ""
     }`,
     `Active goals (${activeGoalRows.length} shown, most recent first):`,
     ...activeGoalRows.map((g) => `  - [P${g.priority}] ${g.title}`),
   ];
-  if (activeGoalRows.length === 0) lines.push('  (none active right now)');
-  return lines.join('\n');
+  if (activeGoalRows.length === 0) lines.push("  (none active right now)");
+  return lines.join("\n");
 }
 
 export async function executeTool(
@@ -214,39 +380,55 @@ export async function executeTool(
   ceo: ApexCEO,
 ): Promise<Record<string, unknown>> {
   switch (call.name) {
-    case 'create_goal': {
-      const title = String(call.args.title ?? '').slice(0, 200);
-      const description = String(call.args.description ?? '');
+    case "create_goal": {
+      const title = String(call.args.title ?? "").slice(0, 200);
+      const description = String(call.args.description ?? "");
       const priority = Number(call.args.priority ?? 5);
       if (!title || description.length < 5) {
-        return { error: 'title and description are required' };
+        return { error: "title and description are required" };
       }
       const goalId = await ceo.submitGoal(
         title,
         description,
-        Number.isFinite(priority) ? Math.min(10, Math.max(1, Math.floor(priority))) : 5,
+        Number.isFinite(priority)
+          ? Math.min(10, Math.max(1, Math.floor(priority)))
+          : 5,
       );
       return { goalId, title, deployed: true };
     }
-    case 'get_pending_approvals': {
+    case "get_pending_approvals": {
       const rows = await db
         .select()
         .from(approvals)
-        .where(eq(approvals.status, 'pending'))
+        .where(eq(approvals.status, "pending"))
         .orderBy(desc(approvals.createdAt))
         .limit(30);
       return {
         approvals: rows
-          .filter((r) => r.kind === 'approval')
-          .map((r) => ({ id: r.id, toolName: r.toolName, reason: r.reason, createdAt: r.createdAt })),
+          .filter((r) => r.kind === "approval")
+          .map((r) => ({
+            id: r.id,
+            toolName: r.toolName,
+            reason: r.reason,
+            createdAt: r.createdAt,
+          })),
         escalations: rows
-          .filter((r) => r.kind === 'escalation')
-          .map((r) => ({ id: r.id, reason: r.reason, occurrences: r.occurrences, createdAt: r.createdAt })),
+          .filter((r) => r.kind === "escalation")
+          .map((r) => ({
+            id: r.id,
+            reason: r.reason,
+            occurrences: r.occurrences,
+            createdAt: r.createdAt,
+          })),
       };
     }
-    case 'get_recent_goals': {
+    case "get_recent_goals": {
       const limit = Math.min(25, Math.max(1, Number(call.args.limit ?? 10)));
-      const rows = await db.select().from(goals).orderBy(desc(goals.createdAt)).limit(limit);
+      const rows = await db
+        .select()
+        .from(goals)
+        .orderBy(desc(goals.createdAt))
+        .limit(limit);
       return {
         goals: rows.map((g) => ({
           id: g.id,
@@ -258,7 +440,7 @@ export async function executeTool(
         })),
       };
     }
-    case 'get_recent_activity': {
+    case "get_recent_activity": {
       const limit = Math.min(40, Math.max(1, Number(call.args.limit ?? 15)));
       const rows = await db
         .select()
@@ -275,11 +457,15 @@ export async function executeTool(
         })),
       };
     }
-    case 'get_goal_progress': {
-      const goalId = String(call.args.goalId ?? '');
-      if (!goalId) return { error: 'goalId is required' };
-      const [goal] = await db.select().from(goals).where(eq(goals.id, goalId)).limit(1);
-      if (!goal) return { error: 'Goal not found.' };
+    case "get_goal_progress": {
+      const goalId = String(call.args.goalId ?? "");
+      if (!goalId) return { error: "goalId is required" };
+      const [goal] = await db
+        .select()
+        .from(goals)
+        .where(eq(goals.id, goalId))
+        .limit(1);
+      if (!goal) return { error: "Goal not found." };
 
       const childTasks = await db
         .select()
@@ -316,17 +502,27 @@ export async function executeTool(
         },
       };
     }
-    case 'cancel_goal': {
-      const goalId = String(call.args.goalId ?? '');
-      const reason = String(call.args.reason ?? '').trim().slice(0, 500);
+    case "cancel_goal": {
+      const goalId = String(call.args.goalId ?? "");
+      const reason = String(call.args.reason ?? "")
+        .trim()
+        .slice(0, 500);
       if (!goalId || reason.length < 3) {
-        return { error: 'goalId and a cancellation reason are required' };
+        return { error: "goalId and a cancellation reason are required" };
       }
 
-      const [goal] = await db.select().from(goals).where(eq(goals.id, goalId)).limit(1);
-      if (!goal) return { error: 'Goal not found.' };
-      if (goal.status === 'completed' || goal.status === 'cancelled') {
-        return { error: `Goal is already ${goal.status}.`, goalId, status: goal.status };
+      const [goal] = await db
+        .select()
+        .from(goals)
+        .where(eq(goals.id, goalId))
+        .limit(1);
+      if (!goal) return { error: "Goal not found." };
+      if (goal.status === "completed" || goal.status === "cancelled") {
+        return {
+          error: `Goal is already ${goal.status}.`,
+          goalId,
+          status: goal.status,
+        };
       }
 
       const openTasks = await db
@@ -335,7 +531,12 @@ export async function executeTool(
         .where(
           and(
             eq(tasks.goalId, goalId),
-            inArray(tasks.status, ['pending', 'in_progress', 'blocked', 'awaiting_approval']),
+            inArray(tasks.status, [
+              "pending",
+              "in_progress",
+              "blocked",
+              "awaiting_approval",
+            ]),
           ),
         );
       const openTaskIds = openTasks.map((task) => task.id);
@@ -343,14 +544,14 @@ export async function executeTool(
 
       await db
         .update(goals)
-        .set({ status: 'cancelled', completedAt: now })
+        .set({ status: "cancelled", completedAt: now })
         .where(eq(goals.id, goalId));
 
       if (openTaskIds.length > 0) {
         await db
           .update(tasks)
           .set({
-            status: 'cancelled',
+            status: "cancelled",
             result: `Cancelled by operator via APEX Live Talk: ${reason}`,
             completedAt: now,
             updatedAt: now,
@@ -360,30 +561,30 @@ export async function executeTool(
         await db
           .update(approvals)
           .set({
-            status: 'rejected',
+            status: "rejected",
             reviewedAt: now,
             reviewerNote: `Goal cancelled by operator: ${reason}`,
           })
           .where(
             and(
               inArray(approvals.taskId, openTaskIds),
-              eq(approvals.kind, 'approval'),
-              eq(approvals.status, 'pending'),
+              eq(approvals.kind, "approval"),
+              eq(approvals.status, "pending"),
             ),
           );
 
         await db
           .update(approvals)
           .set({
-            status: 'acknowledged',
+            status: "acknowledged",
             reviewedAt: now,
             reviewerNote: `Goal cancelled by operator: ${reason}`,
           })
           .where(
             and(
               inArray(approvals.taskId, openTaskIds),
-              eq(approvals.kind, 'escalation'),
-              eq(approvals.status, 'pending'),
+              eq(approvals.kind, "escalation"),
+              eq(approvals.status, "pending"),
             ),
           );
       }
@@ -395,41 +596,88 @@ export async function executeTool(
         cancelledOpenTasks: openTaskIds.length,
         reason,
         inFlightCaveat:
-          'The goal and open task records are cancelled immediately. An external side effect already executing outside the task queue may still finish and should be checked if relevant.',
+          "The goal and open task records are cancelled immediately. An external side effect already executing outside the task queue may still finish and should be checked if relevant.",
       };
     }
-    case 'approve_pending_approval': {
-      const id = String(call.args.id ?? '');
+    case "approve_pending_approval": {
+      const id = String(call.args.id ?? "");
       const note = call.args.note ? String(call.args.note) : undefined;
-      const [resolved] = await db.update(approvals)
-        .set({ status: 'approved', reviewedAt: new Date(), reviewerNote: note })
-        .where(and(eq(approvals.id, id), eq(approvals.kind, 'approval'), eq(approvals.status, 'pending')))
+      const [resolved] = await db
+        .update(approvals)
+        .set({ status: "approved", reviewedAt: new Date(), reviewerNote: note })
+        .where(
+          and(
+            eq(approvals.id, id),
+            eq(approvals.kind, "approval"),
+            eq(approvals.status, "pending"),
+          ),
+        )
         .returning({ id: approvals.id });
-      if (!resolved) return { error: 'That approval is not pending (already resolved, or wrong id).' };
-      const [approvalRow] = await db.select({ taskId: approvals.taskId }).from(approvals).where(eq(approvals.id, id)).limit(1);
-      if (approvalRow?.taskId) await requeueResolvedApprovalTask(approvalRow.taskId);
+      if (!resolved)
+        return {
+          error:
+            "That approval is not pending (already resolved, or wrong id).",
+        };
+      const [approvalRow] = await db
+        .select({ taskId: approvals.taskId })
+        .from(approvals)
+        .where(eq(approvals.id, id))
+        .limit(1);
+      if (approvalRow?.taskId)
+        await requeueResolvedApprovalTask(approvalRow.taskId);
       return { approved: true, id, requeued: Boolean(approvalRow?.taskId) };
     }
-    case 'reject_pending_approval': {
-      const id = String(call.args.id ?? '');
+    case "reject_pending_approval": {
+      const id = String(call.args.id ?? "");
       const note = call.args.note ? String(call.args.note) : undefined;
-      const [resolved] = await db.update(approvals)
-        .set({ status: 'rejected', reviewedAt: new Date(), reviewerNote: note })
-        .where(and(eq(approvals.id, id), eq(approvals.kind, 'approval'), eq(approvals.status, 'pending')))
+      const [resolved] = await db
+        .update(approvals)
+        .set({ status: "rejected", reviewedAt: new Date(), reviewerNote: note })
+        .where(
+          and(
+            eq(approvals.id, id),
+            eq(approvals.kind, "approval"),
+            eq(approvals.status, "pending"),
+          ),
+        )
         .returning({ id: approvals.id });
-      if (!resolved) return { error: 'That approval is not pending (already resolved, or wrong id).' };
-      const [approvalRow] = await db.select({ taskId: approvals.taskId }).from(approvals).where(eq(approvals.id, id)).limit(1);
-      if (approvalRow?.taskId) await requeueResolvedApprovalTask(approvalRow.taskId);
+      if (!resolved)
+        return {
+          error:
+            "That approval is not pending (already resolved, or wrong id).",
+        };
+      const [approvalRow] = await db
+        .select({ taskId: approvals.taskId })
+        .from(approvals)
+        .where(eq(approvals.id, id))
+        .limit(1);
+      if (approvalRow?.taskId)
+        await requeueResolvedApprovalTask(approvalRow.taskId);
       return { rejected: true, id, requeued: Boolean(approvalRow?.taskId) };
     }
-    case 'acknowledge_escalation': {
-      const id = String(call.args.id ?? '');
+    case "acknowledge_escalation": {
+      const id = String(call.args.id ?? "");
       const note = call.args.note ? String(call.args.note) : undefined;
-      const [resolved] = await db.update(approvals)
-        .set({ status: 'acknowledged', reviewedAt: new Date(), reviewerNote: note })
-        .where(and(eq(approvals.id, id), eq(approvals.kind, 'escalation'), eq(approvals.status, 'pending')))
+      const [resolved] = await db
+        .update(approvals)
+        .set({
+          status: "acknowledged",
+          reviewedAt: new Date(),
+          reviewerNote: note,
+        })
+        .where(
+          and(
+            eq(approvals.id, id),
+            eq(approvals.kind, "escalation"),
+            eq(approvals.status, "pending"),
+          ),
+        )
         .returning({ id: approvals.id });
-      if (!resolved) return { error: 'That escalation is not pending (already resolved, or wrong id).' };
+      if (!resolved)
+        return {
+          error:
+            "That escalation is not pending (already resolved, or wrong id).",
+        };
       return { acknowledged: true, id };
     }
     default:
@@ -437,29 +685,115 @@ export async function executeTool(
   }
 }
 
+function copilotAuditEntity(action: CopilotAction): {
+  entityType: string;
+  entityId: string | null;
+} {
+  switch (action.type) {
+    case "navigate":
+      return { entityType: "dashboard_page", entityId: action.page };
+    case "search":
+    case "setFilter":
+      return { entityType: "dashboard_page", entityId: action.page };
+    case "openRecord":
+      return { entityType: action.recordType, entityId: action.id };
+  }
+}
+
+async function writeCopilotAudit(
+  sessionId: string,
+  action: CopilotAction,
+  status: "queued" | "executed" | "failed" | "stopped",
+  reason?: string,
+): Promise<void> {
+  const entity = copilotAuditEntity(action);
+  await db.insert(auditEvents).values({
+    organizationId: "apex",
+    actorType: "agent",
+    actorId: "copilot",
+    action: `copilot.ui.${action.type}`,
+    entityType: entity.entityType,
+    entityId: entity.entityId,
+    metadata: {
+      actor: "copilot",
+      onBehalfOf: "Matthew",
+      sessionId,
+      status,
+      action,
+      undoAvailable: false,
+      ...(reason ? { reason } : {}),
+    },
+  });
+}
+
 export function createChatRouter(ceo: ApexCEO) {
   const router = Router();
-  const llm = createLLMClient(getDefaultLLMConfig('CEO'));
+  const llm = createLLMClient(getDefaultLLMConfig("CEO"));
 
-  router.post('/message', async (req, res) => {
+  router.get("/copilot/status", (_req, res) => {
+    return res.json({ enabled: isCopilotFeatureEnabled() });
+  });
+
+  router.post("/copilot/audit", async (req, res) => {
+    if (!isCopilotFeatureEnabled()) {
+      return res.status(404).json({ error: "Apex Copilot is disabled." });
+    }
+    const parsed = copilotAuditRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+    const validated = validateCopilotAction(parsed.data.action);
+    if (!validated.ok) {
+      return res
+        .status(403)
+        .json({ error: validated.reason, code: validated.code });
+    }
+    try {
+      await writeCopilotAudit(
+        parsed.data.sessionId,
+        validated.action,
+        parsed.data.status,
+        parsed.data.reason,
+      );
+      return res.json({ logged: true });
+    } catch (err) {
+      console.error(
+        "[copilot] audit write failed:",
+        err instanceof Error ? err.message : err,
+      );
+      return res
+        .status(500)
+        .json({ error: "Could not write Apex Copilot audit event." });
+    }
+  });
+
+  router.post("/message", async (req, res) => {
     const parsed = chatRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.flatten() });
     }
-    const { message, history, page } = parsed.data;
+    const { message, history, page, copilot } = parsed.data;
+    const copilotRequested = copilot?.enabled === true;
+    const copilotEnabled = copilotRequested && isCopilotFeatureEnabled();
 
     try {
       const snapshot = await buildLiveSnapshot();
       const screenContext = page
         ? `\n\nDon's current screen: the "${page}" page. When he says "this", "that", or "it", he usually means something on that screen.\n`
-        : '';
+        : "";
       const llmHistory: LLMMessage[] = [
-        { role: 'system', content: `${CHAT_SYSTEM_PROMPT}${screenContext}\n\nCurrent live snapshot:\n${snapshot}` },
-        ...history.map((h): LLMMessage => ({ role: h.role, content: h.content })),
-        { role: 'user', content: message },
+        {
+          role: "system",
+          content: `${CHAT_SYSTEM_PROMPT}${copilotEnabled ? COPILOT_SYSTEM_PROMPT : ""}${screenContext}\n\nCurrent live snapshot:\n${snapshot}`,
+        },
+        ...history.map(
+          (h): LLMMessage => ({ role: h.role, content: h.content }),
+        ),
+        { role: "user", content: message },
       ];
 
       let goalCreated: { id: string; title: string } | undefined;
+      const copilotActions: CopilotAction[] = [];
       const MAX_TURNS = 5;
       // Stable only for this HTTP conversation/tool loop. Gemini uses it to
       // preserve native Interactions state across local tool execution without
@@ -472,32 +806,83 @@ export function createChatRouter(ceo: ApexCEO) {
         // background agent from front-loading a day's budget. It still can't
         // spend past the hard daily caps or the per-minute provider rate
         // limit; see LLMExecutionContext.interactive.
-        const response = await llm.complete(llmHistory, CHAT_TOOLS, {
-          role: 'CEO',
-          interactive: true,
-          conversationId,
+        const response = await llm.complete(
+          llmHistory,
+          copilotEnabled
+            ? [...COPILOT_READ_ONLY_CHAT_TOOLS, COPILOT_TOOL]
+            : CHAT_TOOLS,
+          {
+            role: "CEO",
+            interactive: true,
+            conversationId,
+          },
+        );
+        llmHistory.push({
+          role: "assistant",
+          content: response.content,
+          toolCalls: response.toolCalls,
         });
-        llmHistory.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
 
         if (response.toolCalls.length === 0) {
           return res.json({
-            reply: response.content || "I don't have anything more to add on that.",
+            reply:
+              response.content || "I don't have anything more to add on that.",
             goalCreated,
+            copilot: {
+              enabled: copilotEnabled,
+              actions: copilotActions,
+            },
           });
         }
 
         for (const call of response.toolCalls) {
           let result: Record<string, unknown>;
           try {
-            result = await executeTool(call, ceo);
+            if (call.name === "control_dashboard") {
+              if (!copilotEnabled || !copilot) {
+                result = { error: "Apex Copilot is disabled." };
+              } else {
+                const validated = validateCopilotActions(call.args.actions);
+                copilotActions.push(...validated.actions);
+                await Promise.all(
+                  validated.actions.map((action) =>
+                    writeCopilotAudit(
+                      copilot.sessionId,
+                      action,
+                      "queued",
+                    ).catch((err) => {
+                      console.warn(
+                        "[copilot] queued audit failed:",
+                        err instanceof Error ? err.message : err,
+                      );
+                    }),
+                  ),
+                );
+                result = {
+                  queued: validated.actions,
+                  rejected: validated.rejected.map((item) => ({
+                    code: item.code,
+                    reason: item.reason,
+                  })),
+                  note: "Queued actions still run through the browser registry. Do not claim completion until the UI reports it.",
+                };
+              }
+            } else {
+              result = await executeTool(call, ceo);
+            }
           } catch (err) {
-            result = { error: err instanceof Error ? err.message : String(err) };
+            result = {
+              error: err instanceof Error ? err.message : String(err),
+            };
           }
-          if (call.name === 'create_goal' && result.goalId) {
-            goalCreated = { id: String(result.goalId), title: String(result.title ?? call.args.title ?? '') };
+          if (call.name === "create_goal" && result.goalId) {
+            goalCreated = {
+              id: String(result.goalId),
+              title: String(result.title ?? call.args.title ?? ""),
+            };
           }
           llmHistory.push({
-            role: 'tool',
+            role: "tool",
             toolCallId: call.id,
             name: call.name,
             content: JSON.stringify(result),
@@ -506,8 +891,13 @@ export function createChatRouter(ceo: ApexCEO) {
       }
 
       return res.json({
-        reply: 'That took a few lookups — deploying it as a goal so the swarm can dig in properly.',
+        reply:
+          "That took a few lookups — deploying it as a goal so the swarm can dig in properly.",
         goalCreated,
+        copilot: {
+          enabled: copilotEnabled,
+          actions: copilotActions,
+        },
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -519,7 +909,12 @@ export function createChatRouter(ceo: ApexCEO) {
       if (isLLMIntentionalPause(message)) {
         const resumeAt = getLLMCapacityResumeAt(message);
         const resumeClock = resumeAt
-          ? resumeAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short' })
+          ? resumeAt.toLocaleTimeString("en-US", {
+              hour: "numeric",
+              minute: "2-digit",
+              timeZone: "UTC",
+              timeZoneName: "short",
+            })
           : null;
         return res.json({
           reply: resumeClock
@@ -527,7 +922,7 @@ export function createChatRouter(ceo: ApexCEO) {
             : `I'm out of today's LLM budget for the moment. Try me again shortly.`,
         });
       }
-      console.error('[chat] POST /message error:', err);
+      console.error("[chat] POST /message error:", err);
       return res.status(500).json({ error: message });
     }
   });
@@ -539,10 +934,13 @@ export function createChatRouter(ceo: ApexCEO) {
   // Session rows exist even for a call that never connected (written before
   // Deepgram is contacted — see live-voice.ts), so a run of failed attempts
   // is visible here too, not just successful ones.
-  router.get('/voice-sessions', async (req, res) => {
+  router.get("/voice-sessions", async (req, res) => {
     try {
       const limitParam = Number(req.query.limit);
-      const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 100) : 20;
+      const limit =
+        Number.isFinite(limitParam) && limitParam > 0
+          ? Math.min(limitParam, 100)
+          : 20;
 
       const sessions = await db
         .select()
@@ -569,10 +967,15 @@ export function createChatRouter(ceo: ApexCEO) {
       }
 
       return res.json({
-        sessions: sessions.map((s) => ({ ...s, turns: turnsBySession.get(s.id) ?? [] })),
+        sessions: sessions.map((s) => ({
+          ...s,
+          turns: turnsBySession.get(s.id) ?? [],
+        })),
       });
     } catch (err) {
-      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      return res
+        .status(500)
+        .json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
