@@ -6,8 +6,12 @@ const RATE_LIMIT_COOLDOWN_MS = 30_000;
 
 const DAILY_QUOTA_PATTERN =
   /\b(per[\s-]?day|daily|tokens per day|tpd|quota exhausted|daily limit|daily quota|free tier|free quota|free-models-per-day|openrouter_free_tier_daily|allocationquota)\b/i;
+// "out of funds": Nous Portal answers an unfunded key with HTTP 401 "Your API
+// key is invalid, blocked or out of funds". Read as an auth error, every task
+// failed until midnight UTC; read as exhausted credit, tasks wait and the
+// route is tried again after CREDIT_COOLDOWN_MS.
 const CREDIT_EXHAUSTED_PATTERN =
-  /\b(payment required|insufficient credits?|credits? exhausted|no credits?|negative balance|billing required)\b/i;
+  /\b(payment required|insufficient credits?|credits? exhausted|no credits?|negative balance|billing required|out of funds)\b/i;
 
 export type OpenRouterAccountExclusionScope = "all" | "paid";
 export type OpenRouterAccountExclusionKind =
