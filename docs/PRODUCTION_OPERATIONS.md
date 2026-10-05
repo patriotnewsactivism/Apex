@@ -350,16 +350,20 @@ provider credit; HTTP 402 from OpenRouter is still authoritative.
 
 Current runtime routing order:
 
-1. QwenCloud Token Plan (`qwen3.8-flash`) when configured and enabled
-2. `nex-agi/nex-n2.5-mini:free`
-3. `nex-agi/nex-n2.5-pro:free`
-4. `nvidia/nemotron-3-super-120b-a12b:free`
-5. `nvidia/nemotron-3.5-lightning:free`
-6. `openrouter/free`
-7. `nvidia/nemotron-3-ultra-550b-a55b:free`
-8. direct Groq GPT-OSS 120B BYOK when enabled
-9. direct Gemini 3.8 Flash BYOK when enabled
-10. `z-ai/glm-5.3-flashx` paid continuity when explicitly enabled
+1. `nex-agi/nex-n2.5-mini:free`
+2. `nex-agi/nex-n2.5-pro:free`
+3. `nvidia/nemotron-3-super-120b-a12b:free`
+4. `nvidia/nemotron-3.5-lightning:free`
+5. `openrouter/free`
+6. `nvidia/nemotron-3-ultra-550b-a55b:free`
+7. direct Groq GPT-OSS 120B BYOK when enabled
+8. direct Gemini 3.8 Flash BYOK when enabled
+9. `deepseek/deepseek-v4-flash-0731` paid continuity when `APEX_PAID_FALLBACK_ENABLED=true`, alternating per request between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`), each the other's immediate fallback (ADR-020)
+
+Qwen (QwenCloud Token Plan) is no longer in the chain (2026-10-05). Authenticated
+`GET /api/health/detail` → `llmCapacity.paidFallback.routes` lists which paid
+providers have a configured key; one entry means that provider carries all
+paid traffic.
 
 On 2026-09-12 the account held $20 of credits against $24.28 of usage. The
 routing chain was paid-only, there was no free rung to fall through to, and

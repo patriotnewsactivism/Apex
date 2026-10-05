@@ -108,6 +108,7 @@ export type ApexProviderName =
   | 'openrouter-free-policy'
   | 'groq-gpt-oss-120b-byok'
   | 'gemini-3-8-flash-byok'
+  | 'openrouter-deepseek-v4-flash-paid'
   | 'nous-deepseek-v4-flash-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
@@ -140,15 +141,25 @@ export const OPENROUTER_FREE_KEY_ENVS = [
 ] as const;
 
 /**
- * The funded inference key. As of 2026-09-25 only the OPENROUTER_API_KEY_4
- * account has a positive credit balance (verified via its management key);
- * the other three accounts are overdrawn, so the previous paid key
- * (OPENROUTER_API_KEY) failed every FlashX request with 402.
+ * Paid continuity (operator decision 2026-10-05): one model,
+ * deepseek/deepseek-v4-flash-0731, served by two providers so neither takes
+ * the whole load. Each request alternates which one is tried first and falls
+ * to the other at once (requestProviderOrder).
+ *
+ * OpenRouter: the funded inference key. As of 2026-09-25 only the
+ * OPENROUTER_API_KEY_4 account had a positive credit balance (verified via its
+ * management key); the other three accounts are overdrawn and answer 402.
+ * Nous Portal: NOUS_API_KEY.
  */
-export const OPENROUTER_PAID_KEY_ENVS = ['NOUS_API_KEY'] as const;
-export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName =
-  'nous-deepseek-v4-flash-paid';
+export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_4'] as const;
+export const NOUS_PAID_KEY_ENVS = ['NOUS_API_KEY'] as const;
 export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
+export const PAID_FALLBACK_PROVIDER_NAMES = [
+  'openrouter-deepseek-v4-flash-paid',
+  'nous-deepseek-v4-flash-paid',
+] as const satisfies readonly ApexProviderName[];
+/** The first paid route in the deterministic order (the split alternates it). */
+export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName = PAID_FALLBACK_PROVIDER_NAMES[0];
 
 type ProviderSpec = {
   name: ApexProviderName;
@@ -328,10 +339,32 @@ const PROVIDERS: readonly ProviderSpec[] = [
     maxOutputTokens: 16_384,
   },
   {
-    name: PAID_FALLBACK_PROVIDER_NAME,
+    name: 'openrouter-deepseek-v4-flash-paid',
+    model: PAID_FALLBACK_MODEL,
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
+    paid: true,
+    unrestricted: true,
+    requestPool: 'openrouter',
+    protocol: 'openai-compatible',
+    minIntervalMs: 0,
+    toolCallingReliable: true,
+    supportsParallelToolCalls: true,
+    maxOutputTokens: 131_072,
+    // `sort: 'price'` once pinned the paid route to a host with a 60s p99,
+    // past LLM_REQUEST_TIMEOUT_MS (2026-09-17). Latency is what this route
+    // needs: an answer inside the timeout.
+    providerRouting: { sort: 'latency' },
+    // OpenRouter list price for deepseek/deepseek-v4-flash-0731 on
+    // 2026-10-05. Settled cost from OpenRouter's response stays authoritative.
+    usdPerMillionPrompt: 0.0152,
+    usdPerMillionCompletion: 1.28,
+  },
+  {
+    name: 'nous-deepseek-v4-flash-paid',
     model: PAID_FALLBACK_MODEL,
     baseURL: 'https://inference-api.nousresearch.com/v1',
-    apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS,
+    apiKeyEnvs: NOUS_PAID_KEY_ENVS,
     paid: true,
     unrestricted: true,
     protocol: 'openai-compatible',
@@ -356,10 +389,9 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
  * Custom persisted policies do not appear here; they use FREE_POLICY_GATEWAY_NAME.
  */
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  // Operator-funded paid BYOK, governed but tried first — see the routing
-  // policy comment above and ADR-017. Falls through when unconfigured,
-  // disabled, or failing.
-  'qwen-dashscope-byok',
+  // Qwen led this chain under ADR-017. Its plan is exhausted, and the
+  // operator removed it on 2026-10-05: free capacity first, then the paid
+  // DeepSeek split. The qwen-dashscope-byok spec stays defined, unused.
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
@@ -391,7 +423,6 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
           );
         });
         return [
-          'qwen-dashscope-byok',
           FREE_POLICY_GATEWAY_NAME,
           ...defaultFreeFallbacks,
           'groq-gpt-oss-120b-byok',
@@ -399,16 +430,34 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
         ];
       })()
     : [...PROVIDER_ORDER];
-  // Paid FlashX continuity is part of the route by default when its credential
-  // is configured. APEX imposes no spend ceiling, request cap, or pacing gate
-  // on it; upstream OpenRouter/Z.ai limits remain authoritative. The operator
-  // can remove the route entirely with APEX_PAID_FALLBACK_ENABLED=false.
-  if (paidLLMFallbackEnabled()) freeOrder.push(PAID_FALLBACK_PROVIDER_NAME);
+  // Paid continuity comes last and only with APEX_PAID_FALLBACK_ENABLED=true.
+  // APEX imposes no spend ceiling, request cap, or pacing gate on it; upstream
+  // OpenRouter and Nous limits remain authoritative.
+  if (paidLLMFallbackEnabled()) freeOrder.push(...PAID_FALLBACK_PROVIDER_NAMES);
   return freeOrder;
 }
 
 export function getProviderOrderForRole(_role?: string, pacingEnabled?: boolean): ApexProviderName[] {
   return [...activeProviderOrder(_role, pacingEnabled)];
+}
+
+let paidRotation = 0;
+
+/**
+ * The order one request actually tries. Same as getProviderOrderForRole, but
+ * the two paid routes swap places on every call, so paid traffic splits about
+ * evenly between OpenRouter and Nous and either one is the other's immediate
+ * fallback. A route in cooldown is skipped, so the other takes the load.
+ */
+export function requestProviderOrder(role?: string, pacingEnabled?: boolean): ApexProviderName[] {
+  const order = getProviderOrderForRole(role, pacingEnabled);
+  const first = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[0]);
+  const second = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[1]);
+  paidRotation += 1;
+  if (first >= 0 && second >= 0 && paidRotation % 2 === 0) {
+    [order[first], order[second]] = [order[second], order[first]];
+  }
+  return order;
 }
 
 export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
@@ -1561,7 +1610,7 @@ class MultiProviderClient {
         const capacityBlocks: CapacityBlock[] = [...globalCapacityBlocks];
         let nonCapacityFailureSeen = false;
 
-        for (const providerName of getProviderOrderForRole(this.config.role, pacingOverride)) {
+        for (const providerName of requestProviderOrder(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
 
@@ -1836,11 +1885,15 @@ class MultiProviderClient {
                   setCredentialCooldown(credentialId, status, message, err.retryAfterMs);
                 }
                 if (isOpenRouterProvider(provider)) {
+                  // A free-route quota or rate limit excludes only the
+                  // account's free routing; its paid route stays usable.
                   excludeOpenRouterAccountForFailure(
                     credential.key,
                     status,
                     message,
                     err.retryAfterMs,
+                    Date.now(),
+                    provider.paid !== true,
                   );
                 }
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
@@ -2033,17 +2086,18 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   // still advertising the paid model it no longer used — the same class of
   // quiet lie as an agent stuck reporting `error` while working fine.
   //
-  // Qwen leads PROVIDER_ORDER and also leads activeProviderOrder()'s
-  // custom-policy branch (ADR-017), so it is unconditionally the route
-  // actually attempted first — including when an operator OpenRouter model
-  // policy is set. Reporting the free-policy gateway as "primary" here would
-  // repeat exactly the quiet-lie bug this function exists to avoid.
-  const primaryName = PROVIDER_ORDER[0];
+  // Advertise the route actually attempted first for this role: the free
+  // policy gateway with the role's first selected model when an operator
+  // OpenRouter model policy is saved, otherwise the head of PROVIDER_ORDER.
+  const primaryName = activeProviderOrder(role)[0] ?? PROVIDER_ORDER[0];
   const primary = PROVIDER_BY_NAME.get(primaryName);
-  const model = primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
+  const model =
+    primaryName === FREE_POLICY_GATEWAY_NAME
+      ? getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0]
+      : primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
 
   return {
-    provider: primary?.name ?? 'qwen-dashscope-byok',
+    provider: primary?.name ?? 'openrouter-nex-n2-5-mini-free',
     model,
     temperature: 0.7,
     maxTokens,

@@ -1,8 +1,8 @@
-# APEX free-roster policy with GLM continuity
+# APEX free-roster policy with paid continuity
 
-The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception: `z-ai/glm-5.3-flashx`, appended after the free/BYOK routes whenever the funded `OPENROUTER_API_KEY` is configured.
+The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception, appended after the free/BYOK routes only when `APEX_PAID_FALLBACK_ENABLED=true`: `deepseek/deepseek-v4-flash-0731`, alternating per request between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`).
 
-**Scope note (2026-09-23, ADR-017):** this free roster is no longer the first thing APEX tries overall. An operator-funded, governed Qwen3.8 Flash BYOK route (`qwen-dashscope-byok`) is now tried before it, falling through to the chain below only when Qwen is unconfigured, disabled, or failing. Everything in this document remains accurate for the free roster and FlashX continuity route specifically — "first" and "free-first" below mean first/free-first *within that scope*, not first in APEX's overall runtime order. See `AGENTS.md` ("LLM intelligence policy") and `docs/ARCHITECTURE_DECISIONS.md` ADR-017 for Qwen's placement and governance.
+**Current note (2026-10-05, ADR-020):** Qwen is no longer routed, so this free roster is again the first thing APEX tries. GLM 5.3 FlashX is replaced by the DeepSeek split. Below, "FlashX" and "GLM continuity" mean the current paid continuity route; ADR-017's Qwen notes are historical.
 
 ## Production model order
 

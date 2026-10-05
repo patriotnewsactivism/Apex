@@ -80,10 +80,10 @@ check(
 
 // ── Issue #166: errors are evidence only about the build that wrote them ────
 const buildProviders = [
-  'qwen-dashscope-byok',
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nemotron-ultra',
-  'openrouter-glm-5-3-flashx-paid',
+  'openrouter-deepseek-v4-flash-paid',
+  'nous-deepseek-v4-flash-paid',
 ];
 const retiredRouteFailure =
   'All LLM providers failed or were unavailable. ' +
@@ -92,7 +92,7 @@ const retiredRouteFailure =
 const currentRouteFailure =
   'All LLM providers failed or were unavailable. ' +
   'openrouter-nex-n2-5-mini-free/nex-agi/nex-n2.5-mini:free via OPENROUTER_FREE_API_KEY: HTTP 429 rate limit | ' +
-  'qwen-dashscope-byok: QWEN_API_KEY';
+  'nous-deepseek-v4-flash-paid: NOUS_API_KEY';
 const mixedRouteFailure =
   'All LLM providers failed or were unavailable. ' +
   'openrouter-minimax-m3/minimax/minimax-m3 via OPENROUTER_API_KEY: HTTP 404 model is unavailable | ' +
@@ -101,7 +101,7 @@ const mixedRouteFailure =
 check(
   'current chain-failure format names its providers',
   providersNamedInChainFailure(currentRouteFailure).join(',') ===
-    'openrouter-nex-n2-5-mini-free,qwen-dashscope-byok',
+    'openrouter-nex-n2-5-mini-free,nous-deepseek-v4-flash-paid',
   providersNamedInChainFailure(currentRouteFailure),
 );
 check(

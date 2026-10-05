@@ -16,7 +16,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAME } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { getWebSocketTicketStats } from './websocket-auth.js';
@@ -246,7 +246,7 @@ async function main() {
       paidLLMFallbackEnabled() &&
       getConfiguredProviders().some(
         (provider) =>
-          provider.name === PAID_FALLBACK_PROVIDER_NAME && provider.configured,
+          (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.configured,
       );
     // OpenRouter, Groq and Gemini now have independent request pools. The only
     // request-count state that is truly workspace-wide is the emergency
@@ -345,6 +345,14 @@ async function main() {
           available: paidContinuityAvailable,
           active: paidContinuityActive,
           model: PAID_FALLBACK_MODEL,
+          // The same model on two providers; each request alternates which is
+          // tried first. Lists only the routes whose credential is configured.
+          routes: getConfiguredProviders()
+            .filter(
+              (provider) =>
+                (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.configured,
+            )
+            .map((provider) => provider.name),
         },
       },
       // Provider account balance. The paid continuity route makes remaining

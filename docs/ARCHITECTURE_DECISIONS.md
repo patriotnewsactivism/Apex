@@ -498,7 +498,7 @@ Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/h
 
 ## ADR-016 — Free-first inference with unrestricted GLM 5.3 FlashX continuity
 
-**Status:** Accepted  
+**Status:** Accepted; paid model and providers superseded by ADR-020 (2026-10-05)  
 **Date:** 2026-09-20
 
 The earlier zero-cost-only runtime rule is superseded for continuity routing. The operator-selected/persisted OpenRouter roster remains free-only, but APEX appends one explicit paid runtime route after the free and independent BYOK pools:
@@ -529,7 +529,7 @@ Deterministic guards must prove that DeepSeek V4 Flash 0731 is absent from the c
 
 ## ADR-017 — QwenCloud Token Plan is restored as a governed, primary paid BYOK route
 
-**Status:** Accepted  
+**Status:** Superseded by ADR-020 (2026-10-05) — Qwen is no longer routed  
 **Date:** 2026-09-23/24
 
 ADR-004 retired the direct Gemini/Groq/Cohere/Poolside/Qwen/Kilo/Mistral production provider chain in favor of OpenRouter, with Gemini and Groq later restored as reviewed, capped BYOK exceptions. This decision restores Qwen model access as a third reviewed BYOK exception, on the operator's explicit instruction after purchasing a paid **QwenCloud** (qwencloud.com) Token Plan subscription: the operator wants that capacity used, not left idle while free OpenRouter capacity serves instead. Cohere, Poolside, Kilo, and Mistral remain retired; this decision does not reopen them.
@@ -628,6 +628,69 @@ scope/reason/resume time, affected env names, and whether persistence is
 available. Persistence and health writes are best-effort: database
 unavailability degrades to process-local protection and must never turn a
 successful inference into a failed task.
+
+## ADR-020 — Qwen removed; paid continuity split between OpenRouter and Nous
+
+**Status:** Accepted
+**Date:** 2026-10-05
+
+**Context.** The QwenCloud Token Plan that led the chain under ADR-017 is
+exhausted. The paid continuity route had just moved from OpenRouter (GLM 5.3
+FlashX) to Nous Portal alone, and that one Nous key answered every request with
+HTTP 401 "invalid, blocked or out of funds", so the whole workforce depended on
+one provider account.
+
+**Decision (operator).** Free capacity first: the six OpenRouter free routes,
+then Groq and Gemini BYOK. Then one paid model, `deepseek/deepseek-v4-flash-0731`,
+on two providers:
+
+- `openrouter-deepseek-v4-flash-paid`: OpenRouter, funded `OPENROUTER_API_KEY_4`,
+  request pool `openrouter`, `provider.sort: latency` (the 2026-09-17 finding
+  that `sort: price` picks hosts slower than the request timeout still holds);
+- `nous-deepseek-v4-flash-paid`: Nous Portal, `NOUS_API_KEY`, no OpenRouter
+  fields (Nous answers a `provider` object with HTTP 400).
+
+`requestProviderOrder()` swaps the two on every `complete()` call, so paid load
+alternates and each is the other's immediate fallback. A route in cooldown or
+credit exclusion is skipped and the other carries the load.
+`getProviderOrderForRole()` stays deterministic for health and guards.
+`APEX_PAID_FALLBACK_ENABLED` remains the single switch for both. Qwen is removed
+from `PROVIDER_ORDER` and from the custom-policy order; its spec stays defined
+and is never called. Reinstating it needs a new operator decision.
+
+**Account exclusions.** The funded OpenRouter account is also in the free
+roster. An OpenRouter free-model 429 (daily `free-models-per-day` quota or the
+per-minute limit) used to exclude the whole account, paid routes included,
+until UTC midnight — exactly when paid continuity is needed, which would have
+pushed all paid traffic onto Nous. Such a 429 from a `:free` route is now
+scoped `free` and blocks only free routing on that account. It is stored under
+its own key (`free:<account>`, in memory and in `component_health`), so it
+never overwrites a paid balance exclusion or the reverse. Credit exhaustion
+(402 / out of funds) stays account-wide.
+
+**Model choice.** `deepseek/deepseek-v4-flash-0731`, confirmed by the operator.
+OpenRouter list price on 2026-10-05: $0.0152 per million prompt tokens, $1.28
+per million completion tokens, 1,048,576-token context, tool calling. OpenRouter
+also lists `deepseek/deepseek-v4.1-flash` at a higher prompt price; it is not
+used.
+
+**Consequences.** With both keys configured and funded, paid traffic splits
+about evenly. With one, that provider carries everything, as before.
+Authenticated `GET /api/health/detail` → `llmCapacity.paidFallback.routes`
+lists the configured paid providers. `getDefaultLLMConfig()` now advertises the
+route actually tried first: Nex N2.5 Mini Free, or the free-policy gateway with
+the role's first selected model under a saved operator policy.
+
+**Verification.** `scripts/verify-paid-fallback-request.ts` drives the real
+client with fetch stubbed: 6 requests after the free pool answers 429 land 3/3
+on OpenRouter and Nous, on the account whose free quota ran out; an unfunded
+Nous key falls to OpenRouter with no failed request; Nous alone and unfunded is
+a capacity pause. Reverting either the alternation or the `free` scope fails it.
+`scripts/verify-provider-routing.ts` and `scripts/verify-model-routing-policy.ts`
+pin the order. Not yet production-verified.
+
+**Rollback.** Revert the commit. Setting `APEX_PAID_FALLBACK_ENABLED=false`
+removes both paid routes without a deploy.
 
 ## How to change an architecture decision
 

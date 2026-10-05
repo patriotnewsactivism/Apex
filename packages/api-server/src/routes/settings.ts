@@ -49,9 +49,27 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
+    id: 'paid-continuity',
+    name: 'Paid Continuity — DeepSeek V4 Flash 0731',
+    description: 'Runs only after every free route (OpenRouter free, Groq, Gemini) is spent, and only when Routing Enabled is true. One model on two providers: each request alternates between OpenRouter and Nous Portal, and either one is the other\'s immediate fallback. Configure both keys to split the load; with one key, that provider carries all paid traffic.',
+    category: 'ai',
+    docsUrl: 'https://openrouter.ai/deepseek/deepseek-v4-flash-0731',
+    envVars: [
+      { key: 'APEX_PAID_FALLBACK_ENABLED', label: 'Routing Enabled', placeholder: 'true or false (unset = off)' },
+      {
+        key: 'OPENROUTER_API_KEY_4', label: 'OpenRouter Funded API Key', placeholder: 'sk-or-v1-...', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },
+      },
+      {
+        key: 'NOUS_API_KEY', label: 'Nous Portal API Key', placeholder: 'Nous Portal key', secret: true,
+        probe: { kind: 'openai-models', baseUrl: 'https://inference-api.nousresearch.com/v1' },
+      },
+    ],
+  },
+  {
     id: 'qwen-byok',
-    name: 'QwenCloud Token Plan — Primary BYOK',
-    description: 'Operator-funded QwenCloud (qwencloud.com) Token Plan. Tried first on every call, on QWEN_API_KEY, so usage lands on that plan. An exhausted OpenRouter or workspace budget does not block it. Its own daily cap, rate, and pacing still do.',
+    name: 'QwenCloud Token Plan — Not Routed',
+    description: 'Removed from automatic routing on 2026-10-05 (the plan is exhausted); APEX does not call it. The fields are kept so a stored key is not lost if Qwen is reinstated by a new operator decision.',
     category: 'ai',
     docsUrl: 'https://docs.qwencloud.com',
     envVars: [

@@ -178,6 +178,48 @@ describe("OpenRouter account exclusions", () => {
     ).toBeNull();
   });
 
+  it("a free-route quota excludes only free routing, so the account's paid route keeps serving", () => {
+    const now = Date.parse("2026-10-05T12:00:00.000Z");
+    const exclusion = excludeOpenRouterAccountForFailure(
+      ACCOUNT_A_KEY_1,
+      429,
+      "Rate limit exceeded: free-models-per-day-high-balance.",
+      undefined,
+      now,
+      true,
+    );
+    expect(exclusion).toMatchObject({ account: ACCOUNT_A, scope: "free", kind: "daily_quota" });
+    expect(getOpenRouterAccountExclusion(ACCOUNT_A_KEY_2, { paid: false, now })).toMatchObject({
+      scope: "free",
+      kind: "daily_quota",
+    });
+    expect(getOpenRouterAccountExclusion(ACCOUNT_A_KEY_2, { paid: true, now })).toBeNull();
+
+    // A non-positive balance excludes paid routing on top; neither entry
+    // overwrites the other.
+    reconcileOpenRouterCreditBalances([{ account: ACCOUNT_A, remaining: -1 }], now);
+    expect(getOpenRouterAccountExclusion(ACCOUNT_A_KEY_1, { paid: true, now })).toMatchObject({
+      scope: "paid",
+      kind: "credit_balance",
+    });
+    expect(getOpenRouterAccountExclusion(ACCOUNT_A_KEY_1, { paid: false, now })).toMatchObject({
+      scope: "free",
+      kind: "daily_quota",
+    });
+
+    // The free entry lifts at UTC midnight; the balance entry does not.
+    const afterMidnight = Date.parse("2026-10-06T00:00:00.000Z");
+    expect(getOpenRouterAccountExclusion(ACCOUNT_A_KEY_1, { paid: false, now: afterMidnight })).toBeNull();
+    expect(getOpenRouterAccountExclusion(ACCOUNT_A_KEY_1, { paid: true, now: afterMidnight })).toMatchObject({
+      kind: "credit_balance",
+    });
+
+    // Credit exhaustion is account-wide even when a free route reports it.
+    expect(classifyOpenRouterAccountFailure(402, "insufficient credits", now, undefined, true)?.scope).toBe("all");
+    // A paid-route 429 keeps the account-wide default.
+    expect(classifyOpenRouterAccountFailure(429, "rate limit", now)?.scope).toBe("all");
+  });
+
   it("uses balance probes to exclude paid routing and readmits it after funding", () => {
     const now = Date.parse("2026-09-30T12:00:00.000Z");
     reconcileOpenRouterCreditBalances(

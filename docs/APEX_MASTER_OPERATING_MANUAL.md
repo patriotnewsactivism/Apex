@@ -197,22 +197,21 @@ A coding copilot fixing bugs must **not** weaken approval gates just to make a t
 
 Production routing truth lives in `packages/core/src/llm-client.ts`.
 
-Current architecture has a governed direct Qwen primary route, then a free-first chain, then one explicit paid continuity exception.
+Current architecture is a free-first chain, then one explicit paid continuity model on two providers (ADR-020, 2026-10-05).
 
 Current order documented by the repository:
 
-1. Qwen3.8 Flash direct BYOK — governed operator-funded primary when enabled.
-2. Nex N2.5 Mini Free.
-3. Nex N2.5 Pro Free.
-4. NVIDIA Nemotron 3 Super Free.
-5. NVIDIA Nemotron 3.5 Lightning Free.
-6. OpenRouter Free Router with tool requirements preserved.
-7. NVIDIA Nemotron 3 Ultra Free.
-8. direct Groq GPT-OSS 120B BYOK when enabled.
-9. direct Gemini 3.8 Flash BYOK when enabled.
-10. `z-ai/glm-5.3-flashx` — paid unrestricted continuity route, last resort.
+1. Nex N2.5 Mini Free.
+2. Nex N2.5 Pro Free.
+3. NVIDIA Nemotron 3 Super Free.
+4. NVIDIA Nemotron 3.5 Lightning Free.
+5. OpenRouter Free Router with tool requirements preserved.
+6. NVIDIA Nemotron 3 Ultra Free.
+7. direct Groq GPT-OSS 120B BYOK when enabled.
+8. direct Gemini 3.8 Flash BYOK when enabled.
+9. `deepseek/deepseek-v4-flash-0731` — paid unrestricted continuity, last resort, only with `APEX_PAID_FALLBACK_ENABLED=true`; alternates per request between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`), each the other's immediate fallback.
 
-DeepSeek V4 Flash 0731 is retired. MiniMax M3 Free is not a production route until reverified.
+Qwen3.8 Flash (QwenCloud Token Plan) and GLM 5.3 FlashX are no longer routed. MiniMax M3 Free is not a production route until reverified.
 
 ### OpenRouter accounts
 
@@ -783,7 +782,7 @@ Use this as the current “finish APEX” checklist:
 - [ ] `/api/autonomy` shows healthy worker/scheduler and useful throughput.
 - [ ] No unexplained failed/retrying/stalled task accumulation.
 - [ ] All 13 workforce roles load correctly.
-- [ ] Qwen/free/BYOK/FlashX routing matches current source and UI.
+- [ ] Free/BYOK/paid DeepSeek split routing matches current source and UI.
 - [ ] Independent OpenRouter account detection is correct.
 - [ ] Provider cooldown/backpressure works without deadlocking workforce.
 - [ ] Vector memory works in Railway runtime; no ONNX/libc fallback errors.

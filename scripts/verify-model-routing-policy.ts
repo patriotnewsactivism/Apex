@@ -10,7 +10,7 @@ import {
 } from '../packages/core/src/model-routing.js';
 import {
   FREE_POLICY_GATEWAY_NAME,
-  PAID_FALLBACK_PROVIDER_NAME,
+  PAID_FALLBACK_PROVIDER_NAMES,
   getDefaultLLMConfig,
   getProviderCatalog,
   getProviderOrderForRole,
@@ -29,24 +29,25 @@ const previousPaidFlag = process.env.APEX_PAID_FALLBACK_ENABLED;
 try {
   delete process.env[OPENROUTER_MODEL_POLICY_ENV];
   delete process.env.APEX_PAID_FALLBACK_ENABLED;
-  console.log('── Qwen/free/BYOK runtime + explicit FlashX continuity ──');
+  console.log('── Free/BYOK runtime + explicit paid continuity ──');
   check(
     'no policy preserves the guarded free model chain',
     JSON.stringify(getOpenRouterModelChainForRole('CEO')) === JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN),
     getOpenRouterModelChainForRole('CEO'),
   );
   check(
-    'runtime order defaults to the Qwen/free/BYOK catalog with paid continuity absent',
+    'runtime order defaults to the free/BYOK catalog with paid continuity absent',
     JSON.stringify(getProviderOrderForRole('CEO')) ===
       JSON.stringify(getProviderCatalog().map((provider) => provider.name)) &&
-      !getProviderOrderForRole('CEO').includes(PAID_FALLBACK_PROVIDER_NAME),
+      PAID_FALLBACK_PROVIDER_NAMES.every((name) => !getProviderOrderForRole('CEO').includes(name)),
     getProviderOrderForRole('CEO'),
   );
   process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
   check(
-    'FlashX continuity is appended only after explicit operator opt-in',
-    getProviderOrderForRole('CEO').length === getProviderCatalog().length + 1 &&
-      getProviderOrderForRole('CEO').at(-1) === PAID_FALLBACK_PROVIDER_NAME,
+    'both paid continuity routes are appended only after explicit operator opt-in',
+    getProviderOrderForRole('CEO').length === getProviderCatalog().length + PAID_FALLBACK_PROVIDER_NAMES.length &&
+      JSON.stringify(getProviderOrderForRole('CEO').slice(-PAID_FALLBACK_PROVIDER_NAMES.length)) ===
+        JSON.stringify(PAID_FALLBACK_PROVIDER_NAMES),
     getProviderOrderForRole('CEO'),
   );
   delete process.env.APEX_PAID_FALLBACK_ENABLED;
@@ -153,9 +154,8 @@ try {
   check('BACKEND can have a different first-choice model', backendChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nex-agi/nex-n2.5-mini:free');
   check(
-    'custom FREE roster tries Qwen first, then the selected gateway, then unselected default free fallbacks before BYOK continuity',
+    'custom FREE roster tries the selected gateway first, then unselected default free fallbacks before BYOK continuity',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
-      'qwen-dashscope-byok',
       FREE_POLICY_GATEWAY_NAME,
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
@@ -165,15 +165,14 @@ try {
     getProviderOrderForRole('CEO'),
   );
   check('custom FREE policy still uses free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
-  // Qwen genuinely is dispatched first even under a custom operator policy
-  // (ADR-017), so the default config must advertise Qwen, not the
-  // free-policy gateway or role pin — anything else would be the same
-  // "advertises a model it no longer tries first" bug getDefaultLLMConfig
-  // exists to avoid.
+  // The free-policy gateway is dispatched first under a custom operator
+  // policy, so the default config must advertise it with the role's first
+  // selected model; anything else is the "advertises a model it no longer
+  // tries first" bug getDefaultLLMConfig exists to avoid.
   check(
-    'default LLM config advertises Qwen as primary, even during custom FREE routing',
-    getDefaultLLMConfig('CEO').provider === 'qwen-dashscope-byok' &&
-      getDefaultLLMConfig('CEO').model === 'qwen3.8-flash',
+    'default LLM config advertises the policy gateway and the role pin during custom FREE routing',
+    getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
+      getDefaultLLMConfig('CEO').model === ceoChain[0],
     getDefaultLLMConfig('CEO'),
   );
 

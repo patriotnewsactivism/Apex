@@ -13,7 +13,13 @@ const DAILY_QUOTA_PATTERN =
 const CREDIT_EXHAUSTED_PATTERN =
   /\b(payment required|insufficient credits?|credits? exhausted|no credits?|negative balance|billing required|out of funds)\b/i;
 
-export type OpenRouterAccountExclusionScope = "all" | "paid";
+/**
+ * "all" blocks every route on the account. "paid" blocks only paid routing
+ * (non-positive balance). "free" blocks only :free routing: OpenRouter's
+ * free-model daily quota and per-minute limit do not apply to paid models, so
+ * a free-pool 429 must not take the account's paid route down with it.
+ */
+export type OpenRouterAccountExclusionScope = "all" | "paid" | "free";
 export type OpenRouterAccountExclusionKind =
   | "credit_exhausted"
   | "credit_balance"
@@ -51,7 +57,14 @@ type ProviderAccountHealthMetadata = {
   exclusion: OpenRouterAccountExclusion;
 };
 
+/** Keyed by exclusionKey(): the account id for "all"/"paid" entries and
+ *  `free:<account>` for "free" entries, so a free-pool exclusion and a paid
+ *  balance exclusion on one account never overwrite each other. */
 const exclusions = new Map<string, StoredExclusion>();
+
+function exclusionKey(entry: { account: string; scope: OpenRouterAccountExclusionScope }): string {
+  return entry.scope === "free" ? `free:${entry.account}` : entry.account;
+}
 let persistenceReady = false;
 
 type BalancePause = { reason: string; since: number };
@@ -101,7 +114,7 @@ function isStoredExclusion(
   const entry = value as Partial<OpenRouterAccountExclusion>;
   return (
     typeof entry.account === "string" &&
-    (entry.scope === "all" || entry.scope === "paid") &&
+    (entry.scope === "all" || entry.scope === "paid" || entry.scope === "free") &&
     (entry.kind === "credit_exhausted" ||
       entry.kind === "credit_balance" ||
       entry.kind === "daily_quota" ||
@@ -141,7 +154,7 @@ async function persistExclusion(entry: StoredExclusion): Promise<void> {
     await db
       .insert(componentHealth)
       .values({
-        component: `${COMPONENT_PREFIX}${entry.account}`,
+        component: `${COMPONENT_PREFIX}${exclusionKey(entry)}`,
         status: "degraded",
         detail: `${entry.kind}: ${entry.reason}`,
         lastCheckTime: now,
@@ -170,7 +183,7 @@ async function persistExclusion(entry: StoredExclusion): Promise<void> {
   }
 }
 
-async function removePersistedExclusion(account: string): Promise<void> {
+async function removePersistedExclusion(key: string): Promise<void> {
   if (process.env.NODE_ENV === "test") return;
   try {
     const [{ db, componentHealth }, { eq }] = await Promise.all([
@@ -179,20 +192,31 @@ async function removePersistedExclusion(account: string): Promise<void> {
     ]);
     await db
       .delete(componentHealth)
-      .where(eq(componentHealth.component, `${COMPONENT_PREFIX}${account}`));
+      .where(eq(componentHealth.component, `${COMPONENT_PREFIX}${key}`));
     persistenceReady = true;
   } catch {
     persistenceReady = false;
   }
 }
 
-function deleteExclusion(account: string): void {
-  if (!exclusions.delete(account)) return;
-  void removePersistedExclusion(account);
+function deleteExclusion(key: string): void {
+  if (!exclusions.delete(key)) return;
+  void removePersistedExclusion(key);
 }
 
 function setExclusion(entry: StoredExclusion): void {
-  const existing = exclusions.get(entry.account);
+  const key = exclusionKey(entry);
+  if (entry.scope === "free") {
+    // An "all" exclusion that lasts at least as long already covers it.
+    const all = exclusions.get(entry.account);
+    if (
+      all?.scope === "all" &&
+      (all.until ?? Number.POSITIVE_INFINITY) >= (entry.until ?? Number.POSITIVE_INFINITY)
+    ) {
+      return;
+    }
+  }
+  const existing = exclusions.get(key);
   if (existing) {
     const existingScopeRank = existing.scope === "all" ? 2 : 1;
     const nextScopeRank = entry.scope === "all" ? 2 : 1;
@@ -205,27 +229,37 @@ function setExclusion(entry: StoredExclusion): void {
       return;
     }
   }
-  exclusions.set(entry.account, entry);
+  exclusions.set(key, entry);
   void persistExclusion(entry);
+}
+
+function activeExclusion(key: string, now: number): StoredExclusion | null {
+  const entry = exclusions.get(key);
+  if (!entry) return null;
+  if (entry.until !== null && now >= entry.until) {
+    deleteExclusion(key);
+    return null;
+  }
+  return entry;
 }
 
 function activeExclusionByAccount(
   account: string,
   now: number,
 ): StoredExclusion | null {
-  const entry = exclusions.get(account);
-  if (!entry) return null;
-  if (entry.until !== null && now >= entry.until) {
-    deleteExclusion(account);
-    return null;
-  }
-  return entry;
+  return activeExclusion(account, now);
 }
 
-function exclusionForKey(apiKey: string, now: number): StoredExclusion | null {
+/** The account's "all"/"paid" entry, or with `free: true` its "free" entry. */
+function exclusionForKey(
+  apiKey: string,
+  now: number,
+  options: { free?: boolean } = {},
+): StoredExclusion | null {
   const fingerprint = accountFingerprint(apiKey);
   const canonicalAccount = accountIdForKey(apiKey);
-  const canonical = activeExclusionByAccount(canonicalAccount, now);
+  const keyFor = (account: string) => (options.free ? `free:${account}` : account);
+  const canonical = activeExclusion(keyFor(canonicalAccount), now);
   if (canonical) return canonical;
 
   // A failure can occur before the account probe resolves creator_user_id.
@@ -233,10 +267,10 @@ function exclusionForKey(apiKey: string, now: number): StoredExclusion | null {
   // so sibling keys from the same account do not become an accidental escape.
   const fallbackAccount = `keyfp_${fingerprint}`;
   if (fallbackAccount === canonicalAccount) return null;
-  const fallback = activeExclusionByAccount(fallbackAccount, now);
+  const fallback = activeExclusion(keyFor(fallbackAccount), now);
   if (!fallback) return null;
-  exclusions.delete(fallbackAccount);
-  void removePersistedExclusion(fallbackAccount);
+  exclusions.delete(keyFor(fallbackAccount));
+  void removePersistedExclusion(keyFor(fallbackAccount));
   const migrated = { ...fallback, account: canonicalAccount };
   setExclusion(migrated);
   return migrated;
@@ -247,6 +281,9 @@ export function classifyOpenRouterAccountFailure(
   message: string,
   now: number = Date.now(),
   retryAfterMs?: number,
+  /** True when the failing request went to a :free route. Its quota and rate
+   *  limits are free-pool limits, so they exclude only free routing. */
+  freeRoute: boolean = false,
 ): Omit<StoredExclusion, "account"> | null {
   const reason = sanitizeReason(message);
   let kind: OpenRouterAccountExclusionKind;
@@ -272,7 +309,7 @@ export function classifyOpenRouterAccountFailure(
     until = Math.max(until, now + Math.max(0, retryAfterMs));
   }
   return {
-    scope: "all",
+    scope: freeRoute && kind !== "credit_exhausted" ? "free" : "all",
     kind,
     status: status ?? null,
     reason: reason || kind,
@@ -287,12 +324,14 @@ export function excludeOpenRouterAccountForFailure(
   message: string,
   retryAfterMs?: number,
   now: number = Date.now(),
+  freeRoute: boolean = false,
 ): OpenRouterAccountExclusion | null {
   const classified = classifyOpenRouterAccountFailure(
     status,
     message,
     now,
     retryAfterMs,
+    freeRoute,
   );
   if (!classified) return null;
   const entry = {
@@ -322,9 +361,14 @@ export function getOpenRouterAccountExclusion(
   apiKey: string,
   options: { paid?: boolean; now?: number } = {},
 ): OpenRouterAccountExclusion | null {
-  const entry = exclusionForKey(apiKey, options.now ?? Date.now());
+  const now = options.now ?? Date.now();
+  const entry = exclusionForKey(apiKey, now);
   if (entry && (entry.scope === "all" || options.paid === true)) {
     return publicExclusion(entry);
+  }
+  if (options.paid !== true) {
+    const free = exclusionForKey(apiKey, now, { free: true });
+    if (free) return publicExclusion(free);
   }
   if (options.paid === true) {
     const account = accountIdForKey(apiKey);
@@ -396,8 +440,8 @@ export function getOpenRouterAccountExclusionReport(
   persistence: "postgres+memory" | "memory-only";
   exclusions: Array<OpenRouterAccountExclusion & { credentials: string[] }>;
 } {
-  const active = [...exclusions.values()]
-    .map((entry) => activeExclusionByAccount(entry.account, now))
+  const active = [...exclusions.keys()]
+    .map((key) => activeExclusion(key, now))
     .filter((entry): entry is StoredExclusion => entry !== null);
   const credentialsFor = (account: string): string[] =>
     credentials
@@ -439,7 +483,7 @@ export async function initializeProviderAccountExclusions(
       const entry = fromPublicExclusion(metadata.exclusion);
       if (!entry) continue;
       if (entry.until !== null && entry.until <= now) {
-        void removePersistedExclusion(entry.account);
+        void removePersistedExclusion(exclusionKey(entry));
         continue;
       }
       setExclusion(entry);
