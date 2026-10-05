@@ -419,15 +419,13 @@ export function templateCopyFor(
  *  that fails that check fails it every time), or a search no source can ever
  *  answer: no direct keys and no OSM category.
  *
- *  The second case never covers an outage. The BuildMyBot Tavily proxy is a
- *  source too, and on 2026-10-03 its Tavily plan limit made this rule close
- *  799 searches that only needed to wait. */
+ *  The second case never covers an outage. A keyed source that is merely
+ *  rate-limited or out of quota is not a deterministic failure. */
 export function isDeterministicFailure(message: string): boolean {
   const allDiscoveryProvidersMissing =
     message.includes('YELP_API_KEY not set') &&
     message.includes('GOOGLE_PLACES_API_KEY not set') &&
     message.includes('TOMTOM_API_KEY not set') &&
-    message.includes('TAVILY_API_KEY not set') &&
     message.includes('BRAVE_SEARCH_API_KEY not set');
   const osmCannotAnswer = message.includes('OSM: no known category tag');
 
@@ -643,16 +641,16 @@ export class CampaignRunner {
   /**
    * Second-pass contact recovery for verified businesses. First-party crawling
    * handles the obvious homepage/contact/about/team pages. For the remainder,
-   * use the existing fast cached Tavily/Brave path to discover hidden official
+   * use the existing fast cached search path to discover hidden official
    * pages, then fetch only same-domain URLs. No LLM and no guessed contact data.
    */
   private async enrichVerifiedContactsFromSearch(limit: number): Promise<void> {
     if (this.contactSearchRunning) return;
-    // This lane is specifically a Tavily/Brave recovery pass. When neither
-    // provider is configured, do not issue guaranteed-fail searches for every
-    // candidate on every interval; first-party crawling remains active in the
-    // normal lead pipeline and this lane resumes automatically once a key is set.
-    if (!process.env.TAVILY_API_KEY && !process.env.BRAVE_SEARCH_API_KEY && !process.env.SERPER_API_KEY && !process.env.BRIGHT_DATA_API_KEY) return;
+    // This lane is a search recovery pass. When no keyed provider is
+    // configured, do not issue guaranteed-fail searches for every candidate on
+    // every interval; first-party crawling remains active in the normal lead
+    // pipeline and this lane resumes automatically once a key is set.
+    if (!process.env.BRAVE_SEARCH_API_KEY && !process.env.SERPER_API_KEY && !process.env.BRIGHT_DATA_API_KEY) return;
     const nowMs = Date.now();
     const intervalMs = Math.max(15_000, Number(process.env.LEAD_CONTACT_SEARCH_INTERVAL_MS ?? 60_000));
     if (nowMs < this.contactSearchBackoffUntil) return;
@@ -1135,17 +1133,15 @@ export class CampaignRunner {
         }
       };
 
-      // Current production has Tavily/Brave but no Yelp/Google Places. In that
-      // shape, start with the fast web source and only pay the slower
-      // TomTom/OSM chain when web discovery is empty. This avoids leaving
-      // dozens of 20–25 second fallback requests running after Tavily already
-      // produced a usable lead set.
+      // Current production has Brave/Serper/Bright Data but no Yelp/Google
+      // Places. In that shape, start with the fast web source and only pay the
+      // slower TomTom/OSM chain when web discovery is empty. This avoids
+      // leaving dozens of 20–25 second fallback requests running after a fast
+      // source already produced a usable lead set.
       const hasFastWeb = Boolean(
-        process.env.TAVILY_API_KEY ||
         process.env.BRAVE_SEARCH_API_KEY ||
         process.env.SERPER_API_KEY ||
-        process.env.BRIGHT_DATA_API_KEY ||
-        (process.env.BUILDMYBOT_TAVILY_PROXY_URL && process.env.BUILDMYBOT_TAVILY_PROXY_SECRET),
+        process.env.BRIGHT_DATA_API_KEY,
       );
       const hasFastStructured = Boolean(process.env.YELP_API_KEY || process.env.GOOGLE_PLACES_API_KEY);
 
@@ -1154,8 +1150,8 @@ export class CampaignRunner {
 
       if (!hasFastWeb && !hasFastStructured) {
         // No paid/keyed fast source exists. Do NOT launch webSearch just to
-        // rediscover that Tavily/Brave are unconfigured on every shard; that
-        // produces no leads, doubles the work, and can flood Railway logs.
+        // rediscover that the keyed sources are unconfigured on every shard;
+        // that produces no leads, doubles the work, and can flood Railway logs.
         // searchBusinessDirectory still has the keyless OSM category fallback.
         first = await runDirectory();
       } else if (hasFastWeb && !hasFastStructured) {

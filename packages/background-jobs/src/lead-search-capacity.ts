@@ -3,11 +3,11 @@
 // Decides whether a failed campaign search failed because of the search, or
 // because every search source APEX pays for was unavailable at that moment.
 //
-// The difference matters. On 2026-10-03 the Tavily plan behind BuildMyBot's
-// proxy hit its usage limit at 20:34 UTC. That proxy was the only working
-// search source, so every search after it came back empty. The runner treated
-// each empty search as the segment's own failure and closed 799 "US News"
-// searches across 73 cities in 13 minutes. None of them were retried after the
+// The difference matters. On 2026-10-03 a keyed search source behind
+// BuildMyBot's proxy hit its usage limit at 20:34 UTC. That proxy was the only
+// working search source, so every search after it came back empty. The runner
+// treated each empty search as the segment's own failure and closed 799 "US
+// News" searches across 73 cities in 13 minutes. None were retried after the
 // outage ended, because nothing marked them as waiting.
 //
 // A provider outage is not a property of a segment. The runner now hands the
@@ -20,7 +20,7 @@ const DISCOVERY_ZERO_PREFIX = 'All lead discovery sources returned zero';
  *  Their failures mean lost capacity. Keyless fallbacks (OSM, DuckDuckGo) are
  *  best-effort and often fail for one query only, so they never pause search:
  *  one slow city must not stall the whole territory. */
-const KEYED_SOURCES = new Set(['tavily', 'buildmybot-tavily', 'brave', 'yelp', 'google', 'tomtom', 'serper', 'brightdata']);
+const KEYED_SOURCES = new Set(['brave', 'yelp', 'google', 'tomtom', 'serper', 'brightdata']);
 
 const BREAKER_REASON = 'paused after an earlier failure';
 
@@ -75,9 +75,8 @@ function classifyNote(detail: string): Pick<DiscoverySourceNote, 'state' | 'reas
   }
   const http = /^HTTP (\d{3})\b/.exec(detail);
   if (http) {
-    // The BuildMyBot proxy answers 502 and names Tavily's own status in the
-    // body ("Tavily search failed with HTTP 432"). Tavily's status is the
-    // one that says what happened.
+    // A proxy may answer 502 while naming the upstream's real status in the
+    // body; the upstream status is the one that says what happened.
     const upstream = /\bHTTP (\d{3})\b/.exec(detail.slice(http[0].length));
     const status = upstream ? Number(upstream[1]) : Number(http[1]);
     const reason = reasonForStatus(status) ?? reasonForStatus(Number(http[1]));

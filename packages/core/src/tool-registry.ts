@@ -264,22 +264,13 @@ function webSearchProviderReady(provider: string): boolean {
 }
 
 /** How long to stop calling a web search provider after an HTTP failure.
- *  Tavily answers 432 when the plan's usage limit is reached and 433 when the
- *  pay-as-you-go limit is reached. Neither clears in seconds, so they wait as
- *  long as a missing credit. */
+ *  Auth/credit failures (401/402/403/432/433) wait as long as a missing credit;
+ *  rate limits (429) and 5xx clear faster. */
 export function webSearchCooldownMs(status: number): number {
   if (status === 401 || status === 402 || status === 403 || status === 432 || status === 433) return 30 * 60 * 1000;
   if (status === 429) return 60 * 1000;
   if (status >= 500) return 30 * 1000;
   return 0;
-}
-
-/** BuildMyBot's Tavily proxy answers 502 and names Tavily's own status in the
- *  body ("Tavily search failed with HTTP 432"). Breaker timing follows Tavily's
- *  status, because a 432 behind a 502 is a used-up plan, not a blip. */
-export function proxiedUpstreamStatus(status: number, body: string): number {
-  const upstream = /\bHTTP (\d{3})\b/.exec(body);
-  return upstream ? Number(upstream[1]) : status;
 }
 
 function tripWebSearchProvider(provider: string, status: number, detail: string): void {
@@ -1029,118 +1020,6 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         // and the agent burned its capacity rewording the query instead.
         const diagnostics: string[] = [];
 
-        // ── Strategy 0: Tavily Search API (best quality, AI-optimized) ──
-        const tavilyKey = process.env.TAVILY_API_KEY;
-        if (!tavilyKey) diagnostics.push('tavily: TAVILY_API_KEY not set');
-        if (freeOnly && tavilyKey) diagnostics.push('tavily: skipped by freeOnly mode');
-        if (!freeOnly && tavilyKey && !webSearchProviderReady('tavily')) {
-          diagnostics.push('tavily: temporarily skipped by provider circuit breaker');
-        }
-        if (!freeOnly && tavilyKey && webSearchProviderReady('tavily')) {
-          try {
-            const tavilyRes = await fetch('https://api.tavily.com/search', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                // Current Tavily auth. The body api_key below is the legacy
-                // form, kept so an older key/plan keeps working.
-                Authorization: `Bearer ${tavilyKey}`,
-              },
-              body: JSON.stringify({
-                api_key: tavilyKey,
-                query,
-                max_results: n,
-                search_depth: fast ? 'basic' : 'advanced',
-                include_answer: !fast,
-              }),
-              signal: AbortSignal.timeout(20_000),
-            });
-            if (!tavilyRes.ok) {
-              const body = await tavilyRes.text().catch(() => '');
-              const detail = `tavily: HTTP ${tavilyRes.status} ${body.slice(0, 200)}`.trim();
-              diagnostics.push(detail);
-              tripWebSearchProvider('tavily', tavilyRes.status, body);
-              console.warn(`[webSearch] ${detail} for "${query}"`);
-            }
-            if (tavilyRes.ok) {
-              const tavilyData = await tavilyRes.json() as {
-                answer?: string;
-                results?: Array<{ title: string; url: string; content: string }>;
-              };
-              // Include the AI-generated answer as the first result if present
-              if (tavilyData.answer) {
-                results.push({ title: 'Tavily AI Summary', url: '', snippet: tavilyData.answer });
-              }
-              for (const r of tavilyData.results ?? []) {
-                results.push({ title: r.title, url: r.url, snippet: r.content });
-              }
-              if (results.length > 0) return { query, provider: 'tavily', results: results.slice(0, n + 1) };
-              diagnostics.push('tavily: 200 but zero results');
-            }
-          } catch (e) {
-            diagnostics.push(`tavily: ${e instanceof Error ? e.message : String(e)}`);
-            console.warn(`[webSearch] Tavily failed for "${query}": ${e}`);
-          }
-        }
-
-        // ── Strategy 0b: BuildMyBot Tavily proxy ──────────────────────────
-        // Railway OAuth redacts BuildMyBot's existing Tavily key, so APEX cannot
-        // safely copy it across projects. Use BuildMyBot's narrow bearer-protected
-        // proxy instead; the Tavily provider credential never leaves BuildMyBot.
-        const tavilyProxyUrl = process.env.BUILDMYBOT_TAVILY_PROXY_URL?.trim();
-        const tavilyProxySecret = process.env.BUILDMYBOT_TAVILY_PROXY_SECRET?.trim();
-        if (tavilyProxyUrl && !tavilyProxySecret) {
-          diagnostics.push('buildmybot-tavily: proxy URL configured but secret missing');
-        }
-        if (freeOnly && tavilyProxyUrl && tavilyProxySecret) {
-          diagnostics.push('buildmybot-tavily: skipped by freeOnly mode');
-        }
-        // The proxy shares Tavily's quota, so it gets the same breaker. Without
-        // it, a used-up plan was hit once per query variant, every search.
-        const tavilyProxyReady = webSearchProviderReady('buildmybot-tavily');
-        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret && !tavilyProxyReady) {
-          diagnostics.push('buildmybot-tavily: temporarily skipped by provider circuit breaker');
-        }
-        if (!freeOnly && tavilyProxyUrl && tavilyProxySecret && tavilyProxyReady) {
-          try {
-            const proxyRes = await fetch(tavilyProxyUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${tavilyProxySecret}`,
-              },
-              body: JSON.stringify({ query, maxResults: n }),
-              signal: AbortSignal.timeout(20_000),
-            });
-            if (!proxyRes.ok) {
-              const body = await proxyRes.text().catch(() => '');
-              const detail = `buildmybot-tavily: HTTP ${proxyRes.status} ${body.slice(0, 200)}`.trim();
-              diagnostics.push(detail);
-              tripWebSearchProvider('buildmybot-tavily', proxiedUpstreamStatus(proxyRes.status, body), body);
-              console.warn(`[webSearch] ${detail} for "${query}"`);
-            } else {
-              const proxyData = await proxyRes.json() as {
-                provider?: string;
-                results?: Array<{ title?: string; url?: string; snippet?: string }>;
-              };
-              for (const r of proxyData.results ?? []) {
-                if (!r.url) continue;
-                results.push({ title: r.title ?? '', url: r.url, snippet: r.snippet ?? '' });
-              }
-              if (results.length > 0) {
-                return {
-                  query,
-                  provider: proxyData.provider ?? 'buildmybot-tavily-proxy',
-                  results: results.slice(0, n),
-                };
-              }
-              diagnostics.push('buildmybot-tavily: 200 but zero results');
-            }
-          } catch (e) {
-            diagnostics.push(`buildmybot-tavily: ${e instanceof Error ? e.message : String(e)}`);
-            console.warn(`[webSearch] BuildMyBot Tavily proxy failed for "${query}": ${e}`);
-          }
-        }
         // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
         const braveKey = process.env.BRAVE_SEARCH_API_KEY;
         if (!braveKey) diagnostics.push('brave: BRAVE_SEARCH_API_KEY not set');
