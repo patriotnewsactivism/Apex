@@ -125,8 +125,10 @@ check(
   catalog.every((provider) => !provider.model.includes('minimax')),
 );
 check(
-  'paid OpenRouter credentials remain isolated to the funded key (OPENROUTER_API_KEY_4)',
-  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY_4'\]/.test(clientSource),
+  // 2026-10-05 operator change: the paid continuity route moved from
+  // OpenRouter GLM FlashX (OPENROUTER_API_KEY_4) to Nous Portal (NOUS_API_KEY).
+  'paid credentials remain isolated to the funded Nous Portal key (NOUS_API_KEY)',
+  /OPENROUTER_PAID_KEY_ENVS = \['NOUS_API_KEY'\]/.test(clientSource),
 );
 check(
   'free credential roster holds exactly one key per OpenRouter account (no duplicate OPENROUTER_API_KEY_3)',
@@ -232,8 +234,8 @@ check(
   getProviderOrderForRole('CEO'),
 );
 check(
-  'paid continuity model is GLM 5.3 FlashX',
-  PAID_FALLBACK_MODEL === 'z-ai/glm-5.3-flashx',
+  'paid continuity model is DeepSeek V4 Flash on Nous Portal',
+  PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731',
 );
 
 // The operator's off switch. Before it existed the route was appended

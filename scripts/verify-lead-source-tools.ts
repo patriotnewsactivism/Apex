@@ -122,8 +122,12 @@ async function main(): Promise<void> {
   );
 
   // webSearch: non-ok responses must be recorded, not silently dropped.
+  // The whole tool and nothing past it. A fixed 16,000-character window
+  // first spilled into the next tool, then stopped short of webSearch's own
+  // return once Serper and Bright Data were added (2026-10-04).
   const webSearchStart = src.indexOf("name: 'webSearch'");
-  const webSearchSrc = src.slice(webSearchStart, webSearchStart + 16000);
+  const webSearchEnd = src.indexOf("\n      name: '", webSearchStart + 1);
+  const webSearchSrc = src.slice(webSearchStart, webSearchEnd < 0 ? undefined : webSearchEnd);
   check(
     'webSearch logs Tavily non-ok HTTP status',
     /if \(!tavilyRes\.ok\)/.test(webSearchSrc),
