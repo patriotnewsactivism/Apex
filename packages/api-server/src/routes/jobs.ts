@@ -9,6 +9,33 @@ import { CronParser } from '@workspace/background-jobs';
 // CRUD for scheduled background jobs + execution history. All routes are
 // behind requireAdminAuth (mounted under /api in the main server).
 
+/**
+ * Canonical payload contract for a scheduled job.
+ *
+ * The `schedule_task` tool schema (packages/core/src/tool-registry.ts, line
+ * 2909) declares `payload: z.record(z.any()).optional()` — an object/record is
+ * the only accepted shape. Every job handler in @workspace/background-jobs
+ * reads `job.payload` as a `Record<string, unknown>` (e.g. `(job.payload ??
+ * {}) as Record<string, unknown>`), so a non-object payload would break the
+ * handler at runtime.
+ *
+ * The server-side create/update routes previously accepted `payload` straight
+ * off `req.body` with no validation, so a string could bypass the tool layer
+ * and land in the `jsonb` column typed `Record<string, unknown>`. This helper
+ * reconciles the server route with the tool schema: it rejects any payload
+ * that is not a plain object/record, so the two layers agree on one contract.
+ *
+ * @returns a human-readable error message when the payload is invalid, or
+ *          `null` when it is a valid object/record (or undefined/absent).
+ */
+export function validateJobPayload(payload: unknown): string | null {
+  if (payload === undefined || payload === null) return null;
+  if (typeof payload !== 'object' || Array.isArray(payload)) {
+    return 'payload must be an object/record, received ' + (Array.isArray(payload) ? 'array' : typeof payload);
+  }
+  return null;
+}
+
 export function createJobsRouter(): Router {
   const router = Router();
 
@@ -42,6 +69,12 @@ export function createJobsRouter(): Router {
 
       if (!name || !jobType) {
         res.status(400).json({ error: 'name and jobType are required' });
+        return;
+      }
+
+      const payloadError = validateJobPayload(payload);
+      if (payloadError) {
+        res.status(400).json({ error: payloadError });
         return;
       }
 
@@ -120,7 +153,14 @@ export function createJobsRouter(): Router {
         updates.error = null;
         updates.status = 'active';
       }
-      if (payload !== undefined) updates.payload = payload;
+      if (payload !== undefined) {
+        const payloadError = validateJobPayload(payload);
+        if (payloadError) {
+          res.status(400).json({ error: payloadError });
+          return;
+        }
+        updates.payload = payload;
+      }
       if (priority !== undefined) updates.priority = priority;
       if (enabled !== undefined) {
         updates.enabled = enabled;
