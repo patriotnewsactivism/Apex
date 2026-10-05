@@ -1179,11 +1179,13 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         // ── Strategy 1b: Serper.dev (Google results, free 2,500 queries/mo) ──
         const serperKey = process.env.SERPER_API_KEY;
         if (!serperKey) diagnostics.push('serper: SERPER_API_KEY not set');
-        if (freeOnly && serperKey) diagnostics.push('serper: skipped by freeOnly mode');
-        if (!freeOnly && serperKey && !webSearchProviderReady('serper')) {
+        // Serper is a free-tier keyed provider (2,500 queries/mo, no card) —
+        // freeOnly is a cost-avoidance flag, not a keyless-only flag, so it
+        // must NOT skip serper. Only the circuit breaker can pause it.
+        if (serperKey && !webSearchProviderReady('serper')) {
           diagnostics.push('serper: temporarily skipped by provider circuit breaker');
         }
-        if (!freeOnly && serperKey && webSearchProviderReady('serper')) {
+        if (serperKey && webSearchProviderReady('serper')) {
           try {
             const serperRes = await fetch('https://google.serper.dev/search', {
               method: 'POST',
@@ -1222,11 +1224,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         const brightDataZone = process.env.BRIGHT_DATA_ZONE;
         if (!brightDataKey) diagnostics.push('brightdata: BRIGHT_DATA_API_KEY not set');
         if (brightDataKey && !brightDataZone) diagnostics.push('brightdata: BRIGHT_DATA_ZONE not set');
-        if (freeOnly && brightDataKey) diagnostics.push('brightdata: skipped by freeOnly mode');
-        if (!freeOnly && brightDataKey && !webSearchProviderReady('brightdata')) {
+        // Bright Data is a free-tier keyed provider (5,000 credits/mo, no
+        // card) — freeOnly must NOT skip it, only the circuit breaker can.
+        if (brightDataKey && !webSearchProviderReady('brightdata')) {
           diagnostics.push('brightdata: temporarily skipped by provider circuit breaker');
         }
-        if (!freeOnly && brightDataKey && brightDataZone && webSearchProviderReady('brightdata')) {
+        if (brightDataKey && brightDataZone && webSearchProviderReady('brightdata')) {
           try {
             const bdRes = await fetch('https://api.brightdata.com/request', {
               method: 'POST',
