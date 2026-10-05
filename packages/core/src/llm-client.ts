@@ -154,6 +154,10 @@ export const OPENROUTER_FREE_KEY_ENVS = [
 export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_4'] as const;
 export const NOUS_PAID_KEY_ENVS = ['NOUS_API_KEY'] as const;
 export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
+/** Output floor for the paid routes. On 2026-10-05 a DevOps task (4,096-token
+ *  role budget) failed on deepseek-v4-flash-0731 with "empty completion
+ *  content (finish_reason: length)": the reasoning filled the budget. */
+export const PAID_MIN_OUTPUT_TOKENS = 16_384;
 export const PAID_FALLBACK_PROVIDER_NAMES = [
   'openrouter-deepseek-v4-flash-paid',
   'nous-deepseek-v4-flash-paid',
@@ -195,6 +199,12 @@ type ProviderSpec = {
    * network call instead of learning the limit by burning a 413 attempt. */
   maxRequestTokens?: number;
   maxOutputTokens?: number;
+  /** Floor on max_tokens, above the role's output budget. Reasoning models
+   *  can spend a 4,096-token budget thinking and return no content
+   *  (finish_reason: length), which fails the task after the reasoning was
+   *  billed. Billing is per generated token, so a higher ceiling costs
+   *  nothing when the answer is short. */
+  minOutputTokens?: number;
   providerRouting?: {
     only?: readonly string[];
     allow_fallbacks?: boolean;
@@ -351,6 +361,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
     maxOutputTokens: 131_072,
+    minOutputTokens: PAID_MIN_OUTPUT_TOKENS,
     // `sort: 'price'` once pinned the paid route to a host with a 60s p99,
     // past LLM_REQUEST_TIMEOUT_MS (2026-09-17). Latency is what this route
     // needs: an answer inside the timeout.
@@ -372,6 +383,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     toolCallingReliable: true,
     supportsParallelToolCalls: true,
     maxOutputTokens: 131_072,
+    minOutputTokens: PAID_MIN_OUTPUT_TOKENS,
     // No providerRouting: Nous Portal decides routing per model and rejects a
     // caller-supplied `provider` object with HTTP 400.
     // deepseek/deepseek-v4-flash-0731 via Nous Portal.
@@ -553,7 +565,11 @@ export function prepareProviderRequest(
   const provider = PROVIDER_BY_NAME.get(providerName);
   if (!provider) throw new Error(`Unknown APEX provider: ${providerName}`);
 
-  const requestedOutput = Math.max(256, Math.floor(requestedMaxOutputTokens));
+  const requestedOutput = Math.max(
+    256,
+    provider.minOutputTokens ?? 0,
+    Math.floor(requestedMaxOutputTokens),
+  );
   const providerOutput = provider.maxOutputTokens
     ? Math.min(requestedOutput, provider.maxOutputTokens)
     : requestedOutput;

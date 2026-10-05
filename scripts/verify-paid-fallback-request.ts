@@ -96,6 +96,7 @@ async function main(): Promise<void> {
   const llm = (await import(path.join(root, 'packages/core/src/llm-client.ts'))) as typeof import('../packages/core/src/llm-client.js');
   const tools = [{ name: 'noop', description: 'guard tool', parameters: { type: 'object', properties: {} } }];
   const ask = () => llm.createLLMClient(llm.getDefaultLLMConfig('CEO')).complete([{ role: 'user', content: 'ping' }], tools as never);
+  const roleBudget = llm.getDefaultLLMConfig('CEO').maxTokens ?? 0;
 
   // 1. Only the paid route is configured, as in production once the free
   //    pool, Groq and Gemini are exhausted.
@@ -113,6 +114,13 @@ async function main(): Promise<void> {
     paid?.headers,
   );
   check('tools still go out in the standard OpenAI format', Array.isArray(paid?.body.tools) && paid?.body.tool_choice === 'auto');
+  // 2026-10-05: a 4,096-token role budget let DeepSeek's reasoning fill the
+  // whole budget and return no content (finish_reason: length).
+  check(
+    'the paid request leaves room to reason and answer: max_tokens is at least the paid floor',
+    paid?.body.max_tokens === Math.max(llm.PAID_MIN_OUTPUT_TOKENS, roleBudget) && llm.PAID_MIN_OUTPUT_TOKENS >= 16_384,
+    { max_tokens: paid?.body.max_tokens, roleBudget, floor: llm.PAID_MIN_OUTPUT_TOKENS },
+  );
   check(
     'the reply comes back to the agent',
     (paidReply as { content?: string }).content === 'guard reply',
@@ -131,6 +139,11 @@ async function main(): Promise<void> {
     'it still sends the `usage` extension and OpenRouter headers',
     free !== undefined && 'usage' in free.body && 'x-openrouter-metadata' in free.headers,
     { body: free?.body, headers: free?.headers },
+  );
+  check(
+    'free routes keep the role output budget; the paid floor does not apply to them',
+    free?.body.max_tokens === Math.min(roleBudget, 16_384),
+    { max_tokens: free?.body.max_tokens, roleBudget },
   );
 
   // 3. The split. Only the funded OpenRouter account (also in the free roster)
@@ -174,6 +187,11 @@ async function main(): Promise<void> {
       (orPaid?.body.provider as { sort?: string } | undefined)?.sort === 'latency' &&
       'usage' in (orPaid?.body ?? {}),
     orPaid?.body,
+  );
+  check(
+    'both paid routes get the output floor',
+    paidSent.length > 0 && paidSent.every((req) => Number(req.body.max_tokens) >= llm.PAID_MIN_OUTPUT_TOKENS),
+    paidSent.map((req) => req.body.max_tokens),
   );
   check(
     'the Nous half still carries no OpenRouter fields',
