@@ -436,6 +436,33 @@ export const BRIGHT_DATA_MAX_ATTEMPTS = 2;
 /** Queries in a row that must exhaust every attempt before the breaker opens. */
 export const BRIGHT_DATA_BREAKER_AFTER_FAILURES = 3;
 let brightDataConsecutiveFailures = 0;
+/** Max Bright Data requests in flight at once (BRIGHT_DATA_MAX_CONCURRENCY,
+ *  default 3). The trial unlocker zone answers inner 502/429 to most requests
+ *  once ~10 run in parallel (2026-10-06), while the same queries succeed one
+ *  at a time; extra searches wait their turn instead of failing. */
+export const DEFAULT_BRIGHT_DATA_MAX_CONCURRENCY = 3;
+export function brightDataMaxConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(String(env.BRIGHT_DATA_MAX_CONCURRENCY ?? ''), 10);
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(raw, 50) : DEFAULT_BRIGHT_DATA_MAX_CONCURRENCY;
+}
+let brightDataInFlight = 0;
+const brightDataWaiters: Array<() => void> = [];
+async function acquireBrightDataSlot(): Promise<void> {
+  if (brightDataInFlight < brightDataMaxConcurrency()) { brightDataInFlight++; return; }
+  await new Promise<void>((resolve) => brightDataWaiters.push(resolve));
+}
+function releaseBrightDataSlot(): void {
+  const next = brightDataWaiters.shift();
+  if (next) next(); else brightDataInFlight = Math.max(0, brightDataInFlight - 1);
+}
+/** Test hook: current in-flight count and queue length. */
+export function __brightDataConcurrencyForTests(): { inFlight: number; waiting: number } {
+  return { inFlight: brightDataInFlight, waiting: brightDataWaiters.length };
+}
+/** Pause before a retry so it does not land in the same rate-limit window. */
+export const BRIGHT_DATA_RETRY_DELAY_MS = 1_500;
+/** Test hook: close every web-search provider breaker. */
+export function __resetWebSearchCooldownsForTests(): void { webSearchProviderCooldowns.clear(); }
 /** Test hook: reset the consecutive-failure counter. */
 export function __resetBrightDataFailureStreakForTests(): void { brightDataConsecutiveFailures = 0; }
 
@@ -1349,14 +1376,21 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
               capped = true;
               break;
             }
+            if (attempt > 1) await new Promise((r) => setTimeout(r, BRIGHT_DATA_RETRY_DELAY_MS + Math.floor(Math.random() * 1000)));
+            await acquireBrightDataSlot();
             try {
               const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&brd_json=1&hl=en&gl=us`;
-              const bdRes = await fetch('https://api.brightdata.com/request', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
-                body: JSON.stringify({ zone: brightDataZone, url: googleUrl, format: 'json' }),
-                signal: AbortSignal.timeout(BRIGHT_DATA_TIMEOUT_MS),
-              });
+              let bdRes: Response;
+              try {
+                bdRes = await fetch('https://api.brightdata.com/request', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
+                  body: JSON.stringify({ zone: brightDataZone, url: googleUrl, format: 'json' }),
+                  signal: AbortSignal.timeout(BRIGHT_DATA_TIMEOUT_MS),
+                });
+              } finally {
+                releaseBrightDataSlot();
+              }
               if (!bdRes.ok) {
                 // Bright Data itself refused (auth, quota, rate): not transient
                 // per query — trip the breaker and stop retrying.

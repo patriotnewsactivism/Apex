@@ -207,6 +207,31 @@ async function main(): Promise<void> {
   const third = (await webSearch.execute({ query: 'insurance Reno, NV official business website', maxResults: 10 }, ctx));
   check(`after ${registry.BRIGHT_DATA_BREAKER_AFTER_FAILURES} failed queries in a row the breaker skips Bright Data instead of spending again`, calls.length === callsAtTrip && /brightdata: temporarily skipped by provider circuit breaker/.test(JSON.stringify(third)) && used() === 9, { calls: calls.length, callsAtTrip, used: used(), third });
 
+  // Concurrency: no more than BRIGHT_DATA_MAX_CONCURRENCY requests in flight.
+  {
+    registry.__resetWebSearchCooldownsForTests();
+    registry.__resetBrightDataFailureStreakForTests();
+    process.env.BRIGHT_DATA_DAILY_REQUEST_CAP = '100';
+    process.env.BRIGHT_DATA_MAX_CONCURRENCY = '3';
+    let inFlight = 0; let peak = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url !== 'https://api.brightdata.com/request') return new Response('<html></html>', { status: 200 });
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight--;
+      return new Response(JSON.stringify({ status_code: 200, headers: {}, body: googleBody }), { status: 200 });
+    }) as typeof fetch;
+    const outs = await Promise.all(Array.from({ length: 10 }, (_, i) => webSearch.execute({ query: `concurrency probe ${i} official business website`, maxResults: 5 }, ctx) as Promise<{ provider?: string }>));
+    globalThis.fetch = realFetch;
+    const served = outs.filter((o) => o.provider === 'brightdata').length;
+    check('10 concurrent searches never put more than 3 Bright Data requests in flight', peak === 3, { peak, served });
+    check('queued searches still complete (none dropped by the limit)', served === 10, { served });
+    check('default concurrency is 3; garbage falls back to it', registry.brightDataMaxConcurrency({}) === 3 && registry.brightDataMaxConcurrency({ BRIGHT_DATA_MAX_CONCURRENCY: 'x' }) === 3 && registry.brightDataMaxConcurrency({ BRIGHT_DATA_MAX_CONCURRENCY: '5' }) === 5);
+    check('no slot leaks after the burst', registry.__brightDataConcurrencyForTests().inFlight === 0 && registry.__brightDataConcurrencyForTests().waiting === 0, registry.__brightDataConcurrencyForTests());
+  }
+
   const capMsg = 'All lead discovery sources returned zero for "us news Mesa, AZ". brave: BRAVE_SEARCH_API_KEY not set | serper: SERPER_API_KEY not set | brightdata: daily request cap reached (2000/2000); resumes at midnight CT';
   const capCls = capacity.classifyLeadDiscoveryFailure(capMsg);
   check('the cap is lost capacity (provider outage), not a segment failure', capCls.providerOutage && capCls.unavailable.some((u) => u.source === 'brightdata' && /cap/.test(u.reason ?? '')), capCls);
