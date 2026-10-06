@@ -172,21 +172,7 @@ export function createSalesFloorRouter(): Router {
 
   router.post('/rehearsal', async (req, res) => {
     try {
-      const policy = await loadOutboundPolicy();
-      if (!policy?.rehearsalEmail || !policy.rehearsalPhone || !policy.personaName || !policy.personaCompany) {
-        res.status(400).json({ error: 'Save your rehearsal email, phone, name, and company before selling to yourself.' });
-        return;
-      }
-      const outcome = await runRehearsal(policy, {
-        leadId: REHEARSAL_LEAD_ID,
-        buyerName: policy.personaName,
-        companyName: policy.personaCompany,
-        industry: policy.personaIndustry || 'local service',
-        city: policy.personaCity || 'your area',
-        outreachAngle: null,
-        persistPersonaLead: true,
-        operatorSession: await requestHasOperatorSession(req),
-      });
+      const outcome = await startOperatorSelfRehearsal({ operatorSession: await requestHasOperatorSession(req) });
       res.status(outcome.status).json(outcome.body);
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
@@ -339,6 +325,32 @@ async function requestHasOperatorSession(req: { header(name: string): string | u
 }
 
 type RehearsalPolicy = NonNullable<Awaited<ReturnType<typeof loadOutboundPolicy>>>;
+
+/**
+ * "Sell to me": the operator's own rehearsal (email + call) to the SAVED
+ * rehearsal email and phone from the outbound policy — never a destination
+ * supplied by the caller. Shared by the Sales Floor button and the operator
+ * chat's rehearse_with_me tool. `operatorSession` must come from a validated
+ * x-apex-operator-session header; only then can the send safeguard apply the
+ * #313 rehearsal bypass (allowlist + daily cap + rehearsal_bypass audit row)
+ * while the kill switch is on.
+ */
+export async function startOperatorSelfRehearsal(opts: { operatorSession: boolean }) {
+  const policy = await loadOutboundPolicy();
+  if (!policy?.rehearsalEmail || !policy.rehearsalPhone || !policy.personaName || !policy.personaCompany) {
+    return { status: 400, body: { error: 'Save your rehearsal email, phone, name, and company before selling to yourself.' } as Record<string, unknown> };
+  }
+  return runRehearsal(policy, {
+    leadId: REHEARSAL_LEAD_ID,
+    buyerName: policy.personaName,
+    companyName: policy.personaCompany,
+    industry: policy.personaIndustry || 'local service',
+    city: policy.personaCity || 'your area',
+    outreachAngle: null,
+    persistPersonaLead: true,
+    operatorSession: opts.operatorSession === true,
+  });
+}
 
 /** Confirm / code / release holds. The call is still staged so Pending sends
  *  can dial it. Kill switch and lock are not holds — they stop the call too. */
