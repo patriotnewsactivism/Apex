@@ -690,58 +690,103 @@ export class CampaignRunner {
       await Promise.all(candidates.map(async (lead) => {
         const domain = normalizeLeadDomain(lead.website);
         if (!domain) return;
-        const result = await registry.execute(
-          'webSearch',
-          {
-            query: `site:${domain} "${lead.companyName}" contact phone email`,
-            maxResults: 6,
-            fast: true,
-            freeOnly: true,
-          },
-          this.toolContext,
-        );
-
-        const payload = result.success
-          ? result.data as {
-              provider?: string;
-              cacheHit?: boolean;
-              results?: Array<{ title?: string; url?: string; snippet?: string }>;
-            }
-          : null;
-
-        const urls = [...new Set((payload?.results ?? [])
-          .map((row) => row.url?.trim())
-          .filter((url): url is string => {
-            if (!url) return false;
-            try {
-              return normalizeLeadDomain(url) === domain;
-            } catch {
-              return false;
-            }
-          }))].slice(0, 3);
-
-        const pages = await Promise.all(urls.map((url) => inspectFirstPartyContactUrl(url)));
+        // ── Fast path: Brave LLM Context (one call, extracted content) ──────
+        // Returns the actual page text for a domain-scoped query, so a
+        // decision-maker name / email / phone can be read without the
+        // two-step webSearch-then-fetch. When it yields contact data we skip
+        // the slower path entirely. Same key as webSearch; gated by env.
         let contactEmail = lead.contactEmail;
         let contactPhone = lead.contactPhone;
         let decisionMakerName = lead.decisionMakerName;
         let contactSourceUrl = lead.contactSourceUrl;
         let decisionMakerTitle: string | null = null;
         let decisionMakerSourceUrl: string | null = null;
+        let llmContextProvider: string | null = null;
+        let llmContextSkipped = false;
 
-        for (const page of pages) {
-          if (!page) continue;
-          if (!contactEmail && page.email) {
-            contactEmail = page.email;
-            contactSourceUrl = page.url;
+        const llmEnabled = String(process.env.BRAVE_LLM_CONTEXT_ENABLED ?? 'true').toLowerCase();
+        if (llmEnabled !== 'false' && llmEnabled !== '0' && llmEnabled !== 'no') {
+          try {
+            const { braveLlmContext, parseContactFields } = await import('@workspace/core');
+            const ctx = await braveLlmContext({
+              query: `site:${domain} "${lead.companyName}" contact phone email`,
+              count: 10,
+            });
+            if (ctx.ok) {
+              const fields = parseContactFields(ctx.sources);
+              const email = fields.emails[0] ?? null;
+              const phone = fields.phones[0] ?? null;
+              if (email || phone) {
+                llmContextProvider = 'brave-llm-context';
+                if (!contactEmail && email) { contactEmail = email; contactSourceUrl = ctx.sources[0]?.url ?? null; }
+                if (!contactPhone && phone) { contactPhone = phone; contactSourceUrl ??= ctx.sources[0]?.url ?? null; }
+                // Best-effort decision maker: first non-empty line that is not
+                // a nav/footer fragment. Never fabricate — only surface text
+                // Brave actually extracted.
+                const candidate = fields.lines.find((l) => l.length >= 3 && l.length <= 80 && !/^(home|about|contact|menu|search|©|all rights|privacy|terms)/i.test(l));
+                if (!decisionMakerName && candidate) {
+                  decisionMakerName = candidate;
+                  decisionMakerSourceUrl = ctx.sources[0]?.url ?? null;
+                }
+              }
+            }
+          } catch {
+            llmContextSkipped = true;
           }
-          if (!contactPhone && page.phone) {
-            contactPhone = page.phone;
-            contactSourceUrl ??= page.url;
-          }
-          if (!decisionMakerName && page.decisionMaker) {
-            decisionMakerName = page.decisionMaker.name;
-            decisionMakerTitle = page.decisionMaker.title;
-            decisionMakerSourceUrl = page.url;
+        }
+
+        // ── Slow path: webSearch + first-party fetch (fallback) ─────────────
+        // Only when the fast path produced nothing.
+        let payload: { provider?: string; cacheHit?: boolean; results?: Array<{ title?: string; url?: string; snippet?: string }> } | null = null;
+        let urls: string[] = [];
+        if (!contactEmail && !contactPhone) {
+          const result = await registry.execute(
+            'webSearch',
+            {
+              query: `site:${domain} "${lead.companyName}" contact phone email`,
+              maxResults: 6,
+              fast: true,
+              freeOnly: true,
+            },
+            this.toolContext,
+          );
+
+          payload = result.success
+            ? result.data as {
+                provider?: string;
+                cacheHit?: boolean;
+                results?: Array<{ title?: string; url?: string; snippet?: string }>;
+              }
+            : null;
+
+          urls = [...new Set((payload?.results ?? [])
+            .map((row) => row.url?.trim())
+            .filter((url): url is string => {
+              if (!url) return false;
+              try {
+                return normalizeLeadDomain(url) === domain;
+              } catch {
+                return false;
+              }
+            }))].slice(0, 3);
+
+          const pages = await Promise.all(urls.map((url) => inspectFirstPartyContactUrl(url)));
+
+          for (const page of pages) {
+            if (!page) continue;
+            if (!contactEmail && page.email) {
+              contactEmail = page.email;
+              contactSourceUrl = page.url;
+            }
+            if (!contactPhone && page.phone) {
+              contactPhone = page.phone;
+              contactSourceUrl ??= page.url;
+            }
+            if (!decisionMakerName && page.decisionMaker) {
+              decisionMakerName = page.decisionMaker.name;
+              decisionMakerTitle = page.decisionMaker.title;
+              decisionMakerSourceUrl = page.url;
+            }
           }
         }
 
@@ -759,7 +804,7 @@ export class CampaignRunner {
           contactWebSearch: {
             version,
             checkedAt: now.toISOString(),
-            provider: payload?.provider ?? null,
+            provider: llmContextProvider ?? payload?.provider ?? null,
             cacheHit: Boolean(payload?.cacheHit),
             resultsScanned: urls.length,
             foundEmail: Boolean(!lead.contactEmail && contactEmail),
@@ -800,7 +845,7 @@ export class CampaignRunner {
         }
 
         console.log(
-          `[lead-contact-search] ${lead.companyName}: pages=${urls.length} email=${Boolean(contactEmail)} phone=${Boolean(contactPhone)} decisionMaker=${Boolean(decisionMakerName)} provider=${payload?.cacheHit ? 'cache:' : ''}${payload?.provider ?? 'none'}`,
+          `[lead-contact-search] ${lead.companyName}: pages=${urls.length} email=${Boolean(contactEmail)} phone=${Boolean(contactPhone)} decisionMaker=${Boolean(decisionMakerName)} provider=${llmContextProvider ?? (payload?.cacheHit ? 'cache:' : '')}${llmContextProvider ? '' : (payload?.provider ?? 'none')}`,
         );
       }));
 
