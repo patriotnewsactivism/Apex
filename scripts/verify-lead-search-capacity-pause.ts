@@ -297,8 +297,10 @@ async function main(): Promise<void> {
 
   for (const key of ['BRAVE_SEARCH_API_KEY', 'BRIGHT_DATA_API_KEY', 'BRIGHT_DATA_ZONE', 'TOMTOM_API_KEY']) delete process.env[key];
   process.env.SERPER_API_KEY = 'guard-only-not-a-key';
-  process.env.YELP_API_KEY = 'guard-only-not-a-key';
-  process.env.GOOGLE_PLACES_API_KEY = 'guard-only-not-a-key';
+  // Directory keys must look real now (lead-provider-keys.ts gates malformed
+  // ones before any request), so the fixtures use correctly shaped fakes.
+  process.env.YELP_API_KEY = 'g'.repeat(128);
+  process.env.GOOGLE_PLACES_API_KEY = `AIza${'g'.repeat(35)}`;
 
   const tools = registry.createBuiltinTools(root);
   const webSearch = tools.find((tool) => tool.name === 'webSearch');

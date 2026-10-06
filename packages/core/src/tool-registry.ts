@@ -28,6 +28,7 @@ import { SendBlockedError, assertContactSendable, commitCallOutcome } from './cr
 import { createCrmTools } from './crm/tools.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
+import { disableDirectoryProvider, isDirectoryAuthFailure, redactProviderBody, resolveDirectoryProviderKey } from './lead-provider-keys.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { createCalendarTools } from './calendar/tools.js';
 
@@ -1978,8 +1979,14 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ query }) {
-        const yelpKey = process.env.YELP_API_KEY;
-        const googleKey = process.env.GOOGLE_PLACES_API_KEY;
+        // Keys are format-checked once per value; a missing, malformed or
+        // rejected key comes back null with a "… treated as not set" note,
+        // so the provider is skipped without a request and never counts as
+        // an outage. See lead-provider-keys.ts.
+        const yelp = resolveDirectoryProviderKey('yelp');
+        const google = resolveDirectoryProviderKey('google');
+        const yelpKey = yelp.key;
+        const googleKey = google.key;
         const directoryTimeoutMs = process.env.LIVE_DEMO_MODE === 'true' || process.env.LIVE_DEMO_MODE === '1' ? 4_000 : 10_000;
 
         // Why Yelp or Google produced nothing. A 429 or a billing error used to
@@ -2040,12 +2047,16 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 return { query, total: businesses.length, businesses, provider: 'yelp' };
               }
             } else {
+              // Yelp's 400 VALIDATION_ERROR echoes the Authorization header,
+              // so the body is redacted before it goes anywhere.
               const body = await yelpRes.text().catch(() => '');
-              yelpNote = `yelp: HTTP ${yelpRes.status} ${body.slice(0, 160)}`.trim();
+              yelpNote = isDirectoryAuthFailure('yelp', yelpRes.status, body)
+                ? disableDirectoryProvider('yelp', yelpRes.status, body)
+                : `yelp: HTTP ${yelpRes.status} ${redactProviderBody(body, yelpKey).slice(0, 160)}`.trim();
             }
           } catch (e) {
             // Fall through to next provider
-            yelpNote = `yelp: ${e instanceof Error ? e.message : String(e)}`;
+            yelpNote = `yelp: ${redactProviderBody(e instanceof Error ? e.message : String(e), yelpKey)}`;
           }
         }
 
@@ -2094,7 +2105,9 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
 
               if (!res.ok) {
                 const body = await res.text().catch(() => '');
-                googleNote = `google: HTTP ${res.status} ${body.slice(0, 160)}`.trim();
+                googleNote = isDirectoryAuthFailure('google', res.status, body)
+                  ? disableDirectoryProvider('google', res.status, body)
+                  : `google: HTTP ${res.status} ${redactProviderBody(body, googleKey).slice(0, 160)}`.trim();
                 break;
               }
 
@@ -2316,8 +2329,8 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           // these it reruns query variants against a source that structurally
           // cannot answer them.
           attempts: [
-            yelpKey ? yelpNote ?? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
-            googleKey ? googleNote ?? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
+            yelpKey ? yelpNote ?? 'yelp: returned nothing' : yelp.note ?? 'yelp: YELP_API_KEY not set',
+            googleKey ? googleNote ?? 'google: returned nothing' : google.note ?? 'google: GOOGLE_PLACES_API_KEY not set',
             ...(tomtomKey ? [] : ['tomtom: TOMTOM_API_KEY not set']),
             ...providerNotes,
           ],

@@ -16,6 +16,7 @@ import {
   normalizeIndustry,
   type ResearchedLeadInput,
   type ToolContext,
+  directoryProviderUsable,
 } from '@workspace/core';
 import { citiesForStates, allStateCodes } from './us-geo.js';
 import {
@@ -684,9 +685,12 @@ export function templateCopyFor(
  *  The second case never covers an outage. A keyed source that is merely
  *  rate-limited or out of quota is not a deterministic failure. */
 export function isDeterministicFailure(message: string): boolean {
+  // A key disabled for a bad format or an auth rejection is reported as
+  // "<ENV> treated as not set" and counts as missing here.
+  const missing = (env: string) => message.includes(`${env} not set`) || message.includes(`${env} treated as not set`);
   const allDiscoveryProvidersMissing =
-    message.includes('YELP_API_KEY not set') &&
-    message.includes('GOOGLE_PLACES_API_KEY not set') &&
+    missing('YELP_API_KEY') &&
+    missing('GOOGLE_PLACES_API_KEY') &&
     message.includes('TOMTOM_API_KEY not set') &&
     message.includes('BRAVE_SEARCH_API_KEY not set');
   const osmCannotAnswer = message.includes('OSM: no known category tag');
@@ -1512,7 +1516,9 @@ export class CampaignRunner {
         process.env.SERPER_API_KEY ||
         process.env.BRIGHT_DATA_API_KEY,
       );
-      const hasFastStructured = Boolean(process.env.YELP_API_KEY || process.env.GOOGLE_PLACES_API_KEY);
+      // A configured-but-invalid or rejected Yelp/Google key is not a fast
+      // structured source: treat it as absent so web search goes first.
+      const hasFastStructured = directoryProviderUsable('yelp') || directoryProviderUsable('google');
 
       let first: DiscoveryCandidate;
       let second: DiscoveryCandidate | null = null;

@@ -4,6 +4,7 @@
  */
 
 import { db, integrationSettings } from '@workspace/db';
+import { resolveDirectoryProviderKey } from '@workspace/core';
 
 // Railway/platform values are the operator's emergency safety boundary. A stale
 // dashboard row must never re-enable paid providers or restore bursty
@@ -62,4 +63,10 @@ export async function loadSettingsIntoEnv(): Promise<void> {
       err instanceof Error ? err.message : err,
     );
   }
+
+  // Check the directory provider keys once, now that DB settings are in
+  // process.env. A missing or malformed key logs one
+  // "[lead-provider] <provider> disabled: …" line here and the provider is
+  // skipped silently afterwards (lead-provider-keys.ts). Never logs a key.
+  for (const provider of ['yelp', 'google'] as const) resolveDirectoryProviderKey(provider);
 }
