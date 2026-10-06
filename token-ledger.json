@@ -1,0 +1,1 @@
+{"day":"2026-10-06","providers":{"openrouter-free-policy":{"promptTokens":51675517,"completionTokens":1327981,"calls":2968},"nous-deepseek-v4-flash-paid":{"promptTokens":3975445,"completionTokens":154542,"calls":214},"gemini-3-8-flash-byok":{"promptTokens":25359,"completionTokens":225,"calls":5},"groq-gpt-oss-120b-byok":{"promptTokens":32335,"completionTokens":1315,"calls":8}}}
