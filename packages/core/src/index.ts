@@ -36,6 +36,7 @@ export type { OptimizePromptInput, OptimizePromptResult, PromptCandidateResult }
 export * from './context-budget.js';
 export * from './industry-taxonomy.js';
 export * from './lead-geography.js';
+export * from './lead-provider-keys.js';
 export * from './artifact-store.js';
 export * from './workspace-sync.js';
 export * from './approval-policy.js';
