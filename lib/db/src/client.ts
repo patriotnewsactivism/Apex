@@ -98,7 +98,7 @@ export async function migrate() {
   `;
   // goals.project_id was added to schema.ts on 2026-07-18 but never to this
   // DDL, so on any fresh database every goal insert failed with
-  // 'column \\\"project_id\\\" of relation \\\"goals\\\" does not exist' — submitGoal
+  // 'column "project_id" of relation "goals" does not exist' — submitGoal
   // (and therefore the whole autonomous loop) could not bootstrap. Additive
   // and IF NOT EXISTS: a no-op against the live database, which already has
   // the column. Not a schema change — this makes the DDL match the schema
@@ -111,82 +111,1286 @@ export async function migrate() {
   await client`
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS leased_at timestamptz
   `;
-  // Cancellation attribution columns (guarded PATCH amendment 092a1729).
-  // Additive and IF NOT EXISTS: no-op against a live database that already has
-  // them. Populated only by the attributed cancel route; never by a done write.
+  // Unique partial index for delegation idempotency (Issue 3 / CodeRabbit fix 2026-07-26).
+  // Prevents two concurrent workers from both inserting the same (goal, title, agent) task.
+  // Partial (WHERE goal_id IS NOT NULL) because goal_id is nullable for ad-hoc tasks.
+  // Wrapped in try/catch: dedup existing rows first, then create index. If index creation
+  // fails (e.g. still-duplicate rows from a concurrent writer), log a warning and continue
+  // so remaining bootstrap steps are not aborted.
+  try {
+    await client`
+      DELETE FROM tasks t
+      USING (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY goal_id, title, assigned_agent_id ORDER BY created_at ASC) as rn
+        FROM tasks
+        WHERE goal_id IS NOT NULL AND assigned_agent_id IS NOT NULL
+      ) dupes
+      WHERE t.id = dupes.id AND dupes.rn > 1
+    `;
+    await client`
+      CREATE UNIQUE INDEX IF NOT EXISTS tasks_delegation_unique
+      ON tasks(goal_id, title, assigned_agent_id)
+      WHERE goal_id IS NOT NULL
+    `;
+  } catch (err) {
+    console.warn('⚠️  tasks_delegation_unique index not created:', err instanceof Error ? err.message : String(err));
+  }
   await client`
-    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS cancelled_by text
-  `;
-  await client`
-    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS cancelled_at timestamptz
-  `;
-  await client`
-    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS cancel_reason text
-  `;
-  // Add the new micro-training tables
-  await client`
-    CREATE TABLE IF NOT EXISTS micro_training_modules (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      role text NOT NULL,
-      title text NOT NULL,
-      description text,
-      content jsonb NOT NULL,
-      difficulty text,
-      tags jsonb,
-      active boolean NOT NULL DEFAULT true,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
-    )
-  `;
-  await client`
-    CREATE TABLE IF NOT EXISTS micro_training_recommendations (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      module_id uuid NOT NULL REFERENCES micro_training_modules(id),
-      role text NOT NULL,
-      agent_id text,
+    CREATE TABLE IF NOT EXISTS approvals (
+      id text PRIMARY KEY,
+      task_id text NOT NULL,
+      agent_id text NOT NULL,
+      tool_name text NOT NULL,
+      tool_args jsonb NOT NULL,
       reason text NOT NULL,
-      score real NOT NULL,
-      status text NOT NULL DEFAULT 'recommended',
+      status text NOT NULL DEFAULT 'pending',
+      reviewed_at timestamptz,
+      reviewer_note text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  // ── approvals: separate escalations from real approval gates (2026-08-22) ──
+  // The table mixed genuine per-tool approval gates with escalate_to_human
+  // rows, which are not gated at all. 8,683 escalations buried 16 real
+  // approvals under one status='pending' filter. Additive + IF NOT EXISTS, so
+  // this is a no-op on a database that already has the columns.
+  await client`
+    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'approval'
+  `;
+  await client`
+    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS dedupe_key text
+  `;
+  await client`
+    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS occurrences integer NOT NULL DEFAULT 1
+  `;
+  await client`
+    ALTER TABLE approvals ADD COLUMN IF NOT EXISTS last_occurred_at timestamptz
+  `;
+  // Label pre-existing escalations. Runs once in practice: after the first
+  // pass no escalate_to_human row still carries kind='approval'.
+  await client`
+    UPDATE approvals SET kind = 'escalation'
+    WHERE tool_name = 'escalate_to_human' AND kind <> 'escalation'
+  `;
+  // One-time amnesty for the backlog accumulated before dedupe existed. These
+  // rows were never triaged and never will be — leaving them 'pending' means
+  // the escalation tab opens onto thousands of stale rows and stays useless.
+  // Scoped to rows older than 24h at the moment of the sweep, so a genuinely
+  // fresh escalation is never swept away by a deploy.
+  await client`
+    UPDATE approvals
+    SET status = 'stale',
+        reviewer_note = COALESCE(reviewer_note, 'Auto-closed 2026-08-22: pre-dedupe escalation backlog, never triaged.')
+    WHERE kind = 'escalation'
+      AND status = 'pending'
+      AND created_at < now() - interval '24 hours'
+  `;
+  // Dedupe lookups hit (kind, status, dedupe_key) on every escalation.
+  await client`
+    CREATE INDEX IF NOT EXISTS approvals_escalation_dedupe_idx
+    ON approvals (kind, status, dedupe_key)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS memories (
+      id text PRIMARY KEY,
+      agent_id text NOT NULL,
+      scope text NOT NULL DEFAULT 'agent',
+      key text NOT NULL,
+      value text NOT NULL,
+      embedding jsonb,
+      importance real NOT NULL DEFAULT 0.5,
+      tags jsonb,
       created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz
     )
   `;
   await client`
-    CREATE TABLE IF NOT EXISTS micro_training_uptake (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      recommendation_id uuid NOT NULL REFERENCES micro_training_recommendations(id),
-      module_id uuid NOT NULL REFERENCES micro_training_modules(id),
-      role text NOT NULL,
+    CREATE TABLE IF NOT EXISTS logs (
+      id serial PRIMARY KEY,
       agent_id text,
-      action text NOT NULL,
+      task_id text,
+      goal_id text,
+      level text NOT NULL DEFAULT 'info',
+      message text NOT NULL,
+      data jsonb,
+      timestamp timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS messages (
+      id text PRIMARY KEY,
+      from_agent_id text NOT NULL,
+      to_agent_id text NOT NULL,
+      subject text NOT NULL,
+      body text NOT NULL,
+      reply_to_id text,
+      read boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  // Add idempotency_key for sendMessage dedup on retry (Issue 4 / CodeRabbit fix 2026-07-26).
+  // Partial unique index (WHERE IS NOT NULL) so legacy NULL rows don't conflict each other.
+  await client`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS idempotency_key text
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS messages_idempotency_key_unique
+    ON messages(idempotency_key)
+    WHERE idempotency_key IS NOT NULL
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS researched_leads (
+      id text PRIMARY KEY,
+      company_name text NOT NULL,
+      website text,
+      industry text,
+      city text,
+      fit_reason text NOT NULL,
+      outreach_angle text,
+      status text NOT NULL DEFAULT 'new',
+      researched_by_agent_id text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  // ── Lead campaigns (2026-08-22) ──────────────────────────────────────────
+  // A bounded, observable lead hunt. campaign_id on researched_leads is
+  // nullable so the 4,722 pre-campaign rows are untouched.
+  await client`
+    ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS campaign_id text
+  `;
+  await client`
+    ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS campaign_segment_id text
+  `;
+  // Contact enrichment is deliberately additive and idempotent. Existing leads
+  // remain pending so the autonomous enrichment sweep can work the backlog.
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS decision_maker_name text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_email text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_phone text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_source_url text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_research_status text NOT NULL DEFAULT 'pending'`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_researched_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS enrichment_data jsonb`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS title text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS linkedin_url text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS employee_count integer`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS source text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS enrichment jsonb`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS pipeline_state text NOT NULL DEFAULT 'DISCOVERED'`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS pipeline_state_changed_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS pipeline_lease_expires_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS discovered_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS basic_enriched_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS contact_found_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS qualified_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS deep_researched_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS campaign_ready_at timestamptz`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS research_cache_key text`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS qualification_score integer`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS campaign_draft jsonb`;
+  await client`ALTER TABLE researched_leads ADD COLUMN IF NOT EXISTS pipeline_metadata jsonb`;
+  await client`
+    UPDATE researched_leads
+    SET pipeline_state_changed_at = COALESCE(pipeline_state_changed_at, created_at),
+        discovered_at = COALESCE(discovered_at, created_at)
+    WHERE pipeline_state_changed_at IS NULL OR discovered_at IS NULL
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS researched_leads_campaign_idx
+    ON researched_leads (campaign_id, status)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS researched_leads_pipeline_idx
+    ON researched_leads (campaign_id, pipeline_state, pipeline_lease_expires_at, created_at)
+  `;
+  // De-dup on website is the hot path of every segment run (thousands of rows
+  // checked per campaign). Partial: NULL websites are not comparable anyway.
+  await client`
+    CREATE INDEX IF NOT EXISTS researched_leads_website_idx
+    ON researched_leads (website) WHERE website IS NOT NULL
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS lead_campaigns (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      goal_id text,
+      project_id text,
+      icp jsonb NOT NULL,
+      target_leads integer NOT NULL DEFAULT 100,
+      status text NOT NULL DEFAULT 'running',
+      push_to_buildmybot boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      started_at timestamptz,
+      completed_at timestamptz,
+      last_progress_at timestamptz,
+      created_by_agent_id text,
+      result text
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS campaign_segments (
+      id text PRIMARY KEY,
+      campaign_id text NOT NULL,
+      industry text NOT NULL,
+      city text NOT NULL,
+      subcategory text NOT NULL DEFAULT 'primary',
+      search_intent text NOT NULL DEFAULT 'directory',
+      query text,
+      status text NOT NULL DEFAULT 'pending',
+      found integer NOT NULL DEFAULT 0,
+      saved integer NOT NULL DEFAULT 0,
+      duplicates integer NOT NULL DEFAULT 0,
+      attempts integer NOT NULL DEFAULT 0,
+      max_attempts integer NOT NULL DEFAULT 3,
+      leased_at timestamptz,
+      last_error text,
+      started_at timestamptz,
       completed_at timestamptz,
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;
-  // Add indexes for performance
+  await client`ALTER TABLE campaign_segments ADD COLUMN IF NOT EXISTS subcategory text NOT NULL DEFAULT 'primary'`;
+  await client`ALTER TABLE campaign_segments ADD COLUMN IF NOT EXISTS search_intent text NOT NULL DEFAULT 'directory'`;
+  await client`ALTER TABLE campaign_segments ADD COLUMN IF NOT EXISTS query text`;
+  // A campaign must never enqueue the same territory twice.
+  await client`DROP INDEX IF EXISTS campaign_segments_cell_unique`;
   await client`
-    CREATE INDEX IF NOT EXISTS micro_training_recommendations_role_status_idx ON micro_training_recommendations (role, status)
+    CREATE UNIQUE INDEX IF NOT EXISTS campaign_segments_shard_unique
+    ON campaign_segments (campaign_id, industry, city, subcategory, search_intent)
+  `;
+  // The claim query: next pending segment for a running campaign.
+  await client`
+    CREATE INDEX IF NOT EXISTS campaign_segments_claim_idx
+    ON campaign_segments (campaign_id, status, created_at)
   `;
   await client`
-    CREATE INDEX IF NOT EXISTS micro_training_uptake_recommendation_id_idx ON micro_training_uptake (recommendation_id)
+    CREATE TABLE IF NOT EXISTS lead_research_cache (
+      cache_key text PRIMARY KEY,
+      normalized_domain text,
+      company_name text,
+      website text,
+      industry text,
+      city text,
+      basic_enrichment jsonb,
+      contact_research jsonb,
+      qualification jsonb,
+      deep_research jsonb,
+      campaign_draft jsonb,
+      hit_count integer NOT NULL DEFAULT 0,
+      expires_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
   `;
-  // Seed data for micro-training modules (idempotent)
   await client`
-    INSERT INTO micro_training_modules (id, role, title, description, content, difficulty, tags, active, created_at, updated_at)
+    CREATE INDEX IF NOT EXISTS lead_research_cache_domain_idx
+    ON lead_research_cache (normalized_domain)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS lead_search_cache (
+      cache_key text PRIMARY KEY,
+      cache_kind text NOT NULL,
+      normalized_query text NOT NULL,
+      request_fingerprint jsonb NOT NULL DEFAULT '{}'::jsonb,
+      provider text,
+      payload jsonb NOT NULL,
+      result_count integer NOT NULL DEFAULT 0,
+      hit_count integer NOT NULL DEFAULT 0,
+      last_hit_at timestamptz,
+      expires_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS lead_search_cache_query_idx
+    ON lead_search_cache (cache_kind, normalized_query)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS lead_search_cache_expiry_idx
+    ON lead_search_cache (expires_at)
+  `;
+
+  await client`
+    CREATE TABLE IF NOT EXISTS territory_exclusivity (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      exclusivity_type text NOT NULL,
+      industry text,
+      geography_type text NOT NULL,
+      geography_value text NOT NULL,
+      geography_definition jsonb NOT NULL DEFAULT '{}'::jsonb,
+      status text NOT NULL DEFAULT 'available',
+      reserved_for_company text,
+      reserved_by_lead_id text,
+      sold_to_company text,
+      owner_contact text,
+      effective_at timestamptz,
+      expires_at timestamptz,
+      notes text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS territory_exclusivity_lookup_idx
+    ON territory_exclusivity (exclusivity_type, industry, geography_type, geography_value, status)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS health_metrics (
+      id serial PRIMARY KEY,
+      component text NOT NULL,
+      status text NOT NULL,
+      response_time_ms integer,
+      detail text,
+      error_message text,
+      checked_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS llm_token_usage_daily (
+      day text NOT NULL,
+      provider text NOT NULL,
+      prompt_tokens integer NOT NULL DEFAULT 0,
+      completion_tokens integer NOT NULL DEFAULT 0,
+      calls integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (day, provider)
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS llm_spend_daily (
+      day text NOT NULL,
+      provider text NOT NULL,
+      spent_micros integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (day, provider)
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS llm_request_usage_daily (
+      day text NOT NULL,
+      account text NOT NULL,
+      requests integer NOT NULL DEFAULT 0,
+      succeeded integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (day, account)
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS component_health (
+      component text PRIMARY KEY,
+      status text NOT NULL DEFAULT 'healthy',
+      detail text,
+      last_check_time timestamptz NOT NULL DEFAULT now(),
+      consecutive_failures integer NOT NULL DEFAULT 0,
+      metadata jsonb
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS scheduled_jobs (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      job_type text NOT NULL,
+      cron_expression text,
+      scheduled_at timestamptz,
+      enabled boolean NOT NULL DEFAULT true,
+      target_agent_id text,
+      payload jsonb,
+      priority integer NOT NULL DEFAULT 5,
+      status text NOT NULL DEFAULT 'active',
+      retry_count integer NOT NULL DEFAULT 0,
+      max_retries integer NOT NULL DEFAULT 3,
+      error text,
+      next_run_at timestamptz,
+      last_run_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS job_execution_log (
+      id serial PRIMARY KEY,
+      job_id text NOT NULL,
+      execution_id text NOT NULL,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz,
+      duration_ms integer,
+      status text NOT NULL DEFAULT 'running',
+      output text,
+      error text
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS task_outcomes (
+      id serial PRIMARY KEY,
+      task_id text NOT NULL,
+      agent_id text NOT NULL,
+      role text NOT NULL,
+      duration_ms integer NOT NULL,
+      success boolean NOT NULL,
+      quality_score real NOT NULL DEFAULT 1.0,
+      tool_executions integer NOT NULL DEFAULT 0,
+      llm_calls integer NOT NULL DEFAULT 0,
+      iterations integer NOT NULL DEFAULT 1,
+      required_approvals integer NOT NULL DEFAULT 0,
+      error_type text,
+      complexity real NOT NULL DEFAULT 0.5,
+      satisfaction_metric real NOT NULL DEFAULT 1.0,
+      tags jsonb,
+      recorded_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS learning_insights (
+      id text PRIMARY KEY,
+      insight_type text NOT NULL,
+      title text NOT NULL,
+      description text NOT NULL,
+      confidence real NOT NULL DEFAULT 0.8,
+      evidence jsonb,
+      applied boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS strategy_recommendations (
+      id text PRIMARY KEY,
+      recommendation_type text NOT NULL,
+      title text NOT NULL,
+      text text NOT NULL,
+      expected_impact text NOT NULL,
+      confidence real NOT NULL DEFAULT 0.8,
+      status text NOT NULL DEFAULT 'pending',
+      reviewed_at timestamptz,
+      reviewer_note text,
+      fingerprint text,
+      lifecycle_key text,
+      affected_role text,
+      failure_category text,
+      proposed_action text,
+      insight_type text,
+      evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+      occurrences integer NOT NULL DEFAULT 1,
+      first_observed_at timestamptz NOT NULL DEFAULT now(),
+      last_observed_at timestamptz NOT NULL DEFAULT now(),
+      superseded_by_id text,
+      superseded_at timestamptz,
+      supersede_reason text,
+      regression_of_id text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    ALTER TABLE strategy_recommendations
+      ADD COLUMN IF NOT EXISTS fingerprint text,
+      ADD COLUMN IF NOT EXISTS lifecycle_key text,
+      ADD COLUMN IF NOT EXISTS affected_role text,
+      ADD COLUMN IF NOT EXISTS failure_category text,
+      ADD COLUMN IF NOT EXISTS proposed_action text,
+      ADD COLUMN IF NOT EXISTS insight_type text,
+      ADD COLUMN IF NOT EXISTS evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+      ADD COLUMN IF NOT EXISTS occurrences integer NOT NULL DEFAULT 1,
+      ADD COLUMN IF NOT EXISTS first_observed_at timestamptz NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS last_observed_at timestamptz NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS superseded_by_id text,
+      ADD COLUMN IF NOT EXISTS superseded_at timestamptz,
+      ADD COLUMN IF NOT EXISTS supersede_reason text,
+      ADD COLUMN IF NOT EXISTS regression_of_id text
+  `;
+  // lifecycle_key is deliberately nullable: one canonical lifecycle row owns
+  // the key while superseded audit rows retain the same semantic fingerprint.
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS strategy_recommendations_lifecycle_key_unique
+    ON strategy_recommendations (lifecycle_key)
+    WHERE lifecycle_key IS NOT NULL
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS strategy_recommendations_status_created_idx
+    ON strategy_recommendations (status, created_at DESC)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS opportunities (
+      id text PRIMARY KEY,
+      project_id text,
+      fingerprint text NOT NULL,
+      source text NOT NULL DEFAULT 'opportunity_discovery',
+      category text NOT NULL,
+      title text NOT NULL,
+      description text NOT NULL,
+      rationale text NOT NULL,
+      evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+      proposed_plan jsonb NOT NULL DEFAULT '{}'::jsonb,
+      impact text NOT NULL DEFAULT 'medium',
+      difficulty text NOT NULL DEFAULT 'medium',
+      confidence real NOT NULL DEFAULT 0.65,
+      novelty real NOT NULL DEFAULT 0.7,
+      value_score integer NOT NULL DEFAULT 50,
+      status text NOT NULL DEFAULT 'proposed',
+      goal_title text NOT NULL,
+      goal_description text NOT NULL,
+      goal_priority integer NOT NULL DEFAULT 5,
+      goal_id text,
+      generated_by_agent_id text,
+      generation_id text,
+      occurrences integer NOT NULL DEFAULT 1,
+      dismissal_reason text,
+      first_seen_at timestamptz NOT NULL DEFAULT now(),
+      last_seen_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS opportunities_fingerprint_unique
+      ON opportunities (fingerprint)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS performance_baselines (
+      metric_name text PRIMARY KEY,
+      baseline_value real NOT NULL,
+      measurement_window text NOT NULL DEFAULT '30d',
+      sample_size integer NOT NULL DEFAULT 0,
+      valid_until timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS pipeline_runs (
+      id text PRIMARY KEY,
+      repo text NOT NULL DEFAULT 'Apex',
+      branch text NOT NULL DEFAULT 'main',
+      commit_sha text,
+      status text NOT NULL DEFAULT 'running',
+      trigger_type text NOT NULL DEFAULT 'manual',
+      started_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz,
+      duration_ms integer,
+      error text
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS test_results (
+      id serial PRIMARY KEY,
+      run_id text NOT NULL,
+      total_tests integer NOT NULL DEFAULT 0,
+      passed integer NOT NULL DEFAULT 0,
+      failed integer NOT NULL DEFAULT 0,
+      skipped integer NOT NULL DEFAULT 0,
+      duration_ms integer NOT NULL DEFAULT 0,
+      coverage_pct real,
+      test_report jsonb,
+      recorded_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS lint_results (
+      id serial PRIMARY KEY,
+      run_id text NOT NULL,
+      total_files integer NOT NULL DEFAULT 0,
+      errors integer NOT NULL DEFAULT 0,
+      warnings integer NOT NULL DEFAULT 0,
+      lint_report jsonb,
+      recorded_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS deployments (
+      id text PRIMARY KEY,
+      run_id text,
+      environment text NOT NULL DEFAULT 'production',
+      platform text NOT NULL DEFAULT 'local',
+      deployment_url text,
+      status text NOT NULL DEFAULT 'pending',
+      rolled_back boolean NOT NULL DEFAULT false,
+      error text,
+      deployed_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS applications (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      repo_url text NOT NULL,
+      status text NOT NULL DEFAULT 'active',
+      health_score real NOT NULL DEFAULT 1.0,
+      last_sync_at timestamptz NOT NULL DEFAULT now(),
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS application_tasks (
+      id serial PRIMARY KEY,
+      app_id text NOT NULL,
+      task_name text NOT NULL,
+      status text NOT NULL DEFAULT 'pending',
+      error text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS predictive_forecasts (
+      id text PRIMARY KEY,
+      metric_name text NOT NULL,
+      forecast_value real NOT NULL,
+      confidence real NOT NULL DEFAULT 0.8,
+      -- "window" is a reserved keyword in Postgres and MUST stay quoted here.
+      -- Unquoted, this statement raised a syntax error that aborted migrate()
+      -- part-way through: predictive_forecasts, risk_assessments and
+      -- integration_settings were never created on a fresh database, and the
+      -- failure surfaced only as a warning ("migration skipped or deferred").
+      -- Drizzle quotes identifiers itself, so ORM reads/writes were unaffected
+      -- and hid the gap. Found 2026-07-28 while bootstrapping a clean DB.
+      "window" text NOT NULL DEFAULT '7d',
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS risk_assessments (
+      id text PRIMARY KEY,
+      target text NOT NULL,
+      risk_level text NOT NULL,
+      details text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS integration_settings (
+      key text PRIMARY KEY,
+      value text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      updated_by text
+    )
+  `;
+  // ── Durable artifact store (Phase 1 of the autonomous-execution scheduler) ──
+  // Added 2026-09-06. The objects live in the GCS bucket named by
+  // APEX_ARTIFACT_BUCKET; these rows are the audit/metadata half.
+  await client`
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id text PRIMARY KEY,
+      task_id text,
+      project_id text,
+      object_name text NOT NULL,
+      file_name text NOT NULL,
+      mime_type text,
+      size_bytes integer NOT NULL DEFAULT 0,
+      sha256 text,
+      public_url text,
+      kind text NOT NULL DEFAULT 'other',
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS artifacts_task_object_unique
+    ON artifacts (task_id, object_name)
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS artifacts_project_object_unique
+    ON artifacts (project_id, object_name)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS artifacts_task_idx ON artifacts (task_id)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS deploy_hooks (
+      id text PRIMARY KEY,
+      project_id text,
+      name text NOT NULL,
+      hook_url text NOT NULL,
+      platform text NOT NULL DEFAULT 'custom',
+      active boolean NOT NULL DEFAULT true,
+      last_status jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS deploy_hooks_project_name_unique
+    ON deploy_hooks (project_id, name)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS workstreams (
+      id text PRIMARY KEY,
+      project_id text NOT NULL,
+      name text NOT NULL,
+      goal_id text,
+      repo_url text,
+      artifact_prefix text,
+      schedule_hint text NOT NULL DEFAULT '*/15 * * * *',
+      status text NOT NULL DEFAULT 'active',
+      autonomy_level text NOT NULL DEFAULT 'supervisor',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS workstreams_project_name_unique
+    ON workstreams (project_id, name)
+  `;
+  await client`
+    ALTER TABLE tasks
+      ADD COLUMN IF NOT EXISTS result_artifacts jsonb
+  `;
+  await client`
+    ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS autoapprove_tools jsonb NOT NULL DEFAULT '[]'::jsonb
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS websocket_tickets (
+      ticket text PRIMARY KEY,
+      expires_at timestamptz NOT NULL
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS websocket_tickets_expires_at_idx
+    ON websocket_tickets (expires_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS sales_opportunities (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      organization_id text NOT NULL,
+      contact_id uuid,
+      company_id uuid,
+      mission_id text,
+      stage_id uuid,
+      name varchar(500) NOT NULL,
+      amount_cents numeric(12, 2),
+      probability real,
+      probability_source text,
+      source text,
+      owner_user_id text,
+      status text NOT NULL DEFAULT 'open',
+      next_action_at timestamptz,
+      notes text,
+      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    ALTER TABLE scheduled_jobs
+      ADD COLUMN IF NOT EXISTS missed_runs integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS catch_up_mode text NOT NULL DEFAULT 'collapsed'
+  `;
+  // ── Durable checkpoint/resume + cross-process worker heartbeats ──────────
+  // Autonomous-OS upgrade, Phase 2 + Phase 5. The resumable state itself
+  // lives on tasks.context.checkpoint (jsonb, no migration needed — it is
+  // just another key in an existing column); this table is the append-only
+  // audit/dashboard log described in schema.ts.
+  await client`
+    CREATE TABLE IF NOT EXISTS task_checkpoints (
+      id text PRIMARY KEY,
+      task_id text NOT NULL,
+      execution_id text NOT NULL,
+      goal_id text,
+      agent_id text NOT NULL,
+      reason text NOT NULL,
+      iterations_used integer NOT NULL DEFAULT 0,
+      tool_executions integer NOT NULL DEFAULT 0,
+      yield_count integer NOT NULL DEFAULT 1,
+      working_summary text,
+      resumed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS task_checkpoints_task_idx ON task_checkpoints (task_id, created_at DESC)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS task_checkpoints_created_idx ON task_checkpoints (created_at DESC)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+      worker_id text PRIMARY KEY,
+      kind text NOT NULL,
+      build_sha text NOT NULL DEFAULT 'unknown',
+      started_at timestamptz NOT NULL,
+      last_heartbeat_at timestamptz NOT NULL,
+      agent_count integer NOT NULL DEFAULT 0,
+      alive_agent_count integer NOT NULL DEFAULT 0,
+      current_task_id text,
+      current_task_started_at timestamptz,
+      last_completed_task_id text,
+      last_completed_task_at timestamptz,
+      scheduler_heartbeat_at timestamptz,
+      last_error text,
+      status text NOT NULL DEFAULT 'starting'
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS worker_heartbeats_kind_idx ON worker_heartbeats (kind, last_heartbeat_at DESC)
+  `;
+
+
+  // ── Email campaigns / sends / suppressions (2026-09-06) ──────────────────
+  // Mirrors lead_campaigns / campaign_segments above. See schema.ts for the
+  // full rationale.
+  await client`
+    CREATE TABLE IF NOT EXISTS email_campaigns (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      lead_campaign_id text,
+      goal_id text,
+      subject_template text NOT NULL,
+      body_template text NOT NULL,
+      status text NOT NULL DEFAULT 'draft',
+      total_targets integer NOT NULL DEFAULT 0,
+      sent_count integer NOT NULL DEFAULT 0,
+      failed_count integer NOT NULL DEFAULT 0,
+      created_by_agent_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      started_at timestamptz,
+      completed_at timestamptz,
+      last_progress_at timestamptz,
+      result text
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS email_sends (
+      id text PRIMARY KEY,
+      campaign_id text,
+      lead_id text,
+      to_email text NOT NULL,
+      to_name text,
+      subject text NOT NULL,
+      status text NOT NULL DEFAULT 'queued',
+      provider_id text,
+      error_message text,
+      sent_at timestamptz,
+      delivered_at timestamptz,
+      opened_at timestamptz,
+      clicked_at timestamptz,
+      bounced_at timestamptz,
+      complained_at timestamptz,
+      created_by_agent_id text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS email_sends_campaign_idx
+    ON email_sends (campaign_id, status)
+  `;
+  // Resolved HTML body, so an operator can preview/audit exactly what a
+  // campaign sends from the dashboard instead of needing a CC on every send.
+  await client`
+    ALTER TABLE email_sends ADD COLUMN IF NOT EXISTS body text
+  `;
+  // The webhook correlates purely on provider_id — never on anything else the
+  // webhook body claims — so this must be unique wherever it is set.
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS email_sends_provider_id_unique
+    ON email_sends (provider_id) WHERE provider_id IS NOT NULL
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS email_suppressions (
+      email text PRIMARY KEY,
+      reason text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  // ── SMS (Telnyx front-desk number) (2026-09-15) ──────────────────────────
+  await client`
+    CREATE TABLE IF NOT EXISTS sms_messages (
+      id text PRIMARY KEY,
+      direction text NOT NULL,
+      counterparty_number text NOT NULL,
+      from_number text NOT NULL,
+      to_number text NOT NULL,
+      body text NOT NULL,
+      status text NOT NULL DEFAULT 'queued',
+      provider_id text,
+      error_message text,
+      created_by_agent_id text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS sms_messages_thread_idx
+    ON sms_messages (counterparty_number, created_at)
+  `;
+
+  // ── Call bridge sessions (operator call + live AI takeover) (2026-09-16) ──
+  await client`
+    CREATE TABLE IF NOT EXISTS call_bridge_sessions (
+      id text PRIMARY KEY,
+      status text NOT NULL DEFAULT 'dialing_operator',
+      operator_number text NOT NULL,
+      customer_number text NOT NULL,
+      conference_name text NOT NULL,
+      operator_call_control_id text,
+      customer_call_control_id text,
+      ai_call_control_id text,
+      last_error text,
+      created_by_agent_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS session_mode text NOT NULL DEFAULT 'operator_first'`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS lead_id text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS playbook_id text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS buyer_name text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS assistant_greeting text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS assistant_instructions text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS transcript_tail text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS coach_note text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS operator_join_role text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS follow_up_sent boolean NOT NULL DEFAULT false`;
+
+  // ── Outbound call outcomes (2026-09-23) ──────────────────────────────────
+  // Structured disposition/appointment capture for make_outbound_call, so a
+  // booked meeting is a queryable row instead of a sentence buried in a
+  // transcript. See schema.ts for the write-path explanation.
+  await client`
+    CREATE TABLE IF NOT EXISTS call_outcomes (
+      id text PRIMARY KEY,
+      call_id text NOT NULL,
+      lead_id text,
+      customer_number text NOT NULL,
+      customer_name text,
+      disposition text NOT NULL DEFAULT 'no_decision',
+      appointment_at timestamptz,
+      appointment_date_raw text,
+      appointment_time_raw text,
+      appointment_timezone_raw text,
+      contact_email text,
+      objection text,
+      next_action text,
+      summary text,
+      transcript text,
+      ended_reason text,
+      cost_usd real,
+      created_by_agent_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  // Both write paths (the mid-call function and end-of-call-report) upsert by
+  // call_id, so this must be unique for ON CONFLICT to target the right row.
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS call_outcomes_call_id_unique
+    ON call_outcomes (call_id)
+  `;
+  // Live phone-line state for the Sales Ops lamps. One row per call leg that
+  // touched one of our numbers. A line is "busy" while any row for it has
+  // ended_at IS NULL and started_at is recent (stale rows are swept, see
+  // routes/phone-lines.ts), so a missed hangup event can never pin a lamp on.
+  await client`
+    CREATE TABLE IF NOT EXISTS line_calls (
+      id text PRIMARY KEY,
+      line_number text NOT NULL,
+      direction text NOT NULL DEFAULT 'outbound',
+      remote_number text,
+      remote_name text,
+      call_id text,
+      source text NOT NULL DEFAULT 'unknown',
+      started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz,
+      end_reason text
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS line_calls_line_open_idx
+    ON line_calls (line_number, ended_at, started_at DESC)
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS line_calls_call_id_unique
+    ON line_calls (call_id) WHERE call_id IS NOT NULL
+  `;
+  // The dashboard's "what's booked" query: future appointments, soonest first.
+  await client`
+    CREATE INDEX IF NOT EXISTS call_outcomes_appointment_idx
+    ON call_outcomes (appointment_at) WHERE appointment_at IS NOT NULL
+  `;
+
+  // ── Live voice chat transcripts (2026-09-25) ─────────────────────────────
+  // Durable record of browser mic calls with Apex (packages/api-server/src/
+  // live-voice.ts) -- previously the transcript existed only in QuickChat's
+  // React state and was lost on refresh/navigation. See schema.ts for the
+  // one-row-per-turn rationale.
+  await client`
+    CREATE TABLE IF NOT EXISTS voice_chat_sessions (
+      id text PRIMARY KEY,
+      start_page text,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS voice_chat_turns (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      role text NOT NULL,
+      text text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS voice_chat_turns_session_idx
+    ON voice_chat_turns (session_id, created_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS outbound_policies (
+      project_id text PRIMARY KEY,
+      mode text NOT NULL DEFAULT 'off',
+      kill_switch boolean NOT NULL DEFAULT false,
+      rehearsal_email text,
+      rehearsal_phone text,
+      persona_name text,
+      persona_company text,
+      persona_industry text,
+      persona_city text,
+      daily_email_cap integer NOT NULL DEFAULT 25,
+      daily_call_cap integer NOT NULL DEFAULT 10,
+      send_window_start_hour integer NOT NULL DEFAULT 8,
+      send_window_end_hour integer NOT NULL DEFAULT 19,
+      timezone text NOT NULL DEFAULT 'America/Chicago',
+      postal_address text,
+      unsubscribe_email text,
+      live_enabled_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS outbound_audit (
+      id text PRIMARY KEY,
+      project_id text NOT NULL,
+      tool_name text NOT NULL,
+      destination text,
+      lead_id text,
+      policy_mode text NOT NULL,
+      provider_id text,
+      rehearsal boolean NOT NULL DEFAULT false,
+      detail text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS sales_suggestion_dismissals (
+      fingerprint text PRIMARY KEY,
+      dismissed_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  // ── Autonomous webinars (2026-09-28) ─────────────────────────────────────
+  // Public attendee rooms are intentionally backed by durable Postgres state
+  // rather than process memory so Railway restarts and multiple web replicas
+  // cannot reset a live presentation.
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_sessions (
+      id text PRIMARY KEY,
+      slug text NOT NULL UNIQUE,
+      title text NOT NULL,
+      description text,
+      host_name text NOT NULL DEFAULT 'Don',
+      mode text NOT NULL DEFAULT 'autonomous',
+      status text NOT NULL DEFAULT 'draft',
+      autonomous boolean NOT NULL DEFAULT true,
+      current_segment integer NOT NULL DEFAULT 0,
+      segment_started_at timestamptz,
+      started_at timestamptz,
+      ended_at timestamptz,
+      cta_label text NOT NULL DEFAULT 'Explore BuildMyBot.app',
+      cta_url text NOT NULL DEFAULT 'https://buildmybot.app',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_attendees (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      name text NOT NULL,
+      email text NOT NULL,
+      company text,
+      phone text,
+      engagement_score integer NOT NULL DEFAULT 0,
+      joined_at timestamptz NOT NULL DEFAULT now(),
+      last_seen_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS webinar_attendees_session_email_unique
+    ON webinar_attendees (session_id, email)
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS webinar_attendees_live_idx
+    ON webinar_attendees (session_id, last_seen_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_questions (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      attendee_id text NOT NULL,
+      question text NOT NULL,
+      answer text,
+      status text NOT NULL DEFAULT 'queued',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      answered_at timestamptz
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS webinar_questions_session_idx
+    ON webinar_questions (session_id, created_at)
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS webinar_events (
+      id text PRIMARY KEY,
+      session_id text NOT NULL,
+      type text NOT NULL,
+      segment_index integer,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS webinar_events_session_idx
+    ON webinar_events (session_id, created_at)
+  `;
+  await client`
+    INSERT INTO webinar_sessions
+      (id, slug, title, description, host_name, mode, status, autonomous, current_segment, cta_label, cta_url)
     VALUES
-      -- QA modules
-      ('11111111-1111-1111-1111-111111111111', 'QA', 'Introduction to Test Automation', 'Learn the basics of test automation frameworks and best practices', '{\"overview\": \"This module covers fundamentals of test automation including tools, frameworks, and implementation strategies\"}', 'beginner', '[\"test-automation\", \"fundamentals\"]', true, now(), now()),
-      ('22222222-2222-2222-2222-222222222222', 'QA', 'Advanced Debugging Techniques', 'Master advanced debugging techniques for complex software issues', '{\"overview\": \"Deep dive into debugging methodologies, tools, and strategies for resolving challenging defects\"}', 'advanced', '[\"debugging\", \"advanced\"]', true, now(), now()),
-      ('33333333-3333-3333-3333-333333333333', 'QA', 'Test Case Design Principles', 'Learn effective test case design methodologies and techniques', '{\"overview\": \"Comprehensive guide to designing effective test cases including boundary testing, equivalence partitioning, and decision tables\"}', 'intermediate', '[\"test-design\", \"methodology\"]', true, now(), now()),
-      -- LEAD_DEV modules
-      ('44444444-4444-4444-4444-444444444444', 'LEAD_DEV', 'Technical Leadership Fundamentals', 'Core skills for effective technical leadership and team management', '{\"overview\": \"Essential technical leadership skills including communication, delegation, and team motivation\"}', 'intermediate', '[\"leadership\", \"technical\"]', true, now(), now()),
-      ('55555555-5555-5555-5555-555555555555', 'LEAD_DEV', 'Code Review Best Practices', 'Master effective code review practices and techniques', '{\"overview\": \"Comprehensive guide to conducting effective code reviews that improve code quality and team knowledge sharing\"}', 'intermediate', '[\"code-review\", \"quality\"]', true, now(), now()),
-      ('66666666-6666-6666-6666-666666666666', 'LEAD_DEV', 'System Design Interview Preparation', 'Prepare for system design interviews with proven frameworks and strategies', '{\"overview\": \"Structured approach to system design interviews covering scalability, performance, and architectural patterns\"}', 'advanced', '[\"system-design\", \"interview\"]', true, now(), now()),
-      -- MARKETING modules
-      ('77777777-7777-7777-7777-777777777777', 'MARKETING', 'Digital Marketing Fundamentals', 'Core concepts of digital marketing across channels and platforms', '{\"overview\": \"Introduction to digital marketing including SEO, SEM, social media, and email marketing\"}', 'beginner', '[\"digital-marketing\", \"fundamentals\"]', true, now(), now()),
-      ('88888888-8888-8888-8888-888888888888', 'MARKETING', 'Conversion Rate Optimization', 'Learn proven techniques to improve conversion rates and maximize ROI', '{\"overview\": \"Data-driven approach to CRO including A/B testing, user experience optimization, and funnel analysis\"}', 'intermediate', '[\"cro\", \"optimization\"]', true, now(), now()),
-      ('99999999-9999-9999-9999-999999999999', 'MARKETING', 'Marketing Analytics and Reporting', 'Master marketing analytics tools and reporting techniques', '{\"overview\": \"Comprehensive guide to marketing analytics including measurement, attribution, and reporting dashboards\"}', 'advanced', '[\"analytics\", \"reporting\"]', true, now(), now())
+      (
+        'webinar-apex-buildmybot-20260928',
+        'apex-buildmybot-live-2026-09-28',
+        'The AI Workforce: APEX + BuildMyBot Live',
+        'See how APEX and BuildMyBot work together as an AI workforce for prospecting, customer conversations, follow-up, and revenue operations.',
+        'Don',
+        'autonomous',
+        'draft',
+        true,
+        0,
+        'Explore BuildMyBot.app',
+        'https://buildmybot.app'
+      )
     ON CONFLICT (id) DO NOTHING
+  `;
+
+  await client`
+    CREATE TABLE IF NOT EXISTS send_jobs (
+      id text PRIMARY KEY,
+      campaign_key text,
+      story_key text,
+      full_auto boolean NOT NULL DEFAULT false,
+      status text NOT NULL DEFAULT 'waiting_confirm',
+      confirm1_at timestamptz,
+      confirm2_at timestamptz,
+      code_verified_at timestamptz,
+      content_hash text NOT NULL,
+      created_by text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`CREATE INDEX IF NOT EXISTS send_jobs_campaign_created_idx ON send_jobs (campaign_key, created_at)`;
+  await client`CREATE INDEX IF NOT EXISTS send_jobs_story_created_idx ON send_jobs (story_key, created_at)`;
+  await client`CREATE INDEX IF NOT EXISTS send_jobs_status_idx ON send_jobs (status)`;
+  await client`
+    CREATE TABLE IF NOT EXISTS send_job_recipients (
+      id text PRIMARY KEY,
+      job_id text NOT NULL,
+      channel text NOT NULL,
+      destination text NOT NULL,
+      message_text text NOT NULL,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      status text NOT NULL DEFAULT 'queued',
+      released boolean NOT NULL DEFAULT false,
+      external_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`CREATE INDEX IF NOT EXISTS send_job_recipients_job_idx ON send_job_recipients (job_id)`;
+  await client`
+    CREATE TABLE IF NOT EXISTS send_safeguard_events (
+      id text PRIMARY KEY,
+      job_id text,
+      event_type text NOT NULL,
+      detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`CREATE INDEX IF NOT EXISTS send_safeguard_events_job_created_idx ON send_safeguard_events (job_id, created_at)`;
+  await client`
+    CREATE TABLE IF NOT EXISTS operator_send_code (
+      id text PRIMARY KEY DEFAULT 'operator',
+      code_hash text,
+      salt text,
+      failed_attempts integer NOT NULL DEFAULT 0,
+      locked boolean NOT NULL DEFAULT false,
+      locked_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS operator_dashboard_sessions (
+      token_hash text PRIMARY KEY,
+      origin text NOT NULL,
+      expires_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+
+  // Calendar booking (additive). The exclusion constraint is what makes two
+  // concurrent holds for the same slot impossible. btree_gist is required
+  // because the constraint mixes equality on organization_id with range overlap.
+  await client`CREATE EXTENSION IF NOT EXISTS btree_gist`;
+  await client`
+    CREATE TABLE IF NOT EXISTS calendar_slot_holds (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      organization_id text NOT NULL,
+      starts_at timestamptz NOT NULL,
+      ends_at timestamptz NOT NULL,
+      status text NOT NULL DEFAULT 'held',
+      holder_agent_id text,
+      holder_name text,
+      contact_id uuid,
+      meeting_id uuid,
+      expires_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS calendar_slot_holds_org_status_idx
+    ON calendar_slot_holds (organization_id, status, starts_at)
+  `;
+  await client`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'calendar_slot_holds_no_overlap'
+      ) THEN
+        ALTER TABLE calendar_slot_holds
+          ADD CONSTRAINT calendar_slot_holds_no_overlap
+          EXCLUDE USING gist (
+            organization_id WITH =,
+            tstzrange(starts_at, ends_at, '[)') WITH &&
+          ) WHERE (status = 'held');
+      END IF;
+    END $$
+  `;
+  await client`
+    CREATE TABLE IF NOT EXISTS calendar_booking_settings (
+      organization_id text PRIMARY KEY,
+      timezone text NOT NULL DEFAULT 'America/Chicago',
+      working_hours jsonb NOT NULL,
+      buffer_before_minutes integer NOT NULL DEFAULT 10,
+      buffer_after_minutes integer NOT NULL DEFAULT 10,
+      no_book_blocks jsonb NOT NULL DEFAULT '[]'::jsonb,
+      max_meetings_per_day integer NOT NULL DEFAULT 8,
+      minimum_notice_minutes integer NOT NULL DEFAULT 60,
+      hold_minutes integer NOT NULL DEFAULT 10,
+      slot_minutes integer NOT NULL DEFAULT 30,
+      busy_calendar_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+      booking_calendar_id text,
+      agent_colors jsonb NOT NULL DEFAULT '{}'::jsonb,
+      operator_display_name text NOT NULL DEFAULT 'Matthew',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
   `;
 
   await applyCrmMigration(client);

@@ -37,6 +37,7 @@ import {
   customType,
 } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
+import { projects, goals } from './schema.js';
 
 /** Postgres tsvector. Maintained by triggers in the CRM migration, not by app updates. */
 export const tsvector = customType<{ data: string }>({
