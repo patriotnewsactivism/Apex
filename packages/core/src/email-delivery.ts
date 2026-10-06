@@ -8,9 +8,13 @@ import { SendBlockedError, newReplyToken, replyDomain, replyToAddress } from './
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
-export function resendFromAddress(): string {
+export function resendFromAddress(): string | null {
+  // Never default to a hardcoded personal domain. Resend rejects unverified
+  // senders with 403, so a missing RESEND_FROM_EMAIL must fail loudly at the
+  // call site instead of silently mailing from an unverified address.
+  const email = process.env.RESEND_FROM_EMAIL?.trim();
+  if (!email) return null;
   const name = process.env.RESEND_FROM_NAME || 'BuildMyBot Sales';
-  const email = process.env.RESEND_FROM_EMAIL || 'sales@buildmybot.app';
   return `${name} <${email}>`;
 }
 
@@ -248,13 +252,17 @@ export async function deliverQueuedEmailSend(
   if (!apiKey) {
     return fail('failed', 'Resend is not configured. Set RESEND_API_KEY and RESEND_FROM_EMAIL.');
   }
+  const from = resendFromAddress();
+  if (!from) {
+    return fail('failed', 'Resend is not configured. Set RESEND_FROM_EMAIL to a verified sender domain.');
+  }
 
   try {
     const res = await fetch(RESEND_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        from: resendFromAddress(),
+        from,
         to: [email],
         subject,
         html: bodyHtml,
