@@ -981,48 +981,63 @@ export class CampaignRunner {
    *  The conditional UPDATE is the claim: two runners racing cannot both
    *  match status='pending' on the same row. */
   private async claimSegments(limit: number): Promise<Array<{
-    campaign: typeof leadCampaigns.$inferSelect;
-    segment: typeof campaignSegments.$inferSelect;
-  }>> {
-    const [campaign] = await db
-      .select()
-      .from(leadCampaigns)
-      .where(eq(leadCampaigns.status, 'running'))
-      .orderBy(asc(leadCampaigns.createdAt))
-      .limit(1);
-    if (!campaign) return [];
-
-    await this.repairLegacyGenericSegments(campaign.id);
-
-    const nextSegments = await db
-      .select()
-      .from(campaignSegments)
-      .where(and(eq(campaignSegments.campaignId, campaign.id), eq(campaignSegments.status, 'pending')))
-      .orderBy(asc(campaignSegments.createdAt))
-      .limit(limit);
-    if (nextSegments.length === 0) return [];
-
-    const now = new Date();
-    const claimed: Array<{
       campaign: typeof leadCampaigns.$inferSelect;
       segment: typeof campaignSegments.$inferSelect;
-    }> = [];
-    for (const next of nextSegments) {
-      const [row] = await db
-        .update(campaignSegments)
-        .set({
-          status: 'in_progress',
-          leasedAt: now,
-          startedAt: next.startedAt ?? now,
-          attempts: (next.attempts ?? 0) + 1,
-        })
-        .where(and(eq(campaignSegments.id, next.id), eq(campaignSegments.status, 'pending')))
-        .returning();
-      if (row) claimed.push({ campaign, segment: row });
-    }
+    }>> {
+      // Work several running campaigns at once instead of draining only the
+      // oldest. The old code picked ONE campaign (oldest) and claimed up to
+      // `limit` segments from it, so a huge territory (e.g. a 3,624-segment
+      // nationwide campaign) starved every newer campaign behind it for days.
+      // Same total parallelism (still ≤ `limit` segments, run in parallel by
+      // the caller) — just distributed across campaigns so newer ones make
+      // progress instead of sitting at 0. Oldest-first keeps FIFO ordering.
+      const campaigns = await db
+        .select()
+        .from(leadCampaigns)
+        .where(eq(leadCampaigns.status, 'running'))
+        .orderBy(asc(leadCampaigns.createdAt))
+        .limit(limit);
+      if (campaigns.length === 0) return [];
 
-    return claimed;
-  }
+      const now = new Date();
+      const claimed: Array<{
+        campaign: typeof leadCampaigns.$inferSelect;
+        segment: typeof campaignSegments.$inferSelect;
+      }> = [];
+      let remaining = limit;
+
+      for (const campaign of campaigns) {
+        if (remaining <= 0) break;
+        await this.repairLegacyGenericSegments(campaign.id);
+
+        const nextSegments = await db
+          .select()
+          .from(campaignSegments)
+          .where(and(eq(campaignSegments.campaignId, campaign.id), eq(campaignSegments.status, 'pending')))
+          .orderBy(asc(campaignSegments.createdAt))
+          .limit(remaining);
+        if (nextSegments.length === 0) continue;
+
+        for (const next of nextSegments) {
+          const [row] = await db
+            .update(campaignSegments)
+            .set({
+              status: 'in_progress',
+              leasedAt: now,
+              startedAt: next.startedAt ?? now,
+              attempts: (next.attempts ?? 0) + 1,
+            })
+            .where(and(eq(campaignSegments.id, next.id), eq(campaignSegments.status, 'pending')))
+            .returning();
+          if (row) {
+            claimed.push({ campaign, segment: row });
+            remaining -= 1;
+          }
+        }
+      }
+
+      return claimed;
+    }
 
   private async runSegment(
     campaign: typeof leadCampaigns.$inferSelect,
