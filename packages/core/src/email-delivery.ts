@@ -100,6 +100,9 @@ export interface DeliverEmailOptions {
    * caller is the operator dashboard. Otherwise the normal gate stays.
    */
   operatorDirect?: boolean;
+  /** Operator rehearsal email to the saved rehearsal address (see
+   *  StartCartesiaSalesCallInput.operatorRehearsal). */
+  operatorRehearsal?: boolean;
 }
 
 // A staged or released job whose recipient is refused before the gate runs
@@ -186,6 +189,7 @@ export async function deliverQueuedEmailSend(
       const opened = await openOutboundSendJob({
         caller: operatorDirect ? 'operator-dashboard' : 'tool',
         operatorDirect,
+        operatorRehearsal: operatorDirect && options.operatorRehearsal === true,
         createdBy: 'email-delivery',
         campaignKey: options.campaignKey ?? null,
         storyKey: options.storyKey ?? null,

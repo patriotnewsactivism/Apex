@@ -27,10 +27,12 @@ import {
   rehearsalPersonaFields,
   renderPlaybookTemplate,
   runWithSendCaller,
+  operatorRehearsalDestinationAllowlisted,
   sameEmail,
   startCartesiaSalesCall,
 } from '@workspace/core';
 import { errorMessage, normalizeE164 } from './sales-ops.js';
+import { operatorDashboardSessionValid } from '../operator-session.js';
 
 const PROJECT_ID = 'apex';
 const REHEARSAL_LEAD_ID = 'rehearsal-operator';
@@ -83,6 +85,14 @@ export function createSalesFloorRouter(): Router {
         return;
       }
       const current = await readPolicyRow();
+      // The saved rehearsal phone/email decide where rehearsal sends may go
+      // past the kill switch, so only an operator dashboard session (not the
+      // admin token an agent or script might hold) may change them.
+      const rehearsalChanged = (current?.rehearsalPhone ?? null) !== phone || (current?.rehearsalEmail ?? null) !== (email || null);
+      if (rehearsalChanged && !(await requestHasOperatorSession(req))) {
+        res.status(403).json({ error: 'Changing the rehearsal phone or email requires a signed-in operator dashboard session.' });
+        return;
+      }
       const values = {
         projectId: PROJECT_ID,
         mode,
@@ -160,7 +170,7 @@ export function createSalesFloorRouter(): Router {
     }
   });
 
-  router.post('/rehearsal', async (_req, res) => {
+  router.post('/rehearsal', async (req, res) => {
     try {
       const policy = await loadOutboundPolicy();
       if (!policy?.rehearsalEmail || !policy.rehearsalPhone || !policy.personaName || !policy.personaCompany) {
@@ -175,6 +185,7 @@ export function createSalesFloorRouter(): Router {
         city: policy.personaCity || 'your area',
         outreachAngle: null,
         persistPersonaLead: true,
+        operatorSession: await requestHasOperatorSession(req),
       });
       res.status(outcome.status).json(outcome.body);
     } catch (err) {
@@ -209,6 +220,7 @@ export function createSalesFloorRouter(): Router {
         city: lead.city || 'your area',
         outreachAngle: lead.outreachAngle ?? null,
         persistPersonaLead: false,
+        operatorSession: await requestHasOperatorSession(req),
       });
       res.status(outcome.status).json({ ...outcome.body, leadId: lead.id, leadCompany: lead.companyName });
     } catch (err) {
@@ -312,7 +324,19 @@ type RehearsalTarget = {
   city: string;
   outreachAngle: string | null;
   persistPersonaLead: boolean;
+  /** The request carried a valid operator dashboard session (minted at
+   *  password login). Only then may the send safeguard apply the rehearsal
+   *  kill-switch / suppression bypass; the admin token alone never does. */
+  operatorSession: boolean;
 };
+
+async function requestHasOperatorSession(req: { header(name: string): string | undefined }): Promise<boolean> {
+  try {
+    return await operatorDashboardSessionValid(req.header('x-apex-operator-session') ?? null);
+  } catch {
+    return false;
+  }
+}
 
 type RehearsalPolicy = NonNullable<Awaited<ReturnType<typeof loadOutboundPolicy>>>;
 
@@ -330,7 +354,14 @@ async function runRehearsal(policy: RehearsalPolicy, target: RehearsalTarget) {
     return { status: 400, body: { error: 'Rehearsal email and phone are required.' } };
   }
   if (policy.killSwitch) {
-    return { status: 409, body: { error: 'The outbound kill switch is on.' } };
+    // Only an operator-session rehearsal to allowlisted saved destinations
+    // may continue; the send safeguard re-checks every condition per send.
+    const bypassPossible = target.operatorSession
+      && operatorRehearsalDestinationAllowlisted('phone', policy.rehearsalPhone)
+      && operatorRehearsalDestinationAllowlisted('email', policy.rehearsalEmail);
+    if (!bypassPossible) {
+      return { status: 409, body: { error: 'The outbound kill switch is on.' } };
+    }
   }
   const playbook = getSalesPlaybook('buildmybot-intro');
   if (!playbook) return { status: 500, body: { error: 'The intro playbook is missing.' } };
@@ -418,6 +449,7 @@ async function finishRehearsal(
     email = await deliverQueuedEmailSend(sendId, rehearsalEmail, `[Practice] ${subjectText}`, htmlText, {
       text: textBody,
       operatorDirect: true,
+      operatorRehearsal: target.operatorSession,
     });
   } catch (error) {
     // A held practice email used to return here with no `call` object. The
@@ -484,6 +516,7 @@ async function finishRehearsal(
     leadId: target.leadId,
     createdByAgentId: 'operator',
     operatorDirect: true,
+    operatorRehearsal: target.operatorSession,
   }).then(
     (started) => ({ success: true as const, ...started }),
     (err: unknown) => {
@@ -525,7 +558,7 @@ async function finishRehearsal(
     providerId: call.success ? call.callId : null,
     rehearsal: true,
     detail: call.success
-      ? 'canonical Cartesia rehearsal call'
+      ? `canonical Cartesia rehearsal call${call.rehearsalBypass?.length ? `; rehearsal destination: ${call.rehearsalBypass.join(' + ')} bypassed` : ''}`
       : callHeld
         ? 'rehearsal call waiting in Pending sends'
         : call.error,

@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import crypto from 'crypto';
-import { and, desc, eq, or } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, callOutcomes, providerEvents, researchedLeads, suppressions, contacts, consentRecords, contactOutreachGates } from '@workspace/db';
 import {
@@ -18,6 +18,8 @@ import {
   SendBlockedError,
   SlotUnavailableError,
   zonedTimeToUtc,
+  loadOutboundPolicy,
+  samePhone,
 } from '@workspace/core';
 import { cartesiaToolSecret, cartesiaWebhookSecret } from '../cartesia-sales-auth.js';
 
@@ -119,8 +121,22 @@ async function isSuppressed(phone: string): Promise<boolean> {
   const rows = await db.select({ id: suppressions.id }).from(suppressions).where(and(
     eq(suppressions.organizationId, ORG_ID), eq(suppressions.phoneE164, phone),
     or(eq(suppressions.channel, 'all'), eq(suppressions.channel, 'phone'), eq(suppressions.channel, 'sms')),
+    // An expired suppression no longer applies (same rule as the send safeguard).
+    or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
   )).limit(1);
   return rows.length > 0;
+}
+
+/** The operator's saved rehearsal phone. A voice agent hearing "don't call"
+ *  on a practice call must not put the operator's own number on the
+ *  suppression list (2026-09-27: a rehearsal call wrote `dnc` for it). */
+async function isSavedRehearsalPhone(phone: string): Promise<boolean> {
+  try {
+    const policy = await loadOutboundPolicy();
+    return Boolean(policy?.rehearsalPhone && samePhone(phone, policy.rehearsalPhone));
+  } catch {
+    return false;
+  }
 }
 
 async function recordExplicitSmsConsent(input: {
@@ -682,7 +698,9 @@ export function createCartesiaSalesRouter(): Router {
       return res.status(400).json({ error: 'DNC requires an explicit spoken opt-out; ask for clarification if uncertain' });
     try {
       const p = parsed.data;
-      if (p.disposition === 'dnc') {
+      if (p.disposition === 'dnc' && await isSavedRehearsalPhone(p.phone_number)) {
+        console.warn(`[cartesia-sales] dnc on call ${p.call_id} for the saved rehearsal phone (***-***-${p.phone_number.replace(/\D/g, '').slice(-4)}): outcome recorded, suppression NOT written`);
+      } else if (p.disposition === 'dnc') {
         const [existing] = await db.select({ id: suppressions.id }).from(suppressions).where(and(
           eq(suppressions.organizationId, ORG_ID), eq(suppressions.phoneE164, p.phone_number), eq(suppressions.channel, 'all'))).limit(1);
         if (!existing) await db.insert(suppressions).values({ organizationId: ORG_ID,
