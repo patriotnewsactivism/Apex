@@ -22,7 +22,7 @@ import { getNextRunTimes } from './cron-utils.js';
 import { getWorkspaceRoot, pathWithin, resolveInWorkspace } from './workspace-root.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
 import { db, messages, callBridgeSessions, leadSearchCache } from '@workspace/db';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
 import { SendBlockedError, assertContactSendable, commitCallOutcome } from './crm/store.js';
 import { createCrmTools } from './crm/tools.js';
@@ -65,23 +65,41 @@ function createAgentHealthMonitor(): HealthMonitor {
 //
 // Lead discovery is one of APEX's easiest places to waste money: the same
 // industry/city/query combination can recur across retries, new campaigns, and
-// future customers. Cache only the two lead-discovery surfaces whose staleness
-// tolerance is explicit: structured business-directory searches and webSearch
-// calls with fast:true. Ordinary/general webSearch remains uncached so current
-// research never silently receives old news.
-type LeadSearchCacheSpec = {
+// future customers. Cache only the lead-discovery and lead-enrichment surfaces
+// whose staleness tolerance is explicit: structured business-directory
+// searches, webSearch calls with fast:true, and the paid Hunter enrichment
+// lookups (domain search, email finder, email verify).
+// Ordinary/general webSearch remains uncached so current research never
+// silently receives old news.
+export type LeadSearchCacheKind = 'directory' | 'web_fast' | 'hunter_domain' | 'hunter_email' | 'hunter_verify';
+
+export type LeadSearchCacheSpec = {
   cacheKey: string;
-  cacheKind: 'directory' | 'web_fast';
+  cacheKind: LeadSearchCacheKind;
   normalizedQuery: string;
+  /** Stored in the row. May carry more than the hashed key fingerprint
+   *  (e.g. how many results were requested) so a hit can be judged. */
   requestFingerprint: Record<string, unknown>;
   ttlMs: number;
   refresh: boolean;
+  /** Older keys that hold an equivalent, already-paid-for response. Read
+   *  only; fresh results are always written under cacheKey. */
+  legacyCacheKeys: string[];
+  /** web_fast only: the caller's result count. A cached row satisfies it when
+   *  it was fetched with at least this many, or the provider ran out first. */
+  requestedResults?: number;
 };
 
 const LEAD_SEARCH_CACHE_VERSION = '2026-09-28-v1';
-const leadSearchInFlight = new Map<string, Promise<unknown>>();
+// v2 drops maxResults from the web_fast key. Under v1 a change of
+// LEAD_DIRECTORY_RESULTS_PER_SHARD (25 → 20 in production) silently orphaned
+// every cached campaign search, so the same query was paid for again. v1 rows
+// are still read through legacyCacheKeys until they expire.
+const LEAD_WEB_CACHE_VERSION = '2026-10-06-v2';
+const LEAD_ENRICHMENT_CACHE_VERSION = '2026-10-06-v1';
+const leadSearchInFlight = new Map<string, { promise: Promise<unknown>; requestedResults?: number }>();
 
-function normalizeLeadSearchQuery(query: string): string {
+export function normalizeLeadSearchQuery(query: string): string {
   return query
     .trim()
     .toLowerCase()
@@ -96,50 +114,158 @@ function positiveDaysFromEnv(name: string, fallback: number): number {
   return Math.min(90, Math.max(1, parsed));
 }
 
-function leadSearchCacheSpec(name: string, args: Record<string, unknown>): LeadSearchCacheSpec | null {
+function hashLeadSearchKey(kind: string, normalizedQuery: string, fingerprint: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update(`${kind}\n${normalizedQuery}\n${JSON.stringify(fingerprint)}`)
+    .digest('hex');
+}
+
+function normalizeEnrichmentDomain(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!raw) return '';
+  try {
+    return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname.replace(/^www\./, '');
+  } catch {
+    return raw.replace(/^www\./, '');
+  }
+}
+
+export function leadSearchCacheSpec(name: string, args: Record<string, unknown>): LeadSearchCacheSpec | null {
   const enabled = String(process.env.LEAD_SEARCH_CACHE_ENABLED ?? 'true').toLowerCase();
   if (['0', 'false', 'off', 'no'].includes(enabled)) return null;
+  const refresh = args.refresh === true;
+
+  // ── Paid enrichment lookups (Hunter). Keyed by what identifies the answer,
+  // never by the API key, so a rotated key keeps its cache.
+  if (name === 'hunterDomainSearch' || name === 'hunterEmailFinder' || name === 'hunterEmailVerify') {
+    const enrichmentEnabled = String(process.env.LEAD_ENRICHMENT_CACHE_ENABLED ?? 'true').toLowerCase();
+    if (['0', 'false', 'off', 'no'].includes(enrichmentEnabled)) return null;
+    let cacheKind: LeadSearchCacheKind;
+    let normalizedQuery: string;
+    let requestFingerprint: Record<string, unknown>;
+    let ttlMs: number;
+    if (name === 'hunterDomainSearch') {
+      const domain = normalizeEnrichmentDomain(args.domain);
+      if (!domain) return null;
+      cacheKind = 'hunter_domain';
+      normalizedQuery = `${domain}|${typeof args.seniority === 'string' ? args.seniority.trim().toLowerCase() : ''}`;
+      requestFingerprint = { version: LEAD_ENRICHMENT_CACHE_VERSION, limit: typeof args.limit === 'number' ? args.limit : 10 };
+      ttlMs = positiveDaysFromEnv('LEAD_ENRICHMENT_CACHE_DAYS', 30) * 86_400_000;
+    } else if (name === 'hunterEmailFinder') {
+      const domain = normalizeEnrichmentDomain(args.domain);
+      const first = typeof args.firstName === 'string' ? args.firstName.trim().toLowerCase() : '';
+      const last = typeof args.lastName === 'string' ? args.lastName.trim().toLowerCase() : '';
+      if (!domain || !first || !last) return null;
+      cacheKind = 'hunter_email';
+      normalizedQuery = `${domain}|${first}|${last}`;
+      requestFingerprint = { version: LEAD_ENRICHMENT_CACHE_VERSION };
+      ttlMs = positiveDaysFromEnv('LEAD_ENRICHMENT_CACHE_DAYS', 30) * 86_400_000;
+    } else {
+      const email = typeof args.email === 'string' ? args.email.trim().toLowerCase() : '';
+      if (!email) return null;
+      cacheKind = 'hunter_verify';
+      normalizedQuery = email;
+      requestFingerprint = { version: LEAD_ENRICHMENT_CACHE_VERSION };
+      // Deliverability drifts faster than who works where.
+      ttlMs = positiveDaysFromEnv('LEAD_EMAIL_VERIFY_CACHE_DAYS', 14) * 86_400_000;
+    }
+    return {
+      cacheKey: hashLeadSearchKey(cacheKind, normalizedQuery, requestFingerprint),
+      cacheKind,
+      normalizedQuery,
+      requestFingerprint,
+      ttlMs,
+      refresh,
+      legacyCacheKeys: [],
+    };
+  }
 
   const query = typeof args.query === 'string' ? args.query : '';
   if (!query.trim()) return null;
   const normalizedQuery = normalizeLeadSearchQuery(query);
-  const refresh = args.refresh === true;
-
-  let cacheKind: LeadSearchCacheSpec['cacheKind'];
-  let requestFingerprint: Record<string, unknown>;
-  let ttlMs: number;
 
   if (name === 'searchBusinessDirectory') {
-    cacheKind = 'directory';
-    requestFingerprint = { version: LEAD_SEARCH_CACHE_VERSION };
-    ttlMs = positiveDaysFromEnv('LEAD_DIRECTORY_SEARCH_CACHE_DAYS', 30) * 86_400_000;
-  } else if (name === 'webSearch' && args.fast === true) {
-    cacheKind = 'web_fast';
-    requestFingerprint = {
-      version: LEAD_SEARCH_CACHE_VERSION,
-      fast: true,
-      freeOnly: args.freeOnly === true,
-      maxResults: typeof args.maxResults === 'number' ? args.maxResults : 10,
+    const cacheKind = 'directory';
+    const requestFingerprint = { version: LEAD_SEARCH_CACHE_VERSION };
+    const ttlMs = positiveDaysFromEnv('LEAD_DIRECTORY_SEARCH_CACHE_DAYS', 30) * 86_400_000;
+    return {
+      cacheKey: hashLeadSearchKey(cacheKind, normalizedQuery, requestFingerprint),
+      cacheKind,
+      normalizedQuery,
+      requestFingerprint,
+      ttlMs,
+      refresh,
+      legacyCacheKeys: [],
     };
-    ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
-  } else {
-    return null;
   }
 
-  const cacheKey = createHash('sha256')
-    .update(`${cacheKind}\n${normalizedQuery}\n${JSON.stringify(requestFingerprint)}`)
-    .digest('hex');
+  if (name === 'webSearch' && args.fast === true) {
+    const cacheKind = 'web_fast';
+    const freeOnly = args.freeOnly === true;
+    const requestedResults = typeof args.maxResults === 'number' && args.maxResults > 0 ? Math.trunc(args.maxResults) : 10;
+    const keyFingerprint = { version: LEAD_WEB_CACHE_VERSION, fast: true, freeOnly };
+    const ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
+    // v1 hashed {version, fast, freeOnly, maxResults} in exactly this order.
+    const legacyCacheKeys = [...new Set([requestedResults, 25, 20, 12, 10, 6])].map((maxResults) =>
+      hashLeadSearchKey(cacheKind, normalizedQuery, {
+        version: LEAD_SEARCH_CACHE_VERSION,
+        fast: true,
+        freeOnly,
+        maxResults,
+      }),
+    );
+    return {
+      cacheKey: hashLeadSearchKey(cacheKind, normalizedQuery, keyFingerprint),
+      cacheKind,
+      normalizedQuery,
+      requestFingerprint: { ...keyFingerprint, requestedResults },
+      ttlMs,
+      refresh,
+      legacyCacheKeys,
+      requestedResults,
+    };
+  }
 
-  return { cacheKey, cacheKind, normalizedQuery, requestFingerprint, ttlMs, refresh };
+  return null;
 }
 
-function leadSearchResultCount(value: unknown): number {
+/** Whether a cached row answers a request for `requested` results: it was
+ *  fetched asking for at least as many, or the provider returned fewer than
+ *  it was asked for (so asking for more would not have found more). */
+export function leadSearchCacheRowSatisfies(
+  row: { requestFingerprint: Record<string, unknown> | null; resultCount: number },
+  requested: number | undefined,
+): boolean {
+  if (!requested) return true;
+  const fp = row.requestFingerprint ?? {};
+  const asked = typeof fp.requestedResults === 'number'
+    ? fp.requestedResults
+    : typeof fp.maxResults === 'number'
+      ? fp.maxResults
+      : 10;
+  return asked >= requested || row.resultCount < asked;
+}
+
+export function leadSearchResultCount(value: unknown): number {
   if (!value || typeof value !== 'object') return 0;
   const row = value as Record<string, unknown>;
+  // A provider/auth failure answer is never a positive result.
+  if (typeof row.error === 'string' && row.error.trim()) return 0;
   if (Array.isArray(row.businesses)) return row.businesses.length;
   if (Array.isArray(row.results)) return row.results.length;
+  if (Array.isArray(row.contacts)) return row.contacts.length;
+  // hunterEmailFinder: one address found.
+  if ('email' in row && 'confidence' in row) return typeof row.email === 'string' && row.email ? 1 : 0;
+  // hunterEmailVerify: a definite verdict.
+  if (typeof row.result === 'string') return row.result && row.result !== 'unknown' ? 1 : 0;
   if (typeof row.total === 'number' && Number.isFinite(row.total)) return Math.max(0, row.total);
   return 0;
+}
+
+/** Trim a cached web result list to what this caller asked for. */
+function sliceLeadSearchPayload(payload: Record<string, unknown>, requested: number | undefined): Record<string, unknown> {
+  if (!requested || !Array.isArray(payload.results) || payload.results.length <= requested) return payload;
+  return { ...payload, results: payload.results.slice(0, requested) };
 }
 
 function leadSearchProvider(value: unknown): string | null {
@@ -180,24 +306,31 @@ async function bumpLeadSearchCacheHit(cacheKey: string): Promise<void> {
 async function readLeadSearchCache(spec: LeadSearchCacheSpec): Promise<unknown | null> {
   if (spec.refresh) return null;
   try {
-    const [row] = await db
+    const keys = [spec.cacheKey, ...spec.legacyCacheKeys.filter((key) => key !== spec.cacheKey)];
+    const rows = await db
       .select()
       .from(leadSearchCache)
       .where(
         and(
-          eq(leadSearchCache.cacheKey, spec.cacheKey),
+          keys.length === 1 ? eq(leadSearchCache.cacheKey, spec.cacheKey) : inArray(leadSearchCache.cacheKey, keys),
           gt(leadSearchCache.expiresAt, new Date()),
         ),
       )
-      .limit(1);
+      .limit(keys.length);
+    // Prefer the current key, then the legacy row with the most results.
+    const row = rows
+      .filter((candidate) => leadSearchCacheRowSatisfies(candidate, spec.requestedResults))
+      .sort((a, b) =>
+        Number(b.cacheKey === spec.cacheKey) - Number(a.cacheKey === spec.cacheKey) || b.resultCount - a.resultCount,
+      )[0];
     if (!row) return null;
 
-    await bumpLeadSearchCacheHit(spec.cacheKey);
+    await bumpLeadSearchCacheHit(row.cacheKey);
     const ageMs = Math.max(0, Date.now() - row.updatedAt.getTime());
     console.log(
-      `[lead-search-cache] HIT ${spec.cacheKind} provider=${row.provider ?? 'unknown'} results=${row.resultCount} age=${Math.round(ageMs / 3_600_000)}h hits=${row.hitCount + 1} query="${spec.normalizedQuery}"`,
+      `[lead-search-cache] HIT ${spec.cacheKind}${row.cacheKey === spec.cacheKey ? '' : ' (legacy key)'} provider=${row.provider ?? 'unknown'} results=${row.resultCount} age=${Math.round(ageMs / 3_600_000)}h hits=${row.hitCount + 1} query="${spec.normalizedQuery}"`,
     );
-    return annotateLeadSearchCache(row.payload, {
+    return annotateLeadSearchCache(sliceLeadSearchPayload(row.payload, spec.requestedResults), {
       hit: true,
       ageMs,
       expiresAt: row.expiresAt,
@@ -266,15 +399,34 @@ function webSearchProviderReady(provider: string): boolean {
 /** How long to stop calling a web search provider after an HTTP failure.
  *  Auth/credit failures (401/402/403/432/433) wait as long as a missing credit;
  *  rate limits (429) and 5xx clear faster. */
-export function webSearchCooldownMs(status: number): number {
+export function webSearchCooldownMs(status: number, body = ''): number {
   if (status === 401 || status === 402 || status === 403 || status === 432 || status === 433) return 30 * 60 * 1000;
+  // Serper answers an exhausted account with HTTP 400 {"message":"Not enough
+  // credits"}. Treated as an ordinary 400 it was retried on every shard and,
+  // worse, read as a per-segment failure that closed 27 campaign segments on
+  // 2026-10-05. An out-of-credit body is a credit failure whatever the status.
+  if (isOutOfCreditBody(body)) return 30 * 60 * 1000;
   if (status === 429) return 60 * 1000;
   if (status >= 500) return 30 * 1000;
   return 0;
 }
 
+/** Brave Web Search allows at most 20 results per request and at most 10
+ *  pages (offset 0-9). Ask for exactly `n` when it fits one page; otherwise
+ *  use full 20-result pages so `offset` (a page index) lines up. */
+export function braveSearchPlan(n: number): { count: number; pages: number } {
+  const wanted = Math.max(1, Math.trunc(Number.isFinite(n) ? n : 10));
+  if (wanted <= 20) return { count: wanted, pages: 1 };
+  return { count: 20, pages: Math.min(10, Math.ceil(wanted / 20)) };
+}
+
+/** Provider bodies that mean "this account has no credit left". */
+export function isOutOfCreditBody(body: string): boolean {
+  return /not enough credits|insufficient (?:credits?|balance|funds)|credit balance is insufficient|out of credits|quota (?:exceeded|exhausted)|exceeds your plan'?s set usage limit/i.test(body);
+}
+
 function tripWebSearchProvider(provider: string, status: number, detail: string): void {
-  const cooldownMs = webSearchCooldownMs(status);
+  const cooldownMs = webSearchCooldownMs(status, detail);
   if (cooldownMs <= 0) return;
 
   const until = Date.now() + cooldownMs;
@@ -443,7 +595,15 @@ class ToolRegistry {
         return { success: true, data: cached };
       }
 
-      const existing = leadSearchInFlight.get(searchCache.cacheKey);
+      const inFlight = leadSearchInFlight.get(searchCache.cacheKey);
+      // Only share an in-flight answer that was asked for at least as many
+      // results as this caller wants; otherwise run a normal attempt.
+      const existing = inFlight && leadSearchCacheRowSatisfies(
+        { requestFingerprint: { requestedResults: inFlight.requestedResults ?? 0 }, resultCount: Number.MAX_SAFE_INTEGER },
+        searchCache.requestedResults,
+      )
+        ? inFlight.promise
+        : undefined;
       if (existing) {
         try {
           const shared = await existing;
@@ -453,7 +613,12 @@ class ToolRegistry {
           );
           return {
             success: true,
-            data: annotateLeadSearchCache(shared, { hit: true, coalesced: true }),
+            data: annotateLeadSearchCache(
+              shared && typeof shared === 'object' && !Array.isArray(shared)
+                ? sliceLeadSearchPayload(shared as Record<string, unknown>, searchCache.requestedResults)
+                : shared,
+              { hit: true, coalesced: true },
+            ),
           };
         } catch {
           // The first producer failed. Fall through and allow this invocation
@@ -471,11 +636,11 @@ class ToolRegistry {
           await writeLeadSearchCache(searchCache, fresh);
           return fresh;
         })();
-        leadSearchInFlight.set(searchCache.cacheKey, producer);
+        leadSearchInFlight.set(searchCache.cacheKey, { promise: producer, requestedResults: searchCache.requestedResults });
         try {
           result = await producer;
         } finally {
-          if (leadSearchInFlight.get(searchCache.cacheKey) === producer) {
+          if (leadSearchInFlight.get(searchCache.cacheKey)?.promise === producer) {
             leadSearchInFlight.delete(searchCache.cacheKey);
           }
         }
@@ -1032,31 +1197,39 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             // Brave caps `count` at 20 (HTTP 422 above it). Clamp so a caller
             // asking for 25 results (campaign-runner MAX_PER_SEGMENT) does not
             // 422 on every shard, drop to Serper/Bright Data, time out, and
-            // pause the whole lead-search lane for 2 minutes at a time.
-            const braveCount = Math.max(1, Math.min(20, n));
-            const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${braveCount}`;
-            const braveRes = await fetch(braveUrl, {
-              headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
-              signal: AbortSignal.timeout(20_000),
-            });
-            if (!braveRes.ok) {
-              const body = await braveRes.text().catch(() => '');
-              const detail = `brave: HTTP ${braveRes.status} ${body.slice(0, 200)}`.trim();
-              diagnostics.push(detail);
-              tripWebSearchProvider('brave', braveRes.status, body);
-              console.warn(`[webSearch] ${detail} for "${query}"`);
-            }
-            if (braveRes.ok) {
+            // pause the whole lead-search lane for 2 minutes at a time. More
+            // than 20 is fetched as extra pages via `offset` (a page index in
+            // units of `count`); each page is a separately billed query.
+            const plan = braveSearchPlan(n);
+            for (let page = 0; page < plan.pages && results.length < n; page++) {
+              const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${plan.count}${page > 0 ? `&offset=${page}` : ''}`;
+              const braveRes = await fetch(braveUrl, {
+                headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
+                signal: AbortSignal.timeout(20_000),
+              });
+              if (!braveRes.ok) {
+                const body = await braveRes.text().catch(() => '');
+                const detail = `brave: HTTP ${braveRes.status} ${body.slice(0, 200)}`.trim();
+                diagnostics.push(detail);
+                tripWebSearchProvider('brave', braveRes.status, body);
+                console.warn(`[webSearch] ${detail} for "${query}"`);
+                break;
+              }
               const braveData = await braveRes.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
-              for (const r of braveData.web?.results ?? []) {
+              const pageResults = braveData.web?.results ?? [];
+              for (const r of pageResults) {
                 results.push({ title: r.title, url: r.url, snippet: r.description });
               }
-              if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n) };
-              diagnostics.push('brave: 200 but zero results');
+              // A short page means Brave has nothing further for this query.
+              if (pageResults.length < plan.count) break;
             }
+            if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n) };
+            if (!diagnostics.some((d) => d.startsWith('brave: HTTP'))) diagnostics.push('brave: 200 but zero results');
           } catch (e) {
             diagnostics.push(`brave: ${e instanceof Error ? e.message : String(e)}`);
             console.warn(`[webSearch] Brave failed for "${query}": ${e}`);
+            // A later page failing must not throw away the pages already paid for.
+            if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n), diagnostics };
           }
         }
 

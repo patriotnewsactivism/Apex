@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { desc, eq } from 'drizzle-orm';
 import { db, campaignSegments, leadCampaigns } from '@workspace/db';
 import type { ToolDefinition } from '@workspace/core';
-import { computeCampaignProgress, createCampaign } from './campaign-runner.js';
+import { computeCampaignProgress, createCampaign, extendCampaign } from './campaign-runner.js';
 import { getLeadSearchPauseSnapshot } from './lead-search-capacity.js';
 
 // ─── Campaign tools ───────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ export function createCampaignTools(): ToolDefinition[] {
     {
       name: 'pause_lead_campaign',
       description:
-        'Pause or resume a running lead campaign, or cancel it outright. Pausing stops new territory being worked but keeps everything found so far; a cancelled campaign cannot be restarted.',
+        'Pause or resume a running lead campaign, or cancel it outright. Pausing stops new territory being worked but keeps everything found so far. To continue a completed, cancelled, or short campaign use extend_lead_campaign.',
       schema: z.object({
         campaignId: z.string(),
         action: z.enum(['pause', 'resume', 'cancel']),
@@ -140,7 +140,7 @@ export function createCampaignTools(): ToolDefinition[] {
         if (!campaign) throw new Error(`No campaign with id ${campaignId}`);
         if (campaign.status !== 'running' && campaign.status !== 'paused') {
           throw new Error(
-            `Campaign "${campaign.name}" is ${campaign.status} and can no longer be ${action}d. Start a new campaign instead.`,
+            `Campaign "${campaign.name}" is ${campaign.status} and can no longer be ${action}d. Use extend_lead_campaign to raise its target and continue its unsearched territory.`,
           );
         }
 
@@ -157,6 +157,38 @@ export function createCampaignTools(): ToolDefinition[] {
           .where(eq(leadCampaigns.id, campaignId));
 
         return { campaignId, status: next, name: campaign.name };
+      },
+    },
+
+    {
+      name: 'extend_lead_campaign',
+      description:
+        'Keep a lead campaign collecting: raise its target and resume it through territory it has NOT searched yet. Works on completed, completed_short, cancelled, paused, and running campaigns. Segments already worked are kept and skipped (their searches are cached, so nothing is re-fetched or re-paid); segments cancelled when the old target was hit are reopened; failed segments are retried unless retryFailed=false. Optionally widen with addCities/addStates/national/addIndustries. Call with dryRun=true first to see exactly what would happen. Lead collection only — it never emails or calls anyone.',
+      schema: z.object({
+        campaignId: z.string(),
+        targetLeads: z.number().int().min(1).max(5000).describe('New target in usable (verified, contact-ready) leads; must be above the current count.'),
+        retryFailed: z.boolean().optional().describe('Requeue failed segments with a fresh retry budget. Default true.'),
+        reopenCancelled: z.boolean().optional().describe('Reopen segments cancelled when the previous target was met. Default true.'),
+        addCities: z.array(z.string()).optional().describe('Extra cities, e.g. ["Boise ID"].'),
+        addStates: z.array(z.string().length(2)).optional().describe('Extra two-letter state codes.'),
+        national: z.boolean().optional().describe('Add every state\'s principal cities.'),
+        addIndustries: z.array(z.string()).optional().describe('Extra industries to cover across the territory.'),
+        dryRun: z.boolean().optional().describe('Return the plan without changing anything.'),
+      }),
+      requiresApproval: false,
+      async execute({ campaignId, targetLeads, retryFailed, reopenCancelled, addCities, addStates, national, addIndustries, dryRun }, ctx) {
+        return extendCampaign({
+          campaignId,
+          targetLeads,
+          retryFailed,
+          reopenCancelled,
+          addCities,
+          addStates,
+          national,
+          addIndustries,
+          dryRun,
+          requestedBy: ctx.agentId,
+        });
       },
     },
   ];

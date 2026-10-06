@@ -521,6 +521,29 @@ export async function verifyBusinessWebsiteIdentity(input: {
     };
   }
 }
+/** A cached businessVerification for this lead's domain that is recent
+ *  enough (LEAD_SITE_VERIFY_CACHE_DAYS, default 30) and from the current
+ *  contact-scan version. Only definite outcomes are reused: an 'unverified'
+ *  result is usually a timeout and deserves a fresh attempt. */
+export function reusableCachedWebsiteIdentity(
+  cached: { basicEnrichment?: Record<string, unknown> | null } | undefined,
+  website: string | null | undefined,
+  now: number = Date.now(),
+): BusinessWebsiteIdentity | null {
+  const enabled = String(process.env.LEAD_SITE_VERIFY_CACHE_ENABLED ?? 'true').toLowerCase();
+  if (['0', 'false', 'off', 'no'].includes(enabled)) return null;
+  const identity = cached?.basicEnrichment?.['businessVerification'] as Partial<BusinessWebsiteIdentity> | undefined;
+  if (!identity || (identity.status !== 'verified' && identity.status !== 'mismatch')) return null;
+  if (identity.contactScanVersion !== '2026-09-28-v2') return null;
+  const domain = normalizeLeadDomain(website);
+  if (!domain || normalizeLeadDomain(identity.homepage ?? null) !== domain) return null;
+  const checkedAt = Date.parse(identity.checkedAt ?? '');
+  const days = Number(process.env.LEAD_SITE_VERIFY_CACHE_DAYS ?? 30);
+  const ttlMs = (Number.isFinite(days) && days > 0 ? Math.min(90, days) : 30) * 86_400_000;
+  if (!Number.isFinite(checkedAt) || now - checkedAt > ttlMs) return null;
+  return identity as BusinessWebsiteIdentity;
+}
+
 export function makeResearchCacheKey(input: {
   companyName: string;
   website?: string | null;
@@ -565,6 +588,117 @@ export async function getKnownLeadDomains(): Promise<Set<string>> {
     if (domain) domains.add(domain);
   }
   return domains;
+}
+
+// ─── Lead de-dup before insert ────────────────────────────────────────────────
+//
+// The runner's in-process known-domain Set is a fast pre-filter, not a
+// guarantee: it only covers rows with a website, it is replaced wholesale on
+// every 30s refresh (dropping reservations made while the reload was in
+// flight), and it is per-process, so an overlapping deploy runs two of them.
+// Production on 2026-10-06 held 4,902 extra rows sharing a domain (2,112 from
+// the last 10 days, 3,569 of those by apex-campaign-runner), 3,277 sharing a
+// phone and 3,737 sharing name+city. insertDiscoveredLead now checks the
+// table itself, under transaction-scoped advisory locks on each key, so two
+// runners cannot both decide the same business is new.
+
+/** Hosts that identify a platform, not a business. A lead whose "website" is
+ *  a Facebook page or a Yelp listing must not be deduped against every other
+ *  lead on that platform. */
+const SHARED_PLATFORM_HOSTS = new Set([
+  'facebook.com', 'm.facebook.com', 'instagram.com', 'linkedin.com', 'yelp.com', 'm.yelp.com',
+  'youtube.com', 'm.youtube.com', 'google.com', 'maps.google.com', 'sites.google.com', 'linktr.ee',
+  'x.com', 'twitter.com', 'tiktok.com', 'yellowpages.com', 'bbb.org', 'mapquest.com', 'nextdoor.com',
+]);
+
+export interface LeadDedupeKeys {
+  domain: string | null;
+  phone: string | null;
+  name: string | null;
+  city: string | null;
+  /** Advisory-lock keys, sorted so concurrent inserts always lock in one order. */
+  lockKeys: string[];
+}
+
+/** Same normalization as the SQL expressions in findExistingLeadDuplicate —
+ *  change one, change both. */
+export function normalizeLeadPhoneForDedupe(phone: string | null | undefined): string | null {
+  const digits = (phone ?? '').replace(/\D/g, '');
+  const ten = digits.length === 11 && digits.startsWith('1') ? digits.slice(1) : digits;
+  if (ten.length !== 10) return null;
+  if (/^(\d)\1{9}$/.test(ten)) return null; // 0000000000, 5555555555
+  return ten;
+}
+
+export function normalizeLeadNameForDedupe(name: string | null | undefined): string | null {
+  const value = (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return value.length >= 4 ? value : null;
+}
+
+export function leadDedupeKeys(input: {
+  companyName: string;
+  website?: string | null;
+  phone?: string | null;
+  city?: string | null;
+}): LeadDedupeKeys {
+  const rawDomain = normalizeLeadDomain(input.website);
+  const domain = rawDomain && !SHARED_PLATFORM_HOSTS.has(rawDomain) ? rawDomain : null;
+  const phone = String(process.env.LEAD_DEDUPE_BY_PHONE ?? 'true').toLowerCase() === 'false'
+    ? null
+    : normalizeLeadPhoneForDedupe(input.phone);
+  const city = (input.city ?? '').trim().toLowerCase() || null;
+  const name = String(process.env.LEAD_DEDUPE_BY_NAME_CITY ?? 'true').toLowerCase() === 'false' || !city
+    ? null
+    : normalizeLeadNameForDedupe(input.companyName);
+  const lockKeys = [
+    domain ? `lead-dedupe:domain:${domain}` : null,
+    phone ? `lead-dedupe:phone:${phone}` : null,
+    name && city ? `lead-dedupe:name:${name}|${city}` : null,
+  ].filter((key): key is string => key !== null).sort();
+  return { domain, phone, name: name && city ? name : null, city: name && city ? city : null, lockKeys };
+}
+
+type DbExecutor = Pick<typeof db, 'select'>;
+
+/** Existing lead matching any dedupe key, or null. Expressions mirror the JS
+ *  normalizers above; lib/db/drizzle/20261006_lead_dedupe_indexes.sql adds
+ *  matching expression indexes (optional — without it this is a ~130ms seq
+ *  scan over ~36k rows, measured read-only against production 2026-10-06). */
+export async function findExistingLeadDuplicate(
+  executor: DbExecutor,
+  keys: LeadDedupeKeys,
+): Promise<{ id: string; matchedOn: 'domain' | 'phone' | 'name_city' } | null> {
+  const conditions = [];
+  if (keys.domain) {
+    conditions.push(sql`lower(regexp_replace(regexp_replace(coalesce(${researchedLeads.website}, ''), '^[a-zA-Z]+://', ''), '^www\\.|[/?#:].*$', '', 'g')) = ${keys.domain}`);
+  }
+  if (keys.phone) {
+    conditions.push(sql`right(regexp_replace(coalesce(${researchedLeads.contactPhone}, ''), '\\D', '', 'g'), 10) = ${keys.phone}`);
+  }
+  if (keys.name && keys.city) {
+    conditions.push(sql`(lower(regexp_replace(${researchedLeads.companyName}, '[^a-zA-Z0-9]', '', 'g')) = ${keys.name} AND lower(trim(coalesce(${researchedLeads.city}, ''))) = ${keys.city})`);
+  }
+  if (conditions.length === 0) return null;
+  const [row] = await executor
+    .select({
+      id: researchedLeads.id,
+      website: researchedLeads.website,
+      contactPhone: researchedLeads.contactPhone,
+    })
+    .from(researchedLeads)
+    .where(or(...conditions))
+    .limit(1);
+  if (!row) return null;
+  const matchedOn = keys.domain && normalizeLeadDomain(row.website) === keys.domain
+    ? 'domain'
+    : keys.phone && normalizeLeadPhoneForDedupe(row.contactPhone) === keys.phone
+      ? 'phone'
+      : 'name_city';
+  return { id: row.id, matchedOn };
+}
+
+function leadDedupeBeforeInsertEnabled(): boolean {
+  return !['0', 'false', 'off', 'no'].includes(String(process.env.LEAD_DEDUPE_BEFORE_INSERT ?? 'true').toLowerCase());
 }
 
 export interface DiscoveredLeadInput {
@@ -616,51 +750,79 @@ export async function insertDiscoveredLead(input: DiscoveredLeadInput) {
   );
   const state: LeadPipelineState = readyFromCache ? 'CAMPAIGN_READY' : 'DISCOVERED';
 
-  const [lead] = await db
-    .insert(researchedLeads)
-    .values({
-      id: randomUUID(),
-      companyName: input.companyName,
-      website: input.website,
-      industry: normalizeIndustry(input.industry) ?? input.industry,
-      city: input.city,
-      contactPhone: input.phone ?? cachedContact?.contactPhone,
-      decisionMakerName: cachedContact?.decisionMakerName,
-      contactEmail: cachedContact?.contactEmail,
-      contactSourceUrl: cachedContact?.contactSourceUrl,
-      contactResearchStatus: cachedContact?.contactResearchStatus ?? (input.phone ? 'partial' : 'pending'),
-      contactResearchedAt: cachedContact ? now : null,
-      fitReason: makeFastFitReason(input.industry, input.city, input.companyName),
-      outreachAngle: readyFromCache && typeof cachedCampaignDraft?.['firstTouch'] === 'string'
-        ? String(cachedCampaignDraft['firstTouch'])
-        : makeShortOutreachAngle(input.companyName, input.industry, input.city),
-      status: readyFromCache ? 'qualified' : 'new',
-      pipelineState: state,
-      pipelineStateChangedAt: now,
-      discoveredAt: now,
-      ...(readyFromCache
-        ? {
-            basicEnrichedAt: now,
-            contactFoundAt: now,
-            qualifiedAt: now,
-            deepResearchedAt: now,
-            campaignReadyAt: now,
-            campaignDraft: cachedCampaignDraft,
-          }
-        : {}),
-      researchCacheKey: cacheKey,
-      campaignId: input.campaignId,
-      campaignSegmentId: input.campaignSegmentId,
-      source: input.source,
-      pipelineMetadata: {
-        ...input.metadata,
-        normalizedDomain: domain,
-        cacheHit: Boolean(cached),
-      },
-      researchedByAgentId: input.researchedByAgentId,
-      createdAt: now,
-    })
-    .returning();
+  const values = {
+    id: randomUUID(),
+    companyName: input.companyName,
+    website: input.website,
+    industry: normalizeIndustry(input.industry) ?? input.industry,
+    city: input.city,
+    contactPhone: input.phone ?? cachedContact?.contactPhone,
+    decisionMakerName: cachedContact?.decisionMakerName,
+    contactEmail: cachedContact?.contactEmail,
+    contactSourceUrl: cachedContact?.contactSourceUrl,
+    contactResearchStatus: cachedContact?.contactResearchStatus ?? (input.phone ? 'partial' : 'pending'),
+    contactResearchedAt: cachedContact ? now : null,
+    fitReason: makeFastFitReason(input.industry, input.city, input.companyName),
+    outreachAngle: readyFromCache && typeof cachedCampaignDraft?.['firstTouch'] === 'string'
+      ? String(cachedCampaignDraft['firstTouch'])
+      : makeShortOutreachAngle(input.companyName, input.industry, input.city),
+    status: readyFromCache ? 'qualified' : 'new',
+    pipelineState: state,
+    pipelineStateChangedAt: now,
+    discoveredAt: now,
+    ...(readyFromCache
+      ? {
+          basicEnrichedAt: now,
+          contactFoundAt: now,
+          qualifiedAt: now,
+          deepResearchedAt: now,
+          campaignReadyAt: now,
+          campaignDraft: cachedCampaignDraft,
+        }
+      : {}),
+    researchCacheKey: cacheKey,
+    campaignId: input.campaignId,
+    campaignSegmentId: input.campaignSegmentId,
+    source: input.source,
+    pipelineMetadata: {
+      ...input.metadata,
+      normalizedDomain: domain,
+      cacheHit: Boolean(cached),
+    },
+    researchedByAgentId: input.researchedByAgentId,
+    createdAt: now,
+  };
+
+  // Check the table, not just the caller's in-memory Set, before inserting.
+  const dedupeKeys = leadDedupeBeforeInsertEnabled()
+    ? leadDedupeKeys({ companyName: input.companyName, website: input.website, phone: input.phone, city: input.city })
+    : null;
+  let duplicateOf: { id: string; matchedOn: string } | null = null;
+  let lead: typeof researchedLeads.$inferSelect | undefined;
+  if (dedupeKeys && dedupeKeys.lockKeys.length > 0) {
+    const outcome = await db.transaction(async (tx) => {
+      for (const key of dedupeKeys.lockKeys) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${key}))`);
+      }
+      const existing = await findExistingLeadDuplicate(tx, dedupeKeys);
+      if (existing) return { duplicateOf: existing, lead: undefined };
+      const [inserted] = await tx.insert(researchedLeads).values(values).returning();
+      return { duplicateOf: null, lead: inserted };
+    });
+    duplicateOf = outcome.duplicateOf;
+    lead = outcome.lead;
+  } else {
+    [lead] = await db.insert(researchedLeads).values(values).returning();
+  }
+
+  if (duplicateOf || !lead) {
+    if (duplicateOf) {
+      console.log(
+        `[lead-dedupe] skipped "${input.companyName}" (${input.city ?? 'no city'}): already on file as ${duplicateOf.id} (matched on ${duplicateOf.matchedOn})`,
+      );
+    }
+    return null;
+  }
 
   emitApexEvent({
     type: 'lead:discovered',
@@ -802,7 +964,10 @@ async function advanceLeadPipeline(leadId: string, expectedState: LeadPipelineSt
   let identity: BusinessWebsiteIdentity | null = null;
   let stageLead = lead;
   if (next === 'BASIC_ENRICHMENT' && lead.website) {
-    identity = await verifyBusinessWebsiteIdentity({
+    // Reuse a recent homepage/contact-page scan of the same domain instead of
+    // re-fetching up to five pages. Mostly hits domains re-discovered after a
+    // lead cleanup deleted their row; a cached mismatch rejects them at once.
+    identity = reusableCachedWebsiteIdentity(cached, lead.website) ?? await verifyBusinessWebsiteIdentity({
       website: lead.website,
       industry: lead.industry,
       city: lead.city,

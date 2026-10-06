@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, campaignSegments, leadCampaigns, researchedLeads } from '@workspace/db';
-import { computeCampaignProgress, countUsableCampaignLeads, createCampaign, getLeadSearchPauseSnapshot } from '@workspace/background-jobs';
+import { computeCampaignProgress, countUsableCampaignLeads, createCampaign, extendCampaign, getLeadSearchPauseSnapshot } from '@workspace/background-jobs';
 import { broadcast } from '../websocket.js';
 
 // Progress is always computed from campaign + segment rows at read time, never
@@ -30,6 +30,18 @@ const createSchema = z
     (v) => v.cities.length > 0 || (v.states?.length ?? 0) > 0 || v.national,
     { message: 'Provide at least one city, one state, or national=true.', path: ['cities'] },
   );
+
+const extendSchema = z.object({
+  // Same ceiling as creation.
+  targetLeads: z.number().int().min(1).max(5000),
+  retryFailed: z.boolean().optional().default(true),
+  reopenCancelled: z.boolean().optional().default(true),
+  addCities: z.array(z.string().min(1)).max(50).optional(),
+  addStates: z.array(z.string().min(2).max(2)).max(51).optional(),
+  national: z.boolean().optional().default(false),
+  addIndustries: z.array(z.string().min(1)).max(20).optional(),
+  dryRun: z.boolean().optional().default(false),
+});
 
 /** Only these transitions are meaningful, and only from a live campaign.
  *  Resuming a completed campaign would restart territory it already finished. */
@@ -155,6 +167,35 @@ export function createCampaignsRouter() {
     }
   });
 
+  // POST /api/campaigns/:id/extend — raise the target of a finished,
+  // cancelled, or short campaign and resume it through its UNSEARCHED
+  // territory. Done/exhausted segments are kept and skipped; cancelled
+  // segments reopen; failed ones are retried (retryFailed, default true).
+  // { dryRun: true } returns the plan without writing.
+  router.post('/:id/extend', async (req, res) => {
+    const parsed = extendSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+    try {
+      const result = await extendCampaign({ campaignId: req.params.id, ...parsed.data, requestedBy: 'operator' });
+      if (!result.dryRun) {
+        broadcast({
+          type: 'campaign:started',
+          campaignId: result.campaignId,
+          name: result.name,
+          targetLeads: result.targetLeads,
+          segments: result.segmentsTotalBefore + result.newSegments,
+        });
+      }
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(/^No campaign with id/.test(message) ? 404 : 409).json({ error: message });
+    }
+  });
+
   // POST /api/campaigns/:id/pause | /resume | /cancel
   for (const [action, next] of [['pause', 'paused'], ['resume', 'running'], ['cancel', 'cancelled']] as const) {
     router.post(`/:id/${action}`, async (req, res) => {
@@ -165,7 +206,7 @@ export function createCampaignsRouter() {
       }
       if (!(LIVE_STATUSES as readonly string[]).includes(campaign.status)) {
         res.status(409).json({
-          error: `Campaign is ${campaign.status} and can no longer be ${action}d. Start a new campaign instead.`,
+          error: `Campaign is ${campaign.status} and can no longer be ${action}d. Use POST /api/campaigns/${campaign.id}/extend to raise its target and continue its unsearched territory.`,
         });
         return;
       }
