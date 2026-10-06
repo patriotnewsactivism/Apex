@@ -658,16 +658,6 @@ export function createMissionsRouter(): Router {
           error: 'Cancellation reason must be at least 10 characters.',
         });
       }
-      const actor =
-        (typeof req.headers['x-apex-actor'] === 'string' && req.headers['x-apex-actor'].trim())
-        || (typeof req.body?.actor === 'string' && req.body.actor.trim())
-        || null;
-      if (!actor) {
-        return res.status(400).json({
-          error: 'cancellation_attestation_required',
-          detail: 'x-apex-actor header or body actor is required to cancel a mission',
-        });
-      }
 
       const [mission] = await db
         .select()
@@ -688,17 +678,13 @@ export function createMissionsRouter(): Router {
       await db.update(goals).set({
         status: 'cancelled',
         result: JSON.stringify(updatedPayload),
-        cancelledBy: actor,
-        cancelReason: reason,
-        cancelledAt: new Date(),
+        completedAt: new Date(),
       }).where(eq(goals.id, missionId));
 
       await db.update(tasks).set({
         status: 'cancelled',
         result: `Mission cancelled: ${reason}`,
-        cancelledBy: actor,
-        cancelReason: reason,
-        cancelledAt: new Date(),
+        completedAt: new Date(),
         updatedAt: new Date(),
       }).where(and(
         eq(tasks.goalId, missionId),

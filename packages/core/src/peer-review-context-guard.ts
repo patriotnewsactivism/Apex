@@ -157,9 +157,6 @@ async function collapseClaimedPeerReview(task: Task | null): Promise<Task | null
       .set({
         status: 'cancelled',
         errorMessage: `Cancelled historical recursive peer review; parent ${parent.id} is itself a peer review`,
-        cancelledBy: 'peer-review-guard',
-        cancelReason: 'Cancelled historical recursive peer review; parent is itself a peer review',
-        cancelledAt: new Date(),
         nextRetryAt: null,
         leasedAt: null,
         updatedAt: new Date(),
@@ -197,9 +194,6 @@ async function collapseClaimedPeerReview(task: Task | null): Promise<Task | null
       .set({
         status: 'cancelled',
         errorMessage: `Superseded duplicate peer review; canonical task is ${winner.id}`,
-        cancelledBy: 'peer-review-guard',
-        cancelReason: `Superseded duplicate peer review; canonical task is ${winner.id}`,
-        cancelledAt: now,
         nextRetryAt: null,
         leasedAt: null,
         updatedAt: now,
