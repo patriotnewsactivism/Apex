@@ -431,6 +431,13 @@ export function isOutOfCreditBody(body: string): boolean {
  *  ~2–8 s; a 25 s wait only held campaign batches open and set off
  *  runner-wide search pauses (2026-10-06). */
 export const BRIGHT_DATA_TIMEOUT_MS = 12_000;
+/** Billed attempts per query: one retry for a transient inner 5xx/429 or timeout. */
+export const BRIGHT_DATA_MAX_ATTEMPTS = 2;
+/** Queries in a row that must exhaust every attempt before the breaker opens. */
+export const BRIGHT_DATA_BREAKER_AFTER_FAILURES = 3;
+let brightDataConsecutiveFailures = 0;
+/** Test hook: reset the consecutive-failure counter. */
+export function __resetBrightDataFailureStreakForTests(): void { brightDataConsecutiveFailures = 0; }
 
 /** Organic results from a Bright Data brd_json=1 Google response body (a JSON
  *  string, or an already-parsed object). Anything unparseable yields []. */
@@ -1322,11 +1329,26 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           diagnostics.push('brightdata: temporarily skipped by provider circuit breaker');
         }
         if (brightDataKey && brightDataZone && webSearchProviderReady('brightdata')) {
-          const budget = await reserveBrightDataRequest();
-          if (!budget.allowed) {
-            // Logged once per day by the budget module; no per-call error.
-            diagnostics.push(`brightdata: daily request cap reached (${budget.used}/${budget.cap}); resumes at midnight CT`);
-          } else {
+          // Up to BRIGHT_DATA_MAX_ATTEMPTS billed attempts per query. The
+          // unlocker answers a transient inner 502 / slow response on a large
+          // share of concurrent Google requests (2026-10-06: ~45%), and the
+          // same query usually succeeds on the next attempt. A single bad
+          // answer must not trip the shared breaker: that skipped Bright Data
+          // for every concurrent segment and paused the whole runner. The
+          // breaker opens only after BRIGHT_DATA_BREAKER_AFTER_FAILURES queries
+          // in a row exhaust their attempts (a real outage).
+          let lastDetail = '';
+          let lastStatus = 0;
+          let capped = false;
+          let answeredEmpty = false;
+          for (let attempt = 1; attempt <= BRIGHT_DATA_MAX_ATTEMPTS; attempt++) {
+            const budget = await reserveBrightDataRequest();
+            if (!budget.allowed) {
+              // Logged once per day by the budget module; no per-call error.
+              diagnostics.push(`brightdata: daily request cap reached (${budget.used}/${budget.cap}); resumes at midnight CT`);
+              capped = true;
+              break;
+            }
             try {
               const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&brd_json=1&hl=en&gl=us`;
               const bdRes = await fetch('https://api.brightdata.com/request', {
@@ -1336,35 +1358,50 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 signal: AbortSignal.timeout(BRIGHT_DATA_TIMEOUT_MS),
               });
               if (!bdRes.ok) {
+                // Bright Data itself refused (auth, quota, rate): not transient
+                // per query — trip the breaker and stop retrying.
                 const body = await bdRes.text().catch(() => '');
-                const detail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
-                diagnostics.push(detail);
+                lastDetail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
+                lastStatus = -1;
                 tripWebSearchProvider('brightdata', bdRes.status, body);
-                console.warn(`[webSearch] ${detail} for "${query}"`);
-              } else {
-                const bdData = await bdRes.json() as { status_code?: number; body?: unknown };
-                const inner = Number(bdData.status_code ?? 0);
-                if (inner !== 200) {
-                  // The target (Google) or the unlocker failed behind an outer
-                  // 200. Report it as an HTTP status so the campaign runner reads
-                  // a 5xx as lost capacity, and back off on 5xx/429.
-                  const detail = `brightdata: HTTP ${inner || 502} (upstream status behind Bright Data 200)`;
-                  diagnostics.push(detail);
-                  if (inner >= 500 || inner === 429 || inner === 0) tripWebSearchProvider('brightdata', inner || 502, '');
-                  console.warn(`[webSearch] ${detail} for "${query}"`);
-                } else {
-                  const parsed = parseBrightDataGoogleBody(bdData.body);
-                  for (const r of parsed) results.push(r);
-                  if (results.length > 0) {
-                    recordBrightDataSuccess();
-                    return { query, provider: 'brightdata', results: results.slice(0, n) };
-                  }
-                  diagnostics.push('brightdata: 200 but zero results');
-                }
+                console.warn(`[webSearch] ${lastDetail} for "${query}"`);
+                break;
               }
+              const bdData = await bdRes.json() as { status_code?: number; body?: unknown };
+              const inner = Number(bdData.status_code ?? 0);
+              if (inner !== 200) {
+                lastStatus = inner || 502;
+                lastDetail = `brightdata: HTTP ${lastStatus} (upstream status behind Bright Data 200)`;
+                console.warn(`[webSearch] ${lastDetail} for "${query}" (attempt ${attempt}/${BRIGHT_DATA_MAX_ATTEMPTS})`);
+                if (!(inner >= 500 || inner === 429 || inner === 0)) break;
+                continue;
+              }
+              const parsed = parseBrightDataGoogleBody(bdData.body);
+              for (const r of parsed) results.push(r);
+              if (results.length > 0) {
+                recordBrightDataSuccess();
+                brightDataConsecutiveFailures = 0;
+                return { query, provider: 'brightdata', results: results.slice(0, n) };
+              }
+              answeredEmpty = true;
+              break;
             } catch (e) {
-              diagnostics.push(`brightdata: ${e instanceof Error ? e.message : String(e)}`);
-              console.warn(`[webSearch] Bright Data failed for "${query}": ${e}`);
+              lastStatus = 0;
+              lastDetail = `brightdata: ${e instanceof Error ? e.message : String(e)}`;
+              console.warn(`[webSearch] Bright Data failed for "${query}" (attempt ${attempt}/${BRIGHT_DATA_MAX_ATTEMPTS}): ${e}`);
+            }
+          }
+          if (answeredEmpty) {
+            brightDataConsecutiveFailures = 0;
+            diagnostics.push('brightdata: 200 but zero results');
+          } else if (!capped && lastDetail) {
+            diagnostics.push(lastDetail);
+            if (lastStatus !== -1) {
+              brightDataConsecutiveFailures++;
+              if (brightDataConsecutiveFailures >= BRIGHT_DATA_BREAKER_AFTER_FAILURES) {
+                brightDataConsecutiveFailures = 0;
+                tripWebSearchProvider('brightdata', lastStatus || 502, '');
+              }
             }
           }
         }
