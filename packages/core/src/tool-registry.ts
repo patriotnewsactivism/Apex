@@ -1029,7 +1029,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         }
         if (!freeOnly && braveKey && webSearchProviderReady('brave')) {
           try {
-            const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
+            // Brave caps `count` at 20 (HTTP 422 above it). Clamp so a caller
+            // asking for 25 results (campaign-runner MAX_PER_SEGMENT) does not
+            // 422 on every shard, drop to Serper/Bright Data, time out, and
+            // pause the whole lead-search lane for 2 minutes at a time.
+            const braveCount = Math.max(1, Math.min(20, n));
+            const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${braveCount}`;
             const braveRes = await fetch(braveUrl, {
               headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
               signal: AbortSignal.timeout(20_000),
