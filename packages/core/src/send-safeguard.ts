@@ -93,6 +93,93 @@ export interface SendRecipientRecord {
   externalId: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Set on the record assertSendAllowed returns (never stored) when an
+   *  operator rehearsal send went out past the kill switch and/or a
+   *  suppression. */
+  rehearsalBypass?: RehearsalBypassKind[];
+}
+
+// ─── Operator rehearsal bypass ────────────────────────────────────────────────
+//
+// The operator practising on themself ("Sell to me", rehearse a lead) must not
+// be stopped by the outbound kill switch or by a stale "do not call" on their
+// own number. Every other send keeps every check. A send qualifies only when
+// ALL of these hold:
+//   1. its job was created by the operator dashboard as an operatorDirect +
+//      operatorRehearsal job (createJob writes the payload marker; a caller-
+//      supplied marker is stripped), with exactly one recipient;
+//   2. the send runs in an operator-dashboard caller context;
+//   3. the destination is exactly the saved rehearsal phone (normalized E.164)
+//      or rehearsal email (lowercased) from the outbound policy;
+//   4. that destination is also in APEX_OPERATOR_REHEARSAL_DESTINATIONS
+//      (comma-separated; unset or empty disables the bypass entirely), so
+//      changing the saved destination alone cannot redirect it;
+//   5. fewer than APEX_OPERATOR_REHEARSAL_DAILY_CAP (default 20) bypassed
+//      rehearsal sends in the last 24 hours.
+// The send-code lockout is never bypassed. Every bypass writes an
+// outbound_audit row with the destination masked.
+
+/** Recipient payload key marking an operator rehearsal send. */
+export const OPERATOR_REHEARSAL_PAYLOAD_KEY = 'operatorRehearsal';
+export const OPERATOR_REHEARSAL_DESTINATIONS_ENV = 'APEX_OPERATOR_REHEARSAL_DESTINATIONS';
+export const OPERATOR_REHEARSAL_DAILY_CAP_ENV = 'APEX_OPERATOR_REHEARSAL_DAILY_CAP';
+export const OPERATOR_REHEARSAL_DEFAULT_DAILY_CAP = 20;
+export const REHEARSAL_BYPASS_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export type RehearsalBypassKind = 'kill switch' | 'suppression';
+
+export interface RehearsalDestinations {
+  phone: string | null;
+  email: string | null;
+}
+
+export interface RehearsalBypassAuditEntry {
+  jobId: string;
+  channel: SendChannel;
+  /** Already masked: "***-***-1234" or "***@example.com". */
+  maskedDestination: string;
+  bypassed: RehearsalBypassKind[];
+  detail: string;
+}
+
+/** Normalized allowlist from APEX_OPERATOR_REHEARSAL_DESTINATIONS. */
+export function operatorRehearsalAllowlist(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const out = new Set<string>();
+  for (const raw of String(env[OPERATOR_REHEARSAL_DESTINATIONS_ENV] ?? '').split(',')) {
+    const value = raw.trim();
+    if (!value) continue;
+    if (value.includes('@')) out.add(normalizeDestination('email', value));
+    else {
+      const phone = normalizeDestination('phone', value);
+      if (/^\+\d{8,15}$/.test(phone)) out.add(phone);
+    }
+  }
+  return out;
+}
+
+export function operatorRehearsalDailyCap(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(String(env[OPERATOR_REHEARSAL_DAILY_CAP_ENV] ?? ''), 10);
+  if (!Number.isFinite(raw) || raw < 0) return OPERATOR_REHEARSAL_DEFAULT_DAILY_CAP;
+  return Math.min(raw, 200);
+}
+
+/** True when the destination is allowlisted for the rehearsal bypass. */
+export function operatorRehearsalDestinationAllowlisted(channel: SendChannel, destination: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (channel !== 'phone' && channel !== 'email') return false;
+  return operatorRehearsalAllowlist(env).has(normalizeDestination(channel, destination));
+}
+
+export function maskRehearsalDestination(channel: SendChannel, destination: string): string {
+  if (channel === 'email' || channel === 'calendar') {
+    const at = destination.lastIndexOf('@');
+    return at > 0 ? `***${destination.slice(at)}` : '***';
+  }
+  const digits = destination.replace(/\D/g, '');
+  return digits.length >= 4 ? `***-***-${digits.slice(-4)}` : '***';
+}
+
+export function rehearsalBypassDetail(bypassed: RehearsalBypassKind[]): string {
+  return `rehearsal destination: ${bypassed.join(' + ')} bypassed`;
 }
 
 export interface OperatorCodeRecord {
@@ -125,6 +212,14 @@ export interface SendSafeguardStore {
   saveCode(row: OperatorCodeRecord): Promise<void>;
   isKillSwitchOn(): Promise<boolean>;
   isSuppressed(channel: SendChannel, destination: string): Promise<boolean>;
+  /** Saved rehearsal phone/email from the outbound policy, read at send time.
+   *  A store without it never grants the rehearsal bypass. */
+  rehearsalDestinations?(): Promise<RehearsalDestinations>;
+  /** Bypassed rehearsal sends since `since` (for the daily cap). */
+  countRehearsalBypassesSince?(since: Date): Promise<number>;
+  /** Writes the outbound_audit row for a bypass. Must throw on failure: a
+   *  bypass that cannot be audited does not happen. */
+  recordRehearsalBypass?(entry: RehearsalBypassAuditEntry): Promise<void>;
 }
 
 export interface SendStatusEvent {
@@ -285,7 +380,21 @@ export class MemorySendSafeguardStore implements SendSafeguardStore {
   code: OperatorCodeRecord = emptyCode();
   killSwitch = false;
   suppressed = new Set<string>();
+  rehearsal: RehearsalDestinations = { phone: null, email: null };
+  rehearsalAudit: Array<RehearsalBypassAuditEntry & { at: string }> = [];
   clock = new Date();
+
+  async rehearsalDestinations(): Promise<RehearsalDestinations> {
+    return { ...this.rehearsal };
+  }
+
+  async countRehearsalBypassesSince(since: Date): Promise<number> {
+    return this.rehearsalAudit.filter((row) => Date.parse(row.at) >= since.getTime()).length;
+  }
+
+  async recordRehearsalBypass(entry: RehearsalBypassAuditEntry): Promise<void> {
+    this.rehearsalAudit.push({ ...entry, at: this.now().toISOString() });
+  }
 
   now(): Date {
     return new Date(this.clock.getTime());
@@ -355,6 +464,13 @@ export interface CreateSendJobInput {
    * do-not-contact checks still run. Any other caller is rejected.
    */
   operatorDirect?: boolean;
+  /**
+   * Operator rehearsal send ("Sell to me" / rehearse a lead) to the saved
+   * rehearsal phone or email. Honored only with operatorDirect from caller
+   * `operator-dashboard` and a single recipient. See "Operator rehearsal
+   * bypass" above for every condition the send itself must still meet.
+   */
+  operatorRehearsal?: boolean;
   createdBy: string;
   recipients: Array<{
     channel: SendChannel;
@@ -470,11 +586,36 @@ export class SendSafeguard {
     if (await this.isLocked()) {
       throw new SendSafeguardError('Outbound sending is locked.', 'locked');
     }
-    if (await this.killSwitchOn()) {
-      await this.audit(null, 'send_attempt', { result: 'blocked', reason: 'kill_switch', phase: 'enqueue' });
-      throw new SendSafeguardError('The outbound kill switch is on. Nothing was queued.', 'kill_switch');
-    }
     const direct = input.operatorDirect === true;
+    const rehearsal = direct
+      && input.caller === 'operator-dashboard'
+      && input.operatorRehearsal === true
+      && input.recipients.length === 1;
+    const normalized = input.recipients.map((recipient) => {
+      // The rehearsal marker is only ever written here, never taken from the
+      // caller's payload.
+      const { [OPERATOR_REHEARSAL_PAYLOAD_KEY]: _ignored, ...payload } = recipient.payload ?? {};
+      void _ignored;
+      if (rehearsal && (recipient.channel === 'phone' || recipient.channel === 'email')) {
+        payload[OPERATOR_REHEARSAL_PAYLOAD_KEY] = true;
+      }
+      return {
+        channel: recipient.channel,
+        destination: normalizeDestination(recipient.channel, recipient.destination),
+        messageText: recipient.messageText,
+        payload,
+      };
+    });
+    if (await this.killSwitchOn()) {
+      // Queue past the kill switch only for a send that would qualify for
+      // the rehearsal bypass right now. The send itself is checked again.
+      const queueable = rehearsal
+        && (await this.rehearsalQualifies(normalized[0]!, { checkCap: true })).ok;
+      if (!queueable) {
+        await this.audit(null, 'send_attempt', { result: 'blocked', reason: 'kill_switch', phase: 'enqueue' });
+        throw new SendSafeguardError('The outbound kill switch is on. Nothing was queued.', 'kill_switch');
+      }
+    }
     if (direct && input.caller !== 'operator-dashboard') {
       throw new SendSafeguardError(
         'Only an operator-started rehearsal or test send can go out without the confirmations.',
@@ -482,12 +623,6 @@ export class SendSafeguard {
       );
     }
     const now = this.iso();
-    const normalized = input.recipients.map((recipient) => ({
-      channel: recipient.channel,
-      destination: normalizeDestination(recipient.channel, recipient.destination),
-      messageText: recipient.messageText,
-      payload: recipient.payload ?? {},
-    }));
     const job: SendJobRecord = {
       id: randomUUID(),
       campaignKey: input.campaignKey?.trim() || null,
@@ -526,6 +661,7 @@ export class SendSafeguard {
       channels: [...new Set(recipients.map((row) => row.channel))],
       fullAuto: job.fullAuto,
       operatorDirect: direct,
+      ...(rehearsal ? { operatorRehearsal: true } : {}),
     });
     emitStatus(job.id, job.status, direct ? 'code entered, sending' : 'waiting for confirm');
     return { job, recipients };
@@ -547,6 +683,8 @@ export class SendSafeguard {
       messageText: recipient.messageText,
       payload: recipient.payload ?? {},
     }));
+    // A revised job is no longer the operator's direct rehearsal.
+    for (const recipient of normalized) delete (recipient.payload as Record<string, unknown>)[OPERATOR_REHEARSAL_PAYLOAD_KEY];
     const nextHash = hashSendContent(normalized);
     if (nextHash === job.contentHash) return job;
     const existing = await this.store.listRecipients(jobId);
@@ -815,19 +953,24 @@ export class SendSafeguard {
   }
 
   private async assertInner(jobId: string, recipient: string, channel: SendChannel): Promise<SendRecipientRecord> {
+    // The send-code lockout is never bypassed, not even for a rehearsal.
     if (await this.isLocked()) {
       throw new SendSafeguardError('Outbound sending is locked.', 'locked', jobId, channel);
     }
-    if (await this.killSwitchOn()) {
+    const killSwitchOn = await this.killSwitchOn();
+    const job = await this.store.getJob(jobId).catch(() => null);
+    const destination = normalizeDestination(channel, recipient);
+    const recipients = job ? await this.store.listRecipients(jobId) : [];
+    const match = recipients.find((row) => row.channel === channel && row.destination === destination && row.status !== 'voided' && row.status !== 'sent' && row.status !== 'failed' && row.status !== 'cancelled');
+    const rehearsal = job && match && recipients.length === 1
+      ? await this.rehearsalQualifies(match, { checkCap: true })
+      : { ok: false as const };
+    if (killSwitchOn && !rehearsal.ok) {
       throw new SendSafeguardError('The outbound kill switch is on.', 'kill_switch', jobId, channel);
     }
-    const job = await this.store.getJob(jobId);
     if (!job) throw new SendSafeguardError('No send job is cleared for this recipient.', 'job_not_found', jobId, channel);
     if (job.status === 'stopped') throw new SendSafeguardError('This send job was stopped.', 'stopped', jobId, channel);
     if (job.status === 'voided') throw new SendSafeguardError('This send job was voided.', 'voided', jobId, channel);
-    const destination = normalizeDestination(channel, recipient);
-    const recipients = await this.store.listRecipients(jobId);
-    const match = recipients.find((row) => row.channel === channel && row.destination === destination && row.status !== 'voided' && row.status !== 'sent' && row.status !== 'failed' && row.status !== 'cancelled');
     if (!match) {
       throw new SendSafeguardError('Recipient is not queued on a cleared send job.', 'recipient_not_found', jobId, channel);
     }
@@ -842,6 +985,35 @@ export class SendSafeguard {
       suppressed = await this.store.isSuppressed(channel, destination);
     } catch {
       suppressed = true;
+    }
+    const bypassed: RehearsalBypassKind[] = [];
+    if (rehearsal.ok) {
+      if (killSwitchOn) bypassed.push('kill switch');
+      if (suppressed) bypassed.push('suppression');
+    }
+    if (bypassed.length > 0) {
+      // Audit before anything goes out. If the audit cannot be written the
+      // bypass does not happen and the normal checks apply.
+      try {
+        await this.store.recordRehearsalBypass!({
+          jobId,
+          channel,
+          maskedDestination: maskRehearsalDestination(channel, destination),
+          bypassed,
+          detail: rehearsalBypassDetail(bypassed),
+        });
+        await this.audit(jobId, 'send_attempt', {
+          result: 'allowed',
+          reason: 'operator_rehearsal_bypass',
+          bypassed,
+          channel,
+        });
+        console.log(`[send-safeguard] ${rehearsalBypassDetail(bypassed)} job=${jobId} channel=${channel} to=${maskRehearsalDestination(channel, destination)}`);
+        suppressed = false;
+      } catch {
+        if (killSwitchOn) throw new SendSafeguardError('The outbound kill switch is on.', 'kill_switch', jobId, channel);
+        bypassed.length = 0;
+      }
     }
     if (suppressed) {
       match.status = 'blocked';
@@ -873,7 +1045,39 @@ export class SendSafeguard {
       await this.store.saveJob(job);
       emitStatus(jobId, job.status, 'code entered, sending');
     }
-    return match;
+    return bypassed.length > 0 ? { ...match, rehearsalBypass: [...bypassed] } : match;
+  }
+
+  /** Every condition in "Operator rehearsal bypass" except the job shape,
+   *  which the callers check. Any error means no bypass. */
+  private async rehearsalQualifies(
+    recipient: { channel: SendChannel; destination: string; payload: Record<string, unknown> },
+    options: { checkCap: boolean },
+  ): Promise<{ ok: boolean; reason?: string }> {
+    try {
+      const { channel, destination } = recipient;
+      if (channel !== 'phone' && channel !== 'email') return { ok: false, reason: 'channel' };
+      if (recipient.payload?.[OPERATOR_REHEARSAL_PAYLOAD_KEY] !== true) return { ok: false, reason: 'not_rehearsal' };
+      if (currentSendCaller() !== 'operator-dashboard') return { ok: false, reason: 'not_operator' };
+      if (!this.store.rehearsalDestinations || !this.store.recordRehearsalBypass || !this.store.countRehearsalBypassesSince) {
+        return { ok: false, reason: 'store_unsupported' };
+      }
+      const saved = await this.store.rehearsalDestinations();
+      const savedValue = channel === 'phone' ? saved.phone : saved.email;
+      if (!savedValue || normalizeDestination(channel, savedValue) !== destination) return { ok: false, reason: 'not_saved_destination' };
+      if (!operatorRehearsalDestinationAllowlisted(channel, destination)) return { ok: false, reason: 'not_allowlisted' };
+      if (options.checkCap) {
+        const cap = operatorRehearsalDailyCap();
+        const used = await this.store.countRehearsalBypassesSince(new Date(this.store.now().getTime() - REHEARSAL_BYPASS_WINDOW_MS));
+        if (used >= cap) {
+          console.warn(`[send-safeguard] rehearsal bypass daily cap reached (${used}/${cap}); normal checks apply`);
+          return { ok: false, reason: 'daily_cap' };
+        }
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: 'error' };
+    }
   }
 
   async recordSendResult(

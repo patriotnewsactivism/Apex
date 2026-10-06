@@ -2,6 +2,7 @@
 // so the deterministic guard can exercise the in-memory engine without a database.
 
 import { db, operatorSendCode, sendJobRecipients, sendJobs, sendSafeguardEvents } from '@workspace/db';
+import { randomUUID } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { loadOutboundPolicy } from './outbound-policy-store.js';
 import {
@@ -15,7 +16,12 @@ import {
   type SendRecipientRecord,
   type SendSafeguardStore,
   type RecipientStatus,
+  type RehearsalBypassAuditEntry,
+  type RehearsalDestinations,
 } from './send-safeguard.js';
+
+/** outbound_audit.tool_name for rehearsal bypass rows (also the cap counter). */
+export const REHEARSAL_BYPASS_AUDIT_TOOL = 'rehearsal_bypass';
 
 function iso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
@@ -124,6 +130,39 @@ class PostgresSendSafeguardStore implements SendSafeguardStore {
   async isKillSwitchOn(): Promise<boolean> {
     const policy = await loadOutboundPolicy();
     return policy?.killSwitch === true;
+  }
+
+  async rehearsalDestinations(): Promise<RehearsalDestinations> {
+    const policy = await loadOutboundPolicy();
+    return { phone: policy?.rehearsalPhone ?? null, email: policy?.rehearsalEmail ?? null };
+  }
+
+  async countRehearsalBypassesSince(since: Date): Promise<number> {
+    const { outboundAudit } = await import('@workspace/db');
+    const { and, eq, gte, sql } = await import('drizzle-orm');
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(outboundAudit)
+      .where(and(eq(outboundAudit.toolName, REHEARSAL_BYPASS_AUDIT_TOOL), gte(outboundAudit.createdAt, since)));
+    return Number(row?.n ?? 0);
+  }
+
+  /** Throws on failure on purpose: an un-audited bypass must not happen. */
+  async recordRehearsalBypass(entry: RehearsalBypassAuditEntry): Promise<void> {
+    const { outboundAudit } = await import('@workspace/db');
+    const policy = await loadOutboundPolicy();
+    await db.insert(outboundAudit).values({
+      id: randomUUID(),
+      projectId: 'apex',
+      toolName: REHEARSAL_BYPASS_AUDIT_TOOL,
+      destination: entry.maskedDestination,
+      leadId: null,
+      policyMode: policy?.mode ?? 'unknown',
+      providerId: entry.jobId,
+      rehearsal: true,
+      detail: `${entry.detail} (${entry.channel})`,
+      createdAt: new Date(),
+    });
   }
 
   async isSuppressed(channel: SendChannel, destination: string): Promise<boolean> {
