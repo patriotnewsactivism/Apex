@@ -37,6 +37,19 @@ function queryFlag(value: unknown): boolean | null {
   return null;
 }
 
+/** Pull a bare hostname from a website/org string for site-scoped enrichment. */
+function extractDomain(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    const host = new URL(/^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).hostname;
+    return host.replace(/^www\./, '').toLowerCase() || null;
+  } catch {
+    return trimmed.replace(/^https?:\/\//i, '').replace(/^www\./, '').split(/[/\s]/)[0]?.toLowerCase() || null;
+  }
+}
+
 export function createCrmRouter(): Router {
   const router = Router();
 
@@ -82,10 +95,67 @@ export function createCrmRouter(): Router {
         lastContactedTo: typeof req.query.lastContactedTo === 'string' ? req.query.lastContactedTo : null,
         replied: queryFlag(req.query.replied),
         campaignId: typeof req.query.campaignId === 'string' ? req.query.campaignId : null,
-        limit: 500,
+        limit: Math.min(Math.max(Number(req.query.limit) || 500, 1), 5000),
       });
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.send(contactsToCsv(rows));
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ─── GET /api/crm/contacts/:id/export — full contact + activity CSV ───────
+  // One row per timeline/activity event (agent sends, replies, calls, opt-outs,
+  // merges, do-not-contact, code checks). Replays every interaction recorded
+  // for this contact and its merged family, newest first, so you can pull the
+  // complete agent history into a spreadsheet.
+  router.get('/contacts/:id/export', async (req, res) => {
+    try {
+      const found = await getContact(req.params.id);
+      if (!found) {
+        res.status(404).json({ error: 'Contact not found' });
+        return;
+      }
+      const { contact } = found;
+      const timeline = await getTimeline(req.params.id);
+      const escape = (v: string | null | undefined) => {
+        if (v == null) return '';
+        const s = String(v).replace(/\r?\n/g, ' \\n ');
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const headers = [
+        'contact_id', 'organization', 'name', 'email', 'phone', 'city', 'state', 'tags',
+        'activity_at(chicago)', 'direction', 'channel', 'actor_type', 'actor_name', 'event_kind',
+        'subject', 'body', 'provider_message_id', 'send_record',
+      ];
+      const rows = timeline.map((t) => [
+        escape(contact.id),
+        escape(contact.organizationName),
+        escape([contact.firstName, contact.lastName].filter(Boolean).join(' ')),
+        escape(contact.email),
+        escape(contact.phoneE164),
+        escape(contact.city),
+        escape(contact.state),
+        escape((contact.tags ?? []).join('|')),
+        escape(formatChicago(t.occurredAt)),
+        escape(t.direction),
+        escape(t.channel),
+        escape(t.actorType),
+        escape(t.actorName),
+        escape(t.eventKind),
+        escape(t.subject),
+        escape(t.bodyText),
+        escape(t.providerMessageId),
+        escape(t.sendRecordId ?? ''),
+      ].join(','));
+      const csv = [
+        headers.map(escape).join(','),
+        `#contact,${escape(contact.id)},${escape(contact.organizationName ?? '')},${escape(contact.email ?? '')},${escape(contact.phoneE164 ?? '')}`,
+        ...rows,
+      ].join('\r\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="contact-${contact.id}.csv"`);
+      res.send(csv);
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -101,11 +171,48 @@ export function createCrmRouter(): Router {
     res.json({
       ...found,
       timezone: CRM_DISPLAY_TIMEZONE,
+      enrich: typeof req.query.enrich === 'string' ? req.query.enrich : null,
       timeline: timeline.map((row) => ({
         ...row,
         occurredChicago: formatChicago(row.occurredAt),
       })),
     });
+  });
+
+  // ─── GET /api/crm/contacts/:id/enrich — Brave LLM Context enrichment ─────
+  // Returns the extracted content for the contact's organization/website plus
+  // best-effort email/phone lines. Purely read-only: it queries Brave and
+  // returns a payload; it does not modify the contact. The operator (or an
+  // agent) decides what to persist. Falls back to the contact's organization
+  // name when no website is stored.
+  router.get('/contacts/:id/enrich', async (req, res) => {
+    try {
+      const found = await getContact(req.params.id);
+      if (!found) {
+        res.status(404).json({ error: 'Contact not found' });
+        return;
+      }
+      const c = found.contact;
+      const domain = extractDomain(c.website || c.organizationName || '');
+      const query = domain
+        ? `site:${domain} "${c.organizationName || ''}" contact phone email`
+        : (c.organizationName ? `"${c.organizationName}" contact phone email` : null);
+      if (!query) {
+        res.status(400).json({ error: 'This contact has no website or organization name to enrich from.' });
+        return;
+      }
+      const { braveLlmContext, parseContactFields } = await import('@workspace/core');
+      const result = await braveLlmContext({ query, count: 20 });
+      res.json({
+        ok: result.ok,
+        query,
+        sources: result.sources,
+        contacts: result.ok ? parseContactFields(result.sources) : null,
+        diagnostics: result.diagnostics ?? [],
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   router.post('/contacts/:id/do-not-contact', async (req, res) => {
