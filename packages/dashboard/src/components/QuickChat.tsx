@@ -22,6 +22,7 @@ import {
   Brain,
   Bot,
   Mic,
+  MicOff,
   Square,
   Phone,
   PhoneOff,
@@ -1174,25 +1175,55 @@ export function ChatPanel({
               )}
             </div>
             {liveVoice.status === 'live' || liveVoice.status === 'connecting' ? (
-              <motion.button
-                onClick={() => liveVoice.stop()}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                style={{
-                  padding: '7px 12px',
-                  borderRadius: 8,
-                  border: '1px solid rgba(196,92,102,0.35)',
-                  background: 'rgba(196,92,102,0.12)',
-                  color: '#c45c66',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  cursor: 'pointer',
-                }}
-              >
-                <PhoneOff size={14} /> Hang up
-              </motion.button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
+                {liveVoice.status === 'live' && (
+                  <motion.button
+                    onClick={liveVoice.toggleMute}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    title={liveVoice.muted ? 'Unmute microphone' : 'Mute microphone'}
+                    aria-pressed={liveVoice.muted}
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: 8,
+                      border: liveVoice.muted
+                        ? '1px solid rgba(196,92,102,0.45)'
+                        : '1px solid rgba(215,182,106,0.3)',
+                      background: liveVoice.muted
+                        ? 'rgba(196,92,102,0.15)'
+                        : 'rgba(215,182,106,0.08)',
+                      color: liveVoice.muted ? '#e47780' : '#d7b66a',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {liveVoice.muted ? <MicOff size={14} /> : <Mic size={14} />}
+                    {liveVoice.muted ? 'Unmute' : 'Mute'}
+                  </motion.button>
+                )}
+                <motion.button
+                  onClick={() => liveVoice.stop()}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  style={{
+                    padding: '7px 12px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(196,92,102,0.35)',
+                    background: 'rgba(196,92,102,0.12)',
+                    color: '#c45c66',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <PhoneOff size={14} /> Hang up
+                </motion.button>
+              </div>
             ) : (
               <motion.button
                 onClick={() => liveVoice.start(pageTitle ? `${pageTitle} (${pageId ?? 'chat'})` : undefined)}
