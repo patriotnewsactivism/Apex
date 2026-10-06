@@ -152,12 +152,13 @@ async function main(): Promise<void> {
   // ── 5. real webSearch, stubbed fetch ────────────────────────────────────
   console.log('\n── webSearch ──');
   const calls: Array<{ url: string; body: any }> = [];
-  let inner = 200;
+  let innerSeq: number[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     if (url === 'https://api.brightdata.com/request') {
       const body = JSON.parse(String(init?.body ?? '{}'));
       calls.push({ url, body });
+      const inner = innerSeq.length ? innerSeq.shift()! : 200;
       if (inner !== 200) return new Response(JSON.stringify({ status_code: inner, headers: {}, body: '' }), { status: 200 });
       return new Response(JSON.stringify({ status_code: 200, headers: {}, body: googleBody }), { status: 200 });
     }
@@ -166,7 +167,7 @@ async function main(): Promise<void> {
   for (const key of ['BRAVE_SEARCH_API_KEY', 'SERPER_API_KEY']) delete process.env[key];
   process.env.BRIGHT_DATA_API_KEY = 'guard-only-not-a-key';
   process.env.BRIGHT_DATA_ZONE = 'mcp_unlocker';
-  process.env.BRIGHT_DATA_DAILY_REQUEST_CAP = '2';
+  process.env.BRIGHT_DATA_DAILY_REQUEST_CAP = '10';
   const ws = memoryStore();
   budget.__setBrightDataBudgetStoreForTests(ws);
   const tools = registry.createBuiltinTools(root);
@@ -180,13 +181,31 @@ async function main(): Promise<void> {
   check('the request uses the configured zone and sends no data_format', sent.zone === 'mcp_unlocker' && !('data_format' in sent) && sent.format === 'json', sent);
   check('the request was counted against today\'s cap', [...ws.rows.values()][0] === 1, [...ws.rows]);
 
-  inner = 502;
+  const used = () => [...ws.rows.values()][0];
+  // A transient inner 502 is retried once; the retry's answer is used.
+  innerSeq = [502];
+  const before = calls.length;
+  const retried = (await webSearch.execute({ query: 'dentist Austin TX official business website', maxResults: 10 }, ctx)) as { provider?: string };
+  check('a transient inner 502 is retried once and the retry\'s results are returned', retried.provider === 'brightdata' && calls.length - before === 2, { retried, calls: calls.length - before });
+  check('both billed attempts are counted', used() === 3, [...ws.rows]);
+
+  // Both attempts fail: reported as an HTTP status, breaker still closed.
+  innerSeq = [502, 502];
   const bad = (await webSearch.execute({ query: 'it services Provo, UT official business website', maxResults: 10 }, ctx)) as { diagnostics?: string[]; error?: string };
   const badText = JSON.stringify(bad);
-  check('an inner 502 is reported as an HTTP status, not dropped silently', /brightdata: HTTP 502/.test(badText), bad);
-  check('a failed attempt is still counted (billed)', [...ws.rows.values()][0] === 2, [...ws.rows]);
+  check('an inner 502 on every attempt is reported as an HTTP status, not dropped silently', /brightdata: HTTP 502/.test(badText), bad);
+  check('a failed attempt is still counted (billed)', used() === 5, [...ws.rows]);
+  check(`at most ${registry.BRIGHT_DATA_MAX_ATTEMPTS} attempts per query`, registry.BRIGHT_DATA_MAX_ATTEMPTS === 2);
+  innerSeq = [502, 502];
+  const second = await webSearch.execute({ query: 'cpa Boise ID official business website', maxResults: 10 }, ctx);
+  check('one failed query does not open the shared breaker (the next query is still sent)', !/temporarily skipped by provider circuit breaker/.test(JSON.stringify(second)) && used() === 7, { second, used: used() });
+
+  // Persistent failure: after BRIGHT_DATA_BREAKER_AFTER_FAILURES queries in a row the breaker opens.
+  innerSeq = [502, 502];
+  await webSearch.execute({ query: 'roofer Tulsa OK official business website', maxResults: 10 }, ctx);
+  const callsAtTrip = calls.length;
   const third = (await webSearch.execute({ query: 'insurance Reno, NV official business website', maxResults: 10 }, ctx));
-  check('after a 5xx the breaker skips Bright Data instead of spending again', calls.length === 2 && /brightdata: temporarily skipped by provider circuit breaker/.test(JSON.stringify(third)), { calls: calls.length, third });
+  check(`after ${registry.BRIGHT_DATA_BREAKER_AFTER_FAILURES} failed queries in a row the breaker skips Bright Data instead of spending again`, calls.length === callsAtTrip && /brightdata: temporarily skipped by provider circuit breaker/.test(JSON.stringify(third)) && used() === 9, { calls: calls.length, callsAtTrip, used: used(), third });
 
   const capMsg = 'All lead discovery sources returned zero for "us news Mesa, AZ". brave: BRAVE_SEARCH_API_KEY not set | serper: SERPER_API_KEY not set | brightdata: daily request cap reached (2000/2000); resumes at midnight CT';
   const capCls = capacity.classifyLeadDiscoveryFailure(capMsg);
