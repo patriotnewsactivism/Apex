@@ -78,6 +78,11 @@ function classifyNote(detail: string): Pick<DiscoverySourceNote, 'state' | 'reas
   if (/circuit breaker/i.test(detail)) {
     return { state: 'unavailable', reason: BREAKER_REASON };
   }
+  // A provider APEX deliberately capped for the day (Bright Data's daily
+  // request budget) is lost capacity until midnight CT, not a segment failure.
+  if (/daily request cap reached/i.test(detail)) {
+    return { state: 'unavailable', reason: 'daily request cap reached' };
+  }
   const http = /^HTTP (\d{3})\b/.exec(detail);
   if (http) {
     // A proxy may answer 502 while naming the upstream's real status in the

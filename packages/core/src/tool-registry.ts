@@ -28,6 +28,7 @@ import { SendBlockedError, assertContactSendable, commitCallOutcome } from './cr
 import { createCrmTools } from './crm/tools.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
+import { reserveBrightDataRequest, recordBrightDataSuccess } from './brightdata-budget.js';
 import { disableDirectoryProvider, isDirectoryAuthFailure, redactProviderBody, resolveDirectoryProviderKey } from './lead-provider-keys.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { createCalendarTools } from './calendar/tools.js';
@@ -424,6 +425,34 @@ export function braveSearchPlan(n: number): { count: number; pages: number } {
 /** Provider bodies that mean "this account has no credit left". */
 export function isOutOfCreditBody(body: string): boolean {
   return /not enough credits|insufficient (?:credits?|balance|funds)|credit balance is insufficient|out of credits|quota (?:exceeded|exhausted)|exceeds your plan'?s set usage limit/i.test(body);
+}
+
+/** Bright Data /request timeout. Google through the unlocker answers in
+ *  ~2–8 s; a 25 s wait only held campaign batches open and set off
+ *  runner-wide search pauses (2026-10-06). */
+export const BRIGHT_DATA_TIMEOUT_MS = 12_000;
+
+/** Organic results from a Bright Data brd_json=1 Google response body (a JSON
+ *  string, or an already-parsed object). Anything unparseable yields []. */
+export function parseBrightDataGoogleBody(body: unknown): Array<{ title: string; url: string; snippet: string }> {
+  let parsed: unknown = body;
+  if (typeof body === 'string') {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return [];
+    }
+  }
+  const organic = (parsed as { organic?: unknown } | null)?.organic;
+  if (!Array.isArray(organic)) return [];
+  const out: Array<{ title: string; url: string; snippet: string }> = [];
+  for (const item of organic) {
+    const r = item as { title?: unknown; link?: unknown; url?: unknown; description?: unknown };
+    const url = typeof r.link === 'string' ? r.link : typeof r.url === 'string' ? r.url : '';
+    if (!url) continue;
+    out.push({ title: typeof r.title === 'string' ? r.title : '', url, snippet: typeof r.description === 'string' ? r.description : '' });
+  }
+  return out;
 }
 
 function tripWebSearchProvider(provider: string, status: number, detail: string): void {
@@ -1274,54 +1303,69 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           }
         }
 
-        // ── Strategy 1c: Bright Data SERP API (free 5,000 credits/mo, no card) ──
-        // Uses the /request endpoint with a SERP zone. Bing is the default target
-        // because Google throws captcha challenges on fresh zones; Bing returns
-        // parsed results reliably.
+        // ── Strategy 1c: Bright Data (Google via a Web Unlocker zone) ──
+        // POST /request with an unblocker zone and a Google URL carrying
+        // brd_json=1: Bright Data returns Google's results as JSON
+        // ({ organic: [{ title, link, description }] }). The earlier Bing +
+        // data_format:"parsed" request only works on SERP-product zones; on the
+        // operator's unlocker zone it answers an inner 502 with an empty body,
+        // which used to be dropped silently (2026-10-06). Every request is
+        // billed, so each one first reserves a slot in the daily request cap
+        // (BRIGHT_DATA_DAILY_REQUEST_CAP, Central Time day, persisted).
         const brightDataKey = process.env.BRIGHT_DATA_API_KEY;
         const brightDataZone = process.env.BRIGHT_DATA_ZONE;
         if (!brightDataKey) diagnostics.push('brightdata: BRIGHT_DATA_API_KEY not set');
         if (brightDataKey && !brightDataZone) diagnostics.push('brightdata: BRIGHT_DATA_ZONE not set');
-        // Bright Data is a free-tier keyed provider (5,000 credits/mo, no
-        // card) — freeOnly must NOT skip it, only the circuit breaker can.
+        // Bright Data is keyed (not free) but capped by the daily request
+        // budget — freeOnly must NOT skip it, only the breaker or the cap can.
         if (brightDataKey && !webSearchProviderReady('brightdata')) {
           diagnostics.push('brightdata: temporarily skipped by provider circuit breaker');
         }
         if (brightDataKey && brightDataZone && webSearchProviderReady('brightdata')) {
-          try {
-            const bdRes = await fetch('https://api.brightdata.com/request', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
-              body: JSON.stringify({
-                zone: brightDataZone,
-                url: `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
-                format: 'json',
-                data_format: 'parsed',
-              }),
-              signal: AbortSignal.timeout(25_000),
-            });
-            if (!bdRes.ok) {
-              const body = await bdRes.text().catch(() => '');
-              const detail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
-              diagnostics.push(detail);
-              tripWebSearchProvider('brightdata', bdRes.status, body);
-              console.warn(`[webSearch] ${detail} for "${query}"`);
-            } else {
-              const bdData = await bdRes.json() as { status_code?: number; body?: string };
-              if (bdData.status_code === 200 && bdData.body) {
-                const parsed = JSON.parse(bdData.body) as {
-                  organic?: Array<{ title: string; link: string; description?: string }>;
-                };
-                for (const r of parsed.organic ?? []) {
-                  results.push({ title: r.title, url: r.link, snippet: r.description ?? '' });
+          const budget = await reserveBrightDataRequest();
+          if (!budget.allowed) {
+            // Logged once per day by the budget module; no per-call error.
+            diagnostics.push(`brightdata: daily request cap reached (${budget.used}/${budget.cap}); resumes at midnight CT`);
+          } else {
+            try {
+              const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&brd_json=1&hl=en&gl=us`;
+              const bdRes = await fetch('https://api.brightdata.com/request', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
+                body: JSON.stringify({ zone: brightDataZone, url: googleUrl, format: 'json' }),
+                signal: AbortSignal.timeout(BRIGHT_DATA_TIMEOUT_MS),
+              });
+              if (!bdRes.ok) {
+                const body = await bdRes.text().catch(() => '');
+                const detail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
+                diagnostics.push(detail);
+                tripWebSearchProvider('brightdata', bdRes.status, body);
+                console.warn(`[webSearch] ${detail} for "${query}"`);
+              } else {
+                const bdData = await bdRes.json() as { status_code?: number; body?: unknown };
+                const inner = Number(bdData.status_code ?? 0);
+                if (inner !== 200) {
+                  // The target (Google) or the unlocker failed behind an outer
+                  // 200. Report it as an HTTP status so the campaign runner reads
+                  // a 5xx as lost capacity, and back off on 5xx/429.
+                  const detail = `brightdata: HTTP ${inner || 502} (upstream status behind Bright Data 200)`;
+                  diagnostics.push(detail);
+                  if (inner >= 500 || inner === 429 || inner === 0) tripWebSearchProvider('brightdata', inner || 502, '');
+                  console.warn(`[webSearch] ${detail} for "${query}"`);
+                } else {
+                  const parsed = parseBrightDataGoogleBody(bdData.body);
+                  for (const r of parsed) results.push(r);
+                  if (results.length > 0) {
+                    recordBrightDataSuccess();
+                    return { query, provider: 'brightdata', results: results.slice(0, n) };
+                  }
+                  diagnostics.push('brightdata: 200 but zero results');
                 }
-                if (results.length > 0) return { query, provider: 'brightdata', results: results.slice(0, n) };
-                diagnostics.push('brightdata: 200 but zero results');
               }
+            } catch (e) {
+              diagnostics.push(`brightdata: ${e instanceof Error ? e.message : String(e)}`);
+              console.warn(`[webSearch] Bright Data failed for "${query}": ${e}`);
             }
-          } catch (e) {
-            diagnostics.push(`brightdata: ${e instanceof Error ? e.message : String(e)}`);
-            console.warn(`[webSearch] Bright Data failed for "${query}": ${e}`);
           }
         }
 
