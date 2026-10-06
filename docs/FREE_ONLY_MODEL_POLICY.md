@@ -1,6 +1,6 @@
 # APEX free-roster policy with paid continuity
 
-The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception, appended after the free/BYOK routes only when `APEX_PAID_FALLBACK_ENABLED=true`: `deepseek/deepseek-v4-flash-0731`, alternating per request between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`).
+The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception, appended after the free/BYOK routes only when `APEX_PAID_FALLBACK_ENABLED=true`: `deepseek/deepseek-v4-flash-0731`, on Nous Portal (`NOUS_API_KEY`) first for 9 requests in 10 and OpenRouter (`OPENROUTER_API_KEY_4`) for the tenth.
 
 **Current note (2026-10-05, ADR-020):** Qwen is no longer routed, so this free roster is again the first thing APEX tries. GLM 5.3 FlashX is replaced by the DeepSeek split. Below, "FlashX" and "GLM continuity" mean the current paid continuity route; ADR-017's Qwen notes are historical.
 

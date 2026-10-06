@@ -44,11 +44,12 @@ const byokProviders = [
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ] as const;
-// 2026-10-05 operator decision: Qwen is out of the chain (its plan is
-// exhausted). Free capacity first, then the paid DeepSeek V4 Flash 0731 split
-// between OpenRouter and Nous Portal.
+// 2026-10-05 operator decisions: Qwen is out of the chain (its plan is
+// exhausted). Free capacity first, then the paid DeepSeek V4 Flash 0731 on
+// Nous Portal and OpenRouter: Nous first on 9 requests in 10 (it is the
+// cheaper host), OpenRouter first on the tenth, each the other's fallback.
 const automaticProviders = [...openRouterProviders, ...byokProviders];
-const paidProviders = ['openrouter-deepseek-v4-flash-paid', 'nous-deepseek-v4-flash-paid'] as const;
+const paidProviders = ['nous-deepseek-v4-flash-paid', 'openrouter-deepseek-v4-flash-paid'] as const;
 const explicitPaidProviders = [...automaticProviders, ...paidProviders];
 
 const catalog = getProviderCatalog();
@@ -253,7 +254,7 @@ check(
   getProviderOrderForRole('CEO'),
 );
 check(
-  'paid continuity model is DeepSeek V4 Flash 0731, on OpenRouter and Nous Portal',
+  'paid continuity model is DeepSeek V4 Flash 0731, on Nous Portal first and OpenRouter second',
   PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731' &&
     JSON.stringify(PAID_FALLBACK_PROVIDER_NAMES) === JSON.stringify(paidProviders) &&
     PAID_FALLBACK_PROVIDER_NAME === paidProviders[0],
@@ -288,23 +289,27 @@ check(
   getProviderOrderForRole('CEO'),
 );
 {
-  // The split: each request swaps which paid provider goes first, and the
-  // other is its immediate fallback. Free/BYOK order never moves.
+  // The split: Nous goes first on 9 requests in 10 and OpenRouter on the
+  // tenth; whichever is second is the immediate fallback. Free/BYOK order
+  // never moves. The rotation counter is process-wide, so 20 consecutive
+  // requests hold exactly two OpenRouter-first requests, ten apart, whatever
+  // ran before this block.
   const firstPaid: string[] = [];
   let freeOrderStable = true;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     const order = requestProviderOrder('CEO');
     freeOrderStable &&= JSON.stringify(order.slice(0, automaticProviders.length)) === JSON.stringify(automaticProviders);
     const tail = order.slice(automaticProviders.length);
     freeOrderStable &&= tail.length === 2 && new Set(tail).size === 2 && tail.every((name) => (paidProviders as readonly string[]).includes(name));
     firstPaid.push(tail[0] ?? '');
   }
+  const openRouterFirst = firstPaid.flatMap((name, i) => (name === paidProviders[1] ? [i] : []));
   check('per-request order keeps every free/BYOK route first and both paid routes last', freeOrderStable);
   check(
-    'paid traffic alternates evenly: OpenRouter first on half the requests, Nous on the other half',
-    firstPaid.filter((name) => name === paidProviders[0]).length === 5 &&
-      firstPaid.filter((name) => name === paidProviders[1]).length === 5 &&
-      firstPaid.every((name, i) => i === 0 || name !== firstPaid[i - 1]),
+    'paid traffic splits 90/10: Nous first on 18 of 20 requests, OpenRouter first on 2, ten requests apart',
+    firstPaid.filter((name) => name === paidProviders[0]).length === 18 &&
+      openRouterFirst.length === 2 &&
+      openRouterFirst[1] - openRouterFirst[0] === 10,
     firstPaid,
   );
   check(

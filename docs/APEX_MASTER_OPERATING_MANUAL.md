@@ -209,7 +209,7 @@ Current order documented by the repository:
 6. NVIDIA Nemotron 3 Ultra Free.
 7. direct Groq GPT-OSS 120B BYOK when enabled.
 8. direct Gemini 3.8 Flash BYOK when enabled.
-9. `deepseek/deepseek-v4-flash-0731` — paid unrestricted continuity, last resort, only with `APEX_PAID_FALLBACK_ENABLED=true`; alternates per request between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`), each the other's immediate fallback.
+9. `deepseek/deepseek-v4-flash-0731` — paid unrestricted continuity, last resort, only with `APEX_PAID_FALLBACK_ENABLED=true`; Nous Portal (`NOUS_API_KEY`) first on 9 requests in 10 and OpenRouter (`OPENROUTER_API_KEY_4`) on the tenth, each the other's immediate fallback.
 
 Qwen3.8 Flash (QwenCloud Token Plan) and GLM 5.3 FlashX are no longer routed. MiniMax M3 Free is not a production route until reverified.
 

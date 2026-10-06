@@ -141,10 +141,10 @@ export const OPENROUTER_FREE_KEY_ENVS = [
 ] as const;
 
 /**
- * Paid continuity (operator decision 2026-10-05): one model,
- * deepseek/deepseek-v4-flash-0731, served by two providers so neither takes
- * the whole load. Each request alternates which one is tried first and falls
- * to the other at once (requestProviderOrder).
+ * Paid continuity (operator decisions 2026-10-05): one model,
+ * deepseek/deepseek-v4-flash-0731, served by two providers. Nous Portal, the
+ * cheaper host, is tried first on 9 requests in 10 and OpenRouter on the
+ * tenth; each falls to the other at once (requestProviderOrder).
  *
  * OpenRouter: the funded inference key. As of 2026-09-25 only the
  * OPENROUTER_API_KEY_4 account had a positive credit balance (verified via its
@@ -170,7 +170,7 @@ export const PAID_FALLBACK_PROVIDER_NAMES = [
   'nous-deepseek-v4-flash-paid',
   'openrouter-deepseek-v4-flash-paid',
 ] as const satisfies readonly ApexProviderName[];
-/** The first paid route in the deterministic order (the split alternates it). */
+/** The first paid route in the deterministic order: Nous Portal. */
 export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName = PAID_FALLBACK_PROVIDER_NAMES[0];
 
 type ProviderSpec = {
@@ -470,9 +470,9 @@ export function getProviderOrderForRole(_role?: string, pacingEnabled?: boolean)
 let paidRotation = 0;
 
 /**
- * The order one request actually tries. Same as getProviderOrderForRole, but
- * the two paid routes swap places on every call, so paid traffic splits about
- * evenly between OpenRouter and Nous and either one is the other's immediate
+ * The order one request actually tries. Same as getProviderOrderForRole,
+ * except that every tenth call puts OpenRouter ahead of Nous, so paid traffic
+ * splits about 90/10 Nous/OpenRouter and either one is the other's immediate
  * fallback. A route in cooldown is skipped, so the other takes the load.
  */
 export function requestProviderOrder(role?: string, pacingEnabled?: boolean): ApexProviderName[] {

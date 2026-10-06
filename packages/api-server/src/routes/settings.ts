@@ -51,7 +51,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'paid-continuity',
     name: 'Paid Continuity — DeepSeek V4 Flash 0731',
-    description: 'Runs only after every free route (OpenRouter free, Groq, Gemini) is spent, and only when Routing Enabled is true. One model on two providers: each request alternates between OpenRouter and Nous Portal, and either one is the other\'s immediate fallback. Configure both keys to split the load; with one key, that provider carries all paid traffic.',
+    description: 'Runs only after every free route (OpenRouter free, Groq, Gemini) is spent, and only when Routing Enabled is true. One model on two providers: Nous Portal goes first on 9 requests in 10 and OpenRouter on the tenth, and either one is the other\'s immediate fallback. Configure both keys to split the load; with one key, that provider carries all paid traffic.',
     category: 'ai',
     docsUrl: 'https://openrouter.ai/deepseek/deepseek-v4-flash-0731',
     envVars: [

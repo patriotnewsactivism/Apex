@@ -129,20 +129,27 @@ async function main(): Promise<void> {
   const webSearchEnd = src.indexOf("\n      name: '", webSearchStart + 1);
   const webSearchSrc = src.slice(webSearchStart, webSearchEnd < 0 ? undefined : webSearchEnd);
   check(
-    'webSearch logs Tavily non-ok HTTP status',
-    /if \(!tavilyRes\.ok\)/.test(webSearchSrc),
-  );
-  check(
     'webSearch logs Brave non-ok HTTP status',
     /if \(!braveRes\.ok\)/.test(webSearchSrc),
   );
   check(
-    'webSearch sends the current Tavily bearer header',
-    /Authorization: `Bearer \$\{tavilyKey\}`/.test(webSearchSrc),
+    'webSearch logs Serper and Bright Data non-ok HTTP status',
+    /if \(!serperRes\.ok\)/.test(webSearchSrc) && /if \(!bdRes\.ok\)/.test(webSearchSrc),
   );
   check(
-    'Tavily and Brave calls are bounded by a timeout',
-    (webSearchSrc.match(/AbortSignal\.timeout/g) ?? []).length >= 2,
+    'webSearch authenticates Serper with X-API-KEY and Bright Data with a bearer token',
+    /'X-API-KEY': serperKey/.test(webSearchSrc) && /Authorization: `Bearer \$\{brightDataKey\}`/.test(webSearchSrc),
+  );
+  check(
+    'Brave, Serper and Bright Data calls are bounded by a timeout',
+    (webSearchSrc.match(/AbortSignal\.timeout/g) ?? []).length >= 3,
+  );
+  // Operator decision 2026-10-05 (c7a61fc): Tavily is not in the stack, so
+  // neither it nor BuildMyBot's Tavily proxy may come back into the search path
+  // by accident.
+  check(
+    'Tavily is out of the search path: webSearch calls neither Tavily nor the BuildMyBot Tavily proxy',
+    !/api\.tavily\.com|TAVILY_API_KEY|BUILDMYBOT_TAVILY_PROXY/.test(webSearchSrc),
   );
   check(
     'webSearch returns diagnostics to the agent',
@@ -307,21 +314,16 @@ async function main(): Promise<void> {
     /if \(!hasFastWeb && !hasFastStructured\)[\s\S]{0,500}first = await runDirectory\(\)/.test(campaignRunnerSrc),
   );
   check(
-    'contact recovery skips its Tavily/Brave search lane when neither provider is configured',
-    /enrichVerifiedContactsFromSearch[\s\S]{0,700}!process\.env\.TAVILY_API_KEY && !process\.env\.BRAVE_SEARCH_API_KEY/.test(campaignRunnerSrc),
+    'contact recovery skips its search lane when no keyed web provider (Brave, Serper, Bright Data) is configured',
+    /enrichVerifiedContactsFromSearch[\s\S]{0,700}!process\.env\.BRAVE_SEARCH_API_KEY && !process\.env\.SERPER_API_KEY && !process\.env\.BRIGHT_DATA_API_KEY\) return/.test(campaignRunnerSrc),
   );
   check(
-    'campaign discovery treats the authenticated BuildMyBot Tavily proxy as a fast web source',
-    /BUILDMYBOT_TAVILY_PROXY_URL/.test(campaignRunnerSrc) &&
-      /BUILDMYBOT_TAVILY_PROXY_SECRET/.test(campaignRunnerSrc) &&
-      /const hasFastWeb = Boolean/.test(campaignRunnerSrc),
+    'campaign discovery treats Brave, Serper and Bright Data as fast web sources',
+    /const hasFastWeb = Boolean\(\s*process\.env\.BRAVE_SEARCH_API_KEY \|\|\s*process\.env\.SERPER_API_KEY \|\|\s*process\.env\.BRIGHT_DATA_API_KEY,?\s*\)/.test(campaignRunnerSrc),
   );
   check(
-    'webSearch can use the BuildMyBot Tavily proxy without exposing the provider credential to APEX',
-    /Strategy 0b: BuildMyBot Tavily proxy/.test(src) &&
-      /BUILDMYBOT_TAVILY_PROXY_URL/.test(src) &&
-      /BUILDMYBOT_TAVILY_PROXY_SECRET/.test(src) &&
-      /buildmybot-tavily-proxy/.test(src),
+    'campaign discovery and contact recovery no longer depend on Tavily or the BuildMyBot Tavily proxy',
+    !/TAVILY_API_KEY|BUILDMYBOT_TAVILY_PROXY/.test(campaignRunnerSrc),
   );
 
 
