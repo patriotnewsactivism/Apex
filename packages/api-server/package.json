@@ -13,6 +13,7 @@
     "migrate:production": "tsx src/migrate-production.ts"
   },
   "dependencies": {
+    "apex-copilot": "github:patriotnewsactivism/apex-copilot#f272c147f92eb7827e1fb389acc69b6084089df1",
     "@sentry/node": "^10.75.1",
     "@workspace/agents": "workspace:*",
     "@workspace/background-jobs": "workspace:*",
