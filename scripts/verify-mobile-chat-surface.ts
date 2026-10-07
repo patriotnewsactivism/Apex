@@ -67,7 +67,8 @@ check(
 );
 check(
   'the floating shell is mounted outside the page swap (survives navigation)',
-  /<FloatingChat pageId=\{activePage\} pageTitle=\{meta\.title\}\s*\/>/.test(app),
+  /<FloatingChat \{[^}]*\} pageId=\{activePage\} pageTitle=\{meta\.title\}[^>]*?\/>/.test(app) ||
+    /<FloatingChat pageId=\{activePage\} pageTitle=\{meta\.title\}[^>]*?\/>/.test(app),
 );
 check(
   'the mobile Calendar/Scheduler shortcut is docked left so it cannot overlap the right-side Chat FAB',
