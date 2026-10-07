@@ -129,6 +129,15 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
   const LOCAL_BARGE_FRAMES = 2;
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
+
+  // Operator mic mute. The call stays open (agent audio still plays) but no
+  // mic frames are transmitted while muted, so the agent is neither
+  // interrupted nor fed background noise while Marcus is mid-narration or
+  // watching video. Unlike the automatic barge-in suppression below (which
+  // is short-lived and driven by detected speech), this is an explicit,
+  // persistent operator toggle: unmuting resumes normal full-duplex.
+  const [muted, setMuted] = useState(false);
+  const mutedRef = useRef(false);
   // Monotonic lifecycle token. Any stop() invalidates every async continuation
   // from the current start() so a slow getUserMedia/ticket request cannot
   // resurrect a call after the operator has already hung up.
@@ -170,6 +179,9 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
 
     const ws = wsRef.current;
     wsRef.current = null;
+    // A fresh call starts unmuted; never inherit the previous call's mute.
+    mutedRef.current = false;
+    setMuted(false);
     if (hangupCloseTimerRef.current) {
       clearTimeout(hangupCloseTimerRef.current);
       hangupCloseTimerRef.current = null;
@@ -249,6 +261,20 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     } catch {
       // socket may be closed — nothing to do
     }
+  }, []);
+
+  // Flip the operator microphone on/off without ending the call. While muted
+  // no audio frames are sent upstream (see the gate in onaudioprocess), so the
+  // agent never hears the operator and cannot be barge-in interrupted.
+  const toggleMute = useCallback(() => {
+    mutedRef.current = !mutedRef.current;
+    if (mutedRef.current) {
+      // Clear stale speech counters so unmuting can't fire a spurious
+      // barge-in off audio captured just before the mic was cut.
+      localSpeechFramesRef.current = 0;
+      localSpeechActiveRef.current = false;
+    }
+    setMuted(mutedRef.current);
   }, []);
 
   const start = useCallback(async (startPage?: string) => {
@@ -391,6 +417,17 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
         processorRef.current = processor;
         processor.onaudioprocess = (e) => {
           if (ws.readyState !== WebSocket.OPEN) return;
+          // Operator mute gate: stop transmitting mic frames entirely so the
+          // agent cannot hear the operator or be barge-in interrupted. The
+          // call and agent playback continue normally; unmuting resumes
+          // full-duplex. (This is the one intentional exception to the
+          // "never mute mic frames" rule below — it is user-initiated, not
+          // driven by agent playback.)
+          if (mutedRef.current) {
+            localSpeechFramesRef.current = 0;
+            localSpeechActiveRef.current = false;
+            return;
+          }
           const input = e.inputBuffer.getChannelData(0);
           const down = resample(input, captureCtx.sampleRate, INPUT_RATE);
 
@@ -554,5 +591,5 @@ export function useLiveVoiceCall(callbacks: LiveVoiceCallbacks) {
     }
   }, [playChunk, stop, stopPlayback]);
 
-  return { status, start, stop, sendContext };
+  return { status, start, stop, sendContext, muted, toggleMute };
 }
