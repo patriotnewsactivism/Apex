@@ -41,7 +41,7 @@ check(
 );
 check(
   "chat.ts's LLM call is marked interactive, not routed like a background agent",
-  /llm\.complete\(llmHistory, CHAT_TOOLS, \{[\s\S]{0,180}?role: 'CEO',[\s\S]{0,120}?interactive: true,[\s\S]{0,120}?conversationId/.test(chat),
+  /\bllm\.complete\(\s*llmHistory,\s*[\s\S]{0,160}?\{[\s\S]{0,180}?role: 'CEO',[\s\S]{0,120}?interactive: true,[\s\S]{0,120}?conversationId/.test(chat),
 );
 check(
   'the interactive flag actually reaches the capacity checks in complete(), not just the type',

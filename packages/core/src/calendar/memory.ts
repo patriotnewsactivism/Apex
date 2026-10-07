@@ -62,11 +62,18 @@ export class MemoryCalendarDb implements CalendarRepository {
 
   placeHold(row: HoldRecord): Promise<HoldRecord> {
     return this.lock(() => {
-      const now = Date.now();
+      // Mirror the production btree_gist exclusion constraint exactly:
+      // reject ANY overlapping hold still in status 'held', with no wall-clock
+      // expiry fudge. Expiry is a soft state flipped by releaseExpired()/updateHold
+      // (setting status='expired'), and the exclusion in production
+      // (calendar_slot_holds_no_overlap) filters only on status='held' too.
+      // Previously this checked hold.expiresAt against Date.now(), which made
+      // the test's fixed-clock bookings (FIXED_NOW) nondeterministic: once the
+      // real wall clock passed the fixed date, every freshly placed hold looked
+      // "already expired" and two concurrent bookings both won the same slot.
       const conflict = this.holds.some((hold) =>
         hold.organizationId === row.organizationId
         && hold.status === 'held'
-        && hold.expiresAt.getTime() > now
         && rangesOverlap(hold.start.getTime(), hold.end.getTime(), row.start.getTime(), row.end.getTime()));
       if (conflict) throw new CalendarExclusionError();
       this.holds.push(row);
