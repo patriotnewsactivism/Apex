@@ -81,7 +81,8 @@ import {
 // remain for every route, QwenCloud and FlashX included.
 //
 // Authoritative automatic order:
-//   0. qwen3.8-flash             (Token Plan, governed, primary when configured)
+//   0. qwen3.8-flash             (QWEN_MODEL overrides; pay-as-you-go, governed,
+//                                 primary when configured)
 //   1. nex-agi/nex-n2.5-mini:free
 //   2. nex-agi/nex-n2.5-pro:free
 //   3. nvidia/nemotron-3-super-120b-a12b:free
@@ -175,7 +176,7 @@ export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName = PAID_FALLBACK_PROVI
 
 type ProviderSpec = {
   name: ApexProviderName;
-  model: string;
+  model: string | (() => string);
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
@@ -261,15 +262,19 @@ function envPositiveInt(name: string, fallback: number): number {
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'qwen-dashscope-byok',
-    model: 'qwen3.8-flash',
-    // QwenCloud Token Plan OpenAI-compatible endpoint. Token Plan (`sk-sp-...`)
-    // credentials are not interchangeable with pay-as-you-go (`sk-...`)
-    // credentials/endpoints. The env override remains available for controlled
-    // migrations without another code change.
+    // Not hardcoded: QWEN_MODEL overrides the model (e.g. qwen3.7-flash);
+    // unset or blank falls back to qwen3.8-flash. Resolved per request so the
+    // request body, telemetry, and ledger all carry the same model id.
+    model: () => process.env.QWEN_MODEL?.trim() || 'qwen3.8-flash',
+    // QwenCloud OpenAI-compatible endpoint. The default is the pay-as-you-go
+    // host: pay-as-you-go (`sk-...`) keys only work on maas.qwencloudapi.com,
+    // and Token Plan (`sk-sp-...`) credentials are not interchangeable with
+    // them. QWEN_BASE_URL (or APEX_QWEN_BASE_URL) overrides it, e.g. to point
+    // a Token Plan key at token-plan.maas.qwencloudapi.com.
     baseURL: () =>
       process.env.QWEN_BASE_URL?.trim() ||
       process.env.APEX_QWEN_BASE_URL?.trim() ||
-      'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1',
+      'https://maas.qwencloudapi.com/compatible-mode/v1',
     apiKeyEnvs: ['QWEN_API_KEY', 'QWEN_API_KEY_2'],
     // Real money from a purchased token plan, so spend is recorded like any
     // paid route — but deliberately NOT `unrestricted`. OpenRouter and
@@ -415,9 +420,12 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
  * Custom persisted policies do not appear here; they use FREE_POLICY_GATEWAY_NAME.
  */
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  // Qwen led this chain under ADR-017. Its plan is exhausted, and the
-  // operator removed it on 2026-10-05: free capacity first, then the paid
-  // DeepSeek split. The qwen-dashscope-byok spec stays defined, unused.
+  // Qwen leads this chain again (ADR-017). It was removed on 2026-10-05 while
+  // its plan was exhausted; the plan is active again on a pay-as-you-go key.
+  // It is tried first when APEX_QWEN_BYOK_ENABLED=true and a key is
+  // configured, then free capacity, then the paid DeepSeek split. When Qwen
+  // is disabled, unconfigured, or failing, routing falls through unchanged.
+  'qwen-dashscope-byok',
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
@@ -445,7 +453,7 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
             provider &&
             provider.requestPool === 'openrouter' &&
             provider.paid !== true &&
-            !selected.has(provider.model),
+            !selected.has(providerModel(provider)),
           );
         });
         return [
@@ -1099,6 +1107,12 @@ function providerBaseURL(provider: ProviderSpec): string | undefined {
   return raw?.replace(/\/$/, '');
 }
 
+/** Resolve the model id at call time so env overrides (QWEN_MODEL) take
+ *  effect for the request, telemetry, and ledger without a code change. */
+function providerModel(provider: ProviderSpec): string {
+  return typeof provider.model === 'function' ? provider.model() : provider.model;
+}
+
 function providerActivationIssue(provider: ProviderSpec): string | null {
   if (provider.activationEnv && !enabled(process.env[provider.activationEnv])) {
     return provider.activationDescription ?? `${provider.activationEnv}=true is required`;
@@ -1348,7 +1362,8 @@ async function callCompatibleProvider(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), providerRequestTimeoutMs(provider));
   const startedAt = Date.now();
-  let routedModels = [provider.model];
+  const resolvedModel = providerModel(provider);
+  let routedModels = [resolvedModel];
 
   try {
     const policy = isOpenRouterProvider(provider)
@@ -1357,7 +1372,7 @@ async function callCompatibleProvider(
     const customPolicy = Boolean(policy) && provider.name === FREE_POLICY_GATEWAY_NAME;
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
-      : [provider.model];
+      : [resolvedModel];
 
     if (isOpenRouterProvider(provider) && policy?.routingMode === 'adaptive') {
       routedModels = await getAdaptiveModelOrder({
@@ -1372,7 +1387,7 @@ async function callCompatibleProvider(
 
     const usesFreeRouter = routedModels.some(
       (modelId) => modelId.trim().toLowerCase() === 'openrouter/free',
-    ) || provider.model.trim().toLowerCase() === 'openrouter/free'
+    ) || resolvedModel.trim().toLowerCase() === 'openrouter/free'
       || provider.name === 'openrouter-free-router';
     const wireTools = toWireTools(tools);
     const providerRouting: Record<string, unknown> = {
@@ -1410,7 +1425,7 @@ async function callCompatibleProvider(
       // gateway that refuses every call.
       routedModels = routedModels.slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
       body.models = routedModels;
-    } else body.model = provider.model;
+    } else body.model = resolvedModel;
 
     if (wireTools?.length) {
       body.tools = wireTools;
@@ -1480,7 +1495,7 @@ async function callCompatibleProvider(
 
     const choice = parsed.choices?.[0]?.message;
     if (!choice) throw new Error('provider returned no completion choice');
-    const servedModel = parsed.model || routedModels[0] || provider.model;
+    const servedModel = parsed.model || routedModels[0] || resolvedModel;
     const rawCost = Number(parsed.usage?.cost);
     const toolCalls = parseToolCalls(choice.tool_calls);
     const content = choice.content ?? '';
@@ -1547,7 +1562,7 @@ async function callProvider(
     return callGeminiInteractions({
       baseURL,
       apiKey: key,
-      model: provider.model,
+      model: providerModel(provider),
       messages,
       tools,
       config: providerConfig,
@@ -1872,7 +1887,7 @@ class MultiProviderClient {
                 await recordResponseTelemetry({
                   response: result,
                   provider: provider.name,
-                  requestedModels: result.requestedModels ?? [provider.model],
+                  requestedModels: result.requestedModels ?? [providerModel(provider)],
                   execution: {
                     ...execution,
                     role: execution?.role ?? this.config.role,
@@ -1892,8 +1907,8 @@ class MultiProviderClient {
                   ? err.requestedModels
                   : hasCustomOpenRouterModelPolicy()
                     ? getOpenRouterModelChainForRole(this.config.role)
-                    : [provider.model];
-                const attemptedModel = requestedModels[0] ?? provider.model;
+                    : [providerModel(provider)];
+                const attemptedModel = requestedModels[0] ?? providerModel(provider);
                 recordProviderFailure(
                   provider.name,
                   attemptedModel,
@@ -2039,7 +2054,7 @@ class MultiProviderClient {
                     await recordResponseTelemetry({
                       response: result,
                       provider: provider.name,
-                      requestedModels: result.requestedModels ?? [provider.model],
+                      requestedModels: result.requestedModels ?? [providerModel(provider)],
                       execution: {
                         ...execution,
                         role: execution?.role ?? this.config.role,
@@ -2142,7 +2157,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model =
     primaryName === FREE_POLICY_GATEWAY_NAME
       ? getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0]
-      : primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
+      : (primary ? providerModel(primary) : DEFAULT_OPENROUTER_MODEL_CHAIN[0]);
 
   return {
     provider: primary?.name ?? 'openrouter-nex-n2-5-mini-free',
@@ -2440,13 +2455,13 @@ export function getProviderCatalog(): Array<{
     const provider = PROVIDER_BY_NAME.get(name)!;
     return {
       name: provider.name,
-      model: provider.model,
+      model: providerModel(provider),
       tier: index,
       paid: provider.paid === true,
       supportsParallelToolCalls: provider.supportsParallelToolCalls === true,
       toolCallingReliable: true,
       usesFreeCredentials: providerUsesFreeCredentials(provider.name),
-      requireParametersWhenToolsPresent: provider.model.toLowerCase() === 'openrouter/free',
+      requireParametersWhenToolsPresent: providerModel(provider).toLowerCase() === 'openrouter/free',
       ...(provider.providerRouting ? { providerRouting: provider.providerRouting } : {}),
     };
   });
