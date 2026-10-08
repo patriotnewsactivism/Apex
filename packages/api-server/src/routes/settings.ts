@@ -67,6 +67,15 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
+    id: 'ai-approval-gates',
+    name: 'AI Approval Gates (Reviewer + QA Manager)',
+    description: 'Two-gate AI review of pending gated approvals. off = disabled. shadow = record what the gates would decide in reviewer_note and change nothing. on = approve or reject automatically. Outbound email, calls and deploys are never decided by AI.',
+    category: 'ai',
+    envVars: [
+      { key: 'APEX_AI_APPROVAL_GATES', label: 'Mode', placeholder: 'off, shadow or on' },
+    ],
+  },
+  {
     id: 'qwen-byok',
     name: 'QwenCloud Token Plan — Primary BYOK',
     description: 'Operator-funded QwenCloud (qwencloud.com) Token Plan. Tried first on every call, on QWEN_API_KEY, so usage lands on that plan. Its model follows the QWEN_MODEL override (default qwen3.8-flash). An exhausted OpenRouter or workspace budget does not block it; its own daily cap, rate, and pacing still do.',
