@@ -176,6 +176,10 @@ export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName = PAID_FALLBACK_PROVI
 type ProviderSpec = {
   name: ApexProviderName;
   model: string;
+  /** Optional env var that overrides `model` at request time (e.g. a BYOK
+   * provider whose model is hardcoded but should be switchable by the
+   * operator without a code change). Read via providerModel(). */
+  modelOverrideEnv?: string;
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
@@ -258,10 +262,20 @@ function envPositiveInt(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+/** Effective model for a provider: the operator's env override (if the spec
+ * declares one) wins over the hardcoded default. */
+function providerModel(provider: ProviderSpec): string {
+  const override = provider.modelOverrideEnv
+    ? process.env[provider.modelOverrideEnv]?.trim()
+    : undefined;
+  return override || provider.model;
+}
+
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'qwen-dashscope-byok',
     model: 'qwen3.8-flash',
+    modelOverrideEnv: 'QWEN_MODEL',
     // QwenCloud Token Plan OpenAI-compatible endpoint. Token Plan (`sk-sp-...`)
     // credentials are not interchangeable with pay-as-you-go (`sk-...`)
     // credentials/endpoints. The env override remains available for controlled
@@ -445,7 +459,7 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
             provider &&
             provider.requestPool === 'openrouter' &&
             provider.paid !== true &&
-            !selected.has(provider.model),
+            !selected.has(providerModel(provider)),
           );
         });
         return [
@@ -1348,7 +1362,7 @@ async function callCompatibleProvider(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), providerRequestTimeoutMs(provider));
   const startedAt = Date.now();
-  let routedModels = [provider.model];
+  let routedModels = [providerModel(provider)];
 
   try {
     const policy = isOpenRouterProvider(provider)
@@ -1357,7 +1371,7 @@ async function callCompatibleProvider(
     const customPolicy = Boolean(policy) && provider.name === FREE_POLICY_GATEWAY_NAME;
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
-      : [provider.model];
+      : [providerModel(provider)];
 
     if (isOpenRouterProvider(provider) && policy?.routingMode === 'adaptive') {
       routedModels = await getAdaptiveModelOrder({
@@ -1372,7 +1386,7 @@ async function callCompatibleProvider(
 
     const usesFreeRouter = routedModels.some(
       (modelId) => modelId.trim().toLowerCase() === 'openrouter/free',
-    ) || provider.model.trim().toLowerCase() === 'openrouter/free'
+    ) || providerModel(provider).trim().toLowerCase() === 'openrouter/free'
       || provider.name === 'openrouter-free-router';
     const wireTools = toWireTools(tools);
     const providerRouting: Record<string, unknown> = {
@@ -1410,7 +1424,7 @@ async function callCompatibleProvider(
       // gateway that refuses every call.
       routedModels = routedModels.slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
       body.models = routedModels;
-    } else body.model = provider.model;
+    } else body.model = providerModel(provider);
 
     if (wireTools?.length) {
       body.tools = wireTools;
@@ -1480,7 +1494,7 @@ async function callCompatibleProvider(
 
     const choice = parsed.choices?.[0]?.message;
     if (!choice) throw new Error('provider returned no completion choice');
-    const servedModel = parsed.model || routedModels[0] || provider.model;
+    const servedModel = parsed.model || routedModels[0] || providerModel(provider);
     const rawCost = Number(parsed.usage?.cost);
     const toolCalls = parseToolCalls(choice.tool_calls);
     const content = choice.content ?? '';
@@ -1547,7 +1561,7 @@ async function callProvider(
     return callGeminiInteractions({
       baseURL,
       apiKey: key,
-      model: provider.model,
+      model: providerModel(provider),
       messages,
       tools,
       config: providerConfig,
@@ -1872,7 +1886,7 @@ class MultiProviderClient {
                 await recordResponseTelemetry({
                   response: result,
                   provider: provider.name,
-                  requestedModels: result.requestedModels ?? [provider.model],
+                  requestedModels: result.requestedModels ?? [providerModel(provider)],
                   execution: {
                     ...execution,
                     role: execution?.role ?? this.config.role,
@@ -1892,8 +1906,8 @@ class MultiProviderClient {
                   ? err.requestedModels
                   : hasCustomOpenRouterModelPolicy()
                     ? getOpenRouterModelChainForRole(this.config.role)
-                    : [provider.model];
-                const attemptedModel = requestedModels[0] ?? provider.model;
+                    : [providerModel(provider)];
+                const attemptedModel = requestedModels[0] ?? providerModel(provider);
                 recordProviderFailure(
                   provider.name,
                   attemptedModel,
@@ -2039,7 +2053,7 @@ class MultiProviderClient {
                     await recordResponseTelemetry({
                       response: result,
                       provider: provider.name,
-                      requestedModels: result.requestedModels ?? [provider.model],
+                      requestedModels: result.requestedModels ?? [providerModel(provider)],
                       execution: {
                         ...execution,
                         role: execution?.role ?? this.config.role,
@@ -2440,13 +2454,13 @@ export function getProviderCatalog(): Array<{
     const provider = PROVIDER_BY_NAME.get(name)!;
     return {
       name: provider.name,
-      model: provider.model,
+      model: providerModel(provider),
       tier: index,
       paid: provider.paid === true,
       supportsParallelToolCalls: provider.supportsParallelToolCalls === true,
       toolCallingReliable: true,
       usesFreeCredentials: providerUsesFreeCredentials(provider.name),
-      requireParametersWhenToolsPresent: provider.model.toLowerCase() === 'openrouter/free',
+      requireParametersWhenToolsPresent: providerModel(provider).toLowerCase() === 'openrouter/free',
       ...(provider.providerRouting ? { providerRouting: provider.providerRouting } : {}),
     };
   });
