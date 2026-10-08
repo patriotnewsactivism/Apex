@@ -44,29 +44,30 @@ const byokProviders = [
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ] as const;
-// 2026-10-05 operator decisions: Qwen is out of the chain (its plan is
-// exhausted). Free capacity first, then the paid DeepSeek V4 Flash 0731 on
-// Nous Portal and OpenRouter: Nous first on 9 requests in 10 (it is the
-// cheaper host), OpenRouter first on the tenth, each the other's fallback.
-const automaticProviders = [...openRouterProviders, ...byokProviders];
+// Qwen is back as the primary automatic route (operator decision, ADR-017):
+// it leads the chain on the QwenCloud Token Plan, then free capacity, then
+// the paid DeepSeek V4 Flash 0731 on Nous Portal and OpenRouter (Nous first
+// 9 in 10, OpenRouter on the tenth, each the other's fallback).
+const automaticProviders = ['qwen-dashscope-byok', ...openRouterProviders, ...byokProviders];
 const paidProviders = ['nous-deepseek-v4-flash-paid', 'openrouter-deepseek-v4-flash-paid'] as const;
 const explicitPaidProviders = [...automaticProviders, ...paidProviders];
 
 const catalog = getProviderCatalog();
-const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
-const byokCatalog = catalog.slice(openRouterProviders.length);
+const qwenCatalog = catalog.slice(0, 1);
+const openRouterCatalog = catalog.slice(1, 1 + openRouterProviders.length);
+const byokCatalog = catalog.slice(1 + openRouterProviders.length);
 
 console.log('── Multi-pool automatic provider order ──');
-check('eight automatic routes exist: six OpenRouter free + two BYOK', catalog.length === 8, catalog);
+check('nine automatic routes exist: Qwen, six OpenRouter free + two BYOK', catalog.length === 9, catalog);
 check(
   'automatic provider order is exact',
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(automaticProviders),
   catalog.map((provider) => provider.name),
 );
 check(
-  'Qwen is not in the automatic chain',
-  catalog.every((provider) => provider.name !== 'qwen-dashscope-byok'),
-  catalog.map((provider) => provider.name),
+  'Qwen is the primary automatic route (QwenCloud Token Plan, qwen3.8-flash default)',
+  qwenCatalog[0]?.name === 'qwen-dashscope-byok' && qwenCatalog[0]?.model === 'qwen3.8-flash',
+  qwenCatalog[0],
 );
 check(
   'the next six models remain the reviewed OpenRouter free chain',
@@ -368,9 +369,9 @@ for (const role of [
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to Nex N2.5 Mini Free, the head of the free chain`,
-    config.provider === 'openrouter-nex-n2-5-mini-free' &&
-      config.model === 'nex-agi/nex-n2.5-mini:free',
+    `${role} defaults to Qwen (qwen3.8-flash), the head of the automatic chain`,
+    config.provider === 'qwen-dashscope-byok' &&
+      config.model === 'qwen3.8-flash',
     config,
   );
 }

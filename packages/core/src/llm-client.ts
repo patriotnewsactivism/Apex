@@ -429,9 +429,12 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
  * Custom persisted policies do not appear here; they use FREE_POLICY_GATEWAY_NAME.
  */
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  // Qwen led this chain under ADR-017. Its plan is exhausted, and the
-  // operator removed it on 2026-10-05: free capacity first, then the paid
-  // DeepSeek split. The qwen-dashscope-byok spec stays defined, unused.
+  // Operator-funded paid BYOK, governed but tried first — see the routing
+  // policy comment above and ADR-017. It falls through when unconfigured,
+  // disabled, or failing. Its model honors the QWEN_MODEL override (see the
+  // qwen-dashscope-byok spec) so the operator-chosen model is what the whole
+  // chain tries first.
+  'qwen-dashscope-byok',
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
