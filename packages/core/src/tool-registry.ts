@@ -2444,8 +2444,8 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           // these it reruns query variants against a source that structurally
           // cannot answer them.
           attempts: [
-            yelpKey ? yelpNote ?? 'yelp: returned nothing' : yelp.note ?? 'yelp: YELP_API_KEY not set',
-            googleKey ? googleNote ?? 'google: returned nothing' : google.note ?? 'google: GOOGLE_PLACES_API_KEY not set',
+            yelpKey ? yelpNote ?? 'yelp: no results' : yelp.note ?? 'yelp: YELP_API_KEY not set',
+            googleKey ? googleNote ?? 'google: no results' : google.note ?? 'google: GOOGLE_PLACES_API_KEY not set',
             ...(tomtomKey ? [] : ['tomtom: TOMTOM_API_KEY not set']),
             ...providerNotes,
           ],
