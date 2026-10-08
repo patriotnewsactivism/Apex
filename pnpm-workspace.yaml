@@ -154,4 +154,4 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   sharp: true
-  apex-copilot: true
+  apex-copilot@https://codeload.github.com/patriotnewsactivism/apex-copilot/tar.gz/f272c147f92eb7827e1fb389acc69b6084089df1: true
