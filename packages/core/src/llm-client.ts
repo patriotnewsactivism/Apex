@@ -261,15 +261,19 @@ function envPositiveInt(name: string, fallback: number): number {
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'qwen-dashscope-byok',
-    model: 'qwen3.8-flash',
-    // QwenCloud Token Plan OpenAI-compatible endpoint. Token Plan (`sk-sp-...`)
-    // credentials are not interchangeable with pay-as-you-go (`sk-...`)
-    // credentials/endpoints. The env override remains available for controlled
-    // migrations without another code change.
+    // Override with QWEN_MODEL (e.g. qwen3.7-flash). Read at module load, like
+    // the other spec-level env values (APEX_QWEN_MAX_OUTPUT_TOKENS); the value
+    // is what `body.model = provider.model` sends on the wire.
+    model: process.env.QWEN_MODEL?.trim() || 'qwen3.8-flash',
+    // QwenCloud OpenAI-compatible endpoint. Pay-As-You-Go keys (`sk-...`) use
+    // maas.qwencloudapi.com; Token Plan keys (`sk-sp-...`) use
+    // token-plan.maas.qwencloudapi.com. The two key types are not
+    // interchangeable across hosts. QWEN_BASE_URL (or APEX_QWEN_BASE_URL)
+    // overrides the default.
     baseURL: () =>
       process.env.QWEN_BASE_URL?.trim() ||
       process.env.APEX_QWEN_BASE_URL?.trim() ||
-      'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1',
+      'https://maas.qwencloudapi.com/compatible-mode/v1',
     apiKeyEnvs: ['QWEN_API_KEY', 'QWEN_API_KEY_2'],
     // Real money from a purchased token plan, so spend is recorded like any
     // paid route — but deliberately NOT `unrestricted`. OpenRouter and
