@@ -16,7 +16,7 @@ import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES, aiApprovalMode, sweepPendingApprovalsWithAiGates } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { getWebSocketTicketStats } from './websocket-auth.js';
@@ -858,6 +858,20 @@ async function main() {
   setTimeout(() => {
     sweepStaleEscalations().catch(() => {});
   }, 30_000);
+  // Two-gate AI approval sweeper (Reviewer -> QA Manager). Off unless
+  // APEX_AI_APPROVAL_GATES is 'shadow' or 'on'. Small batch every 30s keeps the
+  // queue from ever backing up while bounding LLM spend per tick. Outbound
+  // sends and prod deploys are never decided here; they stay with a human.
+  const aiApprovalSweepInterval = setInterval(() => {
+    if (aiApprovalMode() === 'off') return;
+    sweepPendingApprovalsWithAiGates().then((s) => {
+      if (s.examined > 0) {
+        console.log(`[ai-approval:${s.mode}] examined=${s.examined} approved=${s.approved} rejected=${s.rejected} human=${s.leftForHuman} shadow=${s.shadowRecorded}`);
+      }
+    }).catch((err) =>
+      console.warn('⚠️  AI approval sweep failed:', err instanceof Error ? err.message : String(err)),
+    );
+  }, 30_000);
   // Run an immediate initial health check after 5s
   setTimeout(runHealthPoll, 5_000);
 
@@ -867,6 +881,7 @@ async function main() {
     console.log(`\n${signal} received. Shutting down APEX...`);
     clearInterval(healthInterval);
     clearInterval(escalationSweepInterval);
+    clearInterval(aiApprovalSweepInterval);
     bootstrap.shutdown(signal).finally(() => {
       server.close(() => {
         console.log('✅ APEX shut down gracefully');

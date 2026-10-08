@@ -49,6 +49,8 @@ export * from './brave-llm-context.js';
 export * from './sales-suggestions.js';
 export * from './email-delivery.js';
 export * from './approval-packet.js';
+export * from './ai-approval-gates.js';
+export { evaluateWithAiGates, sweepPendingApprovalsWithAiGates } from './ai-approval-runtime.js';
 export * from './outbound-compliance-guard.js';
 export * from './send-safeguard.js';
 export * from './calendar-invite.js';
