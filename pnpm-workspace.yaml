@@ -154,3 +154,4 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   sharp: true
+  apex-copilot: true
