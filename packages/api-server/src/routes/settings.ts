@@ -68,8 +68,8 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   },
   {
     id: 'qwen-byok',
-    name: 'QwenCloud Token Plan — Not Routed',
-    description: 'Removed from automatic routing on 2026-10-05 (the plan is exhausted); APEX does not call it. The fields are kept so a stored key is not lost if Qwen is reinstated by a new operator decision.',
+    name: 'QwenCloud Token Plan — Primary BYOK',
+    description: 'Operator-funded QwenCloud (qwencloud.com) Token Plan. Tried first on every call, on QWEN_API_KEY, so usage lands on that plan. Its model follows the QWEN_MODEL override (default qwen3.8-flash). An exhausted OpenRouter or workspace budget does not block it; its own daily cap, rate, and pacing still do.',
     category: 'ai',
     docsUrl: 'https://docs.qwencloud.com',
     envVars: [
@@ -77,6 +77,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'APEX_QWEN_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '50000' },
       { key: 'APEX_QWEN_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '60' },
       { key: 'QWEN_BASE_URL', label: 'Base URL', placeholder: 'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1' },
+      { key: 'QWEN_MODEL', label: 'Model Override', placeholder: 'qwen3.8-flash' },
       {
         key: 'QWEN_API_KEY',
         label: 'QwenCloud Token Plan API Key 1',
