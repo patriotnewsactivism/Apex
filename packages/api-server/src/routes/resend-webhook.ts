@@ -78,6 +78,136 @@ export function verifySvixSignature(
   return false;
 }
 
+// ─── Monotonic status transitions ───────────────────────────────────────────────
+//
+// emailSends.status is the authoritative funnel field. summarizeEmailCampaign()
+// (src/routes/email-campaigns.ts) computes queued/sent/delivered/opened/clicked/
+// bounced/complained/failed/suppressed purely by counting distinct status values,
+// and its own header comment states a row is "queued, then exactly one of
+// sent/delivered/opened/clicked/bounced/complained/failed/suppressed, never more
+// than one at a time."
+//
+// Resend delivers these events through Svix, which retries with backoff, so the
+// same event can be redelivered late and events can arrive out of order. The
+// old handler wrote status unconditionally from the event alone, which let a
+// late redelivery regress a more advanced status (e.g. a redelivered
+// `email.delivered` downgraded an `opened` row back to `delivered`, silently
+// understating open/click rates; a retried `email.failed` overwrote a bounce or
+// complaint, hiding a compliance signal from the operator's campaign view).
+// SECURITY.md mandates "Provider retries/webhook redelivery must be idempotent."
+//
+// The fix is a single explicit total order over the lifecycle. A transition is
+// applied only when the incoming event's rank is STRICTLY greater than the
+// current status's rank; otherwise the event is a stale/out-of-order redelivery
+// and must not touch the row.
+//
+//   queued(0) < sent(1) < delivered(2) < opened(3) < clicked(4)
+//            < failed(5) < bounced(6) < complained(7) < suppressed(8)
+//
+// WHY this order:
+//   - Engagement events (`opened`, `clicked`) rank above `delivered`/`sent`:
+//     an open/click is strictly more advanced than a delivery, so a late
+//     `email.delivered` can never regress an open/click.
+//   - The negative terminal events (`failed`, `bounced`, `complained`,
+//     `suppressed`) rank above ALL engagement/delivery, so a later-arriving
+//     `delivered`/`opened`/`clicked` can never overwrite a bounce/complaint/
+//     failure — a compliance signal is never erased from the funnel.
+//   - `complained` outranks `bounced` (a complaint is the stronger negative
+//     signal and supersedes a bounce), and `clicked` outranks `opened`.
+//   - `bounced`/`complained` outrank `failed`, so a retried `email.failed`
+//     cannot downgrade a bounce/complaint.
+//   - `suppressed` is the most terminal state (set via the suppression insert);
+//     nothing may overwrite it.
+//
+// Unknown/unexpected current statuses fail safe: they are treated as rank 0
+// (the lowest), so any recognized event is a strict rank increase and is
+// recorded. This never regresses a KNOWN status (the monotonic rule still
+// holds for every status we understand) while avoiding dropping a legitimate
+// delivery signal just because the row carries a value we don't recognize.
+
+export interface EmailSendTransition {
+  status: string;
+  deliveredAt?: Date;
+  openedAt?: Date;
+  clickedAt?: Date;
+  bouncedAt?: Date;
+  complainedAt?: Date;
+  errorMessage?: string;
+  suppress: boolean;
+}
+
+// Rank of every status value that can appear in email_sends.status.
+const EMAIL_SEND_STATUS_RANK: Record<string, number> = {
+  queued: 0,
+  sent: 1,
+  delivered: 2,
+  opened: 3,
+  clicked: 4,
+  failed: 5,
+  bounced: 6,
+  complained: 7,
+  suppressed: 8,
+};
+
+// Rank of every Resend event that maps to a status transition. Events not
+// listed here (e.g. `email.delivery_delayed`) are informational only and never
+// produce a transition.
+const EMAIL_SEND_EVENT_RANK: Record<string, number> = {
+  'email.delivered': 2,
+  'email.opened': 3,
+  'email.clicked': 4,
+  'email.failed': 5,
+  'email.bounced': 6,
+  'email.complained': 7,
+};
+
+/** Decide the resulting row state for (currentStatus, event). Returns null when
+ *  the event must not change the row (a stale/out-of-order redelivery, or an
+ *  event that is not a status transition). */
+export function resolveEmailSendEvent(
+  currentStatus: string,
+  event: string,
+  at: Date,
+  row: { openedAt?: Date | null; clickedAt?: Date | null },
+): EmailSendTransition | null {
+  const eventRank = EMAIL_SEND_EVENT_RANK[event];
+  if (eventRank === undefined) {
+    // Not a status event (e.g. email.delivery_delayed) — no transition.
+    return null;
+  }
+
+  // Unknown current statuses fail safe as rank 0 (see WHY above).
+  const currentRank = EMAIL_SEND_STATUS_RANK[currentStatus] ?? 0;
+  if (eventRank <= currentRank) {
+    // Not a strict rank increase — stale/out-of-order redelivery. Never regress.
+    return null;
+  }
+
+  switch (event) {
+    case 'email.delivered':
+      // deliveredAt is set only on the first transition INTO delivered (rank 2
+      // is only reachable from queued/sent), so a redelivery can never rewrite
+      // an existing deliveredAt — time-to-delivery does not drift.
+      return { status: 'delivered', deliveredAt: at, suppress: false };
+    case 'email.opened':
+      // Preserve an existing openedAt (first open wins) — matches the original
+      // `row.openedAt ?? now` semantics.
+      return { status: 'opened', openedAt: row.openedAt ?? at, suppress: false };
+    case 'email.clicked':
+      // Preserve an existing clickedAt (first click wins) — matches the
+      // original `row.clickedAt ?? now` semantics.
+      return { status: 'clicked', clickedAt: row.clickedAt ?? at, suppress: false };
+    case 'email.bounced':
+      return { status: 'bounced', bouncedAt: at, suppress: true };
+    case 'email.complained':
+      return { status: 'complained', complainedAt: at, suppress: true };
+    case 'email.failed':
+      return { status: 'failed', errorMessage: 'Resend reported delivery failure post-send', suppress: false };
+    default:
+      return null;
+  }
+}
+
 export function createResendWebhookRouter(): Router {
   const router = Router();
 
@@ -122,65 +252,66 @@ export function createResendWebhookRouter(): Router {
       }
 
       const now = new Date();
-      switch (type) {
-        case 'email.delivered':
-          await db.update(emailSends).set({ status: 'delivered', deliveredAt: now }).where(eq(emailSends.id, row.id));
-          break;
-        case 'email.opened':
-          await db.update(emailSends).set({ status: 'opened', openedAt: row.openedAt ?? now }).where(eq(emailSends.id, row.id));
-          break;
-        case 'email.clicked':
-          await db.update(emailSends).set({ status: 'clicked', clickedAt: row.clickedAt ?? now }).where(eq(emailSends.id, row.id));
-          break;
-        case 'email.bounced':
-        case 'email.complained': {
-          const complained = type === 'email.complained';
-          const { applyDoNotContact, commitSendRecord } = await import('@workspace/core');
-          await commitSendRecord(async (tx) => {
-            await tx.update(emailSends).set(
-              complained
-                ? { status: 'complained', complainedAt: now }
-                : { status: 'bounced', bouncedAt: now },
-            ).where(eq(emailSends.id, row.id));
-            await tx.insert(emailSuppressions)
-              .values({ email: row.toEmail, reason: complained ? 'complained' : 'bounced', createdAt: now })
-              .onConflictDoNothing();
-            await applyDoNotContact(tx, {
-              destination: row.toEmail,
-              reason: complained ? 'complaint' : 'bounced',
-              setBy: 'resend',
-              channel: 'email',
-              providerMessageId: `optout:${type}:${row.id}`,
-            });
-            return row.id;
-          }, {
-            destination: row.toEmail,
-            channel: 'email',
-            direction: 'inbound',
-            actorType: 'provider',
-            actorName: 'resend',
-            eventKind: complained ? 'complaint' : 'bounce',
-            subject: row.subject,
-            bodyText: complained ? `Spam complaint from ${row.toEmail}` : `Email bounced for ${row.toEmail}`,
-            provider: 'resend',
-            providerMessageId: `${type}:${row.id}`,
-            sendRecordTable: 'email_sends',
-            sendRecordId: row.id,
-          });
-          if (complained) console.warn(`[Resend] SPAM COMPLAINT from ${row.toEmail} (send ${row.id}) — address suppressed`);
-          break;
-        }
-        case 'email.delivery_delayed':
-          console.log(`[Resend] Delivery delayed for send ${row.id} (${row.toEmail})`);
-          break;
-        case 'email.failed':
-          await db.update(emailSends).set({ status: 'failed', errorMessage: 'Resend reported delivery failure post-send' }).where(eq(emailSends.id, row.id));
-          break;
-        default:
-          break;
+
+      // email.delivery_delayed is informational only — never a status change.
+      if (type === 'email.delivery_delayed') {
+        console.log(`[Resend] Delivery delayed for send ${row.id} (${row.toEmail})`);
+        return res.status(200).json({ received: true, matched: true });
       }
 
-      return res.status(200).json({ received: true, matched: true });
+      // Unknown event types are a no-op (kept from the original default branch).
+      if (!(type in EMAIL_SEND_EVENT_RANK)) {
+        return res.status(200).json({ received: true, matched: true });
+      }
+
+      const transition = resolveEmailSendEvent(row.status, type, now, row);
+      if (!transition) {
+        // Stale or out-of-order redelivery (Svix retries with backoff, so the
+        // same event can arrive late or events can arrive out of order). Ack so
+        // Svix stops retrying, but do NOT touch the row — a redelivered event
+        // must never regress a more advanced status.
+        return res.status(200).json({ received: true, matched: true, applied: false, reason: 'stale-or-out-of-order' });
+      }
+
+      // `suppress` is a decision flag, not a column — strip it before the set().
+      const { suppress, ...patch } = transition;
+
+      if (suppress) {
+        const complained = transition.status === 'complained';
+        const { applyDoNotContact, commitSendRecord } = await import('@workspace/core');
+        await commitSendRecord(async (tx) => {
+          await tx.update(emailSends).set(patch).where(eq(emailSends.id, row.id));
+          await tx.insert(emailSuppressions)
+            .values({ email: row.toEmail, reason: complained ? 'complained' : 'bounced', createdAt: now })
+            .onConflictDoNothing();
+          await applyDoNotContact(tx, {
+            destination: row.toEmail,
+            reason: complained ? 'complaint' : 'bounced',
+            setBy: 'resend',
+            channel: 'email',
+            providerMessageId: `optout:${type}:${row.id}`,
+          });
+          return row.id;
+        }, {
+          destination: row.toEmail,
+          channel: 'email',
+          direction: 'inbound',
+          actorType: 'provider',
+          actorName: 'resend',
+          eventKind: complained ? 'complaint' : 'bounce',
+          subject: row.subject,
+          bodyText: complained ? `Spam complaint from ${row.toEmail}` : `Email bounced for ${row.toEmail}`,
+          provider: 'resend',
+          providerMessageId: `${type}:${row.id}`,
+          sendRecordTable: 'email_sends',
+          sendRecordId: row.id,
+        });
+        if (complained) console.warn(`[Resend] SPAM COMPLAINT from ${row.toEmail} (send ${row.id}) — address suppressed`);
+      } else {
+        await db.update(emailSends).set(patch).where(eq(emailSends.id, row.id));
+      }
+
+      return res.status(200).json({ received: true, matched: true, applied: true });
     } catch (err) {
       console.error('[Resend] Webhook error:', err instanceof Error ? err.message : String(err));
       return res.status(500).json({ error: 'Webhook processing failed' });
