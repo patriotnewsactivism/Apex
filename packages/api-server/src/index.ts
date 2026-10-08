@@ -65,6 +65,7 @@ import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { createPhoneLinesRouter } from './routes/phone-lines.js';
 import { createSalesFloorRouter } from './routes/sales-floor.js';
 import { createPublicWebinarRouter, createWebinarAdminRouter } from './routes/webinars.js';
+import { createQwenVideoRouter } from './routes/qwen-video.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
@@ -560,6 +561,7 @@ async function main() {
   app.use('/api/applications', createMultiappRouter());
   app.use('/api/predictive', createPredictiveRouter());
   app.use('/api/settings', createSettingsRouter());
+  app.use('/api/qwen-video', createQwenVideoRouter());
   app.use('/api/leads', createLeadsRouter());
   app.use('/api/crm', createCrmRouter());
   app.use('/api/campaigns', createCampaignsRouter());
