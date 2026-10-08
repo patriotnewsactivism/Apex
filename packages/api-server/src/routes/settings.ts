@@ -67,6 +67,15 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     ],
   },
   {
+    id: 'ai-approval-gates',
+    name: 'AI Approval Gates (Reviewer + QA Manager)',
+    description: 'Two-gate AI review of pending gated approvals. off = disabled. shadow = record what the gates would decide in reviewer_note and change nothing. on = approve or reject automatically. Outbound email, calls and deploys are never decided by AI.',
+    category: 'ai',
+    envVars: [
+      { key: 'APEX_AI_APPROVAL_GATES', label: 'Mode', placeholder: 'off, shadow or on' },
+    ],
+  },
+  {
     id: 'qwen-byok',
     name: 'QwenCloud Token Plan — Not Routed',
     description: 'Removed from automatic routing on 2026-10-05 (the plan is exhausted); APEX does not call it. The fields are kept so a stored key is not lost if Qwen is reinstated by a new operator decision.',
