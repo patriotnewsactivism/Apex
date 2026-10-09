@@ -45,6 +45,13 @@ export type BridgeLegRole = 'operator' | 'customer' | 'ai' | 'monitor' | 'whispe
 
 const BRIDGE_ROLES = new Set<BridgeLegRole>(['operator', 'customer', 'ai', 'monitor', 'whisper', 'barge']);
 export const APPROVED_APEX_OUTBOUND_NUMBER = '+18329757665';
+// Hank's newsroom line (CNAM 'ON YOUR SIDE'): approved so bridge legs show the
+// newsroom caller ID and the bring-in-ai leg reaches Hank directly.
+export const NEWSROOM_BRIDGE_NUMBER = '+13466461352';
+const APPROVED_APEX_OUTBOUND_NUMBERS: readonly string[] = [
+  APPROVED_APEX_OUTBOUND_NUMBER,
+  NEWSROOM_BRIDGE_NUMBER,
+];
 
 interface ClientState {
   sessionId: string;
@@ -147,7 +154,7 @@ function assistantDynamicVariablesForSession(session: typeof callBridgeSessions.
 
 export function configuredApexOutboundNumber(): string | null {
   const normalized = normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
-  return normalized === APPROVED_APEX_OUTBOUND_NUMBER ? normalized : null;
+  return APPROVED_APEX_OUTBOUND_NUMBERS.includes(normalized) ? normalized : null;
 }
 
 function callBridgeWebhookUrl(): string {
