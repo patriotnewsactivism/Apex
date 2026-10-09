@@ -163,6 +163,34 @@ function callBridgeWebhookUrl(): string {
   return `${publicUrl}/api/telnyx-assistant/call-bridge-webhook?key=${encodeURIComponent(secret)}`;
 }
 
+import { campaignForCustomer } from './call-bridge-campaigns.js';
+
+/** PATCH the assistant's dynamic_variables. Telnyx ignores dial-level
+ *  AIAssistantDynamicVariables on the ai_calls path (confirmed 2026-10-09),
+ *  so campaign script payloads must be baked onto the assistant immediately
+ *  before ai_assistant_start. The PATCH replaces the whole map. */
+async function patchAssistantDynamicVariables(
+  assistantId: string,
+  dynamicVariables: Record<string, string>,
+): Promise<string | null> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return 'TELNYX_API_KEY is not configured.';
+  try {
+    const res = await fetch(`https://api.telnyx.com/v2/ai/assistants/${encodeURIComponent(assistantId)}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dynamic_variables: dynamicVariables }),
+    });
+    if (!res.ok) {
+      const json = (await res.json().catch(() => null)) as { errors?: Array<{ detail?: string }> } | null;
+      return json?.errors?.[0]?.detail ?? `Telnyx assistant PATCH returned ${res.status}`;
+    }
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
 /** Originate one outbound call leg and join it into the session's conference.
  *  Exported for direct guard testing of its request-shape logic; the network
  *  call itself is not exercised in CI (no live Telnyx account). */
@@ -463,22 +491,58 @@ async function attachSalesAi(sessionId: string, phase: 'call_start' | 'mid_call'
       return transcriptionError;
     });
   const assistantId = process.env.TELNYX_AI_ASSISTANT_ID;
+  const campaign = campaignForCustomer(session.customerNumber);
   if (assistantId && !greeting && process.env.APEX_BRIDGE_AI_MODE === 'newsroom') {
     // A silent join reads as a dead line to the operator and the contact.
     // The configured assistant must always speak first when it comes onto the
     // bridge: Hank's mandated opening on a fresh outbound call, a short
-    // joining announcement when it is brought in mid-call.
-    greeting = phase === 'mid_call'
-      ? 'This is Hank Vance from On Your Side Investigations with We The People News. I am joining the call.'
-      : (process.env.TELNYX_AI_ASSISTANT_GREETING?.trim()
-        || 'Hi, this is Hank Vance from On Your Side Investigations with We The People News. I am calling to speak with someone regarding a matter that was brought to our Newsroom attention.');
+    // joining announcement when it is brought in mid-call. When the customer
+    // number is a registered campaign target, mid-call joins also open with
+    // the mandated line so the assistant engages the script immediately.
+    if (phase === 'mid_call' && !campaign) {
+      greeting = 'This is Hank Vance from On Your Side Investigations with We The People News. I am joining the call.';
+    } else {
+      greeting = process.env.TELNYX_AI_ASSISTANT_GREETING?.trim()
+        || 'Hi, this is Hank Vance from On Your Side Investigations with We The People News. I am calling to speak with someone regarding a matter that was brought to our Newsroom attention.';
+    }
   }
   if (assistantId) {
     const startedAt = Date.now();
+    // Arm the assistant for this session's campaign target, or neutralize any
+    // leftover script from a previous campaign call so the assistant never
+    // recites the wrong office's questions. The PATCH replaces the whole
+    // dynamic_variables map, and dial-level variables are ignored by Telnyx.
+    let armError: string | null = null;
+    if (campaign) {
+      armError = await patchAssistantDynamicVariables(assistantId, campaign.dynamicVariables);
+      console.info('[Call Bridge] campaign arm PATCH completed', {
+        sessionId: session.id,
+        ok: !armError,
+        error: armError ?? undefined,
+        office: campaign.dynamicVariables['office'],
+      });
+    } else {
+      armError = await patchAssistantDynamicVariables(assistantId, {
+        desk_name: 'Hank Vance',
+        callback_number: '(346) 646-1352',
+        office: '',
+        fact: 'No specific script is armed for this call. Respond naturally per your standing newsroom rules.',
+        contact_name_or_role: 'the caller',
+        question_list: '',
+      });
+    }
+    if (armError) {
+      // Attaching with a stale or missing script would put the wrong questions
+      // in front of a live contact. Fail the attach loudly instead.
+      await db.update(callBridgeSessions).set({ status: 'active', lastError: `AI attach aborted: ${armError}`, updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+      return;
+    }
+    const startDynamicVariables: Record<string, string> = { ...dynamicVariables };
+    if (campaign) Object.assign(startDynamicVariables, campaign.dynamicVariables);
     // Omit empty overrides so the assistant's own base prompt/greeting govern
     // (newsroom mode). Telnyx replaces the assistant's instructions entirely
     // when `instructions` is present, so never send an empty string.
-    const assistantPayload: Record<string, unknown> = { id: assistantId, dynamic_variables: dynamicVariables };
+    const assistantPayload: Record<string, unknown> = { id: assistantId, dynamic_variables: startDynamicVariables };
     if (instructions) assistantPayload.instructions = instructions;
     const startPayload: Record<string, unknown> = { assistant: assistantPayload };
     if (greeting) startPayload.greeting = greeting;
