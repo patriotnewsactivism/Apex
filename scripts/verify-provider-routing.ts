@@ -46,10 +46,10 @@ const byokProviders = [
 ] as const;
 // Qwen is back as the primary automatic route (operator decision, ADR-017):
 // it leads the chain on the QwenCloud Token Plan, then free capacity, then
-// the paid DeepSeek V4 Flash 0731 on Nous Portal and OpenRouter (Nous first
-// 9 in 10, OpenRouter on the tenth, each the other's fallback).
+// the paid DeepSeek V4 Flash 0731 on OpenRouter alone (Apex no longer calls
+// the Nous Portal provider — that access is cut off).
 const automaticProviders = ['qwen-dashscope-byok', ...openRouterProviders, ...byokProviders];
-const paidProviders = ['nous-deepseek-v4-flash-paid', 'openrouter-deepseek-v4-flash-paid'] as const;
+const paidProviders = ['openrouter-deepseek-v4-flash-paid'] as const;
 const explicitPaidProviders = [...automaticProviders, ...paidProviders];
 
 const catalog = getProviderCatalog();
@@ -126,10 +126,10 @@ check(
   catalog.every((provider) => !provider.model.includes('minimax')),
 );
 check(
-  // 2026-10-05 operator change: DeepSeek V4 Flash 0731 on two providers.
-  'paid credentials stay isolated: OpenRouter on the funded OPENROUTER_API_KEY_4, Nous on NOUS_API_KEY',
-  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY_4'\]/.test(clientSource) &&
-    /NOUS_PAID_KEY_ENVS = \['NOUS_API_KEY'\]/.test(clientSource),
+  // 2026-10-09 operator change: DeepSeek V4 Flash 0731 paid continuity moved
+  // to OpenRouter only; the Nous Portal provider was removed entirely.
+  'paid credentials stay isolated on the funded OPENROUTER_API_KEY_4',
+  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY_4'\]/.test(clientSource),
 );
 check(
   // Each OpenRouter account keeps its own :free allowance, so the funded
@@ -170,18 +170,12 @@ check(
     /const emergencyAttemptWindow = independentPlanRoute\(provider\)[\s\S]{0,80}\? null[\s\S]{0,80}: emergencyRequestCapacityWindow/.test(clientSource),
 );
 check(
-  'both paid routes are marked unrestricted from APEX token/request/spend governors',
-  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource) &&
-    /name: 'nous-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource),
+  'the paid route is marked unrestricted from APEX token/request/spend governors',
+  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource),
 );
 check(
-  'the OpenRouter paid route is an OpenRouter route sorted by latency; the Nous route is not',
-  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,200}baseURL: 'https:\/\/openrouter\.ai\/api\/v1'[\s\S]{0,200}requestPool: 'openrouter'[\s\S]{0,700}providerRouting: \{ sort: 'latency' \}/.test(clientSource) &&
-    (() => {
-      const start = clientSource.indexOf("name: 'nous-deepseek-v4-flash-paid'");
-      const body = clientSource.slice(start, clientSource.indexOf('\n  },', start));
-      return start > -1 && !/^\s*requestPool:/m.test(body) && !/^\s*providerRouting:/m.test(body);
-    })(),
+  'the paid OpenRouter route sorts by latency',
+  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,200}baseURL: 'https:\/\/openrouter\.ai\/api\/v1'[\s\S]{0,200}requestPool: 'openrouter'[\s\S]{0,700}providerRouting: \{ sort: 'latency' \}/.test(clientSource),
 );
 check(
   'unrestricted FlashX receives full history rather than the free-route trim',
@@ -191,7 +185,6 @@ check(
 check(
   'FlashX can use its native 131072-token completion envelope while smaller routes stay clamped',
   /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
-    /name: 'nous-deepseek-v4-flash-paid'[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
     /maxOutputTokens: 16_384/.test(clientSource) &&
     /Math\.min\(131_072, Math\.max/.test(clientSource),
 );
@@ -255,7 +248,7 @@ check(
   getProviderOrderForRole('CEO'),
 );
 check(
-  'paid continuity model is DeepSeek V4 Flash 0731, on Nous Portal first and OpenRouter second',
+  'paid continuity model is DeepSeek V4 Flash 0731 on OpenRouter',
   PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731' &&
     JSON.stringify(PAID_FALLBACK_PROVIDER_NAMES) === JSON.stringify(paidProviders) &&
     PAID_FALLBACK_PROVIDER_NAME === paidProviders[0],
@@ -285,32 +278,27 @@ check(
 );
 process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
 check(
-  'APEX_PAID_FALLBACK_ENABLED=true appends both paid routes, still last',
+  'APEX_PAID_FALLBACK_ENABLED=true appends the single paid OpenRouter route, still last',
   JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(explicitPaidProviders),
   getProviderOrderForRole('CEO'),
 );
 {
-  // The split: Nous goes first on 9 requests in 10 and OpenRouter on the
-  // tenth; whichever is second is the immediate fallback. Free/BYOK order
-  // never moves. The rotation counter is process-wide, so 20 consecutive
-  // requests hold exactly two OpenRouter-first requests, ten apart, whatever
-  // ran before this block.
+  // A single OpenRouter paid route always sits last. The Nous/OpenRouter
+  // 90/10 rotation is gone with the Nous Portal provider, so the paid tail is
+  // stable on every request and the free/BYOK order never moves.
   const firstPaid: string[] = [];
   let freeOrderStable = true;
   for (let i = 0; i < 20; i++) {
     const order = requestProviderOrder('CEO');
     freeOrderStable &&= JSON.stringify(order.slice(0, automaticProviders.length)) === JSON.stringify(automaticProviders);
     const tail = order.slice(automaticProviders.length);
-    freeOrderStable &&= tail.length === 2 && new Set(tail).size === 2 && tail.every((name) => (paidProviders as readonly string[]).includes(name));
+    freeOrderStable &&= tail.length === 1 && tail[0] === paidProviders[0];
     firstPaid.push(tail[0] ?? '');
   }
-  const openRouterFirst = firstPaid.flatMap((name, i) => (name === paidProviders[1] ? [i] : []));
-  check('per-request order keeps every free/BYOK route first and both paid routes last', freeOrderStable);
+  check('per-request order keeps every free/BYOK route first and the paid route last', freeOrderStable);
   check(
-    'paid traffic splits 90/10: Nous first on 18 of 20 requests, OpenRouter first on 2, ten requests apart',
-    firstPaid.filter((name) => name === paidProviders[0]).length === 18 &&
-      openRouterFirst.length === 2 &&
-      openRouterFirst[1] - openRouterFirst[0] === 10,
+    'the paid route is OpenRouter on every request (no Nous rotation remains)',
+    firstPaid.every((name) => name === 'openrouter-deepseek-v4-flash-paid'),
     firstPaid,
   );
   check(

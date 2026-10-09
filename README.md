@@ -42,7 +42,7 @@ APEX runs a free-first chain, with one *unrestricted* paid continuity model last
 6. NVIDIA Nemotron 3 Ultra Free
 7. direct Groq GPT-OSS 120B BYOK when enabled
 8. direct Gemini 3.8 Flash BYOK when enabled
-9. DeepSeek V4 Flash 0731 (`deepseek/deepseek-v4-flash-0731`) — paid, unrestricted continuity, last resort, split between Nous Portal (`NOUS_API_KEY`) and OpenRouter (`OPENROUTER_API_KEY_4`): Nous goes first on 9 requests in 10 and OpenRouter on the tenth, and the other is always the immediate fallback
+9. DeepSeek V4 Flash 0731 (`deepseek/deepseek-v4-flash-0731`) — paid, unrestricted continuity, last resort, on OpenRouter (`OPENROUTER_API_KEY_4`). Apex no longer calls the Nous Portal provider.
 
 Qwen (QwenCloud Token Plan) led this chain under ADR-017. Its plan is exhausted and the operator removed it on 2026-10-05; the route is defined but never called.
 
