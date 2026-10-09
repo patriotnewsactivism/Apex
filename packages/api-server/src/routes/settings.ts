@@ -192,6 +192,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'TELNYX_CALL_BRIDGE_CONNECTION_ID', label: 'Call Control Connection ID', placeholder: 'Telnyx Call Control Application ID' },
       { key: 'TELNYX_CALL_BRIDGE_WEBHOOK_SECRET', label: 'Call Bridge Webhook Secret', placeholder: 'long random secret', secret: true },
       { key: 'APEX_FRONT_DESK_NUMBER', label: 'Approved Caller ID', placeholder: '+18329757665' },
+      { key: 'TELNYX_AI_ASSISTANT_ID', label: 'AI Takeover Assistant ID', placeholder: 'assistant-...' },
       { key: 'TELNYX_OWNER_NUMBER', label: 'Owner/Test Pitch Destination', placeholder: '+1xxxxxxxxxx' },
     ],
   },
