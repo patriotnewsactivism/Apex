@@ -408,7 +408,11 @@ async function attachSalesAi(sessionId: string): Promise<void> {
   if (!session?.customerCallControlId) return;
   let greeting = session.assistantGreeting?.trim() || '';
   let instructions = session.assistantInstructions?.trim() || '';
-  if (!greeting || !instructions) {
+  // Newsroom mode: when the bridge is configured for a newsroom assistant
+  // (APEX_BRIDGE_AI_MODE=newsroom), never fall back to the BuildMyBot sales
+  // playbook. The configured assistant (e.g. Hank Vance) speaks from its own
+  // base prompt and greeting instead of being overridden as a sales rep.
+  if ((!greeting || !instructions) && process.env.APEX_BRIDGE_AI_MODE !== 'newsroom') {
     const { getSalesPlaybook, renderPlaybookTemplate, rehearsalPersonaFields, loadOutboundPolicy } = await import('@workspace/core');
     const { researchedLeads } = await import('@workspace/db');
     const policy = await loadOutboundPolicy();
@@ -452,10 +456,14 @@ async function attachSalesAi(sessionId: string): Promise<void> {
   const assistantId = process.env.TELNYX_AI_ASSISTANT_ID;
   if (assistantId) {
     const startedAt = Date.now();
-    const error = await telnyxCommand(session.customerCallControlId, 'ai_assistant_start', {
-      assistant: { id: assistantId, instructions, dynamic_variables: dynamicVariables },
-      greeting,
-    });
+    // Omit empty overrides so the assistant's own base prompt/greeting govern
+    // (newsroom mode). Telnyx replaces the assistant's instructions entirely
+    // when `instructions` is present, so never send an empty string.
+    const assistantPayload: Record<string, unknown> = { id: assistantId, dynamic_variables: dynamicVariables };
+    if (instructions) assistantPayload.instructions = instructions;
+    const startPayload: Record<string, unknown> = { assistant: assistantPayload };
+    if (greeting) startPayload.greeting = greeting;
+    const error = await telnyxCommand(session.customerCallControlId, 'ai_assistant_start', startPayload);
     console.info('[Call Bridge] ai_assistant_start completed', {
       sessionId: session.id,
       elapsedMs: Date.now() - startedAt,
@@ -642,9 +650,27 @@ export function createCallBridgeRouter(): Router {
         return;
       }
 
+      // Direct attach: when a bridge assistant is configured
+      // (TELNYX_AI_ASSISTANT_ID), start it on the customer's live leg instead
+      // of dialing the front desk number. The takeover persona is exactly the
+      // configured assistant (e.g. Hank Vance outbound) — instant join, no
+      // second phone leg, no risk of a different assistant answering.
+      const bridgeAssistantId = process.env.TELNYX_AI_ASSISTANT_ID;
+      if (bridgeAssistantId && session.customerCallControlId) {
+        await db.update(callBridgeSessions).set({ status: 'ai_dialing', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+        await attachSalesAi(session.id);
+        const [updated] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, session.id)).limit(1);
+        if (updated?.lastError) {
+          res.status(502).json({ error: updated.lastError });
+        } else {
+          res.status(200).json({ ok: true, status: updated?.status ?? 'ai_dialing' });
+        }
+        return;
+      }
+
       const frontDeskNumber = process.env.APEX_FRONT_DESK_NUMBER;
       if (!frontDeskNumber) {
-        res.status(500).json({ error: 'APEX_FRONT_DESK_NUMBER is not configured.' });
+        res.status(500).json({ error: 'Set TELNYX_AI_ASSISTANT_ID or APEX_FRONT_DESK_NUMBER to bring an AI into this call.' });
         return;
       }
 
