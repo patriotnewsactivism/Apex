@@ -174,6 +174,13 @@ export async function dialBridgeLeg(params: {
   supervisorRole?: 'monitor' | 'whisper' | 'barge';
   whisperCallControlIds?: string[];
   sendJobId?: string | null;
+  /** True when the operator started this session themselves from the
+   *  dashboard: the dial is their own explicit action, so the send job is
+   *  opened as an operator test send (kill switch, lockout, and
+   *  do-not-contact checks still run) instead of a tool send that would sit
+   *  in Pending sends waiting for two confirmations nobody is going to give.
+   *  Agent-initiated sessions keep the full confirm flow. */
+  operatorInitiated?: boolean;
 }): Promise<{ callControlId: string } | { error: string; awaitingSafeguard?: boolean; sendJobId?: string }> {
   const apiKey = process.env.TELNYX_API_KEY;
   const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
@@ -187,8 +194,9 @@ export async function dialBridgeLeg(params: {
   try {
     if (!sendJobId) {
       const opened = await openOutboundSendJob({
-        caller: 'tool',
-        createdBy: 'call-bridge',
+        caller: params.operatorInitiated ? 'operator-dashboard' : 'tool',
+        createdBy: params.operatorInitiated ? 'call-bridge-operator' : 'call-bridge',
+        ...(params.operatorInitiated ? { operatorDirect: true } : {}),
         recipients: [{
           channel: 'phone',
           destination: params.to,
@@ -336,6 +344,7 @@ export async function startAiFirstSession(input: {
     role: 'customer',
     sessionId: id,
     endConferenceOnExit: true,
+    operatorInitiated: (input.createdByAgentId ?? 'operator') === 'operator',
   });
   console.info('[Call Bridge] ai-first customer dial completed', {
     sessionId: id,
@@ -617,13 +626,13 @@ export function createCallBridgeRouter(): Router {
         updatedAt: new Date(),
       });
 
-      const result = await dialBridgeLeg({ to: operatorNumber, role: 'operator', sessionId: id, endConferenceOnExit: true });
+      const result = await dialBridgeLeg({ to: operatorNumber, role: 'operator', sessionId: id, endConferenceOnExit: true, operatorInitiated: true });
       if ('error' in result) {
         await db
           .update(callBridgeSessions)
           .set({ status: 'failed', lastError: result.error, updatedAt: new Date() })
           .where(eq(callBridgeSessions.id, id));
-        res.status(502).json({ error: result.error, id });
+        res.status(409).json({ error: result.error, id, ...(result.awaitingSafeguard ? { awaitingSafeguard: true, sendJobId: result.sendJobId } : {}) });
         return;
       }
 
@@ -676,13 +685,13 @@ export function createCallBridgeRouter(): Router {
 
       await db.update(callBridgeSessions).set({ status: 'ai_dialing', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
 
-      const result = await dialBridgeLeg({ to: frontDeskNumber, role: 'ai', sessionId: session.id, endConferenceOnExit: false });
+      const result = await dialBridgeLeg({ to: frontDeskNumber, role: 'ai', sessionId: session.id, endConferenceOnExit: false, operatorInitiated: true });
       if ('error' in result) {
         await db
           .update(callBridgeSessions)
           .set({ status: 'active', lastError: result.error, updatedAt: new Date() })
           .where(eq(callBridgeSessions.id, session.id));
-        res.status(502).json({ error: result.error });
+        res.status(409).json({ error: result.error, ...(result.awaitingSafeguard ? { awaitingSafeguard: true, sendJobId: result.sendJobId } : {}) });
         return;
       }
 
@@ -753,7 +762,7 @@ export function createCallBridgeRouter(): Router {
         leadId: body.leadId,
       });
       if ('error' in started) {
-        res.status(502).json(started);
+        res.status(409).json(started);
         return;
       }
       res.status(201).json({ id: started.id, status: 'dialing_customer' });
@@ -794,6 +803,7 @@ export function createCallBridgeRouter(): Router {
         endConferenceOnExit: false,
         supervisorRole: role,
         whisperCallControlIds: session.aiCallControlId ? [session.aiCallControlId] : undefined,
+        operatorInitiated: true,
       });
       if ('error' in result) {
         res.status(502).json({ error: result.error });
@@ -880,6 +890,7 @@ export function createCallBridgeWebhookRouter(): Router {
             role: 'customer',
             sessionId: session.id,
             endConferenceOnExit: true,
+            operatorInitiated: session.createdByAgentId === 'operator',
           });
           if ('error' in result) {
             await db

@@ -154,6 +154,7 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
 
 function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
   const qc = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
   const { data: session } = useQuery({
     queryKey: ['call-bridge', id],
     queryFn: () => api.callBridge.status(id),
@@ -162,12 +163,17 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
 
   const bringInAi = useMutation({
     mutationFn: () => api.callBridge.bringInAi(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['call-bridge', id] }),
+    onSuccess: () => {
+      setActionError(null);
+      qc.invalidateQueries({ queryKey: ['call-bridge', id] });
+    },
+    onError: (err: unknown) => setActionError(err instanceof Error ? err.message : String(err)),
   });
 
   const end = useMutation({
     mutationFn: () => api.callBridge.end(id),
     onSuccess: () => onEnded(),
+    onError: (err: unknown) => setActionError(err instanceof Error ? err.message : String(err)),
   });
 
   if (!session) {
@@ -228,7 +234,10 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
             className="btn-secondary"
             style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
             disabled={!canBringInAi || bringInAi.isPending}
-            onClick={() => bringInAi.mutate()}
+            onClick={() => {
+              setActionError(null);
+              bringInAi.mutate();
+            }}
             title={canBringInAi ? undefined : 'Wait until the call is active (you + customer connected)'}
           >
             <Bot size={14} />
@@ -250,6 +259,9 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
           <button className="btn-secondary" style={{ fontSize: 12 }} onClick={onEnded}>
             New call
           </button>
+        )}
+        {actionError && (
+          <span style={{ fontSize: 12, color: 'var(--color-apex-red)', fontFamily: 'var(--font-mono)' }}>{actionError}</span>
         )}
       </div>
     </div>
