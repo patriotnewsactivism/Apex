@@ -41,6 +41,53 @@ function fail(res: { status: (code: number) => { json: (body: unknown) => void }
 export function createSendSafeguardRouter(): Router {
   const router = Router();
 
+  // Suppression-list management (2026-10-09): the send safeguard blocks calls to
+  // any phone/email in the suppressions table, but no route ever existed to
+  // SEE or CLEAR an entry — an operator whose own test line got auto-suppressed
+  // (rehearsal call dispositioned 'dnc') had no recovery path at all.
+  router.get('/suppressions', async (_req, res) => {
+    try {
+      const { db, suppressions } = await import('@workspace/db');
+      const { desc, or, isNull, gt } = await import('drizzle-orm');
+      const rows = await db.select({
+        id: suppressions.id,
+        channel: suppressions.channel,
+        phoneE164: suppressions.phoneE164,
+        email: suppressions.email,
+        reason: suppressions.reason,
+        source: suppressions.source,
+        createdAt: suppressions.createdAt,
+        expiresAt: suppressions.expiresAt,
+      }).from(suppressions)
+        .where(or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())))
+        .orderBy(desc(suppressions.createdAt)).limit(500);
+      res.json({ suppressions: rows });
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
+  router.delete('/suppressions/:id', async (req, res) => {
+    const session = headerValue(req, 'x-apex-operator-session');
+    if (!(await operatorDashboardSessionValid(session))) {
+      res.status(403).json({ error: 'Operator dashboard session required to clear a suppression.' });
+      return;
+    }
+    try {
+      const { db, suppressions } = await import("@workspace/db");
+      const { eq } = await import('drizzle-orm');
+      const [removed] = await db.delete(suppressions).where(eq(suppressions.id, req.params.id)).returning({
+        id: suppressions.id, channel: suppressions.channel, phoneE164: suppressions.phoneE164,
+        email: suppressions.email, reason: suppressions.reason, source: suppressions.source,
+      });
+      if (!removed) { res.status(404).json({ error: 'Suppression not found (or already expired).' }); return; }
+      console.warn('[send-safeguard] operator cleared suppression', JSON.stringify(removed));
+      res.json({ ok: true, cleared: removed });
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
   router.get('/jobs', async (_req, res) => {
     try {
       const engine = await getSendSafeguard();
