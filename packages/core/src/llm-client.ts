@@ -108,8 +108,7 @@ export type ApexProviderName =
   | 'openrouter-free-policy'
   | 'groq-gpt-oss-120b-byok'
   | 'gemini-3-8-flash-byok'
-  | 'openrouter-deepseek-v4-flash-paid'
-  | 'nous-deepseek-v4-flash-paid';
+  | 'openrouter-deepseek-v4-flash-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
 export const FREE_POLICY_GATEWAY_NAME: ApexProviderName = 'openrouter-free-policy';
@@ -141,18 +140,16 @@ export const OPENROUTER_FREE_KEY_ENVS = [
 ] as const;
 
 /**
- * Paid continuity (operator decisions 2026-10-05): one model,
- * deepseek/deepseek-v4-flash-0731, served by two providers. Nous Portal, the
- * cheaper host, is tried first on 9 requests in 10 and OpenRouter on the
- * tenth; each falls to the other at once (requestProviderOrder).
+ * Paid continuity (operator decision 2026-10-09): one model,
+ * deepseek/deepseek-v4-flash-0731, served by OpenRouter only. Apex no longer
+ * calls the Nous Portal provider (nous-deepseek-v4-flash-paid) — that access
+ * is cut off entirely.
  *
  * OpenRouter: the funded inference key. As of 2026-09-25 only the
  * OPENROUTER_API_KEY_4 account had a positive credit balance (verified via its
  * management key); the other three accounts are overdrawn and answer 402.
- * Nous Portal: NOUS_API_KEY.
  */
 export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_4'] as const;
-export const NOUS_PAID_KEY_ENVS = ['NOUS_API_KEY'] as const;
 export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 /** Output floor for the paid routes. On 2026-10-05 a DevOps task (4,096-token
  *  role budget) failed on deepseek-v4-flash-0731 with "empty completion
@@ -167,10 +164,9 @@ export const PAID_MIN_OUTPUT_TOKENS = 16_384;
  *  route. The paid route is the last resort, so it waits longer. */
 export const PAID_REQUEST_TIMEOUT_MS = 120_000;
 export const PAID_FALLBACK_PROVIDER_NAMES = [
-  'nous-deepseek-v4-flash-paid',
   'openrouter-deepseek-v4-flash-paid',
 ] as const satisfies readonly ApexProviderName[];
-/** The first paid route in the deterministic order: Nous Portal. */
+/** The first (only) paid route in the deterministic order: OpenRouter. */
 export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName = PAID_FALLBACK_PROVIDER_NAMES[0];
 
 type ProviderSpec = {
@@ -396,28 +392,6 @@ const PROVIDERS: readonly ProviderSpec[] = [
     usdPerMillionPrompt: 0.0152,
     usdPerMillionCompletion: 1.28,
   },
-  {
-    name: 'nous-deepseek-v4-flash-paid',
-    model: PAID_FALLBACK_MODEL,
-    baseURL: 'https://inference-api.nousresearch.com/v1',
-    apiKeyEnvs: NOUS_PAID_KEY_ENVS,
-    paid: true,
-    unrestricted: true,
-    protocol: 'openai-compatible',
-    minIntervalMs: 0,
-    toolCallingReliable: true,
-    supportsParallelToolCalls: true,
-    maxOutputTokens: 131_072,
-    minOutputTokens: PAID_MIN_OUTPUT_TOKENS,
-    requestTimeoutMs: PAID_REQUEST_TIMEOUT_MS,
-    // No providerRouting: Nous Portal decides routing per model and rejects a
-    // caller-supplied `provider` object with HTTP 400.
-    // deepseek/deepseek-v4-flash-0731 via Nous Portal.
-    // Verified against live Nous pricing 2026-10-05: $0.07/1M prompt,
-    // $0.14/1M completion, $0.014/1M cached input (automatic prefix cache).
-    usdPerMillionPrompt: 0.07,
-    usdPerMillionCompletion: 0.14,
-  },
 ];
 
 const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
@@ -475,7 +449,7 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
     : [...PROVIDER_ORDER];
   // Paid continuity comes last and only with APEX_PAID_FALLBACK_ENABLED=true.
   // APEX imposes no spend ceiling, request cap, or pacing gate on it; upstream
-  // OpenRouter and Nous limits remain authoritative.
+  // OpenRouter limits remain authoritative.
   if (paidLLMFallbackEnabled()) freeOrder.push(...PAID_FALLBACK_PROVIDER_NAMES);
   return freeOrder;
 }
@@ -484,27 +458,13 @@ export function getProviderOrderForRole(_role?: string, pacingEnabled?: boolean)
   return [...activeProviderOrder(_role, pacingEnabled)];
 }
 
-let paidRotation = 0;
-
 /**
- * The order one request actually tries. Same as getProviderOrderForRole,
- * except that every tenth call puts OpenRouter ahead of Nous, so paid traffic
- * splits about 90/10 Nous/OpenRouter and either one is the other's immediate
- * fallback. A route in cooldown is skipped, so the other takes the load.
+ * The order one request actually tries. Same as getProviderOrderForRole.
+ * There is a single paid route now (OpenRouter), so no rotation is needed;
+ * it sits last behind the free/BYOK chain when paid fallback is enabled.
  */
 export function requestProviderOrder(role?: string, pacingEnabled?: boolean): ApexProviderName[] {
-  const order = getProviderOrderForRole(role, pacingEnabled);
-  const first = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[0]);
-  const second = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[1]);
-  paidRotation += 1;
-  // 90/10 Nous/OpenRouter split (operator decision 2026-10-05): Nous is ~10x
-  // cheaper for this output-heavy workload, so it is primary and OpenRouter is
-  // only tried first 10% of the time. Either is the other's immediate fallback
-  // when in cooldown.
-  if (first >= 0 && second >= 0 && paidRotation % 10 === 0) {
-    [order[first], order[second]] = [order[second], order[first]];
-  }
-  return order;
+  return getProviderOrderForRole(role, pacingEnabled);
 }
 
 export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
