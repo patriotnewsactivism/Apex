@@ -49,6 +49,7 @@ import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
 import { createCartesiaSalesRouter } from './routes/cartesia-sales.js';
 import { createCalendarPublicRouter, createCalendarRouter } from './routes/calendar.js';
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
+import { createHankLiveRouter } from './routes/hank-live.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
@@ -530,6 +531,10 @@ async function main() {
   // registered separately for the feature's own file) since it is equally
   // Telnyx-originated. Must be mounted BEFORE requireAdminAuth.
   app.use('/api/telnyx-assistant', createCallBridgeWebhookRouter());
+
+  // Hank Live Monitor — silent read-only transcript mirror for Hank Vance calls.
+  // Secret-gated (?key=) so it must mount BEFORE requireAdminAuth like webhooks.
+  app.use('/api/hank-live', createHankLiveRouter());
 
   // Public webinar attendee surface. Registration, state polling, Q&A, and
   // engagement are intentionally reachable without the APEX admin bearer token.
