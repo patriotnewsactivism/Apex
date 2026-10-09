@@ -412,7 +412,7 @@ async function recordCustomerLegDialed(sessionId: string, callControlId: string)
   }
 }
 
-async function attachSalesAi(sessionId: string): Promise<void> {
+async function attachSalesAi(sessionId: string, phase: 'call_start' | 'mid_call' = 'call_start'): Promise<void> {
   const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
   if (!session?.customerCallControlId) return;
   let greeting = session.assistantGreeting?.trim() || '';
@@ -463,6 +463,16 @@ async function attachSalesAi(sessionId: string): Promise<void> {
       return transcriptionError;
     });
   const assistantId = process.env.TELNYX_AI_ASSISTANT_ID;
+  if (assistantId && !greeting && process.env.APEX_BRIDGE_AI_MODE === 'newsroom') {
+    // A silent join reads as a dead line to the operator and the contact.
+    // The configured assistant must always speak first when it comes onto the
+    // bridge: Hank's mandated opening on a fresh outbound call, a short
+    // joining announcement when it is brought in mid-call.
+    greeting = phase === 'mid_call'
+      ? 'This is Hank Vance from On Your Side Investigations with We The People News. I am joining the call.'
+      : (process.env.TELNYX_AI_ASSISTANT_GREETING?.trim()
+        || 'Hi, this is Hank Vance from On Your Side Investigations with We The People News. I am calling to speak with someone regarding a matter that was brought to our Newsroom attention.');
+  }
   if (assistantId) {
     const startedAt = Date.now();
     // Omit empty overrides so the assistant's own base prompt/greeting govern
@@ -667,7 +677,7 @@ export function createCallBridgeRouter(): Router {
       const bridgeAssistantId = process.env.TELNYX_AI_ASSISTANT_ID;
       if (bridgeAssistantId && session.customerCallControlId) {
         await db.update(callBridgeSessions).set({ status: 'ai_dialing', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
-        await attachSalesAi(session.id);
+        await attachSalesAi(session.id, 'mid_call');
         const [updated] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, session.id)).limit(1);
         if (updated?.lastError) {
           res.status(502).json({ error: updated.lastError });
