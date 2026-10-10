@@ -17,7 +17,7 @@ import { ApexCEO } from '@workspace/agents';
 import { setOperatorCeo } from './apex-operator-registry.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES, aiApprovalMode, sweepPendingApprovalsWithAiGates } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, paidSpendCapacityWindow, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES, aiApprovalMode, sweepPendingApprovalsWithAiGates } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { getWebSocketTicketStats } from './websocket-auth.js';
@@ -246,12 +246,18 @@ async function main() {
       ...providerBackpressure.pausedProviders,
     ])];
     const requestLedger = getRequestLedgerSnapshot();
+    // Operator decision 2026-10-10: the paid route is now hard-capped by
+    // APEX_DAILY_SPEND_USD. `available` must reflect the dollar budget, not
+    // just a configured credential, or /health claims paid continuity while
+    // the spend cap is refusing every paid call.
+    const paidSpendWindow = paidSpendCapacityWindow();
     const paidContinuityAvailable =
       paidLLMFallbackEnabled() &&
       getConfiguredProviders().some(
         (provider) =>
           (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.configured,
-      );
+      ) &&
+      paidSpendWindow.allowed;
     // OpenRouter, Groq and Gemini now have independent request pools. The only
     // request-count state that is truly workspace-wide is the emergency
     // all-provider ceiling; an exhausted 2,775 OpenRouter pool is NOT a hard
@@ -349,14 +355,20 @@ async function main() {
           available: paidContinuityAvailable,
           active: paidContinuityActive,
           model: PAID_FALLBACK_MODEL,
-          // The same model on two providers; each request alternates which is
-          // tried first. Lists only the routes whose credential is configured.
+          // One model on one provider (OpenRouter); the Nous Portal route was
+          // removed 2026-10-09. Lists only routes whose credential is configured.
           routes: getConfiguredProviders()
             .filter(
               (provider) =>
                 (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.configured,
             )
             .map((provider) => provider.name),
+          // Hard daily dollar cap on paid continuity (APEX_DAILY_SPEND_USD;
+          // 0/unset = fail closed). `spendAvailable` is the gate /health must
+          // be read with when `available` is false.
+          spendCapUsd: paidSpendWindow.capMicros / 1_000_000,
+          spendAvailable: paidSpendWindow.allowed,
+          spendReason: paidSpendWindow.reason,
         },
       },
       // Provider account balance. The paid continuity route makes remaining

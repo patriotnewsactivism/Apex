@@ -51,11 +51,12 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'paid-continuity',
     name: 'Paid Continuity — DeepSeek V4 Flash 0731',
-    description: 'Runs only after every free route (OpenRouter free, Groq, Gemini) is spent, and only when Routing Enabled is true. Paid continuity runs on OpenRouter alone (the funded OPENROUTER_API_KEY_4 account). The Nous Portal provider is removed — Apex no longer calls Nous.',
+    description: 'Runs only after every free route (OpenRouter free, Groq, Gemini) is spent, and only when Routing Enabled is true. Paid continuity runs on OpenRouter alone (the funded OPENROUTER_API_KEY_4 account). The Nous Portal provider is removed — Apex no longer calls Nous. Hard-capped by the Daily Spend Cap below (0/unset = spend nothing).',
     category: 'ai',
     docsUrl: 'https://openrouter.ai/deepseek/deepseek-v4-flash-0731',
     envVars: [
       { key: 'APEX_PAID_FALLBACK_ENABLED', label: 'Routing Enabled', placeholder: 'true or false (unset = off)' },
+      { key: 'APEX_DAILY_SPEND_USD', label: 'Daily Spend Cap (USD)', placeholder: '1 (0 or unset = spend nothing)' },
       {
         key: 'OPENROUTER_API_KEY_4', label: 'OpenRouter Funded API Key', placeholder: 'sk-or-v1-...', secret: true,
         probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },

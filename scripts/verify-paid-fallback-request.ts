@@ -49,7 +49,7 @@ const ROUTE_ENVS = [
   'OPENROUTER_FREE_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY_3', 'OPENROUTER_API_KEY_4',
   'QWEN_API_KEY', 'APEX_QWEN_BYOK_ENABLED', 'GROQ_API_KEY', 'GROQ_API_KEY_2', 'APEX_GROQ_BYOK_ENABLED',
   'GEMINI_API_KEY', 'APEX_GEMINI_BYOK_ENABLED', 'APEX_PAID_FALLBACK_ENABLED', 'APEX_OPENROUTER_MODEL_POLICY',
-  'APEX_LLM_REQUEST_TIMEOUT_MS',
+  'APEX_LLM_REQUEST_TIMEOUT_MS', 'APEX_DAILY_SPEND_USD', 'APEX_SPEND_PACING_ENABLED',
 ];
 /** Default request timeout for this guard: the configurable floor, so a paid
  *  answer slower than it can be checked in seconds rather than minutes. */
@@ -61,6 +61,11 @@ async function main(): Promise<void> {
   process.env.DATABASE_URL = 'postgres://guard:***@127.0.0.1:9/no_database';
   for (const env of ROUTE_ENVS) delete process.env[env];
   process.env.APEX_LLM_REQUEST_TIMEOUT_MS = String(GUARD_DEFAULT_TIMEOUT_MS);
+  // Operator decision 2026-10-10: the paid route is hard-capped by the dollar
+  // ledger, so the guard must give it a budget or every paid call is refused.
+  // Pacing off makes the window deterministic regardless of wall-clock hour.
+  process.env.APEX_DAILY_SPEND_USD = '1';
+  process.env.APEX_SPEND_PACING_ENABLED = 'false';
   // Today's ledger as a build from before cached-token tracking wrote it: no
   // cachedTokens map. The ledger reads its file once, at import.
   const ledgerDir = mkdtempSync(path.join(tmpdir(), 'apex-spend-ledger-'));
