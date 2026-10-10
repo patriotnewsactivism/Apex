@@ -267,8 +267,16 @@ async function writeDialSettings(next: DialSettings): Promise<void> {
  *  feature must not become production just because the code merged. Opt IN
  *  explicitly with APEX_BRIDGE_AI_TRANSPORT=leg (for the controlled test), and
  *  flip it back to unset/'attach' for the instant rollback. */
+/** The AI reaches the bridge as its own dialed conference leg.
+ *
+ *  'leg' is the DEFAULT because it is the one that works. The legacy 'attach'
+ *  starts an assistant on the CUSTOMER's conferenced leg, which takes that
+ *  leg's audio out of the conference — both parties then hear silence, and
+ *  Telnyx refuses a second attempt ("AI Assistant cannot be started more than
+ *  once"). It is opt-IN only (APEX_BRIDGE_AI_TRANSPORT=attach), kept for a
+ *  controlled comparison or a rollback, never a default. */
 export function aiLegTransport(): 'leg' | 'attach' {
-  return process.env.APEX_BRIDGE_AI_TRANSPORT === 'leg' ? 'leg' : 'attach';
+  return process.env.APEX_BRIDGE_AI_TRANSPORT === 'attach' ? 'attach' : 'leg';
 }
 
 function callBridgeWebhookUrl(): string {
