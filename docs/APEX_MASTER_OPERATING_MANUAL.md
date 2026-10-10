@@ -211,7 +211,7 @@ Current order documented by the repository:
 8. direct Gemini 3.8 Flash BYOK when enabled.
 9. `deepseek/deepseek-v4-flash-0731` — paid unrestricted continuity, last resort, only with `APEX_PAID_FALLBACK_ENABLED=true`; on OpenRouter (`OPENROUTER_API_KEY_4`). Apex no longer calls the Nous Portal provider — that access is cut off.
 
-Qwen3.8 Flash (QwenCloud Token Plan) and GLM 5.3 FlashX are no longer routed. MiniMax M3 Free is not a production route until reverified.
+Qwen3.8 Flash (QwenCloud, metered) is the LAST automatic route — used only after every free pool is spent (operator decision 2026-10-10, superseding ADR-017's Qwen-first order). GLM 5.3 FlashX is replaced by the DeepSeek paid continuity route on OpenRouter alone (Nous Portal removed). MiniMax M3 Free is not a production route until reverified.
 
 ### OpenRouter accounts
 
