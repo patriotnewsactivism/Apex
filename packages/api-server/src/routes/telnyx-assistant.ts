@@ -743,6 +743,28 @@ export function createTelnyxAssistantRouter(ceo: ApexCEO): Router {
     }
   });
 
+  // ── POST/GET /front-desk-voice — TeXML inbound entry for the Apex Front
+  // Desk number (+1 832 307 1234). Mirrors donmatthews.live's /voice route:
+  // answers with a <Connect><AIAssistant> verb so Telnyx hands the call to
+  // the "Apex Front Desk" assistant (dynamic variables are fetched by the
+  // assistant itself via its own dynamic_variables_webhook_url). No secret
+  // needed: the route discloses only the assistant id, and reaching it
+  // requires already calling the newsroom's own number.
+  const frontDeskTeXml = () => `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <AIAssistant id="${process.env.TELNYX_FRONT_DESK_ASSISTANT_ID ?? 'assistant-7b4cf04f-c8b9-4940-a07e-24e4d41c67d9'}"></AIAssistant>
+  </Connect>
+</Response>`;
+  router.post('/front-desk-voice', (_req, res) => {
+    res.set('Content-Type', 'text/xml');
+    return res.send(frontDeskTeXml());
+  });
+  router.get('/front-desk-voice', (_req, res) => {
+    res.set('Content-Type', 'text/xml');
+    return res.send(frontDeskTeXml());
+  });
+
   // ── POST /events — inbound conversation lifecycle + insights ───────────
   router.post('/events', async (req, res) => {
     if (!verifyAssistantKey(req.query as Record<string, unknown>)) {
