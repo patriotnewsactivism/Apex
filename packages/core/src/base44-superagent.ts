@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ToolDefinition } from './types.js';
 
-const DEFAULT_AGENT_ID = '6a515f4e071e32fc10378575';
+const DEFAULT_AGENT_ID = '6aca4e7c517f3ccfce4a2df3';
 const BASE44_AGENT_API = 'https://app.base44.com/api/agents';
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_TIMEOUT_MS = 120_000;
@@ -76,7 +76,10 @@ async function base44Fetch<T>(
     signal,
     headers: {
       'Content-Type': 'application/json',
-      api_key: key,
+      // Base44 requires a personal access token as an Authorization Bearer
+      // token. The legacy `api_key` header is refused with
+      // InvalidAccessTokenError, so the credential must be sent here.
+      Authorization: `Bearer ${key}`,
       ...(init.headers ?? {}),
     },
   });
