@@ -382,6 +382,12 @@ export interface CrmContactFilters {
   lastContactedTo?: string;
   replied?: boolean | null;
   campaignId?: string;
+  /** Client's company industry. */
+  industry?: string;
+  /** Has/has not been called. */
+  called?: boolean | null;
+  /** Has/has not been emailed. */
+  emailed?: boolean | null;
 }
 
 export interface CrmContact {
@@ -442,12 +448,25 @@ export interface CrmMeeting {
   status: string | null;
 }
 
+export interface CrmActivityEvent {
+  id: string;
+  kind: 'email' | 'sms' | 'call' | 'timeline';
+  channel: string;
+  occurredAt: string;
+  occurredChicago: string;
+  summary: string;
+  direction: string | null;
+  actor: string | null;
+  detail: Record<string, unknown> | null;
+}
+
 export interface CrmContactDetail {
   timezone: string;
   contact: CrmContact;
   identifiers: CrmIdentifier[];
   meetings: CrmMeeting[];
   timeline: CrmTimelineRow[];
+  activity: CrmActivityEvent[];
 }
 
 export interface CrmUnmatched {
@@ -896,8 +915,27 @@ export const api = {
       if (params?.replied === true) qs.set('replied', 'true');
       if (params?.replied === false) qs.set('replied', 'false');
       if (params?.campaignId) qs.set('campaignId', params.campaignId);
+      if (params?.industry) qs.set('industry', params.industry);
+      if (params?.called === true) qs.set('called', 'true');
+      if (params?.called === false) qs.set('called', 'false');
+      if (params?.emailed === true) qs.set('emailed', 'true');
+      if (params?.emailed === false) qs.set('emailed', 'false');
       const query = qs.toString();
       return apiFetch<{ timezone: string; contacts: CrmContact[] }>(`/crm/contacts${query ? `?${query}` : ''}`);
+    },
+    // The CRM's second record type: researched leads, same facet vocabulary.
+    leads: (params?: CrmContactFilters) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set('q', params.q);
+      if (params?.industry) qs.set('industry', params.industry);
+      if (params?.city) qs.set('city', params.city);
+      if (params?.called === true) qs.set('called', 'true');
+      if (params?.called === false) qs.set('called', 'false');
+      if (params?.emailed === true) qs.set('emailed', 'true');
+      if (params?.emailed === false) qs.set('emailed', 'false');
+      if (params?.campaignId) qs.set('campaignId', params.campaignId);
+      const query = qs.toString();
+      return apiFetch<{ recordType: string; leads: ResearchedLead[] }>(`/crm/leads${query ? `?${query}` : ''}`);
     },
     get: (id: string) => apiFetch<CrmContactDetail>(`/crm/contacts/${encodeURIComponent(id)}`),
     setDoNotContact: (id: string, value: boolean, reason?: string) =>
