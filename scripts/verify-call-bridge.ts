@@ -154,8 +154,8 @@ async function main(): Promise<void> {
       /const action = muted \? 'mute' : 'unmute'/.test(route),
   );
   check(
-    'the conference-leg transport is opt-in; the legacy attach path is the safe production default',
-    /export function aiLegTransport\(\): 'leg' \| 'attach' \{\s*return process\.env\.APEX_BRIDGE_AI_TRANSPORT === 'leg' \? 'leg' : 'attach';/.test(route),
+    'the conference-leg transport is the production default (the legacy attach path is rollback-only)',
+    /export function aiLegTransport\(\): 'leg' \| 'attach' \{\s*return process\.env\.APEX_BRIDGE_AI_TRANSPORT === 'attach' \? 'attach' : 'leg';/.test(route),
   );
   check(
     'a dial the API accepted never claims the AI joined — the leg waits for the conference event',
@@ -328,7 +328,20 @@ async function main(): Promise<void> {
     configuredApexOutboundNumber,
     bridgeTakeoverBriefing,
     assistantArmVariablesForBridge,
+    aiLegTransport,
   } = mod;
+
+  // Executed, not pattern-matched: the transport default is the whole point.
+  const priorTransport = process.env.APEX_BRIDGE_AI_TRANSPORT;
+  try {
+    delete process.env.APEX_BRIDGE_AI_TRANSPORT;
+    check('with nothing configured, the AI takeover uses the conference leg', aiLegTransport() === 'leg');
+    process.env.APEX_BRIDGE_AI_TRANSPORT = 'attach';
+    check('APEX_BRIDGE_AI_TRANSPORT=attach still selects the legacy path (rollback stays available)', aiLegTransport() === 'attach');
+  } finally {
+    if (priorTransport === undefined) delete process.env.APEX_BRIDGE_AI_TRANSPORT;
+    else process.env.APEX_BRIDGE_AI_TRANSPORT = priorTransport;
+  }
 
   // ── The AI's brief and the arming map: run them, don't pattern-match ───────
   const bridgeState = {
