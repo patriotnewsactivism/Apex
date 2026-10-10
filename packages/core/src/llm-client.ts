@@ -293,14 +293,18 @@ const PROVIDERS: readonly ProviderSpec[] = [
     name: 'qwen-dashscope-byok',
     model: 'qwen3.8-flash',
     modelOverrideEnv: 'QWEN_MODEL',
-    // QwenCloud Token Plan OpenAI-compatible endpoint. Token Plan (`sk-sp-...`)
-    // credentials are not interchangeable with pay-as-you-go (`sk-...`)
-    // credentials/endpoints. The env override remains available for controlled
-    // migrations without another code change.
+    // QwenCloud OpenAI-compatible endpoint. Pay-as-you-go (`sk-...`) and Token
+    // Plan (`sk-sp-...`) credentials are not interchangeable across hosts: PAYG
+    // keys are served by maas.qwencloudapi.com, Token Plan keys by
+    // token-plan.maas.qwencloudapi.com. Default to the PAYG host, because the
+    // operator's active key is pay-as-you-go — with the Token Plan host as the
+    // default, a deployment that omits QWEN_BASE_URL sends the key to the wrong
+    // host and every Qwen call fails. Token Plan deployments must set
+    // QWEN_BASE_URL (or APEX_QWEN_BASE_URL) explicitly.
     baseURL: () =>
       process.env.QWEN_BASE_URL?.trim() ||
       process.env.APEX_QWEN_BASE_URL?.trim() ||
-      'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1',
+      'https://maas.qwencloudapi.com/compatible-mode/v1',
     apiKeyEnvs: ['QWEN_API_KEY', 'QWEN_API_KEY_2'],
     // Real money from a purchased token plan, so spend is recorded like any
     // paid route — but deliberately NOT `unrestricted`. OpenRouter and
