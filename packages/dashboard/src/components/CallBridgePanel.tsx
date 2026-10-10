@@ -57,11 +57,24 @@ const LIVE_STATUSES: CallBridgeStatus[] = ['dialing_operator', 'dialing_customer
 function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
   const [operatorNumber, setOperatorNumber] = useState('');
   const [customerNumber, setCustomerNumber] = useState('');
+  const [fromNumber, setFromNumber] = useState('');
+  const [assistantLine, setAssistantLine] = useState('');
+  const [topic, setTopic] = useState('');
+  const [autoJoinAi, setAutoJoinAi] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const start = useMutation({
     mutationFn: () =>
-      api.callBridge.start({ operatorNumber: operatorNumber.trim(), customerNumber: customerNumber.trim() }),
+      api.callBridge.start({
+        operatorNumber: operatorNumber.trim(),
+        customerNumber: customerNumber.trim(),
+        // Empty means "use the configured APEX defaults" — the server only
+        // accepts numbers it has already approved for bridge dials.
+        ...(fromNumber.trim() ? { fromNumber: fromNumber.trim() } : {}),
+        ...(assistantLine.trim() ? { assistantLine: assistantLine.trim() } : {}),
+        ...(topic.trim() ? { topic: topic.trim() } : {}),
+        autoJoinAi,
+      }),
     onSuccess: (res) => {
       if (res.error) {
         setError(res.error);
@@ -87,7 +100,8 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
             Call with live AI takeover
           </div>
           <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginTop: 1 }}>
-            Dials your phone, then the customer once you answer. Bring the AI in live once you're connected.
+            Dials your phone, then the customer once you answer. The AI can sit in from the very start — muted and
+            listening — and take over the moment you hand it the call.
           </div>
         </div>
       </div>
@@ -131,6 +145,51 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
         </div>
       </div>
 
+      <div>
+        <label style={labelStyle}>What this call is about (the AI is briefed with this)</label>
+        <textarea
+          style={{ ...inputStyle, minHeight: 62, resize: 'vertical', lineHeight: 1.45 }}
+          placeholder="e.g. Ask the county records office who authorised the June road closure and when the policy was written."
+          value={topic}
+          onChange={(e) => setTopic(e.target.value)}
+        />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12 }}>
+        <div>
+          <label style={labelStyle}>Call from (blank = configured line)</label>
+          <input
+            style={inputStyle}
+            placeholder="+183****7665"
+            value={fromNumber}
+            onChange={(e) => setFromNumber(e.target.value)}
+          />
+        </div>
+        <div>
+          <label style={labelStyle}>AI line the takeover answers on (blank = default)</label>
+          <input
+            style={inputStyle}
+            placeholder="+134****1352"
+            value={assistantLine}
+            onChange={(e) => setAssistantLine(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer' }}>
+        <input
+          type="checkbox"
+          checked={autoJoinAi}
+          onChange={(e) => setAutoJoinAi(e.target.checked)}
+          style={{ marginTop: 2 }}
+        />
+        <span style={{ fontSize: 11.5, color: 'var(--color-apex-muted)', lineHeight: 1.5 }}>
+          Put the AI on the bridge before the call rings — <strong>muted</strong>, so it hears the whole conversation
+          but cannot say a word until you hand it the call with <strong>Take over</strong>. Off means the AI only joins
+          when you ask, from whatever point in the call you ask.
+        </span>
+      </label>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <button
           className="btn-primary"
@@ -161,13 +220,30 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
     refetchInterval: (query) => (query.state.data && LIVE_STATUSES.includes(query.state.data.status) ? 2000 : false),
   });
 
+  const afterAction = () => {
+    setActionError(null);
+    qc.invalidateQueries({ queryKey: ['call-bridge', id] });
+  };
+  const onActionError = (err: unknown) => setActionError(err instanceof Error ? err.message : String(err));
+
   const bringInAi = useMutation({
     mutationFn: () => api.callBridge.bringInAi(id),
-    onSuccess: () => {
-      setActionError(null);
-      qc.invalidateQueries({ queryKey: ['call-bridge', id] });
-    },
-    onError: (err: unknown) => setActionError(err instanceof Error ? err.message : String(err)),
+    onSuccess: afterAction,
+    onError: onActionError,
+  });
+
+  // Take over = unmute the AI's conference leg, so it is heard by everyone on
+  // the call while it keeps hearing them. Hand back mutes it again.
+  const takeover = useMutation({
+    mutationFn: () => api.callBridge.takeover(id),
+    onSuccess: afterAction,
+    onError: onActionError,
+  });
+
+  const handBack = useMutation({
+    mutationFn: () => api.callBridge.handBack(id),
+    onSuccess: afterAction,
+    onError: onActionError,
   });
 
   const end = useMutation({
@@ -187,6 +263,14 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
   const color = STATUS_COLOR[session.status];
   const canBringInAi = session.status === 'active';
   const isDone = session.status === 'ended' || session.status === 'failed';
+  const aiOnCall = session.status === 'ai_dialing' || session.status === 'ai_joined';
+  const aiListening = aiOnCall && session.aiMuted !== false;
+  const statusLabel =
+    session.status === 'ai_joined'
+      ? aiListening
+        ? 'Live: you + customer + AI listening'
+        : 'Live: you + customer + AI on the call'
+      : STATUS_LABEL[session.status];
 
   return (
     <div className="glass-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -202,12 +286,21 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
             flexShrink: 0,
           }}
         />
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>{STATUS_LABEL[session.status]}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-apex-text)' }}>{statusLabel}</div>
       </div>
 
       <div style={{ fontSize: 12, color: 'var(--color-apex-muted)', fontFamily: 'var(--font-mono)' }}>
         You: {session.operatorNumber} · Customer: {session.customerNumber}
+        {session.fromNumber ? ` · From: ${session.fromNumber}` : ''}
+        {session.assistantLine ? ` · AI line: ${session.assistantLine}` : ''}
       </div>
+
+      {aiListening && (
+        <div style={{ fontSize: 11.5, color: 'var(--color-apex-muted)', lineHeight: 1.5 }}>
+          The AI is on the bridge muted and listening{session.assistantTopic ? ` — briefed on: “${session.assistantTopic}”` : ''}. It
+          cannot be heard until you take over, and it keeps hearing everything after you hand it back.
+        </div>
+      )}
 
       {session.lastError && (
         <div
@@ -229,7 +322,7 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        {!isDone && (
+        {!isDone && !aiOnCall && (
           <button
             className="btn-secondary"
             style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
@@ -241,7 +334,37 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
             title={canBringInAi ? undefined : 'Wait until the call is active (you + customer connected)'}
           >
             <Bot size={14} />
-            {session.status === 'ai_dialing' || session.status === 'ai_joined' ? 'AI is on the call' : 'Bring in AI'}
+            {bringInAi.isPending ? 'Bringing the AI in…' : 'Put the AI in (listening)'}
+          </button>
+        )}
+        {!isDone && aiOnCall && aiListening && (
+          <button
+            className="btn-primary"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
+            disabled={takeover.isPending}
+            onClick={() => {
+              setActionError(null);
+              takeover.mutate();
+            }}
+            title="Unmute the AI so everyone on the call hears it"
+          >
+            <Bot size={14} />
+            {takeover.isPending ? 'Handing over…' : 'Take over — let the AI talk'}
+          </button>
+        )}
+        {!isDone && aiOnCall && !aiListening && (
+          <button
+            className="btn-secondary"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
+            disabled={handBack.isPending}
+            onClick={() => {
+              setActionError(null);
+              handBack.mutate();
+            }}
+            title="Mute the AI again — it keeps listening"
+          >
+            <Bot size={14} />
+            {handBack.isPending ? 'Muting…' : 'Take back — mute the AI'}
           </button>
         )}
         {!isDone && (

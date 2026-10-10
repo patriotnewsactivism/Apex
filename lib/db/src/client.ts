@@ -1038,6 +1038,13 @@ export async function migrate() {
   await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS coach_note text`;
   await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS operator_join_role text`;
   await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS follow_up_sent boolean NOT NULL DEFAULT false`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS ai_muted boolean NOT NULL DEFAULT true`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS ai_auto_join boolean NOT NULL DEFAULT false`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS assistant_id text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS assistant_line text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS assistant_topic text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS from_number text`;
+  await client`ALTER TABLE call_bridge_sessions ADD COLUMN IF NOT EXISTS ai_takeover_at timestamptz`;
 
   // ── Outbound call outcomes (2026-09-23) ──────────────────────────────────
   // Structured disposition/appointment capture for make_outbound_call, so a

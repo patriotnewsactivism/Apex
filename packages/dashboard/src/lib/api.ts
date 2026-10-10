@@ -1009,17 +1009,43 @@ export const api = {
   },
 
   callBridge: {
-    /** Dial the operator; the customer is dialed once they answer. */
-    start: (body: { operatorNumber: string; customerNumber: string }) =>
+    /** Dial the operator; the customer is dialed once they answer.
+     *  autoJoinAi puts the AI on the bridge muted, listening, before the
+     *  customer is even rung. topic is the operator's briefing for the AI. */
+    start: (body: {
+      operatorNumber: string;
+      customerNumber: string;
+      fromNumber?: string;
+      assistantLine?: string;
+      assistantId?: string;
+      topic?: string;
+      autoJoinAi?: boolean;
+    }) =>
       apiFetch<{ id: string; status: string; error?: string }>('/call-bridge/start', {
         method: 'POST',
         body: JSON.stringify(body),
       }),
     /** Poll the live status of a call bridge session. */
     status: (id: string) => apiFetch<CallBridgeSession>(`/call-bridge/${encodeURIComponent(id)}`),
-    /** Dial the Apex Front Desk AI assistant into an already-active call. */
-    bringInAi: (id: string) =>
-      apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/bring-in-ai`, { method: 'POST' }),
+    /** Put the AI on an already-active call. It joins MUTED and listening;
+     *  pass unmute: true to hand it the call at the same moment. */
+    bringInAi: (id: string, unmute = false) =>
+      apiFetch<{ ok: boolean; status: string; aiMuted?: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/bring-in-ai`,
+        { method: 'POST', body: JSON.stringify({ unmute }) },
+      ),
+    /** Hand the call to the AI: unmute its leg so the other party hears it. */
+    takeover: (id: string) =>
+      apiFetch<{ ok: boolean; status: string; aiMuted?: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/takeover`,
+        { method: 'POST' },
+      ),
+    /** Take the call back: mute the AI's leg again, it keeps listening. */
+    handBack: (id: string) =>
+      apiFetch<{ ok: boolean; status: string; aiMuted?: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/hand-back`,
+        { method: 'POST' },
+      ),
     join: (id: string, role: 'monitor' | 'whisper' | 'barge') =>
       apiFetch<{ ok: boolean; role: string; error?: string }>(`/call-bridge/${encodeURIComponent(id)}/join`, {
         method: 'POST',
@@ -1274,6 +1300,18 @@ export interface CallBridgeSession {
   operatorCallControlId: string | null;
   customerCallControlId: string | null;
   aiCallControlId: string | null;
+  /** True while the AI's conference leg is muted: on the call, listening,
+   *  not yet handed the conversation. */
+  aiMuted?: boolean;
+  aiAutoJoin?: boolean;
+  aiTakeoverAt?: string | null;
+  /** The line the AI answers on, the assistant armed for this call, and what
+   *  the operator told it the call is about. */
+  assistantLine?: string | null;
+  assistantId?: string | null;
+  assistantTopic?: string | null;
+  /** Caller ID every leg of this session dials from. */
+  fromNumber?: string | null;
   lastError: string | null;
   sessionMode?: string;
   buyerName?: string | null;

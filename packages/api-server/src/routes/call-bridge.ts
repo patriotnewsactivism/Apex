@@ -19,13 +19,27 @@ import { normalizeE164 } from './sales-ops.js';
 //      rings into an empty conference.
 //   2. (webhook-driven)      — once the operator answers, dial the customer
 //      into the same conference.
-//   3. POST /:id/bring-in-ai — dial the Apex Front Desk NUMBER (not a direct
-//      "call an assistant" API, which Telnyx does not appear to expose) into
-//      the same conference. That number's connection already routes inbound
-//      calls to the Apex Front Desk AI Assistant (see telnyx-assistant.ts),
-//      so redialing it here reuses a mechanism already confirmed working
-//      end-to-end, rather than guessing at an unconfirmed primitive for
-//      something this consequential — a live customer call.
+//   3. POST /:id/bring-in-ai — dial the AI LINE into the same conference as a
+//      MUTED participant. That line's connection already routes inbound calls
+//      to an AI assistant, so the assistant hears the whole conference while
+//      it is muted and can be heard the instant it is unmuted. Joining at
+//      /start instead (POST /start { autoJoinAi: true }) puts the assistant on
+//      the bridge before the customer is even rung, so it has the context of
+//      the entire conversation by the time the operator hands it the call.
+//
+// THE TAKEOVER IS A CONFERENCE MUTE, NOT A THIRD-PARTY ATTACH. The previous
+// implementation called ai_assistant_start on the CUSTOMER's call_control_id —
+// a leg that is already a conference participant. Telnyx accepts that command
+// (HTTP 200, ok:true) and then ends the conversation about one second later:
+// production session 89b6c4c7 shows the conversation created at 16:16:19.17,
+// a greeting playback, and call.conversation.ended at 16:16:20.19, with
+// GET /v2/ai/conversations/{id}/messages returning ZERO messages — the
+// assistant never heard a word and never spoke one. The operator hears the
+// customer and nothing else, which is exactly the reported symptom.
+// APEX_BRIDGE_AI_TRANSPORT=attach restores that path for comparison only.
+// Muting a conference participant changes only what the OTHER participants
+// hear: a muted participant still receives the full conference mix, so the AI
+// keeps listening the whole time it is held back.
 //
 // The operator's and customer's legs are dialed with
 // conference_config.end_conference_on_exit = true, so if either one hangs up
@@ -149,12 +163,51 @@ function assistantDynamicVariablesForSession(session: typeof callBridgeSessions.
       ? 'Owner-requested internal self-pitch test. Use the saved buyer name. Never use Sam. Do not pretend they called you first.'
       : 'Outbound BuildMyBot sales call.',
     requested_first_message: sanitizeAssistantCopy(session.assistantGreeting ?? '', firstName),
+    // What the operator told the AI this call is about. It replaces the
+    // standing "no specific script is armed" default so a bridge takeover is
+    // about the conversation actually happening on the line.
+    fact: session.assistantTopic?.trim()
+      ? sanitizeAssistantCopy(session.assistantTopic, firstName)
+      : 'No specific script is armed for this call. Respond naturally per your standing newsroom rules.',
   };
 }
 
 export function configuredApexOutboundNumber(): string | null {
   const normalized = normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
-  return APPROVED_APEX_OUTBOUND_NUMBERS.includes(normalized) ? normalized : null;
+  return normalized && APPROVED_APEX_OUTBOUND_NUMBERS.includes(normalized) ? normalized : null;
+}
+
+/** The lines a bridge leg may be dialed FROM. APEX only ever dials the
+ *  operator/customer legs from caller IDs it owns and has approved, so an
+ *  operator-supplied number is accepted only when it is already on this list —
+ *  anything else would put an arbitrary number on a live outbound call. */
+export function approvedCallerIdNumbers(): string[] {
+  const extra = (process.env.APEX_BRIDGE_CALLER_ID_NUMBERS ?? '')
+    .split(',')
+    .map((value) => normalizeE164(value))
+    .filter((value): value is string => Boolean(value));
+  return Array.from(new Set([...APPROVED_APEX_OUTBOUND_NUMBERS, ...extra]));
+}
+
+/** The line whose connection answers inbound calls with an AI assistant. A
+ *  per-call override is only honored when it is on the approved list, for the
+ *  same reason as the caller ID: the AI leg must land on a line we know
+ *  answers with an assistant rather than whoever happens to pick up. */
+export function approvedAssistantLines(): string[] {
+  const extra = (process.env.APEX_BRIDGE_AI_LINES ?? '')
+    .split(',')
+    .map((value) => normalizeE164(value))
+    .filter((value): value is string => Boolean(value));
+  const fallback = normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
+  return Array.from(new Set([...(fallback ? [fallback] : []), ...extra]));
+}
+
+/** How the AI gets onto the bridge.
+ *  'leg'    — dial the AI line into the conference muted (the working design).
+ *  'attach' — legacy ai_assistant_start on the customer's conferenced leg.
+ *             Kept only so the broken path stays selectable for comparison. */
+export function aiLegTransport(): 'leg' | 'attach' {
+  return process.env.APEX_BRIDGE_AI_TRANSPORT === 'attach' ? 'attach' : 'leg';
 }
 
 function callBridgeWebhookUrl(): string {
@@ -201,6 +254,12 @@ export async function dialBridgeLeg(params: {
   endConferenceOnExit: boolean;
   supervisorRole?: 'monitor' | 'whisper' | 'barge';
   whisperCallControlIds?: string[];
+  /** Join the conference already muted. This is how the AI listens without
+   *  being heard until the operator hands it the call. */
+  mute?: boolean;
+  /** Caller ID for this leg. Defaults to the single approved APEX caller ID;
+   *  only ever a number on approvedCallerIdNumbers(), validated by the caller. */
+  fromNumber?: string | null;
   sendJobId?: string | null;
   /** True when the operator started this session themselves from the
    *  dashboard: the dial is their own explicit action, so the send job is
@@ -212,7 +271,7 @@ export async function dialBridgeLeg(params: {
 }): Promise<{ callControlId: string } | { error: string; awaitingSafeguard?: boolean; sendJobId?: string }> {
   const apiKey = process.env.TELNYX_API_KEY;
   const connectionId = process.env.TELNYX_CALL_BRIDGE_CONNECTION_ID;
-  const from = configuredApexOutboundNumber();
+  const from = params.fromNumber ?? configuredApexOutboundNumber();
   if (!apiKey || !connectionId || !from) {
     return { error: `TELNYX_API_KEY, TELNYX_CALL_BRIDGE_CONNECTION_ID, and APEX_FRONT_DESK_NUMBER=${APPROVED_APEX_OUTBOUND_NUMBER} are required for outbound Telnyx calls.` };
   }
@@ -268,6 +327,12 @@ export async function dialBridgeLeg(params: {
           early_media: false,
           // A supervisor hanging up must not tear down the buyer's call.
           end_conference_on_exit: params.supervisorRole ? false : params.endConferenceOnExit,
+          // The AI's listening leg never starts a conference of its own: it
+          // only ever joins one the operator's leg already created.
+          ...(params.role === 'ai' ? { start_conference_on_enter: false } : {}),
+          // Muted on arrival. A muted conference participant still hears the
+          // full mix — it just cannot be heard — which is the whole design.
+          ...(params.mute ? { mute: true } : {}),
           ...(params.supervisorRole ? { supervisor_role: params.supervisorRole } : {}),
           ...(params.supervisorRole === 'whisper' && params.whisperCallControlIds?.length
             ? { whisper_call_control_ids: params.whisperCallControlIds }
@@ -324,6 +389,40 @@ async function telnyxCommand(callControlId: string, action: string, body: Record
     if (!res.ok) {
       const json = (await res.json().catch(() => null)) as { errors?: Array<{ detail?: string }> } | null;
       return json?.errors?.[0]?.detail ?? `Telnyx ${action} returned ${res.status}`;
+    }
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** Mute or unmute ONE participant of a live conference.
+ *
+ *  This is the takeover mechanism. Muting changes only what the other
+ *  participants hear: the muted participant still receives the conference mix,
+ *  so a muted AI leg keeps listening to the whole conversation and can be
+ *  handed the call by a single unmute. Returns null on success, or the Telnyx
+ *  error detail. Exported for direct guard testing. */
+export async function setConferenceParticipantMuted(
+  conferenceName: string,
+  callControlId: string,
+  muted: boolean,
+): Promise<string | null> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return 'TELNYX_API_KEY is not configured.';
+  const action = muted ? 'mute' : 'unmute';
+  try {
+    const res = await fetch(
+      `https://api.telnyx.com/v2/conferences/${encodeURIComponent(conferenceName)}/actions/${action}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ call_control_ids: [callControlId] }),
+      },
+    );
+    if (!res.ok) {
+      const json = (await res.json().catch(() => null)) as { errors?: Array<{ detail?: string }> } | null;
+      return json?.errors?.[0]?.detail ?? `Telnyx conference ${action} returned ${res.status}`;
     }
     return null;
   } catch (err) {
@@ -440,9 +539,186 @@ async function recordCustomerLegDialed(sessionId: string, callControlId: string)
   }
 }
 
-async function attachSalesAi(sessionId: string, phase: 'call_start' | 'mid_call' = 'call_start'): Promise<void> {
+/** The standing brief that turns the line's INBOUND assistant into a silent
+ *  third participant on someone else's call.
+ *
+ *  The AI line answers with an assistant built to take tip calls: "Wait for
+ *  the caller to speak. Then ask ONE question: How can I help you? … When you
+ *  have their name, number and the issue, say Thank you and use the Hangup
+ *  tool." Dropped onto a bridge with no brief, that assistant treats the
+ *  operator as a tip caller and eventually hangs itself up. This brief is what
+ *  the operator's "tell it what the call is about" setting rides on. Exported
+ *  so the guard can execute it rather than pattern-match it. */
+export function bridgeTakeoverBriefing(topic: string | null | undefined): string {
+  const subject = typeof topic === 'string' && topic.trim() ? topic.trim() : '';
+  return [
+    'BRIDGE TAKEOVER BRIEFING',
+    'You are on a live three-way call: our operator and the other party. You joined MUTED and you have been listening since the start, so you already have the context.',
+    'This is NOT an inbound tip call. Do not greet anyone, do not open with "How can I help you?", do not ask for a name and number, and do not use the Hangup tool — the operator owns this call and only the operator ends it.',
+    'Stay silent until the operator hands you the call on the line, then take over the conversation as Hank Vance.',
+    subject
+      ? `What this call is about, in the operator's words: ${subject}`
+      : 'The operator gave no topic for this call. Follow what has actually been said on the line.',
+    'If the operator tells you to stand down, go quiet immediately and keep listening.',
+  ].join('\n');
+}
+
+/** The full dynamic_variables map to arm before the AI leg is dialed. Telnyx
+ *  replaces the whole map on PATCH, so every key an assistant might read is
+ *  written every time — including the keys the campaign scripts use. */
+export function assistantArmVariablesForBridge(
+  session: typeof callBridgeSessions.$inferSelect,
+  campaign: { dynamicVariables: Record<string, string> } | null,
+): Record<string, string> {
+  return {
+    desk_name: 'Hank Vance',
+    callback_number: '(346) 646-1352',
+    office: campaign?.dynamicVariables['office'] ?? '',
+    contact_name_or_role: campaign?.dynamicVariables['contact_name_or_role'] ?? 'the operator',
+    question_list: campaign?.dynamicVariables['question_list'] ?? '',
+    fact: session.assistantTopic?.trim()
+      ? session.assistantTopic.trim()
+      : campaign?.dynamicVariables['fact'] ?? '',
+    caller_context: bridgeTakeoverBriefing(session.assistantTopic),
+  };
+}
+
+/** The assistant bound to a line that answers inbound calls with an AI
+ *  assistant. Telnyx exposes those as connections named
+ *  `ai-assistant-<assistant uuid>`, so the assistant that will actually pick
+ *  up is discoverable from the line itself. This matters: TELNYX_AI_ASSISTANT_ID
+ *  is the OUTBOUND persona, and arming that one while the line answers with the
+ *  inbound one silently arms a different assistant than the one on the call.
+ *  Best-effort — null means "could not discover", never a thrown error. */
+async function assistantIdForLine(line: string): Promise<string | null> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return null;
+  const cached = assistantIdByLine.get(line);
+  if (cached !== undefined) return cached;
+  let resolved: string | null = null;
+  try {
+    const listRes = await fetch(
+      `https://api.telnyx.com/v2/phone_numbers?filter%5Bphone_number%5D=${encodeURIComponent(line)}`,
+      { headers: { Authorization: `Bearer ${apiKey}` } },
+    );
+    const list = (await listRes.json().catch(() => null)) as
+      | { data?: Array<{ connection_id?: string }> }
+      | null;
+    const connectionId = list?.data?.find((entry) => entry.connection_id)?.connection_id;
+    if (connectionId) {
+      const connRes = await fetch(`https://api.telnyx.com/v2/connections/${encodeURIComponent(connectionId)}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      const conn = (await connRes.json().catch(() => null)) as { data?: { connection_name?: string } } | null;
+      const match = /^ai-assistant-([0-9a-f-]{36})$/i.exec(conn?.data?.connection_name ?? '');
+      if (match) resolved = `assistant-${match[1]}`;
+    }
+  } catch (err) {
+    console.warn('[Call Bridge] assistant discovery failed', err instanceof Error ? err.message : String(err));
+  }
+  assistantIdByLine.set(line, resolved);
+  return resolved;
+}
+
+/** Which assistant handles the AI leg: the per-session choice, then an
+ *  explicit env binding, then whatever the line itself answers with. */
+async function resolveBridgeAssistantId(session: typeof callBridgeSessions.$inferSelect, line: string): Promise<string | null> {
+  return (
+    session.assistantId?.trim() ||
+    process.env.APEX_BRIDGE_AI_ASSISTANT_ID?.trim() ||
+    (await assistantIdForLine(line)) ||
+    process.env.TELNYX_AI_ASSISTANT_ID?.trim() ||
+    null
+  );
+}
+
+/** Dial the AI line into the session's conference as a MUTED participant.
+ *
+ *  The assistant joins before it can speak and hears everything from then on.
+ *  `unmuteNow` skips the listening phase (the operator asked for the takeover
+ *  straight away). Everything about this path is a documented conference
+ *  behaviour: join muted, then POST …/actions/unmute to hand over the call. */
+async function dialAiLegMuted(
+  session: typeof callBridgeSessions.$inferSelect,
+  options: { unmuteNow?: boolean; operatorInitiated?: boolean } = {},
+): Promise<void> {
+  const line = session.assistantLine?.trim() || normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
+  if (!line) {
+    await db
+      .update(callBridgeSessions)
+      .set({ status: 'active', lastError: 'Set APEX_FRONT_DESK_NUMBER to the line that answers with an AI assistant.', updatedAt: new Date() })
+      .where(eq(callBridgeSessions.id, session.id));
+    return;
+  }
+  const assistantId = await resolveBridgeAssistantId(session, line);
+  if (assistantId) {
+    const campaign = campaignForCustomer(session.customerNumber);
+    const armError = await patchAssistantDynamicVariables(assistantId, assistantArmVariablesForBridge(session, campaign));
+    console.info('[Call Bridge] AI leg armed', { sessionId: session.id, assistantId, ok: !armError, error: armError ?? undefined });
+    if (armError) {
+      // A stale brief puts the wrong instructions in front of a live call.
+      await db
+        .update(callBridgeSessions)
+        .set({ status: 'active', lastError: `AI attach aborted: ${armError}`, updatedAt: new Date() })
+        .where(eq(callBridgeSessions.id, session.id));
+      return;
+    }
+  } else {
+    console.warn('[Call Bridge] AI leg armed with no assistant briefing', { sessionId: session.id, line });
+  }
+  const unmuteNow = options.unmuteNow === true;
+  const result = await dialBridgeLeg({
+    to: line,
+    role: 'ai',
+    sessionId: session.id,
+    endConferenceOnExit: false,
+    mute: !unmuteNow,
+    fromNumber: session.fromNumber ?? null,
+    operatorInitiated: options.operatorInitiated ?? false,
+  });
+  if ('error' in result) {
+    await db
+      .update(callBridgeSessions)
+      .set({ status: 'active', lastError: result.error, updatedAt: new Date() })
+      .where(eq(callBridgeSessions.id, session.id));
+    return;
+  }
+  await db
+    .update(callBridgeSessions)
+    .set({
+      status: unmuteNow ? 'ai_joined' : 'ai_dialing',
+      aiCallControlId: result.callControlId,
+      aiMuted: !unmuteNow,
+      assistantLine: line,
+      assistantId,
+      ...(unmuteNow ? { aiTakeoverAt: new Date() } : {}),
+      lastError: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(callBridgeSessions.id, session.id));
+}
+
+/** The line -> assistant binding is stable for the life of the process. */
+const assistantIdByLine = new Map<string, string | null>();
+
+async function attachSalesAi(
+  sessionId: string,
+  options: { phase?: 'call_start' | 'mid_call'; unmuteNow?: boolean; operatorInitiated?: boolean } = {},
+): Promise<void> {
+  const phase = options.phase ?? 'call_start';
   const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
-  if (!session?.customerCallControlId) return;
+  if (!session) return;
+  // The AI reaches the bridge as its own dialed conference leg. That is the
+  // only design in which the operator and the customer BOTH hear the AI and
+  // the AI hears BOTH of them; see the file header.
+  if (aiLegTransport() === 'leg') {
+    if (!session.customerCallControlId) {
+      console.warn('[Call Bridge] AI leg requested before the customer leg existed', { sessionId: session.id });
+    }
+    await dialAiLegMuted(session, { unmuteNow: options.unmuteNow, operatorInitiated: options.operatorInitiated });
+    return;
+  }
+  if (!session.customerCallControlId) return;
   let greeting = session.assistantGreeting?.trim() || '';
   let instructions = session.assistantInstructions?.trim() || '';
   // Newsroom mode: when the bridge is configured for a newsroom assistant
@@ -669,13 +945,54 @@ export function createCallBridgeRouter(): Router {
   // ── POST /start — dial the operator; the customer follows once answered ──
   router.post('/start', async (req, res) => {
     try {
-      const body = (req.body ?? {}) as { operatorNumber?: string; customerNumber?: string };
+      const body = (req.body ?? {}) as {
+        operatorNumber?: string;
+        customerNumber?: string;
+        /** Caller ID every leg of this call dials from. Must be a number APEX
+         *  has approved; anything else is refused rather than dialed. */
+        fromNumber?: string;
+        /** The line that answers with an AI assistant — i.e. which agent ends
+         *  up on the bridge (the agent is bound to the line, not to the call). */
+        assistantLine?: string;
+        /** Explicit assistant override, `assistant-<uuid>`. */
+        assistantId?: string;
+        /** What the call is about, in the operator's words. Goes onto the AI's
+         *  brief so a takeover lands on-topic instead of opening cold. */
+        topic?: string;
+        /** Put the AI on the bridge, muted, before the customer is rung, so it
+         *  hears the call from the first word. */
+        autoJoinAi?: boolean;
+      };
       const operatorNumber = normalizeE164(body.operatorNumber);
       const customerNumber = normalizeE164(body.customerNumber);
       if (!operatorNumber || !customerNumber) {
         res.status(400).json({ error: 'A valid operatorNumber and customerNumber in E.164 format are required.' });
         return;
       }
+      const requestedFrom = body.fromNumber === undefined ? null : normalizeE164(body.fromNumber);
+      if (body.fromNumber !== undefined && !requestedFrom) {
+        res.status(400).json({ error: 'fromNumber must be a number in E.164 format.' });
+        return;
+      }
+      if (requestedFrom && !approvedCallerIdNumbers().includes(requestedFrom)) {
+        res.status(400).json({ error: `fromNumber ${requestedFrom} is not an approved APEX caller ID.` });
+        return;
+      }
+      const requestedLine = body.assistantLine === undefined ? null : normalizeE164(body.assistantLine);
+      if (body.assistantLine !== undefined && !requestedLine) {
+        res.status(400).json({ error: 'assistantLine must be a number in E.164 format.' });
+        return;
+      }
+      if (requestedLine && !approvedAssistantLines().includes(requestedLine)) {
+        res.status(400).json({ error: `assistantLine ${requestedLine} is not an approved AI line.` });
+        return;
+      }
+      const requestedAssistantId = typeof body.assistantId === 'string' ? body.assistantId.trim() : '';
+      if (requestedAssistantId && !/^assistant-[0-9a-f-]{36}$/i.test(requestedAssistantId)) {
+        res.status(400).json({ error: 'assistantId must look like assistant-<uuid>.' });
+        return;
+      }
+      const topic = typeof body.topic === 'string' ? body.topic.trim().slice(0, 600) : null;
 
       const id = crypto.randomUUID();
       try {
@@ -689,6 +1006,7 @@ export function createCallBridgeRouter(): Router {
       }
       // The customer's timeline row is written when their leg is dialed, after
       // the operator answers, not here: this dial only rings the operator.
+      const autoJoinAi = body.autoJoinAi === true;
       await db.insert(callBridgeSessions).values({
         id,
         status: 'dialing_operator',
@@ -696,11 +1014,33 @@ export function createCallBridgeRouter(): Router {
         customerNumber,
         conferenceName: id,
         createdByAgentId: 'operator',
+        fromNumber: requestedFrom,
+        assistantLine: requestedLine,
+        assistantId: requestedAssistantId || null,
+        assistantTopic: topic,
+        aiAutoJoin: autoJoinAi,
+        aiMuted: true,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
 
-      const result = await dialBridgeLeg({ to: operatorNumber, role: 'operator', sessionId: id, endConferenceOnExit: true, operatorInitiated: true });
+      // The listening AI goes on the bridge FIRST, before the operator's phone
+      // even rings. It joins muted, so it is present and listening from the
+      // first word of the call without being able to say anything until the
+      // operator hands it the call.
+      if (autoJoinAi) {
+        const [fresh] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, id)).limit(1);
+        if (fresh) await dialAiLegMuted(fresh, { operatorInitiated: true });
+      }
+
+      const result = await dialBridgeLeg({
+        to: operatorNumber,
+        role: 'operator',
+        sessionId: id,
+        endConferenceOnExit: true,
+        fromNumber: requestedFrom,
+        operatorInitiated: true,
+      });
       if ('error' in result) {
         await db
           .update(callBridgeSessions)
@@ -733,47 +1073,83 @@ export function createCallBridgeRouter(): Router {
         return;
       }
 
-      // Direct attach: when a bridge assistant is configured
-      // (TELNYX_AI_ASSISTANT_ID), start it on the customer's live leg instead
-      // of dialing the front desk number. The takeover persona is exactly the
-      // configured assistant (e.g. Hank Vance outbound) — instant join, no
-      // second phone leg, no risk of a different assistant answering.
-      const bridgeAssistantId = process.env.TELNYX_AI_ASSISTANT_ID;
-      if (bridgeAssistantId && session.customerCallControlId) {
-        await db.update(callBridgeSessions).set({ status: 'ai_dialing', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
-        await attachSalesAi(session.id, 'mid_call');
-        const [updated] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, session.id)).limit(1);
-        if (updated?.lastError) {
-          res.status(502).json({ error: updated.lastError });
-        } else {
-          res.status(200).json({ ok: true, status: updated?.status ?? 'ai_dialing' });
+      // Default is the listening join: the AI takes its place on the bridge
+      // muted and hears everything from here on. { unmute: true } is the
+      // operator asking for the hand-over at the same moment.
+      const unmuteNow = (req.body as { unmute?: unknown } | undefined)?.unmute === true;
+      await db.update(callBridgeSessions).set({ status: 'ai_dialing', aiMuted: !unmuteNow, updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+      await attachSalesAi(session.id, { phase: 'mid_call', unmuteNow, operatorInitiated: true });
+      const [updated] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, session.id)).limit(1);
+      if (updated?.lastError) {
+        res.status(502).json({ error: updated.lastError });
+        return;
+      }
+      res.status(200).json({ ok: true, status: updated?.status ?? 'ai_dialing', aiMuted: updated?.aiMuted ?? true });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /:id/takeover — hand the call to the AI (unmute its leg) ──────────
+  router.post('/:id/takeover', async (req, res) => {
+    try {
+      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, req.params.id)).limit(1);
+      if (!session) {
+        res.status(404).json({ error: 'Call bridge session not found.' });
+        return;
+      }
+      if (session.status === 'ended' || session.status === 'failed') {
+        res.status(409).json({ error: `Cannot hand this call over while it is ${session.status}.` });
+        return;
+      }
+      // No listening leg yet: dial it straight into the takeover.
+      if (!session.aiCallControlId) {
+        await attachSalesAi(session.id, { phase: 'mid_call', unmuteNow: true, operatorInitiated: true });
+        const [dialed] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, session.id)).limit(1);
+        if (dialed?.lastError) {
+          res.status(502).json({ error: dialed.lastError });
+          return;
         }
+        res.status(200).json({ ok: true, status: dialed?.status ?? 'ai_dialing', aiMuted: false });
         return;
       }
-
-      const frontDeskNumber = process.env.APEX_FRONT_DESK_NUMBER;
-      if (!frontDeskNumber) {
-        res.status(500).json({ error: 'Set TELNYX_AI_ASSISTANT_ID or APEX_FRONT_DESK_NUMBER to bring an AI into this call.' });
-        return;
-      }
-
-      await db.update(callBridgeSessions).set({ status: 'ai_dialing', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
-
-      const result = await dialBridgeLeg({ to: frontDeskNumber, role: 'ai', sessionId: session.id, endConferenceOnExit: false, operatorInitiated: true });
-      if ('error' in result) {
-        await db
-          .update(callBridgeSessions)
-          .set({ status: 'active', lastError: result.error, updatedAt: new Date() })
-          .where(eq(callBridgeSessions.id, session.id));
-        res.status(409).json({ error: result.error, ...(result.awaitingSafeguard ? { awaitingSafeguard: true, sendJobId: result.sendJobId } : {}) });
-        return;
-      }
-
+      const error = await setConferenceParticipantMuted(session.conferenceName, session.aiCallControlId, false);
       await db
         .update(callBridgeSessions)
-        .set({ aiCallControlId: result.callControlId, updatedAt: new Date() })
+        .set({ aiMuted: Boolean(error), status: error ? session.status : 'ai_joined', lastError: error, aiTakeoverAt: error ? session.aiTakeoverAt : new Date(), updatedAt: new Date() })
         .where(eq(callBridgeSessions.id, session.id));
-      res.status(200).json({ ok: true, status: 'ai_dialing' });
+      if (error) {
+        res.status(502).json({ error });
+        return;
+      }
+      res.status(200).json({ ok: true, status: 'ai_joined', aiMuted: false });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /:id/hand-back — take the call back (mute the AI's leg) ───────────
+  router.post('/:id/hand-back', async (req, res) => {
+    try {
+      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, req.params.id)).limit(1);
+      if (!session) {
+        res.status(404).json({ error: 'Call bridge session not found.' });
+        return;
+      }
+      if (!session.aiCallControlId) {
+        res.status(409).json({ error: 'No AI is on this call yet.' });
+        return;
+      }
+      const error = await setConferenceParticipantMuted(session.conferenceName, session.aiCallControlId, true);
+      await db
+        .update(callBridgeSessions)
+        .set({ aiMuted: error ? session.aiMuted : true, lastError: error, updatedAt: new Date() })
+        .where(eq(callBridgeSessions.id, session.id));
+      if (error) {
+        res.status(502).json({ error });
+        return;
+      }
+      res.status(200).json({ ok: true, status: session.status, aiMuted: true });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }
@@ -977,7 +1353,9 @@ export function createCallBridgeWebhookRouter(): Router {
         } else if (state.role === 'customer') {
           await db.update(callBridgeSessions).set({ status: 'active', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
           if ((session.sessionMode ?? 'operator_first') === 'ai_first') {
-            await attachSalesAi(session.id);
+            // ai_first exists so the AI is the one talking to the buyer from
+            // pickup: it joins the bridge already handed the call.
+            await attachSalesAi(session.id, { phase: 'call_start', unmuteNow: true, operatorInitiated: true });
           }
         } else if (state.role === 'ai') {
           await db.update(callBridgeSessions).set({ status: 'ai_joined', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
@@ -1004,7 +1382,7 @@ export function createCallBridgeWebhookRouter(): Router {
           // deliberately does not set end_conference_on_exit.
           await db
             .update(callBridgeSessions)
-            .set({ status: session.status === 'ended' ? 'ended' : 'active', aiCallControlId: null, updatedAt: new Date() })
+            .set({ status: session.status === 'ended' ? 'ended' : 'active', aiCallControlId: null, aiMuted: true, updatedAt: new Date() })
             .where(eq(callBridgeSessions.id, session.id));
         } else if (state.role === 'customer' && session.status === 'dialing_customer') {
           // Customer never answered — keep the operator on the line so they
