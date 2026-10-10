@@ -14,6 +14,7 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
+import { setOperatorCeo } from './apex-operator-registry.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
 import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES, aiApprovalMode, sweepPendingApprovalsWithAiGates } from '@workspace/core';
@@ -182,6 +183,7 @@ async function main() {
   }
 
   const ceo = workforce.get('apex-ceo-001') as ApexCEO;
+  setOperatorCeo(ceo);
 
   const app = express();
   // Railway's edge is one trusted hop. A caller-supplied X-Forwarded-For

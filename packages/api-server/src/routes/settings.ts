@@ -194,6 +194,8 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'APEX_FRONT_DESK_NUMBER', label: 'Approved Caller ID', placeholder: '+18329757665' },
       { key: 'TELNYX_AI_ASSISTANT_ID', label: 'AI Takeover Assistant ID', placeholder: 'assistant-...' },
       { key: 'TELNYX_OWNER_NUMBER', label: 'Owner/Test Pitch Destination', placeholder: '+1xxxxxxxxxx' },
+      { key: 'TELNYX_WEBHOOK_SECRET', label: 'Voice Webhook Secret', placeholder: 'long random secret', secret: true },
+      { key: 'APEX_OPERATOR_UNLOCK_CODE', label: 'Voice Operator Unlock Code', placeholder: '6-digit code', secret: true },
     ],
   },
   {
