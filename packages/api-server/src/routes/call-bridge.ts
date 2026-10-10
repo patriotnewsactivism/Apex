@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import crypto from 'crypto';
-import { db, callBridgeSessions } from '@workspace/db';
+import { db, callBridgeSessions, integrationSettings } from '@workspace/db';
 import { SendBlockedError, assertContactSendable, commitSendRecord } from '@workspace/core';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { normalizeE164 } from './sales-ops.js';
 
 // ─── Call Bridge — operator call with live AI takeover ─────────────────────
@@ -200,6 +200,62 @@ export function approvedAssistantLines(): string[] {
     .filter((value): value is string => Boolean(value));
   const fallback = normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
   return Array.from(new Set([...(fallback ? [fallback] : []), ...extra]));
+}
+
+/** ─── Operator dial settings ───────────────────────────────────────────────
+ *  The operator dials the same handful of numbers constantly, starting with
+ *  their own cell. These are persisted so the operator never retypes them:
+ *
+ *   - defaultOperatorNumber — the operator's own line, dialed first. Ships
+ *     hard-coded to the operator's cell so a takeover call needs no typing at
+ *     all, and stays overridable (env APEX_DEFAULT_OPERATOR_NUMBER, then the
+ *     API, then the UI) so it is a default, not a cage.
+ *   - savedNumbers — recurring customer numbers, label + E.164, so they can be
+ *     picked instead of typed.
+ */
+const DIAL_SETTINGS_KEY = 'call_dial_settings';
+
+/** The operator's cell. Hard-coded default; a change is persisted, not lost. */
+const HARDCODED_DEFAULT_OPERATOR_NUMBER =
+  normalizeE164(process.env.APEX_DEFAULT_OPERATOR_NUMBER) ?? '+18328804970';
+
+export type SavedDialNumber = { label: string; number: string };
+export type DialSettings = { defaultOperatorNumber: string; savedNumbers: SavedDialNumber[] };
+
+export async function readDialSettings(): Promise<DialSettings> {
+  const [row] = await db
+    .select()
+    .from(integrationSettings)
+    .where(eq(integrationSettings.key, DIAL_SETTINGS_KEY))
+    .limit(1);
+  let parsed: Partial<DialSettings> = {};
+  if (row?.value) {
+    try {
+      parsed = JSON.parse(row.value) as Partial<DialSettings>;
+    } catch {
+      parsed = {};
+    }
+  }
+  const savedNumbers = Array.isArray(parsed.savedNumbers)
+    ? parsed.savedNumbers
+        .map((entry) => ({ label: String(entry?.label ?? '').slice(0, 60), number: normalizeE164(entry?.number) ?? '' }))
+        .filter((entry) => entry.number)
+    : [];
+  return {
+    defaultOperatorNumber: normalizeE164(parsed.defaultOperatorNumber) ?? HARDCODED_DEFAULT_OPERATOR_NUMBER,
+    savedNumbers,
+  };
+}
+
+async function writeDialSettings(next: DialSettings): Promise<void> {
+  const value = JSON.stringify(next);
+  await db
+    .insert(integrationSettings)
+    .values({ key: DIAL_SETTINGS_KEY, value, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: integrationSettings.key,
+      set: { value, updatedAt: new Date() },
+    });
 }
 
 /** How the AI gets onto the bridge.
@@ -951,6 +1007,64 @@ async function maybeSendRehearsalFollowUp(sessionId: string): Promise<void> {
 export function createCallBridgeRouter(): Router {
   const router = Router();
 
+  // ── GET /dial-settings — the operator's own number and saved customer
+  //    numbers, so a takeover call needs no typing. ──────────────────────────
+  router.get('/dial-settings', async (_req, res) => {
+    try {
+      res.json(await readDialSettings());
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── PATCH /dial-settings — change the default operator number and/or the
+  //    saved numbers. Persisted, so the next call remembers. ────────────────
+  router.patch('/dial-settings', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as {
+        defaultOperatorNumber?: string;
+        savedNumbers?: Array<{ label?: string; number?: string }>;
+      };
+      const current = await readDialSettings();
+      const next: DialSettings = { ...current };
+      if (body.defaultOperatorNumber !== undefined) {
+        const normalized = normalizeE164(body.defaultOperatorNumber);
+        if (!normalized) {
+          res.status(400).json({ error: 'defaultOperatorNumber must be a valid E.164 number.' });
+          return;
+        }
+        next.defaultOperatorNumber = normalized;
+      }
+      if (Array.isArray(body.savedNumbers)) {
+        next.savedNumbers = body.savedNumbers
+          .map((entry) => ({
+            label: String(entry?.label ?? '').slice(0, 60).trim() || 'Saved number',
+            number: normalizeE164(entry?.number) ?? '',
+          }))
+          .filter((entry) => entry.number);
+      }
+      await writeDialSettings(next);
+      res.json(next);
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── GET /sessions — recent bridge calls for the live call monitor. Newest
+  //    first; the monitor polls this. ────────────────────────────────────────
+  router.get('/sessions', async (_req, res) => {
+    try {
+      const rows = await db
+        .select()
+        .from(callBridgeSessions)
+        .orderBy(desc(callBridgeSessions.createdAt))
+        .limit(25);
+      res.json({ sessions: rows });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
   // ── POST /start — dial the operator; the customer follows once answered ──
   router.post('/start', async (req, res) => {
     try {
@@ -972,10 +1086,17 @@ export function createCallBridgeRouter(): Router {
          *  hears the call from the first word. */
         autoJoinAi?: boolean;
       };
-      const operatorNumber = normalizeE164(body.operatorNumber);
+      // The operator's own line defaults to the saved number, so a takeover
+      // call never needs it typed. An explicit operatorNumber still wins, and
+      // an explicitly malformed one is refused rather than silently defaulted.
+      const operatorNumber =
+        normalizeE164(body.operatorNumber) ??
+        (body.operatorNumber === undefined ? (await readDialSettings()).defaultOperatorNumber : null);
       const customerNumber = normalizeE164(body.customerNumber);
       if (!operatorNumber || !customerNumber) {
-        res.status(400).json({ error: 'A valid operatorNumber and customerNumber in E.164 format are required.' });
+        res.status(400).json({
+          error: 'A valid customerNumber in E.164 format is required (operatorNumber defaults to the saved operator line).',
+        });
         return;
       }
       const requestedFrom = body.fromNumber === undefined ? null : normalizeE164(body.fromNumber);

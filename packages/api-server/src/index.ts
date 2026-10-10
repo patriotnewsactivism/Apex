@@ -666,8 +666,14 @@ async function main() {
     // today and this hour, and a threshold alert — so an unexpected burn surfaces
     // immediately rather than at the next invoice.
     const qwenFallback = {
-      active: (qwenPool?.requests ?? 0) > 0,
+      // Two different facts, kept distinct: `usedToday` means Qwen served a
+      // request at some point today; `activeNow` means it is carrying traffic
+      // in the current minute. "Used today" must not read as "currently on a
+      // call" — that was the imprecision worth fixing.
+      usedToday: (qwenPool?.requests ?? 0) > 0,
+      activeNow: (qwenPool?.lastMinute ?? 0) > 0,
       requestsUsed: qwenPool?.requests ?? 0,
+      requestsLastMinute: qwenPool?.lastMinute ?? 0,
       requestCap: qwenPool?.cap ?? 0,
       spentTodayUsd: Math.round(qwenSpentUsd * 1e6) / 1e6,
       alertThresholdUsd: qwenAlertUsd,

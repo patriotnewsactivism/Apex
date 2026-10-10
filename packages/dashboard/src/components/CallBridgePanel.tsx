@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type CallBridgeStatus } from '../lib/api.js';
-import { PhoneCall, PhoneOff, Bot, AlertTriangle, Users } from 'lucide-react';
+import { PhoneCall, PhoneOff, Bot, AlertTriangle, Users, Radio } from 'lucide-react';
 
 // Bridges the operator's own phone with a customer's, live, with the option
 // to bring the Apex Front Desk AI assistant in as a third participant who can
@@ -62,11 +62,55 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
   const [topic, setTopic] = useState('');
   const [autoJoinAi, setAutoJoinAi] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+
+  // The operator's own line and recurring numbers live server-side, so a
+  // takeover call needs no typing. The operator line auto-fills but stays an
+  // editable field — a default, not a lock-in.
+  const settings = useQuery({
+    queryKey: ['call-bridge', 'dial-settings'],
+    queryFn: () => api.callBridge.dialSettings(),
+  });
+  useEffect(() => {
+    if (!operatorNumber && settings.data?.defaultOperatorNumber) {
+      setOperatorNumber(settings.data.defaultOperatorNumber);
+    }
+  }, [settings.data?.defaultOperatorNumber, operatorNumber]);
+
+  const saveDefault = useMutation({
+    mutationFn: (number: string) => api.callBridge.updateDialSettings({ defaultOperatorNumber: number }),
+    onSuccess: (res) => {
+      setSavedNotice(`Your default operator number is now ${res.defaultOperatorNumber}.`);
+      void settings.refetch();
+    },
+    onError: (err: unknown) => setError(err instanceof Error ? err.message : String(err)),
+  });
+
+  const saveNumber = useMutation({
+    mutationFn: async (number: string) => {
+      const label = (window.prompt('Name for this number (e.g. County records office)', 'Saved number') ?? '').trim();
+      if (!label) throw new Error('Cancelled');
+      const existing = settings.data?.savedNumbers ?? [];
+      if (existing.some((entry) => entry.number === number)) {
+        return settings.data ?? { defaultOperatorNumber: operatorNumber, savedNumbers: existing };
+      }
+      return api.callBridge.updateDialSettings({ savedNumbers: [...existing, { label, number }] });
+    },
+    onSuccess: () => {
+      setSavedNotice('Number saved — it now appears in the pick list.');
+      void settings.refetch();
+    },
+    onError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== 'Cancelled') setError(message);
+    },
+  });
 
   const start = useMutation({
     mutationFn: () =>
       api.callBridge.start({
-        operatorNumber: operatorNumber.trim(),
+        // Blank means "use the saved operator line" — the server falls back to it.
+        ...(operatorNumber.trim() ? { operatorNumber: operatorNumber.trim() } : {}),
         customerNumber: customerNumber.trim(),
         // Empty means "use the configured APEX defaults" — the server only
         // accepts numbers it has already approved for bridge dials.
@@ -129,21 +173,64 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
           <label style={labelStyle}>Your number (E.164)</label>
           <input
             style={inputStyle}
-            placeholder="+18328804970"
+            placeholder="+183****4970"
             value={operatorNumber}
             onChange={(e) => setOperatorNumber(e.target.value)}
           />
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ marginTop: 6, fontSize: 11 }}
+            disabled={!validOperator || saveDefault.isPending}
+            onClick={() => {
+              setSavedNotice(null);
+              saveDefault.mutate(operatorNumber.trim());
+            }}
+          >
+            {saveDefault.isPending ? 'Saving…' : 'Save as my default'}
+          </button>
         </div>
         <div>
           <label style={labelStyle}>Customer number (E.164)</label>
           <input
             style={inputStyle}
-            placeholder="+18328804970"
+            placeholder="+183****4970"
             value={customerNumber}
             onChange={(e) => setCustomerNumber(e.target.value)}
           />
+          <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {settings.data && settings.data.savedNumbers.length > 0 && (
+              <select
+                style={{ ...inputStyle, maxWidth: 220, fontSize: 11 }}
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setCustomerNumber(e.target.value);
+                }}
+              >
+                <option value="">Pick a saved number…</option>
+                {settings.data.savedNumbers.map((entry) => (
+                  <option key={entry.number} value={entry.number}>
+                    {entry.label} · {entry.number}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ fontSize: 11 }}
+              disabled={!validCustomer || saveNumber.isPending}
+              onClick={() => {
+                setSavedNotice(null);
+                saveNumber.mutate(customerNumber.trim());
+              }}
+            >
+              {saveNumber.isPending ? 'Saving…' : 'Save this number'}
+            </button>
+          </div>
         </div>
       </div>
+      {savedNotice && <div style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>{savedNotice}</div>}
 
       <div>
         <label style={labelStyle}>What this call is about (the AI is briefed with this)</label>
@@ -391,6 +478,79 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
   );
 }
 
+/** Live call monitor: the bridge calls APEX is handling, newest first,
+ *  refreshed on a short interval so the operator can watch a call start, watch
+ *  the AI join, and watch it hand over — without hunting through logs. */
+function LiveCallMonitor({ onOpen }: { onOpen: (id: string) => void }) {
+  const sessions = useQuery({
+    queryKey: ['call-bridge', 'sessions'],
+    queryFn: () => api.callBridge.sessions(),
+    refetchInterval: 5000,
+  });
+  const rows = sessions.data?.sessions ?? [];
+  const liveCount = rows.filter((s) => LIVE_STATUSES.includes(s.status)).length;
+  return (
+    <div className="glass-card" style={{ padding: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ color: 'var(--color-apex-brass)', display: 'flex' }}>
+          <Radio size={16} />
+        </span>
+        <div className="apex-display" style={{ fontSize: 15, color: 'var(--color-apex-text)' }}>
+          Live call monitor
+        </div>
+        <span style={{ fontSize: 11, color: 'var(--color-apex-muted)' }}>
+          {liveCount} live · {rows.length} recent
+        </span>
+      </div>
+      {rows.length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>
+          {sessions.isLoading ? 'Loading…' : 'No bridge calls yet.'}
+        </div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {rows.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => onOpen(s.id)}
+            title="Open this call"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(110px, 1.1fr) minmax(120px, 1.3fr) minmax(80px, 1fr) auto',
+              gap: 10,
+              alignItems: 'center',
+              textAlign: 'left',
+              padding: '8px 10px',
+              borderRadius: 6,
+              background: 'rgba(0,0,0,0.22)',
+              border: '1px solid var(--color-apex-line)',
+              color: 'var(--color-apex-text)',
+              fontSize: 11.5,
+              fontFamily: 'var(--font-mono)',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ color: STATUS_COLOR[s.status] ?? 'var(--color-apex-muted)' }}>● {s.status}</span>
+            <span>{s.customerNumber}</span>
+            <span
+              style={{
+                color: 'var(--color-apex-muted)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {s.assistantTopic || '—'}
+            </span>
+            <span style={{ color: 'var(--color-apex-muted)', fontSize: 10 }}>
+              {new Date(s.createdAt).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Load and compose the operator-call-with-AI-takeover section of the Calls tab. */
 export function CallBridgePanel() {
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -398,5 +558,10 @@ export function CallBridgePanel() {
   if (activeId) {
     return <LiveSession id={activeId} onEnded={() => setActiveId(null)} />;
   }
-  return <StartForm onStarted={setActiveId} />;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <StartForm onStarted={setActiveId} />
+      <LiveCallMonitor onOpen={setActiveId} />
+    </div>
+  );
 }

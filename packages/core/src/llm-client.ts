@@ -202,6 +202,10 @@ type ProviderSpec = {
    *  OpenRouter's live catalog; paid specs only. */
   usdPerMillionPrompt?: number;
   usdPerMillionCompletion?: number;
+  /** Cached input is billed far below fresh input (Qwen: $0.016 vs $0.15 per
+   *  1M). Without this the prompt total is priced entirely at the fresh rate
+   *  and the paid spend is overstated. */
+  usdPerMillionCachedPrompt?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
   /** Provider-side request envelope. Used to size output/history before the
    * network call instead of learning the limit by burning a 413 attempt. */
@@ -315,6 +319,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // ledgers derive cost from these rates.
     usdPerMillionPrompt: 0.15,
     usdPerMillionCompletion: 0.47,
+    usdPerMillionCachedPrompt: 0.016,
   },
   freeOpenRouterSpec('openrouter-nex-n2-5-mini-free', 'nex-agi/nex-n2.5-mini:free'),
   freeOpenRouterSpec('openrouter-nex-n2-5-pro-free', 'nex-agi/nex-n2.5-pro:free'),
@@ -1173,12 +1178,18 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
 function estimatedCostUsd(
   provider: ProviderSpec,
   usage: { promptTokens?: number; completionTokens?: number } | undefined,
+  cachedTokens = 0,
 ): number {
   const prompt = Math.max(0, Number(usage?.promptTokens ?? 0));
   const completion = Math.max(0, Number(usage?.completionTokens ?? 0));
+  // Cached prompt tokens are a subset of promptTokens and are billed at the
+  // cached rate, not the fresh-input rate. Price the cached slice separately so
+  // a cache-heavy call is not charged as if every input token were fresh.
+  const cached = Math.min(Math.max(0, Number(cachedTokens)), prompt);
   const inRate = provider.usdPerMillionPrompt ?? 0;
+  const cachedRate = provider.usdPerMillionCachedPrompt ?? inRate;
   const outRate = provider.usdPerMillionCompletion ?? 0;
-  return (prompt * inRate + completion * outRate) / 1_000_000;
+  return ((prompt - cached) * inRate + cached * cachedRate + completion * outRate) / 1_000_000;
 }
 
 function providerBaseURL(provider: ProviderSpec): string | undefined {
@@ -1950,7 +1961,7 @@ class MultiProviderClient {
                   // missing figure must never read as free spend.
                   recordSpend(
                     provider.name,
-                    result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                    result.costUsd ?? estimatedCostUsd(provider, result.usage, result.cachedTokens ?? 0),
                   );
                   recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                 }
@@ -2117,7 +2128,7 @@ class MultiProviderClient {
                     if (provider.paid) {
                       recordSpend(
                         provider.name,
-                        result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                        result.costUsd ?? estimatedCostUsd(provider, result.usage, result.cachedTokens ?? 0),
                       );
                       recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                     }
