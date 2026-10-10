@@ -7,6 +7,7 @@ import {
   callBridgeSessions,
   callOutcomes,
   campaignEnrollments,
+  companies,
   contactIdentifiers,
   contactMerges,
   contactTimeline,
@@ -18,6 +19,7 @@ import {
   inboundUnmatched,
   interactions,
   meetings,
+  researchedLeads,
   sequenceStepExecutions,
   smsMessages,
   suppressions,
@@ -628,6 +630,12 @@ export interface ContactSearchFilters {
   lastContactedTo?: string | null;
   replied?: boolean | null;
   campaignId?: string | null;
+  /** Client's company industry (companies.industry via companyId). */
+  industry?: string | null;
+  /** Has/has not been called (per the contact timeline). */
+  called?: boolean | null;
+  /** Has/has not been emailed (per the contact timeline). */
+  emailed?: boolean | null;
   limit?: number;
 }
 
@@ -668,8 +676,98 @@ export async function searchContacts(filters: ContactSearchFilters) {
       SELECT contact_id FROM campaign_enrollments WHERE campaign_id = ${filters.campaignId}::uuid
     )`);
   }
+  if (filters.industry && filters.industry.trim()) {
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM companies c
+      WHERE c.id = ${contacts.companyId} AND lower(c.industry) = ${filters.industry.trim().toLowerCase()}
+    )`);
+  }
+  // Called/emailed are read off the contact timeline, which records a row per
+  // logged interaction regardless of channel. A false filter is the absence of
+  // any such row, so "not emailed" means truly untouched, not merely untracked.
+  if (filters.called === true) {
+    clauses.push(sql`EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'call')`);
+  } else if (filters.called === false) {
+    clauses.push(sql`NOT EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'call')`);
+  }
+  if (filters.emailed === true) {
+    clauses.push(sql`EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'email')`);
+  } else if (filters.emailed === false) {
+    clauses.push(sql`NOT EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'email')`);
+  }
   const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);
   return db.select().from(contacts).where(and(...clauses)).orderBy(desc(contacts.updatedAt)).limit(limit);
+}
+
+export interface ResearchedLeadSearchFilters {
+  query?: string | null;
+  industry?: string | null;
+  city?: string | null;
+  pipelineState?: string | null;
+  status?: string | null;
+  called?: boolean | null;
+  emailed?: boolean | null;
+  campaignId?: string | null;
+  limit?: number;
+}
+
+/**
+ * The CRM's second record type: researched leads. Same facet shape as the
+ * contact search so one filter bar drives both lists. Called/emailed are read
+ * from the outreach tables (email_sends, call_bridge_sessions) matched on the
+ * lead's researched contact address/number — a lead has no identifier rows.
+ */
+export async function searchResearchedLeads(filters: ResearchedLeadSearchFilters) {
+  const clauses = [];
+  if (filters.query && filters.query.trim()) {
+    const term = `%${filters.query.trim().toLowerCase()}%`;
+    clauses.push(sql`(
+      lower(${researchedLeads.companyName}) LIKE ${term}
+      OR lower(coalesce(${researchedLeads.website}, '')) LIKE ${term}
+      OR lower(coalesce(${researchedLeads.contactEmail}, '')) LIKE ${term}
+      OR lower(coalesce(${researchedLeads.decisionMakerName}, '')) LIKE ${term}
+    )`);
+  }
+  if (filters.industry && filters.industry.trim()) {
+    clauses.push(sql`lower(coalesce(${researchedLeads.industry}, '')) = ${filters.industry.trim().toLowerCase()}`);
+  }
+  if (filters.city && filters.city.trim()) {
+    clauses.push(sql`lower(coalesce(${researchedLeads.city}, '')) = ${filters.city.trim().toLowerCase()}`);
+  }
+  if (filters.pipelineState) clauses.push(eq(researchedLeads.pipelineState, filters.pipelineState));
+  if (filters.status) clauses.push(eq(researchedLeads.status, filters.status));
+  if (filters.campaignId) clauses.push(eq(researchedLeads.campaignId, filters.campaignId));
+  if (filters.emailed === true) {
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM email_sends es
+      WHERE es.lead_id = ${researchedLeads.id}
+         OR (${researchedLeads.contactEmail} IS NOT NULL AND lower(es.to_email) = lower(${researchedLeads.contactEmail}))
+    )`);
+  } else if (filters.emailed === false) {
+    clauses.push(sql`NOT EXISTS (
+      SELECT 1 FROM email_sends es
+      WHERE es.lead_id = ${researchedLeads.id}
+         OR (${researchedLeads.contactEmail} IS NOT NULL AND lower(es.to_email) = lower(${researchedLeads.contactEmail}))
+    )`);
+  }
+  if (filters.called === true) {
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM call_bridge_sessions cs
+      WHERE ${researchedLeads.contactPhone} IS NOT NULL AND cs.customer_number = ${researchedLeads.contactPhone}
+    )`);
+  } else if (filters.called === false) {
+    clauses.push(sql`NOT EXISTS (
+      SELECT 1 FROM call_bridge_sessions cs
+      WHERE ${researchedLeads.contactPhone} IS NOT NULL AND cs.customer_number = ${researchedLeads.contactPhone}
+    )`);
+  }
+  const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);
+  return db
+    .select()
+    .from(researchedLeads)
+    .where(clauses.length ? and(...clauses) : undefined)
+    .orderBy(desc(researchedLeads.discoveredAt))
+    .limit(limit);
 }
 
 export async function getContact(contactId: string) {

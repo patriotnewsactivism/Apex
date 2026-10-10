@@ -17,6 +17,7 @@ import {
   listUnmatched,
   mergeContacts,
   searchContacts,
+  searchResearchedLeads,
   setDoNotContact,
   syncGmailReadonly,
 } from '@workspace/core';
@@ -68,6 +69,9 @@ export function createCrmRouter(): Router {
         lastContactedTo: typeof req.query.lastContactedTo === 'string' ? req.query.lastContactedTo : null,
         replied: queryFlag(req.query.replied),
         campaignId: typeof req.query.campaignId === 'string' ? req.query.campaignId : null,
+        industry: typeof req.query.industry === 'string' ? req.query.industry : null,
+        called: queryFlag(req.query.called),
+        emailed: queryFlag(req.query.emailed),
       });
       res.json({
         timezone: CRM_DISPLAY_TIMEZONE,
@@ -77,6 +81,28 @@ export function createCrmRouter(): Router {
           lastReplyChicago: row.lastReplyAt ? formatChicago(row.lastReplyAt) : null,
         })),
       });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ─── GET /api/crm/leads — the researched-lead record type ──────────────────
+  // Same facet shape as /contacts so ONE filter bar drives both lists: clients
+  // only, researched leads only, or both. Everything found lands in the CRM.
+  router.get('/leads', async (req, res) => {
+    try {
+      const rows = await searchResearchedLeads({
+        query: typeof req.query.q === 'string' ? req.query.q : null,
+        industry: typeof req.query.industry === 'string' ? req.query.industry : null,
+        city: typeof req.query.city === 'string' ? req.query.city : null,
+        pipelineState: typeof req.query.pipelineState === 'string' ? req.query.pipelineState : null,
+        status: typeof req.query.status === 'string' ? req.query.status : null,
+        called: queryFlag(req.query.called),
+        emailed: queryFlag(req.query.emailed),
+        campaignId: typeof req.query.campaignId === 'string' ? req.query.campaignId : null,
+        limit: Math.min(Math.max(Number(req.query.limit) || 50, 1), 500),
+      });
+      res.json({ recordType: 'lead', leads: rows });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -96,6 +122,9 @@ export function createCrmRouter(): Router {
         lastContactedTo: typeof req.query.lastContactedTo === 'string' ? req.query.lastContactedTo : null,
         replied: queryFlag(req.query.replied),
         campaignId: typeof req.query.campaignId === 'string' ? req.query.campaignId : null,
+        industry: typeof req.query.industry === 'string' ? req.query.industry : null,
+        called: queryFlag(req.query.called),
+        emailed: queryFlag(req.query.emailed),
         limit: Math.min(Math.max(Number(req.query.limit) || 500, 1), 5000),
       });
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
