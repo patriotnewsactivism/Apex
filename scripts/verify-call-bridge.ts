@@ -185,9 +185,31 @@ async function main(): Promise<void> {
     /!approvedAssistantLines\(\)\.includes\(requestedLine\)/.test(startBody),
   );
   check(
-    'autoJoinAi puts the AI on the bridge before the operator leg is dialed (before the customer can ring)',
-    /if \(autoJoinAi\) \{[\s\S]{0,300}dialAiLegMuted\(/.test(startBody) &&
-      startBody.indexOf('await dialAiLegMuted(') < startBody.indexOf("to: operatorNumber"),
+    'autoJoinAi puts the listening AI on the bridge for the operator-only phase, and ONLY under the leg transport',
+    /if \(autoJoinAi && aiLegTransport\(\) === 'leg'\) \{/.test(startBody) &&
+      startBody.indexOf('await dialAiLegMuted(') > startBody.indexOf('to: operatorNumber'),
+  );
+  check(
+    "the operator's leg is dialed first, so the operator's leg creates the conference",
+    startBody.indexOf('to: operatorNumber') < startBody.indexOf('dialAiLegMuted('),
+  );
+
+  // ONE AI INGRESS PER CALL. What production actually ran: a MUTED AI leg went
+  // on the conference while the legacy attach started an assistant on the
+  // customer's conferenced leg — and an assistant on a conferenced leg takes
+  // that leg's audio out of the conference. Both parties heard silence. Neither
+  // half of that combination is now reachable on one call.
+  check(
+    'dialAiLegMuted refuses a second AI leg on the same call',
+    /ONE AI INGRESS PER CALL/.test(aiLegBody) && /if \(session\.aiCallControlId\) \{/.test(aiLegBody),
+  );
+  check(
+    'the legacy attach refuses to run when an AI leg is already on the call',
+    /refusing the legacy attach: an AI leg is already on this call/.test(route),
+  );
+  check(
+    'the legacy attach is unreachable while the leg transport is selected',
+    /if \(aiLegTransport\(\) === 'leg'\) \{\s*\n[\s\S]{0,400}await dialAiLegMuted\(session, \{ unmuteNow: options\.unmuteNow/.test(route),
   );
   check(
     'a per-session caller ID reaches every leg it should (operator and AI)',

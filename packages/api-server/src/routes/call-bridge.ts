@@ -711,6 +711,28 @@ async function dialAiLegMuted(
   session: typeof callBridgeSessions.$inferSelect,
   options: { unmuteNow?: boolean; operatorInitiated?: boolean } = {},
 ): Promise<void> {
+  // ONE AI INGRESS PER CALL. A second leg is a second voice on the conference;
+  // and under the legacy transport it is a second assistant on the customer's
+  // leg, which is the combination that made a live call silent in both
+  // directions. If a leg is already on the bridge this is a no-op — except that
+  // a takeover request hands THAT leg the call instead of dialing again.
+  if (session.aiCallControlId) {
+    if (options.unmuteNow) {
+      const takeoverError = await setConferenceParticipantMuted(session.conferenceName, session.aiCallControlId, false);
+      // No status write here: only the conference event may claim the AI is on
+      // the call. This just records the mute.
+      await db
+        .update(callBridgeSessions)
+        .set({ aiMuted: Boolean(takeoverError), lastError: takeoverError, updatedAt: new Date() })
+        .where(eq(callBridgeSessions.id, session.id));
+    }
+    console.info('[Call Bridge] AI leg already on this call; not dialing a second', {
+      sessionId: session.id,
+      callControlId: session.aiCallControlId,
+      handedOver: options.unmuteNow === true,
+    });
+    return;
+  }
   const line = session.assistantLine?.trim() || normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
   if (!line) {
     await db
@@ -792,6 +814,15 @@ async function attachSalesAi(
     return;
   }
   if (!session.customerCallControlId) return;
+  // The legacy attach starts an assistant ON the customer's conferenced leg,
+  // which takes that leg's audio out of the conference. With a leg already on
+  // the bridge this would be the second AI on the call — and Telnyx refuses it
+  // anyway ("AI Assistant cannot be started more than once") after the first
+  // one has broken the audio. Never do it.
+  if (session.aiCallControlId) {
+    console.warn('[Call Bridge] refusing the legacy attach: an AI leg is already on this call', { sessionId: session.id });
+    return;
+  }
   let greeting = session.assistantGreeting?.trim() || '';
   let instructions = session.assistantInstructions?.trim() || '';
   // Newsroom mode: when the bridge is configured for a newsroom assistant
@@ -1162,15 +1193,6 @@ export function createCallBridgeRouter(): Router {
         updatedAt: new Date(),
       });
 
-      // The listening AI goes on the bridge FIRST, before the operator's phone
-      // even rings. It joins muted, so it is present and listening from the
-      // first word of the call without being able to say anything until the
-      // operator hands it the call.
-      if (autoJoinAi) {
-        const [fresh] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, id)).limit(1);
-        if (fresh) await dialAiLegMuted(fresh, { operatorInitiated: true });
-      }
-
       const result = await dialBridgeLeg({
         to: operatorNumber,
         role: 'operator',
@@ -1192,6 +1214,26 @@ export function createCallBridgeRouter(): Router {
         .update(callBridgeSessions)
         .set({ operatorCallControlId: result.callControlId, updatedAt: new Date() })
         .where(eq(callBridgeSessions.id, id));
+      // The listening AI goes on the bridge as soon as the operator's leg
+      // exists — still before the customer can ring, because the customer is
+      // only dialed once the operator answers. It joins MUTED, so it is present
+      // and listening from the first word without being able to say anything
+      // until the operator hands it the call.
+      //
+      // It goes SECOND ON PURPOSE. The operator's leg has to be the one that
+      // creates the conference, exactly as it did before any of this existed: a
+      // leg that joins first leaves the conference created by a participant the
+      // real call has not reached yet, and the observed symptom of that is
+      // silence for everyone on the call.
+      //
+      // Only the LEG transport has a listening leg to dial. Dialing one under
+      // the legacy attach transport is what turned a broken takeover into total
+      // silence, so the two can never be combined here.
+      if (autoJoinAi && aiLegTransport() === 'leg') {
+        const [fresh] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, id)).limit(1);
+        if (fresh) await dialAiLegMuted(fresh, { operatorInitiated: true });
+      }
+
       res.status(201).json({ id, status: 'dialing_operator' });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
