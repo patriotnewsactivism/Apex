@@ -81,8 +81,15 @@ async function main(): Promise<void> {
         choices: [{ index: 0, message: { role: 'assistant', content: isQwen ? 'qwen reply' : 'free reply' }, finish_reason: 'stop' }],
         // No `cost` field: QwenCloud's OpenAI-compatible response omits it (only
         // OpenRouter returns settled cost), so the ledger must derive the cost
-        // from the provider's list price — the case this guard covers.
-        usage: { prompt_tokens: 200_000, completion_tokens: 100_000, total_tokens: 300_000 },
+        // from the provider's list price — the case this guard covers. The Qwen
+        // reply reports half its prompt tokens as cache reads, so the cached
+        // slice must be priced at the cached rate, not the fresh rate.
+        usage: {
+          prompt_tokens: 200_000,
+          completion_tokens: 100_000,
+          total_tokens: 300_000,
+          prompt_tokens_details: { cached_tokens: isQwen ? 100_000 : 0 },
+        },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
@@ -145,6 +152,18 @@ async function main(): Promise<void> {
     'attribution: the paid inference is recorded against the Qwen provider',
     'providers' in snapshot && snapshot.providers.some((row) => row.provider.includes('qwen') && row.spentUsd > 0),
     snapshot,
+  );
+
+  // 3b. Cached-token accounting: 200k prompt + 100k completion, of which 100k
+  // prompt is a cache read. Fresh-rate pricing would be
+  // (200k*0.15 + 100k*0.47)/1M = $0.077; the cached slice must drop it toward
+  // (100k*0.15 + 100k*0.016 + 100k*0.47)/1M = $0.0636. A cost at or above the
+  // fresh figure means the cache discount was ignored.
+  const qwenCost = 'providers' in snapshot ? snapshot.providers.find((row) => row.provider.includes('qwen'))?.spentUsd ?? 0 : 0;
+  check(
+    'cached accounting: the cache-read slice is priced below fresh input',
+    qwenCost > 0.062 && qwenCost < 0.066,
+    { qwenCost, freshPricing: 0.077, cachedPricing: 0.0636 },
   );
 
   // ── 4. Free recovery returns APEX to cheaper inference. ────────────────────

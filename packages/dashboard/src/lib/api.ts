@@ -199,8 +199,12 @@ export interface SpendSnapshot {
   };
   /** Paid-fallback visibility the operator authorized. */
   qwenFallback?: {
-    active: boolean;
+    /** Qwen served a request at some point today. */
+    usedToday: boolean;
+    /** Qwen is carrying traffic in the current minute. */
+    activeNow: boolean;
     requestsUsed: number;
+    requestsLastMinute: number;
     requestCap: number;
     spentTodayUsd: number;
     alertThresholdUsd: number;
@@ -1072,7 +1076,8 @@ export const api = {
      *  autoJoinAi puts the AI on the bridge muted, listening, before the
      *  customer is even rung. topic is the operator's briefing for the AI. */
     start: (body: {
-      operatorNumber: string;
+      /** Optional: omit to use the saved default operator line. */
+      operatorNumber?: string;
       customerNumber: string;
       fromNumber?: string;
       assistantLine?: string;
@@ -1117,6 +1122,13 @@ export const api = {
       }),
     /** Hang up every leg of the session. */
     end: (id: string) => apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/end`, { method: 'POST' }),
+    /** The operator's saved dial settings: their own default line and the
+     *  recurring customer numbers, so a takeover call needs no typing. */
+    dialSettings: () => apiFetch<DialSettings>('/call-bridge/dial-settings'),
+    updateDialSettings: (body: { defaultOperatorNumber?: string; savedNumbers?: SavedDialNumber[] }) =>
+      apiFetch<DialSettings>('/call-bridge/dial-settings', { method: 'PATCH', body: JSON.stringify(body) }),
+    /** Recent bridge calls for the live call monitor (newest first). */
+    sessions: () => apiFetch<{ sessions: LiveSessionSummary[] }>('/call-bridge/sessions'),
   },
 
   missions: {
@@ -1349,6 +1361,27 @@ export type CallBridgeStatus =
   | 'ai_joined'
   | 'ended'
   | 'failed';
+
+export type SavedDialNumber = { label: string; number: string };
+export interface DialSettings {
+  /** The operator's own line, dialed first; ships defaulted to their cell. */
+  defaultOperatorNumber: string;
+  /** Recurring customer numbers, pickable instead of typed. */
+  savedNumbers: SavedDialNumber[];
+}
+/** A row in the live call monitor. */
+export interface LiveSessionSummary {
+  id: string;
+  status: CallBridgeStatus;
+  operatorNumber: string;
+  customerNumber: string;
+  assistantTopic?: string | null;
+  aiMuted?: boolean | null;
+  fromNumber?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  lastError?: string | null;
+}
 
 export interface CallBridgeSession {
   id: string;

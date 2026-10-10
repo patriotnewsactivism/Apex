@@ -174,8 +174,8 @@ export function SpendBurnPanel() {
               <div>
                 <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>QWEN PAID FALLBACK</div>
                 <span style={{ color: data.qwenFallback.alert ? 'var(--color-apex-orange)' : undefined }}>
-                  {data.qwenFallback.active ? 'active' : 'idle'} · {data.qwenFallback.requestsUsed} req · $
-                  {data.qwenFallback.spentTodayUsd.toFixed(4)}
+                  {(data.qwenFallback.activeNow ? 'active now' : data.qwenFallback.usedToday ? 'used today' : 'idle')} ·{' '}
+                  {data.qwenFallback.requestsUsed} req · ${data.qwenFallback.spentTodayUsd.toFixed(4)}
                   {data.qwenFallback.alert ? ' ⚠ over threshold' : ''}
                 </span>
               </div>
