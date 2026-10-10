@@ -154,8 +154,18 @@ async function main(): Promise<void> {
       /const action = muted \? 'mute' : 'unmute'/.test(route),
   );
   check(
-    'the legacy attach path is opt-in, not the default',
-    /export function aiLegTransport\(\): 'leg' \| 'attach' \{\s*return process\.env\.APEX_BRIDGE_AI_TRANSPORT === 'attach' \? 'attach' : 'leg';/.test(route),
+    'the conference-leg transport is opt-in; the legacy attach path is the safe production default',
+    /export function aiLegTransport\(\): 'leg' \| 'attach' \{\s*return process\.env\.APEX_BRIDGE_AI_TRANSPORT === 'leg' \? 'leg' : 'attach';/.test(route),
+  );
+  check(
+    'a dial the API accepted never claims the AI joined — the leg waits for the conference event',
+    aiLegBody.indexOf('status: \'ai_dialing\'') !== -1 && !/'ai_joined'/.test(aiLegBody),
+  );
+  check(
+    'the AI-join signal comes from conference.participant.joined, not call.answered',
+    /conference\.participant\.joined/.test(route) &&
+      /eventType\.startsWith\('conference\.participant\.'\)/.test(route) &&
+      /if \(aiLegTransport\(\) === 'attach'\) \{\s*\n\s*await db\.update\(callBridgeSessions\)\.set\(\{ status: 'ai_joined'/.test(route),
   );
 
   // ── The operator dictates the call, the line, and the agent ────────────────
