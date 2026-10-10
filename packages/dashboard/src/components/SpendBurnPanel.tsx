@@ -188,6 +188,24 @@ export function SpendBurnPanel() {
           )}
         </div>
       )}
+      {data.capacityDiagnostics && (
+        <div className="glass-card" style={{ padding: 16, marginBottom: 14 }}>
+          <div className="apex-display" style={{ fontSize: 15, color: 'var(--color-apex-text)' }}>
+            Why the workforce is paused
+          </div>
+          <div className="apex-eyebrow" style={{ marginTop: 4, marginBottom: 8 }}>
+            Last block {new Date(data.capacityDiagnostics.at).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })} ·
+            retries after {new Date(data.capacityDiagnostics.resumeAt).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+            {Array.from(new Set(data.capacityDiagnostics.blocks)).map((block, index) => (
+              <div key={index} style={{ color: 'var(--color-apex-muted)' }}>
+                • {block}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div
         className="apex-toolbar"
         style={{ marginBottom: 14, gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}

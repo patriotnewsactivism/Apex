@@ -688,6 +688,10 @@ async function main() {
       turnEconomy: turn,
       efficiency,
       qwenFallback,
+      // Why the workforce is (or is not) able to work right now — the exact
+      // routes that blocked the last request, instead of an unexplained
+      // "exhausted".
+      capacityDiagnostics: getLastCapacityDiagnostics(),
       hourlyBurnUsd,
       projected30DayUsd,
       utilizationPct,
