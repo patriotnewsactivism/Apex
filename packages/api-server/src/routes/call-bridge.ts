@@ -205,9 +205,14 @@ export function approvedAssistantLines(): string[] {
 /** How the AI gets onto the bridge.
  *  'leg'    — dial the AI line into the conference muted (the working design).
  *  'attach' — legacy ai_assistant_start on the customer's conferenced leg.
- *             Kept only so the broken path stays selectable for comparison. */
+ *
+ *  SAFE DEFAULT IS 'attach'. The conference-leg transport is the correct fix,
+ *  but it has not yet passed a controlled two-leg audio test, so an un-tested
+ *  feature must not become production just because the code merged. Opt IN
+ *  explicitly with APEX_BRIDGE_AI_TRANSPORT=leg (for the controlled test), and
+ *  flip it back to unset/'attach' for the instant rollback. */
 export function aiLegTransport(): 'leg' | 'attach' {
-  return process.env.APEX_BRIDGE_AI_TRANSPORT === 'attach' ? 'attach' : 'leg';
+  return process.env.APEX_BRIDGE_AI_TRANSPORT === 'leg' ? 'leg' : 'attach';
 }
 
 function callBridgeWebhookUrl(): string {
@@ -686,7 +691,11 @@ async function dialAiLegMuted(
   await db
     .update(callBridgeSessions)
     .set({
-      status: unmuteNow ? 'ai_joined' : 'ai_dialing',
+      // A dial the API ACCEPTED is not an assistant that joined. Stay
+      // 'ai_dialing' until conference.participant.joined confirms this leg is
+      // really in the conference — a successful command is not proof of a
+      // working AI conversation (the exact false-positive this fix removes).
+      status: 'ai_dialing',
       aiCallControlId: result.callControlId,
       aiMuted: !unmuteNow,
       assistantLine: line,
@@ -1311,14 +1320,55 @@ export function createCallBridgeWebhookRouter(): Router {
       const payload = (event.payload ?? {}) as Record<string, unknown>;
       const state = decodeClientState(payload.client_state);
 
-      // Not one of ours (or a webhook with no client_state) — ack and ignore.
-      if (!state) {
+      // Conference-participant events identify the participant by
+      // call_control_id and may omit our client_state, so look the session up
+      // by that id when the state is absent. Everything else needs client_state.
+      const participantCcid = () =>
+        typeof payload.call_control_id === 'string'
+          ? payload.call_control_id
+          : typeof (payload.participant as Record<string, unknown> | undefined)?.call_control_id === 'string'
+            ? ((payload.participant as Record<string, unknown>).call_control_id as string)
+            : undefined;
+      let session: typeof callBridgeSessions.$inferSelect | undefined;
+      if (state) {
+        [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, state.sessionId)).limit(1);
+      } else if (eventType.startsWith('conference.participant.')) {
+        const ccid = participantCcid();
+        if (ccid) {
+          [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.aiCallControlId, ccid)).limit(1);
+        }
+      }
+      // Not one of ours — ack and ignore.
+      if (!session) {
         res.status(200).json({ received: true });
         return;
       }
 
-      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, state.sessionId)).limit(1);
-      if (!session) {
+      // Conference-participant events are the ONLY authoritative proof the AI
+      // actually joined the bridge, and they carry no client_state — handle
+      // them before the state-dependent events below.
+      if (eventType === 'conference.participant.joined' || eventType === 'conference.participant.left') {
+        const ccid = participantCcid();
+        if (session.aiCallControlId && ccid && ccid === session.aiCallControlId) {
+          if (eventType === 'conference.participant.joined') {
+            await db
+              .update(callBridgeSessions)
+              .set({ status: 'ai_joined', lastError: null, updatedAt: new Date() })
+              .where(eq(callBridgeSessions.id, session.id));
+            console.info('[Call Bridge] AI conference participant joined', { sessionId: session.id, callControlId: ccid });
+          } else if (session.status === 'ai_joined') {
+            await db
+              .update(callBridgeSessions)
+              .set({ status: 'active', aiCallControlId: null, aiMuted: true, updatedAt: new Date() })
+              .where(eq(callBridgeSessions.id, session.id));
+          }
+        }
+        res.status(200).json({ received: true });
+        return;
+      }
+
+      // Everything below keys off the dialed leg's client_state.
+      if (!state) {
         res.status(200).json({ received: true });
         return;
       }
@@ -1358,7 +1408,13 @@ export function createCallBridgeWebhookRouter(): Router {
             await attachSalesAi(session.id, { phase: 'call_start', unmuteNow: true, operatorInitiated: true });
           }
         } else if (state.role === 'ai') {
-          await db.update(callBridgeSessions).set({ status: 'ai_joined', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+          // Answering the call is NOT joining the conference. Only the legacy
+          // attach transport (which has no conference leg of its own) treats an
+          // answer as joined; the leg transport waits for the authoritative
+          // conference.participant.joined event handled above.
+          if (aiLegTransport() === 'attach') {
+            await db.update(callBridgeSessions).set({ status: 'ai_joined', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+          }
         } else if (state.role === 'monitor' || state.role === 'whisper' || state.role === 'barge') {
           await db.update(callBridgeSessions).set({ operatorJoinRole: state.role, updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
         }
