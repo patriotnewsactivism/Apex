@@ -145,11 +145,28 @@ export const OPENROUTER_FREE_KEY_ENVS = [
  * calls the Nous Portal provider (nous-deepseek-v4-flash-paid) — that access
  * is cut off entirely.
  *
- * OpenRouter: the funded inference key. As of 2026-09-25 only the
- * OPENROUTER_API_KEY_4 account had a positive credit balance (verified via its
- * management key); the other three accounts are overdrawn and answer 402.
+ * OpenRouter: the funded inference key. Which account is funded changes over
+ * time — the 2026-09-25 reading that "only OPENROUTER_API_KEY_4 has credit" was
+ * already stale by 2026-10-10 — so the paid route must be able to use whichever
+ * account currently holds credit rather than one pinned name.
  */
-export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_4'] as const;
+/**
+ * Env names that may serve the paid continuity route.
+ *
+ * This was pinned to OPENROUTER_API_KEY_4 alone. On 2026-10-10 that account sat
+ * at $0.50, tripped the balance monitor's $0.50 pause threshold, and was
+ * excluded — so the paid continuity route could not serve while three other
+ * accounts still held credit. The route must be able to use whichever account
+ * is actually funded. Order is a tie-break only: configuredCredentials() sorts
+ * by requests-already-made-today, and any balance-paused account is excluded by
+ * the caller. Override with APEX_PAID_KEY_ENVS (comma-separated env names).
+ */
+export const OPENROUTER_PAID_KEY_ENVS: readonly string[] = (
+  process.env.APEX_PAID_KEY_ENVS ?? 'OPENROUTER_API_KEY,OPENROUTER_API_KEY_2,OPENROUTER_API_KEY_4'
+)
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
 export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 /** Output floor for the paid routes. On 2026-10-05 a DevOps task (4,096-token
  *  role budget) failed on deepseek-v4-flash-0731 with "empty completion
