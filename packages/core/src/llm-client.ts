@@ -440,6 +440,14 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
           );
         });
         return [
+          // The prepaid QwenCloud Token Plan is the primary automatic route and
+          // must survive a saved free-model policy: a policy governs the
+          // OpenRouter FREE roster, not whether the operator's prepaid plan is
+          // used at all. 2026-10-10 incident: saving any policy silently
+          // dropped Qwen from the chain, so the whole workforce ran on the
+          // 4,000/day OpenRouter free pool and overflowed into paid spend while
+          // a 15,000/day prepaid plan sat idle.
+          'qwen-dashscope-byok',
           FREE_POLICY_GATEWAY_NAME,
           ...defaultFreeFallbacks,
           'groq-gpt-oss-120b-byok',

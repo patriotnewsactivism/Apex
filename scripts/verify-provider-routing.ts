@@ -321,9 +321,10 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   explorationRate: 0,
 });
 check(
-  'a custom FREE OpenRouter policy tries the selected policy first, then unselected default free fallbacks, then BYOK continuity',
+  'a custom FREE OpenRouter policy keeps Qwen primary, then the selected policy, unselected default free fallbacks, then BYOK continuity',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
     JSON.stringify([
+      'qwen-dashscope-byok',
       FREE_POLICY_GATEWAY_NAME,
       'openrouter-nex-n2-5-pro-free',
       'openrouter-nemotron-super',
@@ -335,9 +336,9 @@ check(
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
 check(
-  'under a custom policy the default config advertises the gateway and the role\'s first selected model',
-  getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
-    getDefaultLLMConfig('CEO').model === 'nex-agi/nex-n2.5-mini:free',
+  'under a custom policy the default config advertises the route actually attempted first (Qwen primary, not the free gateway)',
+  getDefaultLLMConfig('CEO').provider === 'qwen-dashscope-byok' &&
+    getDefaultLLMConfig('CEO').model === 'qwen3.8-flash',
   getDefaultLLMConfig('CEO'),
 );
 if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
