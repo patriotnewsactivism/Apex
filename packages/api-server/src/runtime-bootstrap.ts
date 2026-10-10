@@ -22,6 +22,7 @@ import {
   superviseAgentLoop,
   initializeTokenLedgerPersistence,
   initializeRequestLedgerPersistence,
+  initializeProviderCooldowns,
   initializeSpendLedgerPersistence,
   initializeProviderCredits,
   initializeProviderAccountExclusions,
@@ -142,6 +143,17 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
     durableRequestLedger
       ? '✅ Daily request ledger hydrated from Postgres'
       : '⚠️  Daily request ledger is memory-only; a restart will reset today\'s request budget',
+  );
+
+  // Provider/credential cooldowns must survive a container replacement too, or
+  // a deploy hands the workforce straight back to providers that are still
+  // resting — the agents then re-discover the outage by failing (deferral
+  // storm, 2026-10-10: three deploys, zero completions).
+  const durableCooldowns = await initializeProviderCooldowns();
+  log(
+    durableCooldowns
+      ? '✅ Provider/credential cooldowns hydrated from Postgres'
+      : '⚠️  Provider cooldowns are memory-only; a restart will re-admit resting providers',
   );
 
   // Lease-expiry crash recovery must run here, not only behind the HTTP

@@ -701,6 +701,76 @@ type ProviderRequestError = Error & {
 const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
+/**
+ * Cooldowns are in-memory for the hot path, but they MUST survive a container
+ * replacement. A deploy that forgets a resting provider's cooldown hands the
+ * workforce straight back to it, and the agents re-discover the outage by
+ * failing — the deferral storm observed 2026-10-10 (three deploys, three
+ * workforce reinit batches, zero completions). Persist the still-live entries
+ * to Postgres, debounced; hydrate at boot before the first request.
+ */
+const COOLDOWN_SETTINGS_KEY = 'apex.llm.cooldowns';
+let cooldownsPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleCooldownsPersist(): void {
+  if (cooldownsPersistTimer) return;
+  cooldownsPersistTimer = setTimeout(() => {
+    cooldownsPersistTimer = null;
+    void persistCooldowns();
+  }, 1_000);
+  (cooldownsPersistTimer as { unref?: () => void }).unref?.();
+}
+
+async function persistCooldowns(): Promise<void> {
+  try {
+    const { db, integrationSettings } = await import('@workspace/db');
+    const now = Date.now();
+    const value = JSON.stringify({
+      providers: [...providerCooldowns.entries()].filter(([, until]) => until > now),
+      credentials: [...credentialCooldowns.entries()].filter(([, cooldown]) => cooldown.until > now),
+    });
+    await db
+      .insert(integrationSettings)
+      .values({ key: COOLDOWN_SETTINGS_KEY, value, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: integrationSettings.key,
+        set: { value, updatedAt: new Date() },
+      });
+  } catch {
+    // Best effort: a memory-only cooldown is the pre-existing behaviour.
+  }
+}
+
+/** Load persisted cooldowns at boot so a restart resumes the schedule the
+ *  previous process was keeping, instead of re-discovering it by failing. */
+export async function initializeProviderCooldowns(): Promise<boolean> {
+  try {
+    const { db, integrationSettings } = await import('@workspace/db');
+    const { eq } = await import('drizzle-orm');
+    const [row] = await db
+      .select()
+      .from(integrationSettings)
+      .where(eq(integrationSettings.key, COOLDOWN_SETTINGS_KEY))
+      .limit(1);
+    if (row?.value) {
+      const parsed = JSON.parse(row.value) as {
+        providers?: Array<[string, number]>;
+        credentials?: Array<[string, CredentialCooldown]>;
+      };
+      const now = Date.now();
+      for (const [name, until] of parsed.providers ?? []) {
+        if (until > now) providerCooldowns.set(name as ApexProviderName, until);
+      }
+      for (const [id, cooldown] of parsed.credentials ?? []) {
+        if (cooldown?.until > now) credentialCooldowns.set(id, cooldown);
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** OpenRouter's documented ceiling for the `models` fallback array. Sending
  * more earns "HTTP 400 'models' array must have 3 items or fewer" on every
  * request, whichever credential is used. */
@@ -833,10 +903,12 @@ function setCredentialCooldown(
     capacityPause: isCapacityFailure(status, message),
     reason: message.slice(0, 240),
   });
+  scheduleCooldownsPersist();
 }
 
 function clearCredentialCooldown(id: string): void {
   credentialCooldowns.delete(id);
+  scheduleCooldownsPersist();
 }
 
 function providerMinIntervalMs(provider: ProviderSpec): number {
@@ -887,6 +959,7 @@ function setProviderCooldown(
     provider.name,
     Math.max(providerCooldowns.get(provider.name) ?? 0, Date.now() + duration),
   );
+  scheduleCooldownsPersist();
 }
 
 export function getProviderBackpressureSnapshot(): {
