@@ -632,9 +632,36 @@ async function main() {
         ? Math.round((requests.totalRequests / requests.totalCap) * 10_000) / 100
         : 0;
 
+    // Workforce efficiency: not "how many agents are busy" but "how many
+    // assignments finished, and what each finished assignment cost" — the
+    // measure that says whether the autonomous workforce is actually
+    // productive. Raw request counts are deliberately secondary.
+    const turn = getTurnEconomySnapshot();
+    const startedMs = Date.parse(turn.since);
+    const elapsedHours = Number.isFinite(startedMs)
+      ? Math.max((Date.now() - startedMs) / 3_600_000, 1 / 60)
+      : null;
+    const efficiency = {
+      since: turn.since,
+      completedTasks: turn.completedTasks,
+      deterministicTasks: turn.deterministicTasks,
+      requests: turn.requests,
+      tasksPerHour: elapsedHours == null ? null : Math.round((turn.completedTasks / elapsedHours) * 100) / 100,
+      requestsPerCompletedTask: turn.requestsPerCompletedTask,
+      // Cost per FINISHED task. Null when nothing has completed yet — a cost
+      // per task with a zero denominator is not zero, it is undefined.
+      costPerCompletedTaskUsd:
+        turn.completedTasks > 0
+          ? Math.round((snapshot.spentUsd / turn.completedTasks) * 100_000) / 100_000
+          : null,
+      tokensPerCompletedTask: null as number | null,
+      restedProviders: getProviderBackpressureSnapshot().pausedProviders,
+    };
+
     res.json({
       ...snapshot,
-      turnEconomy: getTurnEconomySnapshot(),
+      turnEconomy: turn,
+      efficiency,
       hourlyBurnUsd,
       projected30DayUsd,
       utilizationPct,

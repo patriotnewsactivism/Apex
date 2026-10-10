@@ -138,6 +138,46 @@ export function SpendBurnPanel() {
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+      {data.efficiency && (
+        <div className="glass-card" style={{ padding: 16, marginBottom: 14 }}>
+          <div className="apex-display" style={{ fontSize: 15, color: 'var(--color-apex-text)' }}>
+            Workforce efficiency
+          </div>
+          <div className="apex-eyebrow" style={{ marginTop: 4, marginBottom: 10 }}>
+            Finished assignments and what each one cost · since{' '}
+            {new Date(data.efficiency.since).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })}
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 22, fontFamily: 'var(--font-mono)', fontSize: 13 }}>
+            <div>
+              <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>COMPLETED TASKS</div>
+              {data.efficiency.completedTasks.toLocaleString()}
+            </div>
+            <div>
+              <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>TASKS / HOUR</div>
+              {data.efficiency.tasksPerHour ?? '—'}
+            </div>
+            <div>
+              <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>REQUESTS / COMPLETED TASK</div>
+              {data.efficiency.requestsPerCompletedTask ?? '—'}
+            </div>
+            <div>
+              <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>COST / COMPLETED TASK</div>
+              {data.efficiency.costPerCompletedTaskUsd == null
+                ? '—'
+                : `$${data.efficiency.costPerCompletedTaskUsd.toFixed(6)}`}
+            </div>
+            <div>
+              <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>RESTED PROVIDERS</div>
+              {data.efficiency.restedProviders.length}
+            </div>
+          </div>
+          {data.efficiency.completedTasks === 0 && (
+            <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-apex-orange)' }}>
+              No completed assignments yet this process — cost per completed task is undefined until one finishes.
+            </div>
+          )}
+        </div>
+      )}
       <div
         className="apex-toolbar"
         style={{ marginBottom: 14, gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}

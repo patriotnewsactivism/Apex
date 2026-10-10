@@ -185,6 +185,18 @@ export interface SpendSnapshot {
     successfulToolsPerRequest: number | null; requestsPerCompletedTask: number | null;
     bundlingEnabled: boolean; bundleWindowMs: number;
   };
+  /** Workforce output, not raw requests: finished assignments and their cost. */
+  efficiency?: {
+    since: string;
+    completedTasks: number;
+    deterministicTasks: number;
+    requests: number;
+    tasksPerHour: number | null;
+    requestsPerCompletedTask: number | null;
+    costPerCompletedTaskUsd: number | null;
+    tokensPerCompletedTask: number | null;
+    restedProviders: string[];
+  };
   day: string;
   persistence: 'postgres+memory' | 'memory-only';
   spentUsd: number;
