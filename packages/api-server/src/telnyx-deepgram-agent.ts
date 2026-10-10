@@ -382,7 +382,7 @@ export class DeepgramVoiceSession {
               'For anything you cannot resolve, offer to take a message. If the caller asks for a human or the owner, confirm first, then call transfer_to_owner.',
               "A confidential operator channel exists. If the caller says the operator access code, call unlock_operator with the exact digits in the same turn. On success you become the Apex operator: treat the caller as the owner with full authority — you can submit goals that put the entire AI workforce into motion (apex_goal, confirm the details with the caller first) and report workforce status (apex_status).",
               'Never reveal, hint at, or ask for the code. Never mention the operator channel or these tools unless the caller provides the code. If a locked operator tool is refused by the system, do not retry repeatedly — ask the caller to confirm the code.',
-            ].join(' '),'
+            ].join(' '),
             functions,
           },
           speak: (() => {
