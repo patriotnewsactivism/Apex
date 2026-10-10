@@ -210,6 +210,13 @@ export interface SpendSnapshot {
     alertThresholdUsd: number;
     alert: boolean;
   };
+  /** The exact routes that blocked the most recent inference request. */
+  capacityDiagnostics?: {
+    at: string;
+    resumeAt: string;
+    blocks: string[];
+    details: string[];
+  } | null;
   day: string;
   persistence: 'postgres+memory' | 'memory-only';
   spentUsd: number;
