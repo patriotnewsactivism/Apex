@@ -349,6 +349,42 @@ jobs:
           CI: true
         run: pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-crm.ts"
 
+  cooldown-postgres:
+    # Proves provider/credential cooldowns survive a worker restart against a
+    # real PostgreSQL: a controlled cooldown is persisted, the in-memory state
+    # is dropped (a container replacement), and the boot hydrate restores the
+    # still-valid cooldown while dropping expired ones. The source-pattern
+    # guard cannot prove this; only a real write-and-restore can.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: cooldown_test
+        ports:
+          - 5437:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify cooldown persistence survives a restart against PostgreSQL
+        env:
+          APEX_COOLDOWN_TEST_DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5437/cooldown_test
+          CI: true
+        run: pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-cooldown-persistence-postgres.ts"
+
   lead-status-postgres:
     # Proves the sanctioned lead-status transition end to end against a real
     # PostgreSQL: PATCH /api/leads/:id with status=qualified persists, the

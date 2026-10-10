@@ -771,6 +771,35 @@ export async function initializeProviderCooldowns(): Promise<boolean> {
   }
 }
 
+/**
+ * Test-only hooks for the Postgres round-trip guard. They expose the private
+ * cooldown maps so a test can seed a cooldown, persist it, clear the process
+ * state (simulating a container replacement) and re-hydrate — the restart
+ * behaviour the source-pattern guard cannot prove.
+ */
+export function __testSeedProviderCooldown(name: ApexProviderName, until: number): void {
+  providerCooldowns.set(name, until);
+  scheduleCooldownsPersist();
+}
+export function __testSeedCredentialCooldown(id: string, cooldown: CredentialCooldown): void {
+  credentialCooldowns.set(id, cooldown);
+  scheduleCooldownsPersist();
+}
+export function __testClearCooldownMaps(): void {
+  providerCooldowns.clear();
+  credentialCooldowns.clear();
+}
+export function __testGetProviderCooldown(name: ApexProviderName): number | undefined {
+  return providerCooldowns.get(name);
+}
+export function __testGetCredentialCooldown(id: string): CredentialCooldown | undefined {
+  return credentialCooldowns.get(id);
+}
+export async function __testFlushCooldowns(): Promise<void> {
+  await persistCooldowns();
+}
+export const __testCooldownSettingsKey = COOLDOWN_SETTINGS_KEY;
+
 /** OpenRouter's documented ceiling for the `models` fallback array. Sending
  * more earns "HTTP 400 'models' array must have 3 items or fewer" on every
  * request, whichever credential is used. */
