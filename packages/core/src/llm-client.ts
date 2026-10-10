@@ -306,14 +306,15 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // completed correctly (tool_calls populated, content empty -- a case the
     // completion guard below already exempts), well inside a normal budget.
     maxOutputTokens: envPositiveInt('APEX_QWEN_MAX_OUTPUT_TOKENS', 8_192),
-    // usdPerMillionPrompt/usdPerMillionCompletion intentionally omitted: a
-    // prepaid Token Plan subscription's real constraint is plan-token/request
-    // consumption (tracked by the request pool below), not a per-call dollar
-    // rate, and no per-call dollar rate for this specific plan could be
-    // confirmed against qwencloud.com's own pricing page. QwenCloud's
-    // OpenAI-compatible response also carries no settled `usage.cost` field
-    // the way OpenRouter's does. Spend-ledger entries for this route report
-    // $0 unless/until the operator wants dollar-equivalent tracking added.
+    // PAYG per-token rates for qwen3.8-flash, confirmed against
+    // qwencloud.com/models/qwen3.8-flash (input $0.15, output $0.47 per 1M
+    // tokens). The operator is on pay-as-you-go, so the binding constraint IS
+    // per-call dollars; without these the paid fallback records $0 and
+    // cost-per-completed-task is invisible. QwenCloud's OpenAI-compatible
+    // response carries no settled `usage.cost` (OpenRouter's does), so the
+    // ledgers derive cost from these rates.
+    usdPerMillionPrompt: 0.15,
+    usdPerMillionCompletion: 0.47,
   },
   freeOpenRouterSpec('openrouter-nex-n2-5-mini-free', 'nex-agi/nex-n2.5-mini:free'),
   freeOpenRouterSpec('openrouter-nex-n2-5-pro-free', 'nex-agi/nex-n2.5-pro:free'),

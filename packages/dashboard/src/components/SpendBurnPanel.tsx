@@ -170,6 +170,16 @@ export function SpendBurnPanel() {
               <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>RESTED PROVIDERS</div>
               {data.efficiency.restedProviders.length}
             </div>
+            {data.qwenFallback && (
+              <div>
+                <div style={{ color: 'var(--color-apex-muted)', fontSize: 9 }}>QWEN PAID FALLBACK</div>
+                <span style={{ color: data.qwenFallback.alert ? 'var(--color-apex-orange)' : undefined }}>
+                  {data.qwenFallback.active ? 'active' : 'idle'} · {data.qwenFallback.requestsUsed} req · $
+                  {data.qwenFallback.spentTodayUsd.toFixed(4)}
+                  {data.qwenFallback.alert ? ' ⚠ over threshold' : ''}
+                </span>
+              </div>
+            )}
           </div>
           {data.efficiency.completedTasks === 0 && (
             <div style={{ marginTop: 8, fontSize: 11, color: 'var(--color-apex-orange)' }}>
