@@ -197,6 +197,15 @@ export interface SpendSnapshot {
     tokensPerCompletedTask: number | null;
     restedProviders: string[];
   };
+  /** Paid-fallback visibility the operator authorized. */
+  qwenFallback?: {
+    active: boolean;
+    requestsUsed: number;
+    requestCap: number;
+    spentTodayUsd: number;
+    alertThresholdUsd: number;
+    alert: boolean;
+  };
   day: string;
   persistence: 'postgres+memory' | 'memory-only';
   spentUsd: number;

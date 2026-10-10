@@ -658,10 +658,27 @@ async function main() {
       restedProviders: getProviderBackpressureSnapshot().pausedProviders,
     };
 
+    const qwenPool = requests.directProviders.find((p) => p.pool === 'qwen');
+    const qwenSpentUsd = snapshot.providers.find((p) => p.provider.includes('qwen'))?.spentUsd ?? 0;
+    const qwenAlertUsd = Number(process.env.APEX_QWEN_SPEND_ALERT_USD ?? 5);
+    // Visibility into the paid fallback the operator authorized: whether Qwen is
+    // carrying traffic (i.e. free pools could not serve), how much it has cost
+    // today and this hour, and a threshold alert — so an unexpected burn surfaces
+    // immediately rather than at the next invoice.
+    const qwenFallback = {
+      active: (qwenPool?.requests ?? 0) > 0,
+      requestsUsed: qwenPool?.requests ?? 0,
+      requestCap: qwenPool?.cap ?? 0,
+      spentTodayUsd: Math.round(qwenSpentUsd * 1e6) / 1e6,
+      alertThresholdUsd: qwenAlertUsd,
+      alert: qwenSpentUsd >= qwenAlertUsd,
+    };
+
     res.json({
       ...snapshot,
       turnEconomy: turn,
       efficiency,
+      qwenFallback,
       hourlyBurnUsd,
       projected30DayUsd,
       utilizationPct,

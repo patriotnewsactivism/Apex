@@ -42,6 +42,7 @@ jobs:
         run: |
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-provider-routing.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-paid-fallback-request.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-qwen-fallback.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-turn-economy.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-account-quotas.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-provider-backpressure.ts"
