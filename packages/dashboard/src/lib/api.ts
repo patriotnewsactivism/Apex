@@ -1117,6 +1117,18 @@ export const api = {
         `/call-bridge/${encodeURIComponent(id)}/hand-back`,
         { method: 'POST' },
       ),
+    /** Press digits on the live call — to get past an auto attendant. */
+    dtmf: (id: string, digits: string, target: 'customer' | 'ai' | 'operator' = 'customer') =>
+      apiFetch<{ ok: boolean; target: string; digits: string; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/dtmf`,
+        { method: 'POST', body: JSON.stringify({ digits, target }) },
+      ),
+    /** Mute/unmute the operator's own leg: listen without being heard. */
+    operatorMute: (id: string, muted: boolean) =>
+      apiFetch<{ ok: boolean; operatorMuted: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/operator-mute`,
+        { method: 'POST', body: JSON.stringify({ muted }) },
+      ),
     join: (id: string, role: 'monitor' | 'whisper' | 'barge') =>
       apiFetch<{ ok: boolean; role: string; error?: string }>(`/call-bridge/${encodeURIComponent(id)}/join`, {
         method: 'POST',
