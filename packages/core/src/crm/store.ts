@@ -4,6 +4,7 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   auditEvents,
+  callBridgeSessions,
   callOutcomes,
   campaignEnrollments,
   contactIdentifiers,
@@ -12,6 +13,7 @@ import {
   contacts,
   crmLegacyLinks,
   db,
+  emailSends,
   emailSuppressions,
   inboundUnmatched,
   interactions,
@@ -684,6 +686,116 @@ export async function getTimeline(contactId: string) {
   return db.select().from(contactTimeline)
     .where(inArray(contactTimeline.contactId, ids))
     .orderBy(desc(contactTimeline.occurredAt));
+}
+
+export type ContactActivityKind = 'email' | 'sms' | 'call' | 'timeline';
+
+export interface ContactActivityEvent {
+  id: string;
+  kind: ContactActivityKind;
+  channel: string;
+  occurredAt: Date;
+  summary: string;
+  direction: string | null;
+  actor: string | null;
+  detail: Record<string, unknown> | null;
+}
+
+/**
+ * Every logged interaction with a contact AND its merged family, across ALL
+ * channels — the client card must show one chronological history, not just the
+ * contact_timeline rows. The operator's rule: if it was emailed, called, or
+ * texted, it is logged here. Email matches by identifier address, SMS and
+ * calls match by identifier number.
+ */
+export async function getContactActivity(contactId: string): Promise<ContactActivityEvent[]> {
+  const ids = await familyIds(db, contactId);
+  const identifiers = await db
+    .select()
+    .from(contactIdentifiers)
+    .where(inArray(contactIdentifiers.contactId, ids));
+  const emails = [
+    ...new Set(
+      identifiers
+        .filter((row) => row.kind === 'email')
+        .map((row) => row.value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+  const phones = [
+    ...new Set(
+      identifiers
+        .filter((row) => row.kind === 'phone')
+        .map((row) => row.value.trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  const [timeline, sentEmails, texts, calls] = await Promise.all([
+    db.select().from(contactTimeline).where(inArray(contactTimeline.contactId, ids)),
+    emails.length
+      ? db.select().from(emailSends).where(inArray(sql`lower(${emailSends.toEmail})`, emails))
+      : Promise.resolve([] as Array<typeof emailSends.$inferSelect>),
+    phones.length
+      ? db.select().from(smsMessages).where(inArray(smsMessages.counterpartyNumber, phones))
+      : Promise.resolve([] as Array<typeof smsMessages.$inferSelect>),
+    phones.length
+      ? db.select().from(callBridgeSessions).where(inArray(callBridgeSessions.customerNumber, phones))
+      : Promise.resolve([] as Array<typeof callBridgeSessions.$inferSelect>),
+  ]);
+
+  const events: ContactActivityEvent[] = [];
+  for (const row of timeline) {
+    events.push({
+      id: `timeline:${row.id}`,
+      kind: 'timeline',
+      channel: row.channel,
+      occurredAt: row.occurredAt,
+      summary: row.subject || row.bodyText || row.eventKind,
+      direction: row.direction,
+      actor: row.actorName,
+      detail: { eventKind: row.eventKind, provider: row.provider ?? null },
+    });
+  }
+  for (const row of sentEmails) {
+    events.push({
+      id: `email:${row.id}`,
+      kind: 'email',
+      channel: 'email',
+      occurredAt: row.sentAt ?? row.createdAt,
+      summary: `${row.subject} — ${row.status}`,
+      direction: 'outbound',
+      actor: row.createdByAgentId ?? null,
+      detail: { to: row.toEmail, status: row.status, campaignId: row.campaignId ?? null, leadId: row.leadId ?? null },
+    });
+  }
+  for (const row of texts) {
+    events.push({
+      id: `sms:${row.id}`,
+      kind: 'sms',
+      channel: 'sms',
+      occurredAt: row.createdAt,
+      summary: row.body,
+      direction: row.direction,
+      actor: row.createdByAgentId ?? null,
+      detail: { status: row.status, from: row.fromNumber, to: row.toNumber },
+    });
+  }
+  for (const row of calls) {
+    events.push({
+      id: `call:${row.id}`,
+      kind: 'call',
+      channel: 'call',
+      occurredAt: row.aiTakeoverAt ?? row.createdAt,
+      summary: `Call ${row.status}${row.assistantTopic ? ` — ${row.assistantTopic}` : ''}`,
+      direction: 'outbound',
+      actor: row.createdByAgentId ?? null,
+      detail: { status: row.status, mode: row.sessionMode, aiMuted: row.aiMuted },
+    });
+  }
+
+  events.sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  return events;
 }
 
 const FREE_EMAIL_DOMAINS = new Set(['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'aol.com']);
