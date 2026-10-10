@@ -154,8 +154,9 @@ try {
   check('BACKEND can have a different first-choice model', backendChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nex-agi/nex-n2.5-mini:free');
   check(
-    'custom FREE roster tries the selected gateway first, then unselected default free fallbacks before BYOK continuity',
+    'custom FREE roster keeps Qwen primary, then the selected gateway, then unselected default free fallbacks before BYOK continuity',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
+      'qwen-dashscope-byok',
       FREE_POLICY_GATEWAY_NAME,
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
@@ -165,14 +166,15 @@ try {
     getProviderOrderForRole('CEO'),
   );
   check('custom FREE policy still uses free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
-  // The free-policy gateway is dispatched first under a custom operator
-  // policy, so the default config must advertise it with the role's first
-  // selected model; anything else is the "advertises a model it no longer
-  // tries first" bug getDefaultLLMConfig exists to avoid.
+  // The prepaid QwenCloud plan is dispatched first under a custom operator
+  // policy (it must not be dropped by a free-roster policy), so the default
+  // config must advertise the route actually attempted first. Anything else
+  // is the "advertises a model it no longer tries first" bug
+  // getDefaultLLMConfig exists to avoid.
   check(
-    'default LLM config advertises the policy gateway and the role pin during custom FREE routing',
-    getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
-      getDefaultLLMConfig('CEO').model === ceoChain[0],
+    'default LLM config advertises the route actually attempted first during custom FREE routing (Qwen primary)',
+    getDefaultLLMConfig('CEO').provider === 'qwen-dashscope-byok' &&
+      getDefaultLLMConfig('CEO').model === 'qwen3.8-flash',
     getDefaultLLMConfig('CEO'),
   );
 
