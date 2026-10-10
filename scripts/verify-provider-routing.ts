@@ -44,28 +44,28 @@ const byokProviders = [
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ] as const;
-// Qwen is back as the primary automatic route (operator decision, ADR-017):
-// it leads the chain on the QwenCloud Token Plan, then free capacity, then
-// the paid DeepSeek V4 Flash 0731 on OpenRouter alone (Apex no longer calls
-// the Nous Portal provider — that access is cut off).
-const automaticProviders = ['qwen-dashscope-byok', ...openRouterProviders, ...byokProviders];
+// Free capacity first, metered QwenCloud last (operator decision 2026-10-10):
+// six OpenRouter free, then Groq/Gemini BYOK, then the metered QwenCloud
+// fallback, then the paid DeepSeek V4 Flash 0731 on OpenRouter alone (Apex no
+// longer calls the Nous Portal provider — that access is cut off).
+const automaticProviders = [...openRouterProviders, ...byokProviders, 'qwen-dashscope-byok'];
 const paidProviders = ['openrouter-deepseek-v4-flash-paid'] as const;
 const explicitPaidProviders = [...automaticProviders, ...paidProviders];
 
 const catalog = getProviderCatalog();
-const qwenCatalog = catalog.slice(0, 1);
-const openRouterCatalog = catalog.slice(1, 1 + openRouterProviders.length);
-const byokCatalog = catalog.slice(1 + openRouterProviders.length);
+const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
+const byokCatalog = catalog.slice(openRouterProviders.length, openRouterProviders.length + byokProviders.length);
+const qwenCatalog = catalog.slice(openRouterProviders.length + byokProviders.length);
 
 console.log('── Multi-pool automatic provider order ──');
-check('nine automatic routes exist: Qwen, six OpenRouter free + two BYOK', catalog.length === 9, catalog);
+check('nine automatic routes exist: six OpenRouter free + two BYOK + metered Qwen (last)', catalog.length === 9, catalog);
 check(
   'automatic provider order is exact',
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(automaticProviders),
   catalog.map((provider) => provider.name),
 );
 check(
-  'Qwen is the primary automatic route (QwenCloud Token Plan, qwen3.8-flash default)',
+  'Qwen is the LAST automatic route — the metered fallback after every free pool (qwen3.8-flash)',
   qwenCatalog[0]?.name === 'qwen-dashscope-byok' && qwenCatalog[0]?.model === 'qwen3.8-flash',
   qwenCatalog[0],
 );
@@ -321,24 +321,24 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   explorationRate: 0,
 });
 check(
-  'a custom FREE OpenRouter policy keeps Qwen primary, then the selected policy, unselected default free fallbacks, then BYOK continuity',
+  'a custom FREE OpenRouter policy keeps the selected gateway and free fallbacks first, BYOK next, then metered Qwen last',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
     JSON.stringify([
-      'qwen-dashscope-byok',
       FREE_POLICY_GATEWAY_NAME,
       'openrouter-nex-n2-5-pro-free',
       'openrouter-nemotron-super',
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
       ...byokProviders,
+      'qwen-dashscope-byok',
     ]),
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
 check(
-  'under a custom policy the default config advertises the route actually attempted first (Qwen primary, not the free gateway)',
-  getDefaultLLMConfig('CEO').provider === 'qwen-dashscope-byok' &&
-    getDefaultLLMConfig('CEO').model === 'qwen3.8-flash',
+  'under a custom policy the default config advertises the route actually attempted first (the free-policy gateway)',
+  getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
+    getDefaultLLMConfig('CEO').model === 'nex-agi/nex-n2.5-mini:free',
   getDefaultLLMConfig('CEO'),
 );
 if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
@@ -358,9 +358,9 @@ for (const role of [
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to Qwen (qwen3.8-flash), the head of the automatic chain`,
-    config.provider === 'qwen-dashscope-byok' &&
-      config.model === 'qwen3.8-flash',
+    `${role} defaults to the free chain head (nex-n2.5-mini:free), not metered Qwen`,
+    config.provider === 'openrouter-nex-n2-5-mini-free' &&
+      config.model === 'nex-agi/nex-n2.5-mini:free',
     config,
   );
 }

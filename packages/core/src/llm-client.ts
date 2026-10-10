@@ -55,11 +55,14 @@ import {
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// ROUTING POLICY (operator decision 2026-09-23/24, ADR-017). Automatic
-// routing tries the operator-funded QwenCloud (qwencloud.com) Token Plan
-// route FIRST: the operator holds a paid QwenCloud Token Plan subscription
-// and wants it used rather than left idle while free capacity serves
-// instead. This is a distinct product from Alibaba Cloud Model Studio/
+// ROUTING POLICY (operator decision 2026-10-10, superseding ADR-017's
+// Qwen-first order). Automatic routing consumes FREE capacity first: the
+// reviewed OpenRouter `:free` roster (six models plus the `openrouter/free`
+// router, each OpenRouter account contributing its own daily free allowance),
+// then the independent Groq/Gemini BYOK free pools. The metered QwenCloud
+// (qwencloud.com) route is tried LAST — only after every free pool is spent —
+// so no-marginal-cost free allowance is always consumed before any metered
+// spend. QwenCloud is a distinct product from Alibaba Cloud Model Studio/
 // DashScope -- the provider `name`/env-var identifiers below still say
 // "dashscope" for historical reasons (an early draft of this integration
 // assumed that product before the operator's real credential proved
@@ -67,30 +70,27 @@ import {
 // renamed, to avoid unnecessary churn -- see ADR-017 for the full history.
 // QwenCloud is governed like Groq/Gemini — its own capped/paced request
 // pool and its own activation switch — and is explicitly NOT unrestricted
-// like FlashX. OpenRouter free-pool exhaustion, the emergency all-provider
-// request ceiling, and the workspace token cap must not stop a call from
-// landing on the QwenCloud Token Plan. Qwen still obeys APEX_QWEN_REQUEST_CAP,
-// rate, and pacing, plus credential cooldowns. If QwenCloud is unconfigured,
-// disabled, or fails, routing falls
-// through to OpenRouter `:free` models (plus the special `openrouter/free`
-// router), then independent Groq/Gemini BYOK capacity, with the
-// operator-approved paid GLM 5.3 FlashX continuity route last. FlashX alone
-// is always eligible when its funded OpenRouter credential exists and
-// bypasses APEX token/request/spend governors; upstream provider limits,
-// billing, error cooldowns, tool authorization, and human approval policy
-// remain for every route, QwenCloud and FlashX included.
+// like the paid continuity route. OpenRouter free-pool exhaustion, the
+// emergency all-provider request ceiling, and the workspace token cap must
+// not stop a call from landing on QwenCloud. Qwen still obeys
+// APEX_QWEN_REQUEST_CAP, rate, and pacing, plus credential cooldowns. The
+// operator-approved paid DeepSeek V4 Flash 0731 continuity route (OpenRouter
+// alone; the Nous Portal route was removed 2026-10-09) is appended last, hard
+// capped by APEX_DAILY_SPEND_USD. It bypasses APEX token/request governors;
+// upstream provider limits, billing, error cooldowns, tool authorization, and
+// human approval policy remain for every route, QwenCloud and paid included.
 //
 // Authoritative automatic order:
-//   0. qwen3.8-flash             (Token Plan, governed, primary when configured)
-//   1. nex-agi/nex-n2.5-mini:free
-//   2. nex-agi/nex-n2.5-pro:free
-//   3. nvidia/nemotron-3-super-120b-a12b:free
-//   4. nvidia/nemotron-3.5-lightning:free
-//   5. openrouter/free  (tool requirements preserved)
-//   6. nvidia/nemotron-3-ultra-550b-a55b:free
-//   7. groq-gpt-oss-120b-byok    (BYOK, when enabled)
-//   8. gemini-3.8-flash-byok     (BYOK, when enabled)
-//   9. z-ai/glm-5.3-flashx       (paid, unrestricted continuity, last)
+//   0. nex-agi/nex-n2.5-mini:free
+//   1. nex-agi/nex-n2.5-pro:free
+//   2. nvidia/nemotron-3-super-120b-a12b:free
+//   3. nvidia/nemotron-3.5-lightning:free
+//   4. openrouter/free  (tool requirements preserved)
+//   5. nvidia/nemotron-3-ultra-550b-a55b:free
+//   6. groq-gpt-oss-120b-byok    (BYOK, when enabled)
+//   7. gemini-3.8-flash-byok     (BYOK, when enabled)
+//   8. qwen3.8-flash             (metered QwenCloud fallback, last automatic route)
+//   9. deepseek-v4-flash-0731    (paid, unrestricted continuity, last)
 //
 // MiniMax M3 Free is intentionally absent until a new direct API verification
 // proves the exact `:free` slug works. Persisted OpenRouter model policies
@@ -403,22 +403,24 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
  * Custom persisted policies do not appear here; they use FREE_POLICY_GATEWAY_NAME.
  */
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  // Operator-funded paid BYOK, governed but tried first — see the routing
-  // policy comment above and ADR-017. It falls through when unconfigured,
-  // disabled, or failing. Its model honors the QWEN_MODEL override (see the
-  // qwen-dashscope-byok spec) so the operator-chosen model is what the whole
-  // chain tries first.
-  'qwen-dashscope-byok',
+  // Free capacity first (operator decision 2026-10-10): the reviewed OpenRouter
+  // free roster, then the independent Groq and Gemini BYOK free pools. The
+  // metered QwenCloud route is the LAST automatic route — used only after
+  // every free pool (and its daily allowance) is spent — so the
+  // no-marginal-cost free allowance is always consumed before any pay-as-you-go
+  // spend. Qwen still falls through when unconfigured, disabled, or failing.
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
   'openrouter-nemotron-3-5-lightning-free',
   'openrouter-free-router',
   'openrouter-nemotron-ultra',
-  // Independent BYOK pools extend daily throughput after OpenRouter pacing or
-  // quota exhaustion. They are intentionally before the paid fallback.
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
+  // Metered fallback of last resort (PAYG today; the operator prefers the
+  // Token Plan balance when it exists). Its model honors the QWEN_MODEL
+  // override (see the qwen-dashscope-byok spec).
+  'qwen-dashscope-byok',
 ];
 
 function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
@@ -440,18 +442,15 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
           );
         });
         return [
-          // The prepaid QwenCloud Token Plan is the primary automatic route and
-          // must survive a saved free-model policy: a policy governs the
-          // OpenRouter FREE roster, not whether the operator's prepaid plan is
-          // used at all. 2026-10-10 incident: saving any policy silently
-          // dropped Qwen from the chain, so the whole workforce ran on the
-          // 4,000/day OpenRouter free pool and overflowed into paid spend while
-          // a 15,000/day prepaid plan sat idle.
-          'qwen-dashscope-byok',
+          // Free pools first, then the metered QwenCloud fallback last (operator
+          // decision 2026-10-10). A saved free-model policy governs only the
+          // OpenRouter FREE sub-order; it must not drop Qwen, and it must not
+          // promote the metered route ahead of free capacity either.
           FREE_POLICY_GATEWAY_NAME,
           ...defaultFreeFallbacks,
           'groq-gpt-oss-120b-byok',
           'gemini-3-8-flash-byok',
+          'qwen-dashscope-byok',
         ];
       })()
     : [...PROVIDER_ORDER];
