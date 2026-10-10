@@ -10,6 +10,7 @@ import {
   contactsToCsv,
   duplicateSuggestions,
   getContact,
+  getContactActivity,
   getTimeline,
   gmailAuthUrl,
   gmailSyncEnabled,
@@ -168,11 +169,19 @@ export function createCrmRouter(): Router {
       return;
     }
     const timeline = await getTimeline(req.params.id);
+    // The client card needs EVERY logged interaction, not just contact_timeline
+    // rows: emails, SMS and calls are merged in from their own tables so the
+    // card shows one chronological history across all channels.
+    const activity = await getContactActivity(req.params.id);
     res.json({
       ...found,
       timezone: CRM_DISPLAY_TIMEZONE,
       enrich: typeof req.query.enrich === 'string' ? req.query.enrich : null,
       timeline: timeline.map((row) => ({
+        ...row,
+        occurredChicago: formatChicago(row.occurredAt),
+      })),
+      activity: activity.map((row) => ({
         ...row,
         occurredChicago: formatChicago(row.occurredAt),
       })),
