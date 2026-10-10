@@ -175,6 +175,27 @@ export function ContactsPanel() {
             <option value="yes">Replied</option>
             <option value="no">Not replied</option>
           </select>
+          <input data-copilot-target="contacts-filter-industry" aria-label="Industry" placeholder="Industry" value={filters.industry ?? ''} onChange={(e) => field('industry', e.target.value)} style={{ flex: '1 1 120px', minWidth: 0 }} />
+          <select
+            data-copilot-target="contacts-filter-called"
+            aria-label="Called filter"
+            value={filters.called === true ? 'yes' : filters.called === false ? 'no' : ''}
+            onChange={(e) => setFilters((c) => ({ ...c, called: e.target.value === 'yes' ? true : e.target.value === 'no' ? false : null }))}
+          >
+            <option value="">Called or not</option>
+            <option value="yes">Called</option>
+            <option value="no">Not called</option>
+          </select>
+          <select
+            data-copilot-target="contacts-filter-emailed"
+            aria-label="Emailed filter"
+            value={filters.emailed === true ? 'yes' : filters.emailed === false ? 'no' : ''}
+            onChange={(e) => setFilters((c) => ({ ...c, emailed: e.target.value === 'yes' ? true : e.target.value === 'no' ? false : null }))}
+          >
+            <option value="">Emailed or not</option>
+            <option value="yes">Emailed</option>
+            <option value="no">Not emailed</option>
+          </select>
         </div>
         {notice && <div style={{ ...wrap, fontSize: 13 }}>{notice}</div>}
         {list.isError && <div style={wrap}>Could not load contacts.</div>}
@@ -257,6 +278,22 @@ export function ContactsPanel() {
                 {detail.data.meetings.map((meeting) => (
                   <div key={meeting.id} style={{ fontSize: 13, ...wrap }}>
                     {meeting.title || 'Meeting'} · {meeting.startsAt ? new Date(meeting.startsAt).toLocaleString('en-US', { timeZone: 'America/Chicago' }) : 'unscheduled'} · {meeting.status}
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div style={{ fontWeight: 650, marginBottom: 6 }}>Activity — every channel</div>
+                {(detail.data.activity ?? []).length === 0 && (
+                  <div style={{ fontSize: 13 }}>No logged activity yet.</div>
+                )}
+                {(detail.data.activity ?? []).map((row) => (
+                  <div key={row.id} style={{ borderTop: '1px solid rgba(255,255,255,0.08)', padding: '6px 0', ...wrap }}>
+                    <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>
+                      {row.occurredChicago} · {row.kind}
+                      {row.direction ? ` · ${row.direction}` : ''}
+                      {row.actor ? ` · ${row.actor}` : ''}
+                    </div>
+                    <div style={{ fontSize: 13 }}>{row.summary}</div>
                   </div>
                 ))}
               </div>
