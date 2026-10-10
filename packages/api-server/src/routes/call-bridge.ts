@@ -711,28 +711,6 @@ async function dialAiLegMuted(
   session: typeof callBridgeSessions.$inferSelect,
   options: { unmuteNow?: boolean; operatorInitiated?: boolean } = {},
 ): Promise<void> {
-  // ONE AI INGRESS PER CALL. A second leg is a second voice on the conference;
-  // and under the legacy transport it is a second assistant on the customer's
-  // leg, which is the combination that made a live call silent in both
-  // directions. If a leg is already on the bridge this is a no-op — except that
-  // a takeover request hands THAT leg the call instead of dialing again.
-  if (session.aiCallControlId) {
-    if (options.unmuteNow) {
-      const takeoverError = await setConferenceParticipantMuted(session.conferenceName, session.aiCallControlId, false);
-      // No status write here: only the conference event may claim the AI is on
-      // the call. This just records the mute.
-      await db
-        .update(callBridgeSessions)
-        .set({ aiMuted: Boolean(takeoverError), lastError: takeoverError, updatedAt: new Date() })
-        .where(eq(callBridgeSessions.id, session.id));
-    }
-    console.info('[Call Bridge] AI leg already on this call; not dialing a second', {
-      sessionId: session.id,
-      callControlId: session.aiCallControlId,
-      handedOver: options.unmuteNow === true,
-    });
-    return;
-  }
   const line = session.assistantLine?.trim() || normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
   if (!line) {
     await db
@@ -814,15 +792,6 @@ async function attachSalesAi(
     return;
   }
   if (!session.customerCallControlId) return;
-  // The legacy attach starts an assistant ON the customer's conferenced leg,
-  // which takes that leg's audio out of the conference. With a leg already on
-  // the bridge this would be the second AI on the call — and Telnyx refuses it
-  // anyway ("AI Assistant cannot be started more than once") after the first
-  // one has broken the audio. Never do it.
-  if (session.aiCallControlId) {
-    console.warn('[Call Bridge] refusing the legacy attach: an AI leg is already on this call', { sessionId: session.id });
-    return;
-  }
   let greeting = session.assistantGreeting?.trim() || '';
   let instructions = session.assistantInstructions?.trim() || '';
   // Newsroom mode: when the bridge is configured for a newsroom assistant
@@ -1193,6 +1162,11 @@ export function createCallBridgeRouter(): Router {
         updatedAt: new Date(),
       });
 
+      // The listening AI is NOT dialed here. A conference leg only exists once
+      // the operator's leg has actually entered the conference, and the operator
+      // has not even been rung yet — a leg dialed now has nothing to join and is
+      // silently dropped. It is dialed from the operator's call.answered handler
+      // below, where the conference exists.
       const result = await dialBridgeLeg({
         to: operatorNumber,
         role: 'operator',
@@ -1214,26 +1188,6 @@ export function createCallBridgeRouter(): Router {
         .update(callBridgeSessions)
         .set({ operatorCallControlId: result.callControlId, updatedAt: new Date() })
         .where(eq(callBridgeSessions.id, id));
-      // The listening AI goes on the bridge as soon as the operator's leg
-      // exists — still before the customer can ring, because the customer is
-      // only dialed once the operator answers. It joins MUTED, so it is present
-      // and listening from the first word without being able to say anything
-      // until the operator hands it the call.
-      //
-      // It goes SECOND ON PURPOSE. The operator's leg has to be the one that
-      // creates the conference, exactly as it did before any of this existed: a
-      // leg that joins first leaves the conference created by a participant the
-      // real call has not reached yet, and the observed symptom of that is
-      // silence for everyone on the call.
-      //
-      // Only the LEG transport has a listening leg to dial. Dialing one under
-      // the legacy attach transport is what turned a broken takeover into total
-      // silence, so the two can never be combined here.
-      if (autoJoinAi && aiLegTransport() === 'leg') {
-        const [fresh] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, id)).limit(1);
-        if (fresh) await dialAiLegMuted(fresh, { operatorInitiated: true });
-      }
-
       res.status(201).json({ id, status: 'dialing_operator' });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
@@ -1396,6 +1350,86 @@ export function createCallBridgeRouter(): Router {
         return;
       }
       res.status(201).json({ id: started.id, status: 'dialing_customer' });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /:id/dtmf — press digits on the live call ────────────────────────
+  // For getting past an auto attendant ("press 1 for billing"): the digits are
+  // sent TO the far end of the chosen leg, exactly as if a keypad on that call
+  // were pressed. Default target is the customer leg, since that is the leg
+  // talking to the IVR.
+  router.post('/:id/dtmf', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { digits?: string; target?: string };
+      const digits = String(body.digits ?? '').trim();
+      // 0-9, *, #, A-D, and `,` for a pause. Nothing else reaches the wire.
+      if (!digits || !/^[0-9A-Da-d*#,]{1,32}$/.test(digits)) {
+        res.status(400).json({ error: 'digits must be 1-32 characters of 0-9, *, #, A-D or , (pause).' });
+        return;
+      }
+      const target = body.target === 'ai' || body.target === 'operator' ? body.target : 'customer';
+      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, req.params.id)).limit(1);
+      if (!session) {
+        res.status(404).json({ error: 'Call bridge session not found.' });
+        return;
+      }
+      const targetCallControlId =
+        target === 'ai' ? session.aiCallControlId
+        : target === 'operator' ? session.operatorCallControlId
+        : session.customerCallControlId;
+      if (!targetCallControlId) {
+        res.status(409).json({ error: `The ${target} leg is not on this call yet.` });
+        return;
+      }
+      const error = await telnyxCommand(targetCallControlId, 'send_dtmf', { digits });
+      if (error) {
+        res.status(409).json({ error });
+        return;
+      }
+      console.info('[Call Bridge] dtmf sent', { sessionId: session.id, target, digits: digits.length });
+      res.json({ ok: true, target, digits });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err) });
+    }
+  });
+
+  // ── POST /:id/operator-mute — talk, or listen without being heard ─────────
+  // The operator's side of AI-first: the AI is running the call and the
+  // operator listens in without being heard, then unmutes to take it over.
+  // Telnyx holds the state; nothing is persisted, so a reload re-asks.
+  router.post('/:id/operator-mute', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { muted?: boolean };
+      if (typeof body.muted !== 'boolean') {
+        res.status(400).json({ error: 'muted must be a boolean.' });
+        return;
+      }
+      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, req.params.id)).limit(1);
+      if (!session) {
+        res.status(404).json({ error: 'Call bridge session not found.' });
+        return;
+      }
+      if (!session.operatorCallControlId) {
+        res.status(409).json({ error: 'The operator leg is not on this call yet.' });
+        return;
+      }
+      if (session.status === 'ended' || session.status === 'failed') {
+        res.status(409).json({ error: `This call is already ${session.status}.` });
+        return;
+      }
+      const error = await telnyxCommand(
+        session.operatorCallControlId,
+        body.muted ? 'mute' : 'unmute',
+        {},
+      );
+      if (error) {
+        res.status(409).json({ error });
+        return;
+      }
+      console.info('[Call Bridge] operator mute', { sessionId: session.id, muted: body.muted });
+      res.json({ ok: true, operatorMuted: body.muted });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }
@@ -1570,6 +1604,12 @@ export function createCallBridgeWebhookRouter(): Router {
               .where(eq(callBridgeSessions.id, session.id));
           } else {
             await recordCustomerLegDialed(session.id, result.callControlId);
+          }
+          // The operator's leg has now entered the conference, so the muted
+          // listening AI can join it. Dialed any earlier it has no conference to
+          // join and never reaches the bridge — which is silence on takeover.
+          if (session.aiAutoJoin && aiLegTransport() === 'leg' && !session.aiCallControlId) {
+            await dialAiLegMuted(session, { operatorInitiated: true });
           }
         } else if (state.role === 'customer') {
           await db.update(callBridgeSessions).set({ status: 'active', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));

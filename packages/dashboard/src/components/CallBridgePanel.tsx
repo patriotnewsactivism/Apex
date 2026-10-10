@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type CallBridgeStatus } from '../lib/api.js';
-import { PhoneCall, PhoneOff, Bot, AlertTriangle, Users, Radio } from 'lucide-react';
+import { PhoneCall, PhoneOff, Bot, AlertTriangle, Users, Radio, MicOff, Mic } from 'lucide-react';
 
 // Bridges the operator's own phone with a customer's, live, with the option
 // to bring the Apex Front Desk AI assistant in as a third participant who can
@@ -301,6 +301,8 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
 function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
   const qc = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [operatorMuted, setOperatorMuted] = useState(false);
+  const [dtmfDigits, setDtmfDigits] = useState('');
   const { data: session } = useQuery({
     queryKey: ['call-bridge', id],
     queryFn: () => api.callBridge.status(id),
@@ -337,6 +339,28 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
     mutationFn: () => api.callBridge.end(id),
     onSuccess: () => onEnded(),
     onError: (err: unknown) => setActionError(err instanceof Error ? err.message : String(err)),
+  });
+
+  // Mute my own leg so the AI can run the call while I listen in, then unmute
+  // to take it back.
+  const muteSelf = useMutation({
+    mutationFn: (muted: boolean) => api.callBridge.operatorMute(id, muted),
+    onSuccess: (res) => {
+      setActionError(null);
+      setOperatorMuted(Boolean(res.operatorMuted));
+    },
+    onError: onActionError,
+  });
+
+  // Press digits through to the far end, for an auto attendant that wants a
+  // number pressed before it will connect the call.
+  const sendDtmf = useMutation({
+    mutationFn: (digits: string) => api.callBridge.dtmf(id, digits, 'customer'),
+    onSuccess: (_res, digits) => {
+      setActionError(null);
+      setDtmfDigits((prev) => (prev + digits).slice(-24));
+    },
+    onError: onActionError,
   });
 
   if (!session) {
@@ -456,6 +480,25 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
         )}
         {!isDone && (
           <button
+            className={operatorMuted ? 'btn-primary' : 'btn-secondary'}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
+            disabled={muteSelf.isPending}
+            onClick={() => {
+              setActionError(null);
+              muteSelf.mutate(!operatorMuted);
+            }}
+            title={
+              operatorMuted
+                ? 'You are muted — the other party cannot hear you. Tap to talk.'
+                : 'Mute your own line: keep listening without being heard while the AI runs the call.'
+            }
+          >
+            {operatorMuted ? <MicOff size={14} /> : <Mic size={14} />}
+            {muteSelf.isPending ? '…' : operatorMuted ? 'Listening only — tap to talk' : 'Mute me (listen only)'}
+          </button>
+        )}
+        {!isDone && (
+          <button
             className="btn-danger"
             style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
             disabled={end.isPending}
@@ -472,6 +515,33 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
         )}
         {actionError && (
           <span style={{ fontSize: 12, color: 'var(--color-apex-red)', fontFamily: 'var(--font-mono)' }}>{actionError}</span>
+        )}
+        {!isDone && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', marginBottom: 6 }}>
+              Press digits through to the other end — for an auto attendant.
+              {dtmfDigits && (
+                <span style={{ fontFamily: 'var(--font-mono)', marginLeft: 6 }}>sent: {dtmfDigits}</span>
+              )}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 40px)', gap: 6 }}>
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((key) => (
+                <button
+                  key={key}
+                  className="btn-secondary"
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: 13, padding: '6px 0' }}
+                  disabled={sendDtmf.isPending}
+                  onClick={() => {
+                    setActionError(null);
+                    sendDtmf.mutate(key);
+                  }}
+                  title={`Send ${key} to the other end`}
+                >
+                  {key}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </div>

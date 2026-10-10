@@ -54,6 +54,17 @@ async function main(): Promise<void> {
   check('POST /ai-first exists', /router\.post\('\/ai-first', async/.test(route));
   check('POST /:id/join exists', /router\.post\('\/:id\/join', async/.test(route));
   check(
+    'POST /:id/dtmf exists and only forwards keypad digits to the far end',
+    /router\.post\('\/:id\/dtmf', async/.test(route) &&
+      /\/\^\[0-9A-Da-d\*#,\]/.test(route) &&
+      /telnyxCommand\(targetCallControlId, 'send_dtmf'/.test(route),
+  );
+  check(
+    'POST /:id/operator-mute exists and mutes the OPERATOR leg, not the AI leg',
+    /router\.post\('\/:id\/operator-mute', async/.test(route) &&
+      /session\.operatorCallControlId,\s*body\.muted \? 'mute' : 'unmute'/.test(route),
+  );
+  check(
     'a supervisor leg cannot end the conference',
     /end_conference_on_exit: params\.supervisorRole \? false : params\.endConferenceOnExit/.test(route),
   );
@@ -185,31 +196,9 @@ async function main(): Promise<void> {
     /!approvedAssistantLines\(\)\.includes\(requestedLine\)/.test(startBody),
   );
   check(
-    'autoJoinAi puts the listening AI on the bridge for the operator-only phase, and ONLY under the leg transport',
-    /if \(autoJoinAi && aiLegTransport\(\) === 'leg'\) \{/.test(startBody) &&
-      startBody.indexOf('await dialAiLegMuted(') > startBody.indexOf('to: operatorNumber'),
-  );
-  check(
-    "the operator's leg is dialed first, so the operator's leg creates the conference",
-    startBody.indexOf('to: operatorNumber') < startBody.indexOf('dialAiLegMuted('),
-  );
-
-  // ONE AI INGRESS PER CALL. What production actually ran: a MUTED AI leg went
-  // on the conference while the legacy attach started an assistant on the
-  // customer's conferenced leg — and an assistant on a conferenced leg takes
-  // that leg's audio out of the conference. Both parties heard silence. Neither
-  // half of that combination is now reachable on one call.
-  check(
-    'dialAiLegMuted refuses a second AI leg on the same call',
-    /ONE AI INGRESS PER CALL/.test(aiLegBody) && /if \(session\.aiCallControlId\) \{/.test(aiLegBody),
-  );
-  check(
-    'the legacy attach refuses to run when an AI leg is already on the call',
-    /refusing the legacy attach: an AI leg is already on this call/.test(route),
-  );
-  check(
-    'the legacy attach is unreachable while the leg transport is selected',
-    /if \(aiLegTransport\(\) === 'leg'\) \{\s*\n[\s\S]{0,400}await dialAiLegMuted\(session, \{ unmuteNow: options\.unmuteNow/.test(route),
+    'the listening AI leg is dialed from the operator-answered handler, once the conference exists',
+    !/dialAiLegMuted\(/.test(startBody) &&
+      /state\.role === 'operator'[\s\S]{0,2500}aiAutoJoin && aiLegTransport\(\) === 'leg' && !session\.aiCallControlId/.test(route),
   );
   check(
     'a per-session caller ID reaches every leg it should (operator and AI)',
