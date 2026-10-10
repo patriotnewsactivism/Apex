@@ -17,7 +17,7 @@ import { ApexCEO } from '@workspace/agents';
 import { setOperatorCeo } from './apex-operator-registry.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, paidSpendCapacityWindow, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES, aiApprovalMode, sweepPendingApprovalsWithAiGates } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, getLastCapacityDiagnostics, paidLLMFallbackEnabled, paidSpendCapacityWindow, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES, aiApprovalMode, sweepPendingApprovalsWithAiGates } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { getWebSocketTicketStats } from './websocket-auth.js';
@@ -338,6 +338,9 @@ async function main() {
       // Capacity state for authenticated GET /api/health/detail. A healthy
       // HTTP listener is distinguishable from a workforce parked by quota
       // pacing. Provider roster detail also lives at GET /api/tokens.
+      // The exact provider/gate behind the most recent capacity pause, so a
+      // "workforce is deferring" report can be answered with evidence.
+      capacityDiagnostics: getLastCapacityDiagnostics(),
       llmCapacity: {
         state: capacityState,
         pacingEnabled: tokenLedger.pacing.enabled,

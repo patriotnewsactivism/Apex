@@ -1678,6 +1678,20 @@ function capacityBlockFromReservation(
   };
 }
 
+/** The most recent capacity pause, kept for diagnostics so "agents are
+ *  deferring" can be answered with the exact provider/gate that caused it
+ *  instead of a guess. Bounded and overwritten, never accumulated. */
+export type CapacityDiagnostics = {
+  at: string;
+  resumeAt: string;
+  blocks: string[];
+  details: string[];
+};
+let lastCapacityDiagnostics: CapacityDiagnostics | null = null;
+export function getLastCapacityDiagnostics(): CapacityDiagnostics | null {
+  return lastCapacityDiagnostics;
+}
+
 function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []): Error {
   const timestamps = blocks
     .map((block) => (block.resumeAt ? Date.parse(block.resumeAt) : Number.NaN))
@@ -1685,6 +1699,12 @@ function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []
   const resumeAt = timestamps.length
     ? new Date(Math.min(...timestamps)).toISOString()
     : new Date(Date.now() + 60_000).toISOString();
+  lastCapacityDiagnostics = {
+    at: new Date().toISOString(),
+    resumeAt,
+    blocks: blocks.map((block) => `${block.source}: ${block.reason}${block.resumeAt ? ` @${block.resumeAt}` : ''}`),
+    details: otherDetails,
+  };
   const detail = [
     ...new Map(
       blocks.map((block) => [
