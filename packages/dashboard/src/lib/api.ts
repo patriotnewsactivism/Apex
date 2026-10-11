@@ -509,6 +509,78 @@ export interface CrmLeadImportFilters {
   reachableOnly?: boolean;
 }
 
+/** A deal on the pipeline board. Amounts arrive in cents and in dollars. */
+export interface CrmDeal {
+  id: string;
+  name: string;
+  status: string;
+  amountCents: string | null;
+  amountUsd: number;
+  probability: number | null;
+  expectedCloseAt: string | null;
+  expectedCloseChicago?: string | null;
+  closedAt: string | null;
+  nextStep: string | null;
+  lostReason: string | null;
+  wonReason: string | null;
+  notes: string | null;
+  stageId: string | null;
+  stageName: string | null;
+  stagePosition: number | null;
+  contactId: string | null;
+  contactName: string | null;
+  companyId: string | null;
+  companyName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmPipelineBoard {
+  timezone: string;
+  stages: Array<{ id: string; name: string; position: number; deals: CrmDeal[]; totalUsd: number }>;
+  unassigned: { deals: CrmDeal[]; totalUsd: number };
+  open: { count: number; totalUsd: number; weightedUsd: number; closingThisMonthUsd: number };
+  closed: { won: number; lost: number; wonUsd: number; lostUsd: number };
+}
+
+export interface CrmCompanyRow {
+  id: string;
+  name: string;
+  domain: string | null;
+  website: string | null;
+  industry: string | null;
+  employeeCount: number | null;
+  contactCount: number;
+  openDeals: number;
+  openValueUsd: number;
+  wonValueUsd: number;
+}
+
+export interface CrmCompanyContact {
+  id: string;
+  name: string;
+  email: string | null;
+  phoneE164: string | null;
+  title: string | null;
+  city: string | null;
+  state: string | null;
+  lifecycleStage: string;
+  doNotContact: boolean;
+  lastContactedAt: string | null;
+  nextFollowUpAt: string | null;
+}
+
+export interface CrmCompanyPage {
+  timezone: string;
+  company: { id: string; name: string; domain: string | null; website: string | null; industry: string | null; employeeCount: number | null; source: string | null };
+  contacts: CrmCompanyContact[];
+  deals: CrmDeal[];
+  totals: { openValueUsd: number; openCount: number; wonValueUsd: number; wonCount: number; lostCount: number };
+  openTasks: number;
+  lastActivityAt: string | null;
+  lastActivityChicago: string | null;
+}
+
 /** One query builder for the contact list, the export, and the copilot. */
 export function crmFilterQuery(params?: CrmContactFilters): string {
   const qs = new URLSearchParams();
@@ -1168,6 +1240,54 @@ export const api = {
           `/crm/suppressions/${encodeURIComponent(id)}/lift`,
           { method: 'POST', body: JSON.stringify(body) },
         ),
+    },
+
+    // ─── Phase 2: the pipeline, and the company behind it ──────────────────
+    pipeline: () => apiFetch<CrmPipelineBoard>('/crm/pipeline'),
+    deals: {
+      list: (params?: { contactId?: string; companyId?: string }) => {
+        const qs = new URLSearchParams();
+        if (params?.contactId) qs.set('contactId', params.contactId);
+        if (params?.companyId) qs.set('companyId', params.companyId);
+        const query = qs.toString();
+        return apiFetch<{ timezone: string; deals: CrmDeal[] }>(`/crm/deals${query ? `?${query}` : ''}`);
+      },
+      create: (body: {
+        name: string;
+        contactId?: string;
+        companyId?: string;
+        stageId?: string;
+        amount?: string | number;
+        probability?: number | null;
+        expectedCloseAt?: string;
+        nextStep?: string;
+        notes?: string;
+      }) => apiFetch<{ ok: boolean; dealId: string }>('/crm/deals', { method: 'POST', body: JSON.stringify(body) }),
+      update: (id: string, patch: Record<string, unknown>) =>
+        apiFetch<{ ok: boolean; changed: string[] }>(`/crm/deals/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(patch),
+        }),
+      move: (id: string, stageId: string) =>
+        apiFetch<{ ok: boolean; from: string | null; to: string | null }>(`/crm/deals/${encodeURIComponent(id)}/move`, {
+          method: 'POST',
+          body: JSON.stringify({ stageId }),
+        }),
+      close: (id: string, body: { outcome: 'won' | 'lost'; amount?: string | number; reason?: string }) =>
+        apiFetch<{ ok: boolean; status: 'won' | 'lost'; contactId: string | null; clientStatusChanged: boolean }>(
+          `/crm/deals/${encodeURIComponent(id)}/close`,
+          { method: 'POST', body: JSON.stringify(body) },
+        ),
+    },
+    companies: {
+      list: (params?: { q?: string; industry?: string }) => {
+        const qs = new URLSearchParams();
+        if (params?.q) qs.set('q', params.q);
+        if (params?.industry) qs.set('industry', params.industry);
+        const query = qs.toString();
+        return apiFetch<{ timezone: string; companies: CrmCompanyRow[] }>(`/crm/companies${query ? `?${query}` : ''}`);
+      },
+      get: (id: string) => apiFetch<CrmCompanyPage>(`/crm/companies/${encodeURIComponent(id)}`),
     },
   },
 

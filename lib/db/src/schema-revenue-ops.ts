@@ -846,6 +846,13 @@ export const salesOpportunities = pgTable('sales_opportunities', {
   ownerUserId: text('owner_user_id'), // users.id (if user system exists)
   status: text('status').notNull().default('open'), // open | qualified | proposed | negotiated | won | lost | stalled
   nextActionAt: timestamp('next_action_at', { withTimezone: true }),
+  /** When the deal is expected to close. Drives the board's due column. */
+  expectedCloseAt: timestamp('expected_close_at', { withTimezone: true }),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  wonReason: text('won_reason'),
+  lostReason: text('lost_reason'),
+  /** The single next thing that moves this deal. */
+  nextStep: text('next_step'),
   notes: text('notes'),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -857,6 +864,7 @@ export const salesOpportunities = pgTable('sales_opportunities', {
   stageIdIdx: index('sales_opportunities_stage_id_idx').on(table.stageId),
   missionIdIdx: index('sales_opportunities_mission_id_idx').on(table.missionId),
   statusIdx: index('sales_opportunities_status_idx').on(table.status),
+  orgStatusCloseIdx: index('sales_opportunities_org_status_close_idx').on(table.organizationId, table.status, table.expectedCloseAt),
 }));
 
 export const salesOpportunityRelations = relations(salesOpportunities, ({ one }) => ({
