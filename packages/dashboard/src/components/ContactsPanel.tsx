@@ -8,12 +8,12 @@ import {
   ContactStatusControl,
   ContactTasks,
   DueTodayPanel,
-  LeadImportPanel,
   LifecycleBadge,
   LogCallForm,
   NewContactForm,
   TagEditor,
 } from './CrmOperatorPanels.js';
+import { ContactInsightPanel, SavedViewsBar, ScoreBadge, ScoreBreakdown } from './CrmIntelligencePanels.js';
 
 const wrap: CSSProperties = {
   overflowWrap: 'anywhere',
@@ -151,6 +151,7 @@ export function ContactsPanel() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0, maxWidth: '100%' }}>
       <DueTodayPanel onOpenContact={(contactId) => setSelectedId(contactId)} />
       <NewContactForm onCreated={(contactId) => { setSelectedId(contactId); refresh(); }} />
+      <SavedViewsBar filters={filters} onApply={(next) => setFilters(next)} onNotice={setNotice} />
       <div className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={wrap}>
@@ -236,6 +237,26 @@ export function ContactsPanel() {
             />
             Follow-up due
           </label>
+          <input
+            data-copilot-target="contacts-filter-minScore"
+            aria-label="Minimum score"
+            placeholder="Min score"
+            value={filters.minScore ? String(filters.minScore) : ''}
+            onChange={(e) => setFilters((c) => ({ ...c, minScore: Number(e.target.value) || undefined }))}
+            style={{ flex: '0 1 110px', minWidth: 0 }}
+          />
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            <input
+              data-copilot-target="contacts-filter-sortByScore"
+              type="checkbox"
+              checked={filters.sortBy === 'score'}
+              onChange={(e) => setFilters((c) => ({ ...c, sortBy: e.target.checked ? 'score' : undefined }))}
+            />
+            Best first
+          </label>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>
+          The score is computed from each contact&apos;s own records, so “min score” and “best first” apply to the page that was fetched.
         </div>
         {notice && <div style={{ ...wrap, fontSize: 13 }}>{notice}</div>}
         {list.isError && <div style={wrap}>Could not load contacts.</div>}
@@ -267,6 +288,7 @@ export function ContactsPanel() {
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 4 }}>
                 <LifecycleBadge stage={row.lifecycleStage} />
+                <ScoreBadge score={row.score} />
                 {row.nextFollowUpChicago && (
                   <span style={{ fontSize: 12, color: 'var(--color-apex-muted)' }}>follow up {row.nextFollowUpChicago}</span>
                 )}
@@ -291,6 +313,14 @@ export function ContactsPanel() {
                 <div>Owner: {detail.data.contact.ownerBot || 'unassigned'}</div>
                 <div style={wrap}>{detail.data.contact.notes}</div>
               </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700 }}>Score</div>
+                  <ScoreBadge score={detail.data.contact.score} />
+                </div>
+                <ScoreBreakdown score={detail.data.contact.score} />
+              </div>
+              <ContactInsightPanel contactId={detail.data.contact.id} />
               <ContactStatusControl contact={detail.data.contact} onChanged={refresh} />
               <ContactEditForm contact={detail.data.contact} onSaved={refresh} />
               <TagEditor contact={detail.data.contact} onChanged={refresh} />

@@ -217,6 +217,118 @@ export function chicagoOffsetMinutes(date: Date = new Date()): number {
   return sign * (Number(match[2]) * 60 + Number(match[3] ?? 0));
 }
 
+// ─── Lead scoring rules ──────────────────────────────────────────────────────
+//
+// The score is arithmetic over what the contact book already holds, so it can
+// be read and argued with, and every point carries the reason that awarded it.
+// The rules live here, with the other pure rules, so they can be checked without
+// a database.
+
+export const SCORE_BANDS = { warm: 35, hot: 65 } as const;
+
+export interface ContactScoreInput {
+  doNotContact: boolean;
+  lifecycleStage: string;
+  hasEmail: boolean;
+  hasPhone: boolean;
+  hasWebsite: boolean;
+  verifiedIdentifier: boolean;
+  replies: number;
+  daysSinceLastReply: number | null;
+  outboundTouches: number;
+  daysSinceLastContact: number | null;
+  openDeals: number;
+  openDealValueUsd: number;
+  followUpDueToday: boolean;
+  industry: string | null;
+  leadQualificationScore: number | null;
+}
+
+export interface ContactScoreReason {
+  label: string;
+  points: number;
+}
+
+export interface ContactScore {
+  score: number;
+  band: 'cold' | 'warm' | 'hot';
+  reasons: ContactScoreReason[];
+  /** Present only when the score was forced to zero. */
+  blocked?: string;
+}
+
+export function scoreBand(score: number): 'cold' | 'warm' | 'hot' {
+  if (score >= SCORE_BANDS.hot) return 'hot';
+  if (score >= SCORE_BANDS.warm) return 'warm';
+  return 'cold';
+}
+
+export function scoreContact(input: ContactScoreInput): ContactScore {
+  if (input.doNotContact) {
+    return {
+      score: 0,
+      band: 'cold',
+      reasons: [],
+      blocked: 'do-not-contact: nothing should be sent to this contact',
+    };
+  }
+  const reasons: ContactScoreReason[] = [];
+  const add = (label: string, points: number) => {
+    if (points !== 0) reasons.push({ label, points });
+  };
+
+  if (input.hasEmail) add('has an email address', 8);
+  if (input.hasPhone) add('has a phone number', 8);
+  if (input.verifiedIdentifier) add('a channel is verified from the source', 7);
+  else if (input.hasWebsite) add('has a website to research', 3);
+  if (input.industry) add('industry recorded', 3);
+
+  if (input.replies > 0) add('has replied', 18);
+  if (input.replies >= 3) add('a real back-and-forth', 6);
+  if (input.daysSinceLastReply !== null && input.daysSinceLastReply <= 14) add('replied within two weeks', 7);
+  if (input.outboundTouches >= 1) add('has been contacted', 5);
+  if (input.outboundTouches >= 3) add('contacted three or more times', 5);
+  if (input.daysSinceLastContact !== null && input.daysSinceLastContact <= 30) add('contacted within a month', 5);
+
+  if (input.openDeals > 0) add('has an open deal', 12);
+  if (input.openDealValueUsd >= 5000) add('open deal worth $5k or more', 6);
+  if (input.followUpDueToday) add('a follow-up is due', 4);
+
+  if (input.lifecycleStage === 'qualified') add('qualified', 8);
+  if (input.lifecycleStage === 'client') add('is a client', 15);
+  if (input.lifecycleStage === 'churned') add('churned', -20);
+
+  if (input.leadQualificationScore !== null) {
+    if (input.leadQualificationScore >= 80) add('research scored the lead 80 or better', 8);
+    else if (input.leadQualificationScore >= 60) add('research scored the lead 60 or better', 4);
+  }
+
+  const score = Math.max(0, Math.min(100, reasons.reduce((sum, reason) => sum + reason.points, 0)));
+  return { score, band: scoreBand(score), reasons: reasons.sort((a, b) => b.points - a.points) };
+}
+
+/** A blank input, for callers that only want to set a few signals. */
+export function emptyScoreInput(overrides: Partial<ContactScoreInput> = {}): ContactScoreInput {
+  return {
+    doNotContact: false,
+    lifecycleStage: 'prospect',
+    hasEmail: false,
+    hasPhone: false,
+    hasWebsite: false,
+    verifiedIdentifier: false,
+    replies: 0,
+    daysSinceLastReply: null,
+    outboundTouches: 0,
+    daysSinceLastContact: null,
+    openDeals: 0,
+    openDealValueUsd: 0,
+    followUpDueToday: false,
+    industry: null,
+    leadQualificationScore: null,
+    ...overrides,
+  };
+}
+
 /**
  * The UTC instants that bound "today" in the display timezone, plus the local
  * date key. The offset is taken at the instant asked about, so the bounds stay

@@ -73,6 +73,7 @@ const DRAWER = [
   { id: 'contacts', label: 'Contacts' },
   { id: 'deals', label: 'Pipeline' },
   { id: 'companies', label: 'Companies' },
+  { id: 'reports', label: 'Reports' },
   { id: 'suggestions', label: 'Suggestions' },
   { id: 'multiapp', label: 'Portfolio' },
   { id: 'control', label: 'Control Room' },
@@ -96,7 +97,7 @@ const DRAWER = [
 const NAV_ID_TO_LABEL = {
   command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals', 'pending-sends': 'Pending sends',
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
-  'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', deals: 'Pipeline', companies: 'Companies', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
+  'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', deals: 'Pipeline', companies: 'Companies', reports: 'Reports', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', 'verify-scale': 'Verify & Scale', artifacts: 'Artifacts',
   scheduled: 'Calendar / Scheduler', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
@@ -236,7 +237,30 @@ for (const width of WIDTHS) {
     // CRM phase 1: the panels the operator works in. Without these the harness
     // would exercise the new views against an empty payload and call the blank
     // render clean.
-    if(u.includes('/crm/contacts/statuses')) return j({stages:['prospect','lead','qualified','client','churned'],priorities:['low','normal','high']});
+    if(u.includes('/crm/statuses')) return j({stages:['prospect','lead','qualified','client','churned'],priorities:['low','normal','high']});
+    // CRM phase 3: the reading of a contact, the score, saved views and reports.
+    if(u.includes('/crm/contacts/') && u.includes('/insight')) return j({insight:{
+      summary:'They answered the first call, asked for the archive licence terms in writing, and have not replied since Tuesday. Two follow-ups are open and the deal is still in Proposal sent.',
+      nextStep:'Send the two-year archive licence terms today, then call Wednesday morning if there is no reply.',
+      model:'deepseek/deepseek-v4-flash-0731',sourceEvents:14,generatedAt:new Date().toISOString(),generatedBy:'Matthew',stale:false,currentEvents:14}});
+    if(u.includes('/crm/scored-contacts')) return j({timezone:'America/Chicago',contacts:[{
+      contactId:'contact-1',name:'Pat Newsroom Directory Contact With A Very Long Legal Name',organizationName:'Baton Rouge Investigative Desk And Publishing Cooperative',
+      lifecycleStage:'qualified',email:'editor@baton-rouge-investigative-desk.example',phoneE164:'+12255550199',nextFollowUpAt:new Date().toISOString(),
+      score:{score:74,band:'hot',reasons:[{label:'has replied',points:18},{label:'has an open deal',points:12},{label:'qualified',points:8}]}}]});
+    if(u.includes('/crm/views')) return j({views:[
+      {id:'view-1',name:'Clients in Louisiana',scope:'contacts',filters:{lifecycleStage:'client',state:'LA'},pinned:true,createdBy:'Matthew',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},
+      {id:'view-2',name:'Hot and never called',scope:'contacts',filters:{called:false,sortBy:'score'},pinned:false,createdBy:'Matthew',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()},
+    ]});
+    if(u.includes('/crm/reports')) return j({timezone:'America/Chicago',window:{from:new Date(Date.now()-90*86400000).toISOString(),to:new Date().toISOString(),label:'ninety day window'},
+      funnel:[{stageId:'stage-1',name:'Qualified',position:1,reached:12,openNow:4,openValueUsd:48000,conversionFromPrevious:null},
+              {stageId:'stage-2',name:'Proposal sent',position:2,reached:7,openNow:3,openValueUsd:37500,conversionFromPrevious:58.3},
+              {stageId:'stage-3',name:'Negotiation',position:3,reached:3,openNow:2,openValueUsd:24000,conversionFromPrevious:42.9}],
+      revenue:{wonCount:2,wonUsd:24000,averageWonUsd:12000,wonThisMonthUsd:12000,lostCount:1,lostUsd:3000,
+        lostReasons:[{reason:'budget moved to the print edition',count:1,valueUsd:3000}],openUsd:109500,openCount:9},
+      replies:{byChannel:[{channel:'email',outbound:180,replies:22,rate:12.2},{channel:'call',outbound:60,replies:9,rate:15}],
+        byIndustry:[{industry:'Investigative publishing',outbound:40,replies:11,rate:27.5},{industry:'Archival services',outbound:25,replies:3,rate:12}],
+        totalOutbound:240,totalReplies:31},
+      asOf:new Date().toISOString()});
     if(u.includes('/crm/tasks/due')) return j({date:'2026-10-11',timezone:'America/Chicago',tasks:[
       {id:'task-1',title:'Ring back the newsroom desk about the records request and the follow-up interview',notes:null,kind:'follow_up',status:'open',priority:'high',dueAt:new Date().toISOString(),dueChicago:'Oct 11, 2026, 9:00 AM',contactId:'contact-1',contactName:'Pat Newsroom Directory Contact With A Very Long Legal Name',contactOrganization:'Baton Rouge Investigative Desk And Publishing Cooperative',overdue:false},
       {id:'task-2',title:'Send the signed retainer',notes:null,kind:'follow_up',status:'open',priority:'normal',dueAt:new Date(Date.now()-86400000).toISOString(),dueChicago:'Oct 10, 2026, 9:00 AM',contactId:'contact-1',contactName:'Pat Newsroom',contactOrganization:'Baton Rouge Investigative Desk',overdue:true},

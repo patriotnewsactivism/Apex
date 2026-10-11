@@ -198,6 +198,118 @@ function sourceChecks(): void {
     read('lib/db/src/crm-migration.ts').includes('20261012_crm_phase2.sql'),
     'the phase 2 migration is applied at boot',
   );
+
+  // ── CRM phase 3: the intelligence layer ─────────────────────────────────
+  const insights = read('packages/core/src/crm/insights.ts');
+  const scoring = read('packages/core/src/crm/scoring.ts');
+  const reporting = read('packages/core/src/crm/reporting.ts');
+  for (const name of ['generateContactInsight', 'completeWithModel', 'saveView', 'deleteSavedView']) {
+    assert.equal(new RegExp(`\\b${name}\\b`).test(tools), false, `agents cannot call ${name}`);
+  }
+  assert.equal(/from '\.\/insights\.js'/.test(tools), false, 'the agent tools do not import the insight module');
+  assert.equal(/from '\.\/saved-views\.js'/.test(tools), false, 'the agent tools do not import the saved-view module');
+  // Generating a summary spends a model call, so it needs the operator and it
+  // refuses before the call when there is no capacity.
+  assert.ok(insights.includes('Only Matthew can generate a contact summary'), 'only the operator generates a summary');
+  assert.ok(insights.includes('llmCapacityAvailableNow'), 'generation checks capacity before calling a model');
+  assert.ok(insights.includes('sourceEvents'), 'a stored summary records how much history it saw');
+  assert.ok(insights.includes('stale'), 'a stored summary can be reported as stale');
+  assert.ok(insights.includes('parseInsightResponse'), 'the stored summary is parsed from the model answer, never written here');
+  // The score is arithmetic over records, with the reasons kept.
+  assert.ok(pure.includes('scoreContact') && pure.includes('SCORE_BANDS'), 'the scoring rules are pure');
+  assert.ok(scoring.includes('scoreContacts'), 'the score is computed from the contact records');
+  assert.ok(scoring.includes('doNotContact'), 'a suppressed contact cannot score');
+  // The funnel is derived from the audit trail, not from a stored counter.
+  assert.ok(reporting.includes('deal.stage_changed'), 'the funnel is derived from the deal audit trail');
+  assert.ok(reporting.includes('companies.industry'), 'reply rates are broken down by industry');
+  const phase3Sql = read('lib/db/drizzle/20261013_crm_phase3.sql');
+  assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(phase3Sql), false, 'the phase 3 migration is additive');
+  assert.ok(phase3Sql.includes('crm_contact_insights'), 'summaries have a table');
+  assert.ok(phase3Sql.includes('crm_saved_views'), 'saved views have a table');
+  assert.ok(
+    read('lib/db/src/crm-migration.ts').includes('20261013_crm_phase3.sql'),
+    'the phase 3 migration is applied at boot',
+  );
+}
+
+/**
+ * The scoring rules are arithmetic, so they are checked here without a database:
+ * this is the part of the intelligence layer that must be reproducible.
+ */
+async function scoringChecks(): Promise<void> {
+  const { emptyScoreInput, scoreBand, scoreContact } = await import('../packages/core/src/crm/pure.js');
+  assert.equal(scoreBand(0), 'cold');
+  assert.equal(scoreBand(34), 'cold');
+  assert.equal(scoreBand(35), 'warm');
+  assert.equal(scoreBand(64), 'warm');
+  assert.equal(scoreBand(65), 'hot');
+  assert.equal(scoreBand(100), 'hot');
+
+  assert.equal(scoreContact(emptyScoreInput()).score, 0, 'a blank contact has no score');
+
+  const blocked = scoreContact(emptyScoreInput({
+    doNotContact: true,
+    hasEmail: true,
+    hasPhone: true,
+    replies: 9,
+    openDeals: 1,
+    openDealValueUsd: 50_000,
+  }));
+  assert.equal(blocked.score, 0, 'do-not-contact scores zero whatever else is true');
+  assert.equal(blocked.reasons.length, 0);
+  assert.ok(blocked.blocked?.includes('do-not-contact'));
+
+  const cold = scoreContact(emptyScoreInput({ hasEmail: true }));
+  assert.equal(cold.band, 'cold');
+  assert.ok(cold.reasons.some((reason) => reason.label === 'has an email address'));
+
+  const hot = scoreContact(emptyScoreInput({
+    hasEmail: true,
+    hasPhone: true,
+    verifiedIdentifier: true,
+    replies: 3,
+    daysSinceLastReply: 2,
+    outboundTouches: 4,
+    daysSinceLastContact: 3,
+    openDeals: 1,
+    openDealValueUsd: 20_000,
+    followUpDueToday: true,
+    industry: 'publishing',
+    lifecycleStage: 'client',
+    leadQualificationScore: 90,
+  }));
+  assert.equal(hot.band, 'hot');
+  assert.ok(hot.score <= 100, 'a score never exceeds 100');
+  assert.deepEqual(
+    hot.reasons.map((reason) => reason.points),
+    [...hot.reasons.map((reason) => reason.points)].sort((a, b) => b - a),
+    'reasons come back biggest first',
+  );
+
+  const churned = scoreContact(emptyScoreInput({
+    hasEmail: true,
+    hasPhone: true,
+    replies: 3,
+    openDeals: 1,
+    openDealValueUsd: 20_000,
+    lifecycleStage: 'churned',
+  }));
+  const client = scoreContact(emptyScoreInput({
+    hasEmail: true,
+    hasPhone: true,
+    replies: 3,
+    openDeals: 1,
+    openDealValueUsd: 20_000,
+    lifecycleStage: 'client',
+  }));
+  assert.ok(churned.score < client.score, 'a churned contact scores below a client on the same signals');
+  assert.equal(
+    client.score - churned.score,
+    35,
+    'the client bonus and the churned penalty are 35 points apart on the same signals',
+  );
+  const floor = scoreContact(emptyScoreInput({ lifecycleStage: 'churned' }));
+  assert.equal(floor.score, 0, 'the churned penalty floors at zero, never below');
 }
 
 async function databaseChecks(): Promise<void> {
@@ -891,11 +1003,136 @@ async function databaseChecks(): Promise<void> {
   assert.equal(companyPage.totals.wonCount, 1);
   await assert.rejects(() => phase2.getCompanyPage({ companyId: crypto.randomUUID() }), /Company not found/);
 
+// ── CRM phase 3 against the real database ────────────────────────────────
+  const phase3 = await import('../packages/core/src/crm/index.js');
+  // Scoring reads the records: the contact from phase 1 has an email, a call and
+  // a task behind it, so it must score above a blank contact, with reasons.
+  const scored = await phase3.scoreContacts([made.contactId, optOutContactId]);
+  const madeScore = scored.get(made.contactId);
+  assert.ok(madeScore, 'a scored contact comes back');
+  assert.ok(madeScore.score > 0, 'a contacted contact scores above zero');
+  assert.ok(madeScore.reasons.length > 0, 'the score explains itself');
+  assert.ok(madeScore.reasons.some((reason) => reason.label === 'has been contacted'), 'the call is in the score');
+  assert.equal(madeScore.band, phase3.scoreBand(madeScore.score), 'the band matches the score');
+  const suppressed = await phase3.scoreContacts([optOutContactId]);
+  assert.ok((suppressed.get(optOutContactId)?.score ?? 0) >= 0);
+
+  // Reports: the funnel comes from the deal audit trail, and the money from the
+  // deals themselves.
+  const reports = await phase3.crmReports({ days: 90 });
+  assert.ok(reports.funnel.length >= 4, 'the funnel lists the seeded stages');
+  assert.equal(reports.funnel[0]?.stageId, stages[0]?.id, 'the funnel starts at the first stage');
+  assert.ok(reports.funnel[0]?.reached >= 1, 'the phase 2 deal counts as having reached the first stage');
+  assert.ok(reports.funnel[1]?.reached >= 1, 'it reached the second stage when it moved');
+  assert.equal(reports.funnel[0]?.conversionFromPrevious, null, 'the first stage has nothing to convert from');
+  assert.ok(reports.revenue.wonCount >= 1, 'the won deal is counted');
+  assert.ok(reports.revenue.wonUsd >= 9900, 'the won value is the value agreed at close');
+  assert.ok(reports.revenue.averageWonUsd > 0);
+  assert.equal(typeof reports.replies.totalOutbound, 'number');
+  assert.ok(Array.isArray(reports.replies.byChannel));
+  assert.ok(reports.replies.byIndustry.some((row) => row.industry.includes('investigative publishing')), 'industry reply rates are grouped by the company industry');
+  assert.equal(reports.revenue.lostReasons.filter((row) => row.count <= 0).length, 0, 'no lost reason has a count below one');
+
+  // Saved views: save, reopen, overwrite by name, delete.
+  const viewName = `Hot without a call ${stamp2}`;
+  const savedView = await phase3.saveView({ actor: OPERATOR_ACTOR, name: viewName, scope: 'contacts', filters: { called: false, minScore: 40 } });
+  assert.equal(savedView.created, true);
+  const listed = await phase3.listSavedViews({ scope: 'contacts' });
+  const savedViewRow = listed.find((view) => view.id === savedView.viewId);
+  assert.ok(savedViewRow, 'the saved view comes back in the list');
+  assert.deepEqual(savedViewRow?.filters, { called: false, minScore: 40 });
+  const again2 = await phase3.saveView({ actor: OPERATOR_ACTOR, name: `${viewName}  `, scope: 'contacts', filters: { lifecycleStage: 'client' } });
+  assert.equal(again2.created, false, 'the same name overwrites rather than duplicating');
+  assert.equal(again2.viewId, savedView.viewId);
+  const afterOverwrite = await phase3.listSavedViews({ scope: 'contacts' });
+  assert.equal(afterOverwrite.filter((view) => view.id === savedView.viewId).length, 1, 'the view was updated, not duplicated');
+  assert.deepEqual(afterOverwrite.find((view) => view.id === savedView.viewId)?.filters, { lifecycleStage: 'client' });
+  await assert.rejects(() => phase3.saveView({ actor: OPERATOR_ACTOR, name: '   ', scope: 'contacts' }), /needs a name/);
+  await assert.rejects(() => phase3.saveView({ actor: OPERATOR_ACTOR, name: 'x', scope: 'invoices' }), /Unknown scope/);
+  await phase3.deleteSavedView({ viewId: savedView.viewId, actor: OPERATOR_ACTOR });
+  assert.equal((await phase3.listSavedViews({ scope: 'contacts' })).some((view) => view.id === savedView.viewId), false, 'the view is gone');
+  await assert.rejects(() => phase3.deleteSavedView({ viewId: savedView.viewId, actor: OPERATOR_ACTOR }), /not found/);
+
+  // The reading of a contact: generated from its own history, cached with the
+  // model that wrote it, and flagged stale once the history grows.
+  assert.equal(await phase3.readInsight(made.contactId), null, 'nothing is cached before it is generated');
+  await assert.rejects(
+    () => phase3.generateContactInsight({ contactId: made.contactId, actor: 'sales-bot', complete: async () => ({ content: '{}' }) }),
+    /Only Matthew can generate a contact summary/,
+  );
+  const digest = await phase3.contactHistoryDigest(made.contactId);
+  assert.ok(digest.totalEvents >= 1, 'the digest reads the history');
+  assert.ok(digest.name.length > 0);
+  const prompt = phase3.buildInsightPrompt(digest);
+  assert.ok(prompt.includes('CONTACT'), 'the prompt carries the contact');
+  assert.ok(prompt.includes('HISTORY'), 'the prompt carries the history');
+  await assert.rejects(
+    () => phase3.generateContactInsight({
+      contactId: made.contactId,
+      actor: OPERATOR_ACTOR,
+      complete: async () => ({ content: 'I could not write that.' }),
+    }),
+    /expected shape/,
+    'a model answer that is not JSON is refused rather than stored',
+  );
+  assert.equal(await phase3.readInsight(made.contactId), null, 'a refused answer stores nothing');
+  await assert.rejects(
+    () => phase3.generateContactInsight({
+      contactId: made.contactId,
+      actor: OPERATOR_ACTOR,
+      complete: async () => ({ content: '{"summary":"only a summary"}' }),
+    }),
+    /without both a summary and a next step/,
+  );
+  const generated = await phase3.generateContactInsight({
+    contactId: made.contactId,
+    actor: OPERATOR_ACTOR,
+    complete: async () => ({
+      content: '{"summary":"They have answered and the terms are with them.","next_step":"Call on Wednesday."}',
+      model: 'stub-model',
+    }),
+  });
+  assert.equal(generated.summary, 'They have answered and the terms are with them.');
+  assert.equal(generated.stale, false);
+  const cached = await phase3.readInsight(made.contactId);
+  assert.ok(cached, 'the generated summary is cached');
+  assert.equal(cached?.model, 'stub-model');
+  assert.equal(cached?.generatedBy, OPERATOR_ACTOR);
+  assert.equal(cached?.sourceEvents, digest.totalEvents);
+  assert.equal(cached?.stale, false);
+  await insertTimelineEvent(db, {
+    contactId: made.contactId,
+    channel: 'internal',
+    direction: 'internal',
+    actorType: 'system',
+    actorName: 'verify-crm',
+    eventKind: 'note',
+    bodyText: 'one more row, so the summary is out of date',
+    provider: 'crm',
+    providerMessageId: `phase3-stale-${stamp2}`,
+  });
+  const afterNewRow = await phase3.readInsight(made.contactId);
+  assert.equal(afterNewRow?.stale, true, 'a summary says so once the history has moved on');
+  assert.ok((afterNewRow?.currentEvents ?? 0) > (afterNewRow?.sourceEvents ?? 0));
+  const regenerated = await phase3.generateContactInsight({
+    contactId: made.contactId,
+    actor: OPERATOR_ACTOR,
+    complete: async () => ({ content: '{"summary":"Updated read.","next_step":"Send the terms."}', model: 'stub-model' }),
+  });
+  assert.equal(regenerated.sourceEvents, afterNewRow?.currentEvents, 'regenerating covers the newer rows');
+  assert.equal((await phase3.readInsight(made.contactId))?.stale, false);
+
+  const topScored = await phase3.topScoredContacts({ limit: 5, minScore: 1 });
+  assert.ok(Array.isArray(topScored));
+  assert.ok(topScored.every((row) => row.score.score >= 1), 'the top list respects the floor');
+  assert.ok(topScored.every((row, index) => index === 0 || topScored[index - 1]!.score.score >= row.score.score), 'the top list is ordered best first');
+
   console.log('CRM database checks passed');
 }
 
 async function main(): Promise<void> {
   pureChecks();
+  await scoringChecks();
   sourceChecks();
   const target = process.env.CRM_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
   if (!target) {
