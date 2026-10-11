@@ -16,7 +16,6 @@ import crypto from 'crypto';
 import { db, goals } from '@workspace/db';
 import { desc } from 'drizzle-orm';
 import { getOperatorCeo, isSessionUnlocked, unlockSession } from './apex-operator-registry.js';
-import crypto from 'crypto';
 
 // ─── Plan catalog ─────────────────────────────────────────────────────────────
 
