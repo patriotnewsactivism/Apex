@@ -234,12 +234,12 @@ async function main(): Promise<void> {
   check(
     'paid routes wait longer than the default request timeout; free routes keep it',
     llm.getProviderRequestTimeoutMs('openrouter-deepseek-v4-flash-paid') === llm.PAID_REQUEST_TIMEOUT_MS &&
-      llm.getProviderRequestTimeoutMs('openrouter-nex-n2-5-mini-free') === llm.LLM_REQUEST_TIMEOUT_MS &&
+      llm.getProviderRequestTimeoutMs('openrouter-nemotron-super') === llm.LLM_REQUEST_TIMEOUT_MS &&
       llm.LLM_REQUEST_TIMEOUT_MS === GUARD_DEFAULT_TIMEOUT_MS &&
       llm.PAID_REQUEST_TIMEOUT_MS > SLOW_PAID_ANSWER_MS,
     {
       paid: llm.getProviderRequestTimeoutMs('openrouter-deepseek-v4-flash-paid'),
-      free: llm.getProviderRequestTimeoutMs('openrouter-nex-n2-5-mini-free'),
+      free: llm.getProviderRequestTimeoutMs('openrouter-nemotron-super'),
       defaultTimeout: llm.LLM_REQUEST_TIMEOUT_MS,
     },
   );

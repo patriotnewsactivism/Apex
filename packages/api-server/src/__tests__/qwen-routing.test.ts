@@ -58,15 +58,20 @@ afterEach(() => {
 });
 
 describe("Qwen routing", () => {
-  it("routes qwen-dashscope-byok first, ahead of the free OpenRouter models", () => {
+  // The order this test asserted (Qwen first) was the ADR-017 arrangement,
+  // superseded on 2026-10-10: free OpenRouter capacity is tried first and the
+  // metered QwenCloud route is the LAST automatic route. The two
+  // `openrouter-nex-n2-5-{mini,pro}-free` rungs are gone with their withdrawn
+  // `:free` slugs, which is why the free chain now starts at Nemotron 3 Super.
+  it("runs the free OpenRouter chain first and keeps metered QwenCloud last", () => {
     const order = getProviderOrderForRole("QA");
-    expect(order[0]).toBe("qwen-dashscope-byok");
-    expect(order[1]).toBe("openrouter-nex-n2-5-mini-free");
-    expect(order.slice(1, 4)).toEqual([
-      "openrouter-nex-n2-5-mini-free",
-      "openrouter-nex-n2-5-pro-free",
+    expect(order.slice(0, 4)).toEqual([
       "openrouter-nemotron-super",
+      "openrouter-nemotron-3-5-lightning-free",
+      "openrouter-free-router",
+      "openrouter-nemotron-ultra",
     ]);
+    expect(order.at(-1)).toBe("qwen-dashscope-byok");
   });
 
   it("defaults the model to qwen3.8-flash", () => {

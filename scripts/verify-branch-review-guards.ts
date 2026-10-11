@@ -80,7 +80,7 @@ check(
 
 // ── Issue #166: errors are evidence only about the build that wrote them ────
 const buildProviders = [
-  'openrouter-nex-n2-5-mini-free',
+  'openrouter-nemotron-super',
   'openrouter-nemotron-ultra',
   'openrouter-deepseek-v4-flash-paid',
 ];
@@ -90,7 +90,7 @@ const retiredRouteFailure =
   'openrouter-minimax-m3/minimax/minimax-m3 via OPENROUTER_API_KEY: HTTP 404 model is unavailable';
 const currentRouteFailure =
   'All LLM providers failed or were unavailable. ' +
-  'openrouter-nex-n2-5-mini-free/nex-agi/nex-n2.5-mini:free via OPENROUTER_FREE_API_KEY: HTTP 429 rate limit | ' +
+  'openrouter-nemotron-super/nvidia/nemotron-3-super-120b-a12b:free via OPENROUTER_FREE_API_KEY: HTTP 429 rate limit | ' +
   'openrouter-deepseek-v4-flash-paid: OPENROUTER_API_KEY_4';
 const mixedRouteFailure =
   'All LLM providers failed or were unavailable. ' +
@@ -100,7 +100,7 @@ const mixedRouteFailure =
 check(
   'current chain-failure format names its providers',
   providersNamedInChainFailure(currentRouteFailure).join(',') ===
-    'openrouter-nex-n2-5-mini-free,openrouter-deepseek-v4-flash-paid',
+    'openrouter-nemotron-super,openrouter-deepseek-v4-flash-paid',
   providersNamedInChainFailure(currentRouteFailure),
 );
 check(

@@ -37,8 +37,8 @@ const PROVIDERS: Array<{
   extraHeaders?: Record<string, string>;
 }> = [
   // Zero-cost OpenRouter chain. Paid endpoints are unreachable.
-  { name: 'openrouter-nex-n2-5-mini-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nex-agi/nex-n2.5-mini:free', extraHeaders: OPENROUTER_HEADERS },
-  { name: 'openrouter-nex-n2-5-pro-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nex-agi/nex-n2.5-pro:free', extraHeaders: OPENROUTER_HEADERS },
+  // The two `openrouter-nex-n2-5-{mini,pro}-free` routes were removed with the
+  // nex-agi `:free` slugs themselves (OpenRouter moved them to paid-only).
   { name: 'openrouter-nemotron-super', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nvidia/nemotron-3-super-120b-a12b:free', extraHeaders: OPENROUTER_HEADERS },
   { name: 'openrouter-nemotron-3-5-lightning-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nvidia/nemotron-3.5-lightning:free', extraHeaders: OPENROUTER_HEADERS },
   { name: 'openrouter-free-router', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'openrouter/free', extraHeaders: OPENROUTER_HEADERS },

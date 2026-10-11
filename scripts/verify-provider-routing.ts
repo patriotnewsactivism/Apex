@@ -33,8 +33,6 @@ const accountExclusionSource = fs.readFileSync(
 );
 
 const openRouterProviders = [
-  'openrouter-nex-n2-5-mini-free',
-  'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
   'openrouter-nemotron-3-5-lightning-free',
   'openrouter-free-router',
@@ -45,7 +43,7 @@ const byokProviders = [
   'gemini-3-8-flash-byok',
 ] as const;
 // Free capacity first, metered QwenCloud last (operator decision 2026-10-10):
-// six OpenRouter free, then Groq/Gemini BYOK, then the metered QwenCloud
+// four OpenRouter free, then Groq/Gemini BYOK, then the metered QwenCloud
 // fallback, then the paid DeepSeek V4 Flash 0731 on OpenRouter alone (Apex no
 // longer calls the Nous Portal provider — that access is cut off).
 const automaticProviders = [...openRouterProviders, ...byokProviders, 'qwen-dashscope-byok'];
@@ -58,7 +56,7 @@ const byokCatalog = catalog.slice(openRouterProviders.length, openRouterProvider
 const qwenCatalog = catalog.slice(openRouterProviders.length + byokProviders.length);
 
 console.log('── Multi-pool automatic provider order ──');
-check('nine automatic routes exist: six OpenRouter free + two BYOK + metered Qwen (last)', catalog.length === 9, catalog);
+check('seven automatic routes exist: four OpenRouter free + two BYOK + metered Qwen (last)', catalog.length === 7, catalog);
 check(
   'automatic provider order is exact',
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(automaticProviders),
@@ -70,19 +68,29 @@ check(
   qwenCatalog[0],
 );
 check(
-  'the next six models remain the reviewed OpenRouter free chain',
+  'the next four models remain the reviewed OpenRouter free chain',
   JSON.stringify(openRouterCatalog.map((provider) => provider.model)) ===
     JSON.stringify([...DEFAULT_OPENROUTER_MODEL_CHAIN]),
   openRouterCatalog.map((provider) => provider.model),
 );
 check(
-  'Nex N2.5 Mini Free remains the production primary of the free chain',
-  openRouterCatalog[0]?.name === 'openrouter-nex-n2-5-mini-free' &&
-    openRouterCatalog[0]?.model === 'nex-agi/nex-n2.5-mini:free',
+  'the free chain head is Nemotron 3 Super, whose :free slug is live',
+  openRouterCatalog[0]?.name === 'openrouter-nemotron-super' &&
+    openRouterCatalog[0]?.model === 'nvidia/nemotron-3-super-120b-a12b:free',
   openRouterCatalog[0],
 );
+// A rung pinned to a withdrawn `:free` slug is worse than no rung: a request is
+// reserved before every dispatch, so a guaranteed-404 rung silently spends the
+// daily allowance. OpenRouter moved both Nex slugs to paid-only on 2026-10-11
+// and they were removed. Do not re-add one without a live 200 first.
 check(
-  'all six OpenRouter automatic routes remain zero-cost and use the free credential roster',
+  'no provider route is pinned to the withdrawn nex-agi/nex-n2.5-*:free slugs',
+  catalog.every((provider) => !provider.model.includes('nex-agi/')) &&
+    DEFAULT_OPENROUTER_MODEL_CHAIN.every((model) => !model.includes('nex-agi/')),
+  catalog.map((provider) => provider.model),
+);
+check(
+  'all four OpenRouter automatic routes remain zero-cost and use the free credential roster',
   openRouterCatalog.every((provider) =>
     provider.paid !== true &&
     provider.usesFreeCredentials === true &&
@@ -128,8 +136,19 @@ check(
 check(
   // 2026-10-09 operator change: DeepSeek V4 Flash 0731 paid continuity moved
   // to OpenRouter only; the Nous Portal provider was removed entirely.
-  'paid credentials stay isolated on the funded OPENROUTER_API_KEY_4',
-  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY_4'\]/.test(clientSource),
+  // 2026-10-09 operator change: DeepSeek V4 Flash 0731 paid continuity moved
+  // to OpenRouter only; the Nous Portal provider was removed entirely. The
+  // funded set is now an operator-configurable list over the configured
+  // OpenRouter keys (default: three env names, overridable with
+  // APEX_PAID_KEY_ENVS), and the caller filters out credentials it cannot use
+  // before dispatch. The isolation this guard protects is therefore "paid
+  // routing only ever draws on configured, usable OpenRouter credentials", not
+  // a single hardcoded env name — which is what the old assertion checked and
+  // why it went stale.
+  'paid credentials draw only on the configured OpenRouter roster',
+  /OPENROUTER_PAID_KEY_ENVS: readonly string\[\] = \([\s\S]{0,200}APEX_PAID_KEY_ENVS/.test(clientSource) &&
+    /apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS/.test(clientSource) &&
+    /const usableCredentials = configuredCredentials\(provider\)\.filter\(/.test(clientSource),
 );
 check(
   // Each OpenRouter account keeps its own :free allowance, so the funded
@@ -313,7 +332,7 @@ console.log('\n── Custom OpenRouter policy + BYOK continuity ──');
 const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
 process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   version: 1,
-  selectedModelIds: ['nex-agi/nex-n2.5-mini:free', 'openrouter/free'],
+  selectedModelIds: ['nvidia/nemotron-3-super-120b-a12b:free', 'openrouter/free'],
   rolePrimary: {},
   routingMode: 'manual',
   optimizationObjective: 'balanced',
@@ -325,8 +344,6 @@ check(
   JSON.stringify(getProviderOrderForRole('CEO')) ===
     JSON.stringify([
       FREE_POLICY_GATEWAY_NAME,
-      'openrouter-nex-n2-5-pro-free',
-      'openrouter-nemotron-super',
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
       ...byokProviders,
@@ -338,7 +355,7 @@ check('the free-policy gateway still uses OpenRouter free credentials', provider
 check(
   'under a custom policy the default config advertises the route actually attempted first (the free-policy gateway)',
   getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
-    getDefaultLLMConfig('CEO').model === 'nex-agi/nex-n2.5-mini:free',
+    getDefaultLLMConfig('CEO').model === 'nvidia/nemotron-3-super-120b-a12b:free',
   getDefaultLLMConfig('CEO'),
 );
 if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
@@ -358,9 +375,9 @@ for (const role of [
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to the free chain head (nex-n2.5-mini:free), not metered Qwen`,
-    config.provider === 'openrouter-nex-n2-5-mini-free' &&
-      config.model === 'nex-agi/nex-n2.5-mini:free',
+    `${role} defaults to the free chain head (nemotron-3-super:free), not metered Qwen`,
+    config.provider === 'openrouter-nemotron-super' &&
+      config.model === 'nvidia/nemotron-3-super-120b-a12b:free',
     config,
   );
 }

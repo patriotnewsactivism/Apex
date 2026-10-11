@@ -300,7 +300,7 @@ describe("OpenRouter account exclusions", () => {
         }
         return new Response(
           JSON.stringify({
-            model: "nex-agi/nex-n2.5-mini:free",
+            model: "nvidia/nemotron-3-super-120b-a12b:free",
             choices: [{ message: { content: "account B served the request" } }],
             usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0 },
           }),

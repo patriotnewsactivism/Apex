@@ -8,12 +8,16 @@ The operator-selected OpenRouter roster remains free-only. Runtime continuity ha
 
 Automatic routing must use only OpenRouter model IDs ending in `:free`, in this order:
 
-1. `nex-agi/nex-n2.5-mini:free` — primary agentic/coding model.
-2. `nex-agi/nex-n2.5-pro:free` — harder reasoning/coding fallback.
-3. `nvidia/nemotron-3-super-120b-a12b:free` — multi-agent/tool fallback.
-4. `nvidia/nemotron-3.5-lightning:free` — high-throughput fallback.
-5. `openrouter/free` — emergency free-model router, only with tool requirements preserved.
-6. `nvidia/nemotron-3-ultra-550b-a55b:free` — last-resort deep/long-context fallback while its availability is degraded.
+1. `nvidia/nemotron-3-super-120b-a12b:free` — primary agentic/coding model.
+2. `nvidia/nemotron-3.5-lightning:free` — high-throughput fallback.
+3. `openrouter/free` — emergency free-model router, only with tool requirements preserved.
+4. `nvidia/nemotron-3-ultra-550b-a55b:free` — last-resort deep/long-context fallback while its availability is degraded.
+
+`nex-agi/nex-n2.5-mini:free` and `nex-agi/nex-n2.5-pro:free` were removed from
+the roster on 2026-10-11 after OpenRouter moved both to paid-only: the free
+slugs 404, and because a request is reserved before every dispatch those two
+rungs at the head of the chain spent roughly half the daily OpenRouter allowance
+without ever serving a call.
 
 MiniMax M3 Free is not in the production chain until its current free endpoint/tool behavior is directly re-verified. DeepSeek V4 Flash 0731 is retired. Arbitrary paid models cannot be persisted into the operator roster; `z-ai/glm-5.3-flashx` is the sole automatic paid runtime continuity exception.
 

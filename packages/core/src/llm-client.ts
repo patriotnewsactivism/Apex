@@ -27,6 +27,9 @@ import {
   markPaidProviderRequestSucceeded,
   markProviderRequestSucceeded,
   paidProviderCapacityWindow,
+  releaseDirectProviderRequest,
+  releasePaidProviderRequest,
+  releaseProviderRequest,
   requestCapacityWindow,
   reserveDirectProviderRequest,
   reservePaidProviderRequest,
@@ -81,16 +84,23 @@ import {
 // human approval policy remain for every route, QwenCloud and paid included.
 //
 // Authoritative automatic order:
-//   0. nex-agi/nex-n2.5-mini:free
-//   1. nex-agi/nex-n2.5-pro:free
-//   2. nvidia/nemotron-3-super-120b-a12b:free
-//   3. nvidia/nemotron-3.5-lightning:free
-//   4. openrouter/free  (tool requirements preserved)
-//   5. nvidia/nemotron-3-ultra-550b-a55b:free
+//   0. nvidia/nemotron-3-super-120b-a12b:free
+//   1. nvidia/nemotron-3.5-lightning:free
+//   2. openrouter/free  (tool requirements preserved)
+//   3. nvidia/nemotron-3-ultra-550b-a55b:free
+//   4. cohere/north-mini-code:free
+//   5. google/gemma-4-31b-it:free
 //   6. groq-gpt-oss-120b-byok    (BYOK, when enabled)
 //   7. gemini-3.8-flash-byok     (BYOK, when enabled)
 //   8. qwen3.8-flash             (metered QwenCloud fallback, last automatic route)
 //   9. deepseek-v4-flash-0731    (paid, unrestricted continuity, last)
+//
+// The two `nex-agi/nex-n2.5-*:free` rungs were removed 2026-10-11: OpenRouter
+// withdrew their free tier (404 "This model is unavailable for free. The paid
+// version is available now") and, because a reservation is taken before every
+// dispatch, two guaranteed-404 rungs at the head of the chain burned roughly
+// half of the daily OpenRouter allowance before the fleet ever reached a rung
+// that could answer.
 //
 // MiniMax M3 Free is intentionally absent until a new direct API verification
 // proves the exact `:free` slug works. Persisted OpenRouter model policies
@@ -99,8 +109,6 @@ import {
 
 export type ApexProviderName =
   | 'qwen-dashscope-byok'
-  | 'openrouter-nex-n2-5-mini-free'
-  | 'openrouter-nex-n2-5-pro-free'
   | 'openrouter-nemotron-super'
   | 'openrouter-nemotron-3-5-lightning-free'
   | 'openrouter-free-router'
@@ -342,8 +350,10 @@ const PROVIDERS: readonly ProviderSpec[] = [
     usdPerMillionCompletion: 0.47,
     usdPerMillionCachedPrompt: 0.016,
   },
-  freeOpenRouterSpec('openrouter-nex-n2-5-mini-free', 'nex-agi/nex-n2.5-mini:free'),
-  freeOpenRouterSpec('openrouter-nex-n2-5-pro-free', 'nex-agi/nex-n2.5-pro:free'),
+  // Retired 2026-10-11 with the `nex-agi/nex-n2.5-*:free` slugs themselves:
+  // OpenRouter moved both to paid-only, so every dispatch was a 404 that still
+  // reserved a slot of the daily free allowance. Do not re-add a free-openrouter
+  // spec without a live 200 on the exact `:free` slug first.
   freeOpenRouterSpec('openrouter-nemotron-super', 'nvidia/nemotron-3-super-120b-a12b:free'),
   freeOpenRouterSpec('openrouter-nemotron-3-5-lightning-free', 'nvidia/nemotron-3.5-lightning:free'),
   freeOpenRouterSpec('openrouter-free-router', 'openrouter/free', {
@@ -436,8 +446,6 @@ const PROVIDER_ORDER: readonly ApexProviderName[] = [
   // every free pool (and its daily allowance) is spent — so the
   // no-marginal-cost free allowance is always consumed before any pay-as-you-go
   // spend. Qwen still falls through when unconfigured, disabled, or failing.
-  'openrouter-nex-n2-5-mini-free',
-  'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
   'openrouter-nemotron-3-5-lightning-free',
   'openrouter-free-router',
@@ -1112,6 +1120,39 @@ function reserveProviderAttempt(
     reservePaidProviderRequest(provider.name);
   } else {
     reserveProviderRequest(credentialKey);
+  }
+}
+
+/**
+ * A failure that means the request was never served, so the provider did not
+ * consume the capacity the daily request allowance stands for.
+ *
+ * 404: the pinned `:free` slug is withdrawn or unknown ("This model is
+ * unavailable for free. The paid version is available now") — no generation was
+ * ever requested. 400: the body, not the key, is indicted (see the note in the
+ * failure path below).
+ *
+ * Everything else keeps its charge. A 429 or 5xx means the provider was engaged
+ * and may well have metered us, and a timeout is not evidence either way.
+ */
+export function isRoutingDefectStatus(status: number | undefined): boolean {
+  return status === 404 || status === 400;
+}
+
+function releaseProviderAttempt(
+  provider: ProviderSpec,
+  credentialKey: string,
+): void {
+  if (
+    provider.requestPool === 'groq' ||
+    provider.requestPool === 'gemini' ||
+    provider.requestPool === 'qwen'
+  ) {
+    releaseDirectProviderRequest(provider.requestPool, provider.name);
+  } else if (provider.paid) {
+    releasePaidProviderRequest(provider.name);
+  } else {
+    releaseProviderRequest(credentialKey);
   }
 }
 
@@ -2020,11 +2061,17 @@ class MultiProviderClient {
                 });
                 return result;
               } catch (error) {
-                // The request was reserved before dispatch, so failures already
-                // count against the correct provider pool. Only successful
-                // outcomes need a post-response ledger update.
+                // The request was reserved before dispatch, so a failure the
+                // provider actually served stays charged to the correct pool.
+                // A routing DEFECT is refunded instead: a 404/400 means no
+                // generation was requested, and charging those is what let a
+                // rung pinned to a withdrawn `:free` slug drain half the daily
+                // allowance while the pool still had live capacity.
                 const err = error as ProviderRequestError;
                 const status = err.status;
+                if (isRoutingDefectStatus(status)) {
+                  releaseProviderAttempt(provider, credential.key);
+                }
                 const message =
                   err.name === 'AbortError' ? 'request timed out' : err.message;
                 const requestedModels = err.requestedModels?.length
@@ -2186,9 +2233,14 @@ class MultiProviderClient {
                       hadTools: Boolean(tools?.length),
                     });
                     return result;
-                  } catch {
-                    // The retry was already reserved and therefore correctly
-                    // counted even when it fails. Continue to the next route.
+                  } catch (retryError) {
+                    // The retry was already reserved, so a served-but-refused
+                    // failure stays correctly counted. A routing DEFECT is
+                    // refunded here too, matching the first dispatch above.
+                    const retryStatus = (retryError as ProviderRequestError).status;
+                    if (isRoutingDefectStatus(retryStatus)) {
+                      releaseProviderAttempt(provider, credential.key);
+                    }
                   }
                 }
               }
@@ -2284,7 +2336,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
       : (primary ? providerModel(primary) : DEFAULT_OPENROUTER_MODEL_CHAIN[0]);
 
   return {
-    provider: primary?.name ?? 'openrouter-nex-n2-5-mini-free',
+    provider: primary?.name ?? PROVIDER_ORDER[0],
     model,
     temperature: 0.7,
     maxTokens,

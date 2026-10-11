@@ -1,9 +1,18 @@
 export const OPENROUTER_MODEL_POLICY_ENV = 'APEX_OPENROUTER_MODEL_POLICY';
 
-/** Zero-cost production fallback chain. If free capacity is exhausted, APEX pauses instead of spending money. */
+/** Zero-cost production fallback chain. If free capacity is exhausted, APEX pauses instead of spending money.
+ *
+ *  The two `nex-agi/nex-n2.5-*:free` slugs that used to head this chain were
+ *  withdrawn by OpenRouter (their router answers HTTP 404 "This model is
+ *  unavailable for free. The paid version is available now"). They are gone
+ *  from the chain AND from the provider roster: a rung that can only ever
+ *  404 is not a fallback, it is a guaranteed miss, and each attempt still
+ *  consumed a slot of the daily OpenRouter allowance.
+ *
+ *  One entry per free provider rung in llm-client.ts, in the same order —
+ *  verify-provider-routing.ts asserts that equivalence, so adding a rung means
+ *  adding a model here too. */
 export const DEFAULT_OPENROUTER_MODEL_CHAIN = [
-  'nex-agi/nex-n2.5-mini:free',
-  'nex-agi/nex-n2.5-pro:free',
   'nvidia/nemotron-3-super-120b-a12b:free',
   'nvidia/nemotron-3.5-lightning:free',
   'openrouter/free',

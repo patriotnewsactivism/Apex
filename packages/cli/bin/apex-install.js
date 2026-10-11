@@ -55,8 +55,6 @@ const MINIMAL_ORG_CHART = {
 
 const LLM_CHAIN = {
   fallbackOrder: [
-    "nex-agi/nex-n2.5-mini:free",
-    "nex-agi/nex-n2.5-pro:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "nvidia/nemotron-3.5-lightning:free",
     "openrouter/free",

@@ -52,10 +52,8 @@ try {
   );
   delete process.env.APEX_PAID_FALLBACK_ENABLED;
   check(
-    'automatic default chain is the exact six-route free order',
+    'automatic default chain is the exact four-route free order',
     JSON.stringify(DEFAULT_OPENROUTER_MODEL_CHAIN) === JSON.stringify([
-      'nex-agi/nex-n2.5-mini:free',
-      'nex-agi/nex-n2.5-pro:free',
       'nvidia/nemotron-3-super-120b-a12b:free',
       'nvidia/nemotron-3.5-lightning:free',
       'openrouter/free',
@@ -92,7 +90,7 @@ try {
   );
   const freePolicy = parseOpenRouterModelPolicy(JSON.stringify({
     version: 1,
-    selectedModelIds: ['nex-agi/nex-n2.5-mini:free', 'openrouter/free'],
+    selectedModelIds: ['nvidia/nemotron-3-super-120b-a12b:free', 'openrouter/free'],
     rolePrimary: {},
   }));
   check('persisted free-model policy is accepted', freePolicy !== null, freePolicy);
@@ -106,14 +104,12 @@ try {
   const policy = {
     version: 1 as const,
     selectedModelIds: [
-      'nex-agi/nex-n2.5-mini:free',
-      'nex-agi/nex-n2.5-pro:free',
       'nvidia/nemotron-3-super-120b-a12b:free',
       'openrouter/free',
     ],
     rolePrimary: {
-      CEO: 'nex-agi/nex-n2.5-pro:free',
-      BACKEND: 'nvidia/nemotron-3-super-120b-a12b:free',
+      CEO: 'nvidia/nemotron-3-super-120b-a12b:free',
+      BACKEND: 'openrouter/free',
       QA: 'not-selected/model',
     },
     routingMode: 'advisor' as const,
@@ -126,7 +122,7 @@ try {
   process.env[OPENROUTER_MODEL_POLICY_ENV] = serialized;
 
   const parsed = parseOpenRouterModelPolicy(serialized);
-  check('operator can explicitly select multiple production-eligible free models', parsed?.selectedModelIds.length === 4, parsed);
+  check('operator can explicitly select multiple production-eligible free models', parsed?.selectedModelIds.length === 2, parsed);
   check('unselected role primary is discarded fail-closed', parsed?.rolePrimary.QA === undefined, parsed?.rolePrimary);
   check('routing mode survives serialization', parsed?.routingMode === 'advisor', parsed);
   check('optimization objective survives serialization', parsed?.optimizationObjective === 'quality', parsed);
@@ -148,11 +144,11 @@ try {
 
   console.log('\n── Runtime routing ──');
   const ceoChain = getOpenRouterModelChainForRole('CEO');
-  check('CEO preferred model is moved to the front', ceoChain[0] === 'nex-agi/nex-n2.5-pro:free', ceoChain);
-  check('CEO retains every explicitly selected model as fallback exactly once', new Set(ceoChain).size === 4 && ceoChain.length === 4, ceoChain);
+  check('CEO preferred model is moved to the front', ceoChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', ceoChain);
+  check('CEO retains every explicitly selected model as fallback exactly once', new Set(ceoChain).size === 2 && ceoChain.length === 2, ceoChain);
   const backendChain = getOpenRouterModelChainForRole('BACKEND');
-  check('BACKEND can have a different first-choice model', backendChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', backendChain);
-  check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nex-agi/nex-n2.5-mini:free');
+  check('BACKEND can have a different first-choice model', backendChain[0] === 'openrouter/free', backendChain);
+  check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nvidia/nemotron-3-super-120b-a12b:free');
   check(
     'custom FREE roster keeps the selected gateway and free fallbacks first, BYOK next, then metered Qwen last',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
@@ -192,7 +188,17 @@ try {
   check('intelligence API reports effective objective rather than hiding escalation', routeSource.includes('effectiveObjective') && routeSource.includes('baseObjective'));
   check('API exposes free-roster production eligibility', routeSource.includes('productionEligible'));
   check('API rejects arbitrary paid saved policies', routeSource.includes(':free') && routeSource.includes('FlashX'));
-  check('dashboard reset restores the six-model free chain', panelSource.includes('nex-agi/nex-n2.5-mini:free') && !panelSource.includes('DeepSeek V4 Flash -> GPT-OSS'));
+  // Four routes, matching DEFAULT_OPENROUTER_MODEL_CHAIN exactly. The two
+  // `nex-agi/nex-n2.5-*:free` slugs are deliberately absent: OpenRouter
+  // withdrew their free tier and a reset that restored them would re-arm a
+  // guaranteed-404 rung at the head of the chain.
+  check(
+    'dashboard reset restores the four-model free chain and cannot restore the withdrawn Nex slugs',
+    panelSource.includes('nvidia/nemotron-3-super-120b-a12b:free') &&
+      !panelSource.includes("'nex-agi/nex-n2.5-mini:free'") &&
+      !panelSource.includes("'nex-agi/nex-n2.5-pro:free'") &&
+      !panelSource.includes('DeepSeek V4 Flash -> GPT-OSS'),
+  );
   check('dashboard no longer calls free models experiment-only', !/experiment-only/.test(panelSource));
   check('dashboard defaults the catalog filter to free-only', panelSource.includes('const [freeOnly, setFreeOnly] = useState(true)'));
   const probeSource = fs.readFileSync(path.join(root, 'scripts/llm-probe.mjs'), 'utf8');
