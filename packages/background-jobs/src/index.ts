@@ -46,6 +46,7 @@ export {
   makeResearchCacheKey,
   normalizeLeadDomain,
   simulateStreamingPipeline,
+  repairWebLeadIdentityBatch,
 } from './lead-pipeline.js';
 export type { LeadPipelineConfig, LeadPipelineState, PipelineBenchmarkResult, SearchShard } from './lead-pipeline.js';
 export { createCampaignTools } from './campaign-tools.js';
