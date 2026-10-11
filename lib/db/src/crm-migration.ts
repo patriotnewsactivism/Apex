@@ -10,6 +10,7 @@ export const CRM_MIGRATION_FILES = [
   '20261003_crm.sql',
   '20261011_crm_phase1.sql',
   '20261012_crm_phase2.sql',
+  '20261013_crm_phase3.sql',
 ] as const;
 
 /**

@@ -21,6 +21,7 @@ import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { ContactsPanel } from './components/ContactsPanel.js';
 import { CompaniesPanel, DealsPipelinePanel } from './components/CrmPipelinePanels.js';
+import { ReportsPanel } from './components/CrmIntelligencePanels.js';
 import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
 import { TerritoryAvailabilityPanel } from './components/TerritoryAvailabilityPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
@@ -319,6 +320,7 @@ function Sidebar({
         { id: 'contacts', label: 'Contacts', icon: <BookUser size={16} /> },
         { id: 'deals', label: 'Pipeline', icon: <CircleDollarSign size={16} /> },
         { id: 'companies', label: 'Companies', icon: <Building2 size={16} /> },
+        { id: 'reports', label: 'Reports', icon: <Activity size={16} /> },
         { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
         { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
       ],
@@ -876,6 +878,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     contacts: <ContactsPanel />,
     deals: <DealsPipelinePanel onOpenCompany={() => setActivePage('companies')} />,
     companies: <CompaniesPanel />,
+    reports: <ReportsPanel />,
     territories: <TerritoryAvailabilityPanel />,
     webinars: <WebinarDirector />,
     control: <ControlRoom />,
@@ -916,6 +919,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     contacts: { title: 'Contacts', kicker: 'Revenue' },
     deals: { title: 'Pipeline', kicker: 'Revenue' },
     companies: { title: 'Companies', kicker: 'Revenue' },
+    reports: { title: 'Reports', kicker: 'Revenue' },
     territories: { title: 'Territory Availability', kicker: 'Revenue' },
     webinars: { title: 'Webinar Director', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },

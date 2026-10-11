@@ -15,11 +15,15 @@ import {
   cancelTask,
   closeDeal,
   completeTask,
+  completeWithModel,
   contactsToCsv,
   createContact,
   createDeal,
   createTask,
+  crmReports,
+  deleteSavedView,
   duplicateSuggestions,
+  generateContactInsight,
   getCompanyPage,
   getContact,
   getContactActivity,
@@ -34,6 +38,7 @@ import {
   listDeals,
   listDueTasks,
   listLeadImports,
+  listSavedViews,
   listTasks,
   listUnmatched,
   logManualCall,
@@ -41,9 +46,13 @@ import {
   moveDeal,
   pipelineBoard,
   planResearchedLeadImport,
+  readInsight,
   rescheduleTask,
+  saveView,
+  scoreContacts,
   searchContacts,
   searchResearchedLeads,
+  topScoredContacts,
   setContactTags,
   setDoNotContact,
   setLifecycleStage,
@@ -106,15 +115,25 @@ export function createCrmRouter(): Router {
         lifecycleStage: isContactLifecycleStage(req.query.lifecycleStage) ? req.query.lifecycleStage : null,
         followUpDueToday: queryFlag(req.query.followUpDueToday),
       });
-      res.json({
-        timezone: CRM_DISPLAY_TIMEZONE,
-        contacts: rows.map((row) => ({
-          ...row,
-          lastContactedChicago: row.lastContactedAt ? formatChicago(row.lastContactedAt) : null,
-          lastReplyChicago: row.lastReplyAt ? formatChicago(row.lastReplyAt) : null,
-          nextFollowUpChicago: row.nextFollowUpAt ? formatChicago(row.nextFollowUpAt) : null,
-        })),
-      });
+      // The score is arithmetic over these contacts' own records, so it is
+      // computed for the page that was fetched. `minScore` and `sortBy=score`
+      // therefore apply to the page, which the panel says out loud.
+      const scores = await scoreContacts(rows.map((row) => row.id));
+      const withScores = rows.map((row) => ({
+        ...row,
+        lastContactedChicago: row.lastContactedAt ? formatChicago(row.lastContactedAt) : null,
+        lastReplyChicago: row.lastReplyAt ? formatChicago(row.lastReplyAt) : null,
+        nextFollowUpChicago: row.nextFollowUpAt ? formatChicago(row.nextFollowUpAt) : null,
+        score: scores.get(row.id) ?? null,
+      }));
+      const minScore = Number(req.query.minScore);
+      const filtered = Number.isFinite(minScore) && minScore > 0
+        ? withScores.filter((row) => (row.score?.score ?? 0) >= minScore)
+        : withScores;
+      const ordered = req.query.sortBy === 'score'
+        ? [...filtered].sort((a, b) => (b.score?.score ?? 0) - (a.score?.score ?? 0))
+        : filtered;
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, contacts: ordered });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -368,7 +387,9 @@ export function createCrmRouter(): Router {
     res.status(unique ? 409 : 500).json({ error: message });
   }
 
-  router.get('/contacts/statuses', (_req, res) => {
+  // NOT under /contacts: `/contacts/:id` is registered above this block, so a
+  // literal path there would be read as a contact id.
+  router.get('/statuses', (_req, res) => {
     res.json({ stages: CONTACT_LIFECYCLE_STAGES, priorities: TASK_PRIORITIES });
   });
 
@@ -744,6 +765,89 @@ export function createCrmRouter(): Router {
         lastActivityAt: page.lastActivityAt,
         lastActivityChicago: page.lastActivityAt ? formatChicago(page.lastActivityAt) : null,
       });
+    } catch (error) {
+      writeFailure(res, error, 404);
+    }
+  });
+
+  // ─── Phase 3: the intelligence layer ──────────────────────────────────────
+  //
+  // A reading of a contact, lead scoring, saved views and the reports. Reading a
+  // cached summary is open to the dashboard; generating one costs a model call,
+  // so that one asks for the operator session like the other privileged writes.
+
+  router.get('/contacts/:id/insight', async (req, res) => {
+    try {
+      const insight = await readInsight(req.params.id);
+      res.json({ insight });
+    } catch (error) {
+      writeFailure(res, error, 404);
+    }
+  });
+
+  router.post('/contacts/:id/insight', async (req, res) => {
+    if (!(await requireOperatorSession(req, res))) return;
+    try {
+      const insight = await generateContactInsight({
+        contactId: req.params.id,
+        actor: OPERATOR_ACTOR,
+        complete: completeWithModel,
+      });
+      res.json({ ok: true, insight });
+    } catch (error) {
+      writeFailure(res, error);
+    }
+  });
+
+  router.get('/reports', async (req, res) => {
+    try {
+      const reports = await crmReports({
+        from: typeof req.query.from === 'string' ? req.query.from : null,
+        to: typeof req.query.to === 'string' ? req.query.to : null,
+        days: Number(req.query.days) || undefined,
+      });
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, ...reports });
+    } catch (error) {
+      writeFailure(res, error);
+    }
+  });
+
+  // NOT under /contacts: `/contacts/:id` is registered above and would swallow it.
+  router.get('/scored-contacts', async (req, res) => {
+    try {
+      const rows = await topScoredContacts({
+        limit: Math.min(Math.max(Number(req.query.limit) || 25, 1), 200),
+        minScore: Number(req.query.minScore) || 0,
+      });
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, contacts: rows });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/views', async (req, res) => {
+    try {
+      const scope = typeof req.query.scope === 'string' ? req.query.scope : null;
+      res.json({ views: await listSavedViews({ scope }) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/views', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await saveView({ ...body, actor: OPERATOR_ACTOR });
+      res.status(result.created ? 201 : 200).json({ ok: true, viewId: result.viewId, created: result.created });
+    } catch (error) {
+      writeFailure(res, error);
+    }
+  });
+
+  router.delete('/views/:id', async (req, res) => {
+    try {
+      await deleteSavedView({ viewId: req.params.id, actor: OPERATOR_ACTOR });
+      res.json({ ok: true });
     } catch (error) {
       writeFailure(res, error, 404);
     }

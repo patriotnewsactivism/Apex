@@ -55,6 +55,20 @@ Every deal write appends to the linked contact's timeline (`deal_created`, `deal
 - `GET /api/crm/companies` — search by name, domain or industry, with per-company contact count, open deals, open value and won value, so the list is a working view rather than a directory.
 - `GET /api/crm/companies/:id` — the company page: its detail, every contact with their client status and do-not-contact flag, every deal with its stage and value, the open/won/lost totals, how many follow-ups are open across those contacts, and when anything last happened.
 
+## Intelligence
+
+**The reading of a contact.** `GET/POST /api/crm/contacts/:id/insight`. The paragraph and the next step are written by a model from that contact's own history — the digest in `contactHistoryDigest` is the only thing in the prompt, so a claim in the summary traces back to a row. The result is cached in `crm_contact_insights` with the model that wrote it and the number of history rows it saw; a larger count later is reported as `stale` with the current count, and the card offers to regenerate rather than showing an out-of-date paragraph as current. Reading is open to the dashboard; **generating spends a model call, so it requires the operator session**, and it refuses with a clear message when there is no model capacity rather than storing an empty summary. An answer that is not the expected JSON, or that is missing either half, is refused and stores nothing. No agent tool reaches this path; verify-crm asserts it.
+
+**Lead scoring.** The score is arithmetic over the records the contact book already holds — contact channels, a verified identifier, replies and how recent they are, how often they were contacted, open deals and their value, an open follow-up, the client status, the researched lead's qualification score. Every point carries the reason that awarded it, so the card shows why a contact is warm, and a contact on do-not-contact scores zero whatever else is true. Nothing is stored, so a score cannot drift from the history behind it. The rules live in `pure.ts` (`scoreContact`, `SCORE_BANDS`) and are checked without a database; the SQL that gathers the signals is `scoreContacts`. `GET /api/crm/contacts` returns the score for the page it fetched, and `?minScore=` / `?sortBy=score` apply to that page — the panel says so out loud instead of implying the whole book was ranked. `GET /api/crm/scored-contacts` is the "work these next" list.
+
+**Saved views.** `crm_saved_views` plus `GET/POST/DELETE /api/crm/views`. A view is a named filter set for a scope (contacts, leads, deals, companies): saving the same name overwrites rather than duplicating, a view stores only scalar filters so it cannot smuggle in an object that means something else when applied, and applying one is exactly the same as typing the filters in. Creates, updates and deletes are audited.
+
+**Reports.** `GET /api/crm/reports?days=&from=&to=` (default 90 days), on a new **Reports** view:
+
+- conversion by stage — how many deals ever entered each stage, read from the deal audit trail (`deal.created`, `deal.stage_changed`) rather than a counter that can drift, with the stage-to-stage conversion and what is open now;
+- revenue — won count and value, the average, what was won this month in America/Chicago, the open book, and why deals were lost, grouped by the reason recorded at close;
+- reply rates by channel and by industry, over the window, with the raw outbound and reply counts beside every rate so a percentage can be checked.
+
 ## Timeline
 
 `contact_timeline` rejects UPDATE and DELETE with a trigger (`crm_reject_timeline_mutation`, errcode 55000). Corrections are new rows. A merge does not rewrite `contact_id`; `contact_merges` links the loser, and the winner's timeline read includes both histories.

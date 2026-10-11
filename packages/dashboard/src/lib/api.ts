@@ -424,6 +424,10 @@ export interface CrmContactFilters {
   lifecycleStage?: CrmLifecycleStage | null;
   /** Only contacts with an open follow-up due today (or already overdue). */
   followUpDueToday?: boolean | null;
+  /** Drop contacts scoring below this. Applies to the fetched page. */
+  minScore?: number;
+  /** Sort the fetched page by score, best first. */
+  sortBy?: 'score';
 }
 
 /**
@@ -581,6 +585,74 @@ export interface CrmCompanyPage {
   lastActivityChicago: string | null;
 }
 
+export interface CrmScoreReason {
+  label: string;
+  points: number;
+}
+
+export interface CrmScore {
+  score: number;
+  band: 'cold' | 'warm' | 'hot';
+  reasons: CrmScoreReason[];
+  blocked?: string;
+}
+
+export interface CrmInsight {
+  summary: string;
+  nextStep: string;
+  model: string | null;
+  sourceEvents: number;
+  generatedAt: string;
+  generatedBy: string;
+  stale: boolean;
+  currentEvents: number;
+}
+
+export interface CrmFunnelRow {
+  stageId: string | null;
+  name: string;
+  position: number | null;
+  reached: number;
+  openNow: number;
+  openValueUsd: number;
+  conversionFromPrevious: number | null;
+}
+
+export interface CrmReports {
+  timezone: string;
+  window: { from: string; to: string; label: string };
+  funnel: CrmFunnelRow[];
+  revenue: {
+    wonCount: number;
+    wonUsd: number;
+    averageWonUsd: number;
+    wonThisMonthUsd: number;
+    lostCount: number;
+    lostUsd: number;
+    lostReasons: Array<{ reason: string; count: number; valueUsd: number }>;
+    openUsd: number;
+    openCount: number;
+  };
+  replies: {
+    byChannel: Array<{ channel: string; outbound: number; replies: number; rate: number }>;
+    byIndustry: Array<{ industry: string; outbound: number; replies: number; rate: number }>;
+    totalOutbound: number;
+    totalReplies: number;
+  };
+  asOf: string;
+}
+
+export interface CrmSavedView {
+  id: string;
+  name: string;
+  scope: string;
+  filters: Record<string, unknown>;
+  pinned: boolean;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** One query builder for the contact list, the export, and the copilot. */
 export function crmFilterQuery(params?: CrmContactFilters): string {
   const qs = new URLSearchParams();
@@ -604,6 +676,8 @@ export function crmFilterQuery(params?: CrmContactFilters): string {
   if (params?.emailed === false) qs.set('emailed', 'false');
   if (params?.lifecycleStage) qs.set('lifecycleStage', params.lifecycleStage);
   if (params?.followUpDueToday === true) qs.set('followUpDueToday', 'true');
+  if (params?.minScore) qs.set('minScore', String(params.minScore));
+  if (params?.sortBy) qs.set('sortBy', params.sortBy);
   return qs.toString();
 }
 
@@ -634,6 +708,8 @@ export interface CrmContact {
   lastContactedChicago?: string | null;
   lastReplyChicago?: string | null;
   nextFollowUpChicago?: string | null;
+  /** The score for this contact, computed from its own records. */
+  score?: CrmScore | null;
 }
 
 export interface CrmIdentifier {
@@ -1166,7 +1242,7 @@ export const api = {
     },
 
     // ─── Phase 1: the parts you work in every day ──────────────────────────
-    stages: () => apiFetch<{ stages: CrmLifecycleStage[]; priorities: string[] }>('/crm/contacts/statuses'),
+    stages: () => apiFetch<{ stages: CrmLifecycleStage[]; priorities: string[] }>('/crm/statuses'),
     createContact: (body: Record<string, unknown>) =>
       apiFetch<{ ok: boolean; contactId: string }>('/crm/contacts', { method: 'POST', body: JSON.stringify(body) }),
     updateContact: (id: string, patch: Record<string, unknown>) =>
@@ -1278,6 +1354,45 @@ export const api = {
           `/crm/deals/${encodeURIComponent(id)}/close`,
           { method: 'POST', body: JSON.stringify(body) },
         ),
+    },
+    // ─── Phase 3: the intelligence layer ───────────────────────────────────
+    insight: {
+      get: (contactId: string) =>
+        apiFetch<{ insight: CrmInsight | null }>(`/crm/contacts/${encodeURIComponent(contactId)}/insight`),
+      generate: (contactId: string) =>
+        apiFetch<{ ok: boolean; insight: CrmInsight }>(`/crm/contacts/${encodeURIComponent(contactId)}/insight`, {
+          method: 'POST',
+        }),
+    },
+    scored: (params?: { limit?: number; minScore?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.minScore) qs.set('minScore', String(params.minScore));
+      const query = qs.toString();
+      return apiFetch<{ timezone: string; contacts: Array<{
+        contactId: string;
+        name: string;
+        organizationName: string | null;
+        lifecycleStage: string;
+        email: string | null;
+        phoneE164: string | null;
+        nextFollowUpAt: string | null;
+        score: CrmScore;
+      }> }>(`/crm/scored-contacts${query ? `?${query}` : ''}`);
+    },
+    reports: (params?: { days?: number; from?: string; to?: string }) => {
+      const qs = new URLSearchParams();
+      if (params?.days) qs.set('days', String(params.days));
+      if (params?.from) qs.set('from', params.from);
+      if (params?.to) qs.set('to', params.to);
+      const query = qs.toString();
+      return apiFetch<CrmReports>(`/crm/reports${query ? `?${query}` : ''}`);
+    },
+    views: {
+      list: (scope?: string) => apiFetch<{ views: CrmSavedView[] }>(`/crm/views${scope ? `?scope=${encodeURIComponent(scope)}` : ''}`),
+      save: (body: { name: string; scope?: string; filters: Record<string, unknown>; pinned?: boolean }) =>
+        apiFetch<{ ok: boolean; viewId: string; created: boolean }>('/crm/views', { method: 'POST', body: JSON.stringify(body) }),
+      remove: (id: string) => apiFetch<{ ok: boolean }>(`/crm/views/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     },
     companies: {
       list: (params?: { q?: string; industry?: string }) => {
