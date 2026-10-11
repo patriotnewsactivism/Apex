@@ -1242,7 +1242,9 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
   if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0, reason: 'already_running' };
   webIdentityRepairRunning = true;
   try {
-    const batchSize = Math.max(1, Math.min(500, Math.trunc(limit)));
+    // A homepage fetch per lead is what sets throughput, so the batch ceiling is
+    // generous: the time budget below, not the size, is what protects the runner.
+    const batchSize = Math.max(1, Math.min(2000, Math.trunc(limit)));
     const rows = await db
       .select()
       .from(researchedLeads)
@@ -1287,7 +1289,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
     let contactsAdded = 0;
     // The batch is network-bound (one homepage fetch per lead), so concurrency,
     // not batch size, sets the throughput of getting imported leads verified.
-    const concurrency = Math.max(1, Math.min(32, Number(process.env.LEAD_IDENTITY_REPAIR_CONCURRENCY ?? 8) || 8));
+    const concurrency = Math.max(1, Math.min(64, Number(process.env.LEAD_IDENTITY_REPAIR_CONCURRENCY ?? 8) || 8));
     const budgetMs = Math.max(15_000, Number(process.env.LEAD_IDENTITY_REPAIR_BUDGET_MS ?? 120_000) || 120_000);
     let budgetExceeded = false;
     await Promise.race([
