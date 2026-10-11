@@ -53,6 +53,27 @@ function check(label: string, ok: boolean, detail?: unknown): void {
   if (detail !== undefined) console.error(`     ${JSON.stringify(detail)}`);
 }
 
+/**
+ * The Google client for this deployment registers https://apexwork.org/auth/callback
+ * as its redirect URI, and Google matches a redirect URI against the client
+ * registration exactly. If that root route is ever dropped, or registered after
+ * the dashboard SPA fallback, the browser navigation is answered with
+ * index.html and the auth code never reaches a handler — a failure that looks
+ * to the operator like "Connect Google Calendar does nothing". Assert the shape
+ * in source, since the fallback is only reachable in a full server boot.
+ */
+function checkGoogleOauthRedirectAlias(): void {
+  const src = readFileSync(new URL('../packages/api-server/src/index.ts', import.meta.url), 'utf8');
+  const aliasAt = src.indexOf("app.get('/auth/callback'");
+  const spaFallbackAt = src.indexOf("res.sendFile(join(dashboardDist, 'index.html'))");
+  check('index.ts serves the root /auth/callback redirect URI', aliasAt !== -1);
+  check(
+    'the root /auth/callback route is registered before the dashboard SPA fallback',
+    aliasAt !== -1 && spaFallbackAt !== -1 && aliasAt < spaFallbackAt,
+    { aliasAt, spaFallbackAt },
+  );
+}
+
 class MemorySettings implements SettingsPort {
   current: CalendarSettings = defaultCalendarSettings();
   async get(): Promise<CalendarSettings> {
@@ -171,6 +192,7 @@ async function bookSlot(
 
 async function main(): Promise<void> {
   console.log('Verifying calendar booking...\n');
+  checkGoogleOauthRedirectAlias();
   const savedEnv = {
     APEX_CALENDAR_TIMEZONE: process.env.APEX_CALENDAR_TIMEZONE,
     APEX_CALENDAR_BUSY_IDS: process.env.APEX_CALENDAR_BUSY_IDS,
