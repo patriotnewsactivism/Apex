@@ -1259,12 +1259,14 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
               sql`${researchedLeads.contactEmail} IS NULL`,
               sql`${researchedLeads.contactPhone} IS NULL`,
             ),
-            // Operator bulk imports (CSV/directory loads) arrive WITH contacts
-            // but never went through a homepage identity check, so they sit in
-            // the Prospects view as "pending verification" forever and can never
-            // become contact-ready. They get the same homepage verification as
-            // web-discovered leads.
-            eq(researchedLeads.researchedByAgentId, 'operator-import'),
+            // Operator bulk imports are deliberately NOT selected here for the
+            // moment. Their industry labels come from the operator's own
+            // directory data ("Local Business", "Education & Childcare"), which
+            // industryAffinity() cannot match, so the pass classified every
+            // imported lead as `mismatch` and REJECTED it — real businesses
+            // destroyed at ~2,900/hour. Import verification returns once the
+            // criterion for a bulk import is identity-based (name/canonical-name
+            // match) rather than industry-affinity-based.
           ),
           sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v2'`,
         ),
