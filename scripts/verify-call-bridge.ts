@@ -196,6 +196,11 @@ async function main(): Promise<void> {
     /!approvedAssistantLines\(\)\.includes\(requestedLine\)/.test(startBody),
   );
   check(
+    'GET /dial-settings answers with the approved AI lines, so the panel offers a choice instead of a typo trap',
+    /res\.json\(await readDialSettingsView\(\)\)/.test(route) &&
+      /approvedAiLines: approvedAssistantLines\(\)/.test(route),
+  );
+  check(
     'the listening AI leg is dialed from the operator-answered handler, once the conference exists',
     !/dialAiLegMuted\(/.test(startBody) &&
       /state\.role === 'operator'[\s\S]{0,2500}aiAutoJoin && aiLegTransport\(\) === 'leg' && !session\.aiCallControlId/.test(route),
@@ -280,6 +285,14 @@ async function main(): Promise<void> {
       /autoJoinAi/.test(panel) &&
       /What this call is about/.test(panel),
   );
+  check(
+    'the panel renders the approved AI lines as a pick list wired to the AI-line field',
+    /approvedAiLines\.map\(\(line\)/.test(panel) && /setAssistantLine\(e\.target\.value\)/.test(panel),
+  );
+  check(
+    'lib/api.ts types the approved AI lines on DialSettings',
+    /approvedAiLines: string\[\];/.test(apiClient),
+  );
   const salesOpsPanel = read('packages/dashboard/src/components/SalesOperationsPanel.tsx');
   check(
     'CallBridgePanel is imported and rendered on the Calls sub-tab',
@@ -340,7 +353,36 @@ async function main(): Promise<void> {
     bridgeTakeoverBriefing,
     assistantArmVariablesForBridge,
     aiLegTransport,
+    approvedAssistantLines,
+    APPROVED_APEX_OUTBOUND_NUMBER,
+    NEWSROOM_BRIDGE_NUMBER,
   } = mod;
+
+  // ── The AI line list: the operator picks a line, the API refuses the rest ──
+  const savedAiLines = process.env.APEX_BRIDGE_AI_LINES;
+  const savedAiFrontDesk = process.env.APEX_FRONT_DESK_NUMBER;
+  try {
+    delete process.env.APEX_BRIDGE_AI_LINES;
+    delete process.env.APEX_FRONT_DESK_NUMBER;
+    check(
+      'with nothing configured, the APEX outbound (Don Voice / sales) line is already an approved AI line',
+      approvedAssistantLines().includes(APPROVED_APEX_OUTBOUND_NUMBER),
+    );
+    process.env.APEX_BRIDGE_AI_LINES = ' +1 (555) 010-9999 , ';
+    check(
+      'a configured extra AI line is normalized in, and only the built-ins plus the extras are approved',
+      approvedAssistantLines().includes('+15550109999') && approvedAssistantLines().length === 2,
+    );
+    check(
+      'the newsroom bridge line is not silently approved as an AI line',
+      !approvedAssistantLines().includes(NEWSROOM_BRIDGE_NUMBER),
+    );
+  } finally {
+    if (savedAiLines === undefined) delete process.env.APEX_BRIDGE_AI_LINES;
+    else process.env.APEX_BRIDGE_AI_LINES = savedAiLines;
+    if (savedAiFrontDesk === undefined) delete process.env.APEX_FRONT_DESK_NUMBER;
+    else process.env.APEX_FRONT_DESK_NUMBER = savedAiFrontDesk;
+  }
 
   // Executed, not pattern-matched: the transport default is the whole point.
   const priorTransport = process.env.APEX_BRIDGE_AI_TRANSPORT;

@@ -1668,6 +1668,10 @@ export interface DialSettings {
   defaultOperatorNumber: string;
   /** Recurring customer numbers, pickable instead of typed. */
   savedNumbers: SavedDialNumber[];
+  /** The lines the takeover may be pointed at, straight from the server's
+   *  approved list, so the operator picks one instead of typing a number the
+   *  API would reject with "not an approved AI line". */
+  approvedAiLines: string[];
 }
 /** A row in the live call monitor. */
 export interface LiveSessionSummary {
