@@ -638,6 +638,38 @@ export const crmMigrationMarkers = pgTable('crm_migration_markers', {
   appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * The cached read on a contact: what happened, and the next step. Built from the
+ * contact's own history by a model, so it carries the model that wrote it and
+ * the number of history rows it saw — a higher count later means it is stale.
+ */
+export const crmContactInsights = pgTable('crm_contact_insights', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  contactId: uuid('contact_id').notNull(),
+  summary: text('summary').notNull(),
+  nextStep: text('next_step').notNull(),
+  model: text('model'),
+  sourceEvents: integer('source_events').notNull().default(0),
+  generatedAt: timestamp('generated_at', { withTimezone: true }).notNull().defaultNow(),
+  generatedBy: text('generated_by').notNull(),
+}, (table) => ({
+  contactUnique: uniqueIndex('crm_contact_insights_contact_unique').on(table.contactId),
+}));
+
+/** A named filter set, so a working view can be reopened in one click. */
+export const crmSavedViews = pgTable('crm_saved_views', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  name: varchar('name', { length: 80 }).notNull(),
+  scope: varchar('scope', { length: 20 }).notNull().default('contacts'),
+  filters: jsonb('filters').$type<Record<string, unknown>>().notNull().default({}),
+  pinned: boolean('pinned').notNull().default(false),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CALLS (full call tracking - extends callBridgeSessions pattern)
 // ═══════════════════════════════════════════════════════════════════════════════
