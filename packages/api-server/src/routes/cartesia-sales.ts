@@ -123,6 +123,8 @@ async function isSuppressed(phone: string): Promise<boolean> {
     or(eq(suppressions.channel, 'all'), eq(suppressions.channel, 'phone'), eq(suppressions.channel, 'sms')),
     // An expired suppression no longer applies (same rule as the send safeguard).
     or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
+    // So does one the operator lifted on purpose.
+    isNull(suppressions.liftedAt),
   )).limit(1);
   return rows.length > 0;
 }
@@ -702,7 +704,10 @@ export function createCartesiaSalesRouter(): Router {
         console.warn(`[cartesia-sales] dnc on call ${p.call_id} for the saved rehearsal phone (***-***-${p.phone_number.replace(/\D/g, '').slice(-4)}): outcome recorded, suppression NOT written`);
       } else if (p.disposition === 'dnc') {
         const [existing] = await db.select({ id: suppressions.id }).from(suppressions).where(and(
-          eq(suppressions.organizationId, ORG_ID), eq(suppressions.phoneE164, p.phone_number), eq(suppressions.channel, 'all'))).limit(1);
+          eq(suppressions.organizationId, ORG_ID), eq(suppressions.phoneE164, p.phone_number), eq(suppressions.channel, 'all'),
+          // A lifted row is history, not a live block: a fresh spoken opt-out
+          // has to write a new blocking record.
+          isNull(suppressions.liftedAt))).limit(1);
         if (!existing) await db.insert(suppressions).values({ organizationId: ORG_ID,
           phoneE164: p.phone_number, channel: 'all', reason: 'dnc', source: 'cartesia_sales_call' });
       }

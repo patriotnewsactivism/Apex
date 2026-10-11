@@ -154,13 +154,14 @@ try {
   check('BACKEND can have a different first-choice model', backendChain[0] === 'nvidia/nemotron-3-super-120b-a12b:free', backendChain);
   check('unassigned role uses global roster priority', getOpenRouterModelChainForRole('SALES')[0] === 'nex-agi/nex-n2.5-mini:free');
   check(
-    'custom FREE roster tries the selected gateway first, then unselected default free fallbacks before BYOK continuity',
+    'custom FREE roster keeps the selected gateway and free fallbacks first, BYOK next, then metered Qwen last',
     JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify([
       FREE_POLICY_GATEWAY_NAME,
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
       'groq-gpt-oss-120b-byok',
       'gemini-3-8-flash-byok',
+      'qwen-dashscope-byok',
     ]),
     getProviderOrderForRole('CEO'),
   );
@@ -168,9 +169,10 @@ try {
   // The free-policy gateway is dispatched first under a custom operator
   // policy, so the default config must advertise it with the role's first
   // selected model; anything else is the "advertises a model it no longer
-  // tries first" bug getDefaultLLMConfig exists to avoid.
+  // tries first" bug getDefaultLLMConfig exists to avoid. Metered Qwen is
+  // last, so it must NOT be advertised here.
   check(
-    'default LLM config advertises the policy gateway and the role pin during custom FREE routing',
+    'default LLM config advertises the route actually attempted first during custom FREE routing (the free-policy gateway)',
     getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
       getDefaultLLMConfig('CEO').model === ceoChain[0],
     getDefaultLLMConfig('CEO'),

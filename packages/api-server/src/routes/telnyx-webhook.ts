@@ -35,7 +35,12 @@ export function createTelnyxWebhookRouter(): Router {
         return res.status(500).json({ error: 'Webhook secret not configured' });
       }
 
-      const received = req.headers['x-webhook-secret'] as string | undefined;
+      // Telnyx v2 webhooks cannot carry custom headers, so the secret may
+      // also ride in the query string (?key=) exactly like the call-bridge
+      // webhook. Header wins when both are present.
+      const received =
+        (req.headers['x-webhook-secret'] as string | undefined) ??
+        (typeof req.query?.key === 'string' && req.query.key ? req.query.key : undefined);
 
       if (!received || received.length !== secret.length) {
         return res.status(403).json({ error: 'Invalid webhook secret' });

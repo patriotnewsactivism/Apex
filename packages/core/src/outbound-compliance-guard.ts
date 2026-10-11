@@ -134,6 +134,7 @@ export async function assertOutboundAllowed(input: {
         eq(suppressions.phoneE164, number),
         or(eq(suppressions.channel, 'all'), eq(suppressions.channel, input.channel)),
         or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
+        isNull(suppressions.liftedAt),
       ))
       .limit(1);
     if (rows.length) {
@@ -152,6 +153,7 @@ export async function assertOutboundAllowed(input: {
         eq(suppressions.email, normalizedEmail),
         or(eq(suppressions.channel, 'all'), eq(suppressions.channel, 'email')),
         or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
+        isNull(suppressions.liftedAt),
       ))
       .limit(1);
     if (rows.length) {

@@ -1,8 +1,8 @@
 # APEX free-roster policy with paid continuity
 
-The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception, appended after the free/BYOK routes only when `APEX_PAID_FALLBACK_ENABLED=true`: `deepseek/deepseek-v4-flash-0731`, on Nous Portal (`NOUS_API_KEY`) first for 9 requests in 10 and OpenRouter (`OPENROUTER_API_KEY_4`) for the tenth.
+The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception, appended after the free/BYOK routes only when `APEX_PAID_FALLBACK_ENABLED=true`: `deepseek/deepseek-v4-flash-0731` on OpenRouter (`OPENROUTER_API_KEY_4`). Apex no longer calls the Nous Portal provider.
 
-**Current note (2026-10-05, ADR-020):** Qwen is no longer routed, so this free roster is again the first thing APEX tries. GLM 5.3 FlashX is replaced by the DeepSeek split. Below, "FlashX" and "GLM continuity" mean the current paid continuity route; ADR-017's Qwen notes are historical.
+**Current note (2026-10-10):** the free roster is the first thing APEX tries — free OpenRouter, then Groq and Gemini BYOK. Metered Qwen (QwenCloud) is the LAST automatic route, used only after every free pool is spent (supersedes ADR-017's Qwen-first order). GLM 5.3 FlashX is replaced by the DeepSeek paid continuity route on OpenRouter alone (Nous Portal removed). Below, "FlashX" and "GLM continuity" mean the current paid continuity route; ADR-017's Qwen notes are historical.
 
 ## Production model order
 
@@ -45,8 +45,8 @@ Credentials are tried least-used-account first, using OpenRouter's resolved acco
 - APEX does not apply daily-dollar, free-request, token, emergency-request, model-specific dispatch-delay, forced-reasoning, or free-route history-trimming limits to FlashX.
 - Provider/account limits, billing, retry-after behavior, circuit breakers, cooldowns, request timeouts, authentication, tool authorization, approval gates, and irreversible-action governance remain authoritative.
 - Free-account rotation and free/BYOK capacity are attempted before FlashX.
-- Frontend labels, backend defaults, agent metadata, tests, environment examples, and operator documentation must report the same free-roster + GLM continuity chain, understood as sitting behind the separately governed Qwen primary route (ADR-017).
+- Frontend labels, backend defaults, agent metadata, tests, environment examples, and operator documentation must report the same free-roster + GLM continuity chain, understood as running ahead of the separately governed metered Qwen route, which is last (supersedes ADR-017).
 
 ## Verification gate
 
-Before merge/deploy, CI must prove that the selectable persisted provider catalog remains free-only, Nex N2.5 Mini Free remains first *within the free chain* (Qwen precedes the whole free chain per ADR-017), GLM FlashX is the sole paid *continuity* (unrestricted, last-resort) exception and is last, APEX capacity governors do not veto FlashX, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot persist an arbitrary paid model.
+Before merge/deploy, CI must prove that the selectable persisted provider catalog remains free-only, Nex N2.5 Mini Free remains first *within the free chain* (the free chain precedes metered Qwen, which is last, per the 2026-10-10 decision), GLM FlashX is the sole paid *continuity* (unrestricted, last-resort) exception and is last, APEX capacity governors do not veto FlashX, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot persist an arbitrary paid model.

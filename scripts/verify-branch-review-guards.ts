@@ -83,7 +83,6 @@ const buildProviders = [
   'openrouter-nex-n2-5-mini-free',
   'openrouter-nemotron-ultra',
   'openrouter-deepseek-v4-flash-paid',
-  'nous-deepseek-v4-flash-paid',
 ];
 const retiredRouteFailure =
   'All LLM providers failed or were unavailable. ' +
@@ -92,7 +91,7 @@ const retiredRouteFailure =
 const currentRouteFailure =
   'All LLM providers failed or were unavailable. ' +
   'openrouter-nex-n2-5-mini-free/nex-agi/nex-n2.5-mini:free via OPENROUTER_FREE_API_KEY: HTTP 429 rate limit | ' +
-  'nous-deepseek-v4-flash-paid: NOUS_API_KEY';
+  'openrouter-deepseek-v4-flash-paid: OPENROUTER_API_KEY_4';
 const mixedRouteFailure =
   'All LLM providers failed or were unavailable. ' +
   'openrouter-minimax-m3/minimax/minimax-m3 via OPENROUTER_API_KEY: HTTP 404 model is unavailable | ' +
@@ -101,7 +100,7 @@ const mixedRouteFailure =
 check(
   'current chain-failure format names its providers',
   providersNamedInChainFailure(currentRouteFailure).join(',') ===
-    'openrouter-nex-n2-5-mini-free,nous-deepseek-v4-flash-paid',
+    'openrouter-nex-n2-5-mini-free,openrouter-deepseek-v4-flash-paid',
   providersNamedInChainFailure(currentRouteFailure),
 );
 check(

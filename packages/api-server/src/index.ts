@@ -14,9 +14,10 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { db, componentHealth, healthMetrics, migrate } from '@workspace/db';
 import { ApexCEO } from '@workspace/agents';
+import { setOperatorCeo } from './apex-operator-registry.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { HealthMonitor } from '@workspace/health-monitor';
-import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, paidLLMFallbackEnabled, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES } from '@workspace/core';
+import { capacityPauseRemainingMs, configureHealthMonitorRuntimeDeps, getConfiguredProviders, getDegradedToolCallingReport, getToolRegistry, getSharedAlertManager, emitApexEvent, getTokenLedgerSnapshot, getRequestLedgerSnapshot, getSpendLedgerSnapshot, getEmbeddingPipelineState, getProviderCreditSnapshot, getOpenRouterBalanceMonitorStatus, getDequeueHealth, isTaskQueueBroken, getBuildInfo, getProviderRoster, getProviderBackpressureSnapshot, resetTokenLedger, getWorkforceLiveness, getWorkerHeartbeatSummary, getAutonomyCounters, llmCapacityAvailableNow, getLastCapacityDiagnostics, paidLLMFallbackEnabled, paidSpendCapacityWindow, PAID_FALLBACK_MODEL, PAID_FALLBACK_PROVIDER_NAMES, aiApprovalMode, sweepPendingApprovalsWithAiGates } from '@workspace/core';
 import { bootstrapApexRuntime } from './runtime-bootstrap.js';
 import { setupWebSocket, getConnectedClientCount } from './websocket.js';
 import { getWebSocketTicketStats } from './websocket-auth.js';
@@ -47,8 +48,9 @@ import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
 import { createCartesiaSalesRouter } from './routes/cartesia-sales.js';
-import { createCalendarPublicRouter, createCalendarRouter } from './routes/calendar.js';
+import { createCalendarPublicRouter, createCalendarRouter, handleGoogleCalendarOauthCallback } from './routes/calendar.js';
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
+import { createHankLiveRouter } from './routes/hank-live.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
@@ -65,6 +67,7 @@ import { createSalesOpsRouter } from './routes/sales-ops.js';
 import { createPhoneLinesRouter } from './routes/phone-lines.js';
 import { createSalesFloorRouter } from './routes/sales-floor.js';
 import { createPublicWebinarRouter, createWebinarAdminRouter } from './routes/webinars.js';
+import { createQwenVideoRouter } from './routes/qwen-video.js';
 import { requireAdminAuth } from './middleware/auth.js';
 import { DeepgramVoiceSession } from './telnyx-deepgram-agent.js';
 import { WebSocketServer } from 'ws';
@@ -180,6 +183,7 @@ async function main() {
   }
 
   const ceo = workforce.get('apex-ceo-001') as ApexCEO;
+  setOperatorCeo(ceo);
 
   const app = express();
   // Railway's edge is one trusted hop. A caller-supplied X-Forwarded-For
@@ -242,12 +246,18 @@ async function main() {
       ...providerBackpressure.pausedProviders,
     ])];
     const requestLedger = getRequestLedgerSnapshot();
+    // Operator decision 2026-10-10: the paid route is now hard-capped by
+    // APEX_DAILY_SPEND_USD. `available` must reflect the dollar budget, not
+    // just a configured credential, or /health claims paid continuity while
+    // the spend cap is refusing every paid call.
+    const paidSpendWindow = paidSpendCapacityWindow();
     const paidContinuityAvailable =
       paidLLMFallbackEnabled() &&
       getConfiguredProviders().some(
         (provider) =>
           (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.configured,
-      );
+      ) &&
+      paidSpendWindow.allowed;
     // OpenRouter, Groq and Gemini now have independent request pools. The only
     // request-count state that is truly workspace-wide is the emergency
     // all-provider ceiling; an exhausted 2,775 OpenRouter pool is NOT a hard
@@ -328,6 +338,9 @@ async function main() {
       // Capacity state for authenticated GET /api/health/detail. A healthy
       // HTTP listener is distinguishable from a workforce parked by quota
       // pacing. Provider roster detail also lives at GET /api/tokens.
+      // The exact provider/gate behind the most recent capacity pause, so a
+      // "workforce is deferring" report can be answered with evidence.
+      capacityDiagnostics: getLastCapacityDiagnostics(),
       llmCapacity: {
         state: capacityState,
         pacingEnabled: tokenLedger.pacing.enabled,
@@ -345,14 +358,20 @@ async function main() {
           available: paidContinuityAvailable,
           active: paidContinuityActive,
           model: PAID_FALLBACK_MODEL,
-          // The same model on two providers; each request alternates which is
-          // tried first. Lists only the routes whose credential is configured.
+          // One model on one provider (OpenRouter); the Nous Portal route was
+          // removed 2026-10-09. Lists only routes whose credential is configured.
           routes: getConfiguredProviders()
             .filter(
               (provider) =>
                 (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.configured,
             )
             .map((provider) => provider.name),
+          // Hard daily dollar cap on paid continuity (APEX_DAILY_SPEND_USD;
+          // 0/unset = fail closed). `spendAvailable` is the gate /health must
+          // be read with when `available` is false.
+          spendCapUsd: paidSpendWindow.capMicros / 1_000_000,
+          spendAvailable: paidSpendWindow.allowed,
+          spendReason: paidSpendWindow.reason,
         },
       },
       // Provider account balance. The paid continuity route makes remaining
@@ -523,12 +542,24 @@ async function main() {
   // requireAdminAuth on the same prefix.
   app.use('/api/calendar', createCalendarPublicRouter());
 
+  // The Google OAuth browser redirect arrives at whatever redirect URI the
+  // Google client is registered with, and Google requires an exact match. This
+  // deployment's client registers https://apexwork.org/auth/callback, so the
+  // root path serves the same handler as /api/calendar/google/callback. It must
+  // be registered BEFORE the dashboard static/SPA fallback below, which would
+  // otherwise answer the redirect with index.html and swallow the auth code.
+  app.get('/auth/callback', handleGoogleCalendarOauthCallback);
+
   // Call Bridge webhook — Telnyx Call Control events for operator-bridged
   // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
   // mounted at the same /api/telnyx-assistant prefix (a different router,
   // registered separately for the feature's own file) since it is equally
   // Telnyx-originated. Must be mounted BEFORE requireAdminAuth.
   app.use('/api/telnyx-assistant', createCallBridgeWebhookRouter());
+
+  // Hank Live Monitor — silent read-only transcript mirror for Hank Vance calls.
+  // Secret-gated (?key=) so it must mount BEFORE requireAdminAuth like webhooks.
+  app.use('/api/hank-live', createHankLiveRouter());
 
   // Public webinar attendee surface. Registration, state polling, Q&A, and
   // engagement are intentionally reachable without the APEX admin bearer token.
@@ -560,6 +591,7 @@ async function main() {
   app.use('/api/applications', createMultiappRouter());
   app.use('/api/predictive', createPredictiveRouter());
   app.use('/api/settings', createSettingsRouter());
+  app.use('/api/qwen-video', createQwenVideoRouter());
   app.use('/api/leads', createLeadsRouter());
   app.use('/api/crm', createCrmRouter());
   app.use('/api/campaigns', createCampaignsRouter());
@@ -611,9 +643,63 @@ async function main() {
         ? Math.round((requests.totalRequests / requests.totalCap) * 10_000) / 100
         : 0;
 
+    // Workforce efficiency: not "how many agents are busy" but "how many
+    // assignments finished, and what each finished assignment cost" — the
+    // measure that says whether the autonomous workforce is actually
+    // productive. Raw request counts are deliberately secondary.
+    const turn = getTurnEconomySnapshot();
+    const startedMs = Date.parse(turn.since);
+    const elapsedHours = Number.isFinite(startedMs)
+      ? Math.max((Date.now() - startedMs) / 3_600_000, 1 / 60)
+      : null;
+    const efficiency = {
+      since: turn.since,
+      completedTasks: turn.completedTasks,
+      deterministicTasks: turn.deterministicTasks,
+      requests: turn.requests,
+      tasksPerHour: elapsedHours == null ? null : Math.round((turn.completedTasks / elapsedHours) * 100) / 100,
+      requestsPerCompletedTask: turn.requestsPerCompletedTask,
+      // Cost per FINISHED task. Null when nothing has completed yet — a cost
+      // per task with a zero denominator is not zero, it is undefined.
+      costPerCompletedTaskUsd:
+        turn.completedTasks > 0
+          ? Math.round((snapshot.spentUsd / turn.completedTasks) * 100_000) / 100_000
+          : null,
+      tokensPerCompletedTask: null as number | null,
+      restedProviders: getProviderBackpressureSnapshot().pausedProviders,
+    };
+
+    const qwenPool = requests.directProviders.find((p) => p.pool === 'qwen');
+    const qwenSpentUsd = snapshot.providers.find((p) => p.provider.includes('qwen'))?.spentUsd ?? 0;
+    const qwenAlertUsd = Number(process.env.APEX_QWEN_SPEND_ALERT_USD ?? 5);
+    // Visibility into the paid fallback the operator authorized: whether Qwen is
+    // carrying traffic (i.e. free pools could not serve), how much it has cost
+    // today and this hour, and a threshold alert — so an unexpected burn surfaces
+    // immediately rather than at the next invoice.
+    const qwenFallback = {
+      // Two different facts, kept distinct: `usedToday` means Qwen served a
+      // request at some point today; `activeNow` means it is carrying traffic
+      // in the current minute. "Used today" must not read as "currently on a
+      // call" — that was the imprecision worth fixing.
+      usedToday: (qwenPool?.requests ?? 0) > 0,
+      activeNow: (qwenPool?.lastMinute ?? 0) > 0,
+      requestsUsed: qwenPool?.requests ?? 0,
+      requestsLastMinute: qwenPool?.lastMinute ?? 0,
+      requestCap: qwenPool?.cap ?? 0,
+      spentTodayUsd: Math.round(qwenSpentUsd * 1e6) / 1e6,
+      alertThresholdUsd: qwenAlertUsd,
+      alert: qwenSpentUsd >= qwenAlertUsd,
+    };
+
     res.json({
       ...snapshot,
-      turnEconomy: getTurnEconomySnapshot(),
+      turnEconomy: turn,
+      efficiency,
+      qwenFallback,
+      // Why the workforce is (or is not) able to work right now — the exact
+      // routes that blocked the last request, instead of an unexplained
+      // "exhausted".
+      capacityDiagnostics: getLastCapacityDiagnostics(),
       hourlyBurnUsd,
       projected30DayUsd,
       utilizationPct,
@@ -856,6 +942,20 @@ async function main() {
   setTimeout(() => {
     sweepStaleEscalations().catch(() => {});
   }, 30_000);
+  // Two-gate AI approval sweeper (Reviewer -> QA Manager). Off unless
+  // APEX_AI_APPROVAL_GATES is 'shadow' or 'on'. Small batch every 30s keeps the
+  // queue from ever backing up while bounding LLM spend per tick. Outbound
+  // sends and prod deploys are never decided here; they stay with a human.
+  const aiApprovalSweepInterval = setInterval(() => {
+    if (aiApprovalMode() === 'off') return;
+    sweepPendingApprovalsWithAiGates().then((s) => {
+      if (s.examined > 0) {
+        console.log(`[ai-approval:${s.mode}] examined=${s.examined} approved=${s.approved} rejected=${s.rejected} human=${s.leftForHuman} shadow=${s.shadowRecorded}`);
+      }
+    }).catch((err) =>
+      console.warn('⚠️  AI approval sweep failed:', err instanceof Error ? err.message : String(err)),
+    );
+  }, 30_000);
   // Run an immediate initial health check after 5s
   setTimeout(runHealthPoll, 5_000);
 
@@ -865,6 +965,7 @@ async function main() {
     console.log(`\n${signal} received. Shutting down APEX...`);
     clearInterval(healthInterval);
     clearInterval(escalationSweepInterval);
+    clearInterval(aiApprovalSweepInterval);
     bootstrap.shutdown(signal).finally(() => {
       server.close(() => {
         console.log('✅ APEX shut down gracefully');

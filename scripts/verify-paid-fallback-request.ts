@@ -2,32 +2,27 @@
  * Guard: the paid continuity route sends a request its API accepts.
  *
  * On 2026-10-05 the paid route moved from OpenRouter (GLM FlashX) to Nous
- * Portal (DeepSeek V4 Flash). The route had no request pool, and an unset pool
- * counted as OpenRouter, so every request carried OpenRouter's `provider`
- * routing object. Nous refuses that with HTTP 400. With the free pool, Groq
- * and Gemini already exhausted, the paid route was the only one left, and
- * every task failed: 156 "All LLM providers failed" errors in two hours.
- *
- * Later the same day the operator removed Qwen and split the paid model,
- * deepseek/deepseek-v4-flash-0731, between Nous and OpenRouter
- * (OPENROUTER_API_KEY_4). Nous, the cheaper host, goes first on 9 requests in
- * 10 and OpenRouter on the tenth; each is the other's fallback.
+ * Portal (DeepSeek V4 Flash) split against OpenRouter (OPENROUTER_API_KEY_4).
+ * On 2026-10-09 the operator cut off all access to the Nous Portal provider,
+ * so paid continuity runs on OpenRouter alone (deepseek/deepseek-v4-flash-0731,
+ * the funded OPENROUTER_API_KEY_4 account), last behind the free/BYOK chain
+ * and only when APEX_PAID_FALLBACK_ENABLED=true.
  *
  * This drives the real MultiProviderClient.complete() with fetch stubbed, so
  * it checks the request that actually leaves APEX, not the source text:
- *   - the Nous route alone: no `provider`, no `usage`, no OpenRouter headers,
- *     and the reply is used;
- *   - an OpenRouter free route alone: it still gets OpenRouter's fields;
- *   - the split: once the free pool answers 429, paid requests go 9 to Nous
- *     and 1 to OpenRouter in every 10, and the OpenRouter one runs on the
- *     same account whose free quota ran out;
- *   - an unfunded Nous key: OpenRouter answers instead, no task fails;
- *   - Nous alone and unfunded: a capacity pause, not a failed task;
+ *   - the OpenRouter paid route alone: it asks for the paid model, sends
+ *     OpenRouter's `usage` extension and headers, sorts by latency, applies the
+ *     paid output floor, and the reply is used;
+ *   - an OpenRouter free route alone: it still gets the role output budget, not
+ *     the paid floor;
+ *   - the free pool exhausted: paid OpenRouter answers every request, the
+ *     model is never retried as free;
  *   - a paid answer slower than the default request timeout still arrives:
- *     the paid routes wait PAID_REQUEST_TIMEOUT_MS, free routes keep the
+ *     the paid route waits PAID_REQUEST_TIMEOUT_MS, free routes keep the
  *     default (here lowered to its 10s floor so the check stays fast);
  *   - the spend ledger loads a same-day file written before it tracked cached
- *     tokens, records the paid route's cache hits, and still reports.
+ *     tokens, keeps that file's spend, and the paid OpenRouter route records
+ *     settled cost.
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,21 +48,24 @@ type Sent = { url: string; body: Record<string, unknown>; headers: Record<string
 const ROUTE_ENVS = [
   'OPENROUTER_FREE_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_API_KEY_2', 'OPENROUTER_API_KEY_3', 'OPENROUTER_API_KEY_4',
   'QWEN_API_KEY', 'APEX_QWEN_BYOK_ENABLED', 'GROQ_API_KEY', 'GROQ_API_KEY_2', 'APEX_GROQ_BYOK_ENABLED',
-  'GEMINI_API_KEY', 'APEX_GEMINI_BYOK_ENABLED', 'NOUS_API_KEY', 'APEX_PAID_FALLBACK_ENABLED', 'APEX_OPENROUTER_MODEL_POLICY',
-  'APEX_LLM_REQUEST_TIMEOUT_MS',
+  'GEMINI_API_KEY', 'APEX_GEMINI_BYOK_ENABLED', 'APEX_PAID_FALLBACK_ENABLED', 'APEX_OPENROUTER_MODEL_POLICY',
+  'APEX_LLM_REQUEST_TIMEOUT_MS', 'APEX_DAILY_SPEND_USD', 'APEX_SPEND_PACING_ENABLED',
 ];
 /** Default request timeout for this guard: the configurable floor, so a paid
  *  answer slower than it can be checked in seconds rather than minutes. */
 const GUARD_DEFAULT_TIMEOUT_MS = 10_000;
 const SLOW_PAID_ANSWER_MS = 11_000;
-/** Prompt tokens the stubbed Nous answer reports as served from its cache. */
-const NOUS_CACHED_TOKENS = 8;
 
 async function main(): Promise<void> {
   // No database: telemetry and ledgers are best-effort and must not matter.
-  process.env.DATABASE_URL = 'postgres://guard:guard@127.0.0.1:9/no_database';
+  process.env.DATABASE_URL = 'postgres://guard:***@127.0.0.1:9/no_database';
   for (const env of ROUTE_ENVS) delete process.env[env];
   process.env.APEX_LLM_REQUEST_TIMEOUT_MS = String(GUARD_DEFAULT_TIMEOUT_MS);
+  // Operator decision 2026-10-10: the paid route is hard-capped by the dollar
+  // ledger, so the guard must give it a budget or every paid call is refused.
+  // Pacing off makes the window deterministic regardless of wall-clock hour.
+  process.env.APEX_DAILY_SPEND_USD = '1';
+  process.env.APEX_SPEND_PACING_ENABLED = 'false';
   // Today's ledger as a build from before cached-token tracking wrote it: no
   // cachedTokens map. The ledger reads its file once, at import.
   const ledgerDir = mkdtempSync(path.join(tmpdir(), 'apex-spend-ledger-'));
@@ -78,7 +76,6 @@ async function main(): Promise<void> {
   );
 
   const sent: Sent[] = [];
-  let nousUnfunded = false;
   let freeQuotaExhausted = false;
   let slowPaidAnswer = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -107,27 +104,12 @@ async function main(): Promise<void> {
         { status: 429, headers: { 'content-type': 'application/json' } },
       );
     }
-    if (nousUnfunded && url.includes('nousresearch.com')) {
-      // Nous Portal's exact answer for an unfunded key on 2026-10-05.
-      return new Response(
-        JSON.stringify({
-          status: 401,
-          message: 'Your API key is invalid, blocked or out of funds. Please go visit the portal to sort that out: https://portal.nousresearch.com ',
-        }),
-        { status: 401, headers: { 'content-type': 'application/json' } },
-      );
-    }
     return new Response(
       JSON.stringify({
         id: 'guard',
         model: 'guard-model',
         choices: [{ index: 0, message: { role: 'assistant', content: 'guard reply' }, finish_reason: 'stop' }],
-        usage: {
-          prompt_tokens: 12,
-          completion_tokens: 3,
-          total_tokens: 15,
-          ...(url.includes('nousresearch.com') ? { prompt_tokens_details: { cached_tokens: NOUS_CACHED_TOKENS } } : {}),
-        },
+        usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15, cost: 0.05 },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
@@ -140,20 +122,26 @@ async function main(): Promise<void> {
   const ask = () => llm.createLLMClient(llm.getDefaultLLMConfig('CEO')).complete([{ role: 'user', content: 'ping' }], tools as never);
   const roleBudget = llm.getDefaultLLMConfig('CEO').maxTokens ?? 0;
 
-  // 1. Only the paid route is configured, as in production once the free
-  //    pool, Groq and Gemini are exhausted.
-  process.env.NOUS_API_KEY = 'guard-not-a-real-key';
+  // 1. Only the paid route is effective, as in production once the free
+  //    pool, Groq and Gemini are exhausted. The funded OPENROUTER_API_KEY_4 is
+  //    also a member of the free-pool roster, so the free OpenRouter routes
+  //    answer 429 and the paid route carries every request.
+  process.env.OPENROUTER_API_KEY_4 = 'guard-not-a-real-funded-openrouter-key';
   process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
+  freeQuotaExhausted = true;
   const paidReply = await ask().catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }));
   const paid = sent.at(-1);
-  check('the paid route is called on Nous Portal', paid?.url === 'https://inference-api.nousresearch.com/v1/chat/completions', paid?.url);
+  check('the paid route is called on OpenRouter', paid?.url === 'https://openrouter.ai/api/v1/chat/completions', paid?.url);
   check('it asks for the paid continuity model', paid?.body.model === llm.PAID_FALLBACK_MODEL, paid?.body.model);
-  check("it sends no OpenRouter `provider` object (Nous answers 400 to one)", paid !== undefined && !('provider' in paid.body), paid?.body);
-  check('it sends no OpenRouter `usage` extension', paid !== undefined && !('usage' in paid.body), paid?.body);
   check(
-    'it sends no OpenRouter headers',
-    paid !== undefined && !('http-referer' in paid.headers) && !('x-openrouter-metadata' in paid.headers),
-    paid?.headers,
+    'it sends OpenRouter`s `usage` extension and headers',
+    paid !== undefined && 'usage' in paid.body && 'x-openrouter-metadata' in paid.headers,
+    { body: paid?.body, headers: paid?.headers },
+  );
+  check(
+    'the paid route sorts by latency',
+    (paid?.body.provider as { sort?: string } | undefined)?.sort === 'latency',
+    paid?.body.provider,
   );
   check('tools still go out in the standard OpenAI format', Array.isArray(paid?.body.tools) && paid?.body.tool_choice === 'auto');
   // 2026-10-05: a 4,096-token role budget let DeepSeek's reasoning fill the
@@ -180,15 +168,18 @@ async function main(): Promise<void> {
     snapshot,
   );
   check(
-    "the paid route's cached prompt tokens are recorded",
-    'cachedTokens' in snapshot &&
-      snapshot.cachedTokens.some((row) => row.provider === 'nous-deepseek-v4-flash-paid' && row.tokens === NOUS_CACHED_TOKENS),
+    "the paid route's settled cost is recorded",
+    'providers' in snapshot && snapshot.providers.some((row) => row.provider === 'openrouter-deepseek-v4-flash-paid' && row.spentUsd > 0),
     snapshot,
   );
 
-  // 2. An OpenRouter route keeps OpenRouter's fields.
-  delete process.env.NOUS_API_KEY;
+  // 2. An OpenRouter free route keeps the role output budget, not the paid floor.
+  //    The free providers' 500ms min-interval pacing was reserved by scenario 1's
+  //    free attempts, so wait it out before issuing a fresh free request.
+  await new Promise<void>((resolve) => setTimeout(resolve, 700));
+  delete process.env.OPENROUTER_API_KEY_4;
   delete process.env.APEX_PAID_FALLBACK_ENABLED;
+  freeQuotaExhausted = false;
   process.env.OPENROUTER_FREE_API_KEY = 'guard-not-a-real-openrouter-key';
   const before = sent.length;
   await ask().catch(() => undefined);
@@ -205,89 +196,44 @@ async function main(): Promise<void> {
     { max_tokens: free?.body.max_tokens, roleBudget },
   );
 
-  // 3. The split. Only the funded OpenRouter account (also in the free roster)
-  //    and Nous are configured, and that account's free quota is spent. The
-  //    rotation counter is process-wide, so any 10 consecutive requests hold
-  //    exactly one OpenRouter-first request, whatever ran before.
+  // 3. The free pool is spent (only the funded account and a free key on it);
+  //    paid OpenRouter continuity carries every request that follows.
   delete process.env.OPENROUTER_FREE_API_KEY;
   process.env.OPENROUTER_API_KEY_4 = 'guard-not-a-real-funded-openrouter-key';
-  process.env.NOUS_API_KEY = 'guard-not-a-real-key';
   process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
   freeQuotaExhausted = true;
-  const splitStart = sent.length;
-  const splitReplies: string[] = [];
-  for (let i = 0; i < 10; i++) {
+  const paidStart = sent.length;
+  const replies: string[] = [];
+  for (let i = 0; i < 5; i++) {
     const reply = await ask().catch((err: unknown) => ({ content: `error: ${err instanceof Error ? err.message : String(err)}` }));
-    splitReplies.push(String((reply as { content?: string }).content));
+    replies.push(String((reply as { content?: string }).content));
   }
-  const splitSent = sent.slice(splitStart);
-  const paidSent = splitSent.filter((req) => req.body.model === llm.PAID_FALLBACK_MODEL);
+  const paidSent = sent.slice(paidStart);
   const viaOpenRouter = paidSent.filter((req) => req.url.startsWith('https://openrouter.ai/'));
-  const viaNous = paidSent.filter((req) => req.url.startsWith('https://inference-api.nousresearch.com/'));
-  const freeAttempts = splitSent.filter((req) => req.body.model !== llm.PAID_FALLBACK_MODEL);
-  check('every request is answered once the free pool is spent', splitReplies.every((r) => r === 'guard reply'), splitReplies);
+  const onPaidModel = paidSent.filter((req) => req.body.model === llm.PAID_FALLBACK_MODEL);
+  check('every request is answered once the free pool is spent', replies.every((r) => r === 'guard reply'), replies);
   check(
-    'paid load splits 90/10: 9 of 10 requests on Nous, 1 on OpenRouter',
-    viaNous.length === 9 && viaOpenRouter.length === 1 && paidSent.length === 10,
-    { openrouter: viaOpenRouter.length, nous: viaNous.length, paid: paidSent.length },
+    'the paid fallback carries the load on OpenRouter, on the funded account',
+    onPaidModel.length === 5 &&
+      viaOpenRouter.every((req) => req.headers.authorization === 'Bearer guard-not-a-real-funded-openrouter-key'),
+    viaOpenRouter.map((req) => new URL(req.url).host),
   );
   check(
-    "a free-quota 429 does not block the same account's paid OpenRouter route",
-    viaOpenRouter.length > 0 && viaOpenRouter.every((req) => req.headers.authorization === 'Bearer guard-not-a-real-funded-openrouter-key'),
-    viaOpenRouter.map((req) => req.headers.authorization?.slice(0, 12)),
+    'the paid OpenRouter request asks for DeepSeek V4 Flash 0731 with usage accounting',
+    onPaidModel.every((req) => req.body.model === 'deepseek/deepseek-v4-flash-0731' && 'usage' in req.body),
   );
   check(
-    'the spent free pool is not retried on every request',
-    freeAttempts.length === 1,
-    freeAttempts.map((req) => req.body.model),
-  );
-  const orPaid = viaOpenRouter[0];
-  check(
-    'the OpenRouter paid request asks for DeepSeek V4 Flash 0731 sorted by latency, with usage accounting',
-    orPaid?.body.model === 'deepseek/deepseek-v4-flash-0731' &&
-      (orPaid?.body.provider as { sort?: string } | undefined)?.sort === 'latency' &&
-      'usage' in (orPaid?.body ?? {}),
-    orPaid?.body,
-  );
-  check(
-    'both paid routes get the output floor',
-    paidSent.length > 0 && paidSent.every((req) => Number(req.body.max_tokens) >= llm.PAID_MIN_OUTPUT_TOKENS),
-    paidSent.map((req) => req.body.max_tokens),
-  );
-  check(
-    'the Nous half still carries no OpenRouter fields',
-    viaNous.length > 0 && viaNous.every((req) => !('provider' in req.body) && !('usage' in req.body)),
+    'every paid request gets the output floor',
+    onPaidModel.every((req) => Number(req.body.max_tokens) >= llm.PAID_MIN_OUTPUT_TOKENS),
+    onPaidModel.map((req) => req.body.max_tokens),
   );
 
-  // 4. Nous runs out of funds mid-split: OpenRouter answers at once, every
-  //    request still succeeds.
-  nousUnfunded = true;
-  const fallbackStart = sent.length;
-  const fallbackReplies: string[] = [];
-  for (let i = 0; i < 4; i++) {
-    const reply = await ask().catch((err: unknown) => ({ content: `error: ${err instanceof Error ? err.message : String(err)}` }));
-    fallbackReplies.push(String((reply as { content?: string }).content));
-  }
-  const fallbackPaid = sent.slice(fallbackStart).filter((req) => req.body.model === llm.PAID_FALLBACK_MODEL);
-  check(
-    'an unfunded Nous key falls to OpenRouter immediately; no request fails',
-    fallbackReplies.every((r) => r === 'guard reply'),
-    fallbackReplies,
-  );
-  check(
-    'after one 401, Nous is left alone and OpenRouter takes the load',
-    fallbackPaid.filter((req) => req.url.includes('nousresearch.com')).length <= 1 &&
-      fallbackPaid.filter((req) => req.url.startsWith('https://openrouter.ai/')).length === 4,
-    fallbackPaid.map((req) => new URL(req.url).host),
-  );
-
-  // 4b. A paid answer slower than the default request timeout still arrives.
+  // 4. A paid answer slower than the default request timeout still arrives.
   //     2026-10-05: deepseek-v4-flash-0731 often needed more than 30s on large
   //     agent contexts; every timeout became a capacity pause and a restart.
   check(
     'paid routes wait longer than the default request timeout; free routes keep it',
     llm.getProviderRequestTimeoutMs('openrouter-deepseek-v4-flash-paid') === llm.PAID_REQUEST_TIMEOUT_MS &&
-      llm.getProviderRequestTimeoutMs('nous-deepseek-v4-flash-paid') === llm.PAID_REQUEST_TIMEOUT_MS &&
       llm.getProviderRequestTimeoutMs('openrouter-nex-n2-5-mini-free') === llm.LLM_REQUEST_TIMEOUT_MS &&
       llm.LLM_REQUEST_TIMEOUT_MS === GUARD_DEFAULT_TIMEOUT_MS &&
       llm.PAID_REQUEST_TIMEOUT_MS > SLOW_PAID_ANSWER_MS,
@@ -310,33 +256,10 @@ async function main(): Promise<void> {
     { reply: slowReply.slice(0, 300), elapsedMs: Date.now() - slowStart },
   );
 
-  // 5. Nous alone and unfunded is a capacity pause, not a failed task: the
-  //    work waits, and the route is tried again after the credit cooldown.
-  delete process.env.OPENROUTER_API_KEY_4;
-  freeQuotaExhausted = false;
-  process.env.NOUS_API_KEY = 'guard-not-a-real-key-unfunded';
-  process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
-  nousUnfunded = true;
-  const unfunded = await ask().then(
-    () => 'no error',
-    (err: unknown) => (err instanceof Error ? err.message : String(err)),
-  );
-  const resumeAt = Date.parse(/resume-at=(\S+)/.exec(unfunded)?.[1] ?? '');
-  check(
-    'an "out of funds" 401 from Nous pauses for capacity instead of failing the task',
-    unfunded.startsWith('APEX LLM capacity paused.'),
-    unfunded.slice(0, 300),
-  );
-  check(
-    'the paid route is tried again within hours, not only at the next free-pool reset',
-    Number.isFinite(resumeAt) && resumeAt - Date.now() > 5 * 3_600_000 && resumeAt - Date.now() <= 6 * 3_600_000 + 60_000,
-    { resumeAt: Number.isFinite(resumeAt) ? new Date(resumeAt).toISOString() : null },
-  );
-
   rmSync(ledgerDir, { recursive: true, force: true });
   console.log(
     failures === 0
-      ? '\n✅ The paid continuity routes send requests their APIs accept, and share the load.\n'
+      ? '\n✅ The paid continuity route sends a request its API accepts, and Apex no longer calls Nous Portal.\n'
       : `\n❌ ${failures} check(s) failed.\n`,
   );
   process.exit(failures === 0 ? 0 : 1);
