@@ -193,13 +193,20 @@ export function approvedCallerIdNumbers(): string[] {
  *  per-call override is only honored when it is on the approved list, for the
  *  same reason as the caller ID: the AI leg must land on a line we know
  *  answers with an assistant rather than whoever happens to pick up. */
+/** Built-in AI lines, approved without any env change: the Don Voice / sales
+ *  line (832-975-7665, the approved APEX outbound number) answers with a voice
+ *  assistant too, so a takeover may be pointed at it. Env-only approval meant
+ *  an operator who typed this line got a 400 and had to go and set
+ *  APEX_BRIDGE_AI_LINES before the call could be placed at all. */
+const BUILT_IN_APPROVED_AI_LINES: readonly string[] = [APPROVED_APEX_OUTBOUND_NUMBER];
+
 export function approvedAssistantLines(): string[] {
   const extra = (process.env.APEX_BRIDGE_AI_LINES ?? '')
     .split(',')
     .map((value) => normalizeE164(value))
     .filter((value): value is string => Boolean(value));
   const fallback = normalizeE164(process.env.APEX_FRONT_DESK_NUMBER);
-  return Array.from(new Set([...(fallback ? [fallback] : []), ...extra]));
+  return Array.from(new Set([...BUILT_IN_APPROVED_AI_LINES, ...(fallback ? [fallback] : []), ...extra]));
 }
 
 /** ─── Operator dial settings ───────────────────────────────────────────────
@@ -245,6 +252,17 @@ export async function readDialSettings(): Promise<DialSettings> {
     defaultOperatorNumber: normalizeE164(parsed.defaultOperatorNumber) ?? HARDCODED_DEFAULT_OPERATOR_NUMBER,
     savedNumbers,
   };
+}
+
+/** What GET/PATCH /dial-settings answers with: the persisted settings plus the
+ *  AI lines a takeover may actually be pointed at. The panel renders these as
+ *  a pick list, so the operator selects an approved line instead of typing one
+ *  the API will then refuse. Derived from the same source as the guard, never
+ *  stored — a stale copy in the settings row could outlive a code change. */
+export type DialSettingsView = DialSettings & { approvedAiLines: string[] };
+
+export async function readDialSettingsView(): Promise<DialSettingsView> {
+  return { ...(await readDialSettings()), approvedAiLines: approvedAssistantLines() };
 }
 
 async function writeDialSettings(next: DialSettings): Promise<void> {
@@ -1019,7 +1037,7 @@ export function createCallBridgeRouter(): Router {
   //    numbers, so a takeover call needs no typing. ──────────────────────────
   router.get('/dial-settings', async (_req, res) => {
     try {
-      res.json(await readDialSettings());
+      res.json(await readDialSettingsView());
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }
@@ -1052,7 +1070,7 @@ export function createCallBridgeRouter(): Router {
           .filter((entry) => entry.number);
       }
       await writeDialSettings(next);
-      res.json(next);
+      res.json({ ...next, approvedAiLines: approvedAssistantLines() });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }

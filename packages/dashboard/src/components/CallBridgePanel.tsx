@@ -92,7 +92,7 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
       if (!label) throw new Error('Cancelled');
       const existing = settings.data?.savedNumbers ?? [];
       if (existing.some((entry) => entry.number === number)) {
-        return settings.data ?? { defaultOperatorNumber: operatorNumber, savedNumbers: existing };
+        return settings.data ?? { defaultOperatorNumber: operatorNumber, savedNumbers: existing, approvedAiLines: [] };
       }
       return api.callBridge.updateDialSettings({ savedNumbers: [...existing, { label, number }] });
     },
@@ -260,6 +260,25 @@ function StartForm({ onStarted }: { onStarted: (id: string) => void }) {
             value={assistantLine}
             onChange={(e) => setAssistantLine(e.target.value)}
           />
+          <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {settings.data && settings.data.approvedAiLines.length > 0 && (
+              <select
+                style={{ ...inputStyle, maxWidth: 240, fontSize: 11 }}
+                aria-label="Approved AI lines"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setAssistantLine(e.target.value);
+                }}
+              >
+                <option value="">Pick an approved AI line…</option>
+                {settings.data.approvedAiLines.map((line) => (
+                  <option key={line} value={line}>
+                    {line}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       </div>
 
