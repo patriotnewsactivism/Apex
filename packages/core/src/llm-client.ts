@@ -1218,6 +1218,12 @@ function providerBaseURL(provider: ProviderSpec): string | undefined {
   return raw?.replace(/\/$/, '');
 }
 
+/** Resolve the model id at call time so env overrides (QWEN_MODEL) take
+ *  effect for the request, telemetry, and ledger without a code change. */
+function providerModel(provider: ProviderSpec): string {
+  return typeof provider.model === 'function' ? provider.model() : provider.model;
+}
+
 function providerActivationIssue(provider: ProviderSpec): string | null {
   if (provider.activationEnv && !enabled(process.env[provider.activationEnv])) {
     return provider.activationDescription ?? `${provider.activationEnv}=true is required`;
@@ -2281,7 +2287,7 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model =
     primaryName === FREE_POLICY_GATEWAY_NAME
       ? getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0]
-      : primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
+      : (primary ? providerModel(primary) : DEFAULT_OPENROUTER_MODEL_CHAIN[0]);
 
   return {
     provider: primary?.name ?? 'openrouter-nex-n2-5-mini-free',
