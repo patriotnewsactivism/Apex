@@ -305,6 +305,22 @@ export function createLeadsRouter(): Router {
     });
   });
 
+  // ─── POST /api/leads/verify-batch — run the website-identity repair now ───
+  // The scheduled pass runs in the background and only logs completed batches,
+  // so an operator who has just bulk-loaded leads has no way to tell whether
+  // they are actually being verified. This runs one batch synchronously and
+  // returns its counters.
+  router.post('/verify-batch', async (req, res) => {
+    try {
+      const { repairWebLeadIdentityBatch } = await import('@workspace/background-jobs');
+      const limit = Math.max(1, Math.min(500, Number((req.body as { limit?: number } | undefined)?.limit ?? 100) || 100));
+      const result = await repairWebLeadIdentityBatch(limit);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ─── POST /api/leads/import — CSV or JSON, preview unless commit=true ────
   router.post('/import', async (req, res) => {
     try {
