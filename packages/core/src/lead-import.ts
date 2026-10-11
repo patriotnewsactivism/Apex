@@ -15,7 +15,13 @@ export interface ImportedLead {
   outreachAngle: string | null;
   fitReason: string;
   source: string;
-  enrichment: Record<string, string>;
+  /**
+   * Non-flat enrichment carried with the row. Typed as unknown values, not
+   * string: the nested objects (businessVerification, deepResearch) are the
+   * payload the dashboard and the campaign runner read, and an import that
+   * merely MATCHES an existing lead must not flatten them to "[object Object]".
+   */
+  enrichment: Record<string, unknown>;
 }
 
 export interface ExistingLeadSnapshot {
@@ -272,9 +278,7 @@ export function planLeadImport(input: {
       employeeCount: lead.employeeCount ?? existing.employeeCount,
       outreachAngle: prefer(lead.outreachAngle, existing.outreachAngle, input.overwrite),
       enrichment: {
-        ...(existing.enrichment && typeof existing.enrichment === 'object' ? Object.fromEntries(
-          Object.entries(existing.enrichment).map(([key, value]) => [key, String(value)]),
-        ) : {}),
+        ...(existing.enrichment && typeof existing.enrichment === 'object' ? existing.enrichment : {}),
         ...lead.enrichment,
       },
     };
