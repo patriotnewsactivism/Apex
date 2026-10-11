@@ -105,6 +105,52 @@ function sourceChecks(): void {
   assert.ok(sql.includes('crm_reject_timeline_mutation'));
   assert.equal(sql.includes('DROP TABLE'), false, 'CRM migration does not drop tables');
 
+  // ── The migration applier itself ─────────────────────────────────────────
+  // A statement that fails stops the rest of its file with no transaction, which
+  // is exactly how production ended up with contacts.lifecycle_stage applied and
+  // crm_tasks missing. These checks are database-free: they read the SQL and the
+  // applier, and refuse a file whose statements cannot be split cleanly.
+  const migrationSource = read('lib/db/src/crm-migration.ts');
+  const migrationFiles = [...migrationSource.matchAll(/'(\d{8}_[a-z0-9_]+\.sql)'/g)].map((match) => match[1]!);
+  assert.ok(migrationFiles.includes('20261003_crm.sql'), 'the base migration is registered');
+  assert.ok(migrationFiles.includes('20261011_crm_phase1.sql'), 'the phase 1 migration is registered');
+  assert.ok(migrationFiles.includes('20261014_crm_repair.sql'), 'the repair migration is registered last');
+  assert.equal(
+    migrationFiles[migrationFiles.length - 1],
+    '20261014_crm_repair.sql',
+    'the repair runs after every other migration',
+  );
+  assert.ok(migrationSource.includes('statement ${index + 1}/${statements.length} failed'), 'a failing statement names its file and position');
+  assert.ok(migrationSource.includes('verifyCrmSchema'), 'the applier verifies the schema it promised');
+  assert.ok(migrationSource.includes('CRM_REQUIRED_OBJECTS'), 'the required objects are declared, not implied');
+  for (const required of ['crm_tasks', 'crm_lead_imports', 'crm_lead_import_rows', 'crm_migration_markers']) {
+    assert.ok(migrationSource.includes(`name: '${required}'`), `the applier requires ${required}`);
+  }
+  for (const file of migrationFiles) {
+    const statements = read(`lib/db/drizzle/${file}`)
+      .split(/\n-- STATEMENT\n/)
+      .map((part) => part.replace(/^--[^\n]*\n/gm, '').trim())
+      .filter((part) => part.length > 0 && !part.startsWith('--'));
+    assert.ok(statements.length > 0, `${file} has statements`);
+    for (const statement of statements) {
+      // A merged or truncated statement is the failure this whole check exists for.
+      assert.equal(
+        (statement.match(/CREATE TABLE/g) ?? []).length > 1,
+        false,
+        `${file}: a statement does not create two tables at once`,
+      );
+      assert.ok(statement.length > 10, `${file}: no empty statement`);
+    }
+    // $$-quoted bodies must survive the split whole.
+    const opens = (read(`lib/db/drizzle/${file}`).match(/\$\$/g) ?? []).length;
+    assert.equal(opens % 2, 0, `${file} has balanced $$ quoting`);
+  }
+  const repair = read('lib/db/drizzle/20261014_crm_repair.sql');
+  for (const table of ['crm_tasks', 'crm_lead_imports', 'crm_lead_import_rows', 'crm_contact_insights', 'crm_saved_views']) {
+    assert.ok(repair.includes(`CREATE TABLE IF NOT EXISTS ${table}`), `the repair re-asserts ${table}`);
+  }
+  assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(repair), false, 'the repair migration is additive');
+
   // ── CRM phase 1: the parts you work in every day ─────────────────────────
   const operator = read('packages/core/src/crm/operator.ts');
   // Agents hold the same admin bearer token as a script. None of the phase-1
