@@ -401,7 +401,8 @@ export function createCrmRouter(): Router {
   });
 
   router.post('/contacts/:id/lifecycle', async (req, res) => {
-    const stage = (req.body as { stage?: unknown })?.stage;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const stage = body.stage;
     if (!isContactLifecycleStage(stage)) {
       res.status(400).json({ error: `stage must be one of ${CONTACT_LIFECYCLE_STAGES.join(', ')}` });
       return;
@@ -412,7 +413,7 @@ export function createCrmRouter(): Router {
         contactId: req.params.id,
         stage,
         actor: OPERATOR_ACTOR,
-        reason: (req.body as { reason?: unknown })?.reason,
+        reason: typeof body.reason === 'string' ? body.reason : null,
       });
       res.json({ ok: true, ...result });
     } catch (error) {
@@ -609,7 +610,7 @@ export function createCrmRouter(): Router {
         reason: body.reason,
         alsoClearDoNotContact: body.alsoClearDoNotContact === true,
       });
-      res.json({ ok: true, ...result });
+      res.json(result);
     } catch (error) {
       writeFailure(res, error);
     }

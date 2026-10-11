@@ -4,7 +4,7 @@
 -- a reviewed/undoable copy of researched leads into the contact book, and the
 -- columns that let a single opt-out be lifted from the dashboard.
 --
--- Additive only: no DROP TABLE, no DROP COLUMN, no data loss. Applied by
+-- Additive only: nothing existing is removed, and no data is lost. Applied by
 -- applyCrmMigration() at the end of the boot migration, so every statement is
 -- idempotent and safe to re-run on a database that already has it.
 

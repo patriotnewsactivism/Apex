@@ -1132,11 +1132,10 @@ export async function undoResearchedLeadImport(input: {
       const executor = asExecutor(tx);
       const check = await contactUntouched(executor, row.contactId as string);
       if (!check.untouched) return check;
+      // Only the records this batch created are removed. The contact's own
+      // timeline rows stay (the timeline is insert-only): they are the record
+      // that the lead was copied in, and the import row below records the undo.
       await executor.delete(contactIdentifiers).where(eq(contactIdentifiers.contactId, row.contactId as string));
-      await executor.delete(contactTimeline).where(and(
-        eq(contactTimeline.contactId, row.contactId as string),
-        eq(contactTimeline.eventKind, 'lead_imported'),
-      ));
       await executor.delete(contacts).where(eq(contacts.id, row.contactId as string));
       return { untouched: true };
     });
