@@ -48,7 +48,7 @@ import { createVapiWebhookRouter } from './routes/vapi.js';
 import { createTelnyxWebhookRouter } from './routes/telnyx-webhook.js';
 import { createTelnyxAssistantRouter } from './routes/telnyx-assistant.js';
 import { createCartesiaSalesRouter } from './routes/cartesia-sales.js';
-import { createCalendarPublicRouter, createCalendarRouter } from './routes/calendar.js';
+import { createCalendarPublicRouter, createCalendarRouter, handleGoogleCalendarOauthCallback } from './routes/calendar.js';
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createHankLiveRouter } from './routes/hank-live.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
@@ -541,6 +541,14 @@ async function main() {
   // can present the admin bearer token. Operator calendar routes mount after
   // requireAdminAuth on the same prefix.
   app.use('/api/calendar', createCalendarPublicRouter());
+
+  // The Google OAuth browser redirect arrives at whatever redirect URI the
+  // Google client is registered with, and Google requires an exact match. This
+  // deployment's client registers https://apexwork.org/auth/callback, so the
+  // root path serves the same handler as /api/calendar/google/callback. It must
+  // be registered BEFORE the dashboard static/SPA fallback below, which would
+  // otherwise answer the redirect with index.html and swallow the auth code.
+  app.get('/auth/callback', handleGoogleCalendarOauthCallback);
 
   // Call Bridge webhook — Telnyx Call Control events for operator-bridged
   // calls (dial legs, hangups). Same pre-auth reasoning as the router above;
