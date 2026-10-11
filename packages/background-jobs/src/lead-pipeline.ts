@@ -1229,8 +1229,17 @@ function replaceCompanyNameText(value: string | null | undefined, oldName: strin
   return value.split(oldName).join(newName);
 }
 
-export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked: number; renamed: number; mismatched: number; contactsAdded: number }> {
-  if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0 };
+export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
+  checked: number;
+  renamed: number;
+  mismatched: number;
+  contactsAdded: number;
+  /** Why nothing was checked, when nothing was. */
+  reason?: 'already_running' | 'no_matching_leads';
+  /** True when the batch hit its time budget before finishing every row. */
+  budgetExceeded?: boolean;
+}> {
+  if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0, reason: 'already_running' };
   webIdentityRepairRunning = true;
   try {
     const batchSize = Math.max(1, Math.min(500, Math.trunc(limit)));
@@ -1269,13 +1278,20 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
       )
       .limit(batchSize);
 
+    if (rows.length === 0) {
+      return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0, reason: 'no_matching_leads' };
+    }
+
     let renamed = 0;
     let mismatched = 0;
     let contactsAdded = 0;
     // The batch is network-bound (one homepage fetch per lead), so concurrency,
     // not batch size, sets the throughput of getting imported leads verified.
     const concurrency = Math.max(1, Math.min(32, Number(process.env.LEAD_IDENTITY_REPAIR_CONCURRENCY ?? 8) || 8));
-    await runPool(rows, Math.min(concurrency, batchSize), async (lead) => {
+    const budgetMs = Math.max(15_000, Number(process.env.LEAD_IDENTITY_REPAIR_BUDGET_MS ?? 120_000) || 120_000);
+    let budgetExceeded = false;
+    await Promise.race([
+      runPool(rows, Math.min(concurrency, batchSize), async (lead) => {
       const identity = await verifyBusinessWebsiteIdentity({
         website: lead.website,
         industry: lead.industry,
@@ -1344,10 +1360,14 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
           updatedAt: new Date(),
         }).where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
       }
-    });
+    }),
+      sleep(budgetMs).then(() => {
+        budgetExceeded = true;
+      }),
+    ]);
 
     if (rows.length > 0) {
-      console.log(`[lead-identity] checked=${rows.length} renamed=${renamed} mismatched=${mismatched} contactsAdded=${contactsAdded}`);
+      console.log(`[lead-identity] checked=${rows.length} renamed=${renamed} mismatched=${mismatched} contactsAdded=${contactsAdded} budgetExceeded=${budgetExceeded}`);
       await recordOperatorActivity({
         category: 'lead_cleanup',
         agentId: 'apex-campaign-runner',
@@ -1358,7 +1378,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
         data: { checked: rows.length, renamed, mismatched, contactsAdded },
       });
     }
-    return { checked: rows.length, renamed, mismatched, contactsAdded };
+    return { checked: rows.length, renamed, mismatched, contactsAdded, budgetExceeded };
   } finally {
     webIdentityRepairRunning = false;
   }
