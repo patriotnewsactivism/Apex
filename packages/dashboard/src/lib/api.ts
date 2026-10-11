@@ -420,6 +420,119 @@ export interface CrmContactFilters {
   called?: boolean | null;
   /** Has/has not been emailed. */
   emailed?: boolean | null;
+  /** Client status: prospect | lead | qualified | client | churned. */
+  lifecycleStage?: CrmLifecycleStage | null;
+  /** Only contacts with an open follow-up due today (or already overdue). */
+  followUpDueToday?: boolean | null;
+}
+
+/**
+ * Where a person stands: prospect (researched, never contacted), lead
+ * (contacted), qualified (answered and fits), client (paying), churned.
+ * Only Matthew can move a contact between these.
+ */
+export type CrmLifecycleStage = 'prospect' | 'lead' | 'qualified' | 'client' | 'churned';
+
+export const CRM_LIFECYCLE_STAGES: CrmLifecycleStage[] = ['prospect', 'lead', 'qualified', 'client', 'churned'];
+
+export interface CrmTask {
+  id: string;
+  title: string;
+  notes: string | null;
+  kind: string;
+  status: string;
+  priority: string;
+  dueAt: string | null;
+  dueChicago?: string | null;
+  contactId: string | null;
+  contactName: string | null;
+  contactOrganization: string | null;
+  overdue: boolean;
+}
+
+export interface CrmSuppression {
+  id: string;
+  channel: string;
+  reason: string;
+  source: string | null;
+  email: string | null;
+  phoneE164: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  liftedAt: string | null;
+  liftedBy: string | null;
+  liftReason: string | null;
+}
+
+export interface CrmLeadImportRow {
+  leadId: string;
+  companyName: string;
+  contactName: string | null;
+  email: string | null;
+  phone: string | null;
+  city: string | null;
+  industry: string | null;
+  action: 'create' | 'matched' | 'skipped';
+  reason?: string;
+  existingContactId?: string;
+}
+
+export interface CrmLeadImportPreview {
+  dryRun: boolean;
+  considered: number;
+  wouldCreate: number;
+  alreadyInBook: number;
+  skipped: number;
+  rows: CrmLeadImportRow[];
+  truncated: boolean;
+}
+
+export interface CrmLeadImportBatch {
+  id: string;
+  status: string;
+  appliedBy: string;
+  appliedAt: string;
+  undoneAt: string | null;
+  createdCount: number;
+  matched: number;
+  skippedCount: number;
+  notes: string | null;
+}
+
+export interface CrmLeadImportFilters {
+  limit?: number;
+  status?: string;
+  pipelineState?: string;
+  industry?: string;
+  city?: string;
+  campaignId?: string;
+  reachableOnly?: boolean;
+}
+
+/** One query builder for the contact list, the export, and the copilot. */
+export function crmFilterQuery(params?: CrmContactFilters): string {
+  const qs = new URLSearchParams();
+  if (params?.q) qs.set('q', params.q);
+  if (params?.tag) qs.set('tag', params.tag);
+  if (params?.city) qs.set('city', params.city);
+  if (params?.state) qs.set('state', params.state);
+  if (params?.verifiedOnly) qs.set('verified', 'true');
+  if (params?.doNotContact === true) qs.set('doNotContact', 'true');
+  if (params?.doNotContact === false) qs.set('doNotContact', 'false');
+  if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
+  if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
+  if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
+  if (params?.replied === true) qs.set('replied', 'true');
+  if (params?.replied === false) qs.set('replied', 'false');
+  if (params?.campaignId) qs.set('campaignId', params.campaignId);
+  if (params?.industry) qs.set('industry', params.industry);
+  if (params?.called === true) qs.set('called', 'true');
+  if (params?.called === false) qs.set('called', 'false');
+  if (params?.emailed === true) qs.set('emailed', 'true');
+  if (params?.emailed === false) qs.set('emailed', 'false');
+  if (params?.lifecycleStage) qs.set('lifecycleStage', params.lifecycleStage);
+  if (params?.followUpDueToday === true) qs.set('followUpDueToday', 'true');
+  return qs.toString();
 }
 
 export interface CrmContact {
@@ -443,8 +556,12 @@ export interface CrmContact {
   lastReplyAt: string | null;
   nextFollowUpAt: string | null;
   followUpPaused: boolean;
+  lifecycleStage: CrmLifecycleStage | string;
+  lifecycleStageChangedAt: string | null;
+  lifecycleStageChangedBy: string | null;
   lastContactedChicago?: string | null;
   lastReplyChicago?: string | null;
+  nextFollowUpChicago?: string | null;
 }
 
 export interface CrmIdentifier {
@@ -933,26 +1050,7 @@ export const api = {
 
   crm: {
     list: (params?: CrmContactFilters) => {
-      const qs = new URLSearchParams();
-      if (params?.q) qs.set('q', params.q);
-      if (params?.tag) qs.set('tag', params.tag);
-      if (params?.city) qs.set('city', params.city);
-      if (params?.state) qs.set('state', params.state);
-      if (params?.verifiedOnly) qs.set('verified', 'true');
-      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
-      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
-      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
-      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
-      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
-      if (params?.replied === true) qs.set('replied', 'true');
-      if (params?.replied === false) qs.set('replied', 'false');
-      if (params?.campaignId) qs.set('campaignId', params.campaignId);
-      if (params?.industry) qs.set('industry', params.industry);
-      if (params?.called === true) qs.set('called', 'true');
-      if (params?.called === false) qs.set('called', 'false');
-      if (params?.emailed === true) qs.set('emailed', 'true');
-      if (params?.emailed === false) qs.set('emailed', 'false');
-      const query = qs.toString();
+      const query = crmFilterQuery(params);
       return apiFetch<{ timezone: string; contacts: CrmContact[] }>(`/crm/contacts${query ? `?${query}` : ''}`);
     },
     // The CRM's second record type: researched leads, same facet vocabulary.
@@ -988,25 +1086,88 @@ export const api = {
         body: JSON.stringify({ winnerId, loserId, explicit: true }),
       }),
     exportCsv: (params?: CrmContactFilters) => {
-      const qs = new URLSearchParams();
-      if (params?.q) qs.set('q', params.q);
-      if (params?.tag) qs.set('tag', params.tag);
-      if (params?.city) qs.set('city', params.city);
-      if (params?.state) qs.set('state', params.state);
-      if (params?.verifiedOnly) qs.set('verified', 'true');
-      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
-      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
-      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
-      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
-      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
-      if (params?.replied === true) qs.set('replied', 'true');
-      if (params?.replied === false) qs.set('replied', 'false');
-      if (params?.campaignId) qs.set('campaignId', params.campaignId);
-      const query = qs.toString();
+      const query = crmFilterQuery(params);
       const token = localStorage.getItem('apex_token');
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       return fetch(`${API}/crm/contacts/export${query ? `?${query}` : ''}`, { headers }).then((r) => r.blob());
+    },
+
+    // ─── Phase 1: the parts you work in every day ──────────────────────────
+    stages: () => apiFetch<{ stages: CrmLifecycleStage[]; priorities: string[] }>('/crm/contacts/statuses'),
+    createContact: (body: Record<string, unknown>) =>
+      apiFetch<{ ok: boolean; contactId: string }>('/crm/contacts', { method: 'POST', body: JSON.stringify(body) }),
+    updateContact: (id: string, patch: Record<string, unknown>) =>
+      apiFetch<{ ok: boolean; changed: string[] }>(`/crm/contacts/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    setTags: (id: string, body: { add?: string[]; remove?: string[]; replace?: string[] }) =>
+      apiFetch<{ ok: boolean; tags: string[] }>(`/crm/contacts/${encodeURIComponent(id)}/tags`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    setLifecycle: (id: string, stage: CrmLifecycleStage, reason?: string) =>
+      apiFetch<{ ok: boolean; changed: boolean; from: string; to: string }>(`/crm/contacts/${encodeURIComponent(id)}/lifecycle`, {
+        method: 'POST',
+        body: JSON.stringify({ stage, reason }),
+      }),
+    logCall: (id: string, body: { direction?: 'inbound' | 'outbound'; outcome?: string; notes?: string; occurredAt?: string; durationSeconds?: number }) =>
+      apiFetch<{ ok: boolean; timelineId: string }>(`/crm/contacts/${encodeURIComponent(id)}/calls`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    tasks: {
+      due: () => apiFetch<{ date: string; timezone: string; tasks: CrmTask[] }>('/crm/tasks/due'),
+      list: (params?: { status?: string; contactId?: string }) => {
+        const qs = new URLSearchParams();
+        if (params?.status) qs.set('status', params.status);
+        if (params?.contactId) qs.set('contactId', params.contactId);
+        const query = qs.toString();
+        return apiFetch<{ timezone: string; tasks: CrmTask[] }>(`/crm/tasks${query ? `?${query}` : ''}`);
+      },
+      create: (body: { title: string; contactId?: string; dueAt?: string; dueInDays?: number; priority?: string; kind?: string; notes?: string }) =>
+        apiFetch<{ ok: boolean; taskId: string }>('/crm/tasks', { method: 'POST', body: JSON.stringify(body) }),
+      complete: (id: string, notes?: string) =>
+        apiFetch<{ ok: boolean }>(`/crm/tasks/${encodeURIComponent(id)}/complete`, {
+          method: 'POST',
+          body: JSON.stringify({ notes }),
+        }),
+      cancel: (id: string, reason?: string) =>
+        apiFetch<{ ok: boolean }>(`/crm/tasks/${encodeURIComponent(id)}/cancel`, {
+          method: 'POST',
+          body: JSON.stringify({ reason }),
+        }),
+      reschedule: (id: string, dueAt: string) =>
+        apiFetch<{ ok: boolean; dueAt: string | null }>(`/crm/tasks/${encodeURIComponent(id)}/reschedule`, {
+          method: 'POST',
+          body: JSON.stringify({ dueAt }),
+        }),
+    },
+    leadImport: {
+      preview: (filters: CrmLeadImportFilters) =>
+        apiFetch<CrmLeadImportPreview>('/crm/leads/import/preview', { method: 'POST', body: JSON.stringify(filters) }),
+      apply: (filters: CrmLeadImportFilters) =>
+        apiFetch<{ ok: boolean; batchId: string; created: number; matched: number; skipped: number }>('/crm/leads/import', {
+          method: 'POST',
+          body: JSON.stringify({ ...filters, confirm: true }),
+        }),
+      list: () => apiFetch<{ imports: CrmLeadImportBatch[] }>('/crm/leads/imports'),
+      undo: (batchId: string) =>
+        apiFetch<{ ok: boolean; removed: number; kept: number; keptReasons: Array<{ contactId: string; reason: string }> }>(
+          `/crm/leads/import/${encodeURIComponent(batchId)}/undo`,
+          { method: 'POST' },
+        ),
+    },
+    suppressions: {
+      forContact: (contactId: string) =>
+        apiFetch<{ suppressions: CrmSuppression[] }>(`/crm/contacts/${encodeURIComponent(contactId)}/suppressions`),
+      active: () => apiFetch<{ suppressions: CrmSuppression[]; timezone: string }>('/crm/suppressions'),
+      lift: (id: string, body: { reason?: string; alsoClearDoNotContact?: boolean }) =>
+        apiFetch<{ ok: boolean; channel: string; clearedDoNotContact: boolean; contactId: string | null }>(
+          `/crm/suppressions/${encodeURIComponent(id)}/lift`,
+          { method: 'POST', body: JSON.stringify(body) },
+        ),
     },
   },
 

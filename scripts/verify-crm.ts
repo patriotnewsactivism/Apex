@@ -104,6 +104,78 @@ function sourceChecks(): void {
   assert.ok(sql.includes('CREATE INDEX IF NOT EXISTS audit_events_entity_idx'));
   assert.ok(sql.includes('crm_reject_timeline_mutation'));
   assert.equal(sql.includes('DROP TABLE'), false, 'CRM migration does not drop tables');
+
+  // ── CRM phase 1: the parts you work in every day ─────────────────────────
+  const operator = read('packages/core/src/crm/operator.ts');
+  // Agents hold the same admin bearer token as a script. None of the phase-1
+  // write paths may be reachable from an agent tool, and the tools module must
+  // not import the module that holds them.
+  const writePaths = [
+    'createContact',
+    'updateContact',
+    'setContactTags',
+    'setLifecycleStage',
+    'logManualCall',
+    'createTask',
+    'completeTask',
+    'cancelTask',
+    'rescheduleTask',
+    'liftSuppression',
+    'applyResearchedLeadImport',
+    'undoResearchedLeadImport',
+  ];
+  for (const name of writePaths) {
+    assert.equal(new RegExp(`\\b${name}\\b`).test(tools), false, `agents cannot call ${name}`);
+  }
+  assert.equal(/from '\.\/operator\.js'/.test(tools), false, 'the agent tools do not import the operator write module');
+  // The privileged writes check the actor at the write path, not only at the
+  // route, so a future caller cannot reach them with an agent's token.
+  assert.ok(operator.includes('lifecycleStageChangeAllowed'), 'status and opt-out writes check the actor');
+  assert.ok(pure.includes('lifecycleStageChangeAllowed'), 'the actor rule lives in the pure rules');
+  assert.ok(pure.includes("'churned'"), 'the client status list is defined once');
+  assert.ok(operator.includes('CONTACT_LIFECYCLE_STAGES'), 'an unknown client status is refused');
+  assert.ok(operator.includes('insertTimelineEvent'), 'every phase-1 write appends to the history');
+  assert.ok(operator.includes('auditEvents'), 'every phase-1 write is audited');
+  // A lifted opt-out must stop blocking in every place that reads one.
+  for (const file of [
+    'packages/core/src/send-safeguard-store.ts',
+    'packages/core/src/outbound-compliance-guard.ts',
+    'packages/core/src/revenue-ops/campaign-engine.ts',
+    'packages/api-server/src/routes/cartesia-sales.ts',
+  ]) {
+    assert.ok(read(file).includes('liftedAt'), `${file} ignores a lifted opt-out`);
+  }
+  // Privileged routes must ask for the operator dashboard session.
+  const routes = read('packages/api-server/src/routes/crm.ts');
+  for (const route of ["'/contacts/:id/lifecycle'", "'/suppressions/:id/lift'", "'/leads/import'", "'/leads/import/:batchId/undo'"]) {
+    const at = routes.indexOf(`router.post(${route}`);
+    assert.ok(at > 0, `route ${route} exists`);
+    const body = routes.slice(at, at + 3200);
+    const end = body.indexOf('\n  router.');
+    const handler = end > 0 ? body.slice(0, end) : body;
+    assert.ok(
+      handler.includes('requireOperatorSession'),
+      `${route} requires the operator dashboard session`,
+    );
+  }
+  // The lists and the export carry the client status.
+  const store = read('packages/core/src/crm/store.ts');
+  assert.ok(store.includes('lifecycleStage'), 'the contact list filters on the client status');
+  assert.ok(store.includes('followUpDueToday'), 'the contact list filters on a due follow-up');
+  assert.ok(store.includes("'client_status'"), 'the CSV export carries the client status');
+  // The phase-1 migration is additive and applied at boot with the rest.
+  const phase1Sql = read('lib/db/drizzle/20261011_crm_phase1.sql');
+  assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(phase1Sql), false, 'the phase 1 migration is additive');
+  assert.ok(phase1Sql.includes('ADD COLUMN IF NOT EXISTS lifecycle_stage'), 'contacts gain a client status');
+  assert.ok(phase1Sql.includes('crm_tasks'), 'follow-up tasks have a table');
+  assert.ok(phase1Sql.includes('crm_lead_import_rows'), 'the lead copy is recorded per lead');
+  assert.ok(phase1Sql.includes('lifted_at'), 'an opt-out can be lifted, not deleted');
+  assert.ok(phase1Sql.includes('20261011_crm_phase1_lifecycle_backfill'), 'the status backfill runs exactly once');
+  assert.ok(
+    read('lib/db/src/crm-migration.ts').includes('20261011_crm_phase1.sql'),
+    'the phase 1 migration is applied at boot',
+  );
+  assert.ok(read('packages/core/src/crm/index.ts').includes("'./operator.js'"), 'the write paths are exported for the routes');
 }
 
 async function databaseChecks(): Promise<void> {
@@ -155,6 +227,9 @@ async function databaseChecks(): Promise<void> {
     researchedLeads,
     sequenceStepExecutions,
   } = dbMod;
+  const phase1 = await import('../packages/core/src/crm/index.js');
+  const { assertOutboundAllowed } = await import('../packages/core/src/outbound-compliance-guard.js');
+  const { crmTasks, crmLeadImports, crmLeadImportRows, suppressions } = dbMod;
 
   assert.equal(codeCheckTimelineText(true, '482193'), 'pass');
   assert.equal(codeCheckTimelineText(false, '482193'), 'fail');
@@ -492,6 +567,188 @@ async function databaseChecks(): Promise<void> {
   assert.ok(backfill.wouldCreate >= 1);
   assert.equal(backfill.created, 0);
   assert.equal(afterBackfill?.n, beforeBackfill?.n, 'backfill dry-run writes nothing');
+
+  // ── CRM phase 1 against the real database ────────────────────────────────
+  const stamp2 = `${stamp}p1`;
+  const made = await phase1.createContact({
+    actor: OPERATOR_ACTOR,
+    firstName: 'Verify',
+    lastName: `PhaseOne ${stamp2}`,
+    organizationName: `Phase One Desk ${stamp2}`,
+    email: `phase1-${stamp2}@example.com`,
+    phone: '+15125550101',
+    city: 'Baton Rouge',
+    tags: ['newsroom'],
+  });
+  const [madeRow] = await db.select().from(contacts).where(eq(contacts.id, made.contactId));
+  assert.equal(madeRow?.lifecycleStage, 'prospect', 'a hand-made contact starts as a prospect');
+  const edited = await phase1.updateContact({
+    contactId: made.contactId,
+    actor: OPERATOR_ACTOR,
+    patch: { city: 'New Orleans', notes: 'edited by verify' },
+  });
+  assert.deepEqual([...edited.changed].sort(), ['city', 'notes']);
+  await assert.rejects(
+    () => phase1.createContact({
+      actor: OPERATOR_ACTOR,
+      organizationName: 'Duplicate Desk',
+      email: `phase1-${stamp2}@example.com`,
+    }),
+    /already on another contact/,
+    'a duplicate address names the contact that holds it',
+  );
+  const tagged = await phase1.setContactTags({ contactId: made.contactId, actor: OPERATOR_ACTOR, add: ['Tier-A'] });
+  assert.deepEqual([...tagged.tags].sort(), ['newsroom', 'tier-a']);
+
+  // Client status: refused for anyone but Matthew, logged twice when it lands.
+  await assert.rejects(
+    () => phase1.setLifecycleStage({ contactId: made.contactId, stage: 'qualified', actor: 'sales-bot' }),
+    /Only Matthew/,
+  );
+  const [beforeMove] = await db.select().from(contacts).where(eq(contacts.id, made.contactId));
+  assert.equal(beforeMove?.lifecycleStage, 'prospect', 'a refused status move changes nothing');
+  await assert.rejects(
+    () => phase1.setLifecycleStage({ contactId: made.contactId, stage: 'vip', actor: OPERATOR_ACTOR }),
+    /Unknown client status/,
+  );
+  const movedTo = await phase1.setLifecycleStage({
+    contactId: made.contactId,
+    stage: 'qualified',
+    actor: OPERATOR_ACTOR,
+    reason: 'answered the phone',
+  });
+  assert.equal(movedTo.changed, true);
+  const again = await phase1.setLifecycleStage({ contactId: made.contactId, stage: 'qualified', actor: OPERATOR_ACTOR });
+  assert.equal(again.changed, false, 'moving to the stage it is already in is a no-op');
+  const statusHistory = await getTimeline(made.contactId);
+  assert.ok(statusHistory.some((row) => row.eventKind === 'lifecycle_stage'), 'the status move is in the history');
+  const statusAudit = await db.select().from(auditEvents).where(and(
+    eq(auditEvents.action, 'contact.lifecycle_stage_changed'),
+    eq(auditEvents.entityId, made.contactId),
+  ));
+  assert.equal(statusAudit.length, 1, 'the status move is audited once');
+  const qualifiedOnly = await searchContacts({ lifecycleStage: 'qualified', limit: 500 });
+  assert.ok(qualifiedOnly.some((row) => row.id === made.contactId), 'the list filters on the client status');
+
+  // A call you made yourself, and follow-ups with a due-today list.
+  const loggedCall = await phase1.logManualCall({
+    contactId: made.contactId,
+    actor: OPERATOR_ACTOR,
+    direction: 'outbound',
+    outcome: 'spoke to the owner',
+    durationSeconds: 300,
+  });
+  assert.ok(loggedCall.timelineId);
+  const callHistory = await getTimeline(made.contactId);
+  assert.ok(callHistory.some((row) => row.channel === 'call' && row.eventKind === 'call'), 'the call is in the history');
+  const task = await phase1.createTask({
+    actor: OPERATOR_ACTOR,
+    contactId: made.contactId,
+    title: `Ring back ${stamp2}`,
+    dueAt: new Date().toISOString(),
+    priority: 'high',
+  });
+  const [afterTask] = await db.select().from(contacts).where(eq(contacts.id, made.contactId));
+  assert.ok(afterTask?.nextFollowUpAt, 'an open follow-up sets the next follow-up date');
+  const dueToday = await phase1.listDueTasks({});
+  assert.ok(dueToday.tasks.some((row) => row.id === task.taskId), 'the follow-up is on the due list');
+  assert.ok(dueToday.tasks.some((row) => row.id === task.taskId && row.overdue === false), 'a follow-up due now is not marked overdue');
+  const dueFiltered = await searchContacts({ followUpDueToday: true, limit: 500 });
+  assert.ok(dueFiltered.some((row) => row.id === made.contactId), 'the list filters on a due follow-up');
+  await phase1.completeTask({ taskId: task.taskId, actor: OPERATOR_ACTOR, notes: 'reached them' });
+  const [afterDone] = await db.select().from(contacts).where(eq(contacts.id, made.contactId));
+  assert.equal(afterDone?.nextFollowUpAt, null, 'completing the last open follow-up clears the date');
+  const [doneTask] = await db.select().from(crmTasks).where(eq(crmTasks.id, task.taskId));
+  assert.equal(doneTask?.status, 'done');
+
+  // The reviewed copy of researched leads, and its undo.
+  await db.insert(researchedLeads).values({
+    id: `lead-p1-${stamp2}`,
+    companyName: `Phase One Lead ${stamp2}`,
+    fitReason: 'phase 1 fixture',
+    contactEmail: `phase1-lead-${stamp2}@example.com`,
+    researchedByAgentId: 'verify-crm',
+  });
+  const plan = await phase1.planResearchedLeadImport({ limit: 500 });
+  assert.ok(
+    plan.rows.some((row) => row.leadId === `lead-p1-${stamp2}` && row.action === 'create'),
+    'the preview plans the copy',
+  );
+  const [beforeCopy] = await db.select({ n: count() }).from(contacts);
+  await assert.rejects(() => phase1.applyResearchedLeadImport({ actor: OPERATOR_ACTOR }), /explicit confirmation/);
+  const [afterRefusedCopy] = await db.select({ n: count() }).from(contacts);
+  assert.equal(afterRefusedCopy?.n, beforeCopy?.n, 'the copy writes nothing without confirmation');
+  const applied = await phase1.applyResearchedLeadImport({ actor: OPERATOR_ACTOR, confirm: true, filter: { limit: 500 } });
+  assert.ok(applied.created >= 1, 'the reviewed copy creates contacts');
+  const importRows = await db.select().from(crmLeadImportRows).where(eq(crmLeadImportRows.batchId, applied.batchId));
+  const copiedRow = importRows.find((row) => row.leadId === `lead-p1-${stamp2}`);
+  assert.equal(copiedRow?.outcome, 'created');
+  const copiedContactId = copiedRow?.contactId ?? '';
+  const [copiedContact] = await db.select().from(contacts).where(eq(contacts.id, copiedContactId));
+  assert.equal(copiedContact?.lifecycleStage, 'prospect', 'a copied lead arrives as a prospect');
+  assert.equal(copiedContact?.source, 'researched-leads');
+  assert.equal(copiedContact?.email?.toLowerCase(), `phase1-lead-${stamp2}@example.com`);
+  // A second copy of the same leads matches instead of duplicating.
+  const secondCopy = await phase1.applyResearchedLeadImport({ actor: OPERATOR_ACTOR, confirm: true, filter: { limit: 500 } });
+  assert.equal(secondCopy.created, 0, 'a repeat copy creates nothing new');
+  await phase1.undoResearchedLeadImport({ batchId: secondCopy.batchId, actor: OPERATOR_ACTOR });
+  // The undo keeps a contact that has activity since the copy.
+  await phase1.logManualCall({ contactId: copiedContactId, actor: OPERATOR_ACTOR, direction: 'outbound', outcome: 'touched after the copy' });
+  const undone = await phase1.undoResearchedLeadImport({ batchId: applied.batchId, actor: OPERATOR_ACTOR });
+  assert.ok(undone.keptReasons.some((item) => item.contactId === copiedContactId), 'the undo keeps a contact that has activity');
+  const [stillThere] = await db.select().from(contacts).where(eq(contacts.id, copiedContactId));
+  assert.ok(stillThere, 'a touched contact survives the undo');
+  const [batchRow] = await db.select().from(crmLeadImports).where(eq(crmLeadImports.id, applied.batchId));
+  assert.equal(batchRow?.status, 'undone');
+  assert.equal(batchRow?.undoneBy, OPERATOR_ACTOR);
+  await assert.rejects(
+    () => phase1.undoResearchedLeadImport({ batchId: applied.batchId, actor: OPERATOR_ACTOR }),
+    /already undone/,
+  );
+
+  // One recorded opt-out, lifted on purpose.
+  const optOutPhone = '+15125550202';
+  const optOutContactId = await findOrCreateContact(db, optOutPhone, { name: 'Verify Opt Out' });
+  await applyDoNotContact(db, { contactId: optOutContactId, reason: 'spoken dnc on the call', setBy: 'verify-crm' });
+  const optOuts = await phase1.listContactSuppressions({ contactId: optOutContactId });
+  assert.ok(optOuts.length >= 1, 'the recorded opt-out is listed on the contact');
+  const optOut = optOuts.find((row) => row.channel === 'all') ?? optOuts[0]!;
+  assert.ok(!optOut.liftedAt, 'a fresh opt-out is not lifted');
+  const blocked = await assertOutboundAllowed({ channel: 'phone', destination: optOutPhone })
+    .then(() => null)
+    .catch((error: unknown) => error as Error);
+  assert.match(String(blocked instanceof Error ? blocked.message : blocked), /do-not-contact request/i);
+  await assert.rejects(
+    () => phase1.liftSuppression({ suppressionId: optOut.id, actor: 'sales-bot', reason: 'agent tried' }),
+    /Only Matthew/,
+  );
+  const lifted = await phase1.liftSuppression({
+    suppressionId: optOut.id,
+    actor: OPERATOR_ACTOR,
+    reason: 'verify: the operator took their call',
+    alsoClearDoNotContact: true,
+  });
+  assert.equal(lifted.clearedDoNotContact, true, 'the contact flag is cleared when asked for');
+  const [liftedRow] = await db.select().from(suppressions).where(eq(suppressions.id, optOut.id));
+  assert.ok(liftedRow?.liftedAt, 'the record is marked lifted, not deleted');
+  assert.equal(liftedRow?.liftedBy, OPERATOR_ACTOR);
+  assert.equal(liftedRow?.liftReason, 'verify: the operator took their call');
+  const [optOutContact] = await db.select().from(contacts).where(eq(contacts.id, optOutContactId));
+  assert.equal(optOutContact?.doNotContact, false, 'do-not-contact is cleared');
+  const afterLift = await assertOutboundAllowed({ channel: 'phone', destination: optOutPhone })
+    .then(() => null)
+    .catch((error: unknown) => error as Error);
+  assert.doesNotMatch(
+    String(afterLift instanceof Error ? afterLift.message : afterLift),
+    /do-not-contact request/i,
+    'a lifted opt-out no longer blocks that channel',
+  );
+  const liftHistory = await getTimeline(optOutContactId);
+  assert.ok(liftHistory.some((row) => row.eventKind === 'opt_out_lifted'), 'the lift is in the history');
+  await assert.rejects(
+    () => phase1.liftSuppression({ suppressionId: optOut.id, actor: OPERATOR_ACTOR, reason: 'again' }),
+    /already lifted/,
+  );
 
   console.log('CRM database checks passed');
 }

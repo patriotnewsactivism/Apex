@@ -231,11 +231,33 @@ for (const width of WIDTHS) {
     if(u.includes('/approvals/counts')) return j({pending:5});
     if(u.includes('/leads/stats')) return j({total:1284,byIndustry:{'commercial real estate':402,'law firms':311},byCity:{'Baton Rouge':210}});
     if(u.includes('/crm/gmail/status')) return j({enabled:false,scope:'https://www.googleapis.com/auth/gmail.readonly',sends:false});
+    // CRM phase 1: the panels the operator works in. Without these the harness
+    // would exercise the new views against an empty payload and call the blank
+    // render clean.
+    if(u.includes('/crm/contacts/statuses')) return j({stages:['prospect','lead','qualified','client','churned'],priorities:['low','normal','high']});
+    if(u.includes('/crm/tasks/due')) return j({date:'2026-10-11',timezone:'America/Chicago',tasks:[
+      {id:'task-1',title:'Ring back the newsroom desk about the records request and the follow-up interview',notes:null,kind:'follow_up',status:'open',priority:'high',dueAt:new Date().toISOString(),dueChicago:'Oct 11, 2026, 9:00 AM',contactId:'contact-1',contactName:'Pat Newsroom Directory Contact With A Very Long Legal Name',contactOrganization:'Baton Rouge Investigative Desk And Publishing Cooperative',overdue:false},
+      {id:'task-2',title:'Send the signed retainer',notes:null,kind:'follow_up',status:'open',priority:'normal',dueAt:new Date(Date.now()-86400000).toISOString(),dueChicago:'Oct 10, 2026, 9:00 AM',contactId:'contact-1',contactName:'Pat Newsroom',contactOrganization:'Baton Rouge Investigative Desk',overdue:true},
+    ]});
+    if(u.includes('/crm/tasks')) return j({timezone:'America/Chicago',tasks:[
+      {id:'task-1',title:'Ring back the newsroom desk',notes:null,kind:'follow_up',status:'open',priority:'high',dueAt:new Date().toISOString(),dueChicago:'Oct 11, 2026, 9:00 AM',contactId:'contact-1',contactName:'Pat Newsroom',contactOrganization:'Baton Rouge Investigative Desk',overdue:false},
+    ]});
+    if(u.includes('/crm/suppressions')) return j({timezone:'America/Chicago',suppressions:[
+      {id:'sup-1',channel:'all',reason:'dnc',source:'cartesia_sales_call',email:null,phoneE164:'+12255550199',createdAt:new Date().toISOString(),expiresAt:null,liftedAt:null,liftedBy:null,liftReason:null},
+      {id:'sup-2',channel:'email',reason:'unsubscribed',source:'webhook',email:'editor@baton-rouge-investigative-desk.example',phoneE164:null,createdAt:new Date().toISOString(),expiresAt:null,liftedAt:new Date().toISOString(),liftedBy:'Matthew',liftReason:'they asked us to resume'},
+    ]});
+    if(u.includes('/crm/contacts/') && u.includes('/suppressions')) return j({suppressions:[
+      {id:'sup-1',channel:'all',reason:'dnc',source:'cartesia_sales_call',email:null,phoneE164:'+12255550199',createdAt:new Date().toISOString(),expiresAt:null,liftedAt:null,liftedBy:null,liftReason:null},
+    ]});
+    if(u.includes('/crm/leads/imports')) return j({imports:[
+      {id:'batch-1',status:'applied',appliedBy:'Matthew',appliedAt:new Date().toISOString(),undoneAt:null,createdCount:12,matched:3,skippedCount:1,notes:null},
+    ]});
+    if(u.includes('/crm/leads')) return j({recordType:'lead',leads:[]});
     if(u.includes('/crm/unmatched')) return j([{id:'unmatched-1',fromAddress:'tips@baton-rouge-investigative-desk.example',subject:NASTY[0],bodyText:'Unmatched inbound note',receivedAt:new Date().toISOString()}]);
     if(u.includes('/crm/duplicates')) return j([{kind:'domain',value:'baton-rouge-investigative-desk.example',contactIds:['contact-1','contact-2']}]);
     if(u.includes('/crm/contacts/') && !u.includes('/export')) return j({
       timezone:'America/Chicago',
-      contact:{id:'contact-1',firstName:'Pat',lastName:'Newsroom',organizationName:'Baton Rouge Investigative Desk',email:'editor@baton-rouge-investigative-desk.example',phoneE164:'+12255550199',city:'Baton Rouge',state:'LA',tags:['newsroom','tier-A'],notes:NASTY[1],doNotContact:false,ownerBot:'newsroom-bot',website:'https://baton-rouge-investigative-desk.example'},
+      contact:{id:'contact-1',firstName:'Pat',lastName:'Newsroom',organizationName:'Baton Rouge Investigative Desk',email:'editor@baton-rouge-investigative-desk.example',phoneE164:'+12255550199',city:'Baton Rouge',state:'LA',tags:['newsroom','tier-A'],notes:NASTY[1],doNotContact:false,ownerBot:'newsroom-bot',website:'https://baton-rouge-investigative-desk.example',lifecycleStage:'qualified',lifecycleStageChangedAt:new Date().toISOString(),lifecycleStageChangedBy:'Matthew',nextFollowUpAt:new Date().toISOString(),nextFollowUpChicago:'Oct 11, 2026, 9:00 AM'},
       identifiers:[{id:'id-1',kind:'email',value:'editor@baton-rouge-investigative-desk.example',verified:true,sourceUrl:'https://baton-rouge-investigative-desk.example/contact',foundAt:new Date().toISOString()}],
       meetings:[],
       timeline:[{id:'tl-1',occurredAt:new Date().toISOString(),occurredChicago:'Oct 3, 2026, 3:13 PM',channel:'email',direction:'inbound',actorName:'Pat Newsroom',eventKind:'reply',subject:'Tip',bodyText:NASTY[1],attachments:[]}],
@@ -246,6 +268,8 @@ for (const width of WIDTHS) {
       email:'editor@baton-rouge-investigative-desk.example',phoneE164:'+12255550199',city:'Baton Rouge',state:'LA',
       tags:['newsroom','tier-A'],doNotContact:false,ownerBot:'newsroom-bot',notes:NASTY[1],
       lastContactedAt:new Date().toISOString(),lastReplyAt:null,lastContactedChicago:'Oct 3, 2026, 3:13 PM',lastReplyChicago:null,
+      lifecycleStage:'lead',lifecycleStageChangedAt:new Date().toISOString(),lifecycleStageChangedBy:'Matthew',
+      nextFollowUpAt:new Date().toISOString(),nextFollowUpChicago:'Oct 11, 2026, 9:00 AM',
     }]});
     return j([]); });
 

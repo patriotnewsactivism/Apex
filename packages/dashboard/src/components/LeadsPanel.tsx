@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { api, type ResearchedLead } from '../lib/api.js';
 import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter, Mail, Phone, Upload } from 'lucide-react';
 import { describeRehearsalOutcome } from '../lib/rehearsal-outcome.js';
+import { LeadImportPanel } from './CrmOperatorPanels.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
 import { COPILOT_PANEL_EVENT, type CopilotPanelEventDetail } from '../copilot/actions.js';
 
@@ -329,6 +330,9 @@ export function LeadsPanel() {
           )}
         </div>
       )}
+
+      {/* The reviewed copy of researched leads into the contact book. */}
+      <LeadImportPanel />
 
       {/* Filter bar */}
       {showFilters && (

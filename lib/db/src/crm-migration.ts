@@ -2,11 +2,21 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Apply the additive CRM migration. Statements are separated by a
+ * CRM migrations, applied in order. Each file is additive and idempotent, and a
+ * new phase is a new file rather than an edit to a file already applied on a
+ * running database.
+ */
+export const CRM_MIGRATION_FILES = [
+  '20261003_crm.sql',
+  '20261011_crm_phase1.sql',
+] as const;
+
+/**
+ * Apply one additive CRM migration. Statements are separated by a
  * "-- STATEMENT" marker so dollar-quoted trigger bodies stay intact.
  */
-export function crmMigrationStatements(): string[] {
-  const sqlPath = fileURLToPath(new URL('../drizzle/20261003_crm.sql', import.meta.url));
+export function crmMigrationStatements(file: string = CRM_MIGRATION_FILES[0]): string[] {
+  const sqlPath = fileURLToPath(new URL(`../drizzle/${file}`, import.meta.url));
   const raw = readFileSync(sqlPath, 'utf8');
   return raw
     .split(/\n-- STATEMENT\n/)
@@ -15,7 +25,9 @@ export function crmMigrationStatements(): string[] {
 }
 
 export async function applyCrmMigration(client: { unsafe: (query: string) => Promise<unknown> }): Promise<void> {
-  for (const statement of crmMigrationStatements()) {
-    await client.unsafe(statement);
+  for (const file of CRM_MIGRATION_FILES) {
+    for (const statement of crmMigrationStatements(file)) {
+      await client.unsafe(statement);
+    }
   }
 }
