@@ -1218,12 +1218,6 @@ function providerBaseURL(provider: ProviderSpec): string | undefined {
   return raw?.replace(/\/$/, '');
 }
 
-/** Resolve the model id at call time so env overrides (QWEN_MODEL) take
- *  effect for the request, telemetry, and ledger without a code change. */
-function providerModel(provider: ProviderSpec): string {
-  return typeof provider.model === 'function' ? provider.model() : provider.model;
-}
-
 function providerActivationIssue(provider: ProviderSpec): string | null {
   if (provider.activationEnv && !enabled(process.env[provider.activationEnv])) {
     return provider.activationDescription ?? `${provider.activationEnv}=true is required`;
