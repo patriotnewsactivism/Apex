@@ -13,11 +13,14 @@ import {
   applyResearchedLeadImport,
   attachUnmatched,
   cancelTask,
+  closeDeal,
   completeTask,
   contactsToCsv,
   createContact,
+  createDeal,
   createTask,
   duplicateSuggestions,
+  getCompanyPage,
   getContact,
   getContactActivity,
   getTimeline,
@@ -26,13 +29,17 @@ import {
   isContactLifecycleStage,
   liftSuppression,
   listActiveSuppressions,
+  listCompanies,
   listContactSuppressions,
+  listDeals,
   listDueTasks,
   listLeadImports,
   listTasks,
   listUnmatched,
   logManualCall,
   mergeContacts,
+  moveDeal,
+  pipelineBoard,
   planResearchedLeadImport,
   rescheduleTask,
   searchContacts,
@@ -43,6 +50,7 @@ import {
   syncGmailReadonly,
   undoResearchedLeadImport,
   updateContact,
+  updateDeal,
 } from '@workspace/core';
 import { CRM_DISPLAY_TIMEZONE, formatChicago } from '@workspace/core';
 
@@ -613,6 +621,131 @@ export function createCrmRouter(): Router {
       res.json(result);
     } catch (error) {
       writeFailure(res, error);
+    }
+  });
+
+  // ─── Phase 2: the pipeline, and the company behind it ─────────────────────
+  //
+  // A deal carries a value, an expected close date, a next step and a won/lost
+  // outcome. Opening and editing one stays on the admin token; marking a deal
+  // won turns its contact into a client, so that needs the operator session,
+  // the same as any other client-status change.
+
+  router.get('/pipeline', async (_req, res) => {
+    try {
+      const board = await pipelineBoard();
+      res.json({
+        timezone: CRM_DISPLAY_TIMEZONE,
+        stages: board.stages.map((stage) => ({
+          ...stage,
+          deals: stage.deals.map((deal) => ({ ...deal, expectedCloseChicago: deal.expectedCloseAt ? formatChicago(deal.expectedCloseAt) : null })),
+        })),
+        unassigned: {
+          ...board.unassigned,
+          deals: board.unassigned.deals.map((deal) => ({ ...deal, expectedCloseChicago: deal.expectedCloseAt ? formatChicago(deal.expectedCloseAt) : null })),
+        },
+        open: board.open,
+        closed: board.closed,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/deals', async (req, res) => {
+    try {
+      const deals = await listDeals({
+        contactId: typeof req.query.contactId === 'string' ? req.query.contactId : null,
+        companyId: typeof req.query.companyId === 'string' ? req.query.companyId : null,
+        limit: Math.min(Math.max(Number(req.query.limit) || 200, 1), 500),
+      });
+      res.json({
+        timezone: CRM_DISPLAY_TIMEZONE,
+        deals: deals.map((deal) => ({ ...deal, expectedCloseChicago: deal.expectedCloseAt ? formatChicago(deal.expectedCloseAt) : null })),
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/deals', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await createDeal({ ...body, actor: OPERATOR_ACTOR });
+      res.status(201).json({ ok: true, dealId: result.dealId });
+    } catch (error) {
+      writeFailure(res, error);
+    }
+  });
+
+  router.patch('/deals/:id', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await updateDeal({ dealId: req.params.id, actor: OPERATOR_ACTOR, patch: body });
+      res.json({ ok: true, changed: result.changed });
+    } catch (error) {
+      writeFailure(res, error);
+    }
+  });
+
+  router.post('/deals/:id/move', async (req, res) => {
+    try {
+      const result = await moveDeal({
+        dealId: req.params.id,
+        actor: OPERATOR_ACTOR,
+        stageId: (req.body as { stageId?: unknown })?.stageId,
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      writeFailure(res, error);
+    }
+  });
+
+  router.post('/deals/:id/close', async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.outcome === 'won' && !(await requireOperatorSession(req, res))) return;
+    try {
+      const result = await closeDeal({
+        dealId: req.params.id,
+        actor: OPERATOR_ACTOR,
+        outcome: body.outcome,
+        amount: body.amount,
+        reason: body.reason,
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      writeFailure(res, error);
+    }
+  });
+
+  router.get('/companies', async (req, res) => {
+    try {
+      const rows = await listCompanies({
+        query: typeof req.query.q === 'string' ? req.query.q : null,
+        industry: typeof req.query.industry === 'string' ? req.query.industry : null,
+        limit: Math.min(Math.max(Number(req.query.limit) || 200, 1), 500),
+      });
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, companies: rows });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/companies/:id', async (req, res) => {
+    try {
+      const page = await getCompanyPage({ companyId: req.params.id });
+      res.json({
+        timezone: CRM_DISPLAY_TIMEZONE,
+        company: page.company,
+        contacts: page.contacts,
+        deals: page.deals.map((deal) => ({ ...deal, expectedCloseChicago: deal.expectedCloseAt ? formatChicago(deal.expectedCloseAt) : null })),
+        totals: page.totals,
+        openTasks: page.openTasks,
+        lastActivityAt: page.lastActivityAt,
+        lastActivityChicago: page.lastActivityAt ? formatChicago(page.lastActivityAt) : null,
+      });
+    } catch (error) {
+      writeFailure(res, error, 404);
     }
   });
 

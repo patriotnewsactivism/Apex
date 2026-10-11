@@ -20,6 +20,7 @@ import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { ContactsPanel } from './components/ContactsPanel.js';
+import { CompaniesPanel, DealsPipelinePanel } from './components/CrmPipelinePanels.js';
 import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
 import { TerritoryAvailabilityPanel } from './components/TerritoryAvailabilityPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
@@ -39,6 +40,7 @@ import {
   Rocket,
   Network,
   Kanban,
+  Building2,
   Terminal,
   ShieldCheck,
   Wifi,
@@ -315,6 +317,8 @@ function Sidebar({
         { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
         { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
         { id: 'contacts', label: 'Contacts', icon: <BookUser size={16} /> },
+        { id: 'deals', label: 'Pipeline', icon: <CircleDollarSign size={16} /> },
+        { id: 'companies', label: 'Companies', icon: <Building2 size={16} /> },
         { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
         { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
       ],
@@ -870,6 +874,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
     contacts: <ContactsPanel />,
+    deals: <DealsPipelinePanel onOpenCompany={() => setActivePage('companies')} />,
+    companies: <CompaniesPanel />,
     territories: <TerritoryAvailabilityPanel />,
     webinars: <WebinarDirector />,
     control: <ControlRoom />,
@@ -908,6 +914,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
     leads: { title: 'Prospects', kicker: 'Revenue' },
     contacts: { title: 'Contacts', kicker: 'Revenue' },
+    deals: { title: 'Pipeline', kicker: 'Revenue' },
+    companies: { title: 'Companies', kicker: 'Revenue' },
     territories: { title: 'Territory Availability', kicker: 'Revenue' },
     webinars: { title: 'Webinar Director', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },

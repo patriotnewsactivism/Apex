@@ -71,6 +71,8 @@ const DRAWER = [
   { id: 'logs', label: 'Activity Log' },
   { id: 'leads', label: 'Prospects' },
   { id: 'contacts', label: 'Contacts' },
+  { id: 'deals', label: 'Pipeline' },
+  { id: 'companies', label: 'Companies' },
   { id: 'suggestions', label: 'Suggestions' },
   { id: 'multiapp', label: 'Portfolio' },
   { id: 'control', label: 'Control Room' },
@@ -94,7 +96,7 @@ const DRAWER = [
 const NAV_ID_TO_LABEL = {
   command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals', 'pending-sends': 'Pending sends',
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
-  'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
+  'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', deals: 'Pipeline', companies: 'Companies', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', 'verify-scale': 'Verify & Scale', artifacts: 'Artifacts',
   scheduled: 'Calendar / Scheduler', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
@@ -253,6 +255,32 @@ for (const width of WIDTHS) {
       {id:'batch-1',status:'applied',appliedBy:'Matthew',appliedAt:new Date().toISOString(),undoneAt:null,createdCount:12,matched:3,skippedCount:1,notes:null},
     ]});
     if(u.includes('/crm/leads')) return j({recordType:'lead',leads:[]});
+    // CRM phase 2: the pipeline board and the company page. A stage column and a
+    // deal both carry long real-world strings on purpose — a board that only
+    // looks clean with short names is not clean.
+    const deal=(i,stageId)=>({id:`deal-${i}`,name:`Documentary rights package for the Baton Rouge investigative desk, season ${i}`,
+      status:'open',amountCents:'1250000.00',amountUsd:12500,probability:0.4,expectedCloseAt:new Date().toISOString(),
+      expectedCloseChicago:'Oct 24, 2026, 3:00 PM',closedAt:null,nextStep:'Send the updated scope and the two-year archive licence',
+      lostReason:null,wonReason:null,notes:null,stageId,stageName:null,stagePosition:null,contactId:'contact-1',
+      contactName:'Pat Newsroom Directory Contact With A Very Long Legal Name',companyId:'company-1',
+      companyName:'Baton Rouge Investigative Desk And Publishing Cooperative',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+    if(u.includes('/crm/pipeline')) return j({timezone:'America/Chicago',
+      stages:[{id:'stage-1',name:'Qualified',position:1,deals:[deal(1,'stage-1')],totalUsd:12500},
+              {id:'stage-2',name:'Proposal sent',position:2,deals:[deal(2,'stage-2'),deal(3,'stage-2')],totalUsd:25000},
+              {id:'stage-3',name:'Negotiation',position:3,deals:[],totalUsd:0},
+              {id:'stage-4',name:'Verbal yes',position:4,deals:[],totalUsd:0}],
+      unassigned:{deals:[],totalUsd:0},
+      open:{count:3,totalUsd:37500,weightedUsd:15000,closingThisMonthUsd:25000},
+      closed:{won:2,lost:1,wonUsd:24000,lostUsd:3000}});
+    if(u.includes('/crm/companies/company-1')) return j({timezone:'America/Chicago',
+      company:{id:'company-1',name:'Baton Rouge Investigative Desk And Publishing Cooperative',domain:'baton-rouge-investigative-desk.example',website:'https://baton-rouge-investigative-desk.example',industry:'Investigative publishing',employeeCount:24,source:'manual'},
+      contacts:[{id:'contact-1',name:'Pat Newsroom Directory Contact With A Very Long Legal Name',email:'editor@baton-rouge-investigative-desk.example',phoneE164:'+12255550199',title:'Editor in chief',city:'Baton Rouge',state:'LA',lifecycleStage:'qualified',doNotContact:false,lastContactedAt:new Date().toISOString(),nextFollowUpAt:new Date().toISOString()}],
+      deals:[deal(1,'stage-1')],totals:{openValueUsd:12500,openCount:1,wonValueUsd:24000,wonCount:2,lostCount:1},openTasks:2,
+      lastActivityAt:new Date().toISOString(),lastActivityChicago:'Oct 11, 2026, 9:00 AM'});
+    if(u.includes('/crm/companies')) return j({timezone:'America/Chicago',companies:[
+      {id:'company-1',name:'Baton Rouge Investigative Desk And Publishing Cooperative',domain:'baton-rouge-investigative-desk.example',website:'https://baton-rouge-investigative-desk.example',industry:'Investigative publishing',employeeCount:24,contactCount:3,openDeals:1,openValueUsd:12500,wonValueUsd:24000},
+      {id:'company-2',name:'Gulf Coast Records Cooperative',domain:'gulf-coast-records.example',website:null,industry:'Archival services',employeeCount:8,contactCount:1,openDeals:0,openValueUsd:0,wonValueUsd:0},
+    ]});
     if(u.includes('/crm/unmatched')) return j([{id:'unmatched-1',fromAddress:'tips@baton-rouge-investigative-desk.example',subject:NASTY[0],bodyText:'Unmatched inbound note',receivedAt:new Date().toISOString()}]);
     if(u.includes('/crm/duplicates')) return j([{kind:'domain',value:'baton-rouge-investigative-desk.example',contactIds:['contact-1','contact-2']}]);
     if(u.includes('/crm/contacts/') && !u.includes('/export')) return j({
@@ -351,7 +379,14 @@ for (const width of WIDTHS) {
     if (!await item.isVisible()) {
       await page.getByText('More systems', { exact:true }).click({ timeout:4000 });
     }
-    await item.click({ timeout:4000 });
+    // The drawer scrolls on its own, independently of the page. With 26 views
+    // the lower items sit past its visible edge, where Playwright's own
+    // scroll-into-view scrolls the page rather than the drawer, the click point
+    // stays under the fixed chrome, and the click retries until it times out.
+    // Scroll the item inside the drawer first, then click it for real.
+    await item.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
+    await page.waitForTimeout(120);
+    await item.click({ timeout:8000 });
     await page.waitForTimeout(600); await measure(label);
 
     // Sales Operations consolidated three former top-level pages (Campaigns,

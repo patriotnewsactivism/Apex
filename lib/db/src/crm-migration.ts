@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 export const CRM_MIGRATION_FILES = [
   '20261003_crm.sql',
   '20261011_crm_phase1.sql',
+  '20261012_crm_phase2.sql',
 ] as const;
 
 /**
