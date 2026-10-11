@@ -21,7 +21,11 @@ dockerfilePath = "Dockerfile"
 [deploy]
 healthcheckPath = "/health"
 healthcheckTimeout = 120
-restartPolicyType = "ON_FAILURE"
+# ALWAYS (not ON_FAILURE): a graceful clean exit still exits 0, which
+# ON_FAILURE treats as intentional and never restarts. An APEX agent that
+# SIGTERMs the api-server (which it did 2026-10-06 and took the whole service
+# down for ~50 min) exits 0, so the container sat dead until a manual redeploy.
+restartPolicyType = "ALWAYS"
 restartPolicyMaxRetries = 10
 # Operator setting on the GitHub integration (not a railway.toml key):
 # Wait for CI / checkSuites is enabled so a red production-checks run cannot
