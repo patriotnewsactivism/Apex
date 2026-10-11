@@ -40,6 +40,21 @@ Researched leads live in their own table until they are copied across. That copy
 
 Lifting clears that channel only. Clearing the contact-level do-not-contact flag is a second, explicit decision (`alsoClearDoNotContact: true`) and is refused while another record still blocks the same person on that channel, so lifting one row cannot quietly unblock a person who opted out twice. `GET /api/crm/contacts/:id/suppressions` lists what is blocking that contact and what has been lifted. `DELETE /api/send-safeguard/suppressions/:id` now lifts the row through the same path instead of deleting it.
 
+## Pipeline
+
+The pipeline uses the `pipeline_stages` and `sales_opportunities` tables that already existed but had no screen and no API. `sales_opportunities` gained `expected_close_at`, `closed_at`, `won_reason`, `lost_reason` and `next_step`, plus the index the board reads on, and the migration seeds four default stages per position for this organization (`Qualified`, `Proposal sent`, `Negotiation`, `Verbal yes`). The seed fills only empty positions, so a stage you rename or add is never overwritten.
+
+- `GET /api/crm/pipeline` — the board: each stage with its open deals and column total, plus the deals that have no stage at all (they would otherwise be invisible), the open totals (count, plain value, weighted by probability, and what is expected to close before the end of the month), and the won/lost counts and values.
+- `POST /api/crm/deals`, `PATCH /api/crm/deals/:id`, `POST /api/crm/deals/:id/move` — open a deal (value, expected close, next step, probability), edit one, move it between columns. Amounts are entered in dollars and stored in cents; a blank value is no value, and a negative or absurd one is refused.
+- `POST /api/crm/deals/:id/close` — `won` or `lost`, with the value that was actually agreed and the reason. A **win** requires the operator dashboard session, because a win is what turns the contact into a client (`lifecycle_stage = client`, recorded with the same changed-by attribution as a hand move). A deal that is already won or lost cannot be closed twice.
+
+Every deal write appends to the linked contact's timeline (`deal_created`, `deal_stage`, `deal_won`/`deal_lost`, `deal_updated`) and to `audit_events`, so a deal's history is on the contact card next to the calls and emails. Nothing here is reachable from an agent: `tools.ts` neither calls nor imports these write paths, and verify-crm asserts it.
+
+## Companies
+
+- `GET /api/crm/companies` — search by name, domain or industry, with per-company contact count, open deals, open value and won value, so the list is a working view rather than a directory.
+- `GET /api/crm/companies/:id` — the company page: its detail, every contact with their client status and do-not-contact flag, every deal with its stage and value, the open/won/lost totals, how many follow-ups are open across those contacts, and when anything last happened.
+
 ## Timeline
 
 `contact_timeline` rejects UPDATE and DELETE with a trigger (`crm_reject_timeline_mutation`, errcode 55000). Corrections are new rows. A merge does not rewrite `contact_id`; `contact_merges` links the loser, and the winner's timeline read includes both histories.

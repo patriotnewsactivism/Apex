@@ -176,6 +176,28 @@ function sourceChecks(): void {
     'the phase 1 migration is applied at boot',
   );
   assert.ok(read('packages/core/src/crm/index.ts').includes("'./operator.js'"), 'the write paths are exported for the routes');
+
+  // ── CRM phase 2: the pipeline and the company page ───────────────────────
+  const pipeline = read('packages/core/src/crm/pipeline.ts');
+  for (const name of ['createDeal', 'updateDeal', 'moveDeal', 'closeDeal']) {
+    assert.equal(new RegExp(`\\b${name}\\b`).test(tools), false, `agents cannot call ${name}`);
+  }
+  assert.equal(/from '\.\/pipeline\.js'/.test(tools), false, 'the agent tools do not import the pipeline write module');
+  // A win is what turns a contact into a client, so it carries the same
+  // authority as a client-status change.
+  assert.ok(pipeline.includes('lifecycleStageChangeAllowed'), 'closing a deal as won checks the actor');
+  assert.ok(pipeline.includes('DEFAULT_PIPELINE_STAGES'), 'the board has default stages to seed');
+  assert.ok(pipeline.includes('unassigned'), 'the board shows deals that have no stage');
+  assert.ok(read('packages/api-server/src/routes/crm.ts').includes('pipelineBoard'), 'the pipeline route serves the board');
+  const phase2Sql = read('lib/db/drizzle/20261012_crm_phase2.sql');
+  assert.equal(/DROP\s+(TABLE|COLUMN)/i.test(phase2Sql), false, 'the phase 2 migration is additive');
+  assert.ok(phase2Sql.includes('expected_close_at'), 'a deal has an expected close date');
+  assert.ok(phase2Sql.includes('closed_at'), 'a deal records when it closed');
+  assert.ok(phase2Sql.includes('WHERE NOT EXISTS'), 'the stage seed never overwrites a stage that exists');
+  assert.ok(
+    read('lib/db/src/crm-migration.ts').includes('20261012_crm_phase2.sql'),
+    'the phase 2 migration is applied at boot',
+  );
 }
 
 async function databaseChecks(): Promise<void> {
@@ -229,7 +251,7 @@ async function databaseChecks(): Promise<void> {
   } = dbMod;
   const phase1 = await import('../packages/core/src/crm/index.js');
   const { assertOutboundAllowed } = await import('../packages/core/src/outbound-compliance-guard.js');
-  const { crmTasks, crmLeadImports, crmLeadImportRows, suppressions } = dbMod;
+  const { crmTasks, crmLeadImports, crmLeadImportRows, suppressions, salesOpportunities, companies: companyTable } = dbMod;
 
   assert.equal(codeCheckTimelineText(true, '482193'), 'pass');
   assert.equal(codeCheckTimelineText(false, '482193'), 'fail');
@@ -749,6 +771,125 @@ async function databaseChecks(): Promise<void> {
     () => phase1.liftSuppression({ suppressionId: optOut.id, actor: OPERATOR_ACTOR, reason: 'again' }),
     /already lifted/,
   );
+
+// ── CRM phase 2 against the real database ────────────────────────────────
+  const phase2 = await import('../packages/core/src/crm/pipeline.js');
+  const stages = await phase2.listPipelineStages();
+  assert.ok(stages.length >= 4, 'the board has stages to work with');
+  assert.equal(stages[0]?.position, 1, 'stages come back in board order');
+  const seededAgain = await phase2.listPipelineStages();
+  assert.equal(seededAgain.length, stages.length, 'asking for the stage list twice does not duplicate it');
+
+  const companyId = crypto.randomUUID();
+  await dbMod.db.insert(companyTable).values({
+    id: companyId,
+    organizationId: 'apex',
+    name: `Phase Two Publishing ${stamp2}`,
+    domain: `phase-two-${stamp2}.example`,
+    industry: 'investigative publishing',
+  }).onConflictDoNothing();
+  const dealContact = await phase1.createContact({
+    actor: OPERATOR_ACTOR,
+    firstName: 'Verify',
+    lastName: `Deal ${stamp2}`,
+    organizationName: `Phase Two Publishing ${stamp2}`,
+    email: `phase2-${stamp2}@example.com`,
+    companyId,
+  });
+  const deal = await phase2.createDeal({
+    actor: OPERATOR_ACTOR,
+    name: `Documentary rights ${stamp2}`,
+    contactId: dealContact.contactId,
+    companyId,
+    amount: '12500',
+    probability: 0.4,
+    expectedCloseAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+    nextStep: 'send the updated scope',
+  });
+  const [dealRow] = await db.select().from(salesOpportunities).where(eq(salesOpportunities.id, deal.dealId));
+  assert.equal(dealRow?.status, 'open');
+  assert.equal(Number(dealRow?.amountCents), 12500, 'the value is stored in cents');
+  assert.equal(dealRow?.stageId, stages[0]?.id, 'a new deal starts in the first stage');
+  await assert.rejects(
+    () => phase2.createDeal({ actor: OPERATOR_ACTOR, name: 'Bad probability', probability: 4 }),
+    /Probability is a fraction/,
+  );
+  await assert.rejects(
+    () => phase2.createDeal({ actor: OPERATOR_ACTOR, name: 'Bad amount', amount: '-12' }),
+    /not a usable amount/,
+  );
+
+  const board = await phase2.pipelineBoard();
+  const firstColumn = board.stages.find((stage) => stage.id === stages[0]?.id);
+  assert.ok(firstColumn?.deals.some((row) => row.id === deal.dealId), 'the deal is on the board in its column');
+  const boardDeal = firstColumn?.deals.find((row) => row.id === deal.dealId);
+  assert.equal(boardDeal?.amountUsd, 12500);
+  assert.equal(boardDeal?.companyName, `Phase Two Publishing ${stamp2}`);
+  assert.ok(board.open.count >= 1 && board.open.totalUsd >= 12500, 'the board totals the open deals');
+  assert.ok(board.open.weightedUsd <= board.open.totalUsd, 'the weighted total is not larger than the plain total');
+
+  const moved = await phase2.moveDeal({ dealId: deal.dealId, actor: OPERATOR_ACTOR, stageId: stages[1]?.id ?? '' });
+  assert.equal(moved.to, stages[1]?.id, 'the deal moves to the stage asked for');
+  await assert.rejects(() => phase2.moveDeal({ dealId: deal.dealId, actor: OPERATOR_ACTOR, stageId: null }), /needs a stage/);
+  await assert.rejects(
+    () => phase2.updateDeal({ dealId: deal.dealId, actor: OPERATOR_ACTOR, patch: { stageId: crypto.randomUUID() } }),
+    /stage was not found/,
+  );
+  const dealHistory = await getTimeline(dealContact.contactId);
+  assert.ok(dealHistory.some((row) => row.eventKind === 'deal_created'), 'opening a deal is in the contact history');
+  assert.ok(dealHistory.some((row) => row.eventKind === 'deal_stage'), 'moving a deal is in the contact history');
+
+  const updated = await phase2.updateDeal({
+    dealId: deal.dealId,
+    actor: OPERATOR_ACTOR,
+    patch: { amount: '9900', nextStep: 'they asked for the archive licence' },
+  });
+  assert.deepEqual([...updated.changed].sort(), ['amountCents', 'nextStep']);
+
+  // A win requires the operator, because it is what makes the contact a client.
+  await assert.rejects(
+    () => phase2.closeDeal({ dealId: deal.dealId, actor: 'sales-bot', outcome: 'won', reason: 'agent tried to close' }),
+    /Only Matthew can mark a deal won/,
+  );
+  const [stillOpen] = await db.select().from(salesOpportunities).where(eq(salesOpportunities.id, deal.dealId));
+  assert.equal(stillOpen?.status, 'open', 'a refused close changes nothing');
+  const won = await phase2.closeDeal({
+    dealId: deal.dealId,
+    actor: OPERATOR_ACTOR,
+    outcome: 'won',
+    amount: '9900',
+    reason: 'two-year archive licence',
+  });
+  assert.equal(won.status, 'won');
+  assert.equal(won.clientStatusChanged, true, 'a won deal turns its contact into a client');
+  const [clientContact] = await db.select().from(contacts).where(eq(contacts.id, dealContact.contactId));
+  assert.equal(clientContact?.lifecycleStage, 'client');
+  const [wonRow] = await db.select().from(salesOpportunities).where(eq(salesOpportunities.id, deal.dealId));
+  assert.ok(wonRow?.closedAt, 'a closed deal records when it closed');
+  assert.equal(wonRow?.wonReason, 'two-year archive licence');
+  assert.equal(Number(wonRow?.amountCents), 9900, 'the closed value is what was actually agreed');
+  const wonHistory = await getTimeline(dealContact.contactId);
+  assert.ok(wonHistory.some((row) => row.eventKind === 'deal_won'), 'the win is in the contact history');
+  await assert.rejects(
+    () => phase2.closeDeal({ dealId: deal.dealId, actor: OPERATOR_ACTOR, outcome: 'lost' }),
+    /already won/,
+  );
+
+  const wonBoard = await phase2.pipelineBoard();
+  assert.ok(wonBoard.closed.won >= 1, 'the board counts the won deal');
+  assert.equal((await phase2.listDeals({ companyId })).length, 1, 'a company reads back its own deals');
+
+  const companyRows = await phase2.listCompanies({ query: `Phase Two Publishing ${stamp2}` });
+  const companyRow = companyRows.find((row) => row.id === companyId);
+  assert.ok(companyRow, 'the company is listed');
+  assert.equal(companyRow?.wonValueUsd, 9900, 'the company row totals what it won');
+  assert.equal(companyRow?.contactCount, 1, 'the company row counts its contacts');
+  const companyPage = await phase2.getCompanyPage({ companyId });
+  assert.equal(companyPage.contacts.length, 1);
+  assert.equal(companyPage.deals.length, 1);
+  assert.equal(companyPage.totals.wonValueUsd, 9900);
+  assert.equal(companyPage.totals.wonCount, 1);
+  await assert.rejects(() => phase2.getCompanyPage({ companyId: crypto.randomUUID() }), /Company not found/);
 
   console.log('CRM database checks passed');
 }
