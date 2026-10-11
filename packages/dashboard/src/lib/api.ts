@@ -185,6 +185,38 @@ export interface SpendSnapshot {
     successfulToolsPerRequest: number | null; requestsPerCompletedTask: number | null;
     bundlingEnabled: boolean; bundleWindowMs: number;
   };
+  /** Workforce output, not raw requests: finished assignments and their cost. */
+  efficiency?: {
+    since: string;
+    completedTasks: number;
+    deterministicTasks: number;
+    requests: number;
+    tasksPerHour: number | null;
+    requestsPerCompletedTask: number | null;
+    costPerCompletedTaskUsd: number | null;
+    tokensPerCompletedTask: number | null;
+    restedProviders: string[];
+  };
+  /** Paid-fallback visibility the operator authorized. */
+  qwenFallback?: {
+    /** Qwen served a request at some point today. */
+    usedToday: boolean;
+    /** Qwen is carrying traffic in the current minute. */
+    activeNow: boolean;
+    requestsUsed: number;
+    requestsLastMinute: number;
+    requestCap: number;
+    spentTodayUsd: number;
+    alertThresholdUsd: number;
+    alert: boolean;
+  };
+  /** The exact routes that blocked the most recent inference request. */
+  capacityDiagnostics?: {
+    at: string;
+    resumeAt: string;
+    blocks: string[];
+    details: string[];
+  } | null;
   day: string;
   persistence: 'postgres+memory' | 'memory-only';
   spentUsd: number;
@@ -382,6 +414,125 @@ export interface CrmContactFilters {
   lastContactedTo?: string;
   replied?: boolean | null;
   campaignId?: string;
+  /** Client's company industry. */
+  industry?: string;
+  /** Has/has not been called. */
+  called?: boolean | null;
+  /** Has/has not been emailed. */
+  emailed?: boolean | null;
+  /** Client status: prospect | lead | qualified | client | churned. */
+  lifecycleStage?: CrmLifecycleStage | null;
+  /** Only contacts with an open follow-up due today (or already overdue). */
+  followUpDueToday?: boolean | null;
+}
+
+/**
+ * Where a person stands: prospect (researched, never contacted), lead
+ * (contacted), qualified (answered and fits), client (paying), churned.
+ * Only Matthew can move a contact between these.
+ */
+export type CrmLifecycleStage = 'prospect' | 'lead' | 'qualified' | 'client' | 'churned';
+
+export const CRM_LIFECYCLE_STAGES: CrmLifecycleStage[] = ['prospect', 'lead', 'qualified', 'client', 'churned'];
+
+export interface CrmTask {
+  id: string;
+  title: string;
+  notes: string | null;
+  kind: string;
+  status: string;
+  priority: string;
+  dueAt: string | null;
+  dueChicago?: string | null;
+  contactId: string | null;
+  contactName: string | null;
+  contactOrganization: string | null;
+  overdue: boolean;
+}
+
+export interface CrmSuppression {
+  id: string;
+  channel: string;
+  reason: string;
+  source: string | null;
+  email: string | null;
+  phoneE164: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+  liftedAt: string | null;
+  liftedBy: string | null;
+  liftReason: string | null;
+}
+
+export interface CrmLeadImportRow {
+  leadId: string;
+  companyName: string;
+  contactName: string | null;
+  email: string | null;
+  phone: string | null;
+  city: string | null;
+  industry: string | null;
+  action: 'create' | 'matched' | 'skipped';
+  reason?: string;
+  existingContactId?: string;
+}
+
+export interface CrmLeadImportPreview {
+  dryRun: boolean;
+  considered: number;
+  wouldCreate: number;
+  alreadyInBook: number;
+  skipped: number;
+  rows: CrmLeadImportRow[];
+  truncated: boolean;
+}
+
+export interface CrmLeadImportBatch {
+  id: string;
+  status: string;
+  appliedBy: string;
+  appliedAt: string;
+  undoneAt: string | null;
+  createdCount: number;
+  matched: number;
+  skippedCount: number;
+  notes: string | null;
+}
+
+export interface CrmLeadImportFilters {
+  limit?: number;
+  status?: string;
+  pipelineState?: string;
+  industry?: string;
+  city?: string;
+  campaignId?: string;
+  reachableOnly?: boolean;
+}
+
+/** One query builder for the contact list, the export, and the copilot. */
+export function crmFilterQuery(params?: CrmContactFilters): string {
+  const qs = new URLSearchParams();
+  if (params?.q) qs.set('q', params.q);
+  if (params?.tag) qs.set('tag', params.tag);
+  if (params?.city) qs.set('city', params.city);
+  if (params?.state) qs.set('state', params.state);
+  if (params?.verifiedOnly) qs.set('verified', 'true');
+  if (params?.doNotContact === true) qs.set('doNotContact', 'true');
+  if (params?.doNotContact === false) qs.set('doNotContact', 'false');
+  if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
+  if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
+  if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
+  if (params?.replied === true) qs.set('replied', 'true');
+  if (params?.replied === false) qs.set('replied', 'false');
+  if (params?.campaignId) qs.set('campaignId', params.campaignId);
+  if (params?.industry) qs.set('industry', params.industry);
+  if (params?.called === true) qs.set('called', 'true');
+  if (params?.called === false) qs.set('called', 'false');
+  if (params?.emailed === true) qs.set('emailed', 'true');
+  if (params?.emailed === false) qs.set('emailed', 'false');
+  if (params?.lifecycleStage) qs.set('lifecycleStage', params.lifecycleStage);
+  if (params?.followUpDueToday === true) qs.set('followUpDueToday', 'true');
+  return qs.toString();
 }
 
 export interface CrmContact {
@@ -405,8 +556,12 @@ export interface CrmContact {
   lastReplyAt: string | null;
   nextFollowUpAt: string | null;
   followUpPaused: boolean;
+  lifecycleStage: CrmLifecycleStage | string;
+  lifecycleStageChangedAt: string | null;
+  lifecycleStageChangedBy: string | null;
   lastContactedChicago?: string | null;
   lastReplyChicago?: string | null;
+  nextFollowUpChicago?: string | null;
 }
 
 export interface CrmIdentifier {
@@ -442,12 +597,25 @@ export interface CrmMeeting {
   status: string | null;
 }
 
+export interface CrmActivityEvent {
+  id: string;
+  kind: 'email' | 'sms' | 'call' | 'timeline';
+  channel: string;
+  occurredAt: string;
+  occurredChicago: string;
+  summary: string;
+  direction: string | null;
+  actor: string | null;
+  detail: Record<string, unknown> | null;
+}
+
 export interface CrmContactDetail {
   timezone: string;
   contact: CrmContact;
   identifiers: CrmIdentifier[];
   meetings: CrmMeeting[];
   timeline: CrmTimelineRow[];
+  activity: CrmActivityEvent[];
 }
 
 export interface CrmUnmatched {
@@ -882,22 +1050,22 @@ export const api = {
 
   crm: {
     list: (params?: CrmContactFilters) => {
+      const query = crmFilterQuery(params);
+      return apiFetch<{ timezone: string; contacts: CrmContact[] }>(`/crm/contacts${query ? `?${query}` : ''}`);
+    },
+    // The CRM's second record type: researched leads, same facet vocabulary.
+    leads: (params?: CrmContactFilters) => {
       const qs = new URLSearchParams();
       if (params?.q) qs.set('q', params.q);
-      if (params?.tag) qs.set('tag', params.tag);
+      if (params?.industry) qs.set('industry', params.industry);
       if (params?.city) qs.set('city', params.city);
-      if (params?.state) qs.set('state', params.state);
-      if (params?.verifiedOnly) qs.set('verified', 'true');
-      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
-      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
-      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
-      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
-      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
-      if (params?.replied === true) qs.set('replied', 'true');
-      if (params?.replied === false) qs.set('replied', 'false');
+      if (params?.called === true) qs.set('called', 'true');
+      if (params?.called === false) qs.set('called', 'false');
+      if (params?.emailed === true) qs.set('emailed', 'true');
+      if (params?.emailed === false) qs.set('emailed', 'false');
       if (params?.campaignId) qs.set('campaignId', params.campaignId);
       const query = qs.toString();
-      return apiFetch<{ timezone: string; contacts: CrmContact[] }>(`/crm/contacts${query ? `?${query}` : ''}`);
+      return apiFetch<{ recordType: string; leads: ResearchedLead[] }>(`/crm/leads${query ? `?${query}` : ''}`);
     },
     get: (id: string) => apiFetch<CrmContactDetail>(`/crm/contacts/${encodeURIComponent(id)}`),
     setDoNotContact: (id: string, value: boolean, reason?: string) =>
@@ -918,25 +1086,88 @@ export const api = {
         body: JSON.stringify({ winnerId, loserId, explicit: true }),
       }),
     exportCsv: (params?: CrmContactFilters) => {
-      const qs = new URLSearchParams();
-      if (params?.q) qs.set('q', params.q);
-      if (params?.tag) qs.set('tag', params.tag);
-      if (params?.city) qs.set('city', params.city);
-      if (params?.state) qs.set('state', params.state);
-      if (params?.verifiedOnly) qs.set('verified', 'true');
-      if (params?.doNotContact === true) qs.set('doNotContact', 'true');
-      if (params?.doNotContact === false) qs.set('doNotContact', 'false');
-      if (params?.ownerBot) qs.set('ownerBot', params.ownerBot);
-      if (params?.lastContactedFrom) qs.set('lastContactedFrom', params.lastContactedFrom);
-      if (params?.lastContactedTo) qs.set('lastContactedTo', params.lastContactedTo);
-      if (params?.replied === true) qs.set('replied', 'true');
-      if (params?.replied === false) qs.set('replied', 'false');
-      if (params?.campaignId) qs.set('campaignId', params.campaignId);
-      const query = qs.toString();
+      const query = crmFilterQuery(params);
       const token = localStorage.getItem('apex_token');
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       return fetch(`${API}/crm/contacts/export${query ? `?${query}` : ''}`, { headers }).then((r) => r.blob());
+    },
+
+    // ─── Phase 1: the parts you work in every day ──────────────────────────
+    stages: () => apiFetch<{ stages: CrmLifecycleStage[]; priorities: string[] }>('/crm/contacts/statuses'),
+    createContact: (body: Record<string, unknown>) =>
+      apiFetch<{ ok: boolean; contactId: string }>('/crm/contacts', { method: 'POST', body: JSON.stringify(body) }),
+    updateContact: (id: string, patch: Record<string, unknown>) =>
+      apiFetch<{ ok: boolean; changed: string[] }>(`/crm/contacts/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    setTags: (id: string, body: { add?: string[]; remove?: string[]; replace?: string[] }) =>
+      apiFetch<{ ok: boolean; tags: string[] }>(`/crm/contacts/${encodeURIComponent(id)}/tags`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    setLifecycle: (id: string, stage: CrmLifecycleStage, reason?: string) =>
+      apiFetch<{ ok: boolean; changed: boolean; from: string; to: string }>(`/crm/contacts/${encodeURIComponent(id)}/lifecycle`, {
+        method: 'POST',
+        body: JSON.stringify({ stage, reason }),
+      }),
+    logCall: (id: string, body: { direction?: 'inbound' | 'outbound'; outcome?: string; notes?: string; occurredAt?: string; durationSeconds?: number }) =>
+      apiFetch<{ ok: boolean; timelineId: string }>(`/crm/contacts/${encodeURIComponent(id)}/calls`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    tasks: {
+      due: () => apiFetch<{ date: string; timezone: string; tasks: CrmTask[] }>('/crm/tasks/due'),
+      list: (params?: { status?: string; contactId?: string }) => {
+        const qs = new URLSearchParams();
+        if (params?.status) qs.set('status', params.status);
+        if (params?.contactId) qs.set('contactId', params.contactId);
+        const query = qs.toString();
+        return apiFetch<{ timezone: string; tasks: CrmTask[] }>(`/crm/tasks${query ? `?${query}` : ''}`);
+      },
+      create: (body: { title: string; contactId?: string; dueAt?: string; dueInDays?: number; priority?: string; kind?: string; notes?: string }) =>
+        apiFetch<{ ok: boolean; taskId: string }>('/crm/tasks', { method: 'POST', body: JSON.stringify(body) }),
+      complete: (id: string, notes?: string) =>
+        apiFetch<{ ok: boolean }>(`/crm/tasks/${encodeURIComponent(id)}/complete`, {
+          method: 'POST',
+          body: JSON.stringify({ notes }),
+        }),
+      cancel: (id: string, reason?: string) =>
+        apiFetch<{ ok: boolean }>(`/crm/tasks/${encodeURIComponent(id)}/cancel`, {
+          method: 'POST',
+          body: JSON.stringify({ reason }),
+        }),
+      reschedule: (id: string, dueAt: string) =>
+        apiFetch<{ ok: boolean; dueAt: string | null }>(`/crm/tasks/${encodeURIComponent(id)}/reschedule`, {
+          method: 'POST',
+          body: JSON.stringify({ dueAt }),
+        }),
+    },
+    leadImport: {
+      preview: (filters: CrmLeadImportFilters) =>
+        apiFetch<CrmLeadImportPreview>('/crm/leads/import/preview', { method: 'POST', body: JSON.stringify(filters) }),
+      apply: (filters: CrmLeadImportFilters) =>
+        apiFetch<{ ok: boolean; batchId: string; created: number; matched: number; skipped: number }>('/crm/leads/import', {
+          method: 'POST',
+          body: JSON.stringify({ ...filters, confirm: true }),
+        }),
+      list: () => apiFetch<{ imports: CrmLeadImportBatch[] }>('/crm/leads/imports'),
+      undo: (batchId: string) =>
+        apiFetch<{ ok: boolean; removed: number; kept: number; keptReasons: Array<{ contactId: string; reason: string }> }>(
+          `/crm/leads/import/${encodeURIComponent(batchId)}/undo`,
+          { method: 'POST' },
+        ),
+    },
+    suppressions: {
+      forContact: (contactId: string) =>
+        apiFetch<{ suppressions: CrmSuppression[] }>(`/crm/contacts/${encodeURIComponent(contactId)}/suppressions`),
+      active: () => apiFetch<{ suppressions: CrmSuppression[]; timezone: string }>('/crm/suppressions'),
+      lift: (id: string, body: { reason?: string; alsoClearDoNotContact?: boolean }) =>
+        apiFetch<{ ok: boolean; channel: string; clearedDoNotContact: boolean; contactId: string | null }>(
+          `/crm/suppressions/${encodeURIComponent(id)}/lift`,
+          { method: 'POST', body: JSON.stringify(body) },
+        ),
     },
   },
 
@@ -1009,17 +1240,56 @@ export const api = {
   },
 
   callBridge: {
-    /** Dial the operator; the customer is dialed once they answer. */
-    start: (body: { operatorNumber: string; customerNumber: string }) =>
+    /** Dial the operator; the customer is dialed once they answer.
+     *  autoJoinAi puts the AI on the bridge muted, listening, before the
+     *  customer is even rung. topic is the operator's briefing for the AI. */
+    start: (body: {
+      /** Optional: omit to use the saved default operator line. */
+      operatorNumber?: string;
+      customerNumber: string;
+      fromNumber?: string;
+      assistantLine?: string;
+      assistantId?: string;
+      topic?: string;
+      autoJoinAi?: boolean;
+    }) =>
       apiFetch<{ id: string; status: string; error?: string }>('/call-bridge/start', {
         method: 'POST',
         body: JSON.stringify(body),
       }),
     /** Poll the live status of a call bridge session. */
     status: (id: string) => apiFetch<CallBridgeSession>(`/call-bridge/${encodeURIComponent(id)}`),
-    /** Dial the Apex Front Desk AI assistant into an already-active call. */
-    bringInAi: (id: string) =>
-      apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/bring-in-ai`, { method: 'POST' }),
+    /** Put the AI on an already-active call. It joins MUTED and listening;
+     *  pass unmute: true to hand it the call at the same moment. */
+    bringInAi: (id: string, unmute = false) =>
+      apiFetch<{ ok: boolean; status: string; aiMuted?: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/bring-in-ai`,
+        { method: 'POST', body: JSON.stringify({ unmute }) },
+      ),
+    /** Hand the call to the AI: unmute its leg so the other party hears it. */
+    takeover: (id: string) =>
+      apiFetch<{ ok: boolean; status: string; aiMuted?: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/takeover`,
+        { method: 'POST' },
+      ),
+    /** Take the call back: mute the AI's leg again, it keeps listening. */
+    handBack: (id: string) =>
+      apiFetch<{ ok: boolean; status: string; aiMuted?: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/hand-back`,
+        { method: 'POST' },
+      ),
+    /** Press digits on the live call — to get past an auto attendant. */
+    dtmf: (id: string, digits: string, target: 'customer' | 'ai' | 'operator' = 'customer') =>
+      apiFetch<{ ok: boolean; target: string; digits: string; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/dtmf`,
+        { method: 'POST', body: JSON.stringify({ digits, target }) },
+      ),
+    /** Mute/unmute the operator's own leg: listen without being heard. */
+    operatorMute: (id: string, muted: boolean) =>
+      apiFetch<{ ok: boolean; operatorMuted: boolean; error?: string }>(
+        `/call-bridge/${encodeURIComponent(id)}/operator-mute`,
+        { method: 'POST', body: JSON.stringify({ muted }) },
+      ),
     join: (id: string, role: 'monitor' | 'whisper' | 'barge') =>
       apiFetch<{ ok: boolean; role: string; error?: string }>(`/call-bridge/${encodeURIComponent(id)}/join`, {
         method: 'POST',
@@ -1032,6 +1302,13 @@ export const api = {
       }),
     /** Hang up every leg of the session. */
     end: (id: string) => apiFetch<{ ok: boolean; status: string }>(`/call-bridge/${encodeURIComponent(id)}/end`, { method: 'POST' }),
+    /** The operator's saved dial settings: their own default line and the
+     *  recurring customer numbers, so a takeover call needs no typing. */
+    dialSettings: () => apiFetch<DialSettings>('/call-bridge/dial-settings'),
+    updateDialSettings: (body: { defaultOperatorNumber?: string; savedNumbers?: SavedDialNumber[] }) =>
+      apiFetch<DialSettings>('/call-bridge/dial-settings', { method: 'PATCH', body: JSON.stringify(body) }),
+    /** Recent bridge calls for the live call monitor (newest first). */
+    sessions: () => apiFetch<{ sessions: LiveSessionSummary[] }>('/call-bridge/sessions'),
   },
 
   missions: {
@@ -1265,6 +1542,27 @@ export type CallBridgeStatus =
   | 'ended'
   | 'failed';
 
+export type SavedDialNumber = { label: string; number: string };
+export interface DialSettings {
+  /** The operator's own line, dialed first; ships defaulted to their cell. */
+  defaultOperatorNumber: string;
+  /** Recurring customer numbers, pickable instead of typed. */
+  savedNumbers: SavedDialNumber[];
+}
+/** A row in the live call monitor. */
+export interface LiveSessionSummary {
+  id: string;
+  status: CallBridgeStatus;
+  operatorNumber: string;
+  customerNumber: string;
+  assistantTopic?: string | null;
+  aiMuted?: boolean | null;
+  fromNumber?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  lastError?: string | null;
+}
+
 export interface CallBridgeSession {
   id: string;
   status: CallBridgeStatus;
@@ -1274,6 +1572,18 @@ export interface CallBridgeSession {
   operatorCallControlId: string | null;
   customerCallControlId: string | null;
   aiCallControlId: string | null;
+  /** True while the AI's conference leg is muted: on the call, listening,
+   *  not yet handed the conversation. */
+  aiMuted?: boolean;
+  aiAutoJoin?: boolean;
+  aiTakeoverAt?: string | null;
+  /** The line the AI answers on, the assistant armed for this call, and what
+   *  the operator told it the call is about. */
+  assistantLine?: string | null;
+  assistantId?: string | null;
+  assistantTopic?: string | null;
+  /** Caller ID every leg of this session dials from. */
+  fromNumber?: string | null;
   lastError: string | null;
   sessionMode?: string;
   buyerName?: string | null;

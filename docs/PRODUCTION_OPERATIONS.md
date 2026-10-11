@@ -358,9 +358,9 @@ Current runtime routing order:
 6. `nvidia/nemotron-3-ultra-550b-a55b:free`
 7. direct Groq GPT-OSS 120B BYOK when enabled
 8. direct Gemini 3.8 Flash BYOK when enabled
-9. `deepseek/deepseek-v4-flash-0731` paid continuity when `APEX_PAID_FALLBACK_ENABLED=true`, Nous Portal (`NOUS_API_KEY`) first on 9 requests in 10 and OpenRouter (`OPENROUTER_API_KEY_4`) on the tenth, each the other's immediate fallback (ADR-020)
+9. `deepseek/deepseek-v4-flash-0731` paid continuity when `APEX_PAID_FALLBACK_ENABLED=true`, on OpenRouter (`OPENROUTER_API_KEY_4`) (ADR-020). Apex no longer calls the Nous Portal provider — that access is cut off.
 
-Qwen (QwenCloud Token Plan) is no longer in the chain (2026-10-05). Authenticated
+Qwen (QwenCloud, metered) is the LAST automatic route (operator decision 2026-10-10): the daily-allowance free chain runs first and Qwen is used only once every free pool is spent. Authenticated
 `GET /api/health/detail` → `llmCapacity.paidFallback.routes` lists which paid
 providers have a configured key; one entry means that provider carries all
 paid traffic.

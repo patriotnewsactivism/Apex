@@ -184,6 +184,9 @@ class PostgresSendSafeguardStore implements SendSafeguardStore {
         ? eq(suppressions.email, normalized)
         : eq(suppressions.phoneE164, normalized),
       or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, now)),
+      // A lifted opt-out no longer blocks: the row stays as the record that the
+      // opt-out happened and was lifted by the operator.
+      isNull(suppressions.liftedAt),
     )).limit(1);
     if (rows.length > 0) return true;
     // Contact-level do-not-contact covers every channel: a STOP by text or an

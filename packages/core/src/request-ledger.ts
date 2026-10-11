@@ -36,6 +36,7 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
+import { paidSpendCapacityWindow } from './spend-ledger.js';
 
 /**
  * An account is identified by a fingerprint of its KEY, not by the env var
@@ -731,18 +732,43 @@ export function requestCapacityWindow(
 }
 
 /**
- * Paid continuity is governed by the spend ledger, not by OpenRouter's free
- * request allowance. It stays inside the emergency all-provider ceiling and
- * the provider's minimum-dispatch interval, but a paced free pool must never
- * veto an enabled, in-budget paid fallback.
+ * Paid continuity is governed by the DOLLAR spend ledger, not by OpenRouter's
+ * free request allowance. It stays inside the emergency all-provider ceiling
+ * and the provider's minimum-dispatch interval, but a paced free pool must
+ * never veto an enabled, in-budget paid fallback.
+ *
+ * Operator decision 2026-10-10: the paid route is now hard-capped by
+ * APEX_DAILY_SPEND_USD (default 0 = spend nothing, fail closed). Before this,
+ * the spend ledger was observability only and the paid route was ungated, so
+ * a busy day could drain the funded OpenRouter credits. We translate the
+ * dollar window into a request-capacity refusal so the agent loop's existing
+ * capacity latch parks paid work until the budget releases (next UTC day, or
+ * the pacing ramp) instead of spending past the cap.
  */
-export function paidProviderCapacityWindow(): RequestCapacityWindow {
-  return calculateRequestCapacityWindow({
+export function paidProviderCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
+  const spend = paidSpendCapacityWindow(at);
+  if (spend.allowed) {
+    return {
+      cap: 0,
+      usedRequests: 0,
+      requestedRequests: 1,
+      pacingAllowance: 0,
+      availableRequests: null,
+      allowed: true,
+      reason: 'uncapped',
+      resumeAt: null,
+    };
+  }
+  return {
     cap: 0,
     usedRequests: 0,
     requestedRequests: 1,
-    pacingEnabled: false,
-  });
+    pacingAllowance: 0,
+    availableRequests: 0,
+    allowed: false,
+    reason: spend.reason === 'paced' ? 'paced' : 'daily_cap',
+    resumeAt: spend.resumeAt,
+  };
 }
 
 function directPoolNumber(

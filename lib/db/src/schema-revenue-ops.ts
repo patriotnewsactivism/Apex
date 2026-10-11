@@ -128,6 +128,15 @@ export const contacts = pgTable('contacts', {
   location: jsonb('location'),
   source: text('source'), // research | import | enrichment | manual
   status: text('status').notNull().default('active'), // active | suppressed | archived
+  /**
+   * Where the person is in the relationship: prospect | lead | qualified |
+   * client | churned. Separate from `status`, which is the record state (a
+   * merged or suppressed record). Only the operator moves this, and every move
+   * writes an audit row plus a timeline row.
+   */
+  lifecycleStage: text('lifecycle_stage').notNull().default('prospect'),
+  lifecycleStageChangedAt: timestamp('lifecycle_stage_changed_at', { withTimezone: true }),
+  lifecycleStageChangedBy: text('lifecycle_stage_changed_by'),
   /** Display organization when the contact is not linked to a companies row (newsrooms, outlets). */
   organizationName: text('organization_name'),
   website: text('website'),
@@ -153,6 +162,7 @@ export const contacts = pgTable('contacts', {
 }, (table) => ({
   orgIdIdx: index('contacts_organization_id_idx').on(table.organizationId),
   companyIdIdx: index('contacts_company_id_idx').on(table.companyId),
+  lifecycleStageIdx: index('contacts_lifecycle_stage_idx').on(table.organizationId, table.lifecycleStage),
   emailPartialUnique: uniqueIndex('contacts_email_unique')
     .on(table.organizationId, table.email)
     .where(sql`${table.email} IS NOT NULL`),
@@ -211,6 +221,14 @@ export const suppressions = pgTable('suppressions', {
   source: text('source'), // webhook | manual | automated
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   expiresAt: timestamp('expires_at', { withTimezone: true }),
+  /**
+   * A lifted opt-out. The row is never deleted — the opt-out happened — but a
+   * row with lifted_at set no longer blocks a send on that channel. Only the
+   * operator can lift one, and the lift writes an audit row plus a timeline row.
+   */
+  liftedAt: timestamp('lifted_at', { withTimezone: true }),
+  liftedBy: text('lifted_by'),
+  liftReason: text('lift_reason'),
 }, (table) => ({
   orgChannelUnique: uniqueIndex('suppressions_org_channel_unique')
     .on(table.organizationId, table.channel)
@@ -548,6 +566,77 @@ export const crmOauthTokens = pgTable('crm_oauth_tokens', {
 }, (table) => ({
   providerEmailUnique: uniqueIndex('crm_oauth_tokens_provider_email_unique').on(table.provider, table.accountEmail),
 }));
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CRM PHASE 1 — follow-up tasks, lead imports, migration markers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The follow-up you owe someone. `dueAt` is what the "due today" list reads;
+ * `contact.nextFollowUpAt` is kept in step with the earliest open task so the
+ * contact list can show it without joining.
+ */
+export const crmTasks = pgTable('crm_tasks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  contactId: uuid('contact_id'),
+  companyId: uuid('company_id'),
+  opportunityId: uuid('opportunity_id'),
+  kind: text('kind').notNull().default('follow_up'), // follow_up | call | email | meeting | admin
+  title: text('title').notNull(),
+  notes: text('notes'),
+  dueAt: timestamp('due_at', { withTimezone: true }),
+  priority: text('priority').notNull().default('normal'), // low | normal | high
+  status: text('status').notNull().default('open'), // open | done | cancelled
+  assignedTo: text('assigned_to'),
+  createdBy: text('created_by').notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  completedBy: text('completed_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  statusDueIdx: index('crm_tasks_status_due_idx').on(table.organizationId, table.status, table.dueAt),
+  contactIdx: index('crm_tasks_contact_idx').on(table.contactId),
+}));
+
+/** One reviewed copy of researched leads into the contact book, and its undo. */
+export const crmLeadImports = pgTable('crm_lead_imports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  status: text('status').notNull().default('applied'), // applied | undone
+  filter: jsonb('filter').$type<Record<string, unknown>>().notNull().default({}),
+  matched: integer('matched').notNull().default(0),
+  createdCount: integer('created_count').notNull().default(0),
+  skippedCount: integer('skipped_count').notNull().default(0),
+  appliedBy: text('applied_by').notNull(),
+  appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
+  undoneBy: text('undone_by'),
+  undoneAt: timestamp('undone_at', { withTimezone: true }),
+  notes: text('notes'),
+});
+
+export const crmLeadImportRows = pgTable('crm_lead_import_rows', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  batchId: uuid('batch_id').notNull(),
+  /** researched_leads.id is text; the row type matches it on purpose. */
+  leadId: text('lead_id').notNull(),
+  contactId: uuid('contact_id'),
+  outcome: text('outcome').notNull(), // created | matched | skipped
+  detail: text('detail'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  batchIdx: index('crm_lead_import_rows_batch_idx').on(table.batchId),
+  batchLeadUnique: uniqueIndex('crm_lead_import_rows_batch_lead_unique').on(table.batchId, table.leadId),
+}));
+
+/**
+ * Exactly-once markers for CRM migration work. Migration statements re-run on
+ * every boot, so anything that must happen once records a marker here.
+ */
+export const crmMigrationMarkers = pgTable('crm_migration_markers', {
+  name: text('name').primaryKey(),
+  appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CALLS (full call tracking - extends callBridgeSessions pattern)

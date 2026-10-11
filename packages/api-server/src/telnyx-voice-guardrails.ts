@@ -13,6 +13,10 @@
 
 import { assertOutboundAllowed, assertContactSendable, commitSmsMessage } from '@workspace/core';
 import crypto from 'crypto';
+import { db, goals } from '@workspace/db';
+import { desc } from 'drizzle-orm';
+import { getOperatorCeo, isSessionUnlocked, unlockSession } from './apex-operator-registry.js';
+import crypto from 'crypto';
 
 // ─── Plan catalog ─────────────────────────────────────────────────────────────
 
@@ -117,6 +121,60 @@ export function getToolDeclarationsForDeepgram(): DeepgramFunctionDeclaration[] 
       },
     },
     {
+      name: 'unlock_operator',
+      description:
+        'Validate the operator access code spoken by the caller. ' +
+        'Call this in the same turn the caller says the code. ' +
+        'On success you become the Apex operator with full authority for the rest of the call. ' +
+        'Never call this speculatively or with guessed codes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: {
+            type: 'string',
+            description: 'The operator access code exactly as spoken by the caller (digits only).',
+          },
+        },
+        required: ['code'],
+      },
+    },
+    {
+      name: 'apex_goal',
+      description:
+        'Submit a goal to the APEX CEO, putting the AI workforce into motion on it. ' +
+        'OPERATOR MODE ONLY — valid only after unlock_operator succeeds. ' +
+        'Confirm the goal title and description with the caller before submitting.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: 'Short goal title (3-200 chars).',
+          },
+          description: {
+            type: 'string',
+            description: 'What the workforce should accomplish and any constraints (10+ chars).',
+          },
+          priority: {
+            type: 'integer',
+            description: '1 (highest) to 10 (lowest). Default 5.',
+          },
+        },
+        required: ['title', 'description'],
+      },
+    },
+    {
+      name: 'apex_status',
+      description:
+        'Report the current status of the APEX workforce: the most recent goals and their states. ' +
+        'OPERATOR MODE ONLY — valid only after unlock_operator succeeds.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+    {
       name: 'transfer_to_owner',
       description:
         'Transfer the caller to the owner / escalate urgently. ' +
@@ -154,6 +212,15 @@ export async function executeServerTool(
 
     case 'transfer_to_owner':
       return executeTransferToOwner(args, callControlId);
+
+    case 'unlock_operator':
+      return executeUnlockOperator(args, callControlId);
+
+    case 'apex_goal':
+      return executeApexGoal(args, callControlId);
+
+    case 'apex_status':
+      return executeApexStatus(callControlId);
 
     default:
       return {
@@ -518,4 +585,94 @@ async function executeTransferToOwner(
       ? "I wasn't able to connect you directly right now, but I've texted the owner to call you back as soon as they can."
       : "I wasn't able to connect you directly right now. Please try calling back shortly, or I can take a message for the owner.",
   };
+}
+
+
+// ─── Operator channel: unlock / goal submission / status ─────────────────────
+
+function executeUnlockOperator(
+  args: Record<string, unknown>,
+  callControlId: string,
+): Record<string, unknown> {
+  const expected = process.env.APEX_OPERATOR_UNLOCK_CODE;
+  const given = String(args.code ?? '').replace(/[^0-9]/g, '');
+  if (!expected) {
+    console.error('[Operator Channel] APEX_OPERATOR_UNLOCK_CODE is not configured.');
+    return { ok: false, error: 'Operator channel is not configured.' };
+  }
+  if (!given || given.length !== expected.length || !safeEqual(given, expected)) {
+    console.warn(`[Operator Channel] Failed unlock attempt on call ${callControlId}.`);
+    return { ok: false, error: 'That code is not valid.' };
+  }
+  unlockSession(callControlId);
+  console.info(`[Operator Channel] Operator unlocked on call ${callControlId}.`);
+  return {
+    ok: true,
+    operator_mode: true,
+    instructions:
+      'Operator mode unlocked. Treat the caller as the owner with full authority over APEX. ' +
+      'You may now submit goals (apex_goal) and report workforce status (apex_status). ' +
+      'Confirm every goal with the caller before submitting it.',
+  };
+}
+
+function safeEqual(a: string, b: string): boolean {
+  try {
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    return false;
+  }
+}
+
+async function executeApexGoal(
+  args: Record<string, unknown>,
+  callControlId: string,
+): Promise<Record<string, unknown>> {
+  if (!isSessionUnlocked(callControlId)) {
+    return { ok: false, error: 'Operator mode is locked. Provide the operator access code first.' };
+  }
+  const title = String(args.title ?? '').trim();
+  const description = String(args.description ?? '').trim();
+  const priority = typeof args.priority === 'number' ? args.priority : 5;
+  if (title.length < 3 || description.length < 10) {
+    return { ok: false, error: 'A goal needs a title (3+ chars) and a description (10+ chars).' };
+  }
+  const ceo = getOperatorCeo();
+  if (!ceo) {
+    return { ok: false, error: 'The APEX workforce is not available right now.' };
+  }
+  try {
+    const goalId = await ceo.submitGoal(title, description, priority);
+    console.info(`[Operator Channel] Goal submitted on call ${callControlId}: ${goalId}`);
+    return {
+      ok: true,
+      goalId,
+      message: `Goal "${title}" submitted to the APEX CEO. The workforce is on it.`,
+    };
+  } catch (err) {
+    console.error('[Operator Channel] Goal submission failed:', err);
+    return { ok: false, error: 'Goal submission failed. ' + (err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function executeApexStatus(
+  callControlId: string,
+): Promise<Record<string, unknown>> {
+  if (!isSessionUnlocked(callControlId)) {
+    return { ok: false, error: 'Operator mode is locked. Provide the operator access code first.' };
+  }
+  try {
+    const recent = await db.select().from(goals).orderBy(desc(goals.createdAt)).limit(5);
+    return {
+      ok: true,
+      goals: recent.map((g) => ({
+        title: g.title,
+        status: g.status,
+        priority: g.priority,
+        createdAt: g.createdAt,
+      })),
+    };
+  } catch (err) {
+    return { ok: false, error: 'Status lookup failed. ' + (err instanceof Error ? err.message : String(err)) };
+  }
 }

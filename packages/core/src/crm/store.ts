@@ -4,18 +4,22 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   auditEvents,
+  callBridgeSessions,
   callOutcomes,
   campaignEnrollments,
+  companies,
   contactIdentifiers,
   contactMerges,
   contactTimeline,
   contacts,
   crmLegacyLinks,
   db,
+  emailSends,
   emailSuppressions,
   inboundUnmatched,
   interactions,
   meetings,
+  researchedLeads,
   sequenceStepExecutions,
   smsMessages,
   suppressions,
@@ -25,12 +29,14 @@ import {
   OPERATOR_ACTOR,
   SendBlockedError,
   assertDoNotContactClear,
+  chicagoDayBounds,
   clearDoNotContactAllowed,
   extractEmailAddress,
   mergeAllowed,
   normalizePhone,
   parseNewsroomCsv,
   toCsv,
+  type ContactLifecycleStage,
   type NewsroomRow,
 } from './pure.js';
 
@@ -626,6 +632,16 @@ export interface ContactSearchFilters {
   lastContactedTo?: string | null;
   replied?: boolean | null;
   campaignId?: string | null;
+  /** Client's company industry (companies.industry via companyId). */
+  industry?: string | null;
+  /** Has/has not been called (per the contact timeline). */
+  called?: boolean | null;
+  /** Has/has not been emailed (per the contact timeline). */
+  emailed?: boolean | null;
+  /** Client status: prospect | lead | qualified | client | churned. */
+  lifecycleStage?: ContactLifecycleStage | null;
+  /** Only contacts with an open follow-up task due today (or overdue). */
+  followUpDueToday?: boolean | null;
   limit?: number;
 }
 
@@ -666,8 +682,111 @@ export async function searchContacts(filters: ContactSearchFilters) {
       SELECT contact_id FROM campaign_enrollments WHERE campaign_id = ${filters.campaignId}::uuid
     )`);
   }
+  if (filters.industry && filters.industry.trim()) {
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM companies c
+      WHERE c.id = ${contacts.companyId} AND lower(c.industry) = ${filters.industry.trim().toLowerCase()}
+    )`);
+  }
+  // Called/emailed are read off the contact timeline, which records a row per
+  // logged interaction regardless of channel. A false filter is the absence of
+  // any such row, so "not emailed" means truly untouched, not merely untracked.
+  if (filters.called === true) {
+    clauses.push(sql`EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'call')`);
+  } else if (filters.called === false) {
+    clauses.push(sql`NOT EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'call')`);
+  }
+  if (filters.emailed === true) {
+    clauses.push(sql`EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'email')`);
+  } else if (filters.emailed === false) {
+    clauses.push(sql`NOT EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'email')`);
+  }
+  if (filters.lifecycleStage) clauses.push(eq(contacts.lifecycleStage, filters.lifecycleStage));
+  if (filters.followUpDueToday === true) {
+    // Same boundary the due list uses: everything due before the end of today
+    // in Chicago, so an overdue follow-up is never hidden by a date filter.
+    const bounds = chicagoDayBounds();
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM crm_tasks t
+      WHERE t.contact_id = ${contacts.id}
+        AND t.status = 'open'
+        AND t.due_at IS NOT NULL
+        AND t.due_at < ${bounds.end}
+    )`);
+  }
   const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);
   return db.select().from(contacts).where(and(...clauses)).orderBy(desc(contacts.updatedAt)).limit(limit);
+}
+
+export interface ResearchedLeadSearchFilters {
+  query?: string | null;
+  industry?: string | null;
+  city?: string | null;
+  pipelineState?: string | null;
+  status?: string | null;
+  called?: boolean | null;
+  emailed?: boolean | null;
+  campaignId?: string | null;
+  limit?: number;
+}
+
+/**
+ * The CRM's second record type: researched leads. Same facet shape as the
+ * contact search so one filter bar drives both lists. Called/emailed are read
+ * from the outreach tables (email_sends, call_bridge_sessions) matched on the
+ * lead's researched contact address/number — a lead has no identifier rows.
+ */
+export async function searchResearchedLeads(filters: ResearchedLeadSearchFilters) {
+  const clauses = [];
+  if (filters.query && filters.query.trim()) {
+    const term = `%${filters.query.trim().toLowerCase()}%`;
+    clauses.push(sql`(
+      lower(${researchedLeads.companyName}) LIKE ${term}
+      OR lower(coalesce(${researchedLeads.website}, '')) LIKE ${term}
+      OR lower(coalesce(${researchedLeads.contactEmail}, '')) LIKE ${term}
+      OR lower(coalesce(${researchedLeads.decisionMakerName}, '')) LIKE ${term}
+    )`);
+  }
+  if (filters.industry && filters.industry.trim()) {
+    clauses.push(sql`lower(coalesce(${researchedLeads.industry}, '')) = ${filters.industry.trim().toLowerCase()}`);
+  }
+  if (filters.city && filters.city.trim()) {
+    clauses.push(sql`lower(coalesce(${researchedLeads.city}, '')) = ${filters.city.trim().toLowerCase()}`);
+  }
+  if (filters.pipelineState) clauses.push(eq(researchedLeads.pipelineState, filters.pipelineState));
+  if (filters.status) clauses.push(eq(researchedLeads.status, filters.status));
+  if (filters.campaignId) clauses.push(eq(researchedLeads.campaignId, filters.campaignId));
+  if (filters.emailed === true) {
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM email_sends es
+      WHERE es.lead_id = ${researchedLeads.id}
+         OR (${researchedLeads.contactEmail} IS NOT NULL AND lower(es.to_email) = lower(${researchedLeads.contactEmail}))
+    )`);
+  } else if (filters.emailed === false) {
+    clauses.push(sql`NOT EXISTS (
+      SELECT 1 FROM email_sends es
+      WHERE es.lead_id = ${researchedLeads.id}
+         OR (${researchedLeads.contactEmail} IS NOT NULL AND lower(es.to_email) = lower(${researchedLeads.contactEmail}))
+    )`);
+  }
+  if (filters.called === true) {
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM call_bridge_sessions cs
+      WHERE ${researchedLeads.contactPhone} IS NOT NULL AND cs.customer_number = ${researchedLeads.contactPhone}
+    )`);
+  } else if (filters.called === false) {
+    clauses.push(sql`NOT EXISTS (
+      SELECT 1 FROM call_bridge_sessions cs
+      WHERE ${researchedLeads.contactPhone} IS NOT NULL AND cs.customer_number = ${researchedLeads.contactPhone}
+    )`);
+  }
+  const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);
+  return db
+    .select()
+    .from(researchedLeads)
+    .where(clauses.length ? and(...clauses) : undefined)
+    .orderBy(desc(researchedLeads.discoveredAt))
+    .limit(limit);
 }
 
 export async function getContact(contactId: string) {
@@ -684,6 +803,116 @@ export async function getTimeline(contactId: string) {
   return db.select().from(contactTimeline)
     .where(inArray(contactTimeline.contactId, ids))
     .orderBy(desc(contactTimeline.occurredAt));
+}
+
+export type ContactActivityKind = 'email' | 'sms' | 'call' | 'timeline';
+
+export interface ContactActivityEvent {
+  id: string;
+  kind: ContactActivityKind;
+  channel: string;
+  occurredAt: Date;
+  summary: string;
+  direction: string | null;
+  actor: string | null;
+  detail: Record<string, unknown> | null;
+}
+
+/**
+ * Every logged interaction with a contact AND its merged family, across ALL
+ * channels — the client card must show one chronological history, not just the
+ * contact_timeline rows. The operator's rule: if it was emailed, called, or
+ * texted, it is logged here. Email matches by identifier address, SMS and
+ * calls match by identifier number.
+ */
+export async function getContactActivity(contactId: string): Promise<ContactActivityEvent[]> {
+  const ids = await familyIds(db, contactId);
+  const identifiers = await db
+    .select()
+    .from(contactIdentifiers)
+    .where(inArray(contactIdentifiers.contactId, ids));
+  const emails = [
+    ...new Set(
+      identifiers
+        .filter((row) => row.kind === 'email')
+        .map((row) => row.value.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+  const phones = [
+    ...new Set(
+      identifiers
+        .filter((row) => row.kind === 'phone')
+        .map((row) => row.value.trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  const [timeline, sentEmails, texts, calls] = await Promise.all([
+    db.select().from(contactTimeline).where(inArray(contactTimeline.contactId, ids)),
+    emails.length
+      ? db.select().from(emailSends).where(inArray(sql`lower(${emailSends.toEmail})`, emails))
+      : Promise.resolve([] as Array<typeof emailSends.$inferSelect>),
+    phones.length
+      ? db.select().from(smsMessages).where(inArray(smsMessages.counterpartyNumber, phones))
+      : Promise.resolve([] as Array<typeof smsMessages.$inferSelect>),
+    phones.length
+      ? db.select().from(callBridgeSessions).where(inArray(callBridgeSessions.customerNumber, phones))
+      : Promise.resolve([] as Array<typeof callBridgeSessions.$inferSelect>),
+  ]);
+
+  const events: ContactActivityEvent[] = [];
+  for (const row of timeline) {
+    events.push({
+      id: `timeline:${row.id}`,
+      kind: 'timeline',
+      channel: row.channel,
+      occurredAt: row.occurredAt,
+      summary: row.subject || row.bodyText || row.eventKind,
+      direction: row.direction,
+      actor: row.actorName,
+      detail: { eventKind: row.eventKind, provider: row.provider ?? null },
+    });
+  }
+  for (const row of sentEmails) {
+    events.push({
+      id: `email:${row.id}`,
+      kind: 'email',
+      channel: 'email',
+      occurredAt: row.sentAt ?? row.createdAt,
+      summary: `${row.subject} — ${row.status}`,
+      direction: 'outbound',
+      actor: row.createdByAgentId ?? null,
+      detail: { to: row.toEmail, status: row.status, campaignId: row.campaignId ?? null, leadId: row.leadId ?? null },
+    });
+  }
+  for (const row of texts) {
+    events.push({
+      id: `sms:${row.id}`,
+      kind: 'sms',
+      channel: 'sms',
+      occurredAt: row.createdAt,
+      summary: row.body,
+      direction: row.direction,
+      actor: row.createdByAgentId ?? null,
+      detail: { status: row.status, from: row.fromNumber, to: row.toNumber },
+    });
+  }
+  for (const row of calls) {
+    events.push({
+      id: `call:${row.id}`,
+      kind: 'call',
+      channel: 'call',
+      occurredAt: row.aiTakeoverAt ?? row.createdAt,
+      summary: `Call ${row.status}${row.assistantTopic ? ` — ${row.assistantTopic}` : ''}`,
+      direction: 'outbound',
+      actor: row.createdByAgentId ?? null,
+      detail: { status: row.status, mode: row.sessionMode, aiMuted: row.aiMuted },
+    });
+  }
+
+  events.sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  return events;
 }
 
 const FREE_EMAIL_DOMAINS = new Set(['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'aol.com']);
@@ -894,7 +1123,7 @@ export async function importNewsroomCsv(csv: string, options: { dryRun: boolean 
 }
 
 export function contactsToCsv(rows: Array<typeof contacts.$inferSelect>): string {
-  const headers = ['name', 'organization', 'email', 'phone', 'city', 'state', 'tags', 'do_not_contact', 'owner_bot', 'last_contacted_at', 'last_reply_at'];
+  const headers = ['name', 'organization', 'email', 'phone', 'city', 'state', 'tags', 'client_status', 'do_not_contact', 'owner_bot', 'next_follow_up_at', 'last_contacted_at', 'last_reply_at'];
   const body = rows.map((row) => [
     [row.firstName, row.lastName].filter(Boolean).join(' '),
     row.organizationName ?? '',
@@ -903,8 +1132,10 @@ export function contactsToCsv(rows: Array<typeof contacts.$inferSelect>): string
     row.city ?? '',
     row.state ?? '',
     (row.tags ?? []).join('|'),
+    row.lifecycleStage ?? '',
     row.doNotContact ? 'true' : 'false',
     row.ownerBot ?? '',
+    row.nextFollowUpAt ? row.nextFollowUpAt.toISOString() : '',
     row.lastContactedAt ? row.lastContactedAt.toISOString() : '',
     row.lastReplyAt ? row.lastReplyAt.toISOString() : '',
   ]);

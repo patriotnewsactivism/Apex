@@ -514,16 +514,19 @@ async function isContactSuppressed(
     .select({ id: suppressions.id })
     .from(suppressions)
     .where(
-      or(
-        and(
-          eq(suppressions.organizationId, organizationId),
-          eq(suppressions.contactId, contactId),
-        ),
-        and(
-          eq(suppressions.organizationId, organizationId),
-          isNull(suppressions.contactId),
-          isNull(suppressions.email),
-          isNull(suppressions.phoneE164),
+      and(
+        isNull(suppressions.liftedAt),
+        or(
+          and(
+            eq(suppressions.organizationId, organizationId),
+            eq(suppressions.contactId, contactId),
+          ),
+          and(
+            eq(suppressions.organizationId, organizationId),
+            isNull(suppressions.contactId),
+            isNull(suppressions.email),
+            isNull(suppressions.phoneE164),
+          ),
         ),
       ),
     )

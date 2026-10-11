@@ -41,6 +41,72 @@ function fail(res: { status: (code: number) => { json: (body: unknown) => void }
 export function createSendSafeguardRouter(): Router {
   const router = Router();
 
+  // Suppression-list management (2026-10-09): the send safeguard blocks calls to
+  // any phone/email in the suppressions table, but no route ever existed to
+  // SEE or CLEAR an entry — an operator whose own test line got auto-suppressed
+  // (rehearsal call dispositioned 'dnc') had no recovery path at all.
+  //
+  // 2026-10-11: clearing a suppression now lifts the row instead of deleting it.
+  // The opt-out happened; the row is the record of it, and the lift is what
+  // unblocks the channel. Every lift is attributed. Lifted rows stay out of the
+  // default list because they no longer block anything.
+  router.get('/suppressions', async (req, res) => {
+    try {
+      const { db, suppressions } = await import('@workspace/db');
+      const { and, desc, or, isNull, gt } = await import('drizzle-orm');
+      const includeLifted = String(req.query.includeLifted ?? '') === 'true';
+      const rows = await db.select({
+        id: suppressions.id,
+        channel: suppressions.channel,
+        phoneE164: suppressions.phoneE164,
+        email: suppressions.email,
+        reason: suppressions.reason,
+        source: suppressions.source,
+        createdAt: suppressions.createdAt,
+        expiresAt: suppressions.expiresAt,
+        liftedAt: suppressions.liftedAt,
+        liftedBy: suppressions.liftedBy,
+        liftReason: suppressions.liftReason,
+      }).from(suppressions)
+        .where(and(
+          or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
+          ...(includeLifted ? [] : [isNull(suppressions.liftedAt)]),
+        ))
+        .orderBy(desc(suppressions.createdAt)).limit(500);
+      res.json({ suppressions: rows });
+    } catch (error) {
+      fail(res, error);
+    }
+  });
+
+  // Lifts one recorded opt-out so the channel can be used again. Same effect as
+  // POST /api/crm/suppressions/:id/lift, reachable here for the rehearsal-line
+  // recovery path this route was added for.
+  router.delete('/suppressions/:id', async (req, res) => {
+    const session = headerValue(req, 'x-apex-operator-session');
+    if (!(await operatorDashboardSessionValid(session))) {
+      res.status(403).json({ error: 'Operator dashboard session required to clear a suppression.' });
+      return;
+    }
+    try {
+      const { liftSuppression } = await import('@workspace/core');
+      const result = await liftSuppression({
+        suppressionId: req.params.id,
+        actor: 'Matthew',
+        reason: 'cleared from the send safeguard panel',
+      });
+      console.warn('[send-safeguard] operator lifted suppression', JSON.stringify({ id: req.params.id, channel: result.channel }));
+      res.json({ ok: true, cleared: { id: req.params.id, channel: result.channel } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not found/i.test(message)) {
+        res.status(404).json({ error: message });
+        return;
+      }
+      fail(res, error);
+    }
+  });
+
   router.get('/jobs', async (_req, res) => {
     try {
       const engine = await getSendSafeguard();

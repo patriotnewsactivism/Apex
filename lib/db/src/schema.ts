@@ -550,6 +550,24 @@ export const callBridgeSessions = pgTable('call_bridge_sessions', {
   operatorCallControlId: text('operator_call_control_id'),
   customerCallControlId: text('customer_call_control_id'),
   aiCallControlId: text('ai_call_control_id'),
+  // The AI joins the conference MUTED and listens; unmuting is the operator's
+  // explicit hand-over. Attaching the assistant to the customer's already
+  // conferenced leg instead (ai_assistant_start on customer_call_control_id)
+  // ends the assistant's conversation about a second after it starts and
+  // nobody on the bridge hears it — see the Call Bridge comment block.
+  aiMuted: boolean('ai_muted').notNull().default(true),
+  // Dial the AI's listening leg alongside the operator, before the customer is
+  // even rung, so it has heard the whole conversation by the time it is asked
+  // to take over.
+  aiAutoJoin: boolean('ai_auto_join').notNull().default(false),
+  // Which assistant is armed for this call, which line it answers on, and what
+  // the operator told it the call is about.
+  assistantId: text('assistant_id'),
+  assistantLine: text('assistant_line'),
+  assistantTopic: text('assistant_topic'),
+  // The caller ID every leg of this session dials from.
+  fromNumber: text('from_number'),
+  aiTakeoverAt: timestamp('ai_takeover_at', { withTimezone: true, mode: 'date' }),
   lastError: text('last_error'),
   createdByAgentId: text('created_by_agent_id'), // 'operator'
   // operator_first dials the operator, then the customer. ai_first dials the

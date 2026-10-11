@@ -42,9 +42,9 @@ APEX runs a free-first chain, with one *unrestricted* paid continuity model last
 6. NVIDIA Nemotron 3 Ultra Free
 7. direct Groq GPT-OSS 120B BYOK when enabled
 8. direct Gemini 3.8 Flash BYOK when enabled
-9. DeepSeek V4 Flash 0731 (`deepseek/deepseek-v4-flash-0731`) — paid, unrestricted continuity, last resort, split between Nous Portal (`NOUS_API_KEY`) and OpenRouter (`OPENROUTER_API_KEY_4`): Nous goes first on 9 requests in 10 and OpenRouter on the tenth, and the other is always the immediate fallback
+9. DeepSeek V4 Flash 0731 (`deepseek/deepseek-v4-flash-0731`) — paid, unrestricted continuity, last resort, on OpenRouter (`OPENROUTER_API_KEY_4`). Apex no longer calls the Nous Portal provider.
 
-Qwen (QwenCloud Token Plan) led this chain under ADR-017. Its plan is exhausted and the operator removed it on 2026-10-05; the route is defined but never called.
+Qwen (QwenCloud, metered) is the LAST automatic route: a daily-allowance free chain (OpenRouter free, Groq, Gemini) runs first and Qwen is used only once every free pool is spent (operator decision 2026-10-10, which supersedes ADR-017's Qwen-first order). The live Qwen credential is pay-as-you-go; the operator prefers the Token Plan balance when it exists.
 
 The operator-persisted OpenRouter model roster remains free-only. The paid routes run only when `APEX_PAID_FALLBACK_ENABLED=true` and at least one of their keys is set (Settings → Paid Continuity, or the platform environment); unset or `false` removes both and APEX parks the workforce when free/BYOK capacity is spent rather than spending further. Every free and BYOK provider is unaffected — do not unset `OPENROUTER_API_KEY_4` to stop paid spend, because it is also a free-pool account. APEX does not apply its spend, token, request, emergency-cap, or pacing governors to the paid routes. A free-model 429 on the funded OpenRouter account blocks only that account's free routing, not its paid route. Upstream OpenRouter/Nous billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply to every route.
 

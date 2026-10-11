@@ -172,6 +172,63 @@ export function clearDoNotContactAllowed(actor: string): boolean {
   return actor === OPERATOR_ACTOR;
 }
 
+/**
+ * Where a person stands with you: prospect (researched, never contacted), lead
+ * (contacted, no reply yet), qualified (they answered and it fits), client
+ * (paying), churned (was a client, is not any more).
+ */
+export const CONTACT_LIFECYCLE_STAGES = ['prospect', 'lead', 'qualified', 'client', 'churned'] as const;
+export type ContactLifecycleStage = (typeof CONTACT_LIFECYCLE_STAGES)[number];
+
+export function isContactLifecycleStage(value: unknown): value is ContactLifecycleStage {
+  return typeof value === 'string' && (CONTACT_LIFECYCLE_STAGES as readonly string[]).includes(value);
+}
+
+/**
+ * Who may move a client status or lift a recorded opt-out. Same rule as
+ * clearing do-not-contact and merging: the operator alone. Agents hold the
+ * admin token, so the actor is never taken from an agent tool.
+ */
+export function lifecycleStageChangeAllowed(actor: string): boolean {
+  return actor === OPERATOR_ACTOR;
+}
+
+/** The calendar date (YYYY-MM-DD) it is right now in the display timezone. */
+export function chicagoDateKey(date: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: CRM_DISPLAY_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/** Minutes east of UTC for the display timezone at that instant. */
+export function chicagoOffsetMinutes(date: Date = new Date()): number {
+  const name = new Intl.DateTimeFormat('en-US', {
+    timeZone: CRM_DISPLAY_TIMEZONE,
+    timeZoneName: 'shortOffset',
+  }).formatToParts(date).find((part) => part.type === 'timeZoneName')?.value ?? 'GMT-6';
+  const match = /GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(name);
+  if (!match) return -360;
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (Number(match[2]) * 60 + Number(match[3] ?? 0));
+}
+
+/**
+ * The UTC instants that bound "today" in the display timezone, plus the local
+ * date key. The offset is taken at the instant asked about, so the bounds stay
+ * right across a daylight-saving change other than on the change itself.
+ */
+export function chicagoDayBounds(now: Date = new Date()): { start: Date; end: Date; date: string } {
+  const date = chicagoDateKey(now);
+  const [year, month, day] = date.split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day) - chicagoOffsetMinutes(now) * 60_000);
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000), date };
+}
+
 export function mergeAllowed(explicit: boolean, actor: string): { ok: true } | { ok: false; error: string } {
   if (!explicit) return { ok: false, error: 'Merge only happens when the operator explicitly confirms it.' };
   if (actor !== OPERATOR_ACTOR) return { ok: false, error: 'Only Matthew can merge contacts.' };
