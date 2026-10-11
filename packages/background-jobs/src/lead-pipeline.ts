@@ -1258,7 +1258,15 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
           sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v2'`,
         ),
       )
-      .orderBy(asc(researchedLeads.createdAt))
+      // Operator imports go FIRST. The pass otherwise works oldest-first, and an
+      // operator's fresh bulk load sits behind every older web lead in the
+      // queue — a 200k-row import would wait days to be verified while the
+      // operator watches Prospects stay empty. Oldest-first still holds within
+      // each group, so the original "clean up older prospects" order is kept.
+      .orderBy(
+        sql`(${researchedLeads.researchedByAgentId} = 'operator-import') DESC`,
+        asc(researchedLeads.createdAt),
+      )
       .limit(batchSize);
 
     let renamed = 0;
