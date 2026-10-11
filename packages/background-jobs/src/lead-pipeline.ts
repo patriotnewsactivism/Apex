@@ -1233,7 +1233,7 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
   if (webIdentityRepairRunning) return { checked: 0, renamed: 0, mismatched: 0, contactsAdded: 0 };
   webIdentityRepairRunning = true;
   try {
-    const batchSize = Math.max(1, Math.min(50, Math.trunc(limit)));
+    const batchSize = Math.max(1, Math.min(500, Math.trunc(limit)));
     const rows = await db
       .select()
       .from(researchedLeads)
@@ -1248,6 +1248,12 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
               sql`${researchedLeads.contactEmail} IS NULL`,
               sql`${researchedLeads.contactPhone} IS NULL`,
             ),
+            // Operator bulk imports (CSV/directory loads) arrive WITH contacts
+            // but never went through a homepage identity check, so they sit in
+            // the Prospects view as "pending verification" forever and can never
+            // become contact-ready. They get the same homepage verification as
+            // web-discovered leads.
+            eq(researchedLeads.researchedByAgentId, 'operator-import'),
           ),
           sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v2'`,
         ),
@@ -1258,7 +1264,10 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{ checked:
     let renamed = 0;
     let mismatched = 0;
     let contactsAdded = 0;
-    await runPool(rows, Math.min(8, batchSize), async (lead) => {
+    // The batch is network-bound (one homepage fetch per lead), so concurrency,
+    // not batch size, sets the throughput of getting imported leads verified.
+    const concurrency = Math.max(1, Math.min(32, Number(process.env.LEAD_IDENTITY_REPAIR_CONCURRENCY ?? 8) || 8));
+    await runPool(rows, Math.min(concurrency, batchSize), async (lead) => {
       const identity = await verifyBusinessWebsiteIdentity({
         website: lead.website,
         industry: lead.industry,
