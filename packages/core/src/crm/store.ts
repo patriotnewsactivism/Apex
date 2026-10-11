@@ -29,12 +29,14 @@ import {
   OPERATOR_ACTOR,
   SendBlockedError,
   assertDoNotContactClear,
+  chicagoDayBounds,
   clearDoNotContactAllowed,
   extractEmailAddress,
   mergeAllowed,
   normalizePhone,
   parseNewsroomCsv,
   toCsv,
+  type ContactLifecycleStage,
   type NewsroomRow,
 } from './pure.js';
 
@@ -636,6 +638,10 @@ export interface ContactSearchFilters {
   called?: boolean | null;
   /** Has/has not been emailed (per the contact timeline). */
   emailed?: boolean | null;
+  /** Client status: prospect | lead | qualified | client | churned. */
+  lifecycleStage?: ContactLifecycleStage | null;
+  /** Only contacts with an open follow-up task due today (or overdue). */
+  followUpDueToday?: boolean | null;
   limit?: number;
 }
 
@@ -694,6 +700,19 @@ export async function searchContacts(filters: ContactSearchFilters) {
     clauses.push(sql`EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'email')`);
   } else if (filters.emailed === false) {
     clauses.push(sql`NOT EXISTS (SELECT 1 FROM contact_timeline t WHERE t.contact_id = ${contacts.id} AND t.channel = 'email')`);
+  }
+  if (filters.lifecycleStage) clauses.push(eq(contacts.lifecycleStage, filters.lifecycleStage));
+  if (filters.followUpDueToday === true) {
+    // Same boundary the due list uses: everything due before the end of today
+    // in Chicago, so an overdue follow-up is never hidden by a date filter.
+    const bounds = chicagoDayBounds();
+    clauses.push(sql`EXISTS (
+      SELECT 1 FROM crm_tasks t
+      WHERE t.contact_id = ${contacts.id}
+        AND t.status = 'open'
+        AND t.due_at IS NOT NULL
+        AND t.due_at < ${bounds.end}
+    )`);
   }
   const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);
   return db.select().from(contacts).where(and(...clauses)).orderBy(desc(contacts.updatedAt)).limit(limit);
@@ -1104,7 +1123,7 @@ export async function importNewsroomCsv(csv: string, options: { dryRun: boolean 
 }
 
 export function contactsToCsv(rows: Array<typeof contacts.$inferSelect>): string {
-  const headers = ['name', 'organization', 'email', 'phone', 'city', 'state', 'tags', 'do_not_contact', 'owner_bot', 'last_contacted_at', 'last_reply_at'];
+  const headers = ['name', 'organization', 'email', 'phone', 'city', 'state', 'tags', 'client_status', 'do_not_contact', 'owner_bot', 'next_follow_up_at', 'last_contacted_at', 'last_reply_at'];
   const body = rows.map((row) => [
     [row.firstName, row.lastName].filter(Boolean).join(' '),
     row.organizationName ?? '',
@@ -1113,8 +1132,10 @@ export function contactsToCsv(rows: Array<typeof contacts.$inferSelect>): string
     row.city ?? '',
     row.state ?? '',
     (row.tags ?? []).join('|'),
+    row.lifecycleStage ?? '',
     row.doNotContact ? 'true' : 'false',
     row.ownerBot ?? '',
+    row.nextFollowUpAt ? row.nextFollowUpAt.toISOString() : '',
     row.lastContactedAt ? row.lastContactedAt.toISOString() : '',
     row.lastReplyAt ? row.lastReplyAt.toISOString() : '',
   ]);
