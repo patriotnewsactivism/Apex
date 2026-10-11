@@ -1200,6 +1200,40 @@ export function makeShortOutreachAngle(companyName: string, industry?: string | 
   return `Show ${companyName} how to capture and follow up with ${industry ?? 'service'} leads in ${city ?? 'their market'} before competitors respond.`;
 }
 
+/**
+ * Does this business's own homepage confirm the company the lead names?
+ *
+ * The test for an operator import: a distinctive token of the company name has
+ * to appear in the site's domain or in the canonical name the homepage
+ * publishes (title / JSON-LD / og:site_name). "Zpl Energy" on zplenergy.com
+ * passes; "Los Angeles Rams Quarterback" on espn.com does not. This is what
+ * stands in for industry affinity on imported rows, where the operator's own
+ * directory labels cannot match anyway.
+ */
+export function homepageConfirmsCompanyName(
+  companyName: string | null | undefined,
+  website: string | null | undefined,
+  canonicalName: string | null | undefined,
+): boolean {
+  const generic = new Set([
+    'the', 'and', 'llc', 'inc', 'corp', 'company', 'group', 'services', 'service', 'texas',
+    'houston', 'north', 'south', 'east', 'west', 'central', 'national', 'american', 'united',
+  ]);
+  const tokens = (value: string | null | undefined): string[] =>
+    (value ?? '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 3 && !generic.has(t));
+  const nameTokens = tokens(companyName);
+  if (nameTokens.length === 0) return false;
+  const domainRoot = (() => {
+    const raw = (website ?? '').toLowerCase().replace(/^[a-z]+:\/\//, '').split('/')[0].split(':')[0];
+    return raw.replace(/^www\./, '').split('.')[0] ?? '';
+  })();
+  const canonical = (canonicalName ?? '').toLowerCase();
+  return nameTokens.some((t) => (domainRoot && (domainRoot.includes(t) || t.includes(domainRoot))) || canonical.includes(t));
+}
+
 function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
   const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
     | { status?: string }
@@ -1259,14 +1293,13 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
               sql`${researchedLeads.contactEmail} IS NULL`,
               sql`${researchedLeads.contactPhone} IS NULL`,
             ),
-            // Operator bulk imports are deliberately NOT selected here for the
-            // moment. Their industry labels come from the operator's own
-            // directory data ("Local Business", "Education & Childcare"), which
-            // industryAffinity() cannot match, so the pass classified every
-            // imported lead as `mismatch` and REJECTED it — real businesses
-            // destroyed at ~2,900/hour. Import verification returns once the
-            // criterion for a bulk import is identity-based (name/canonical-name
-            // match) rather than industry-affinity-based.
+            // Operator bulk imports are verified on IDENTITY, not industry
+            // affinity (see operatorImportMatches below). The operator's own
+            // directory labels ("Local Business", "Education & Childcare") match
+            // no industry keywords, so an affinity-based rule classified every
+            // imported lead as `mismatch` — and mismatch rejects the lead, which
+            // destroyed thousands of real businesses before this was caught.
+            eq(researchedLeads.researchedByAgentId, 'operator-import'),
           ),
           sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v2'`,
         ),
@@ -1302,6 +1335,18 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
         city: lead.city,
         currentName: lead.companyName,
       });
+      const operatorImport = lead.researchedByAgentId === 'operator-import';
+      // A bulk import is verified when its own homepage confirms the BUSINESS,
+      // which is what identity.canonicalName gives us. Industry affinity is a
+      // stricter test the operator's directory labels cannot satisfy, so for
+      // imports a name match stands in — labelled distinctly in `reason` so the
+      // two standards stay auditable. Imports are never rejected on a mismatch:
+      // the platform does not silently delete a list the operator loaded.
+      const importNameMatch = operatorImport && identity.status !== 'verified'
+        && homepageConfirmsCompanyName(lead.companyName, lead.website, identity.canonicalName);
+      const verifiedIdentity = importNameMatch
+        ? { ...identity, status: 'verified' as const, reason: 'homepage_identity_verified_industry_unchecked' }
+        : identity;
       const oldName = lead.companyName;
       const decisionMakerName = lead.decisionMakerName ?? identity.decisionMakerName;
       const contactEmail = lead.contactEmail ?? identity.contactEmail;
@@ -1309,11 +1354,11 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
       const contactSourceUrl = lead.contactSourceUrl ?? identity.contactSourceUrl ?? identity.decisionMakerSourceUrl;
       if ((!lead.contactEmail && contactEmail) || (!lead.contactPhone && contactPhone)) contactsAdded++;
       const candidate = identity.canonicalName?.trim();
-      const newName = candidate && (identity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
+      const newName = candidate && (verifiedIdentity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
         ? candidate
         : oldName;
       if (newName !== oldName) renamed++;
-      if (identity.status === 'mismatch') mismatched++;
+      if (identity.status === 'mismatch' && !importNameMatch) mismatched++;
 
       const existingDraft = (lead.campaignDraft ?? {}) as Record<string, unknown>;
       const campaignDraft = Object.keys(existingDraft).length > 0
@@ -1336,14 +1381,14 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
         contactResearchedAt: contactEmail || contactPhone ? new Date() : lead.contactResearchedAt,
         enrichment: {
           ...(lead.enrichment ?? {}),
-          businessVerification: identity,
+          businessVerification: verifiedIdentity,
           normalizedDomain: normalizeLeadDomain(identity.homepage ?? lead.website),
           summary: `${newName} is a ${lead.industry ?? 'local'} business in ${lead.city ?? 'its market'}.`,
         },
         fitReason: replaceCompanyNameText(lead.fitReason, oldName, newName) ?? lead.fitReason,
         outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
         campaignDraft,
-        ...(identity.status === 'mismatch' ? { status: 'rejected', qualificationScore: 0 } : {}),
+        ...(identity.status === 'mismatch' && !operatorImport ? { status: 'rejected', qualificationScore: 0 } : {}),
       }).where(eq(researchedLeads.id, lead.id));
 
       if (lead.researchCacheKey) {
