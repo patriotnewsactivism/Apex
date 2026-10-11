@@ -10,7 +10,7 @@
  * are paced across the UTC day so a restart/startup swarm cannot spend the
  * entire allowance before the rest of the business day begins:
  *   APEX_TOKEN_CAP_TOTAL=0
- *   APEX_TOKEN_CAPS=openrouter-nex-n2-5-mini-free:200000
+ *   APEX_TOKEN_CAPS=openrouter-nemotron-super:200000
  *   APEX_TOKEN_PACING_ENABLED=true
  *   APEX_TOKEN_PACING_BURST_TOKENS=12000
  *

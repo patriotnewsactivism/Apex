@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -60,7 +60,33 @@ async function main() {
     assert.equal(ledger.accountCapacityWindow(keyA, at + 60000).allowed, true, 'exact minute boundary releases capacity');
   } finally { Date.now = realNow; }
   assert.equal(ledger.getRequestLedgerSnapshot().totalRequests, 6);
-  console.log('Account quotas: shared caps, uncapped sibling, failure accounting, dashboard parity, account RPM and boundary passed.');
+
+  // ── Routing-defect release ────────────────────────────────────────────────
+  // A reservation is taken before every dispatch, so a rung pinned to a
+  // withdrawn `:free` slug used to spend the daily allowance on requests the
+  // provider never served. releaseProviderRequest() gives that slot back — but
+  // never below the calls the account actually answered.
+  const keyE = 'test-credential-e';
+  const charged = ledger.totalRequestsToday();
+  ledger.reserveProviderRequest(keyE);
+  assert.equal(ledger.totalRequestsToday(), charged + 1, 'a reservation is charged on dispatch');
+  ledger.releaseProviderRequest(keyE);
+  assert.equal(ledger.totalRequestsToday(), charged, 'a routing defect gives its slot back');
+
+  ledger.reserveProviderRequest(keyE);
+  ledger.markProviderRequestSucceeded(keyE);
+  ledger.releaseProviderRequest(keyE);
+  assert.equal(
+    ledger.totalRequestsToday(),
+    charged + 1,
+    'a release never drops an account below the calls it answered',
+  );
+
+  const persisted = JSON.parse(readFileSync(process.env.APEX_REQUEST_LEDGER_PATH, 'utf8'));
+  assert.equal(persisted.accounts[fp(keyE)].requests, 1, 'the release is persisted, not just in memory');
+  assert.equal(persisted.accounts[fp(keyE)].succeeded, 1);
+
+  console.log('Account quotas: shared caps, uncapped sibling, failure accounting, dashboard parity, account RPM, boundary and routing-defect release passed.');
 }
 main().then(() => { rmSync(dir, { recursive: true, force: true }); process.exit(0); }, error => {
   console.error(error); rmSync(dir, { recursive: true, force: true }); process.exit(1);

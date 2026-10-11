@@ -1,4 +1,4 @@
-import { getProviderRequestSpacingMs, isAccountQuotaFailure, isCapacityFailure, parseRetryAfterMs, shouldCooldownCredential } from '../packages/core/src/llm-client.js';
+import { getProviderRequestSpacingMs, isAccountQuotaFailure, isCapacityFailure, isRoutingDefectStatus, parseRetryAfterMs, shouldCooldownCredential } from '../packages/core/src/llm-client.js';
 
 let failures = 0;
 function check(label: string, condition: boolean, detail?: unknown): void {
@@ -6,11 +6,23 @@ function check(label: string, condition: boolean, detail?: unknown): void {
   else { failures++; console.error(`  ❌ ${label}`, detail ?? ''); }
 }
 
-check('OpenRouter Nex N2.5 Mini Free default spacing is 500ms', getProviderRequestSpacingMs('openrouter-nex-n2-5-mini-free') === 500);
-check('OpenRouter Nemotron Super default spacing is 500ms', getProviderRequestSpacingMs('openrouter-nemotron-super') === 500);
-process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_NEX_N2_5_MINI_FREE = '';
-check('empty spacing override falls back safely', getProviderRequestSpacingMs('openrouter-nex-n2-5-mini-free') === 500);
-delete process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_NEX_N2_5_MINI_FREE;
+// Uses the free chain head: the retired `openrouter-nex-n2-5-mini-free` spec no
+// longer exists, so naming it here would only measure a default path that no
+// provider takes.
+check('OpenRouter Nemotron Super (free chain head) default spacing is 500ms', getProviderRequestSpacingMs('openrouter-nemotron-super') === 500);
+process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_NEMOTRON_SUPER = '';
+check('empty spacing override falls back safely', getProviderRequestSpacingMs('openrouter-nemotron-super') === 500);
+delete process.env.APEX_LLM_MIN_INTERVAL_MS_OPENROUTER_NEMOTRON_SUPER;
+// Only failures where the provider never served the request refund their
+// reserved slot. A 404 is a withdrawn/unknown model and a 400 indicts the body
+// (not the key); a 429, 5xx or timeout means the provider was engaged, so it
+// keeps its charge against the daily allowance.
+check('a withdrawn/unknown model (404) refunds its reserved request slot', isRoutingDefectStatus(404));
+check('a malformed request body (400) refunds its reserved request slot', isRoutingDefectStatus(400));
+check('a rate limit (429) keeps its charge', !isRoutingDefectStatus(429));
+check('an auth failure (401) keeps its charge', !isRoutingDefectStatus(401));
+check('an upstream failure (503) keeps its charge', !isRoutingDefectStatus(503));
+check('a timeout (no status) keeps its charge', !isRoutingDefectStatus(undefined));
 check('Retry-After numeric seconds are honored', parseRetryAfterMs('2', 0) === 2000);
 check('Retry-After HTTP dates are honored', parseRetryAfterMs('Thu, 01 Jan 1970 00:00:05 GMT', 1000) === 4000);
 check('invalid Retry-After is ignored', parseRetryAfterMs('nonsense', 0) === undefined);

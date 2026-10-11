@@ -119,9 +119,11 @@ function normalizeModel(entry: OpenRouterCatalogEntry) {
   };
 }
 
+// Labels for DEFAULT_OPENROUTER_MODEL_CHAIN. The withdrawn
+// `nex-agi/nex-n2.5-{mini,pro}:free` entries are deliberately absent: keeping a
+// label here would let an operator re-select a slug whose free tier no longer
+// exists, and every attempt on it 404s (see model-routing.ts).
 const DEFAULT_CHAIN_LABELS: Record<string, string> = {
-  'nex-agi/nex-n2.5-mini:free': 'Nex N2.5 Mini Free',
-  'nex-agi/nex-n2.5-pro:free': 'Nex N2.5 Pro Free',
   'nvidia/nemotron-3-super-120b-a12b:free': 'Nemotron 3 Super Free',
   'nvidia/nemotron-3.5-lightning:free': 'Nemotron 3.5 Lightning Free',
   'openrouter/free': 'OpenRouter Free Router',

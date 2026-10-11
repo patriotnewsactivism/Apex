@@ -24,9 +24,12 @@ import {
   type OpenRouterModelPolicy,
 } from '../lib/settingsApi.js';
 
+// Must stay in step with DEFAULT_OPENROUTER_MODEL_CHAIN in
+// packages/core/src/model-routing.ts — four entries, one per free provider rung.
+// The two `nex-agi/nex-n2.5-*:free` slugs are gone: OpenRouter withdrew their
+// free tier and every attempt on them 404'd while still reserving a slot of the
+// daily allowance.
 const ZERO_COST_DEFAULT_CHAIN = [
-  'nex-agi/nex-n2.5-mini:free',
-  'nex-agi/nex-n2.5-pro:free',
   'nvidia/nemotron-3-super-120b-a12b:free',
   'nvidia/nemotron-3.5-lightning:free',
   'openrouter/free',
