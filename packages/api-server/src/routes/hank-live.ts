@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { existsSync, createReadStream, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { desc, gt, inArray, and } from 'drizzle-orm';
+import { desc, eq, gt, inArray, and } from 'drizzle-orm';
 import { db, callBridgeSessions } from '@workspace/db';
 import { joinBridgeSession } from './call-bridge.js';
 import { campaignForCustomer } from './call-bridge-campaigns.js';
@@ -54,6 +54,48 @@ function officeLabel(number: string | null): string | null {
   const camp = campaignForCustomer(number);
   const office = camp?.dynamicVariables?.office;
   return typeof office === 'string' && office ? office : null;
+}
+
+/** Resolve the conference-wide recording for a bridge session.
+ *
+ * Conference recordings (started by call-bridge.ts when the conference goes
+ * live) land in the /v2/recordings store with conference_id set to the
+ * session's conferenceName. The list API has no working conference filter
+ * (same silent-ignore class as conversation_id), so scan the window from the
+ * session's start and match client-side. Prefer dual-channel, then newest. */
+async function findConferenceRecording(
+  conferenceName: string,
+  sinceISO: string,
+): Promise<{ url: string; type: string } | null> {
+  try {
+    const qs = `filter[created_at][gte]=${encodeURIComponent(sinceISO)}&page[size]=100`;
+    const body = (await telnyx(`/v2/recordings?${qs}`)) as {
+      data?: Array<{ conference_id?: string | null; channels?: string | null; created_at?: string; download_urls?: Record<string, string> }>;
+    };
+    const matches = (body.data ?? []).filter((r) => r.conference_id === conferenceName && r.download_urls);
+    if (!matches.length) return null;
+    matches.sort((a, b) => (b.channels === 'dual' ? 1 : 0) - (a.channels === 'dual' ? 1 : 0)
+      || String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+    const urls = matches[0].download_urls!;
+    const type = urls.mp3 ? 'mp3' : urls.wav ? 'wav' : Object.keys(urls)[0];
+    if (type && urls[type]) return { url: urls[type], type };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Recent bridge sessions (any status) used to attach per-session recording
+ *  links to the conversations listed in the RECORDED CALLS section. */
+async function collectBridgeSessionIndex(): Promise<
+  Array<{ id: string; customerNumber: string; createdAt: string }>
+> {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const rows = await db
+    .select({ id: callBridgeSessions.id, customerNumber: callBridgeSessions.customerNumber, createdAt: callBridgeSessions.createdAt })
+    .from(callBridgeSessions)
+    .where(gt(callBridgeSessions.createdAt, since));
+  return rows.map((r) => ({ id: r.id, customerNumber: r.customerNumber, createdAt: r.createdAt.toISOString() }));
 }
 
 interface TelnyxMessage { role?: string; text?: string; created_at?: string }
@@ -278,10 +320,11 @@ tick(); setInterval(tick, 3000);
 
 export function createHankLiveRouter(): Router {
   const router = Router();
+  const keyFromRequest = (req: { query: Record<string, unknown> }): string => String(req.query.key ?? '');
   const okKey = (req: { query: Record<string, unknown> }) => {
     const expected = process.env.APEX_HANK_LIVE_KEY;
     if (!expected) return false;
-    const given = String(req.query.key ?? '');
+    const given = keyFromRequest(req);
     if (given.length !== expected.length) return false;
     let diff = 0;
     for (let i = 0; i < expected.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i);
@@ -296,7 +339,26 @@ export function createHankLiveRouter(): Router {
   router.get('/data', async (req, res) => {
     if (!okKey(req)) { res.status(403).json({ error: 'forbidden' }); return; }
     try {
-      const [calls, sessions] = await Promise.all([collectHankCalls(), collectLiveSessions()]);
+      const [calls, sessions, bridgeIndex] = await Promise.all([
+        collectHankCalls(),
+        collectLiveSessions(),
+        collectBridgeSessionIndex(),
+      ]);
+      // Attach per-session conference-recording links: a conversation started
+      // by a bridge session matches on the dialed number within a tight time
+      // window, and only when Telnyx itself didn't already resolve a recording.
+      const key = keyFromRequest(req);
+      for (const call of calls as Array<{ number?: string | null; created_at?: string | null; recording_url?: string | null }>) {
+        if (call.recording_url || !call.number || !call.created_at) continue;
+        const convAt = Date.parse(call.created_at);
+        let best: { id: string; diff: number } | null = null;
+        for (const b of bridgeIndex) {
+          if (b.customerNumber !== call.number) continue;
+          const diff = Math.abs(Date.parse(b.createdAt) - convAt);
+          if (diff < 10 * 60 * 1000 && (!best || diff < best.diff)) best = { id: b.id, diff };
+        }
+        if (best) call.recording_url = `/api/hank-live/audio-session/${best.id}?key=${key}`;
+      }
       res.json({ ok: true, calls, sessions, fetched_at: new Date().toISOString() });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -316,6 +378,51 @@ export function createHankLiveRouter(): Router {
     const result = await joinBridgeSession(sessionId, wantRole);
     if ('error' in result) { res.status(result.status).json({ error: result.error }); return; }
     res.json({ ok: true, role: result.role });
+  });
+
+  // ── GET /audio-session/:sid — stream a bridge session's conference recording
+  // Resolves a FRESH signed download link on every request (the stored ones
+  // expire after 10 minutes) and streams the audio through Apex. Same page-key
+  // gate as the rest of hank-live.
+  router.get('/audio-session/:sid', async (req, res) => {
+    if (!okKey(req)) { res.status(403).send('forbidden'); return; }
+    try {
+      const [session] = await db
+        .select()
+        .from(callBridgeSessions)
+        .where(eq(callBridgeSessions.id, req.params.sid))
+        .limit(1);
+      if (!session) { res.status(404).send('no such call session'); return; }
+      const since = new Date(session.createdAt.getTime() - 60 * 1000).toISOString();
+      const found = await findConferenceRecording(session.conferenceName, since);
+      if (!found) { res.status(404).send('no recording found for this call yet'); return; }
+      const headers: Record<string, string> = {};
+      if (typeof req.headers.range === 'string') headers.Range = req.headers.range;
+      const upstream = await fetch(found.url, { headers });
+      if (!upstream.ok && upstream.status !== 206) {
+        res.status(502).send(`Recording host returned ${upstream.status}.`);
+        return;
+      }
+      res.status(upstream.status);
+      res.setHeader('Content-Type', upstream.headers.get('content-type') ?? (found.type === 'mp3' ? 'audio/mpeg' : 'audio/wav'));
+      for (const h of ['content-length', 'content-range', 'accept-ranges']) {
+        const v = upstream.headers.get(h);
+        if (v) res.setHeader(h, v);
+      }
+      res.setHeader('Cache-Control', 'private, no-store');
+      if (!upstream.body) { res.end(); return; }
+      const reader = upstream.body.getReader();
+      req.on('close', () => void reader.cancel().catch(() => undefined));
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(Buffer.from(value));
+      }
+      res.end();
+    } catch (err) {
+      if (!res.headersSent) res.status(500).send(err instanceof Error ? err.message : String(err));
+      else res.end();
+    }
   });
 
   // ── GET /audio/:name — permanent call-evidence recordings ────────────────

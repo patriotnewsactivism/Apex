@@ -331,6 +331,62 @@ async function patchAssistantDynamicVariables(
   }
 }
 
+/** Conference-wide recording: ONE continuous dual-channel file per bridge
+ *  session, started when the conference is live and stopped on session end.
+ *
+ *  Before this, only the individual call legs were auto-recorded: the customer
+ *  leg captured ~5 seconds and the AI leg kept re-anchoring into ~6s fragments,
+ *  so the 10/12 Boozman voicemail lost the exact seconds where Hank spoke.
+ *  A conference recording covers the whole bridge with no gaps, and lands in
+ *  the /v2/recordings store with conference_id = conferenceName, which is how
+ *  the hank-live monitor resolves it per session. record_start on an already
+ *  recording conference 422s and record_stop on a non-recording one 422s;
+ *  both are expected and swallowed — the log line says which happened. */
+export async function startConferenceRecording(conferenceName: string): Promise<void> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return;
+  try {
+    const res = await fetch(
+      `https://api.telnyx.com/v2/conferences/${encodeURIComponent(conferenceName)}/actions/record_start`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'mp3', channels: 'dual' }),
+      },
+    );
+    const body = (await res.json().catch(() => null)) as { errors?: Array<{ detail?: string }> } | null;
+    const detail = body?.errors?.[0]?.detail ?? '';
+    if (res.ok) {
+      console.info('[Call Bridge] Conference recording started', { conferenceName });
+    } else if (detail.toLowerCase().includes('already')) {
+      console.info('[Call Bridge] Conference already recording', { conferenceName });
+    } else {
+      console.warn('[Call Bridge] Conference record_start failed', { conferenceName, status: res.status, detail });
+    }
+  } catch (err) {
+    console.warn('[Call Bridge] Conference record_start error', { conferenceName, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+export async function stopConferenceRecording(conferenceName: string): Promise<void> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return;
+  try {
+    const res = await fetch(
+      `https://api.telnyx.com/v2/conferences/${encodeURIComponent(conferenceName)}/actions/record_stop`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    if (res.ok) console.info('[Call Bridge] Conference recording stopped', { conferenceName });
+  } catch {
+    /* conference gone / never recorded — nothing to finalize */
+  }
+}
+
+/** Originate one outbound call leg and join it into the session's conference.
 /** Originate one outbound call leg and join it into the session's conference.
  *  Exported for direct guard testing of its request-shape logic; the network
  *  call itself is not exercised in CI (no live Telnyx account). */
@@ -1356,6 +1412,7 @@ export function createCallBridgeRouter(): Router {
       );
       await Promise.all(legs.map((id) => hangupBridgeLeg(id)));
       await db.update(callBridgeSessions).set({ status: 'ended', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+      void stopConferenceRecording(session.conferenceName);
       res.status(200).json({ ok: true, status: 'ended' });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
@@ -1573,6 +1630,7 @@ export function createCallBridgeWebhookRouter(): Router {
               .update(callBridgeSessions)
               .set({ status: 'ai_joined', lastError: null, updatedAt: new Date() })
               .where(eq(callBridgeSessions.id, session.id));
+            void startConferenceRecording(session.conferenceName);
             console.info('[Call Bridge] AI conference participant joined', { sessionId: session.id, callControlId: ccid });
           } else if (session.status === 'ai_joined') {
             await db
@@ -1629,6 +1687,7 @@ export function createCallBridgeWebhookRouter(): Router {
           if ((session.sessionMode ?? 'operator_first') === 'ai_first') {
             // ai_first exists so the AI is the one talking to the buyer from
             // pickup: it joins the bridge already handed the call.
+            void startConferenceRecording(session.conferenceName);
             await attachSalesAi(session.id, { phase: 'call_start', unmuteNow: true, operatorInitiated: true });
           }
         } else if (state.role === 'ai') {
@@ -1671,11 +1730,13 @@ export function createCallBridgeWebhookRouter(): Router {
             .update(callBridgeSessions)
             .set({ status: 'failed', lastError: `Customer did not answer: ${cause}`, customerCallControlId: null, updatedAt: new Date() })
             .where(eq(callBridgeSessions.id, session.id));
+          void stopConferenceRecording(session.conferenceName);
         } else {
           // Operator hung up (at any stage) or the customer hung up mid-call.
           // end_conference_on_exit on both their legs already told Telnyx to
           // hang up whichever other legs remain — this just reflects that.
           await db.update(callBridgeSessions).set({ status: 'ended', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+          void stopConferenceRecording(session.conferenceName);
           if ((session.sessionMode ?? 'operator_first') === 'ai_first') {
             await maybeSendRehearsalFollowUp(session.id);
           }
