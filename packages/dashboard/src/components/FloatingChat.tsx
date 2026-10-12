@@ -27,9 +27,19 @@ interface FloatingChatProps {
   pageId: string;
   pageTitle: string;
   copilot: CopilotUiController;
+  /** Copilot is enabled for this deployment but this browser holds no operator session. */
+  copilotNeedsSignIn?: boolean;
+  /** Send the operator back through the password login, which mints the operator session. */
+  onCopilotSignIn?: () => void;
 }
 
-export function FloatingChat({ pageId, pageTitle, copilot }: FloatingChatProps) {
+export function FloatingChat({
+  pageId,
+  pageTitle,
+  copilot,
+  copilotNeedsSignIn = false,
+  onCopilotSignIn,
+}: FloatingChatProps) {
   const isMobile = useIsMobile();
   // Desktop starts open; mobile starts minimized so it doesn't cover
   // content on arrival (the Chat nav item or the FAB expands it).
@@ -194,6 +204,8 @@ export function FloatingChat({ pageId, pageTitle, copilot }: FloatingChatProps) 
         onHeaderPointerDown={onHeaderPointerDown}
         onVoiceStatus={setVoiceStatus}
         copilot={copilot}
+        copilotNeedsSignIn={copilotNeedsSignIn}
+        onCopilotSignIn={onCopilotSignIn}
       />
     </div>
   );
