@@ -43,6 +43,16 @@ const PROVIDERS: Array<{
   { name: 'openrouter-nemotron-3-5-lightning-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nvidia/nemotron-3.5-lightning:free', extraHeaders: OPENROUTER_HEADERS },
   { name: 'openrouter-free-router', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'openrouter/free', extraHeaders: OPENROUTER_HEADERS },
   { name: 'openrouter-nemotron-ultra', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'nvidia/nemotron-3-ultra-550b-a55b:free', extraHeaders: OPENROUTER_HEADERS },
+  // Extended free-tier chain (2026-10-12): added after Nemotron quota exhausts
+  { name: 'openrouter-llama-3-2-3b-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'meta-llama/llama-3.2-3b-instruct:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-gemma-3-4b-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'google/gemma-3-4b-it:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-mistral-7b-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'mistralai/mistral-7b-instruct:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-deepseek-r1-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'deepseek/deepseek-r1-0528:free', extraHeaders: OPENROUTER_HEADERS },
+  { name: 'openrouter-qwen-2-7b-free', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'qwen/qwen-2-7b-instruct:free', extraHeaders: OPENROUTER_HEADERS },
+  // Anthropic Claude Haiku via OpenRouter paid route (last resort, gated by APEX_CONVEX_ANTHROPIC_FALLBACK_ENABLED)
+  ...(process.env.APEX_CONVEX_ANTHROPIC_FALLBACK_ENABLED === 'true' ? [
+    { name: 'openrouter-claude-haiku-paid', baseURL: 'https://openrouter.ai/api/v1', fallbackModel: 'anthropic/claude-haiku-4-5', extraHeaders: OPENROUTER_HEADERS },
+  ] : []),
 ];
 
 export type LLMMessage = {

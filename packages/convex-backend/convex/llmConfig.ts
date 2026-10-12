@@ -17,6 +17,12 @@ const PROVIDERS = [
   { name: 'openrouter-nemotron-3-5-lightning-free' },
   { name: 'openrouter-free-router' },
   { name: 'openrouter-nemotron-ultra' },
+  // Extended free-tier chain (2026-10-12): added after Nemotron quota exhausts
+  { name: 'openrouter-llama-3-2-3b-free' },
+  { name: 'openrouter-gemma-3-4b-free' },
+  { name: 'openrouter-mistral-7b-free' },
+  { name: 'openrouter-deepseek-r1-free' },
+  { name: 'openrouter-qwen-2-7b-free' },
 ];
 
 const TOKEN_BUDGETS: Record<string, number> = {
