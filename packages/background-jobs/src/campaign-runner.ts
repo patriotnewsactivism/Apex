@@ -30,6 +30,7 @@ import {
   normalizeLeadDomain,
   insertDiscoveredLead,
   processLeadPipelineBacklog,
+  recoverStuckLeadIdentities,
   repairWebLeadIdentityBatch,
   inspectFirstPartyContactUrl,
 } from './lead-pipeline.js';
@@ -912,6 +913,13 @@ export class CampaignRunner {
       const config = getLeadPipelineConfig();
       void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16))
         .catch((err) => console.warn('[lead-identity] background repair failed:', err instanceof Error ? err.message : String(err)));
+      // The recovery lane works the rows the main pass can no longer reach: a
+      // homepage fetch that timed out under the current scan version, an import
+      // still holding the pre-#370 industry-affinity mismatch, or a row the main
+      // pass's WHERE never selected. It carries its own attempt ledger, so it
+      // drains and then stops on its own rather than hammering dead domains.
+      void recoverStuckLeadIdentities(Number(process.env.LEAD_IDENTITY_RECOVERY_BATCH ?? 250))
+        .catch((err) => console.warn('[lead-identity-recovery] background recovery failed:', err instanceof Error ? err.message : String(err)));
       void this.enrichVerifiedContactsFromSearch(Number(process.env.LEAD_CONTACT_SEARCH_BATCH ?? 6))
         .catch((err) => console.warn('[lead-contact-search] background search failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();

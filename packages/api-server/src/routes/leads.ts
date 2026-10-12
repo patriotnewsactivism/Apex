@@ -321,6 +321,23 @@ export function createLeadsRouter(): Router {
     }
   });
 
+  // ─── POST /api/leads/recover-batch — work the rows the pass can no longer reach ──
+  // The main verify pass stamps its scan version even on a homepage fetch that
+  // timed out, so those rows are invisible to it forever. This runs one
+  // recovery batch synchronously and returns its counters, so an operator can
+  // tell a drained backlog (checked: 0) from a real repair
+  // (verified: 30, contactsAdded: 6).
+  router.post('/recover-batch', async (req, res) => {
+    try {
+      const { recoverStuckLeadIdentities } = await import('@workspace/background-jobs');
+      const limit = Math.max(1, Math.min(2000, Number((req.body as { limit?: number } | undefined)?.limit ?? 200) || 200));
+      const result = await recoverStuckLeadIdentities(limit);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ─── POST /api/leads/import — CSV or JSON, preview unless commit=true ────
   router.post('/import', async (req, res) => {
     try {
