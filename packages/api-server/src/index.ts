@@ -146,11 +146,7 @@ async function main() {
   // routing traffic. The operational snapshot (accounts, spend, caps, workers,
   // pause state) lives on authenticated GET /api/health/detail.
   app.get('/health', (_req, res) => {
-    if (!runtimeReady) {
-      res.status(200).json({ status: runtimeState, build: getBuildInfo() });
-      return;
-    }
-    sendPublicHealth(res, { broken: isTaskQueueBroken(), build: getBuildInfo() });
+    sendPublicHealth(res, { broken: !runtimeReady || isTaskQueueBroken(), build: getBuildInfo() });
   });
 
   // Everything below depends on ceo/workforce, which do not exist until
