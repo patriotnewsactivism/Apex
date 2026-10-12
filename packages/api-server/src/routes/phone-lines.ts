@@ -25,15 +25,36 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Resolve a Telnyx recording for a call id, trying the ids we might have stored. */
+/**
+ * Resolve a Telnyx recording for a call id.
+ *
+ * AI (TeXML) conversations carry their own recording_url — the recordings list
+ * API has NO conversation_id filter: Telnyx silently ignores it and returns the
+ * newest account-wide recording, which made every call-log entry play the same
+ * audio. Never query the recordings list by conversation_id.
+ */
 async function findTelnyxRecordingUrl(callId: string): Promise<{ url: string; type: string } | null> {
   const apiKey = process.env.TELNYX_API_KEY;
   if (!apiKey) return null;
   const bare = callId.replace(/^telnyx-ai:/, '');
+  if (callId.startsWith('telnyx-ai:')) {
+    try {
+      const res = await fetch(`https://api.telnyx.com/v2/ai/conversations/${encodeURIComponent(bare)}`, {
+        headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'apex-phone-lines' },
+      });
+      if (res.ok) {
+        const body = (await res.json()) as { data?: { recording_url?: string | null } };
+        const ru = body.data?.recording_url;
+        if (ru) return { url: ru, type: ru.includes('.mp3') ? 'mp3' : 'wav' };
+      }
+    } catch {
+      /* fall through to null below */
+    }
+    return null;
+  }
   const filters = [
     `filter[call_leg_id]=${encodeURIComponent(bare)}`,
     `filter[call_session_id]=${encodeURIComponent(bare)}`,
-    `filter[conversation_id]=${encodeURIComponent(bare)}`,
   ];
   for (const filter of filters) {
     const response = await fetch(`https://api.telnyx.com/v2/recordings?${filter}&page[size]=1`, {
