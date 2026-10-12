@@ -102,10 +102,15 @@ function main(): void {
       /emergencyCap: requestLedger\.emergencyCap/.test(source) &&
       /directProviders: requestLedger\.directProviders/.test(source),
   );
+  // Inspect the real handler body. The handler may check readiness before it
+  // answers (the not-ready branch added with listen-before-bootstrap), so the
+  // probe is "answers through sendPublicHealth, and nothing in the handler
+  // carries a capacity snapshot", not "sendPublicHealth is the first statement".
+  const publicHealthHandler = /app\.get\('\/health', \(_req, res\) => \{([\s\S]*?)\n\s*\}\);/.exec(source)?.[1] ?? '';
   check(
     'public /health is the minimal probe, not the capacity snapshot',
-    /app\.get\('\/health', \(_req, res\) => \{\s*sendPublicHealth\(/.test(source) &&
-      !/sendPublicHealth[\s\S]{0,240}llmRequests/.test(source),
+    /sendPublicHealth\(/.test(publicHealthHandler) &&
+      !/llmRequests|requestLedger|allProviderUsed|emergencyCap|directProviders/.test(publicHealthHandler),
   );
 
   if (failures > 0) {
