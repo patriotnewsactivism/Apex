@@ -75,6 +75,8 @@ import {
 } from './copilot/actions.js';
 import { CopilotOverlay, type CopilotOverlayState } from './copilot/CopilotOverlay.js';
 import { isCopilotClientFeatureEnabled } from './copilot/feature-flag.js';
+import { resolveCopilotAvailability, COPILOT_OPERATOR_SESSION_REQUIRED } from './copilot/availability.js';
+import { ApiError } from './lib/api.js';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 10_000, retry: 2 } },
@@ -749,8 +751,22 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     queryFn: () => api.chat.copilotStatus(),
     enabled: COPILOT_CLIENT_FLAG_ENABLED,
     staleTime: 60_000,
+    // A 403 here is a settled answer — this device holds no operator session —
+    // and retrying it only delays the "sign in again" control behind two
+    // pointless round trips. Anything else still gets the default retries.
+    retry: (attempt, error) =>
+      !(error instanceof ApiError && error.status === COPILOT_OPERATOR_SESSION_REQUIRED) && attempt < 2,
   });
-  const copilotAvailable = COPILOT_CLIENT_FLAG_ENABLED && copilotStatus.data?.enabled === true;
+  const copilotAvailability = resolveCopilotAvailability({
+    clientFlagEnabled: COPILOT_CLIENT_FLAG_ENABLED,
+    status: copilotStatus.data,
+    errorStatus: copilotStatus.error instanceof ApiError ? copilotStatus.error.status : null,
+  });
+  const copilotAvailable = copilotAvailability === 'ready';
+  // Enabled, but this browser has no operator session: the operator can fix
+  // that with a sign-in, so the chat offers exactly that instead of silently
+  // rendering no Copilot control at all.
+  const copilotNeedsSignIn = copilotAvailability === 'needs-sign-in';
 
   const stopCopilot = useCallback((reason?: string) => {
     copilotRunRef.current += 1;
@@ -1084,7 +1100,13 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           unmounts when activePage changes, so the conversation and any live
           voice call survive navigation. It receives the page Don is viewing
           so the agent knows what's on his screen. */}
-      <FloatingChat pageId={activePage} pageTitle={meta.title} copilot={copilotController} />
+      <FloatingChat
+        pageId={activePage}
+        pageTitle={meta.title}
+        copilot={copilotController}
+        copilotNeedsSignIn={copilotNeedsSignIn}
+        onCopilotSignIn={onLogout}
+      />
       <CopilotOverlay state={copilotOverlay} />
     </div>
   );
