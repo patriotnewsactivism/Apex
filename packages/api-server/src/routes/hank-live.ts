@@ -433,6 +433,11 @@ export function createHankLiveRouter(): Router {
   const AUDIO_FILES: Record<string, string> = {
     'boozman-20261012': 'boozman-20261012.mp3',
     'westerman-20261012': 'westerman-20261012.mp3',
+    'morgan-nick-20261012': 'morgan-nick-20261012.mp3',
+    'polk-prosecutor-20261012': 'polk-prosecutor-20261012.mp3',
+    'polk-county-clerk-20261012': 'polk-county-clerk-20261012.mp3',
+    'polk-county-judge-20261012': 'polk-county-judge-20261012.mp3',
+    'cotton-20261012': 'cotton-20261012.mp3',
   };
   const audioDir = (() => {
     const viaCwd = resolve(process.cwd(), 'packages/api-server/src/routes/hank-audio');
