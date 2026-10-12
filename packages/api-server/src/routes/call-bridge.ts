@@ -578,6 +578,42 @@ export async function startAiFirstSession(input: {
   return { id };
 }
 
+export async function joinBridgeSession(sessionId: string, role: string): Promise<{ ok: true; role: string } | { error: string; status: number }> {
+  try {
+    if (role !== 'monitor' && role !== 'whisper' && role !== 'barge') {
+      return { error: 'role must be monitor, whisper, or barge.', status: 400 };
+    }
+    const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
+    if (!session) return { error: 'Call bridge session not found.', status: 404 };
+    if (session.status === 'ended' || session.status === 'failed') {
+      return { error: `This call is already ${session.status}.`, status: 409 };
+    }
+    if (session.operatorNumber === session.customerNumber) {
+      return { error: 'You are already the buyer on this call. A second join would ring the same phone.', status: 409 };
+    }
+    if (role === 'whisper' && !session.aiCallControlId) {
+      return { error: 'Whisper needs a separate AI leg. Use Listen or Talk on this call.', status: 409 };
+    }
+    const result = await dialBridgeLeg({
+      to: session.operatorNumber,
+      role,
+      sessionId: session.id,
+      endConferenceOnExit: false,
+      supervisorRole: role,
+      whisperCallControlIds: session.aiCallControlId ? [session.aiCallControlId] : undefined,
+      operatorInitiated: true,
+    });
+    if ('error' in result) return { error: result.error, status: 502 };
+    await db.update(callBridgeSessions).set({
+      operatorCallControlId: result.callControlId,
+      operatorJoinRole: role,
+      updatedAt: new Date(),
+    }).where(eq(callBridgeSessions.id, session.id));
+    return { ok: true, role };
+  } catch (err) {
+    return { error: errorMessage(err), status: 500 };
+  }
+}
 // Only the customer leg reaches the contact, so it alone writes the CRM
 // timeline row, and only once Telnyx accepted the dial: a leg still held in
 // Pending sends never gets here. The release hook uses this too, and there the
@@ -1455,51 +1491,10 @@ export function createCallBridgeRouter(): Router {
 
   // ── POST /:id/join — dial the operator in as monitor, whisper, or barge ────
   router.post('/:id/join', async (req, res) => {
-    try {
-      const role = (req.body ?? {}).role as string;
-      if (role !== 'monitor' && role !== 'whisper' && role !== 'barge') {
-        res.status(400).json({ error: 'role must be monitor, whisper, or barge.' });
-        return;
-      }
-      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, req.params.id)).limit(1);
-      if (!session) {
-        res.status(404).json({ error: 'Call bridge session not found.' });
-        return;
-      }
-      if (session.status === 'ended' || session.status === 'failed') {
-        res.status(409).json({ error: `This call is already ${session.status}.` });
-        return;
-      }
-      if (session.operatorNumber === session.customerNumber) {
-        res.status(409).json({ error: 'You are already the buyer on this call. A second join would ring the same phone.' });
-        return;
-      }
-      if (role === 'whisper' && !session.aiCallControlId) {
-        res.status(409).json({ error: 'Whisper needs a separate AI leg. Use Listen or Talk on this call.' });
-        return;
-      }
-      const result = await dialBridgeLeg({
-        to: session.operatorNumber,
-        role,
-        sessionId: session.id,
-        endConferenceOnExit: false,
-        supervisorRole: role,
-        whisperCallControlIds: session.aiCallControlId ? [session.aiCallControlId] : undefined,
-        operatorInitiated: true,
-      });
-      if ('error' in result) {
-        res.status(502).json({ error: result.error });
-        return;
-      }
-      await db.update(callBridgeSessions).set({
-        operatorCallControlId: result.callControlId,
-        operatorJoinRole: role,
-        updatedAt: new Date(),
-      }).where(eq(callBridgeSessions.id, session.id));
-      res.status(200).json({ ok: true, role });
-    } catch (err) {
-      res.status(500).json({ error: errorMessage(err) });
-    }
+    const role = (req.body ?? {}).role as string;
+    const result = await joinBridgeSession(req.params.id, role);
+    if ('error' in result) { res.status(result.status).json({ error: result.error }); return; }
+    res.status(200).json({ ok: true, role: result.role });
   });
 
   // ── POST /:id/coach — store a note for the operator. Does not email anyone.

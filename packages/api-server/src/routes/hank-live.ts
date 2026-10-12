@@ -1,15 +1,23 @@
 import { Router } from 'express';
+import { desc, gt, inArray, and } from 'drizzle-orm';
+import { db, callBridgeSessions } from '@workspace/db';
+import { joinBridgeSession } from './call-bridge.js';
+import { campaignForCustomer } from './call-bridge-campaigns.js';
 
 // ─── Hank Live Monitor ─────────────────────────────────────────────────────────
 //
-// Silent, read-only live monitor for every Hank Vance call. Renders a single
-// self-refreshing HTML page plus a JSON feed. It NEVER joins a call, plays no
-// audio, and touches no call-control state — it only reads Telnyx AI
-// conversation transcripts and recording URLs.
+// Live call monitor for every Hank Vance call. The page has two clearly
+// separated sections:
+//
+//   1. LIVE CALL MONITOR  — active bridge sessions with a live-updating
+//      transcript and Listen / Talk buttons that dial Don into the call
+//      (muted or audible) via the shared call bridge.
+//   2. RECORDED CALLS     — everything that has ended, with recordings.
 //
 // Auth: shared-secret query param (?key=) checked against APEX_HANK_LIVE_KEY.
-// Mounted BEFORE requireAdminAuth (like the webhook routers) because Don opens
-// this straight from a phone browser with no operator session.
+// Mounted BEFORE requireAdminAuth because Don opens this straight from a phone
+// browser with no operator session. The /listen action re-uses the exact same
+// joinBridgeSession() the operator dashboard uses, just gated on this key.
 
 const HANK_ASSISTANT_IDS = new Set([
   'assistant-3cea8e28-0ef8-4633-8420-2ebc4ae9b40f', // Hank Vance - Outbound
@@ -26,8 +34,24 @@ const OFFICE_LABELS: Record<string, string> = {
   '+14793948100': 'Polk County Circuit Clerk',
   '+14793944585': 'Mena City Hall / Mayor',
   '+14793948123': 'Polk County Clerk',
+  '+14793946114': 'Polk County Prosecuting Attorney',
+  '+15016188000': 'Arkansas State Police HQ (Little Rock)',
+  '+15012239081': 'Sen. Tom Cotton (Little Rock)',
+  '+15013727153': 'Sen. John Boozman (Little Rock)',
+  '+15016099796': 'Rep. Bruce Westerman (Hot Springs)',
+  '+17032242150': 'NCMEC HQ (Alexandria VA)',
+  '+18775434673': 'Morgan Nick Foundation',
+  '+15016822345': 'Arkansas Governor (Little Rock)',
   '+18328804970': 'Owner line (test)',
 };
+
+function officeLabel(number: string | null): string | null {
+  if (!number) return null;
+  if (OFFICE_LABELS[number]) return OFFICE_LABELS[number];
+  const camp = campaignForCustomer(number);
+  const office = camp?.dynamicVariables?.office;
+  return typeof office === 'string' && office ? office : null;
+}
 
 interface TelnyxMessage { role?: string; text?: string; created_at?: string }
 interface TelnyxConversation {
@@ -77,7 +101,7 @@ async function collectHankCalls(): Promise<unknown[]> {
       created_at: c.created_at ?? null,
       last_message_at: c.last_message_at ?? null,
       number,
-      office: (number && OFFICE_LABELS[number]) || (c.name ?? 'Unknown'),
+      office: officeLabel(number) || (c.name ?? 'Unknown'),
       status: c.status ?? null,
       recording_url: c.recording_url ?? null,
       message_count: messages.length,
@@ -87,16 +111,44 @@ async function collectHankCalls(): Promise<unknown[]> {
   return out;
 }
 
+async function collectLiveSessions(): Promise<unknown[]> {
+  const since = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const rows = await db
+    .select()
+    .from(callBridgeSessions)
+    .where(and(
+      inArray(callBridgeSessions.status, ['dialing_operator', 'dialing_customer', 'active', 'ai_dialing', 'ai_joined']),
+      gt(callBridgeSessions.updatedAt, since),
+    ))
+    .orderBy(desc(callBridgeSessions.createdAt))
+    .limit(10);
+  return rows.map(s => ({
+    id: s.id,
+    status: s.status,
+    customer_number: s.customerNumber,
+    operator_number: s.operatorNumber,
+    office: officeLabel(s.customerNumber) || s.buyerName || 'Unknown target',
+    buyer_name: s.buyerName ?? null,
+    operator_joined: Boolean(s.operatorCallControlId),
+    operator_join_role: s.operatorJoinRole ?? null,
+    created_at: (s.createdAt instanceof Date) ? s.createdAt.toISOString() : String(s.createdAt),
+    updated_at: (s.updatedAt instanceof Date) ? s.updatedAt.toISOString() : String(s.updatedAt),
+  }));
+}
+
 function page(): string {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hank — Silent Live Monitor</title>
+<title>Hank — Live Call Monitor</title>
 <style>
 :root{color-scheme:dark}
 body{background:#0c1017;color:#e6e9ef;font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:14px}
 h1{font-size:16px;margin:0 0 4px}
+h2{font-size:13px;letter-spacing:.8px;text-transform:uppercase;margin:18px 0 8px;color:#aab4c5}
+h2.live{color:#ff5d5d}
 .sub{color:#8a94a6;font-size:12px;margin-bottom:12px}
 .call{background:#131a24;border:1px solid #232c3b;border-radius:10px;margin-bottom:12px;overflow:hidden}
+.call.livecall{border-color:#ff5d5d66;box-shadow:0 0 14px #ff5d5d22}
 .head{padding:10px 12px;border-bottom:1px solid #232c3b;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 .office{font-weight:600}
 .num{color:#8a94a6;font-size:12px}
@@ -108,31 +160,113 @@ h1{font-size:16px;margin:0 0 4px}
 .rec{margin:6px 0 0}
 .rec a{color:#39d98a}
 .badge{font-size:10px;padding:2px 7px;border-radius:99px;background:#39d98a22;color:#39d98a;letter-spacing:.5px}
-.badge.dead{background:#f05252;color:#fff}
+.badge.dead{background:#3a4356;color:#aab4c5}
+.badge.livebadge{background:#ff5d5d;color:#fff;animation:pulse 1.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.actions{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #232c3b;flex-wrap:wrap}
+button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:8px 12px;cursor:pointer}
+button.listen{background:#39d98a;color:#06210f}
+button.talk{background:#ffb02e;color:#2b1c00}
+button:disabled{opacity:.55;cursor:wait}
+.actnote{color:#8a94a6;font-size:12px;align-self:center}
+.err-inline{color:#ff8080;font-size:12px;align-self:center}
+details{background:#131a24;border:1px solid #232c3b;border-radius:10px;margin-bottom:10px;overflow:hidden}
+details summary{padding:10px 12px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;list-style:none}
+details summary::-webkit-details-marker{display:none}
+details .msgs{border-top:1px solid #232c3b}
 #err{color:#f05252;font-size:12px;min-height:16px}
+#nolive{color:#8a94a6;font-size:13px;padding:14px;border:1px dashed #2a3550;border-radius:10px}
 </style></head><body>
-<h1>HANK — SILENT LIVE MONITOR</h1>
-<div class="sub">Read-only transcript mirror. Polls every 3s. Joins nothing, plays nothing.</div>
-<div id="err"></div><div id="calls"></div>
+<h1>HANK — LIVE CALL MONITOR</h1>
+<div class="sub">Live section below updates every 3s. Listen rings your phone into the call muted; Talk joins you audible. Never dials the office.</div>
+<div id="err"></div>
+
+<h2 class="live">&#9679; LIVE CALL MONITOR</h2>
+<div id="live"></div>
+
+<h2>RECORDED CALLS (last 24h)</h2>
+<div id="calls"></div>
+
 <script>
 const KEY = new URLSearchParams(location.search).get('key') || '';
+const esc = s => (s||'').replace(/[<>&"]/g,x=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[x]));
+const msgsHtml = (ms, rev) => {
+  const arr = (ms||[]).slice();
+  if (rev) arr.reverse();
+  return arr.map(m=>{
+    const cls=m.role==='assistant'?'h':(m.role==='user'?'u':'s');
+    return '<div class="'+cls+'">'+esc(m.text)+'</div>';
+  }).join('') || '<div class="s">— no speech yet —</div>';
+};
+
+async function listen(sessionId, role, btn){
+  document.querySelectorAll('button[data-sid="'+sessionId+'"]').forEach(b=>b.disabled=true);
+  btn.textContent = role==='monitor' ? 'Ringing your phone…' : 'Ringing (audible)…';
+  try{
+    const r = await fetch('/api/hank-live/listen?key='+encodeURIComponent(KEY), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sessionId, role})
+    });
+    const d = await r.json();
+    if(!r.ok){ btn.textContent = d.error||('failed '+r.status); return; }
+    btn.textContent = role==='monitor' ? '🎧 Listening (muted)' : '🎤 You are on the call';
+  }catch(e){ btn.textContent='request failed'; }
+}
+
+function renderLive(d){
+  const wrap = document.getElementById('live');
+  const sessions = d.sessions||[];
+  const calls = d.calls||[];
+  if(!sessions.length){
+    wrap.innerHTML = '<div id="nolive">No live call right now. When Hank dials, it appears here instantly with a Listen button.</div>';
+    return;
+  }
+  wrap.innerHTML = sessions.map(s=>{
+    // pair with the newest conversation for the same number, started around the session
+    const sessStart = new Date(s.created_at).getTime() - 5*60*1000;
+    const c = calls.filter(x=>x.number===s.customer_number && new Date(x.created_at).getTime()>=sessStart)
+                  .sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))[0];
+    const live = s.status!=='failed';
+    const transcript = c ? msgsHtml(c.messages, true)
+      : '<div class="s">— dialing, no speech yet —</div>';
+    const joined = s.operator_joined ? '<span class="badge">&#127911; you '+(s.operator_join_role||'joined')+'</span>' : '';
+    const joinedRole = (s.operator_join_role||'');
+    const lbtn = joined && joinedRole!=='barge' ? '' : '<button class="listen" data-sid="'+s.id+'" onclick="listen(\\''+s.id+'\\',\\'monitor\\',this)">&#127911; Listen live (muted)</button>';
+    const tbtn = joined && joinedRole==='barge' ? '' : '<button class="talk" data-sid="'+s.id+'" onclick="listen(\\''+s.id+'\\',\\'barge\\',this)">&#127908; Talk</button>';
+    return '<div class="call livecall"><div class="head"><span><span class="office">'+esc(s.office)+'</span> <span class="num">'+esc(s.customer_number)+'</span></span><span><span class="badge livebadge">LIVE</span> <span class="num">'+esc(s.status)+'</span> '+joined+'</span></div>'
+      + '<div class="msgs">'+transcript+'</div>'
+      + '<div class="actions">'+lbtn+tbtn+'<span class="actnote">Your phone: '+esc(s.operator_number)+' — it will ring and connect.</span></div></div>';
+  }).join('');
+}
+
+function renderRecorded(d){
+  const wrap = document.getElementById('calls');
+  const liveNums = new Set((d.sessions||[]).map(s=>s.customer_number));
+  const liveIds = new Set();
+  (d.sessions||[]).forEach(s=>{
+    (d.calls||[]).forEach(c=>{ if(c.number===s.customer_number) liveIds.add(c.id); });
+  });
+  const recorded = (d.calls||[]).filter(c=>{
+    if (liveIds.has(c.id)) return false;            // shown in the live section
+    if (liveNums.has(c.number) && c.status==='active') return false;
+    return true;
+  });
+  wrap.innerHTML = recorded.map(c=>{
+    const live = c.message_count>0 && c.status!=='failed';
+    return '<details><summary><span><span class="office">'+esc(c.office)+'</span> <span class="num">'+esc(c.number||'')+'</span></span><span><span class="badge'+(live?'':' dead')+'">'+esc(c.status||'ACTIVE')+'</span>'+(c.recording_url?' <a class="rec" href="'+c.recording_url+'" target="_blank">&#9654; recording</a>':'')+'</span></summary><div class="msgs">'+msgsHtml(c.messages,true)+'</div></details>';
+  }).join('') || '<div class="s">No recorded calls yet.</div>';
+}
+
 async function tick(){
   try{
     const r = await fetch('/api/hank-live/data?key='+encodeURIComponent(KEY), {cache:'no-store'});
     if(!r.ok){ document.getElementById('err').textContent='feed '+r.status; return; }
     document.getElementById('err').textContent='';
     const d = await r.json();
-    const wrap = document.getElementById('calls');
-    const atBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 80;
-    wrap.innerHTML = (d.calls||[]).map(c=>{
-      const live = c.message_count>0 && c.status!=='failed';
-      const msgs=(c.messages||[]).map(m=>{
-        const cls=m.role==='assistant'?'h':(m.role==='user'?'u':'s');
-        return '<div class="'+cls+'">'+(m.text||'').replace(/[<>&]/g,x=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[x]))+'</div>';
-      }).join('') || '<div class="s">— no speech yet —</div>';
-      return '<div class="call"><div class="head"><span><span class="office">'+(c.office||'')+'</span> <span class="num">'+(c.number||'')+'</span></span><span class="badge'+(live?'':' dead')+'">'+(c.status||'ACTIVE')+'</span></div><div class="msgs">'+msgs+'</div>'+(c.recording_url?'<div class="rec"><a href="'+c.recording_url+'" target="_blank">&#9654; recording</a></div>':'')+'</div>';
-    }).join('') || '<div class="s">No Hank calls in the last 24h.</div>';
-    if(atBottom) wrap.scrollTop = wrap.scrollHeight;
+    renderLive(d);
+    renderRecorded(d);
+    const lm = document.querySelector('#live .msgs');
+    if(lm && lm.scrollHeight - lm.scrollTop - lm.clientHeight < 120) lm.scrollTop = lm.scrollHeight;
   }catch(e){ document.getElementById('err').textContent='poll failed'; }
 }
 tick(); setInterval(tick, 3000);
@@ -159,11 +293,26 @@ export function createHankLiveRouter(): Router {
   router.get('/data', async (req, res) => {
     if (!okKey(req)) { res.status(403).json({ error: 'forbidden' }); return; }
     try {
-      const calls = await collectHankCalls();
-      res.json({ ok: true, calls, fetched_at: new Date().toISOString() });
+      const [calls, sessions] = await Promise.all([collectHankCalls(), collectLiveSessions()]);
+      res.json({ ok: true, calls, sessions, fetched_at: new Date().toISOString() });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
+  });
+
+  // ── POST /listen — dial Don into a live bridge session (muted or audible) ──
+  // Same joinBridgeSession() the operator dashboard uses; gated on the page key.
+  router.post('/listen', async (req, res) => {
+    if (!okKey(req)) { res.status(403).json({ error: 'forbidden' }); return; }
+    const { sessionId, role } = (req.body ?? {}) as { sessionId?: string; role?: string };
+    if (!sessionId || typeof sessionId !== 'string') {
+      res.status(400).json({ error: 'sessionId is required.' });
+      return;
+    }
+    const wantRole = role === 'barge' ? 'barge' : 'monitor';
+    const result = await joinBridgeSession(sessionId, wantRole);
+    if ('error' in result) { res.status(result.status).json({ error: result.error }); return; }
+    res.json({ ok: true, role: result.role });
   });
 
   return router;
