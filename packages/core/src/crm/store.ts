@@ -672,8 +672,8 @@ export async function searchContacts(filters: ContactSearchFilters) {
   }
   if (filters.replied === true) clauses.push(sql`${contacts.lastReplyAt} IS NOT NULL`);
   if (filters.replied === false) clauses.push(sql`${contacts.lastReplyAt} IS NULL`);
-  if (filters.lastContactedFrom) clauses.push(sql`${contacts.lastContactedAt} >= ${new Date(filters.lastContactedFrom)}`);
-  if (filters.lastContactedTo) clauses.push(sql`${contacts.lastContactedAt} <= ${new Date(filters.lastContactedTo)}`);
+  if (filters.lastContactedFrom) clauses.push(sql`${contacts.lastContactedAt} >= ${new Date(filters.lastContactedFrom).toISOString()}::timestamptz`);
+  if (filters.lastContactedTo) clauses.push(sql`${contacts.lastContactedAt} <= ${new Date(filters.lastContactedTo).toISOString()}::timestamptz`);
   if (filters.verifiedOnly) {
     clauses.push(sql`${contacts.id} IN (SELECT contact_id FROM contact_identifiers WHERE verified = true)`);
   }
@@ -711,7 +711,7 @@ export async function searchContacts(filters: ContactSearchFilters) {
       WHERE t.contact_id = ${contacts.id}
         AND t.status = 'open'
         AND t.due_at IS NOT NULL
-        AND t.due_at < ${bounds.end}
+        AND t.due_at < ${bounds.end.toISOString()}::timestamptz
     )`);
   }
   const limit = Math.min(Math.max(filters.limit ?? 50, 1), 500);

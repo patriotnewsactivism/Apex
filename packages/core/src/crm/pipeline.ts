@@ -616,24 +616,28 @@ export async function listCompanies(input: { query?: string | null; industry?: s
   }
   const industry = clean(input.industry);
   if (industry) clauses.push(sql`lower(coalesce(${companies.industry}, '')) = ${industry.toLowerCase()}`);
+  // In a single-table select list Drizzle renders ${companies.id} as a bare "id",
+  // which inside these subqueries resolves to the deal's or contact's OWN id, so
+  // every count and total came back 0. Qualify it by hand.
+  const outerCompanyId = sql.raw('"companies"."id"');
   const rows = await db
     .select({
       company: companies,
       contactCount: sql<number>`(
         SELECT count(*) FROM contacts c
-        WHERE c.company_id = ${companies.id} AND c.organization_id = ${CRM_ORGANIZATION_ID} AND c.status <> 'merged'
+        WHERE c.company_id = ${outerCompanyId} AND c.organization_id = ${CRM_ORGANIZATION_ID} AND c.status <> 'merged'
       )`,
       openDeals: sql<number>`(
         SELECT count(*) FROM sales_opportunities d
-        WHERE d.company_id = ${companies.id} AND d.status NOT IN ('won', 'lost')
+        WHERE d.company_id = ${outerCompanyId} AND d.status NOT IN ('won', 'lost')
       )`,
       openValue: sql<string | null>`(
         SELECT coalesce(sum(d.amount_cents), 0) FROM sales_opportunities d
-        WHERE d.company_id = ${companies.id} AND d.status NOT IN ('won', 'lost')
+        WHERE d.company_id = ${outerCompanyId} AND d.status NOT IN ('won', 'lost')
       )`,
       wonValue: sql<string | null>`(
         SELECT coalesce(sum(d.amount_cents), 0) FROM sales_opportunities d
-        WHERE d.company_id = ${companies.id} AND d.status = 'won'
+        WHERE d.company_id = ${outerCompanyId} AND d.status = 'won'
       )`,
     })
     .from(companies)
