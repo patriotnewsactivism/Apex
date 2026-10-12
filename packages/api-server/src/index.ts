@@ -87,15 +87,15 @@ process.on('unhandledRejection', (reason) => {
 });
 
 import { seedDefaultJobs, recoverStaleLeasedTasks } from './bootstrap-jobs.js';
+import { withStepTimeout } from './startup-step.js';
+// How long to wait for the shared runtime bootstrap before declaring startup
+// degraded in the logs. The bootstrap itself keeps running in the background;
+// this only bounds how long we say nothing. Per-step timeouts inside
+// bootstrapApexRuntime() are what actually bound each individual call.
+const BOOTSTRAP_WATCHDOG_MS = 120_000;
+
 async function main() {
   console.log('🚀 APEX starting up...');
-
-  try {
-    await migrate();
-    console.log('✅ Database initialized');
-  } catch (err) {
-    console.warn('⚠️  Database migration skipped or deferred:', err instanceof Error ? err.message : String(err));
-  }
 
   let mode = process.env.APEX_APPROVAL_MODE ?? 'normal';
   if (mode === 'off') {
@@ -104,15 +104,127 @@ async function main() {
   }
   const approvalRequired = mode === 'strict' ? true : undefined;
 
+  // ── Phase 1: HTTP listener ────────────────────────────────────────────────
+  // The listener comes up FIRST. Railway only needs the port bound and /health
+  // answering to route traffic; gating it behind migrate()/provider hydration
+  // let one hung call take the whole site offline with 502s and no error.
+  // Until `runtimeReady` flips, everything except /health answers 503
+  // {status:'starting'} (or 'degraded' if bootstrap failed).
+  console.log('[startup] phase http-listener: start');
+  let runtimeReady = false;
+  let runtimeState: 'starting' | 'degraded' = 'starting';
+
+  const app = express();
+  // Railway's edge is one trusted hop. A caller-supplied X-Forwarded-For
+  // prefix must not become the login rate-limit key. Override only when a
+  // real extra proxy is inserted in front (APEX_TRUST_PROXY_HOPS).
+  app.set('trust proxy', resolveTrustProxyHops());
+  const server = createServer(app);
+
+  // The agent-facing health_check tool lives in @workspace/core and cannot
+  // import api-server without creating a dependency cycle. Inject the real
+  // WebSocket liveness source here so CTO/CEO health checks observe the same
+  // runtime truth as /api/health instead of permanently reporting
+  // "no WebSocket checker injected".
+  configureHealthMonitorRuntimeDeps({
+    wsChecker: () => ({
+      serverRunning: server.listening,
+      connectedClients: getConnectedClientCount(),
+    }),
+  });
+
+  app.use(cors({ origin: '*' }));
+
+  // Public health probe.
+  //
+  // Railway healthchecks GET /health and only needs HTTP 200 when the process
+  // can serve, plus enough body to see which commit is running. On 2026-08-19
+  // a flat {status:'ok'} hid a queue that was failing every dequeue, so a
+  // provably broken queue still returns HTTP 503 here once the runtime is up.
+  // While bootstrap is still running (or has failed) the listener is alive and
+  // this answers 200 with status 'starting' / 'degraded' so the platform keeps
+  // routing traffic. The operational snapshot (accounts, spend, caps, workers,
+  // pause state) lives on authenticated GET /api/health/detail.
+  app.get('/health', (_req, res) => {
+    if (!runtimeReady) {
+      res.status(200).json({ status: runtimeState, build: getBuildInfo() });
+      return;
+    }
+    sendPublicHealth(res, { broken: isTaskQueueBroken(), build: getBuildInfo() });
+  });
+
+  // Everything below depends on ceo/workforce, which do not exist until
+  // bootstrap resolves. Routes are mounted after that point; until then every
+  // other request gets a 503 instead of reaching a router (or the dashboard
+  // fallback) that is not there yet.
+  app.use((_req, res, next) => {
+    if (runtimeReady) return next();
+    res.status(503).json({ status: runtimeState });
+  });
+
+  // `verify` stashes the exact request bytes on req.rawBody for every request.
+  // Cheap (one Buffer, discarded per-request), and it's the only way the
+  // Resend webhook below can verify a Svix HMAC signature — that signature is
+  // computed over the exact bytes Resend sent, and re-serializing req.body
+  // with JSON.stringify is NOT guaranteed to reproduce them byte-for-byte
+  // (key order, whitespace). Every other route ignores req.rawBody entirely.
+  app.use(express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }));
+
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(PORT, '0.0.0.0', () => {
+      server.off('error', rejectListen);
+      console.log(`✅ APEX running on http://0.0.0.0:${PORT}`);
+      console.log('[startup] phase http-listener: done (listening; /health answers "starting" until runtime is ready)');
+      resolveListen();
+    });
+  });
+
+  // ── Phase 2: database migration ───────────────────────────────────────────
+  console.log('[startup] phase migrate: start');
+  const migrated = await withStepTimeout('migrate', undefined, async () => {
+    await migrate();
+    return true;
+  });
+  if (migrated) {
+    console.log('✅ Database initialized');
+  } else {
+    console.warn('⚠️  Database migration skipped or deferred');
+  }
+  console.log('[startup] phase migrate: done');
+
+  // ── Phase 3: runtime bootstrap ────────────────────────────────────────────
   // Shared bootstrap (Phase 5): settings/provider-roster/token-ledger init,
   // lease-expiry recovery, campaign-tool registration, workforce creation,
   // default job seeding, the scheduler, campaign runner, executor dispatch
   // loop, durable worker heartbeat, and supervised agent loops — everything
   // the dedicated `start:worker` runtime (ADR-011) also needs and, before
-  // this, did not get. See runtime-bootstrap.ts.
-  const bootstrap = await bootstrapApexRuntime({ kind: 'http', approvalRequired });
+  // this, did not get. See runtime-bootstrap.ts. Each step inside is bounded
+  // by its own timeout; the watchdog below only makes a long run visible.
+  console.log('[startup] phase bootstrap: start');
+  const bootstrapWatchdog = setTimeout(() => {
+    console.warn(`⚠️  [startup] phase bootstrap still running after ${BOOTSTRAP_WATCHDOG_MS}ms; HTTP listener is up, API routes return 503 until it completes`);
+  }, BOOTSTRAP_WATCHDOG_MS);
+  let bootstrap: Awaited<ReturnType<typeof bootstrapApexRuntime>>;
+  try {
+    bootstrap = await bootstrapApexRuntime({ kind: 'http', approvalRequired });
+  } catch (err) {
+    runtimeState = 'degraded';
+    console.error('❌ [startup] phase bootstrap: FAILED — staying up in degraded mode (/health 200, API routes 503):', err);
+    return;
+  } finally {
+    clearTimeout(bootstrapWatchdog);
+  }
+  console.log('[startup] phase bootstrap: done');
   const { workforce } = bootstrap;
   console.log(`   Approval mode: ${mode === 'strict' ? 'STRICT (all agents gated)' : 'PER-ROLE DEFAULT (dev/infra gated, business/orchestration autonomous)'}`);
+
+  console.log('[startup] phase routes: start');
 
   // buildmybot2 as a registered MANAGED project (2026-07-23): idempotent
   // upsert so the registration survives fresh databases instead of relying
@@ -120,7 +232,7 @@ async function main() {
   // the registry half of the managed-project interface; the adapter half
   // (repo dispatch / deploy hook / health check) lives in
   // @workspace/core/buildmybot-connector.
-  try {
+  await withStepTimeout('buildmybot2-registration', undefined, async () => {
     const { db, projects, applications } = await import('@workspace/db');
     const { eq } = await import('drizzle-orm');
     const now = new Date();
@@ -178,54 +290,13 @@ async function main() {
         set: { repoUrl: 'https://github.com/patriotnewsactivism/buildmybot2', lastSyncAt: now },
       });
     console.log('✅ buildmybot2 registered as managed project');
-  } catch (err) {
-    console.warn('⚠️  buildmybot2 project registration skipped:', err instanceof Error ? err.message : String(err));
-  }
+  });
 
   const ceo = workforce.get('apex-ceo-001') as ApexCEO;
   setOperatorCeo(ceo);
 
-  const app = express();
-  // Railway's edge is one trusted hop. A caller-supplied X-Forwarded-For
-  // prefix must not become the login rate-limit key. Override only when a
-  // real extra proxy is inserted in front (APEX_TRUST_PROXY_HOPS).
-  app.set('trust proxy', resolveTrustProxyHops());
-  const server = createServer(app);
-
-  // The agent-facing health_check tool lives in @workspace/core and cannot
-  // import api-server without creating a dependency cycle. Inject the real
-  // WebSocket liveness source here so CTO/CEO health checks observe the same
-  // runtime truth as /api/health instead of permanently reporting
-  // "no WebSocket checker injected".
-  configureHealthMonitorRuntimeDeps({
-    wsChecker: () => ({
-      serverRunning: server.listening,
-      connectedClients: getConnectedClientCount(),
-    }),
-  });
-
-  app.use(cors({ origin: '*' }));
-  // `verify` stashes the exact request bytes on req.rawBody for every request.
-  // Cheap (one Buffer, discarded per-request), and it's the only way the
-  // Resend webhook below can verify a Svix HMAC signature — that signature is
-  // computed over the exact bytes Resend sent, and re-serializing req.body
-  // with JSON.stringify is NOT guaranteed to reproduce them byte-for-byte
-  // (key order, whitespace). Every other route ignores req.rawBody entirely.
-  app.use(express.json({
-    limit: '10mb',
-    verify: (req, _res, buf) => {
-      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
-    },
-  }));
-
-  // Public health probe.
-  //
-  // Railway healthchecks GET /health and only needs HTTP 200 when the process
-  // can serve, plus enough body to see which commit is running. On 2026-08-19
-  // a flat {status:'ok'} hid a queue that was failing every dequeue, so a
-  // provably broken queue still returns HTTP 503 here. The operational
-  // snapshot (accounts, spend, caps, workers, pause state) moved to
-  // authenticated GET /api/health/detail — the public body is status + build.
+  // Operational snapshot served by authenticated GET /api/health/detail (the
+  // public /health body is status + build only; see the probe registered above).
   async function buildRuntimeHealthDetail() {
     const queue = getDequeueHealth();
     const broken = isTaskQueueBroken();
@@ -493,10 +564,6 @@ async function main() {
 
   configureHealthMonitorRuntimeDeps({
     runtimeHealthDetail: () => buildRuntimeHealthDetail(),
-  });
-
-  app.get('/health', (_req, res) => {
-    sendPublicHealth(res, { broken: isTaskQueueBroken(), build: getBuildInfo() });
   });
 
   // Health Monitor & Alert Manager setup
@@ -839,11 +906,12 @@ async function main() {
   // After every route, and before any later error middleware.
   Sentry.setupExpressErrorHandler(app);
 
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ APEX running on http://0.0.0.0:${PORT}`);
-    console.log(`✅ WebSocket ready at ws://0.0.0.0:${PORT}/ws`);
-    console.log(`🤖 Approval mode: ${mode === 'strict' ? 'HUMAN APPROVAL REQUIRED (strict)' : mode === 'off' ? 'FULLY AUTONOMOUS' : 'PER-ROLE DEFAULT'}`);
-  });
+  // Every route is mounted; open the gate registered in the listener phase.
+  runtimeReady = true;
+  console.log('[startup] phase routes: done');
+  console.log(`✅ WebSocket ready at ws://0.0.0.0:${PORT}/ws`);
+  console.log(`🤖 Approval mode: ${mode === 'strict' ? 'HUMAN APPROVAL REQUIRED (strict)' : mode === 'off' ? 'FULLY AUTONOMOUS' : 'PER-ROLE DEFAULT'}`);
+  console.log('✅ [startup] runtime ready');
 
   // Vapi persists inbound assistant configuration outside this repository.
   // A code deploy alone therefore cannot fix the already-live 832-975-7665

@@ -40,11 +40,17 @@ export type { LeadSearchPauseSnapshot } from './lead-search-capacity.js';
 export { US_STATES, STATE_CITIES, citiesForStates, allStateCodes } from './us-geo.js';
 export {
   LEAD_PIPELINE_STATES,
+  IDENTITY_RECOVERY_RULE,
+  IDENTITY_SETTLED_REASONS,
   dedupeDiscoveredBusinesses,
   generateSearchShards,
   getLeadPipelineConfig,
+  identityRecoveryMaxAttempts,
+  isRetryableIdentityFailure,
   makeResearchCacheKey,
   normalizeLeadDomain,
+  recoverStuckLeadIdentities,
+  shouldRejectOnIdentityMismatch,
   simulateStreamingPipeline,
   repairWebLeadIdentityBatch,
 } from './lead-pipeline.js';

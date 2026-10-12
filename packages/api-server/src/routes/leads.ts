@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { eq, desc, and, ilike, sql } from 'drizzle-orm';
 import { broadcast } from '../websocket.js';
 import { mapImportRows, planLeadImport, recordsFromCsv, type ImportedLead } from '@workspace/core';
+import { computeLeadStats } from '../lead-stats.js';
 
 export function createLeadsRouter(): Router {
   const router = Router();
@@ -268,41 +269,11 @@ export function createLeadsRouter(): Router {
 
   // ─── GET /api/leads/stats — summary counts ───────────────────────────────
   router.get('/stats', async (_req, res) => {
-    const { db, researchedLeads } = await import('@workspace/db');
-
-    const all = await db.select().from(researchedLeads);
-    const byStatus = {
-      new: all.filter((l) => l.status === 'new').length,
-      contacted: all.filter((l) => l.status === 'contacted').length,
-      qualified: all.filter((l) => l.status === 'qualified').length,
-      rejected: all.filter((l) => l.status === 'rejected').length,
-    };
-    const visible = all.filter((lead) => {
-      if (lead.status === 'rejected') return false;
-      if (!lead.contactEmail && !lead.contactPhone) return false;
-      const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
-        | { status?: string }
-        | undefined;
-      return verification?.status === 'verified';
-    });
-    const byPipelineState: Record<string, number> = {};
-    const byIndustry: Record<string, number> = {};
-    for (const l of visible) {
-      const key = l.industry || 'Unknown';
-      byIndustry[key] = (byIndustry[key] ?? 0) + 1;
-      byPipelineState[l.pipelineState ?? 'DISCOVERED'] = (byPipelineState[l.pipelineState ?? 'DISCOVERED'] ?? 0) + 1;
-    }
-
-    res.json({
-      total: visible.length,
-      contactReady: visible.length,
-      rawCandidates: all.length,
-      pendingOrUnverified: Math.max(0, all.length - visible.length - byStatus.rejected),
-      rejected: byStatus.rejected,
-      byStatus,
-      byPipelineState,
-      byIndustry,
-    });
+    // Counted in the database. This used to load every lead, jsonb columns and
+    // all, into Node and count in JavaScript, which took minutes once the table
+    // reached the hundreds of thousands of rows. See ../lead-stats.ts.
+    const { db } = await import('@workspace/db');
+    res.json(await computeLeadStats(db));
   });
 
   // ─── POST /api/leads/verify-batch — run the website-identity repair now ───
@@ -315,6 +286,23 @@ export function createLeadsRouter(): Router {
       const { repairWebLeadIdentityBatch } = await import('@workspace/background-jobs');
       const limit = Math.max(1, Math.min(500, Number((req.body as { limit?: number } | undefined)?.limit ?? 100) || 100));
       const result = await repairWebLeadIdentityBatch(limit);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ─── POST /api/leads/recover-batch — work the rows the pass can no longer reach ──
+  // The main verify pass stamps its scan version even on a homepage fetch that
+  // timed out, so those rows are invisible to it forever. This runs one
+  // recovery batch synchronously and returns its counters, so an operator can
+  // tell a drained backlog (checked: 0) from a real repair
+  // (verified: 30, contactsAdded: 6).
+  router.post('/recover-batch', async (req, res) => {
+    try {
+      const { recoverStuckLeadIdentities } = await import('@workspace/background-jobs');
+      const limit = Math.max(1, Math.min(2000, Number((req.body as { limit?: number } | undefined)?.limit ?? 200) || 200));
+      const result = await recoverStuckLeadIdentities(limit);
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
