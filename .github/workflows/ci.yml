@@ -444,3 +444,11 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
         run: pnpm exec vitest run src/__tests__/lead-write-path.test.ts
+      - name: Lead stats integration suite
+        # GET /api/leads/stats counts in the database, not by loading every
+        # lead: identical to the original JavaScript over the whole table plus
+        # seeded edge cases, and the route may not select the table again.
+        working-directory: packages/api-server
+        env:
+          DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
+        run: pnpm exec vitest run src/__tests__/lead-stats.test.ts
