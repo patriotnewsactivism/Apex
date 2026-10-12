@@ -6,7 +6,7 @@ import {
   resolveCartesiaSalesVoiceId,
 } from '@workspace/core';
 import { cartesiaCredentialMode, cartesiaSalesToolNames, cartesiaToolSecret, cartesiaWebhookSecret } from './cartesia-sales-auth.js';
-import { DAN_SALES_CONSTITUTION } from './cartesia-dan-constitution.js';
+import { renderSalesAgentConstitution } from './sales-agent-constitution.js';
 
 const CARTESIA_API = 'https://api.cartesia.ai';
 const TOOL_BASE_URL = 'https://apex.donmatthews.live/api/cartesia';
@@ -239,11 +239,25 @@ function desiredTools(toolSecret: string) {
   ];
 }
 
+/**
+ * The name this agent speaks as. One name per agent; the protocol is shared.
+ *
+ * Read per call rather than at module load so a process that sets the variable
+ * after import (tests, the reconciler CLI) still gets the right name.
+ */
+function salesAgentSpokenName(): string {
+  return (
+    process.env.CARTESIA_SALES_SPOKEN_NAME?.trim() ||
+    process.env.SALES_AGENT_NAME?.trim() ||
+    'Dan'
+  );
+}
+
 function agentConfig(toolIds: string[], voiceId: string) {
   const toolNames = cartesiaSalesToolNames();
   return {
     instructions: [
-      DAN_SALES_CONSTITUTION,
+      renderSalesAgentConstitution(salesAgentSpokenName()),
       '=== OPERATIONAL RULES (APEX/Cartesia) — MUST FOLLOW ALONGSIDE THE CONSTITUTION ===',
       'You make outbound business sales calls. Sound warm and conversational. Answer as soon as the other person finishes.',
       'ANSWER THE WHOLE TURN: respond to every distinct point they just made — a yes plus a detail, a correction, a second question, and a short reply all count. Do not drop one of them, and do not replace what they said with the next scripted line. Then ask at most one next question.',
