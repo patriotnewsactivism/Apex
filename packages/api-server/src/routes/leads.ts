@@ -655,7 +655,13 @@ function leadInsert(lead: ImportedLead, provider: string) {
     campaignReadyAt: new Date(),
     campaignDraft: {
       firstTouch: lead.outreachAngle,
-      nextBestAction: lead.contactEmail ? 'email' : lead.contactPhone ? 'call' : 'research_contact',
+      // A call is the action that actually produces a decision maker, and the
+      // operator's campaigns are calling campaigns — so a dialable lead is
+      // ranked above an emailable one. This used to read the other way round
+      // (`contactEmail ? 'email' : ...`), which put every lead that happened to
+      // have an address into the email lane and left the ones worth calling
+      // queued behind them.
+      nextBestAction: lead.contactPhone ? 'call' : lead.contactEmail ? 'email' : 'research_contact',
     },
     source: provider,
     enrichment: lead.enrichment,
