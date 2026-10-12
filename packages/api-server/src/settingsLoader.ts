@@ -9,11 +9,27 @@ import { resolveDirectoryProviderKey } from '@workspace/core';
 // Railway/platform values are the operator's emergency safety boundary. A stale
 // dashboard row must never re-enable paid providers or restore bursty
 // concurrency after the operator deliberately tightened production.
+//
+// The QwenCloud BYOK credentials belong here too, and for the same reason: they
+// are held on the platform. Without them a dashboard row saved months earlier
+// (a key issued for a different Qwen host, an older model slug) silently
+// replaced the platform credential at boot. The lane then answered every call
+// with "Incorrect API key provided", the last metered route failed, and the
+// whole workforce parked on "All LLM providers failed" while Railway's
+// variables still looked correct — the app was reading values no operator
+// could see in the dashboard. Credentials the operator sets on the platform
+// are authoritative; a row for them must not win.
 const PLATFORM_AUTHORITATIVE_KEYS = new Set([
   'APEX_PAID_FALLBACK_ENABLED',
   'APEX_QWEN_BYOK_ENABLED',
   'APEX_GROQ_BYOK_ENABLED',
   'APEX_GEMINI_BYOK_ENABLED',
+  // QwenCloud BYOK routing target: key, host and model must move together.
+  'QWEN_API_KEY',
+  'QWEN_API_KEY_2',
+  'QWEN_BASE_URL',
+  'APEX_QWEN_BASE_URL',
+  'QWEN_MODEL',
   'APEX_MAX_CONCURRENT_LLM_CALLS',
   'APEX_LEAD_RESEARCH_CONCURRENCY',
   'APEX_QWEN_REQUEST_CAP',
