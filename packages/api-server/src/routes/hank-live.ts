@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import { existsSync, createReadStream, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { desc, gt, inArray, and } from 'drizzle-orm';
 import { db, callBridgeSessions } from '@workspace/db';
 import { joinBridgeSession } from './call-bridge.js';
@@ -313,6 +316,33 @@ export function createHankLiveRouter(): Router {
     const result = await joinBridgeSession(sessionId, wantRole);
     if ('error' in result) { res.status(result.status).json({ error: result.error }); return; }
     res.json({ ok: true, role: result.role });
+  });
+
+  // ── GET /audio/:name — permanent call-evidence recordings ────────────────
+  // Audio pulled from the Telnyx recording store and committed to the repo so
+  // the signed S3 links (10-min expiry) can't rot. Served behind the same page
+  // key. Files live in src/routes/hank-audio/ (copied wholesale by the Docker
+  // runtime stage), resolved from cwd first, then relative to this module.
+  const AUDIO_FILES: Record<string, string> = {
+    'boozman-20261012': 'boozman-20261012.mp3',
+    'westerman-20261012': 'westerman-20261012.mp3',
+  };
+  const audioDir = (() => {
+    const viaCwd = resolve(process.cwd(), 'packages/api-server/src/routes/hank-audio');
+    if (existsSync(viaCwd)) return viaCwd;
+    const here = dirname(fileURLToPath(import.meta.url));
+    return join(here, 'hank-audio');
+  })();
+  router.get('/audio/:name', (req, res) => {
+    if (!okKey(req)) { res.status(403).send('forbidden'); return; }
+    const file = AUDIO_FILES[req.params.name];
+    if (!file) { res.status(404).send('unknown recording'); return; }
+    const full = join(audioDir, file);
+    if (!existsSync(full)) { res.status(404).send('recording not present in this build'); return; }
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', statSync(full).size);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    createReadStream(full).pipe(res);
   });
 
   return router;
