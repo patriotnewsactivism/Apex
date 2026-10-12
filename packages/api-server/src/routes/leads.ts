@@ -3,7 +3,6 @@ import { Router } from 'express';
 import { eq, desc, and, ilike, sql } from 'drizzle-orm';
 import { broadcast } from '../websocket.js';
 import { mapImportRows, planLeadImport, recordsFromCsv, type ImportedLead } from '@workspace/core';
-import { computeLeadStats } from '../lead-stats.js';
 
 export function createLeadsRouter(): Router {
   const router = Router();
@@ -216,19 +215,68 @@ export function createLeadsRouter(): Router {
   });
 
   // ─── GET /api/leads/export — CSV download ────────────────────────────────
-  router.get('/export', async (_req, res) => {
+  // Exports the researched-lead table as the SAME column set
+  // POST /api/leads/import-enrichment reads back, so a round trip is
+  // export → enrich elsewhere → import and the headers line up by construction.
+  //
+  // Two things used to make that impossible and both are now opt-out:
+  //   1. `.limit(10000)` was hardcoded, so the book silently truncated at
+  //      10,000 rows with no signal that it had.
+  //   2. The reachable+verified filter was unconditional. You cannot export
+  //      leads in order to enrich them if the export only returns leads that
+  //      are already enriched — the one workflow this endpoint exists for was
+  //      the one it refused.
+  // Defaults are unchanged (reachable + verified, 10,000 rows) so nothing that
+  // already calls this changes shape; pass reachable=false / verified=false and
+  // raise limit (or page with offset) to get the whole table.
+  router.get('/export', async (req, res) => {
     const { db, researchedLeads } = await import('@workspace/db');
+
+    const conditions = [];
+    const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    if (status) conditions.push(eq(researchedLeads.status, status));
+    else conditions.push(sql`${researchedLeads.status} <> 'rejected'`);
+
+    if (typeof req.query.pipelineState === 'string' && req.query.pipelineState.trim()) {
+      conditions.push(eq(researchedLeads.pipelineState, req.query.pipelineState.trim()));
+    }
+    if (typeof req.query.industry === 'string' && req.query.industry.trim()) {
+      conditions.push(ilike(researchedLeads.industry, `%${req.query.industry.trim()}%`));
+    }
+    if (typeof req.query.city === 'string' && req.query.city.trim()) {
+      conditions.push(ilike(researchedLeads.city, `%${req.query.city.trim()}%`));
+    }
+    if (typeof req.query.campaignId === 'string' && req.query.campaignId.trim()) {
+      conditions.push(eq(researchedLeads.campaignId, req.query.campaignId.trim()));
+    }
+    if (req.query.reachable !== 'false') {
+      conditions.push(sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`);
+    }
+    if (req.query.verified !== 'false') {
+      conditions.push(sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`);
+    }
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Cap is generous but still finite: an unbounded SELECT here would stream a
+    // 250k-row table into one response and one Node heap. Page with offset.
+    const EXPORT_MAX_LIMIT = 250_000;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10000, 1), EXPORT_MAX_LIMIT);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+    const [countRow] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(researchedLeads)
+      .where(where);
+    const total = Number(countRow?.n ?? 0);
 
     const leads = await db
       .select()
       .from(researchedLeads)
-      .where(and(
-        sql`${researchedLeads.status} <> 'rejected'`,
-        sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-        sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
-      ))
+      .where(where)
       .orderBy(desc(researchedLeads.createdAt))
-      .limit(10000);
+      .limit(limit)
+      .offset(offset);
 
     const escapeCsv = (val: string | null | undefined): string => {
       if (val == null) return '';
@@ -262,6 +310,12 @@ export function createLeadsRouter(): Router {
 
     const csv = [headers.join(','), ...rows].join('\r\n');
 
+    // Tell the caller whether it got everything. The old version gave no hint
+    // that it had stopped at 10,000, which is how a truncated export reads as
+    // a complete one.
+    res.setHeader('X-Total-Count', String(total));
+    res.setHeader('X-Export-Rows', String(rows.length));
+    res.setHeader('X-Export-Offset', String(offset));
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="apex-leads.csv"');
     res.send(csv);
@@ -269,11 +323,41 @@ export function createLeadsRouter(): Router {
 
   // ─── GET /api/leads/stats — summary counts ───────────────────────────────
   router.get('/stats', async (_req, res) => {
-    // Counted in the database. This used to load every lead, jsonb columns and
-    // all, into Node and count in JavaScript, which took minutes once the table
-    // reached the hundreds of thousands of rows. See ../lead-stats.ts.
-    const { db } = await import('@workspace/db');
-    res.json(await computeLeadStats(db));
+    const { db, researchedLeads } = await import('@workspace/db');
+
+    const all = await db.select().from(researchedLeads);
+    const byStatus = {
+      new: all.filter((l) => l.status === 'new').length,
+      contacted: all.filter((l) => l.status === 'contacted').length,
+      qualified: all.filter((l) => l.status === 'qualified').length,
+      rejected: all.filter((l) => l.status === 'rejected').length,
+    };
+    const visible = all.filter((lead) => {
+      if (lead.status === 'rejected') return false;
+      if (!lead.contactEmail && !lead.contactPhone) return false;
+      const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
+        | { status?: string }
+        | undefined;
+      return verification?.status === 'verified';
+    });
+    const byPipelineState: Record<string, number> = {};
+    const byIndustry: Record<string, number> = {};
+    for (const l of visible) {
+      const key = l.industry || 'Unknown';
+      byIndustry[key] = (byIndustry[key] ?? 0) + 1;
+      byPipelineState[l.pipelineState ?? 'DISCOVERED'] = (byPipelineState[l.pipelineState ?? 'DISCOVERED'] ?? 0) + 1;
+    }
+
+    res.json({
+      total: visible.length,
+      contactReady: visible.length,
+      rawCandidates: all.length,
+      pendingOrUnverified: Math.max(0, all.length - visible.length - byStatus.rejected),
+      rejected: byStatus.rejected,
+      byStatus,
+      byPipelineState,
+      byIndustry,
+    });
   });
 
   // ─── POST /api/leads/verify-batch — run the website-identity repair now ───
@@ -286,23 +370,6 @@ export function createLeadsRouter(): Router {
       const { repairWebLeadIdentityBatch } = await import('@workspace/background-jobs');
       const limit = Math.max(1, Math.min(500, Number((req.body as { limit?: number } | undefined)?.limit ?? 100) || 100));
       const result = await repairWebLeadIdentityBatch(limit);
-      res.json(result);
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
-  // ─── POST /api/leads/recover-batch — work the rows the pass can no longer reach ──
-  // The main verify pass stamps its scan version even on a homepage fetch that
-  // timed out, so those rows are invisible to it forever. This runs one
-  // recovery batch synchronously and returns its counters, so an operator can
-  // tell a drained backlog (checked: 0) from a real repair
-  // (verified: 30, contactsAdded: 6).
-  router.post('/recover-batch', async (req, res) => {
-    try {
-      const { recoverStuckLeadIdentities } = await import('@workspace/background-jobs');
-      const limit = Math.max(1, Math.min(2000, Number((req.body as { limit?: number } | undefined)?.limit ?? 200) || 200));
-      const result = await recoverStuckLeadIdentities(limit);
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
