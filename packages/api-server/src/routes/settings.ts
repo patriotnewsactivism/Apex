@@ -51,25 +51,31 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   {
     id: 'paid-continuity',
     name: 'Paid Continuity — DeepSeek V4 Flash 0731',
-    description: 'Runs only after every free route (OpenRouter free, Groq, Gemini) is spent, and only when Routing Enabled is true. One model on two providers: each request alternates between OpenRouter and Nous Portal, and either one is the other\'s immediate fallback. Configure both keys to split the load; with one key, that provider carries all paid traffic.',
+    description: 'Runs only after every free route (OpenRouter free, Groq, Gemini) is spent, and only when Routing Enabled is true. Paid continuity runs on OpenRouter alone (the funded OPENROUTER_API_KEY_4 account). The Nous Portal provider is removed — Apex no longer calls Nous. Hard-capped by the Daily Spend Cap below (0/unset = spend nothing).',
     category: 'ai',
     docsUrl: 'https://openrouter.ai/deepseek/deepseek-v4-flash-0731',
     envVars: [
       { key: 'APEX_PAID_FALLBACK_ENABLED', label: 'Routing Enabled', placeholder: 'true or false (unset = off)' },
+      { key: 'APEX_DAILY_SPEND_USD', label: 'Daily Spend Cap (USD)', placeholder: '1 (0 or unset = spend nothing)' },
       {
         key: 'OPENROUTER_API_KEY_4', label: 'OpenRouter Funded API Key', placeholder: 'sk-or-v1-...', secret: true,
         probe: { kind: 'openai-models', baseUrl: 'https://openrouter.ai/api/v1' },
       },
-      {
-        key: 'NOUS_API_KEY', label: 'Nous Portal API Key', placeholder: 'Nous Portal key', secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://inference-api.nousresearch.com/v1' },
-      },
+    ],
+  },
+  {
+    id: 'ai-approval-gates',
+    name: 'AI Approval Gates (Reviewer + QA Manager)',
+    description: 'Two-gate AI review of pending gated approvals. off = disabled. shadow = record what the gates would decide in reviewer_note and change nothing. on = approve or reject automatically. Outbound email, calls and deploys are never decided by AI.',
+    category: 'ai',
+    envVars: [
+      { key: 'APEX_AI_APPROVAL_GATES', label: 'Mode', placeholder: 'off, shadow or on' },
     ],
   },
   {
     id: 'qwen-byok',
-    name: 'QwenCloud Token Plan — Not Routed',
-    description: 'Removed from automatic routing on 2026-10-05 (the plan is exhausted); APEX does not call it. The fields are kept so a stored key is not lost if Qwen is reinstated by a new operator decision.',
+    name: 'QwenCloud Token Plan — Primary BYOK',
+    description: 'Operator-funded QwenCloud (qwencloud.com) Token Plan. Tried first on every call, on QWEN_API_KEY, so usage lands on that plan. Its model follows the QWEN_MODEL override (default qwen3.8-flash). An exhausted OpenRouter or workspace budget does not block it; its own daily cap, rate, and pacing still do.',
     category: 'ai',
     docsUrl: 'https://docs.qwencloud.com',
     envVars: [
@@ -77,6 +83,7 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'APEX_QWEN_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '50000' },
       { key: 'APEX_QWEN_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '60' },
       { key: 'QWEN_BASE_URL', label: 'Base URL', placeholder: 'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1' },
+      { key: 'QWEN_MODEL', label: 'Model Override', placeholder: 'qwen3.8-flash' },
       {
         key: 'QWEN_API_KEY',
         label: 'QwenCloud Token Plan API Key 1',
@@ -186,7 +193,10 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
       { key: 'TELNYX_CALL_BRIDGE_CONNECTION_ID', label: 'Call Control Connection ID', placeholder: 'Telnyx Call Control Application ID' },
       { key: 'TELNYX_CALL_BRIDGE_WEBHOOK_SECRET', label: 'Call Bridge Webhook Secret', placeholder: 'long random secret', secret: true },
       { key: 'APEX_FRONT_DESK_NUMBER', label: 'Approved Caller ID', placeholder: '+18329757665' },
+      { key: 'TELNYX_AI_ASSISTANT_ID', label: 'AI Takeover Assistant ID', placeholder: 'assistant-...' },
       { key: 'TELNYX_OWNER_NUMBER', label: 'Owner/Test Pitch Destination', placeholder: '+1xxxxxxxxxx' },
+      { key: 'TELNYX_WEBHOOK_SECRET', label: 'Voice Webhook Secret', placeholder: 'long random secret', secret: true },
+      { key: 'APEX_OPERATOR_UNLOCK_CODE', label: 'Voice Operator Unlock Code', placeholder: '6-digit code', secret: true },
     ],
   },
   {

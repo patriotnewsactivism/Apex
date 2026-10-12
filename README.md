@@ -34,17 +34,21 @@ See:
 
 APEX runs a free-first chain, with one *unrestricted* paid continuity model last (ADR-020, 2026-10-05):
 
-1. Nex N2.5 Mini Free (`nex-agi/nex-n2.5-mini:free`) — primary
-2. Nex N2.5 Pro Free (`nex-agi/nex-n2.5-pro:free`)
-3. NVIDIA Nemotron 3 Super Free
-4. NVIDIA Nemotron 3.5 Lightning Free
-5. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
-6. NVIDIA Nemotron 3 Ultra Free
-7. direct Groq GPT-OSS 120B BYOK when enabled
-8. direct Gemini 3.8 Flash BYOK when enabled
-9. DeepSeek V4 Flash 0731 (`deepseek/deepseek-v4-flash-0731`) — paid, unrestricted continuity, last resort, split between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`): each request alternates which provider goes first and the other is its immediate fallback
+1. NVIDIA Nemotron 3 Super Free
+2. NVIDIA Nemotron 3.5 Lightning Free
+3. OpenRouter Free Router (`openrouter/free`, tool requirements preserved)
+4. NVIDIA Nemotron 3 Ultra Free
+5. direct Groq GPT-OSS 120B BYOK when enabled
+6. direct Gemini 3.8 Flash BYOK when enabled
+7. DeepSeek V4 Flash 0731 (`deepseek/deepseek-v4-flash-0731`) — paid, unrestricted continuity, last resort, on OpenRouter (`OPENROUTER_API_KEY_4`). Apex no longer calls the Nous Portal provider.
 
-Qwen (QwenCloud Token Plan) led this chain under ADR-017. Its plan is exhausted and the operator removed it on 2026-10-05; the route is defined but never called.
+The two `nex-agi/nex-n2.5-*:free` rungs that used to head this chain are gone
+(2026-10-11): OpenRouter withdrew their free tier and answered every dispatch
+with HTTP 404, while the reservation taken before each dispatch kept spending
+the daily OpenRouter allowance on requests no model ever served. A route is only
+added back with a live 200 on the exact `:free` slug first.
+
+Qwen (QwenCloud, metered) is the LAST automatic route: a daily-allowance free chain (OpenRouter free, Groq, Gemini) runs first and Qwen is used only once every free pool is spent (operator decision 2026-10-10, which supersedes ADR-017's Qwen-first order). The live Qwen credential is pay-as-you-go; the operator prefers the Token Plan balance when it exists.
 
 The operator-persisted OpenRouter model roster remains free-only. The paid routes run only when `APEX_PAID_FALLBACK_ENABLED=true` and at least one of their keys is set (Settings → Paid Continuity, or the platform environment); unset or `false` removes both and APEX parks the workforce when free/BYOK capacity is spent rather than spending further. Every free and BYOK provider is unaffected — do not unset `OPENROUTER_API_KEY_4` to stop paid spend, because it is also a free-pool account. APEX does not apply its spend, token, request, emergency-cap, or pacing governors to the paid routes. A free-model 429 on the funded OpenRouter account blocks only that account's free routing, not its paid route. Upstream OpenRouter/Nous billing, provider limits, request timeouts, backoff/cooldowns, authentication, tool authorization, and human approvals still apply to every route.
 

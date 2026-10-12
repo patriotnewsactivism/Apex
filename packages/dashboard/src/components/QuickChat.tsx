@@ -22,15 +22,19 @@ import {
   Brain,
   Bot,
   Mic,
+  MicOff,
   Square,
   Phone,
   PhoneOff,
   Minus,
   ChevronDown,
   History,
+  MousePointer2,
+  Octagon,
 } from 'lucide-react';
 
 import { useIsMobile } from '../hooks/useIsMobile.js';
+import type { CopilotUiController } from '../copilot/actions.js';
 
 /* ── Past voice calls ─────────────────────────────────────────────────────────
  * Durable history of live-voice sessions (packages/api-server/src/
@@ -492,6 +496,7 @@ export interface ChatPanelProps {
   onMinimize?: () => void;
   onHeaderPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onVoiceStatus?: (status: import('../hooks/useLiveVoiceCall.js').LiveVoiceStatus) => void;
+  copilot: CopilotUiController;
 }
 
 export function ChatPanel({
@@ -500,6 +505,7 @@ export function ChatPanel({
   onMinimize,
   onHeaderPointerDown,
   onVoiceStatus,
+  copilot,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -514,6 +520,7 @@ export function ChatPanel({
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [copilotActivityAt, setCopilotActivityAt] = useState(() => Date.now());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -558,7 +565,12 @@ export function ChatPanel({
         .filter((m) => m.id !== 'welcome')
         .slice(-20)
         .map((m) => ({ role: (m.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }));
-      return api.chat.message(text, history, pageTitle);
+      return api.chat.message(
+        text,
+        history,
+        pageTitle,
+        copilot.active ? { enabled: true, pageId, sessionId: copilot.sessionId } : undefined,
+      );
     },
     onSuccess: (result) => {
       setMessages((prev) => [
@@ -573,6 +585,20 @@ export function ChatPanel({
       ]);
       if (result.goalCreated) {
         qc.invalidateQueries({ queryKey: ['goals'] });
+      }
+      if (copilot.active && result.copilot?.actions.length) {
+        setCopilotActivityAt(Date.now());
+        void copilot.execute(result.copilot.actions, (text) => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `copilot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              role: 'system',
+              text,
+              timestamp: Date.now(),
+            },
+          ]);
+        });
       }
     },
     onError: (err: Error) => {
@@ -596,12 +622,13 @@ export function ChatPanel({
   }, [messages, chatMut.isPending]);
   const handleSubmit = () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || (copilot.active && copilot.busy)) return;
     setMessages((prev) => [
       ...prev,
       { id: `usr-${Date.now()}`, role: 'user', text, timestamp: Date.now() },
     ]);
     setInput('');
+    if (copilot.active) setCopilotActivityAt(Date.now());
     chatMut.mutate(text);
   };
 
@@ -611,6 +638,38 @@ export function ChatPanel({
       handleSubmit();
     }
   };
+
+  useEffect(() => {
+    if (!copilot.active) return;
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      copilot.stop('Stopped with Esc');
+      setMessages((prev) => [
+        ...prev,
+        { id: `copilot-stop-${Date.now()}`, role: 'system', text: 'Apex Copilot stopped with Esc.', timestamp: Date.now() },
+      ]);
+    };
+    window.addEventListener('keydown', onEscape, true);
+    return () => window.removeEventListener('keydown', onEscape, true);
+  }, [copilot.active, copilot.stop]);
+
+  useEffect(() => {
+    if (!copilot.active) return;
+    const remaining = Math.max(0, 10 * 60_000 - (Date.now() - copilotActivityAt));
+    const timeout = window.setTimeout(() => {
+      copilot.stop('Stopped after 10 minutes of inactivity');
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `copilot-idle-${Date.now()}`,
+          role: 'system',
+          text: 'Apex Copilot turned off after 10 minutes of inactivity.',
+          timestamp: Date.now(),
+        },
+      ]);
+    }, remaining);
+    return () => window.clearTimeout(timeout);
+  }, [copilot.active, copilot.stop, copilotActivityAt]);
 
   // ── Push-to-talk voice input ────────────────────────────────────────────
   // Records a clip with MediaRecorder, POSTs it to /api/transcribe
@@ -774,6 +833,7 @@ export function ChatPanel({
 
   return (
     <div
+      data-copilot-control
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -836,27 +896,93 @@ export function ChatPanel({
                   Sees your screen: {pageTitle ?? '—'}
                 </div>
               </div>
-              {onMinimize && (
+              <div data-copilot-control style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                {copilot.available && (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={copilot.active}
+                    aria-label="Toggle Apex Copilot"
+                    onClick={() => {
+                      if (copilot.active) {
+                        copilot.stop('Stopped from the chat toggle');
+                        setMessages((prev) => [
+                          ...prev,
+                          { id: `copilot-toggle-${Date.now()}`, role: 'system', text: 'Apex Copilot is off.', timestamp: Date.now() },
+                        ]);
+                      } else {
+                        setCopilotActivityAt(Date.now());
+                        copilot.start();
+                        setMessages((prev) => [
+                          ...prev,
+                          {
+                            id: `copilot-toggle-${Date.now()}`,
+                            role: 'system',
+                            text: 'Apex Copilot is on. I can navigate and work inside this APEX dashboard only. Press Esc or Stop at any time.',
+                            timestamp: Date.now(),
+                          },
+                        ]);
+                      }
+                    }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5, padding: '4px 7px',
+                      borderRadius: 999,
+                      border: `1px solid ${copilot.active ? 'rgba(215,182,106,0.55)' : 'rgba(90,158,174,0.18)'}`,
+                      background: copilot.active ? 'rgba(215,182,106,0.15)' : 'transparent',
+                      color: copilot.active ? '#d7b66a' : 'var(--color-apex-muted)',
+                      fontSize: 9, fontFamily: 'var(--font-mono)', cursor: 'pointer',
+                    }}
+                  >
+                    <MousePointer2 size={11} /> Apex Copilot {copilot.active ? 'ON' : 'OFF'}
+                  </button>
+                )}
+                {onMinimize && (
+                  <button
+                    onClick={onMinimize}
+                    aria-label="Minimize chat"
+                    title="Minimize — chat and calls keep running"
+                    style={{
+                      background: 'transparent', border: '1px solid rgba(90,158,174,0.15)',
+                      borderRadius: 6, padding: '4px 6px', cursor: 'pointer',
+                      color: 'var(--color-apex-muted)', display: 'flex',
+                    }}
+                  >
+                    <Minus size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {copilot.available && copilot.active && (
+              <div
+                data-copilot-control
+                style={{
+                  padding: '7px 12px', borderBottom: '1px solid rgba(215,182,106,0.2)',
+                  background: 'rgba(215,182,106,0.07)', display: 'flex',
+                  alignItems: 'center', gap: 8, color: '#d7b66a', fontSize: 10,
+                }}
+              >
+                <MousePointer2 size={13} />
+                <span style={{ flex: 1 }}>{copilot.busy ? 'Acting inside APEX…' : 'Dashboard control active · Esc stops'}</span>
                 <button
-                  onClick={onMinimize}
-                  aria-label="Minimize chat"
-                  title="Minimize — chat and calls keep running"
+                  type="button"
+                  onClick={() => {
+                    copilot.stop('Stopped by Matthew');
+                    setMessages((prev) => [
+                      ...prev,
+                      { id: `copilot-stop-${Date.now()}`, role: 'system', text: 'Apex Copilot stopped.', timestamp: Date.now() },
+                    ]);
+                  }}
                   style={{
-                    marginLeft: 'auto',
-                    background: 'transparent',
-                    border: '1px solid rgba(90,158,174,0.15)',
-                    borderRadius: 6,
-                    padding: '4px 6px',
-                    cursor: 'pointer',
-                    color: 'var(--color-apex-muted)',
-                    display: 'flex',
-                    flexShrink: 0,
+                    display: 'flex', alignItems: 'center', gap: 5, borderRadius: 6,
+                    border: '1px solid rgba(196,92,102,0.45)', background: 'rgba(196,92,102,0.15)',
+                    color: '#e47780', padding: '5px 9px', cursor: 'pointer', fontSize: 10, fontWeight: 700,
                   }}
                 >
-                  <Minus size={13} />
+                  <Octagon size={12} /> Stop
                 </button>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Messages */}
             <div
@@ -1049,25 +1175,55 @@ export function ChatPanel({
               )}
             </div>
             {liveVoice.status === 'live' || liveVoice.status === 'connecting' ? (
-              <motion.button
-                onClick={() => liveVoice.stop()}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                style={{
-                  padding: '7px 12px',
-                  borderRadius: 8,
-                  border: '1px solid rgba(196,92,102,0.35)',
-                  background: 'rgba(196,92,102,0.12)',
-                  color: '#c45c66',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  cursor: 'pointer',
-                }}
-              >
-                <PhoneOff size={14} /> Hang up
-              </motion.button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
+                {liveVoice.status === 'live' && (
+                  <motion.button
+                    onClick={liveVoice.toggleMute}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    title={liveVoice.muted ? 'Unmute microphone' : 'Mute microphone'}
+                    aria-pressed={liveVoice.muted}
+                    style={{
+                      padding: '7px 12px',
+                      borderRadius: 8,
+                      border: liveVoice.muted
+                        ? '1px solid rgba(196,92,102,0.45)'
+                        : '1px solid rgba(215,182,106,0.3)',
+                      background: liveVoice.muted
+                        ? 'rgba(196,92,102,0.15)'
+                        : 'rgba(215,182,106,0.08)',
+                      color: liveVoice.muted ? '#e47780' : '#d7b66a',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {liveVoice.muted ? <MicOff size={14} /> : <Mic size={14} />}
+                    {liveVoice.muted ? 'Unmute' : 'Mute'}
+                  </motion.button>
+                )}
+                <motion.button
+                  onClick={() => liveVoice.stop()}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  style={{
+                    padding: '7px 12px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(196,92,102,0.35)',
+                    background: 'rgba(196,92,102,0.12)',
+                    color: '#c45c66',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <PhoneOff size={14} /> Hang up
+                </motion.button>
+              </div>
             ) : (
               <motion.button
                 onClick={() => liveVoice.start(pageTitle ? `${pageTitle} (${pageId ?? 'chat'})` : undefined)}
@@ -1145,7 +1301,10 @@ export function ChatPanel({
                 aria-label="Chat message"
                 placeholder="Ask me anything, or tell me what to do..."
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  if (copilot.active) setCopilotActivityAt(Date.now());
+                }}
                 onKeyDown={handleKeyDown}
                 rows={expanded ? 4 : 1}
                 style={{
@@ -1188,7 +1347,7 @@ export function ChatPanel({
               <motion.button
                 className="btn-primary"
                 onClick={handleSubmit}
-                disabled={!input.trim() || chatMut.isPending}
+                disabled={!input.trim() || chatMut.isPending || (copilot.active && copilot.busy)}
                 aria-label="Send chat message"
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}

@@ -31,7 +31,7 @@ export const bootstrapWorkforce = internalAction({
         systemPrompt: cfg.systemPrompt,
         // Cosmetic/legacy fields — the model actually used per LLM call is
         // resolved fresh each time via getDefaultLLMConfig(role) in llmConfig.ts.
-        model: 'nex-agi/nex-n2.5-mini:free',
+        model: 'nvidia/nemotron-3-super-120b-a12b:free',
         provider: 'groq',
       });
     }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from 'react';
-import { Copy, Check, Download, BookOpen, Terminal, ArrowDown } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { Copy, Check, Download, BookOpen, Terminal, ArrowDown, Pause, Play } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api.js';
 import { useWebSocket, type ApexEvent } from '../hooks/useWebSocket.js';
 import { copyText, downloadText, fileStamp } from '../lib/clipboard.js';
@@ -92,11 +92,21 @@ function mapPersistedLog(log: Awaited<ReturnType<typeof api.logs.list>>[number])
 
 export function LogStream() {
   const { events } = useWebSocket();
+  const queryClient = useQueryClient();
   const [mode, setMode] = useState<'plain' | 'technical'>('plain');
   const [copied, setCopied] = useState(false);
   const [followLive, setFollowLive] = useState(true);
+  // Paused freezes the visible feed (and stops polling) so the operator can
+  // read without the list moving. Live keeps it pinned to the newest activity.
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollToBottomRef = useRef(false);
+
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
 
   // This is intentionally much longer than the old 200-row feed. These rows
   // are outcome summaries APEX explicitly persisted as operator_activity, not
@@ -104,7 +114,7 @@ export function LogStream() {
   const { data: activityLogs = [] } = useQuery({
     queryKey: ['logs', 'operator-activity'],
     queryFn: () => api.logs.activity(2000),
-    refetchInterval: 5_000,
+    refetchInterval: paused ? false : 5_000,
   });
 
   // Technical mode stays bounded because raw agent/debug logging is much
@@ -112,13 +122,19 @@ export function LogStream() {
   const { data: restLogs = [] } = useQuery({
     queryKey: ['logs', 'technical'],
     queryFn: () => api.logs.list(500),
-    refetchInterval: mode === 'technical' ? 5_000 : false,
-    enabled: mode === 'technical',
+    refetchInterval: mode === 'technical' && !paused ? 5_000 : false,
+    enabled: mode === 'technical' && !paused,
   });
 
+  // While paused the feed must stay frozen, so exclude any event (REST or WS)
+  // that arrived after the feed was paused.
+  const pausedSinceRef = useRef(0);
   const wsLogs = useMemo(
-    () => events.filter((event) => event.type === 'log') as Extract<ApexEvent, { type: 'log' }>[],
-    [events],
+    () => (events.filter((event) => event.type === 'log') as Extract<ApexEvent, { type: 'log' }>[])
+      .filter((event) => event.timestamp <= pausedSinceRef.current),
+    // `paused` is a dependency so the filter re-runs when it is lifted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [events, paused],
   );
 
   const plainMerged = useMemo<DisplayLog[]>(() => {
@@ -175,22 +191,52 @@ export function LogStream() {
 
   const visible = mode === 'plain' ? plainMerged : technicalMerged;
 
+  // Active scroll: whenever a new line lands and the operator is already at the
+  // bottom, snap to the newest line so activity is visibly streaming in.
+  // A raised flag jumps immediately (resume / jump-to-live) regardless of the
+  // 80px follow window.
   useEffect(() => {
-    if (!followLive) return;
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [visible.length, mode, followLive]);
+    if (scrollToBottomRef.current || (followLive && !paused)) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+    scrollToBottomRef.current = false;
+  }, [visible.length, mode, followLive, paused]);
+
+  // The newest timestamp on screen; captured at the instant the feed is paused
+  // so every line at or before it stays visible and later lines are hidden.
+  const pausedAt = visible.length > 0 ? visible[visible.length - 1].timestamp : Date.now();
 
   const onScroll = useCallback(() => {
     const node = scrollRef.current;
     if (!node) return;
     const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
-    setFollowLive(distanceFromBottom < 80);
+    // Scrolling up (for instance to read) must not fight the operator: it takes
+    // the feed out of follow-live, and re-reaching the bottom puts it back.
+    if (distanceFromBottom >= 80) setFollowLive(false);
+    else setFollowLive(true);
   }, []);
 
   const jumpToLive = useCallback(() => {
+    scrollToBottomRef.current = true;
+    setPaused(false);
+    pausedSinceRef.current = Number.POSITIVE_INFINITY;
     setFollowLive(true);
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, []);
+
+  const togglePause = useCallback(() => {
+    setPaused((current) => {
+      if (!current) {
+        // Pausing: freeze on everything visible right now.
+        pausedSinceRef.current = pausedAt;
+        return true;
+      }
+      // Resuming: drop the cutoff and catch up to now.
+      pausedSinceRef.current = Number.POSITIVE_INFINITY;
+      scrollToBottomRef.current = true;
+      return false;
+    });
+  }, [pausedAt]);
 
   const copyLogs = useCallback(async () => {
     await copyText(toPlainText(visible, mode === 'plain'));
@@ -270,8 +316,45 @@ export function LogStream() {
         <span className="apex-eyebrow">
           {visible.length.toLocaleString()} {mode === 'plain' ? 'real activity entries' : 'technical entries'}
         </span>
+        {paused && (
+          <span
+            className="apex-eyebrow"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '4px 8px',
+              borderRadius: 999,
+              color: 'var(--color-apex-orange)',
+              border: '1px solid rgba(201,168,74,0.35)',
+              background: 'rgba(201,168,74,0.10)',
+            }}
+          >
+            <Pause size={11} /> PAUSED · {pausedAt ? formatPlainTime(pausedAt) : 'now'}
+          </span>
+        )}
         <div style={{ flex: 1, minWidth: 8 }} />
 
+        {paused ? (
+          <button
+            className="btn-secondary apex-tap"
+            onClick={jumpToLive}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 11 }}
+            title="Resume live activity and jump to the newest line"
+          >
+            <ArrowDown size={13} /> Resume live
+          </button>
+        ) : (
+          <button
+            className="btn-secondary apex-tap"
+            onClick={togglePause}
+            disabled={visible.length === 0}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', fontSize: 11 }}
+            title="Pause the feed so you can read without it moving"
+          >
+            <Pause size={13} /> Pause
+          </button>
+        )}
         <button
           className="btn-secondary apex-tap"
           onClick={copyLogs}

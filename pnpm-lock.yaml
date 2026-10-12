@@ -237,6 +237,9 @@ importers:
       '@workspace/predictive':
         specifier: workspace:*
         version: link:../predictive
+      apex-copilot:
+        specifier: github:patriotnewsactivism/apex-copilot#f272c147f92eb7827e1fb389acc69b6084089df1
+        version: https://codeload.github.com/patriotnewsactivism/apex-copilot/tar.gz/f272c147f92eb7827e1fb389acc69b6084089df1
       cors:
         specifier: ^2.8.5
         version: 2.8.6
@@ -469,6 +472,9 @@ importers:
       '@workspace/convex-backend':
         specifier: workspace:*
         version: link:../convex-backend
+      apex-copilot:
+        specifier: github:patriotnewsactivism/apex-copilot#f272c147f92eb7827e1fb389acc69b6084089df1
+        version: https://codeload.github.com/patriotnewsactivism/apex-copilot/tar.gz/f272c147f92eb7827e1fb389acc69b6084089df1
       convex:
         specifier: ^1.42.3
         version: 1.42.3(react@19.1.0)
@@ -1235,6 +1241,11 @@ packages:
 
   anynum@1.0.1:
     resolution: {integrity: sha512-N6//FLET/tXYNM/F6ABca1oH6fWB+KlTt909Le28WMDBk8oaT4vY17DCrwg2MvmuqUKt3Ni4N5dGJ/EoBgcO6A==}
+
+  apex-copilot@https://codeload.github.com/patriotnewsactivism/apex-copilot/tar.gz/f272c147f92eb7827e1fb389acc69b6084089df1:
+    resolution: {gitHosted: true, integrity: sha512-ThlItadKB/xxhT+y//dqMu+sBIasBWxwW3wjtNuDRE/4wIcgsAQyo7NDcXw+SRDvrmfC+STJa+H6TzS55m7N4Q==, tarball: https://codeload.github.com/patriotnewsactivism/apex-copilot/tar.gz/f272c147f92eb7827e1fb389acc69b6084089df1}
+    version: 1.0.0
+    engines: {node: '>=22'}
 
   argparse@1.0.10:
     resolution: {integrity: sha512-o5Roy6tNG4SL/FOkCAN6RzjiakZS25RLYFrcMttJqbdd8BWrnA+fGz57iN5Pb06pvBGvl5gQ0B48dJlslXvoTg==}
@@ -3429,6 +3440,10 @@ snapshots:
       color-convert: 2.0.1
 
   anynum@1.0.1: {}
+
+  apex-copilot@https://codeload.github.com/patriotnewsactivism/apex-copilot/tar.gz/f272c147f92eb7827e1fb389acc69b6084089df1:
+    dependencies:
+      zod: 3.25.76
 
   argparse@1.0.10:
     dependencies:

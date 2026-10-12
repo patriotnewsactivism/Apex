@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { db, goals } from '@workspace/db';
-import { desc, eq } from 'drizzle-orm';
+import { db, goals, tasks } from '@workspace/db';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { ApexCEO } from '@workspace/agents';
+
+/** Task statuses that still represent live work on a goal. */
+const OPEN_TASK_STATUSES = ['pending', 'in_progress', 'blocked', 'awaiting_approval'] as const;
 
 const submitGoalSchema = z.object({
   title: z.string().min(3).max(200),
@@ -55,7 +58,28 @@ export function createGoalsRouter(ceo: ApexCEO) {
     if (!parsed.success) return res.status(400).json({ error: 'Invalid status' });
     
     await db.update(goals).set({ status: parsed.data.status }).where(eq(goals.id, req.params.id));
-    return res.json({ updated: true });
+
+    // Cancelling a goal must also cancel the work it owns. Without this the
+    // goal reads cancelled while its tasks stay pending forever, so the task
+    // backlog only ever grows and the task_backlog_high governor (>50 pending)
+    // latches degraded with no way to clear it. Rows are set to 'cancelled',
+    // never deleted, so history and attribution are preserved.
+    //
+    // Deliberately NOT done for 'paused': a paused goal can resume, and its
+    // pending tasks are still legitimate work. Only an explicit cancellation
+    // means the work is dead. Tasks that were already done/failed/cancelled are
+    // left untouched.
+    let cancelledTasks = 0;
+    if (parsed.data.status === 'cancelled') {
+      const cancelled = await db
+        .update(tasks)
+        .set({ status: 'cancelled', updatedAt: new Date() })
+        .where(and(eq(tasks.goalId, req.params.id), inArray(tasks.status, [...OPEN_TASK_STATUSES])))
+        .returning({ id: tasks.id });
+      cancelledTasks = cancelled.length;
+    }
+
+    return res.json({ updated: true, cancelledTasks });
   });
 
   return router;

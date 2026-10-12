@@ -16,6 +16,7 @@ import {
   normalizeIndustry,
   type ResearchedLeadInput,
   type ToolContext,
+  directoryProviderUsable,
 } from '@workspace/core';
 import { citiesForStates, allStateCodes } from './us-geo.js';
 import {
@@ -314,6 +315,268 @@ export async function createCampaign(input: CreateCampaignInput): Promise<{
   return { campaignId, segments: cells.length, industries, cities };
 }
 
+// ─── Extending a finished campaign ────────────────────────────────────────────
+//
+// Before 2026-10-06 a campaign that hit its target could not be continued:
+// pause/resume/cancel only accept running|paused, and closeFinishedCampaigns
+// marks every untouched segment 'cancelled' when the target is met. A finished
+// "Premium Software Development" campaign at 30% territory coverage therefore
+// had 2,551 never-searched segments and no sanctioned way to search them.
+//
+// extendCampaign raises the target and puts the campaign back to 'running'
+// WITHOUT redoing finished work:
+//   - done / exhausted segments are never touched (that work is kept and
+//     skipped; their search responses are also in lead_search_cache);
+//   - 'cancelled' segments (never searched) go back to pending;
+//   - 'failed' segments go back to pending with a fresh retry budget when
+//     retryFailed is set (default) — e.g. the 958 US News segments closed by
+//     the 2026-10-03 Tavily outage;
+//   - optional addCities/addStates/national/addIndustries widen the territory
+//     with brand-new shards, skipping any that already exist.
+// It also works for 'cancelled' and 'completed_short' campaigns, which is the
+// sanctioned way to restart those.
+
+export interface ExtendCampaignInput {
+  campaignId: string;
+  /** New target, in usable (verified, contact-ready) leads. Must be above the
+   *  campaign's current usable count. */
+  targetLeads: number;
+  /** Requeue failed segments with a fresh retry budget. Default true. */
+  retryFailed?: boolean;
+  /** Requeue segments cancelled when the target was met. Default true. */
+  reopenCancelled?: boolean;
+  addCities?: string[];
+  addStates?: string[];
+  national?: boolean;
+  addIndustries?: string[];
+  /** Compute and return the plan without writing anything. */
+  dryRun?: boolean;
+  requestedBy?: string;
+}
+
+export interface CampaignExtensionPlan {
+  campaignId: string;
+  name: string;
+  previousStatus: string;
+  previousTarget: number;
+  targetLeads: number;
+  usableLeads: number;
+  segmentsTotalBefore: number;
+  alreadyWorked: number;
+  reopenCancelled: number;
+  requeueFailed: number;
+  stillFailed: number;
+  alreadyPending: number;
+  newSegments: SearchShardLike[];
+  pendingAfter: number;
+  industries: string[];
+  cities: string[];
+}
+
+type SearchShardLike = { industry: string; city: string; subcategory: string; searchIntent: string; query: string };
+
+/** Pure: what extendCampaign would do. Throws on a request that cannot make
+ *  progress, so a bad extension is refused before anything is written. */
+export function planCampaignExtension(
+  campaign: Pick<typeof leadCampaigns.$inferSelect, 'id' | 'name' | 'status' | 'targetLeads' | 'icp'>,
+  segments: Array<Pick<typeof campaignSegments.$inferSelect, 'industry' | 'city' | 'subcategory' | 'searchIntent' | 'status'>>,
+  input: Omit<ExtendCampaignInput, 'campaignId' | 'dryRun' | 'requestedBy'>,
+  usableLeads: number,
+  shardOptions: { liveDemoMode?: boolean; shardsPerCell?: number } = {},
+): CampaignExtensionPlan {
+  if (!Number.isInteger(input.targetLeads) || input.targetLeads < 1) {
+    throw new Error('targetLeads must be a positive integer.');
+  }
+  if (input.targetLeads <= usableLeads) {
+    throw new Error(
+      `targetLeads (${input.targetLeads}) must be above the ${usableLeads} usable leads "${campaign.name}" already has.`,
+    );
+  }
+
+  const count = (status: string) => segments.filter((s) => s.status === status).length;
+  const retryFailed = input.retryFailed !== false;
+  const reopenCancelled = input.reopenCancelled !== false;
+
+  const existingIndustries = campaign.icp?.industries ?? [];
+  const existingCities = campaign.icp?.cities ?? [];
+  const addedIndustries = [...new Set((input.addIndustries ?? [])
+    .map((i) => normalizeIndustry(i))
+    .filter((i): i is string => Boolean(i)))]
+    .filter((i) => !existingIndustries.includes(i));
+  const expanded = input.national
+    ? citiesForStates(allStateCodes())
+    : citiesForStates(input.addStates ?? []);
+  const addedCities = [...new Set([...(input.addCities ?? []).map((c) => c.trim()).filter(Boolean), ...expanded])]
+    .filter((c) => !existingCities.includes(c));
+  const industries = [...existingIndustries, ...addedIndustries];
+  const cities = [...existingCities, ...addedCities];
+
+  const shardKey = (s: Pick<SearchShardLike, 'industry' | 'city' | 'subcategory' | 'searchIntent'>) =>
+    `${s.industry}\u0000${s.city}\u0000${s.subcategory}\u0000${s.searchIntent}`;
+  const existingKeys = new Set(segments.map(shardKey));
+  const candidates = [
+    // New industries across the whole (old + new) city list...
+    ...(addedIndustries.length > 0 ? generateSearchShards(addedIndustries, cities, shardOptions) : []),
+    // ...and the old industries across only the new cities.
+    ...(addedCities.length > 0 && existingIndustries.length > 0
+      ? generateSearchShards(existingIndustries, addedCities, shardOptions)
+      : []),
+  ];
+  const newSegments: SearchShardLike[] = [];
+  for (const shard of candidates) {
+    const key = shardKey(shard);
+    if (existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    newSegments.push(shard);
+  }
+  if (segments.length + newSegments.length > MAX_CAMPAIGN_SEGMENTS) {
+    throw new Error(
+      `Extending would make ${segments.length + newSegments.length} segments; the safety ceiling is ${MAX_CAMPAIGN_SEGMENTS}. Start a separate campaign for the extra territory.`,
+    );
+  }
+
+  const alreadyPending = count('pending') + count('in_progress');
+  const reopen = reopenCancelled ? count('cancelled') : 0;
+  const requeue = retryFailed ? count('failed') : 0;
+  const pendingAfter = alreadyPending + reopen + requeue + newSegments.length;
+  if (pendingAfter === 0) {
+    throw new Error(
+      `"${campaign.name}" has no unsearched territory left (every segment is done, exhausted${retryFailed ? '' : ', or failed'}). ` +
+        'Pass addCities, addStates, national, or addIndustries to widen it.',
+    );
+  }
+
+  return {
+    campaignId: campaign.id,
+    name: campaign.name,
+    previousStatus: campaign.status,
+    previousTarget: campaign.targetLeads,
+    targetLeads: input.targetLeads,
+    usableLeads,
+    segmentsTotalBefore: segments.length,
+    alreadyWorked: count('done') + count('exhausted'),
+    reopenCancelled: reopen,
+    requeueFailed: requeue,
+    stillFailed: count('failed') - requeue,
+    alreadyPending,
+    newSegments,
+    pendingAfter,
+    industries,
+    cities,
+  };
+}
+
+export async function extendCampaign(input: ExtendCampaignInput): Promise<Omit<CampaignExtensionPlan, 'newSegments'> & {
+  newSegments: number;
+  dryRun: boolean;
+  message: string;
+}> {
+  const [campaign] = await db.select().from(leadCampaigns).where(eq(leadCampaigns.id, input.campaignId)).limit(1);
+  if (!campaign) throw new Error(`No campaign with id ${input.campaignId}`);
+  const segments = await db
+    .select({
+      industry: campaignSegments.industry,
+      city: campaignSegments.city,
+      subcategory: campaignSegments.subcategory,
+      searchIntent: campaignSegments.searchIntent,
+      status: campaignSegments.status,
+    })
+    .from(campaignSegments)
+    .where(eq(campaignSegments.campaignId, campaign.id));
+  const usableLeads = await countUsableCampaignLeads(campaign.id);
+  const config = getLeadPipelineConfig();
+  const plan = planCampaignExtension(campaign, segments, input, usableLeads, {
+    liveDemoMode: config.liveDemoMode,
+    shardsPerCell: config.shardsPerCell,
+  });
+
+  const summary =
+    `target ${plan.previousTarget} → ${plan.targetLeads} (${plan.usableLeads} usable so far); ` +
+    `${plan.alreadyWorked} segments already worked are kept and skipped; ` +
+    `${plan.reopenCancelled} never-searched segments reopened, ${plan.requeueFailed} failed segments requeued` +
+    `${plan.newSegments.length ? `, ${plan.newSegments.length} new segments added` : ''}; ` +
+    `${plan.pendingAfter} segments to search.`;
+
+  if (input.dryRun) {
+    return { ...plan, newSegments: plan.newSegments.length, dryRun: true, message: `Dry run — nothing written. Would set ${summary}` };
+  }
+
+  const now = new Date();
+  await db.transaction(async (tx) => {
+    if (plan.reopenCancelled > 0) {
+      await tx
+        .update(campaignSegments)
+        .set({ status: 'pending', attempts: 0, leasedAt: null, completedAt: null, lastError: null })
+        .where(and(eq(campaignSegments.campaignId, campaign.id), eq(campaignSegments.status, 'cancelled')));
+    }
+    if (plan.requeueFailed > 0) {
+      await tx
+        .update(campaignSegments)
+        .set({
+          status: 'pending',
+          attempts: 0,
+          leasedAt: null,
+          completedAt: null,
+          lastError: sql`left('Requeued by campaign extension. Previous failure: ' || coalesce(${campaignSegments.lastError}, 'unknown'), 500)`,
+        })
+        .where(and(eq(campaignSegments.campaignId, campaign.id), eq(campaignSegments.status, 'failed')));
+    }
+    for (let offset = 0; offset < plan.newSegments.length; offset += SEGMENT_INSERT_BATCH) {
+      await tx
+        .insert(campaignSegments)
+        .values(plan.newSegments.slice(offset, offset + SEGMENT_INSERT_BATCH).map((cell) => ({
+          id: randomUUID(),
+          campaignId: campaign.id,
+          industry: cell.industry,
+          city: cell.city,
+          subcategory: cell.subcategory,
+          searchIntent: cell.searchIntent,
+          query: cell.query,
+          status: 'pending',
+          createdAt: now,
+        })))
+        .onConflictDoNothing();
+    }
+    await tx
+      .update(leadCampaigns)
+      .set({
+        status: 'running',
+        targetLeads: plan.targetLeads,
+        completedAt: null,
+        startedAt: campaign.startedAt ?? now,
+        lastProgressAt: now,
+        icp: { ...campaign.icp, industries: plan.industries, cities: plan.cities },
+        result: `Extended ${now.toISOString()}${input.requestedBy ? ` by ${input.requestedBy}` : ''} from ${plan.previousStatus}: ${summary}`.slice(0, 2000),
+      })
+      .where(eq(leadCampaigns.id, campaign.id));
+  });
+
+  emitApexEvent({
+    type: 'campaign:started',
+    campaignId: campaign.id,
+    name: campaign.name,
+    targetLeads: plan.targetLeads,
+    segments: plan.segmentsTotalBefore + plan.newSegments.length,
+  });
+  await recordOperatorActivity({
+    category: 'campaign',
+    agentId: input.requestedBy ?? 'apex-campaign-runner',
+    message: `Campaign "${campaign.name}" extended and resumed: ${summary}`,
+    data: {
+      campaignId: campaign.id,
+      previousStatus: plan.previousStatus,
+      previousTarget: plan.previousTarget,
+      targetLeads: plan.targetLeads,
+      reopenedCancelled: plan.reopenCancelled,
+      requeuedFailed: plan.requeueFailed,
+      addedSegments: plan.newSegments.length,
+      pendingAfter: plan.pendingAfter,
+    },
+  });
+
+  return { ...plan, newSegments: plan.newSegments.length, dryRun: false, message: `Extended. ${summary}` };
+}
+
 interface DirectoryBusiness {
   name?: string;
   n?: string;
@@ -422,9 +685,12 @@ export function templateCopyFor(
  *  The second case never covers an outage. A keyed source that is merely
  *  rate-limited or out of quota is not a deterministic failure. */
 export function isDeterministicFailure(message: string): boolean {
+  // A key disabled for a bad format or an auth rejection is reported as
+  // "<ENV> treated as not set" and counts as missing here.
+  const missing = (env: string) => message.includes(`${env} not set`) || message.includes(`${env} treated as not set`);
   const allDiscoveryProvidersMissing =
-    message.includes('YELP_API_KEY not set') &&
-    message.includes('GOOGLE_PLACES_API_KEY not set') &&
+    missing('YELP_API_KEY') &&
+    missing('GOOGLE_PLACES_API_KEY') &&
     message.includes('TOMTOM_API_KEY not set') &&
     message.includes('BRAVE_SEARCH_API_KEY not set');
   const osmCannotAnswer = message.includes('OSM: no known category tag');
@@ -515,6 +781,20 @@ const SEARCH_DIRECTORY_HOSTS = [
   'bbb.org',
   'chamberofcommerce.com',
   'manta.com',
+  // Platforms and aggregators, never a business's own site. youtube.com alone
+  // was saved as a "lead" 72 times in ten days before this.
+  'youtube.com',
+  'wikipedia.org',
+  'x.com',
+  'twitter.com',
+  'tiktok.com',
+  'reddit.com',
+  'indeed.com',
+  'glassdoor.com',
+  'angi.com',
+  'thumbtack.com',
+  'nextdoor.com',
+  'google.com',
 ] as const;
 
 export function businessFromWebResult(result: { title?: string; url?: string; snippet?: string }, city: string): DirectoryBusiness | null {
@@ -547,6 +827,26 @@ export function businessFromWebResult(result: { title?: string; url?: string; sn
     website: homepage,
     city,
   };
+}
+
+/** Split `limit` claim slots across campaign queues of the given lengths,
+ *  round-robin in order (oldest campaign first), never giving a queue more
+ *  than it holds. Exported for the guard script. */
+export function fairShareClaimCounts(queueLengths: number[], limit: number): number[] {
+  const shares = queueLengths.map(() => 0);
+  let left = Math.max(0, Math.trunc(limit));
+  while (left > 0) {
+    let progressed = false;
+    for (let i = 0; i < queueLengths.length && left > 0; i++) {
+      if (shares[i] < queueLengths[i]) {
+        shares[i] += 1;
+        left -= 1;
+        progressed = true;
+      }
+    }
+    if (!progressed) break;
+  }
+  return shares;
 }
 
 export class CampaignRunner {
@@ -690,58 +990,103 @@ export class CampaignRunner {
       await Promise.all(candidates.map(async (lead) => {
         const domain = normalizeLeadDomain(lead.website);
         if (!domain) return;
-        const result = await registry.execute(
-          'webSearch',
-          {
-            query: `site:${domain} "${lead.companyName}" contact phone email`,
-            maxResults: 6,
-            fast: true,
-            freeOnly: true,
-          },
-          this.toolContext,
-        );
-
-        const payload = result.success
-          ? result.data as {
-              provider?: string;
-              cacheHit?: boolean;
-              results?: Array<{ title?: string; url?: string; snippet?: string }>;
-            }
-          : null;
-
-        const urls = [...new Set((payload?.results ?? [])
-          .map((row) => row.url?.trim())
-          .filter((url): url is string => {
-            if (!url) return false;
-            try {
-              return normalizeLeadDomain(url) === domain;
-            } catch {
-              return false;
-            }
-          }))].slice(0, 3);
-
-        const pages = await Promise.all(urls.map((url) => inspectFirstPartyContactUrl(url)));
+        // ── Fast path: Brave LLM Context (one call, extracted content) ──────
+        // Returns the actual page text for a domain-scoped query, so a
+        // decision-maker name / email / phone can be read without the
+        // two-step webSearch-then-fetch. When it yields contact data we skip
+        // the slower path entirely. Same key as webSearch; gated by env.
         let contactEmail = lead.contactEmail;
         let contactPhone = lead.contactPhone;
         let decisionMakerName = lead.decisionMakerName;
         let contactSourceUrl = lead.contactSourceUrl;
         let decisionMakerTitle: string | null = null;
         let decisionMakerSourceUrl: string | null = null;
+        let llmContextProvider: string | null = null;
+        let llmContextSkipped = false;
 
-        for (const page of pages) {
-          if (!page) continue;
-          if (!contactEmail && page.email) {
-            contactEmail = page.email;
-            contactSourceUrl = page.url;
+        const llmEnabled = String(process.env.BRAVE_LLM_CONTEXT_ENABLED ?? 'true').toLowerCase();
+        if (llmEnabled !== 'false' && llmEnabled !== '0' && llmEnabled !== 'no') {
+          try {
+            const { braveLlmContext, parseContactFields } = await import('@workspace/core');
+            const ctx = await braveLlmContext({
+              query: `site:${domain} "${lead.companyName}" contact phone email`,
+              count: 10,
+            });
+            if (ctx.ok) {
+              const fields = parseContactFields(ctx.sources);
+              const email = fields.emails[0] ?? null;
+              const phone = fields.phones[0] ?? null;
+              if (email || phone) {
+                llmContextProvider = 'brave-llm-context';
+                if (!contactEmail && email) { contactEmail = email; contactSourceUrl = ctx.sources[0]?.url ?? null; }
+                if (!contactPhone && phone) { contactPhone = phone; contactSourceUrl ??= ctx.sources[0]?.url ?? null; }
+                // Best-effort decision maker: first non-empty line that is not
+                // a nav/footer fragment. Never fabricate — only surface text
+                // Brave actually extracted.
+                const candidate = fields.lines.find((l) => l.length >= 3 && l.length <= 80 && !/^(home|about|contact|menu|search|©|all rights|privacy|terms)/i.test(l));
+                if (!decisionMakerName && candidate) {
+                  decisionMakerName = candidate;
+                  decisionMakerSourceUrl = ctx.sources[0]?.url ?? null;
+                }
+              }
+            }
+          } catch {
+            llmContextSkipped = true;
           }
-          if (!contactPhone && page.phone) {
-            contactPhone = page.phone;
-            contactSourceUrl ??= page.url;
-          }
-          if (!decisionMakerName && page.decisionMaker) {
-            decisionMakerName = page.decisionMaker.name;
-            decisionMakerTitle = page.decisionMaker.title;
-            decisionMakerSourceUrl = page.url;
+        }
+
+        // ── Slow path: webSearch + first-party fetch (fallback) ─────────────
+        // Only when the fast path produced nothing.
+        let payload: { provider?: string; cacheHit?: boolean; results?: Array<{ title?: string; url?: string; snippet?: string }> } | null = null;
+        let urls: string[] = [];
+        if (!contactEmail && !contactPhone) {
+          const result = await registry.execute(
+            'webSearch',
+            {
+              query: `site:${domain} "${lead.companyName}" contact phone email`,
+              maxResults: 6,
+              fast: true,
+              freeOnly: true,
+            },
+            this.toolContext,
+          );
+
+          payload = result.success
+            ? result.data as {
+                provider?: string;
+                cacheHit?: boolean;
+                results?: Array<{ title?: string; url?: string; snippet?: string }>;
+              }
+            : null;
+
+          urls = [...new Set((payload?.results ?? [])
+            .map((row) => row.url?.trim())
+            .filter((url): url is string => {
+              if (!url) return false;
+              try {
+                return normalizeLeadDomain(url) === domain;
+              } catch {
+                return false;
+              }
+            }))].slice(0, 3);
+
+          const pages = await Promise.all(urls.map((url) => inspectFirstPartyContactUrl(url)));
+
+          for (const page of pages) {
+            if (!page) continue;
+            if (!contactEmail && page.email) {
+              contactEmail = page.email;
+              contactSourceUrl = page.url;
+            }
+            if (!contactPhone && page.phone) {
+              contactPhone = page.phone;
+              contactSourceUrl ??= page.url;
+            }
+            if (!decisionMakerName && page.decisionMaker) {
+              decisionMakerName = page.decisionMaker.name;
+              decisionMakerTitle = page.decisionMaker.title;
+              decisionMakerSourceUrl = page.url;
+            }
           }
         }
 
@@ -759,7 +1104,7 @@ export class CampaignRunner {
           contactWebSearch: {
             version,
             checkedAt: now.toISOString(),
-            provider: payload?.provider ?? null,
+            provider: llmContextProvider ?? payload?.provider ?? null,
             cacheHit: Boolean(payload?.cacheHit),
             resultsScanned: urls.length,
             foundEmail: Boolean(!lead.contactEmail && contactEmail),
@@ -800,7 +1145,7 @@ export class CampaignRunner {
         }
 
         console.log(
-          `[lead-contact-search] ${lead.companyName}: pages=${urls.length} email=${Boolean(contactEmail)} phone=${Boolean(contactPhone)} decisionMaker=${Boolean(decisionMakerName)} provider=${payload?.cacheHit ? 'cache:' : ''}${payload?.provider ?? 'none'}`,
+          `[lead-contact-search] ${lead.companyName}: pages=${urls.length} email=${Boolean(contactEmail)} phone=${Boolean(contactPhone)} decisionMaker=${Boolean(decisionMakerName)} provider=${llmContextProvider ?? (payload?.cacheHit ? 'cache:' : '')}${llmContextProvider ? '' : (payload?.provider ?? 'none')}`,
         );
       }));
 
@@ -981,48 +1326,76 @@ export class CampaignRunner {
    *  The conditional UPDATE is the claim: two runners racing cannot both
    *  match status='pending' on the same row. */
   private async claimSegments(limit: number): Promise<Array<{
-    campaign: typeof leadCampaigns.$inferSelect;
-    segment: typeof campaignSegments.$inferSelect;
-  }>> {
-    const [campaign] = await db
-      .select()
-      .from(leadCampaigns)
-      .where(eq(leadCampaigns.status, 'running'))
-      .orderBy(asc(leadCampaigns.createdAt))
-      .limit(1);
-    if (!campaign) return [];
-
-    await this.repairLegacyGenericSegments(campaign.id);
-
-    const nextSegments = await db
-      .select()
-      .from(campaignSegments)
-      .where(and(eq(campaignSegments.campaignId, campaign.id), eq(campaignSegments.status, 'pending')))
-      .orderBy(asc(campaignSegments.createdAt))
-      .limit(limit);
-    if (nextSegments.length === 0) return [];
-
-    const now = new Date();
-    const claimed: Array<{
       campaign: typeof leadCampaigns.$inferSelect;
       segment: typeof campaignSegments.$inferSelect;
-    }> = [];
-    for (const next of nextSegments) {
-      const [row] = await db
-        .update(campaignSegments)
-        .set({
-          status: 'in_progress',
-          leasedAt: now,
-          startedAt: next.startedAt ?? now,
-          attempts: (next.attempts ?? 0) + 1,
-        })
-        .where(and(eq(campaignSegments.id, next.id), eq(campaignSegments.status, 'pending')))
-        .returning();
-      if (row) claimed.push({ campaign, segment: row });
-    }
+    }>> {
+      // Work several running campaigns at once instead of draining only the
+      // oldest. The old code picked ONE campaign (oldest) and claimed up to
+      // `limit` segments from it, so a huge territory (e.g. a 3,624-segment
+      // nationwide campaign) starved every newer campaign behind it for days.
+      // Same total parallelism (still ≤ `limit` segments, run in parallel by
+      // the caller) — just distributed across campaigns so newer ones make
+      // progress instead of sitting at 0. Oldest-first keeps FIFO ordering.
+      const campaigns = await db
+        .select()
+        .from(leadCampaigns)
+        .where(eq(leadCampaigns.status, 'running'))
+        .orderBy(asc(leadCampaigns.createdAt))
+        .limit(limit);
+      if (campaigns.length === 0) return [];
 
-    return claimed;
-  }
+      const now = new Date();
+      const claimed: Array<{
+        campaign: typeof leadCampaigns.$inferSelect;
+        segment: typeof campaignSegments.$inferSelect;
+      }> = [];
+      let remaining = limit;
+
+      // The loop above used to pass `.limit(remaining)` to the FIRST campaign,
+      // which took every slot, so "distributed" claiming still drained one
+      // campaign at a time (production 2026-10-06: only "Premium: IT & Managed
+      // Services" progressed while five other running campaigns sat at 0).
+      // Fetch each campaign's head of queue, then hand out slots round-robin,
+      // oldest first, letting a campaign with a short queue pass its share on.
+      const queues: Array<{
+        campaign: typeof leadCampaigns.$inferSelect;
+        pending: Array<typeof campaignSegments.$inferSelect>;
+      }> = [];
+      for (const campaign of campaigns) {
+        await this.repairLegacyGenericSegments(campaign.id);
+        const pending = await db
+          .select()
+          .from(campaignSegments)
+          .where(and(eq(campaignSegments.campaignId, campaign.id), eq(campaignSegments.status, 'pending')))
+          .orderBy(asc(campaignSegments.createdAt))
+          .limit(limit);
+        if (pending.length > 0) queues.push({ campaign, pending });
+      }
+      const shares = fairShareClaimCounts(queues.map((queue) => queue.pending.length), limit);
+
+      for (const [index, { campaign, pending }] of queues.entries()) {
+        if (remaining <= 0) break;
+        const nextSegments = pending.slice(0, Math.min(shares[index], remaining));
+        for (const next of nextSegments) {
+          const [row] = await db
+            .update(campaignSegments)
+            .set({
+              status: 'in_progress',
+              leasedAt: now,
+              startedAt: next.startedAt ?? now,
+              attempts: (next.attempts ?? 0) + 1,
+            })
+            .where(and(eq(campaignSegments.id, next.id), eq(campaignSegments.status, 'pending')))
+            .returning();
+          if (row) {
+            claimed.push({ campaign, segment: row });
+            remaining -= 1;
+          }
+        }
+      }
+
+      return claimed;
+    }
 
   private async runSegment(
     campaign: typeof leadCampaigns.$inferSelect,
@@ -1143,7 +1516,9 @@ export class CampaignRunner {
         process.env.SERPER_API_KEY ||
         process.env.BRIGHT_DATA_API_KEY,
       );
-      const hasFastStructured = Boolean(process.env.YELP_API_KEY || process.env.GOOGLE_PLACES_API_KEY);
+      // A configured-but-invalid or rejected Yelp/Google key is not a fast
+      // structured source: treat it as absent so web search goes first.
+      const hasFastStructured = directoryProviderUsable('yelp') || directoryProviderUsable('google');
 
       let first: DiscoveryCandidate;
       let second: DiscoveryCandidate | null = null;
@@ -1189,7 +1564,7 @@ export class CampaignRunner {
       // Drop companies already on file before spending enrichment or model
       // work on them. Fresh businesses are inserted immediately as DISCOVERED.
       const known = await this.knownDomains();
-      const { fresh, duplicates } = dedupeDiscoveredBusinesses(found, known);
+      const { fresh, duplicates: preInsertDuplicates } = dedupeDiscoveredBusinesses(found, known);
 
       // Reserve every fresh domain synchronously BEFORE the first insert await.
       // Multiple segment promises run concurrently; adding domains only after
@@ -1205,9 +1580,10 @@ export class CampaignRunner {
       }
 
       let saved = 0;
+      let duplicates = preInsertDuplicates;
       for (const business of fresh) {
         try {
-          await insertDiscoveredLead({
+          const inserted = await insertDiscoveredLead({
             companyName: business.companyName,
             website: business.website,
             industry: segment.industry,
@@ -1224,7 +1600,10 @@ export class CampaignRunner {
               liveDemoMode: config.liveDemoMode,
             },
           });
-          saved++;
+          // null: already on file (matched in Postgres by domain, phone, or
+          // name+city). Keep the domain reserved; it is known now.
+          if (inserted) saved++;
+          else duplicates++;
         } catch (err) {
           // Release the in-process reservation only when the insert failed so a
           // later shard may retry it. Successful rows stay reserved until the

@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { api, type ResearchedLead } from '../lib/api.js';
 import { Download, RefreshCw, ChevronDown, ChevronRight, ExternalLink, Filter, Mail, Phone, Upload } from 'lucide-react';
 import { describeRehearsalOutcome } from '../lib/rehearsal-outcome.js';
+import { LeadImportPanel } from './CrmOperatorPanels.js';
 import { useApexEvent } from '../hooks/useWebSocket.js';
+import { COPILOT_PANEL_EVENT, type CopilotPanelEventDetail } from '../copilot/actions.js';
 
 const STATUS_COLORS: Record<string, string> = {
   new: '#5a9eae',
@@ -43,6 +45,7 @@ export function LeadsPanel() {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [pipelineFilter, setPipelineFilter] = useState<string>('');
   const [industryFilter, setIndustryFilter] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -105,6 +108,37 @@ export function LeadsPanel() {
     queryClient.invalidateQueries({ queryKey: ['leadStats'] });
   });
 
+  useEffect(() => {
+    const handleCopilotAction = (event: Event) => {
+      const detail = (event as CustomEvent<CopilotPanelEventDetail>).detail;
+      const action = detail?.action;
+      if (!action) return;
+      if (action.type === 'search' && action.page === 'leads') {
+        setSearchQuery(action.query);
+        detail.acknowledge({ ok: true });
+        return;
+      }
+      if (action.type !== 'setFilter' || action.page !== 'leads') return;
+      if (typeof action.value !== 'string' && action.value !== null) {
+        detail.acknowledge({ ok: false, reason: `Filter ${action.field} requires text or null.` });
+        return;
+      }
+      const value = action.value ?? '';
+      switch (action.field) {
+        case 'status': setStatusFilter(value); break;
+        case 'pipelineState': setPipelineFilter(value); break;
+        case 'industry': setIndustryFilter(value); break;
+        default:
+          detail.acknowledge({ ok: false, reason: `Filter ${action.field} is not registered.` });
+          return;
+      }
+      setShowFilters(true);
+      detail.acknowledge({ ok: true });
+    };
+    window.addEventListener(COPILOT_PANEL_EVENT, handleCopilotAction);
+    return () => window.removeEventListener(COPILOT_PANEL_EVENT, handleCopilotAction);
+  }, []);
+
   const handleExport = async () => {
     const blob = await api.leads.exportCsv();
     const url = URL.createObjectURL(blob);
@@ -120,6 +154,13 @@ export function LeadsPanel() {
   const industries = leads.length > 0
     ? [...new Set(leads.map((l) => l.industry || 'Unknown'))].sort()
     : [];
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const displayedLeads = normalizedSearch
+    ? leads.filter((lead) => [
+        lead.companyName, lead.industry, lead.city, lead.decisionMakerName,
+        lead.contactEmail, lead.contactPhone,
+      ].some((value) => value?.toLowerCase().includes(normalizedSearch)))
+    : leads;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -168,6 +209,14 @@ export function LeadsPanel() {
           </>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input
+            data-copilot-target="leads-search"
+            aria-label="Search prospects"
+            placeholder="Search this view"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            style={{ minWidth: 160 }}
+          />
           <button
             onClick={() => setImportOpen((open) => !open)}
             style={{
@@ -282,6 +331,9 @@ export function LeadsPanel() {
         </div>
       )}
 
+      {/* The reviewed copy of researched leads into the contact book. */}
+      <LeadImportPanel />
+
       {/* Filter bar */}
       {showFilters && (
         <motion.div
@@ -292,6 +344,7 @@ export function LeadsPanel() {
           style={{ padding: '12px 16px', display: 'flex', gap: 12, flexWrap: 'wrap' }}
         >
           <select
+            data-copilot-target="leads-filter-status"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             style={{
@@ -311,6 +364,7 @@ export function LeadsPanel() {
             <option value="rejected">Rejected</option>
           </select>
           <select
+            data-copilot-target="leads-filter-pipelineState"
             value={pipelineFilter}
             onChange={(e) => setPipelineFilter(e.target.value)}
             style={{
@@ -329,6 +383,7 @@ export function LeadsPanel() {
             ))}
           </select>
           <select
+            data-copilot-target="leads-filter-industry"
             value={industryFilter}
             onChange={(e) => setIndustryFilter(e.target.value)}
             style={{
@@ -369,9 +424,9 @@ export function LeadsPanel() {
           <div style={{ padding: 40, textAlign: 'center', color: '#5a9eae', fontSize: 13 }}>
             Loading leads...
           </div>
-        ) : leads.length === 0 ? (
+        ) : displayedLeads.length === 0 ? (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--color-apex-muted)', fontSize: 13 }}>
-            No leads found. Submit a goal to the CEO to start research.
+            {searchQuery ? 'No prospects match this search.' : 'No leads found. Submit a goal to the CEO to start research.'}
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
@@ -390,7 +445,7 @@ export function LeadsPanel() {
                 </tr>
               </thead>
               <tbody>
-                {leads.map((lead) => {
+                {displayedLeads.map((lead) => {
                   const isExpanded = expandedId === lead.id;
                   const verification = (lead.enrichment?.['businessVerification'] ?? null) as
                     | { status?: string; contactSourceUrl?: string | null }
@@ -399,6 +454,7 @@ export function LeadsPanel() {
                     <>
                       <motion.tr
                         key={lead.id}
+                        data-copilot-record={lead.id}
                         layout
                         onClick={() => setExpandedId(isExpanded ? null : lead.id)}
                         style={{

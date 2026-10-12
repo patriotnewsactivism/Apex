@@ -24,6 +24,11 @@ const KEYED_SOURCES = new Set(['brave', 'yelp', 'google', 'tomtom', 'serper', 'b
 
 const BREAKER_REASON = 'paused after an earlier failure';
 
+/** Provider wording for an account with no credit left, whatever HTTP status
+ *  carries it. Kept in step with isOutOfCreditBody in core/tool-registry.ts. */
+const OUT_OF_CREDIT_TEXT =
+  /not enough credits|insufficient (?:credits?|balance|funds)|credit balance is insufficient|out of credits|quota (?:exceeded|exhausted)|exceeds your plan'?s set usage limit/i;
+
 export type DiscoverySourceState =
   /** No key, or deliberately skipped. */
   | 'unconfigured'
@@ -73,13 +78,24 @@ function classifyNote(detail: string): Pick<DiscoverySourceNote, 'state' | 'reas
   if (/circuit breaker/i.test(detail)) {
     return { state: 'unavailable', reason: BREAKER_REASON };
   }
+  // A provider APEX deliberately capped for the day (Bright Data's daily
+  // request budget) is lost capacity until midnight CT, not a segment failure.
+  if (/daily request cap reached/i.test(detail)) {
+    return { state: 'unavailable', reason: 'daily request cap reached' };
+  }
   const http = /^HTTP (\d{3})\b/.exec(detail);
   if (http) {
     // A proxy may answer 502 while naming the upstream's real status in the
     // body; the upstream status is the one that says what happened.
     const upstream = /\bHTTP (\d{3})\b/.exec(detail.slice(http[0].length));
     const status = upstream ? Number(upstream[1]) : Number(http[1]);
-    const reason = reasonForStatus(status) ?? reasonForStatus(Number(http[1]));
+    // Serper reports an exhausted account as HTTP 400 {"message":"Not enough
+    // credits"}. On 2026-10-05 that read as "other", the segment was judged a
+    // deterministic failure, and 27 News Directors / Women-Owned Ad Agencies
+    // segments were closed after one attempt instead of waiting for capacity.
+    const reason = reasonForStatus(status)
+      ?? reasonForStatus(Number(http[1]))
+      ?? (OUT_OF_CREDIT_TEXT.test(detail) ? `out of credits (HTTP ${http[1]})` : null);
     return reason ? { state: 'unavailable', reason } : { state: 'other', reason: null };
   }
   if (/200 but zero results|returned nothing|^0 results\b/i.test(detail)) {

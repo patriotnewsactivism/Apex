@@ -217,6 +217,12 @@ async function main(): Promise<void> {
   process.env.APEX_GEMINI_REQUEST_CAP = '500';
   process.env.APEX_EMERGENCY_REQUEST_CAP_TOTAL = '4500';
   process.env.APEX_REQUEST_RATE_PER_MIN = '0';
+  // Operator decision 2026-10-10: paid continuity is hard-capped by the dollar
+  // ledger. Give it a budget here so the paid window can admit work; the
+  // fail-closed case is checked separately below. Spend pacing off makes the
+  // window deterministic regardless of wall-clock time of day.
+  process.env.APEX_DAILY_SPEND_USD = '1';
+  process.env.APEX_SPEND_PACING_ENABLED = 'false';
 
   const ledgerModule = (await import(
     pathToFileURL(path.join(root, 'packages/core/src/request-ledger.ts')).href
@@ -279,6 +285,19 @@ async function main(): Promise<void> {
     snapshot.lastMinute === 1 && paidProviderCapacityWindow().allowed,
     { freeRequestsLastMinute: snapshot.lastMinute, paidWindow: paidProviderCapacityWindow() },
   );
+  // Operator decision 2026-10-10: the paid route is hard-capped by the dollar
+  // ledger (APEX_DAILY_SPEND_USD) and must fail closed when no budget is set.
+  {
+    const savedSpend = process.env.APEX_DAILY_SPEND_USD;
+    delete process.env.APEX_DAILY_SPEND_USD;
+    const failClosed = paidProviderCapacityWindow();
+    process.env.APEX_DAILY_SPEND_USD = savedSpend;
+    check(
+      'paid continuity fails closed with no dollar budget and admits work under one',
+      !failClosed.allowed && paidProviderCapacityWindow().allowed,
+      failClosed,
+    );
+  }
   check(
     'direct pool counters remain independent',
     groq?.requests === 1 && gemini?.requests === 1,

@@ -1,7 +1,7 @@
 import { evaluateOutboundAction } from './revenue-ops/compliance.js';
 import type { OutboundChannel } from './compliance/types.js';
 import { contacts, db, researchedLeads, suppressions } from '@workspace/db';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, gt, isNull, or } from 'drizzle-orm';
 
 function normalizePhone(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
@@ -133,6 +133,8 @@ export async function assertOutboundAllowed(input: {
         ),
         eq(suppressions.phoneE164, number),
         or(eq(suppressions.channel, 'all'), eq(suppressions.channel, input.channel)),
+        or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
+        isNull(suppressions.liftedAt),
       ))
       .limit(1);
     if (rows.length) {
@@ -150,6 +152,8 @@ export async function assertOutboundAllowed(input: {
         ),
         eq(suppressions.email, normalizedEmail),
         or(eq(suppressions.channel, 'all'), eq(suppressions.channel, 'email')),
+        or(isNull(suppressions.expiresAt), gt(suppressions.expiresAt, new Date())),
+        isNull(suppressions.liftedAt),
       ))
       .limit(1);
     if (rows.length) {

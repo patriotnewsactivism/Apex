@@ -252,6 +252,12 @@ export interface StartCartesiaSalesCallInput {
    * call skip the two confirmations and the volume code.
    */
   operatorDirect?: boolean;
+  /**
+   * Operator rehearsal call to the saved rehearsal phone. Applied only with
+   * operatorDirect from the operator dashboard; the send safeguard decides
+   * whether the kill switch / suppression bypass applies.
+   */
+  operatorRehearsal?: boolean;
 }
 
 export interface StartCartesiaSalesCallResult {
@@ -261,6 +267,8 @@ export interface StartCartesiaSalesCallResult {
   fromNumberId: string;
   fromNumber: string;
   toNumber: string;
+  /** What the send safeguard bypassed for an operator rehearsal, if anything. */
+  rehearsalBypass?: Array<'kill switch' | 'suppression'>;
 }
 
 export async function startCartesiaSalesCall(
@@ -271,12 +279,14 @@ export async function startCartesiaSalesCall(
   const { assertSendAllowed, currentSendCaller, openOutboundSendJob, recordOutboundSendResult, SendSafeguardError } = await import('./send-safeguard.js');
   let sendJobId = input.sendJobId ?? null;
   let safeguardRecipientId: string | null = null;
+  let rehearsalBypass: Array<'kill switch' | 'suppression'> | undefined;
   try {
     if (!sendJobId) {
       const operatorDirect = input.operatorDirect === true && currentSendCaller() === 'operator-dashboard';
       const opened = await openOutboundSendJob({
         caller: operatorDirect ? 'operator-dashboard' : 'tool',
         operatorDirect,
+        operatorRehearsal: operatorDirect && input.operatorRehearsal === true,
         createdBy: input.createdByAgentId ?? 'cartesia-sales',
         campaignKey: input.campaignId ?? null,
         recipients: [{
@@ -299,6 +309,7 @@ export async function startCartesiaSalesCall(
     }
     const cleared = await assertSendAllowed(sendJobId, toNumber, 'phone');
     safeguardRecipientId = cleared.id;
+    rehearsalBypass = cleared.rehearsalBypass;
   } catch (error) {
     if (error instanceof SendSafeguardError) throw error;
     console.error(`[send-safeguard] blocked job=${sendJobId ?? 'none'} channel=phone reason=safeguard_error`);
@@ -419,6 +430,7 @@ export async function startCartesiaSalesCall(
     fromNumberId,
     fromNumber: APEX_CARTESIA_CALLER_NUMBER,
     toNumber,
+    ...(rehearsalBypass?.length ? { rehearsalBypass } : {}),
   };
 }
 

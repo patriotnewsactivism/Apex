@@ -1,4 +1,4 @@
-import { useState, type ReactNode, useEffect, useMemo } from 'react';
+import { useState, type ReactNode, useEffect, useMemo, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { api } from './lib/api.js';
@@ -20,6 +20,7 @@ import { PipelinePanel } from './components/PipelinePanel.js';
 import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { ContactsPanel } from './components/ContactsPanel.js';
+import { CompaniesPanel, DealsPipelinePanel } from './components/CrmPipelinePanels.js';
 import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
 import { TerritoryAvailabilityPanel } from './components/TerritoryAvailabilityPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
@@ -39,6 +40,7 @@ import {
   Rocket,
   Network,
   Kanban,
+  Building2,
   Terminal,
   ShieldCheck,
   Wifi,
@@ -64,10 +66,71 @@ import {
   Send,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
+import {
+  COPILOT_PANEL_EVENT,
+  copilotActionTarget,
+  describeCopilotAction,
+  type CopilotAction,
+  type CopilotUiController,
+} from './copilot/actions.js';
+import { CopilotOverlay, type CopilotOverlayState } from './copilot/CopilotOverlay.js';
+import { isCopilotClientFeatureEnabled } from './copilot/feature-flag.js';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 10_000, retry: 2 } },
 });
+
+const COPILOT_CLIENT_FLAG_ENABLED = isCopilotClientFeatureEnabled(import.meta.env.VITE_FEATURE_COPILOT);
+
+function waitForCopilotPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
+function copilotActionPage(action: CopilotAction): string {
+  if (action.type === 'openRecord') return 'contacts';
+  return action.page;
+}
+
+function waitForCopilotPage(page: string, timeoutMs = 1200): Promise<boolean> {
+  const startedAt = performance.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (document.querySelector(`[data-copilot-page="${CSS.escape(page)}"]`)) {
+        resolve(true);
+        return;
+      }
+      if (performance.now() - startedAt >= timeoutMs) {
+        resolve(false);
+        return;
+      }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
+}
+
+function dispatchCopilotPanelAction(action: Exclude<CopilotAction, { type: 'navigate' }>): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (!settled) reject(new Error(`The ${copilotActionPage(action)} panel did not accept the action.`));
+    }, 800);
+    window.dispatchEvent(new CustomEvent(COPILOT_PANEL_EVENT, {
+      detail: {
+        action,
+        acknowledge: (result: { ok: boolean; reason?: string }) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timeout);
+          if (result.ok) resolve();
+          else reject(new Error(result.reason ?? 'The dashboard action was refused.'));
+        },
+      },
+    }));
+  });
+}
 
 // ─── Mobile detection ─────────────────────────────────────────────────────────
 
@@ -254,6 +317,8 @@ function Sidebar({
         { id: 'sales-ops', label: 'Revenue Operations', icon: <Rocket size={16} /> },
         { id: 'leads', label: 'Prospects', icon: <Search size={16} /> },
         { id: 'contacts', label: 'Contacts', icon: <BookUser size={16} /> },
+        { id: 'deals', label: 'Pipeline', icon: <CircleDollarSign size={16} /> },
+        { id: 'companies', label: 'Companies', icon: <Building2 size={16} /> },
         { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
         { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
       ],
@@ -672,7 +737,128 @@ function MobileBottomBar({
 function AppContent({ onLogout }: { onLogout: () => void }) {
   const [activePage, setActivePage] = useState('command');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [copilotActive, setCopilotActive] = useState(false);
+  const [copilotBusy, setCopilotBusy] = useState(false);
+  const [copilotOverlay, setCopilotOverlay] = useState<CopilotOverlayState | null>(null);
+  const copilotSessionRef = useRef(crypto.randomUUID());
+  const copilotRunRef = useRef(0);
+  const copilotActiveRef = useRef(false);
   const isMobile = useIsMobile();
+  const copilotStatus = useQuery({
+    queryKey: ['copilot-status'],
+    queryFn: () => api.chat.copilotStatus(),
+    enabled: COPILOT_CLIENT_FLAG_ENABLED,
+    staleTime: 60_000,
+  });
+  const copilotAvailable = COPILOT_CLIENT_FLAG_ENABLED && copilotStatus.data?.enabled === true;
+
+  const stopCopilot = useCallback((reason?: string) => {
+    copilotRunRef.current += 1;
+    if (copilotActiveRef.current) {
+      copilotActiveRef.current = false;
+      void api.chat.auditCopilotSession(
+        copilotSessionRef.current, 'stopped', reason,
+      ).catch(() => undefined);
+    }
+    setCopilotActive(false);
+    setCopilotBusy(false);
+    setCopilotOverlay(null);
+  }, []);
+
+  const startCopilot = useCallback(() => {
+    if (!copilotAvailable) return;
+    copilotSessionRef.current = crypto.randomUUID();
+    copilotRunRef.current += 1;
+    copilotActiveRef.current = true;
+    void api.chat.auditCopilotSession(
+      copilotSessionRef.current, 'started',
+    ).catch(() => undefined);
+    setCopilotActive(true);
+  }, [copilotAvailable]);
+
+  const executeCopilotActions = useCallback(
+    async (actions: CopilotAction[], narrate: (message: string) => void) => {
+      if (!copilotActive || !copilotAvailable || actions.length === 0) return;
+      const run = ++copilotRunRef.current;
+      setCopilotBusy(true);
+      for (const action of actions) {
+        if (copilotRunRef.current !== run) break;
+        const description = describeCopilotAction(action);
+        narrate(`Apex Copilot · ${description}…`);
+        try {
+          const initialTarget = copilotActionTarget(action);
+          if (action.type === 'navigate') {
+            setCopilotOverlay({ selector: initialTarget, label: description, sequence: Date.now() });
+          }
+          const actionPage = copilotActionPage(action);
+          setActivePage(actionPage);
+          setMobileMenuOpen(false);
+          await waitForCopilotPaint();
+          const pageReady = await waitForCopilotPage(actionPage);
+          if (!pageReady) throw new Error(`The ${actionPage} panel did not become ready.`);
+          if (copilotRunRef.current !== run) break;
+
+          if (action.type !== 'navigate') {
+            await dispatchCopilotPanelAction(action);
+            await waitForCopilotPaint();
+            setCopilotOverlay({
+              selector: copilotActionTarget(action),
+              label: description,
+              sequence: Date.now(),
+            });
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 650));
+          if (copilotRunRef.current !== run) break;
+          await api.chat.auditCopilotAction(copilotSessionRef.current, action, 'executed');
+          narrate(`Apex Copilot · Done: ${description.toLowerCase()}.`);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : 'Action failed';
+          await api.chat.auditCopilotAction(
+            copilotSessionRef.current, action, 'failed', reason,
+          ).catch(() => undefined);
+          narrate(`Apex Copilot · Could not complete that step: ${reason}`);
+          break;
+        } finally {
+          if (copilotRunRef.current === run) setCopilotOverlay(null);
+        }
+      }
+      if (copilotRunRef.current === run) setCopilotBusy(false);
+    },
+    [copilotActive, copilotAvailable],
+  );
+
+  useEffect(() => {
+    if (!copilotAvailable && copilotActive) stopCopilot('Feature became unavailable');
+  }, [copilotActive, copilotAvailable, stopCopilot]);
+
+  useEffect(() => {
+    if (!copilotActive) return;
+    const stopForManualInput = (event: Event) => {
+      if (!event.isTrusted) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest('[data-copilot-control]')) return;
+      stopCopilot('Paused because Matthew took manual control');
+    };
+    window.addEventListener('pointerdown', stopForManualInput, true);
+    window.addEventListener('keydown', stopForManualInput, true);
+    return () => {
+      window.removeEventListener('pointerdown', stopForManualInput, true);
+      window.removeEventListener('keydown', stopForManualInput, true);
+    };
+  }, [copilotActive, stopCopilot]);
+
+  const copilotController = useMemo<CopilotUiController>(() => ({
+    available: copilotAvailable,
+    active: copilotActive,
+    busy: copilotBusy,
+    sessionId: copilotSessionRef.current,
+    start: startCopilot,
+    stop: stopCopilot,
+    execute: executeCopilotActions,
+  }), [
+    copilotActive, copilotAvailable, copilotBusy, executeCopilotActions, startCopilot, stopCopilot,
+  ]);
+
   const { data: agents = [] } = useQuery({
     queryKey: ['agents'],
     queryFn: () => api.agents.list(),
@@ -688,6 +874,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': <SalesOperationsPanel />,
     leads: <LeadsPanel />,
     contacts: <ContactsPanel />,
+    deals: <DealsPipelinePanel onOpenCompany={() => setActivePage('companies')} />,
+    companies: <CompaniesPanel />,
     territories: <TerritoryAvailabilityPanel />,
     webinars: <WebinarDirector />,
     control: <ControlRoom />,
@@ -726,6 +914,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     'sales-ops': { title: 'Revenue Operations', kicker: 'Revenue' },
     leads: { title: 'Prospects', kicker: 'Revenue' },
     contacts: { title: 'Contacts', kicker: 'Revenue' },
+    deals: { title: 'Pipeline', kicker: 'Revenue' },
+    companies: { title: 'Companies', kicker: 'Revenue' },
     territories: { title: 'Territory Availability', kicker: 'Revenue' },
     webinars: { title: 'Webinar Director', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
@@ -867,6 +1057,7 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           <AnimatePresence mode="wait">
             <motion.div
               key={activePage}
+              data-copilot-page={activePage}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
@@ -893,7 +1084,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
           unmounts when activePage changes, so the conversation and any live
           voice call survive navigation. It receives the page Don is viewing
           so the agent knows what's on his screen. */}
-      <FloatingChat pageId={activePage} pageTitle={meta.title} />
+      <FloatingChat pageId={activePage} pageTitle={meta.title} copilot={copilotController} />
+      <CopilotOverlay state={copilotOverlay} />
     </div>
   );
 }

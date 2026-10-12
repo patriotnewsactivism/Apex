@@ -33,8 +33,8 @@ export {
   PER_WORKSTREAM_JOB_CAP,
 } from './cron-governor-job.js';
 
-export { CampaignRunner, createCampaign, computeCampaignProgress, countUsableCampaignLeads, STALL_AFTER_MS } from './campaign-runner.js';
-export type { CampaignProgress, CreateCampaignInput } from './campaign-runner.js';
+export { CampaignRunner, createCampaign, extendCampaign, planCampaignExtension, computeCampaignProgress, countUsableCampaignLeads, STALL_AFTER_MS } from './campaign-runner.js';
+export type { CampaignProgress, CreateCampaignInput, ExtendCampaignInput, CampaignExtensionPlan } from './campaign-runner.js';
 export { getLeadSearchPauseSnapshot } from './lead-search-capacity.js';
 export type { LeadSearchPauseSnapshot } from './lead-search-capacity.js';
 export { US_STATES, STATE_CITIES, citiesForStates, allStateCodes } from './us-geo.js';
@@ -46,6 +46,7 @@ export {
   makeResearchCacheKey,
   normalizeLeadDomain,
   simulateStreamingPipeline,
+  repairWebLeadIdentityBatch,
 } from './lead-pipeline.js';
 export type { LeadPipelineConfig, LeadPipelineState, PipelineBenchmarkResult, SearchShard } from './lead-pipeline.js';
 export { createCampaignTools } from './campaign-tools.js';

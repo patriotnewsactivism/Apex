@@ -13,8 +13,6 @@ const OPENROUTER_FREE_KEY_ENVS = [
 ] as const;
 
 const PROVIDERS = [
-  { name: 'openrouter-nex-n2-5-mini-free' },
-  { name: 'openrouter-nex-n2-5-pro-free' },
   { name: 'openrouter-nemotron-super' },
   { name: 'openrouter-nemotron-3-5-lightning-free' },
   { name: 'openrouter-free-router' },
@@ -29,11 +27,11 @@ const TOKEN_BUDGETS: Record<string, number> = {
 };
 
 const TIER_MAP: Record<string, string> = {
-  CEO: 'nex-agi/nex-n2.5-mini:free', CTO: 'nex-agi/nex-n2.5-mini:free', COO: 'nex-agi/nex-n2.5-mini:free',
-  LEAD_DEV: 'nex-agi/nex-n2.5-mini:free', RESEARCH: 'nex-agi/nex-n2.5-mini:free', LEAD_RESEARCH: 'nex-agi/nex-n2.5-mini:free',
-  SALES: 'nex-agi/nex-n2.5-mini:free', QA_DIRECTOR: 'nex-agi/nex-n2.5-mini:free',
-  FRONTEND: 'nex-agi/nex-n2.5-mini:free', BACKEND: 'nex-agi/nex-n2.5-mini:free', DEVOPS: 'nex-agi/nex-n2.5-mini:free', QA: 'nex-agi/nex-n2.5-mini:free',
-  MARKETING: 'nex-agi/nex-n2.5-mini:free', CUSTOMER_SUCCESS: 'nex-agi/nex-n2.5-mini:free', DOCS: 'nex-agi/nex-n2.5-mini:free', OPS: 'nex-agi/nex-n2.5-mini:free',
+  CEO: 'nvidia/nemotron-3-super-120b-a12b:free', CTO: 'nvidia/nemotron-3-super-120b-a12b:free', COO: 'nvidia/nemotron-3-super-120b-a12b:free',
+  LEAD_DEV: 'nvidia/nemotron-3-super-120b-a12b:free', RESEARCH: 'nvidia/nemotron-3-super-120b-a12b:free', LEAD_RESEARCH: 'nvidia/nemotron-3-super-120b-a12b:free',
+  SALES: 'nvidia/nemotron-3-super-120b-a12b:free', QA_DIRECTOR: 'nvidia/nemotron-3-super-120b-a12b:free',
+  FRONTEND: 'nvidia/nemotron-3-super-120b-a12b:free', BACKEND: 'nvidia/nemotron-3-super-120b-a12b:free', DEVOPS: 'nvidia/nemotron-3-super-120b-a12b:free', QA: 'nvidia/nemotron-3-super-120b-a12b:free',
+  MARKETING: 'nvidia/nemotron-3-super-120b-a12b:free', CUSTOMER_SUCCESS: 'nvidia/nemotron-3-super-120b-a12b:free', DOCS: 'nvidia/nemotron-3-super-120b-a12b:free', OPS: 'nvidia/nemotron-3-super-120b-a12b:free',
 };
 
 function isZeroCostModel(modelId: string): boolean {
@@ -47,7 +45,7 @@ export function getDefaultLLMConfig(role: string): { model: string; temperature:
     return { model: envOverride, temperature: 0.7, maxTokens, role };
   }
 
-  const model = TIER_MAP[role] ?? 'nex-agi/nex-n2.5-mini:free';
+  const model = TIER_MAP[role] ?? 'nvidia/nemotron-3-super-120b-a12b:free';
   return { model, temperature: 0.7, maxTokens, role };
 }
 

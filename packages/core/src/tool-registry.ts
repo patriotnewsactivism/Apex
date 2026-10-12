@@ -22,12 +22,14 @@ import { getNextRunTimes } from './cron-utils.js';
 import { getWorkspaceRoot, pathWithin, resolveInWorkspace } from './workspace-root.js';
 import { HealthMonitor, AlertManager, type WebSocketLivenessChecker } from '@workspace/health-monitor';
 import { db, messages, callBridgeSessions, leadSearchCache } from '@workspace/db';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { createQueuedEmailSend, deliverQueuedEmailSend, resolveMergeFields } from './email-delivery.js';
 import { SendBlockedError, assertContactSendable, commitCallOutcome } from './crm/store.js';
 import { createCrmTools } from './crm/tools.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
+import { reserveBrightDataRequest, recordBrightDataSuccess } from './brightdata-budget.js';
+import { disableDirectoryProvider, isDirectoryAuthFailure, redactProviderBody, resolveDirectoryProviderKey } from './lead-provider-keys.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { createCalendarTools } from './calendar/tools.js';
 
@@ -65,23 +67,41 @@ function createAgentHealthMonitor(): HealthMonitor {
 //
 // Lead discovery is one of APEX's easiest places to waste money: the same
 // industry/city/query combination can recur across retries, new campaigns, and
-// future customers. Cache only the two lead-discovery surfaces whose staleness
-// tolerance is explicit: structured business-directory searches and webSearch
-// calls with fast:true. Ordinary/general webSearch remains uncached so current
-// research never silently receives old news.
-type LeadSearchCacheSpec = {
+// future customers. Cache only the lead-discovery and lead-enrichment surfaces
+// whose staleness tolerance is explicit: structured business-directory
+// searches, webSearch calls with fast:true, and the paid Hunter enrichment
+// lookups (domain search, email finder, email verify).
+// Ordinary/general webSearch remains uncached so current research never
+// silently receives old news.
+export type LeadSearchCacheKind = 'directory' | 'web_fast' | 'hunter_domain' | 'hunter_email' | 'hunter_verify';
+
+export type LeadSearchCacheSpec = {
   cacheKey: string;
-  cacheKind: 'directory' | 'web_fast';
+  cacheKind: LeadSearchCacheKind;
   normalizedQuery: string;
+  /** Stored in the row. May carry more than the hashed key fingerprint
+   *  (e.g. how many results were requested) so a hit can be judged. */
   requestFingerprint: Record<string, unknown>;
   ttlMs: number;
   refresh: boolean;
+  /** Older keys that hold an equivalent, already-paid-for response. Read
+   *  only; fresh results are always written under cacheKey. */
+  legacyCacheKeys: string[];
+  /** web_fast only: the caller's result count. A cached row satisfies it when
+   *  it was fetched with at least this many, or the provider ran out first. */
+  requestedResults?: number;
 };
 
 const LEAD_SEARCH_CACHE_VERSION = '2026-09-28-v1';
-const leadSearchInFlight = new Map<string, Promise<unknown>>();
+// v2 drops maxResults from the web_fast key. Under v1 a change of
+// LEAD_DIRECTORY_RESULTS_PER_SHARD (25 → 20 in production) silently orphaned
+// every cached campaign search, so the same query was paid for again. v1 rows
+// are still read through legacyCacheKeys until they expire.
+const LEAD_WEB_CACHE_VERSION = '2026-10-06-v2';
+const LEAD_ENRICHMENT_CACHE_VERSION = '2026-10-06-v1';
+const leadSearchInFlight = new Map<string, { promise: Promise<unknown>; requestedResults?: number }>();
 
-function normalizeLeadSearchQuery(query: string): string {
+export function normalizeLeadSearchQuery(query: string): string {
   return query
     .trim()
     .toLowerCase()
@@ -96,50 +116,158 @@ function positiveDaysFromEnv(name: string, fallback: number): number {
   return Math.min(90, Math.max(1, parsed));
 }
 
-function leadSearchCacheSpec(name: string, args: Record<string, unknown>): LeadSearchCacheSpec | null {
+function hashLeadSearchKey(kind: string, normalizedQuery: string, fingerprint: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update(`${kind}\n${normalizedQuery}\n${JSON.stringify(fingerprint)}`)
+    .digest('hex');
+}
+
+function normalizeEnrichmentDomain(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!raw) return '';
+  try {
+    return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname.replace(/^www\./, '');
+  } catch {
+    return raw.replace(/^www\./, '');
+  }
+}
+
+export function leadSearchCacheSpec(name: string, args: Record<string, unknown>): LeadSearchCacheSpec | null {
   const enabled = String(process.env.LEAD_SEARCH_CACHE_ENABLED ?? 'true').toLowerCase();
   if (['0', 'false', 'off', 'no'].includes(enabled)) return null;
+  const refresh = args.refresh === true;
+
+  // ── Paid enrichment lookups (Hunter). Keyed by what identifies the answer,
+  // never by the API key, so a rotated key keeps its cache.
+  if (name === 'hunterDomainSearch' || name === 'hunterEmailFinder' || name === 'hunterEmailVerify') {
+    const enrichmentEnabled = String(process.env.LEAD_ENRICHMENT_CACHE_ENABLED ?? 'true').toLowerCase();
+    if (['0', 'false', 'off', 'no'].includes(enrichmentEnabled)) return null;
+    let cacheKind: LeadSearchCacheKind;
+    let normalizedQuery: string;
+    let requestFingerprint: Record<string, unknown>;
+    let ttlMs: number;
+    if (name === 'hunterDomainSearch') {
+      const domain = normalizeEnrichmentDomain(args.domain);
+      if (!domain) return null;
+      cacheKind = 'hunter_domain';
+      normalizedQuery = `${domain}|${typeof args.seniority === 'string' ? args.seniority.trim().toLowerCase() : ''}`;
+      requestFingerprint = { version: LEAD_ENRICHMENT_CACHE_VERSION, limit: typeof args.limit === 'number' ? args.limit : 10 };
+      ttlMs = positiveDaysFromEnv('LEAD_ENRICHMENT_CACHE_DAYS', 30) * 86_400_000;
+    } else if (name === 'hunterEmailFinder') {
+      const domain = normalizeEnrichmentDomain(args.domain);
+      const first = typeof args.firstName === 'string' ? args.firstName.trim().toLowerCase() : '';
+      const last = typeof args.lastName === 'string' ? args.lastName.trim().toLowerCase() : '';
+      if (!domain || !first || !last) return null;
+      cacheKind = 'hunter_email';
+      normalizedQuery = `${domain}|${first}|${last}`;
+      requestFingerprint = { version: LEAD_ENRICHMENT_CACHE_VERSION };
+      ttlMs = positiveDaysFromEnv('LEAD_ENRICHMENT_CACHE_DAYS', 30) * 86_400_000;
+    } else {
+      const email = typeof args.email === 'string' ? args.email.trim().toLowerCase() : '';
+      if (!email) return null;
+      cacheKind = 'hunter_verify';
+      normalizedQuery = email;
+      requestFingerprint = { version: LEAD_ENRICHMENT_CACHE_VERSION };
+      // Deliverability drifts faster than who works where.
+      ttlMs = positiveDaysFromEnv('LEAD_EMAIL_VERIFY_CACHE_DAYS', 14) * 86_400_000;
+    }
+    return {
+      cacheKey: hashLeadSearchKey(cacheKind, normalizedQuery, requestFingerprint),
+      cacheKind,
+      normalizedQuery,
+      requestFingerprint,
+      ttlMs,
+      refresh,
+      legacyCacheKeys: [],
+    };
+  }
 
   const query = typeof args.query === 'string' ? args.query : '';
   if (!query.trim()) return null;
   const normalizedQuery = normalizeLeadSearchQuery(query);
-  const refresh = args.refresh === true;
-
-  let cacheKind: LeadSearchCacheSpec['cacheKind'];
-  let requestFingerprint: Record<string, unknown>;
-  let ttlMs: number;
 
   if (name === 'searchBusinessDirectory') {
-    cacheKind = 'directory';
-    requestFingerprint = { version: LEAD_SEARCH_CACHE_VERSION };
-    ttlMs = positiveDaysFromEnv('LEAD_DIRECTORY_SEARCH_CACHE_DAYS', 30) * 86_400_000;
-  } else if (name === 'webSearch' && args.fast === true) {
-    cacheKind = 'web_fast';
-    requestFingerprint = {
-      version: LEAD_SEARCH_CACHE_VERSION,
-      fast: true,
-      freeOnly: args.freeOnly === true,
-      maxResults: typeof args.maxResults === 'number' ? args.maxResults : 10,
+    const cacheKind = 'directory';
+    const requestFingerprint = { version: LEAD_SEARCH_CACHE_VERSION };
+    const ttlMs = positiveDaysFromEnv('LEAD_DIRECTORY_SEARCH_CACHE_DAYS', 30) * 86_400_000;
+    return {
+      cacheKey: hashLeadSearchKey(cacheKind, normalizedQuery, requestFingerprint),
+      cacheKind,
+      normalizedQuery,
+      requestFingerprint,
+      ttlMs,
+      refresh,
+      legacyCacheKeys: [],
     };
-    ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
-  } else {
-    return null;
   }
 
-  const cacheKey = createHash('sha256')
-    .update(`${cacheKind}\n${normalizedQuery}\n${JSON.stringify(requestFingerprint)}`)
-    .digest('hex');
+  if (name === 'webSearch' && args.fast === true) {
+    const cacheKind = 'web_fast';
+    const freeOnly = args.freeOnly === true;
+    const requestedResults = typeof args.maxResults === 'number' && args.maxResults > 0 ? Math.trunc(args.maxResults) : 10;
+    const keyFingerprint = { version: LEAD_WEB_CACHE_VERSION, fast: true, freeOnly };
+    const ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
+    // v1 hashed {version, fast, freeOnly, maxResults} in exactly this order.
+    const legacyCacheKeys = [...new Set([requestedResults, 25, 20, 12, 10, 6])].map((maxResults) =>
+      hashLeadSearchKey(cacheKind, normalizedQuery, {
+        version: LEAD_SEARCH_CACHE_VERSION,
+        fast: true,
+        freeOnly,
+        maxResults,
+      }),
+    );
+    return {
+      cacheKey: hashLeadSearchKey(cacheKind, normalizedQuery, keyFingerprint),
+      cacheKind,
+      normalizedQuery,
+      requestFingerprint: { ...keyFingerprint, requestedResults },
+      ttlMs,
+      refresh,
+      legacyCacheKeys,
+      requestedResults,
+    };
+  }
 
-  return { cacheKey, cacheKind, normalizedQuery, requestFingerprint, ttlMs, refresh };
+  return null;
 }
 
-function leadSearchResultCount(value: unknown): number {
+/** Whether a cached row answers a request for `requested` results: it was
+ *  fetched asking for at least as many, or the provider returned fewer than
+ *  it was asked for (so asking for more would not have found more). */
+export function leadSearchCacheRowSatisfies(
+  row: { requestFingerprint: Record<string, unknown> | null; resultCount: number },
+  requested: number | undefined,
+): boolean {
+  if (!requested) return true;
+  const fp = row.requestFingerprint ?? {};
+  const asked = typeof fp.requestedResults === 'number'
+    ? fp.requestedResults
+    : typeof fp.maxResults === 'number'
+      ? fp.maxResults
+      : 10;
+  return asked >= requested || row.resultCount < asked;
+}
+
+export function leadSearchResultCount(value: unknown): number {
   if (!value || typeof value !== 'object') return 0;
   const row = value as Record<string, unknown>;
+  // A provider/auth failure answer is never a positive result.
+  if (typeof row.error === 'string' && row.error.trim()) return 0;
   if (Array.isArray(row.businesses)) return row.businesses.length;
   if (Array.isArray(row.results)) return row.results.length;
+  if (Array.isArray(row.contacts)) return row.contacts.length;
+  // hunterEmailFinder: one address found.
+  if ('email' in row && 'confidence' in row) return typeof row.email === 'string' && row.email ? 1 : 0;
+  // hunterEmailVerify: a definite verdict.
+  if (typeof row.result === 'string') return row.result && row.result !== 'unknown' ? 1 : 0;
   if (typeof row.total === 'number' && Number.isFinite(row.total)) return Math.max(0, row.total);
   return 0;
+}
+
+/** Trim a cached web result list to what this caller asked for. */
+function sliceLeadSearchPayload(payload: Record<string, unknown>, requested: number | undefined): Record<string, unknown> {
+  if (!requested || !Array.isArray(payload.results) || payload.results.length <= requested) return payload;
+  return { ...payload, results: payload.results.slice(0, requested) };
 }
 
 function leadSearchProvider(value: unknown): string | null {
@@ -180,24 +308,31 @@ async function bumpLeadSearchCacheHit(cacheKey: string): Promise<void> {
 async function readLeadSearchCache(spec: LeadSearchCacheSpec): Promise<unknown | null> {
   if (spec.refresh) return null;
   try {
-    const [row] = await db
+    const keys = [spec.cacheKey, ...spec.legacyCacheKeys.filter((key) => key !== spec.cacheKey)];
+    const rows = await db
       .select()
       .from(leadSearchCache)
       .where(
         and(
-          eq(leadSearchCache.cacheKey, spec.cacheKey),
+          keys.length === 1 ? eq(leadSearchCache.cacheKey, spec.cacheKey) : inArray(leadSearchCache.cacheKey, keys),
           gt(leadSearchCache.expiresAt, new Date()),
         ),
       )
-      .limit(1);
+      .limit(keys.length);
+    // Prefer the current key, then the legacy row with the most results.
+    const row = rows
+      .filter((candidate) => leadSearchCacheRowSatisfies(candidate, spec.requestedResults))
+      .sort((a, b) =>
+        Number(b.cacheKey === spec.cacheKey) - Number(a.cacheKey === spec.cacheKey) || b.resultCount - a.resultCount,
+      )[0];
     if (!row) return null;
 
-    await bumpLeadSearchCacheHit(spec.cacheKey);
+    await bumpLeadSearchCacheHit(row.cacheKey);
     const ageMs = Math.max(0, Date.now() - row.updatedAt.getTime());
     console.log(
-      `[lead-search-cache] HIT ${spec.cacheKind} provider=${row.provider ?? 'unknown'} results=${row.resultCount} age=${Math.round(ageMs / 3_600_000)}h hits=${row.hitCount + 1} query="${spec.normalizedQuery}"`,
+      `[lead-search-cache] HIT ${spec.cacheKind}${row.cacheKey === spec.cacheKey ? '' : ' (legacy key)'} provider=${row.provider ?? 'unknown'} results=${row.resultCount} age=${Math.round(ageMs / 3_600_000)}h hits=${row.hitCount + 1} query="${spec.normalizedQuery}"`,
     );
-    return annotateLeadSearchCache(row.payload, {
+    return annotateLeadSearchCache(sliceLeadSearchPayload(row.payload, spec.requestedResults), {
       hit: true,
       ageMs,
       expiresAt: row.expiresAt,
@@ -266,15 +401,96 @@ function webSearchProviderReady(provider: string): boolean {
 /** How long to stop calling a web search provider after an HTTP failure.
  *  Auth/credit failures (401/402/403/432/433) wait as long as a missing credit;
  *  rate limits (429) and 5xx clear faster. */
-export function webSearchCooldownMs(status: number): number {
+export function webSearchCooldownMs(status: number, body = ''): number {
   if (status === 401 || status === 402 || status === 403 || status === 432 || status === 433) return 30 * 60 * 1000;
+  // Serper answers an exhausted account with HTTP 400 {"message":"Not enough
+  // credits"}. Treated as an ordinary 400 it was retried on every shard and,
+  // worse, read as a per-segment failure that closed 27 campaign segments on
+  // 2026-10-05. An out-of-credit body is a credit failure whatever the status.
+  if (isOutOfCreditBody(body)) return 30 * 60 * 1000;
   if (status === 429) return 60 * 1000;
   if (status >= 500) return 30 * 1000;
   return 0;
 }
 
+/** Brave Web Search allows at most 20 results per request and at most 10
+ *  pages (offset 0-9). Ask for exactly `n` when it fits one page; otherwise
+ *  use full 20-result pages so `offset` (a page index) lines up. */
+export function braveSearchPlan(n: number): { count: number; pages: number } {
+  const wanted = Math.max(1, Math.trunc(Number.isFinite(n) ? n : 10));
+  if (wanted <= 20) return { count: wanted, pages: 1 };
+  return { count: 20, pages: Math.min(10, Math.ceil(wanted / 20)) };
+}
+
+/** Provider bodies that mean "this account has no credit left". */
+export function isOutOfCreditBody(body: string): boolean {
+  return /not enough credits|insufficient (?:credits?|balance|funds)|credit balance is insufficient|out of credits|quota (?:exceeded|exhausted)|exceeds your plan'?s set usage limit/i.test(body);
+}
+
+/** Bright Data /request timeout. Google through the unlocker answers in
+ *  ~2–8 s; a 25 s wait only held campaign batches open and set off
+ *  runner-wide search pauses (2026-10-06). */
+export const BRIGHT_DATA_TIMEOUT_MS = 12_000;
+/** Billed attempts per query: one retry for a transient inner 5xx/429 or timeout. */
+export const BRIGHT_DATA_MAX_ATTEMPTS = 2;
+/** Queries in a row that must exhaust every attempt before the breaker opens. */
+export const BRIGHT_DATA_BREAKER_AFTER_FAILURES = 3;
+let brightDataConsecutiveFailures = 0;
+/** Max Bright Data requests in flight at once (BRIGHT_DATA_MAX_CONCURRENCY,
+ *  default 3). The trial unlocker zone answers inner 502/429 to most requests
+ *  once ~10 run in parallel (2026-10-06), while the same queries succeed one
+ *  at a time; extra searches wait their turn instead of failing. */
+export const DEFAULT_BRIGHT_DATA_MAX_CONCURRENCY = 3;
+export function brightDataMaxConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(String(env.BRIGHT_DATA_MAX_CONCURRENCY ?? ''), 10);
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(raw, 50) : DEFAULT_BRIGHT_DATA_MAX_CONCURRENCY;
+}
+let brightDataInFlight = 0;
+const brightDataWaiters: Array<() => void> = [];
+async function acquireBrightDataSlot(): Promise<void> {
+  if (brightDataInFlight < brightDataMaxConcurrency()) { brightDataInFlight++; return; }
+  await new Promise<void>((resolve) => brightDataWaiters.push(resolve));
+}
+function releaseBrightDataSlot(): void {
+  const next = brightDataWaiters.shift();
+  if (next) next(); else brightDataInFlight = Math.max(0, brightDataInFlight - 1);
+}
+/** Test hook: current in-flight count and queue length. */
+export function __brightDataConcurrencyForTests(): { inFlight: number; waiting: number } {
+  return { inFlight: brightDataInFlight, waiting: brightDataWaiters.length };
+}
+/** Pause before a retry so it does not land in the same rate-limit window. */
+export const BRIGHT_DATA_RETRY_DELAY_MS = 1_500;
+/** Test hook: close every web-search provider breaker. */
+export function __resetWebSearchCooldownsForTests(): void { webSearchProviderCooldowns.clear(); }
+/** Test hook: reset the consecutive-failure counter. */
+export function __resetBrightDataFailureStreakForTests(): void { brightDataConsecutiveFailures = 0; }
+
+/** Organic results from a Bright Data brd_json=1 Google response body (a JSON
+ *  string, or an already-parsed object). Anything unparseable yields []. */
+export function parseBrightDataGoogleBody(body: unknown): Array<{ title: string; url: string; snippet: string }> {
+  let parsed: unknown = body;
+  if (typeof body === 'string') {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return [];
+    }
+  }
+  const organic = (parsed as { organic?: unknown } | null)?.organic;
+  if (!Array.isArray(organic)) return [];
+  const out: Array<{ title: string; url: string; snippet: string }> = [];
+  for (const item of organic) {
+    const r = item as { title?: unknown; link?: unknown; url?: unknown; description?: unknown };
+    const url = typeof r.link === 'string' ? r.link : typeof r.url === 'string' ? r.url : '';
+    if (!url) continue;
+    out.push({ title: typeof r.title === 'string' ? r.title : '', url, snippet: typeof r.description === 'string' ? r.description : '' });
+  }
+  return out;
+}
+
 function tripWebSearchProvider(provider: string, status: number, detail: string): void {
-  const cooldownMs = webSearchCooldownMs(status);
+  const cooldownMs = webSearchCooldownMs(status, detail);
   if (cooldownMs <= 0) return;
 
   const until = Date.now() + cooldownMs;
@@ -443,7 +659,15 @@ class ToolRegistry {
         return { success: true, data: cached };
       }
 
-      const existing = leadSearchInFlight.get(searchCache.cacheKey);
+      const inFlight = leadSearchInFlight.get(searchCache.cacheKey);
+      // Only share an in-flight answer that was asked for at least as many
+      // results as this caller wants; otherwise run a normal attempt.
+      const existing = inFlight && leadSearchCacheRowSatisfies(
+        { requestFingerprint: { requestedResults: inFlight.requestedResults ?? 0 }, resultCount: Number.MAX_SAFE_INTEGER },
+        searchCache.requestedResults,
+      )
+        ? inFlight.promise
+        : undefined;
       if (existing) {
         try {
           const shared = await existing;
@@ -453,7 +677,12 @@ class ToolRegistry {
           );
           return {
             success: true,
-            data: annotateLeadSearchCache(shared, { hit: true, coalesced: true }),
+            data: annotateLeadSearchCache(
+              shared && typeof shared === 'object' && !Array.isArray(shared)
+                ? sliceLeadSearchPayload(shared as Record<string, unknown>, searchCache.requestedResults)
+                : shared,
+              { hit: true, coalesced: true },
+            ),
           };
         } catch {
           // The first producer failed. Fall through and allow this invocation
@@ -471,11 +700,11 @@ class ToolRegistry {
           await writeLeadSearchCache(searchCache, fresh);
           return fresh;
         })();
-        leadSearchInFlight.set(searchCache.cacheKey, producer);
+        leadSearchInFlight.set(searchCache.cacheKey, { promise: producer, requestedResults: searchCache.requestedResults });
         try {
           result = await producer;
         } finally {
-          if (leadSearchInFlight.get(searchCache.cacheKey) === producer) {
+          if (leadSearchInFlight.get(searchCache.cacheKey)?.promise === producer) {
             leadSearchInFlight.delete(searchCache.cacheKey);
           }
         }
@@ -1029,29 +1258,42 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         }
         if (!freeOnly && braveKey && webSearchProviderReady('brave')) {
           try {
-            const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`;
-            const braveRes = await fetch(braveUrl, {
-              headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
-              signal: AbortSignal.timeout(20_000),
-            });
-            if (!braveRes.ok) {
-              const body = await braveRes.text().catch(() => '');
-              const detail = `brave: HTTP ${braveRes.status} ${body.slice(0, 200)}`.trim();
-              diagnostics.push(detail);
-              tripWebSearchProvider('brave', braveRes.status, body);
-              console.warn(`[webSearch] ${detail} for "${query}"`);
-            }
-            if (braveRes.ok) {
+            // Brave caps `count` at 20 (HTTP 422 above it). Clamp so a caller
+            // asking for 25 results (campaign-runner MAX_PER_SEGMENT) does not
+            // 422 on every shard, drop to Serper/Bright Data, time out, and
+            // pause the whole lead-search lane for 2 minutes at a time. More
+            // than 20 is fetched as extra pages via `offset` (a page index in
+            // units of `count`); each page is a separately billed query.
+            const plan = braveSearchPlan(n);
+            for (let page = 0; page < plan.pages && results.length < n; page++) {
+              const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${plan.count}${page > 0 ? `&offset=${page}` : ''}`;
+              const braveRes = await fetch(braveUrl, {
+                headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
+                signal: AbortSignal.timeout(20_000),
+              });
+              if (!braveRes.ok) {
+                const body = await braveRes.text().catch(() => '');
+                const detail = `brave: HTTP ${braveRes.status} ${body.slice(0, 200)}`.trim();
+                diagnostics.push(detail);
+                tripWebSearchProvider('brave', braveRes.status, body);
+                console.warn(`[webSearch] ${detail} for "${query}"`);
+                break;
+              }
               const braveData = await braveRes.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
-              for (const r of braveData.web?.results ?? []) {
+              const pageResults = braveData.web?.results ?? [];
+              for (const r of pageResults) {
                 results.push({ title: r.title, url: r.url, snippet: r.description });
               }
-              if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n) };
-              diagnostics.push('brave: 200 but zero results');
+              // A short page means Brave has nothing further for this query.
+              if (pageResults.length < plan.count) break;
             }
+            if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n) };
+            if (!diagnostics.some((d) => d.startsWith('brave: HTTP'))) diagnostics.push('brave: 200 but zero results');
           } catch (e) {
             diagnostics.push(`brave: ${e instanceof Error ? e.message : String(e)}`);
             console.warn(`[webSearch] Brave failed for "${query}": ${e}`);
+            // A later page failing must not throw away the pages already paid for.
+            if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n), diagnostics };
           }
         }
 
@@ -1095,54 +1337,106 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           }
         }
 
-        // ── Strategy 1c: Bright Data SERP API (free 5,000 credits/mo, no card) ──
-        // Uses the /request endpoint with a SERP zone. Bing is the default target
-        // because Google throws captcha challenges on fresh zones; Bing returns
-        // parsed results reliably.
+        // ── Strategy 1c: Bright Data (Google via a Web Unlocker zone) ──
+        // POST /request with an unblocker zone and a Google URL carrying
+        // brd_json=1: Bright Data returns Google's results as JSON
+        // ({ organic: [{ title, link, description }] }). The earlier Bing +
+        // data_format:"parsed" request only works on SERP-product zones; on the
+        // operator's unlocker zone it answers an inner 502 with an empty body,
+        // which used to be dropped silently (2026-10-06). Every request is
+        // billed, so each one first reserves a slot in the daily request cap
+        // (BRIGHT_DATA_DAILY_REQUEST_CAP, Central Time day, persisted).
         const brightDataKey = process.env.BRIGHT_DATA_API_KEY;
         const brightDataZone = process.env.BRIGHT_DATA_ZONE;
         if (!brightDataKey) diagnostics.push('brightdata: BRIGHT_DATA_API_KEY not set');
         if (brightDataKey && !brightDataZone) diagnostics.push('brightdata: BRIGHT_DATA_ZONE not set');
-        // Bright Data is a free-tier keyed provider (5,000 credits/mo, no
-        // card) — freeOnly must NOT skip it, only the circuit breaker can.
+        // Bright Data is keyed (not free) but capped by the daily request
+        // budget — freeOnly must NOT skip it, only the breaker or the cap can.
         if (brightDataKey && !webSearchProviderReady('brightdata')) {
           diagnostics.push('brightdata: temporarily skipped by provider circuit breaker');
         }
         if (brightDataKey && brightDataZone && webSearchProviderReady('brightdata')) {
-          try {
-            const bdRes = await fetch('https://api.brightdata.com/request', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
-              body: JSON.stringify({
-                zone: brightDataZone,
-                url: `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
-                format: 'json',
-                data_format: 'parsed',
-              }),
-              signal: AbortSignal.timeout(25_000),
-            });
-            if (!bdRes.ok) {
-              const body = await bdRes.text().catch(() => '');
-              const detail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
-              diagnostics.push(detail);
-              tripWebSearchProvider('brightdata', bdRes.status, body);
-              console.warn(`[webSearch] ${detail} for "${query}"`);
-            } else {
-              const bdData = await bdRes.json() as { status_code?: number; body?: string };
-              if (bdData.status_code === 200 && bdData.body) {
-                const parsed = JSON.parse(bdData.body) as {
-                  organic?: Array<{ title: string; link: string; description?: string }>;
-                };
-                for (const r of parsed.organic ?? []) {
-                  results.push({ title: r.title, url: r.link, snippet: r.description ?? '' });
-                }
-                if (results.length > 0) return { query, provider: 'brightdata', results: results.slice(0, n) };
-                diagnostics.push('brightdata: 200 but zero results');
+          // Up to BRIGHT_DATA_MAX_ATTEMPTS billed attempts per query. The
+          // unlocker answers a transient inner 502 / slow response on a large
+          // share of concurrent Google requests (2026-10-06: ~45%), and the
+          // same query usually succeeds on the next attempt. A single bad
+          // answer must not trip the shared breaker: that skipped Bright Data
+          // for every concurrent segment and paused the whole runner. The
+          // breaker opens only after BRIGHT_DATA_BREAKER_AFTER_FAILURES queries
+          // in a row exhaust their attempts (a real outage).
+          let lastDetail = '';
+          let lastStatus = 0;
+          let capped = false;
+          let answeredEmpty = false;
+          for (let attempt = 1; attempt <= BRIGHT_DATA_MAX_ATTEMPTS; attempt++) {
+            const budget = await reserveBrightDataRequest();
+            if (!budget.allowed) {
+              // Logged once per day by the budget module; no per-call error.
+              diagnostics.push(`brightdata: daily request cap reached (${budget.used}/${budget.cap}); resumes at midnight CT`);
+              capped = true;
+              break;
+            }
+            if (attempt > 1) await new Promise((r) => setTimeout(r, BRIGHT_DATA_RETRY_DELAY_MS + Math.floor(Math.random() * 1000)));
+            await acquireBrightDataSlot();
+            try {
+              const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&brd_json=1&hl=en&gl=us`;
+              let bdRes: Response;
+              try {
+                bdRes = await fetch('https://api.brightdata.com/request', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${brightDataKey}` },
+                  body: JSON.stringify({ zone: brightDataZone, url: googleUrl, format: 'json' }),
+                  signal: AbortSignal.timeout(BRIGHT_DATA_TIMEOUT_MS),
+                });
+              } finally {
+                releaseBrightDataSlot();
+              }
+              if (!bdRes.ok) {
+                // Bright Data itself refused (auth, quota, rate): not transient
+                // per query — trip the breaker and stop retrying.
+                const body = await bdRes.text().catch(() => '');
+                lastDetail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
+                lastStatus = -1;
+                tripWebSearchProvider('brightdata', bdRes.status, body);
+                console.warn(`[webSearch] ${lastDetail} for "${query}"`);
+                break;
+              }
+              const bdData = await bdRes.json() as { status_code?: number; body?: unknown };
+              const inner = Number(bdData.status_code ?? 0);
+              if (inner !== 200) {
+                lastStatus = inner || 502;
+                lastDetail = `brightdata: HTTP ${lastStatus} (upstream status behind Bright Data 200)`;
+                console.warn(`[webSearch] ${lastDetail} for "${query}" (attempt ${attempt}/${BRIGHT_DATA_MAX_ATTEMPTS})`);
+                if (!(inner >= 500 || inner === 429 || inner === 0)) break;
+                continue;
+              }
+              const parsed = parseBrightDataGoogleBody(bdData.body);
+              for (const r of parsed) results.push(r);
+              if (results.length > 0) {
+                recordBrightDataSuccess();
+                brightDataConsecutiveFailures = 0;
+                return { query, provider: 'brightdata', results: results.slice(0, n) };
+              }
+              answeredEmpty = true;
+              break;
+            } catch (e) {
+              lastStatus = 0;
+              lastDetail = `brightdata: ${e instanceof Error ? e.message : String(e)}`;
+              console.warn(`[webSearch] Bright Data failed for "${query}" (attempt ${attempt}/${BRIGHT_DATA_MAX_ATTEMPTS}): ${e}`);
+            }
+          }
+          if (answeredEmpty) {
+            brightDataConsecutiveFailures = 0;
+            diagnostics.push('brightdata: 200 but zero results');
+          } else if (!capped && lastDetail) {
+            diagnostics.push(lastDetail);
+            if (lastStatus !== -1) {
+              brightDataConsecutiveFailures++;
+              if (brightDataConsecutiveFailures >= BRIGHT_DATA_BREAKER_AFTER_FAILURES) {
+                brightDataConsecutiveFailures = 0;
+                tripWebSearchProvider('brightdata', lastStatus || 502, '');
               }
             }
-          } catch (e) {
-            diagnostics.push(`brightdata: ${e instanceof Error ? e.message : String(e)}`);
-            console.warn(`[webSearch] Bright Data failed for "${query}": ${e}`);
           }
         }
 
@@ -1800,8 +2094,14 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
       }),
       requiresApproval: false,
       async execute({ query }) {
-        const yelpKey = process.env.YELP_API_KEY;
-        const googleKey = process.env.GOOGLE_PLACES_API_KEY;
+        // Keys are format-checked once per value; a missing, malformed or
+        // rejected key comes back null with a "… treated as not set" note,
+        // so the provider is skipped without a request and never counts as
+        // an outage. See lead-provider-keys.ts.
+        const yelp = resolveDirectoryProviderKey('yelp');
+        const google = resolveDirectoryProviderKey('google');
+        const yelpKey = yelp.key;
+        const googleKey = google.key;
         const directoryTimeoutMs = process.env.LIVE_DEMO_MODE === 'true' || process.env.LIVE_DEMO_MODE === '1' ? 4_000 : 10_000;
 
         // Why Yelp or Google produced nothing. A 429 or a billing error used to
@@ -1862,12 +2162,16 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 return { query, total: businesses.length, businesses, provider: 'yelp' };
               }
             } else {
+              // Yelp's 400 VALIDATION_ERROR echoes the Authorization header,
+              // so the body is redacted before it goes anywhere.
               const body = await yelpRes.text().catch(() => '');
-              yelpNote = `yelp: HTTP ${yelpRes.status} ${body.slice(0, 160)}`.trim();
+              yelpNote = isDirectoryAuthFailure('yelp', yelpRes.status, body)
+                ? disableDirectoryProvider('yelp', yelpRes.status, body)
+                : `yelp: HTTP ${yelpRes.status} ${redactProviderBody(body, yelpKey).slice(0, 160)}`.trim();
             }
           } catch (e) {
             // Fall through to next provider
-            yelpNote = `yelp: ${e instanceof Error ? e.message : String(e)}`;
+            yelpNote = `yelp: ${redactProviderBody(e instanceof Error ? e.message : String(e), yelpKey)}`;
           }
         }
 
@@ -1916,7 +2220,9 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
 
               if (!res.ok) {
                 const body = await res.text().catch(() => '');
-                googleNote = `google: HTTP ${res.status} ${body.slice(0, 160)}`.trim();
+                googleNote = isDirectoryAuthFailure('google', res.status, body)
+                  ? disableDirectoryProvider('google', res.status, body)
+                  : `google: HTTP ${res.status} ${redactProviderBody(body, googleKey).slice(0, 160)}`.trim();
                 break;
               }
 
@@ -2138,8 +2444,8 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           // these it reruns query variants against a source that structurally
           // cannot answer them.
           attempts: [
-            yelpKey ? yelpNote ?? 'yelp: returned nothing' : 'yelp: YELP_API_KEY not set',
-            googleKey ? googleNote ?? 'google: returned nothing' : 'google: GOOGLE_PLACES_API_KEY not set',
+            yelpKey ? yelpNote ?? 'yelp: returned nothing' : yelp.note ?? 'yelp: YELP_API_KEY not set',
+            googleKey ? googleNote ?? 'google: returned nothing' : google.note ?? 'google: GOOGLE_PLACES_API_KEY not set',
             ...(tomtomKey ? [] : ['tomtom: TOMTOM_API_KEY not set']),
             ...providerNotes,
           ],

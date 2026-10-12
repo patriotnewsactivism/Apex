@@ -36,6 +36,7 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
+import { paidSpendCapacityWindow } from './spend-ledger.js';
 
 /**
  * An account is identified by a fingerprint of its KEY, not by the env var
@@ -423,6 +424,36 @@ async function persistDatabaseRequestDelta(day: string, account: string): Promis
   }
 }
 
+/**
+ * Give back a reservation the provider never served.
+ *
+ * The memory counter refuses to fall below `succeeded`, so a release can never
+ * make an account look better than the calls it actually answered. The SQL
+ * mirror uses GREATEST for the same reason: another process's row may already
+ * carry the success that this refund would otherwise undo.
+ */
+async function persistDatabaseRequestReleaseDelta(day: string, account: string): Promise<void> {
+  try {
+    const [{ db, llmRequestUsageDaily }, { sql }] = await Promise.all([
+      import('@workspace/db'),
+      import('drizzle-orm'),
+    ]);
+    await db
+      .insert(llmRequestUsageDaily)
+      .values({ day, account, requests: 0, succeeded: 0, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [llmRequestUsageDaily.day, llmRequestUsageDaily.account],
+        set: {
+          requests: sql`GREATEST(${llmRequestUsageDaily.succeeded}, ${llmRequestUsageDaily.requests} - 1)`,
+          updatedAt: new Date(),
+        },
+      });
+    databasePersistenceReady = true;
+  } catch {
+    databasePersistenceReady = false;
+  }
+}
+
 async function persistDatabaseSuccessDelta(day: string, account: string): Promise<void> {
   try {
     const [{ db, llmRequestUsageDaily }, { sql }] = await Promise.all([
@@ -581,6 +612,35 @@ function reserveRequestAccount(
   }
 }
 
+/**
+ * Release one reserved slot for a request the provider never served.
+ *
+ * Reservation is per ATTEMPT and happens before dispatch (deliberately: with no
+ * await between the capacity check and the increment, concurrent turns cannot
+ * share a final slot). A served-but-refused answer (429, 5xx, timeout) keeps
+ * its charge, because the provider was genuinely engaged. A routing DEFECT does
+ * not: a 404 on a withdrawn `:free` slug, or a 400 indicting the request body,
+ * means no generation was ever asked of the model. Leaving those charged is
+ * exactly how two dead rungs at the head of the chain consumed about half of
+ * the OpenRouter daily allowance while the pool still answered live calls — the
+ * fleet read "cap reached" with real capacity left.
+ *
+ * The OpenRouter per-minute window entry is NOT released: the dispatch pressure
+ * was real, and only the daily provider-consumption number is corrected.
+ */
+function releaseRequestAccount(account: string): void {
+  try {
+    rolloverIfNeeded();
+    const entry = state.accounts[account];
+    if (!entry || entry.requests <= entry.succeeded) return;
+    entry.requests -= 1;
+    persist();
+    void persistDatabaseRequestReleaseDelta(state.day, account);
+  } catch {
+    // Request accounting must never take inference down.
+  }
+}
+
 function markRequestAccountSucceeded(account: string): void {
   try {
     rolloverIfNeeded();
@@ -631,6 +691,24 @@ export function markDirectProviderRequestSucceeded(
   provider: string,
 ): void {
   markRequestAccountSucceeded(directAccountId(pool, provider));
+}
+
+/** Refund mirrors of the reserve*() trio. Called only for failures where the
+ *  provider never served the request (404 withdrawn slug, 400 bad body), so the
+ *  daily allowance keeps meaning "capacity the provider consumed". */
+export function releaseProviderRequest(apiKey: string): void {
+  releaseRequestAccount(accountFingerprint(apiKey));
+}
+
+export function releasePaidProviderRequest(provider: string): void {
+  releaseRequestAccount(`${PAID_REQUEST_ACCOUNT_PREFIX}${provider}`);
+}
+
+export function releaseDirectProviderRequest(
+  pool: DirectRequestPool,
+  provider: string,
+): void {
+  releaseRequestAccount(directAccountId(pool, provider));
 }
 
 /** Backward-compatible one-shot accounting helpers used by verification code.
@@ -731,18 +809,43 @@ export function requestCapacityWindow(
 }
 
 /**
- * Paid continuity is governed by the spend ledger, not by OpenRouter's free
- * request allowance. It stays inside the emergency all-provider ceiling and
- * the provider's minimum-dispatch interval, but a paced free pool must never
- * veto an enabled, in-budget paid fallback.
+ * Paid continuity is governed by the DOLLAR spend ledger, not by OpenRouter's
+ * free request allowance. It stays inside the emergency all-provider ceiling
+ * and the provider's minimum-dispatch interval, but a paced free pool must
+ * never veto an enabled, in-budget paid fallback.
+ *
+ * Operator decision 2026-10-10: the paid route is now hard-capped by
+ * APEX_DAILY_SPEND_USD (default 0 = spend nothing, fail closed). Before this,
+ * the spend ledger was observability only and the paid route was ungated, so
+ * a busy day could drain the funded OpenRouter credits. We translate the
+ * dollar window into a request-capacity refusal so the agent loop's existing
+ * capacity latch parks paid work until the budget releases (next UTC day, or
+ * the pacing ramp) instead of spending past the cap.
  */
-export function paidProviderCapacityWindow(): RequestCapacityWindow {
-  return calculateRequestCapacityWindow({
+export function paidProviderCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
+  const spend = paidSpendCapacityWindow(at);
+  if (spend.allowed) {
+    return {
+      cap: 0,
+      usedRequests: 0,
+      requestedRequests: 1,
+      pacingAllowance: 0,
+      availableRequests: null,
+      allowed: true,
+      reason: 'uncapped',
+      resumeAt: null,
+    };
+  }
+  return {
     cap: 0,
     usedRequests: 0,
     requestedRequests: 1,
-    pacingEnabled: false,
-  });
+    pacingAllowance: 0,
+    availableRequests: 0,
+    allowed: false,
+    reason: spend.reason === 'paced' ? 'paced' : 'daily_cap',
+    resumeAt: spend.resumeAt,
+  };
 }
 
 function directPoolNumber(

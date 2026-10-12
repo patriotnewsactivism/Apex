@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "apex-copilot": "github:patriotnewsactivism/apex-copilot#f272c147f92eb7827e1fb389acc69b6084089df1",
     "@tanstack/react-query": "catalog:",
     "@workspace/convex-backend": "workspace:*",
     "convex": "^1.42.3",

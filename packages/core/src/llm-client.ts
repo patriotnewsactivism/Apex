@@ -27,6 +27,9 @@ import {
   markPaidProviderRequestSucceeded,
   markProviderRequestSucceeded,
   paidProviderCapacityWindow,
+  releaseDirectProviderRequest,
+  releasePaidProviderRequest,
+  releaseProviderRequest,
   requestCapacityWindow,
   reserveDirectProviderRequest,
   reservePaidProviderRequest,
@@ -55,11 +58,14 @@ import {
 
 // ─── APEX OpenRouter Stack ────────────────────────────────────────────────────
 //
-// ROUTING POLICY (operator decision 2026-09-23/24, ADR-017). Automatic
-// routing tries the operator-funded QwenCloud (qwencloud.com) Token Plan
-// route FIRST: the operator holds a paid QwenCloud Token Plan subscription
-// and wants it used rather than left idle while free capacity serves
-// instead. This is a distinct product from Alibaba Cloud Model Studio/
+// ROUTING POLICY (operator decision 2026-10-10, superseding ADR-017's
+// Qwen-first order). Automatic routing consumes FREE capacity first: the
+// reviewed OpenRouter `:free` roster (six models plus the `openrouter/free`
+// router, each OpenRouter account contributing its own daily free allowance),
+// then the independent Groq/Gemini BYOK free pools. The metered QwenCloud
+// (qwencloud.com) route is tried LAST — only after every free pool is spent —
+// so no-marginal-cost free allowance is always consumed before any metered
+// spend. QwenCloud is a distinct product from Alibaba Cloud Model Studio/
 // DashScope -- the provider `name`/env-var identifiers below still say
 // "dashscope" for historical reasons (an early draft of this integration
 // assumed that product before the operator's real credential proved
@@ -67,30 +73,34 @@ import {
 // renamed, to avoid unnecessary churn -- see ADR-017 for the full history.
 // QwenCloud is governed like Groq/Gemini — its own capped/paced request
 // pool and its own activation switch — and is explicitly NOT unrestricted
-// like FlashX. OpenRouter free-pool exhaustion, the emergency all-provider
-// request ceiling, and the workspace token cap must not stop a call from
-// landing on the QwenCloud Token Plan. Qwen still obeys APEX_QWEN_REQUEST_CAP,
-// rate, and pacing, plus credential cooldowns. If QwenCloud is unconfigured,
-// disabled, or fails, routing falls
-// through to OpenRouter `:free` models (plus the special `openrouter/free`
-// router), then independent Groq/Gemini BYOK capacity, with the
-// operator-approved paid GLM 5.3 FlashX continuity route last. FlashX alone
-// is always eligible when its funded OpenRouter credential exists and
-// bypasses APEX token/request/spend governors; upstream provider limits,
-// billing, error cooldowns, tool authorization, and human approval policy
-// remain for every route, QwenCloud and FlashX included.
+// like the paid continuity route. OpenRouter free-pool exhaustion, the
+// emergency all-provider request ceiling, and the workspace token cap must
+// not stop a call from landing on QwenCloud. Qwen still obeys
+// APEX_QWEN_REQUEST_CAP, rate, and pacing, plus credential cooldowns. The
+// operator-approved paid DeepSeek V4 Flash 0731 continuity route (OpenRouter
+// alone; the Nous Portal route was removed 2026-10-09) is appended last, hard
+// capped by APEX_DAILY_SPEND_USD. It bypasses APEX token/request governors;
+// upstream provider limits, billing, error cooldowns, tool authorization, and
+// human approval policy remain for every route, QwenCloud and paid included.
 //
 // Authoritative automatic order:
-//   0. qwen3.8-flash             (Token Plan, governed, primary when configured)
-//   1. nex-agi/nex-n2.5-mini:free
-//   2. nex-agi/nex-n2.5-pro:free
-//   3. nvidia/nemotron-3-super-120b-a12b:free
-//   4. nvidia/nemotron-3.5-lightning:free
-//   5. openrouter/free  (tool requirements preserved)
-//   6. nvidia/nemotron-3-ultra-550b-a55b:free
-//   7. groq-gpt-oss-120b-byok    (BYOK, when enabled)
-//   8. gemini-3.8-flash-byok     (BYOK, when enabled)
-//   9. z-ai/glm-5.3-flashx       (paid, unrestricted continuity, last)
+//   0. nvidia/nemotron-3-super-120b-a12b:free
+//   1. nvidia/nemotron-3.5-lightning:free
+//   2. openrouter/free  (tool requirements preserved)
+//   3. nvidia/nemotron-3-ultra-550b-a55b:free
+//   4. cohere/north-mini-code:free
+//   5. google/gemma-4-31b-it:free
+//   6. groq-gpt-oss-120b-byok    (BYOK, when enabled)
+//   7. gemini-3.8-flash-byok     (BYOK, when enabled)
+//   8. qwen3.8-flash             (metered QwenCloud fallback, last automatic route)
+//   9. deepseek-v4-flash-0731    (paid, unrestricted continuity, last)
+//
+// The two `nex-agi/nex-n2.5-*:free` rungs were removed 2026-10-11: OpenRouter
+// withdrew their free tier (404 "This model is unavailable for free. The paid
+// version is available now") and, because a reservation is taken before every
+// dispatch, two guaranteed-404 rungs at the head of the chain burned roughly
+// half of the daily OpenRouter allowance before the fleet ever reached a rung
+// that could answer.
 //
 // MiniMax M3 Free is intentionally absent until a new direct API verification
 // proves the exact `:free` slug works. Persisted OpenRouter model policies
@@ -99,8 +109,6 @@ import {
 
 export type ApexProviderName =
   | 'qwen-dashscope-byok'
-  | 'openrouter-nex-n2-5-mini-free'
-  | 'openrouter-nex-n2-5-pro-free'
   | 'openrouter-nemotron-super'
   | 'openrouter-nemotron-3-5-lightning-free'
   | 'openrouter-free-router'
@@ -108,8 +116,7 @@ export type ApexProviderName =
   | 'openrouter-free-policy'
   | 'groq-gpt-oss-120b-byok'
   | 'gemini-3-8-flash-byok'
-  | 'openrouter-deepseek-v4-flash-paid'
-  | 'nous-deepseek-v4-flash-paid';
+  | 'openrouter-deepseek-v4-flash-paid';
 
 /** Logical provider used only when a valid persisted FREE policy exists. */
 export const FREE_POLICY_GATEWAY_NAME: ApexProviderName = 'openrouter-free-policy';
@@ -141,18 +148,33 @@ export const OPENROUTER_FREE_KEY_ENVS = [
 ] as const;
 
 /**
- * Paid continuity (operator decision 2026-10-05): one model,
- * deepseek/deepseek-v4-flash-0731, served by two providers so neither takes
- * the whole load. Each request alternates which one is tried first and falls
- * to the other at once (requestProviderOrder).
+ * Paid continuity (operator decision 2026-10-09): one model,
+ * deepseek/deepseek-v4-flash-0731, served by OpenRouter only. Apex no longer
+ * calls the Nous Portal provider (nous-deepseek-v4-flash-paid) — that access
+ * is cut off entirely.
  *
- * OpenRouter: the funded inference key. As of 2026-09-25 only the
- * OPENROUTER_API_KEY_4 account had a positive credit balance (verified via its
- * management key); the other three accounts are overdrawn and answer 402.
- * Nous Portal: NOUS_API_KEY.
+ * OpenRouter: the funded inference key. Which account is funded changes over
+ * time — the 2026-09-25 reading that "only OPENROUTER_API_KEY_4 has credit" was
+ * already stale by 2026-10-10 — so the paid route must be able to use whichever
+ * account currently holds credit rather than one pinned name.
  */
-export const OPENROUTER_PAID_KEY_ENVS = ['OPENROUTER_API_KEY_4'] as const;
-export const NOUS_PAID_KEY_ENVS = ['NOUS_API_KEY'] as const;
+/**
+ * Env names that may serve the paid continuity route.
+ *
+ * This was pinned to OPENROUTER_API_KEY_4 alone. On 2026-10-10 that account sat
+ * at $0.50, tripped the balance monitor's $0.50 pause threshold, and was
+ * excluded — so the paid continuity route could not serve while three other
+ * accounts still held credit. The route must be able to use whichever account
+ * is actually funded. Order is a tie-break only: configuredCredentials() sorts
+ * by requests-already-made-today, and any balance-paused account is excluded by
+ * the caller. Override with APEX_PAID_KEY_ENVS (comma-separated env names).
+ */
+export const OPENROUTER_PAID_KEY_ENVS: readonly string[] = (
+  process.env.APEX_PAID_KEY_ENVS ?? 'OPENROUTER_API_KEY,OPENROUTER_API_KEY_2,OPENROUTER_API_KEY_4'
+)
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
 export const PAID_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 /** Output floor for the paid routes. On 2026-10-05 a DevOps task (4,096-token
  *  role budget) failed on deepseek-v4-flash-0731 with "empty completion
@@ -167,15 +189,18 @@ export const PAID_MIN_OUTPUT_TOKENS = 16_384;
  *  route. The paid route is the last resort, so it waits longer. */
 export const PAID_REQUEST_TIMEOUT_MS = 120_000;
 export const PAID_FALLBACK_PROVIDER_NAMES = [
-  'nous-deepseek-v4-flash-paid',
   'openrouter-deepseek-v4-flash-paid',
 ] as const satisfies readonly ApexProviderName[];
-/** The first paid route in the deterministic order (the split alternates it). */
+/** The first (only) paid route in the deterministic order: OpenRouter. */
 export const PAID_FALLBACK_PROVIDER_NAME: ApexProviderName = PAID_FALLBACK_PROVIDER_NAMES[0];
 
 type ProviderSpec = {
   name: ApexProviderName;
   model: string;
+  /** Optional env var that overrides `model` at request time (e.g. a BYOK
+   * provider whose model is hardcoded but should be switchable by the
+   * operator without a code change). Read via providerModel(). */
+  modelOverrideEnv?: string;
   baseURL: string | (() => string | undefined);
   apiKeyEnvs: readonly string[];
   paid?: boolean;
@@ -202,6 +227,10 @@ type ProviderSpec = {
    *  OpenRouter's live catalog; paid specs only. */
   usdPerMillionPrompt?: number;
   usdPerMillionCompletion?: number;
+  /** Cached input is billed far below fresh input (Qwen: $0.016 vs $0.15 per
+   *  1M). Without this the prompt total is priced entirely at the fresh rate
+   *  and the paid spend is overstated. */
+  usdPerMillionCachedPrompt?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
   /** Provider-side request envelope. Used to size output/history before the
    * network call instead of learning the limit by burning a 413 attempt. */
@@ -258,18 +287,32 @@ function envPositiveInt(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
+/** Effective model for a provider: the operator's env override (if the spec
+ * declares one) wins over the hardcoded default. */
+function providerModel(provider: ProviderSpec): string {
+  const override = provider.modelOverrideEnv
+    ? process.env[provider.modelOverrideEnv]?.trim()
+    : undefined;
+  return override || provider.model;
+}
+
 const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'qwen-dashscope-byok',
     model: 'qwen3.8-flash',
-    // QwenCloud Token Plan OpenAI-compatible endpoint. Token Plan (`sk-sp-...`)
-    // credentials are not interchangeable with pay-as-you-go (`sk-...`)
-    // credentials/endpoints. The env override remains available for controlled
-    // migrations without another code change.
+    modelOverrideEnv: 'QWEN_MODEL',
+    // QwenCloud OpenAI-compatible endpoint. Pay-as-you-go (`sk-...`) and Token
+    // Plan (`sk-sp-...`) credentials are not interchangeable across hosts: PAYG
+    // keys are served by maas.qwencloudapi.com, Token Plan keys by
+    // token-plan.maas.qwencloudapi.com. Default to the PAYG host, because the
+    // operator's active key is pay-as-you-go — with the Token Plan host as the
+    // default, a deployment that omits QWEN_BASE_URL sends the key to the wrong
+    // host and every Qwen call fails. Token Plan deployments must set
+    // QWEN_BASE_URL (or APEX_QWEN_BASE_URL) explicitly.
     baseURL: () =>
       process.env.QWEN_BASE_URL?.trim() ||
       process.env.APEX_QWEN_BASE_URL?.trim() ||
-      'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1',
+      'https://maas.qwencloudapi.com/compatible-mode/v1',
     apiKeyEnvs: ['QWEN_API_KEY', 'QWEN_API_KEY_2'],
     // Real money from a purchased token plan, so spend is recorded like any
     // paid route — but deliberately NOT `unrestricted`. OpenRouter and
@@ -296,17 +339,21 @@ const PROVIDERS: readonly ProviderSpec[] = [
     // completed correctly (tool_calls populated, content empty -- a case the
     // completion guard below already exempts), well inside a normal budget.
     maxOutputTokens: envPositiveInt('APEX_QWEN_MAX_OUTPUT_TOKENS', 8_192),
-    // usdPerMillionPrompt/usdPerMillionCompletion intentionally omitted: a
-    // prepaid Token Plan subscription's real constraint is plan-token/request
-    // consumption (tracked by the request pool below), not a per-call dollar
-    // rate, and no per-call dollar rate for this specific plan could be
-    // confirmed against qwencloud.com's own pricing page. QwenCloud's
-    // OpenAI-compatible response also carries no settled `usage.cost` field
-    // the way OpenRouter's does. Spend-ledger entries for this route report
-    // $0 unless/until the operator wants dollar-equivalent tracking added.
+    // PAYG per-token rates for qwen3.8-flash, confirmed against
+    // qwencloud.com/models/qwen3.8-flash (input $0.15, output $0.47 per 1M
+    // tokens). The operator is on pay-as-you-go, so the binding constraint IS
+    // per-call dollars; without these the paid fallback records $0 and
+    // cost-per-completed-task is invisible. QwenCloud's OpenAI-compatible
+    // response carries no settled `usage.cost` (OpenRouter's does), so the
+    // ledgers derive cost from these rates.
+    usdPerMillionPrompt: 0.15,
+    usdPerMillionCompletion: 0.47,
+    usdPerMillionCachedPrompt: 0.016,
   },
-  freeOpenRouterSpec('openrouter-nex-n2-5-mini-free', 'nex-agi/nex-n2.5-mini:free'),
-  freeOpenRouterSpec('openrouter-nex-n2-5-pro-free', 'nex-agi/nex-n2.5-pro:free'),
+  // Retired 2026-10-11 with the `nex-agi/nex-n2.5-*:free` slugs themselves:
+  // OpenRouter moved both to paid-only, so every dispatch was a 404 that still
+  // reserved a slot of the daily free allowance. Do not re-add a free-openrouter
+  // spec without a live 200 on the exact `:free` slug first.
   freeOpenRouterSpec('openrouter-nemotron-super', 'nvidia/nemotron-3-super-120b-a12b:free'),
   freeOpenRouterSpec('openrouter-nemotron-3-5-lightning-free', 'nvidia/nemotron-3.5-lightning:free'),
   freeOpenRouterSpec('openrouter-free-router', 'openrouter/free', {
@@ -382,28 +429,6 @@ const PROVIDERS: readonly ProviderSpec[] = [
     usdPerMillionPrompt: 0.0152,
     usdPerMillionCompletion: 1.28,
   },
-  {
-    name: 'nous-deepseek-v4-flash-paid',
-    model: PAID_FALLBACK_MODEL,
-    baseURL: 'https://inference-api.nousresearch.com/v1',
-    apiKeyEnvs: NOUS_PAID_KEY_ENVS,
-    paid: true,
-    unrestricted: true,
-    protocol: 'openai-compatible',
-    minIntervalMs: 0,
-    toolCallingReliable: true,
-    supportsParallelToolCalls: true,
-    maxOutputTokens: 131_072,
-    minOutputTokens: PAID_MIN_OUTPUT_TOKENS,
-    requestTimeoutMs: PAID_REQUEST_TIMEOUT_MS,
-    // No providerRouting: Nous Portal decides routing per model and rejects a
-    // caller-supplied `provider` object with HTTP 400.
-    // deepseek/deepseek-v4-flash-0731 via Nous Portal.
-    // Verified against live Nous pricing 2026-10-05: $0.07/1M prompt,
-    // $0.14/1M completion, $0.014/1M cached input (automatic prefix cache).
-    usdPerMillionPrompt: 0.07,
-    usdPerMillionCompletion: 0.14,
-  },
 ];
 
 const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
@@ -415,19 +440,22 @@ const PROVIDER_BY_NAME = new Map<ApexProviderName, ProviderSpec>(
  * Custom persisted policies do not appear here; they use FREE_POLICY_GATEWAY_NAME.
  */
 const PROVIDER_ORDER: readonly ApexProviderName[] = [
-  // Qwen led this chain under ADR-017. Its plan is exhausted, and the
-  // operator removed it on 2026-10-05: free capacity first, then the paid
-  // DeepSeek split. The qwen-dashscope-byok spec stays defined, unused.
-  'openrouter-nex-n2-5-mini-free',
-  'openrouter-nex-n2-5-pro-free',
+  // Free capacity first (operator decision 2026-10-10): the reviewed OpenRouter
+  // free roster, then the independent Groq and Gemini BYOK free pools. The
+  // metered QwenCloud route is the LAST automatic route — used only after
+  // every free pool (and its daily allowance) is spent — so the
+  // no-marginal-cost free allowance is always consumed before any pay-as-you-go
+  // spend. Qwen still falls through when unconfigured, disabled, or failing.
   'openrouter-nemotron-super',
   'openrouter-nemotron-3-5-lightning-free',
   'openrouter-free-router',
   'openrouter-nemotron-ultra',
-  // Independent BYOK pools extend daily throughput after OpenRouter pacing or
-  // quota exhaustion. They are intentionally before the paid fallback.
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
+  // Metered fallback of last resort (PAYG today; the operator prefers the
+  // Token Plan balance when it exists). Its model honors the QWEN_MODEL
+  // override (see the qwen-dashscope-byok spec).
+  'qwen-dashscope-byok',
 ];
 
 function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly ApexProviderName[] {
@@ -445,20 +473,25 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
             provider &&
             provider.requestPool === 'openrouter' &&
             provider.paid !== true &&
-            !selected.has(provider.model),
+            !selected.has(providerModel(provider)),
           );
         });
         return [
+          // Free pools first, then the metered QwenCloud fallback last (operator
+          // decision 2026-10-10). A saved free-model policy governs only the
+          // OpenRouter FREE sub-order; it must not drop Qwen, and it must not
+          // promote the metered route ahead of free capacity either.
           FREE_POLICY_GATEWAY_NAME,
           ...defaultFreeFallbacks,
           'groq-gpt-oss-120b-byok',
           'gemini-3-8-flash-byok',
+          'qwen-dashscope-byok',
         ];
       })()
     : [...PROVIDER_ORDER];
   // Paid continuity comes last and only with APEX_PAID_FALLBACK_ENABLED=true.
   // APEX imposes no spend ceiling, request cap, or pacing gate on it; upstream
-  // OpenRouter and Nous limits remain authoritative.
+  // OpenRouter limits remain authoritative.
   if (paidLLMFallbackEnabled()) freeOrder.push(...PAID_FALLBACK_PROVIDER_NAMES);
   return freeOrder;
 }
@@ -467,27 +500,13 @@ export function getProviderOrderForRole(_role?: string, pacingEnabled?: boolean)
   return [...activeProviderOrder(_role, pacingEnabled)];
 }
 
-let paidRotation = 0;
-
 /**
- * The order one request actually tries. Same as getProviderOrderForRole, but
- * the two paid routes swap places on every call, so paid traffic splits about
- * evenly between OpenRouter and Nous and either one is the other's immediate
- * fallback. A route in cooldown is skipped, so the other takes the load.
+ * The order one request actually tries. Same as getProviderOrderForRole.
+ * There is a single paid route now (OpenRouter), so no rotation is needed;
+ * it sits last behind the free/BYOK chain when paid fallback is enabled.
  */
 export function requestProviderOrder(role?: string, pacingEnabled?: boolean): ApexProviderName[] {
-  const order = getProviderOrderForRole(role, pacingEnabled);
-  const first = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[0]);
-  const second = order.indexOf(PAID_FALLBACK_PROVIDER_NAMES[1]);
-  paidRotation += 1;
-  // 90/10 Nous/OpenRouter split (operator decision 2026-10-05): Nous is ~10x
-  // cheaper for this output-heavy workload, so it is primary and OpenRouter is
-  // only tried first 10% of the time. Either is the other's immediate fallback
-  // when in cooldown.
-  if (first >= 0 && second >= 0 && paidRotation % 10 === 0) {
-    [order[first], order[second]] = [order[second], order[first]];
-  }
-  return order;
+  return getProviderOrderForRole(role, pacingEnabled);
 }
 
 export function providerUsesFreeCredentials(name: ApexProviderName): boolean {
@@ -717,6 +736,105 @@ type ProviderRequestError = Error & {
 const providerCooldowns = new Map<ApexProviderName, number>();
 const providerNextAttemptAt = new Map<ApexProviderName, number>();
 
+/**
+ * Cooldowns are in-memory for the hot path, but they MUST survive a container
+ * replacement. A deploy that forgets a resting provider's cooldown hands the
+ * workforce straight back to it, and the agents re-discover the outage by
+ * failing — the deferral storm observed 2026-10-10 (three deploys, three
+ * workforce reinit batches, zero completions). Persist the still-live entries
+ * to Postgres, debounced; hydrate at boot before the first request.
+ */
+const COOLDOWN_SETTINGS_KEY = 'apex.llm.cooldowns';
+let cooldownsPersistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleCooldownsPersist(): void {
+  if (cooldownsPersistTimer) return;
+  cooldownsPersistTimer = setTimeout(() => {
+    cooldownsPersistTimer = null;
+    void persistCooldowns();
+  }, 1_000);
+  (cooldownsPersistTimer as { unref?: () => void }).unref?.();
+}
+
+async function persistCooldowns(): Promise<void> {
+  try {
+    const { db, integrationSettings } = await import('@workspace/db');
+    const now = Date.now();
+    const value = JSON.stringify({
+      providers: [...providerCooldowns.entries()].filter(([, until]) => until > now),
+      credentials: [...credentialCooldowns.entries()].filter(([, cooldown]) => cooldown.until > now),
+    });
+    await db
+      .insert(integrationSettings)
+      .values({ key: COOLDOWN_SETTINGS_KEY, value, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: integrationSettings.key,
+        set: { value, updatedAt: new Date() },
+      });
+  } catch {
+    // Best effort: a memory-only cooldown is the pre-existing behaviour.
+  }
+}
+
+/** Load persisted cooldowns at boot so a restart resumes the schedule the
+ *  previous process was keeping, instead of re-discovering it by failing. */
+export async function initializeProviderCooldowns(): Promise<boolean> {
+  try {
+    const { db, integrationSettings } = await import('@workspace/db');
+    const { eq } = await import('drizzle-orm');
+    const [row] = await db
+      .select()
+      .from(integrationSettings)
+      .where(eq(integrationSettings.key, COOLDOWN_SETTINGS_KEY))
+      .limit(1);
+    if (row?.value) {
+      const parsed = JSON.parse(row.value) as {
+        providers?: Array<[string, number]>;
+        credentials?: Array<[string, CredentialCooldown]>;
+      };
+      const now = Date.now();
+      for (const [name, until] of parsed.providers ?? []) {
+        if (until > now) providerCooldowns.set(name as ApexProviderName, until);
+      }
+      for (const [id, cooldown] of parsed.credentials ?? []) {
+        if (cooldown?.until > now) credentialCooldowns.set(id, cooldown);
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Test-only hooks for the Postgres round-trip guard. They expose the private
+ * cooldown maps so a test can seed a cooldown, persist it, clear the process
+ * state (simulating a container replacement) and re-hydrate — the restart
+ * behaviour the source-pattern guard cannot prove.
+ */
+export function __testSeedProviderCooldown(name: ApexProviderName, until: number): void {
+  providerCooldowns.set(name, until);
+  scheduleCooldownsPersist();
+}
+export function __testSeedCredentialCooldown(id: string, cooldown: CredentialCooldown): void {
+  credentialCooldowns.set(id, cooldown);
+  scheduleCooldownsPersist();
+}
+export function __testClearCooldownMaps(): void {
+  providerCooldowns.clear();
+  credentialCooldowns.clear();
+}
+export function __testGetProviderCooldown(name: ApexProviderName): number | undefined {
+  return providerCooldowns.get(name);
+}
+export function __testGetCredentialCooldown(id: string): CredentialCooldown | undefined {
+  return credentialCooldowns.get(id);
+}
+export async function __testFlushCooldowns(): Promise<void> {
+  await persistCooldowns();
+}
+export const __testCooldownSettingsKey = COOLDOWN_SETTINGS_KEY;
+
 /** OpenRouter's documented ceiling for the `models` fallback array. Sending
  * more earns "HTTP 400 'models' array must have 3 items or fewer" on every
  * request, whichever credential is used. */
@@ -849,10 +967,12 @@ function setCredentialCooldown(
     capacityPause: isCapacityFailure(status, message),
     reason: message.slice(0, 240),
   });
+  scheduleCooldownsPersist();
 }
 
 function clearCredentialCooldown(id: string): void {
   credentialCooldowns.delete(id);
+  scheduleCooldownsPersist();
 }
 
 function providerMinIntervalMs(provider: ProviderSpec): number {
@@ -903,6 +1023,7 @@ function setProviderCooldown(
     provider.name,
     Math.max(providerCooldowns.get(provider.name) ?? 0, Date.now() + duration),
   );
+  scheduleCooldownsPersist();
 }
 
 export function getProviderBackpressureSnapshot(): {
@@ -1002,6 +1123,39 @@ function reserveProviderAttempt(
   }
 }
 
+/**
+ * A failure that means the request was never served, so the provider did not
+ * consume the capacity the daily request allowance stands for.
+ *
+ * 404: the pinned `:free` slug is withdrawn or unknown ("This model is
+ * unavailable for free. The paid version is available now") — no generation was
+ * ever requested. 400: the body, not the key, is indicted (see the note in the
+ * failure path below).
+ *
+ * Everything else keeps its charge. A 429 or 5xx means the provider was engaged
+ * and may well have metered us, and a timeout is not evidence either way.
+ */
+export function isRoutingDefectStatus(status: number | undefined): boolean {
+  return status === 404 || status === 400;
+}
+
+function releaseProviderAttempt(
+  provider: ProviderSpec,
+  credentialKey: string,
+): void {
+  if (
+    provider.requestPool === 'groq' ||
+    provider.requestPool === 'gemini' ||
+    provider.requestPool === 'qwen'
+  ) {
+    releaseDirectProviderRequest(provider.requestPool, provider.name);
+  } else if (provider.paid) {
+    releasePaidProviderRequest(provider.name);
+  } else {
+    releaseProviderRequest(credentialKey);
+  }
+}
+
 function markProviderAttemptSucceeded(
   provider: ProviderSpec,
   credentialKey: string,
@@ -1086,12 +1240,18 @@ export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
 function estimatedCostUsd(
   provider: ProviderSpec,
   usage: { promptTokens?: number; completionTokens?: number } | undefined,
+  cachedTokens = 0,
 ): number {
   const prompt = Math.max(0, Number(usage?.promptTokens ?? 0));
   const completion = Math.max(0, Number(usage?.completionTokens ?? 0));
+  // Cached prompt tokens are a subset of promptTokens and are billed at the
+  // cached rate, not the fresh-input rate. Price the cached slice separately so
+  // a cache-heavy call is not charged as if every input token were fresh.
+  const cached = Math.min(Math.max(0, Number(cachedTokens)), prompt);
   const inRate = provider.usdPerMillionPrompt ?? 0;
+  const cachedRate = provider.usdPerMillionCachedPrompt ?? inRate;
   const outRate = provider.usdPerMillionCompletion ?? 0;
-  return (prompt * inRate + completion * outRate) / 1_000_000;
+  return ((prompt - cached) * inRate + cached * cachedRate + completion * outRate) / 1_000_000;
 }
 
 function providerBaseURL(provider: ProviderSpec): string | undefined {
@@ -1348,7 +1508,7 @@ async function callCompatibleProvider(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), providerRequestTimeoutMs(provider));
   const startedAt = Date.now();
-  let routedModels = [provider.model];
+  let routedModels = [providerModel(provider)];
 
   try {
     const policy = isOpenRouterProvider(provider)
@@ -1357,7 +1517,7 @@ async function callCompatibleProvider(
     const customPolicy = Boolean(policy) && provider.name === FREE_POLICY_GATEWAY_NAME;
     routedModels = customPolicy
       ? getOpenRouterModelChainForRole(config.role)
-      : [provider.model];
+      : [providerModel(provider)];
 
     if (isOpenRouterProvider(provider) && policy?.routingMode === 'adaptive') {
       routedModels = await getAdaptiveModelOrder({
@@ -1372,7 +1532,7 @@ async function callCompatibleProvider(
 
     const usesFreeRouter = routedModels.some(
       (modelId) => modelId.trim().toLowerCase() === 'openrouter/free',
-    ) || provider.model.trim().toLowerCase() === 'openrouter/free'
+    ) || providerModel(provider).trim().toLowerCase() === 'openrouter/free'
       || provider.name === 'openrouter-free-router';
     const wireTools = toWireTools(tools);
     const providerRouting: Record<string, unknown> = {
@@ -1410,7 +1570,7 @@ async function callCompatibleProvider(
       // gateway that refuses every call.
       routedModels = routedModels.slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
       body.models = routedModels;
-    } else body.model = provider.model;
+    } else body.model = providerModel(provider);
 
     if (wireTools?.length) {
       body.tools = wireTools;
@@ -1480,7 +1640,7 @@ async function callCompatibleProvider(
 
     const choice = parsed.choices?.[0]?.message;
     if (!choice) throw new Error('provider returned no completion choice');
-    const servedModel = parsed.model || routedModels[0] || provider.model;
+    const servedModel = parsed.model || routedModels[0] || providerModel(provider);
     const rawCost = Number(parsed.usage?.cost);
     const toolCalls = parseToolCalls(choice.tool_calls);
     const content = choice.content ?? '';
@@ -1547,7 +1707,7 @@ async function callProvider(
     return callGeminiInteractions({
       baseURL,
       apiKey: key,
-      model: provider.model,
+      model: providerModel(provider),
       messages,
       tools,
       config: providerConfig,
@@ -1580,6 +1740,20 @@ function capacityBlockFromReservation(
   };
 }
 
+/** The most recent capacity pause, kept for diagnostics so "agents are
+ *  deferring" can be answered with the exact provider/gate that caused it
+ *  instead of a guess. Bounded and overwritten, never accumulated. */
+export type CapacityDiagnostics = {
+  at: string;
+  resumeAt: string;
+  blocks: string[];
+  details: string[];
+};
+let lastCapacityDiagnostics: CapacityDiagnostics | null = null;
+export function getLastCapacityDiagnostics(): CapacityDiagnostics | null {
+  return lastCapacityDiagnostics;
+}
+
 function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []): Error {
   const timestamps = blocks
     .map((block) => (block.resumeAt ? Date.parse(block.resumeAt) : Number.NaN))
@@ -1587,6 +1761,12 @@ function capacityPauseError(blocks: CapacityBlock[], otherDetails: string[] = []
   const resumeAt = timestamps.length
     ? new Date(Math.min(...timestamps)).toISOString()
     : new Date(Date.now() + 60_000).toISOString();
+  lastCapacityDiagnostics = {
+    at: new Date().toISOString(),
+    resumeAt,
+    blocks: blocks.map((block) => `${block.source}: ${block.reason}${block.resumeAt ? ` @${block.resumeAt}` : ''}`),
+    details: otherDetails,
+  };
   const detail = [
     ...new Map(
       blocks.map((block) => [
@@ -1863,7 +2043,7 @@ class MultiProviderClient {
                   // missing figure must never read as free spend.
                   recordSpend(
                     provider.name,
-                    result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                    result.costUsd ?? estimatedCostUsd(provider, result.usage, result.cachedTokens ?? 0),
                   );
                   recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                 }
@@ -1872,7 +2052,7 @@ class MultiProviderClient {
                 await recordResponseTelemetry({
                   response: result,
                   provider: provider.name,
-                  requestedModels: result.requestedModels ?? [provider.model],
+                  requestedModels: result.requestedModels ?? [providerModel(provider)],
                   execution: {
                     ...execution,
                     role: execution?.role ?? this.config.role,
@@ -1881,19 +2061,25 @@ class MultiProviderClient {
                 });
                 return result;
               } catch (error) {
-                // The request was reserved before dispatch, so failures already
-                // count against the correct provider pool. Only successful
-                // outcomes need a post-response ledger update.
+                // The request was reserved before dispatch, so a failure the
+                // provider actually served stays charged to the correct pool.
+                // A routing DEFECT is refunded instead: a 404/400 means no
+                // generation was requested, and charging those is what let a
+                // rung pinned to a withdrawn `:free` slug drain half the daily
+                // allowance while the pool still had live capacity.
                 const err = error as ProviderRequestError;
                 const status = err.status;
+                if (isRoutingDefectStatus(status)) {
+                  releaseProviderAttempt(provider, credential.key);
+                }
                 const message =
                   err.name === 'AbortError' ? 'request timed out' : err.message;
                 const requestedModels = err.requestedModels?.length
                   ? err.requestedModels
                   : hasCustomOpenRouterModelPolicy()
                     ? getOpenRouterModelChainForRole(this.config.role)
-                    : [provider.model];
-                const attemptedModel = requestedModels[0] ?? provider.model;
+                    : [providerModel(provider)];
+                const attemptedModel = requestedModels[0] ?? providerModel(provider);
                 recordProviderFailure(
                   provider.name,
                   attemptedModel,
@@ -2030,7 +2216,7 @@ class MultiProviderClient {
                     if (provider.paid) {
                       recordSpend(
                         provider.name,
-                        result.costUsd ?? estimatedCostUsd(provider, result.usage),
+                        result.costUsd ?? estimatedCostUsd(provider, result.usage, result.cachedTokens ?? 0),
                       );
                       recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                     }
@@ -2039,7 +2225,7 @@ class MultiProviderClient {
                     await recordResponseTelemetry({
                       response: result,
                       provider: provider.name,
-                      requestedModels: result.requestedModels ?? [provider.model],
+                      requestedModels: result.requestedModels ?? [providerModel(provider)],
                       execution: {
                         ...execution,
                         role: execution?.role ?? this.config.role,
@@ -2047,9 +2233,14 @@ class MultiProviderClient {
                       hadTools: Boolean(tools?.length),
                     });
                     return result;
-                  } catch {
-                    // The retry was already reserved and therefore correctly
-                    // counted even when it fails. Continue to the next route.
+                  } catch (retryError) {
+                    // The retry was already reserved, so a served-but-refused
+                    // failure stays correctly counted. A routing DEFECT is
+                    // refunded here too, matching the first dispatch above.
+                    const retryStatus = (retryError as ProviderRequestError).status;
+                    if (isRoutingDefectStatus(retryStatus)) {
+                      releaseProviderAttempt(provider, credential.key);
+                    }
                   }
                 }
               }
@@ -2142,10 +2333,10 @@ export function getDefaultLLMConfig(role: string): LLMClientConfig {
   const model =
     primaryName === FREE_POLICY_GATEWAY_NAME
       ? getOpenRouterModelChainForRole(role)[0] ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0]
-      : primary?.model ?? DEFAULT_OPENROUTER_MODEL_CHAIN[0];
+      : (primary ? providerModel(primary) : DEFAULT_OPENROUTER_MODEL_CHAIN[0]);
 
   return {
-    provider: primary?.name ?? 'openrouter-nex-n2-5-mini-free',
+    provider: primary?.name ?? PROVIDER_ORDER[0],
     model,
     temperature: 0.7,
     maxTokens,
@@ -2440,13 +2631,13 @@ export function getProviderCatalog(): Array<{
     const provider = PROVIDER_BY_NAME.get(name)!;
     return {
       name: provider.name,
-      model: provider.model,
+      model: providerModel(provider),
       tier: index,
       paid: provider.paid === true,
       supportsParallelToolCalls: provider.supportsParallelToolCalls === true,
       toolCallingReliable: true,
       usesFreeCredentials: providerUsesFreeCredentials(provider.name),
-      requireParametersWhenToolsPresent: provider.model.toLowerCase() === 'openrouter/free',
+      requireParametersWhenToolsPresent: providerModel(provider).toLowerCase() === 'openrouter/free',
       ...(provider.providerRouting ? { providerRouting: provider.providerRouting } : {}),
     };
   });
@@ -2477,6 +2668,10 @@ export function getKnownApiKeyEnvs(): string[] {
     'TELNYX_CALL_BRIDGE_WEBHOOK_SECRET',
     'APEX_FRONT_DESK_NUMBER',
     'TELNYX_OWNER_NUMBER',
+    'APEX_HANK_LIVE_KEY',
+    'TELNYX_WEBHOOK_SECRET',
+    'DEEPGRAM_API_KEY',
+    'ELEVENLABS_API_KEY',
     'CASEBUDDY_SUPABASE_URL',
     'CASEBUDDY_SUPABASE_SERVICE_KEY',
     'CASEBUDDY_SYSTEM_USER_ID',

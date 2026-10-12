@@ -1,11 +1,21 @@
 import { randomUUID } from 'crypto';
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { db, goals, tasks, approvals, logs, agents as agentsTable, voiceChatSessions, voiceChatTurns } from '@workspace/db';
+import { db, goals, tasks, approvals, logs, agents as agentsTable, auditEvents, voiceChatSessions, voiceChatTurns } from '@workspace/db';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMIntentionalPause } from '@workspace/core';
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
+import { operatorDashboardSessionValid } from '../operator-session.js';
+import {
+  COPILOT_SAFE_PAGES,
+  COPILOT_READ_ONLY_CHAT_TOOL_NAMES,
+  isCopilotChatToolAllowed,
+  isCopilotFeatureEnabled,
+  validateCopilotAction,
+  validateCopilotActions,
+  type CopilotAction,
+} from '../copilot-actions.js';
 
 /** Re-dispatch a task that was blocked awaiting approval immediately after the
  *  human resolves it, instead of waiting for the durable recovery sweep's next
@@ -46,7 +56,34 @@ const chatRequestSchema = z.object({
   // The Apex screen Don is currently viewing, so "this", "that graph", "the
   // thing on my screen" resolve against what he is actually looking at.
   page: z.string().max(120).optional(),
+  copilot: z.object({
+    enabled: z.boolean(),
+    pageId: z.string().max(80).optional(),
+    sessionId: z.string().uuid(),
+  }).strict().optional(),
 });
+
+const copilotAuditRequestSchema = z.object({
+  sessionId: z.string().uuid(),
+  action: z.unknown(),
+  status: z.enum(['executed', 'failed', 'stopped']),
+  reason: z.string().max(500).optional(),
+}).strict();
+
+const copilotSessionAuditRequestSchema = z.object({
+  sessionId: z.string().uuid(),
+  event: z.enum(['started', 'stopped']),
+  reason: z.string().max(500).optional(),
+}).strict();
+
+async function requireCopilotOperatorSession(req: Request, res: Response): Promise<boolean> {
+  const header = req.header('x-apex-operator-session');
+  if (await operatorDashboardSessionValid(typeof header === 'string' ? header : null)) return true;
+  res.status(403).json({
+    error: 'Apex Copilot requires an operator dashboard session. Sign in to the dashboard again.',
+  });
+  return false;
+}
 
 export const CHAT_SYSTEM_PROMPT = `You are Apex, talking directly with Don — the founder who built you and the whole
 portfolio you run operations for. This is his Chat window: a real conversation, not a command line.
@@ -73,6 +110,52 @@ You are a capable agent in your own right, not a dispatcher. Handle things yours
   inventing a plausible-sounding answer.
 - Keep replies conversational length — a few sentences to a few short paragraphs, not a wall of bullet points,
   unless he's asked for a list.`;
+
+const COPILOT_SYSTEM_PROMPT = `
+
+Apex Copilot is active for this turn. You may control ONLY the authenticated APEX dashboard through
+the control_dashboard tool. Use that tool when the operator explicitly asks you to open a safe page,
+search leads/contacts, set one of the tool's listed filters, or open a contact by exact id.
+Never narrate a raw click or claim the UI moved without using the tool.
+
+The tool is an allow-list. It cannot send email/SMS/calls/invites; release pending sends; approve,
+confirm, or enter codes; change kill switches/outbound policy; access secrets, billing, or payments;
+delete or merge data; change users/permissions; deploy or roll back. Do not try synonyms or another
+tool to bypass those limits. Sensitive pages are not valid navigation destinations. If asked for a
+blocked action, explain that Matthew must do it himself. Campaign edits, bulk edits, merges, and
+other medium-risk changes require a separate visible “Do it?” confirmation that you cannot click;
+this MVP registry intentionally does not expose those actions.`;
+
+const COPILOT_TOOL: LLMTool = {
+  name: 'control_dashboard',
+  description: 'Queue one or more allow-listed in-app APEX dashboard actions. This never controls the OS or desktop.',
+  parameters: {
+    type: 'object',
+    properties: {
+      actions: {
+        type: 'array',
+        maxItems: 10,
+        items: {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: ['navigate', 'search', 'setFilter', 'openRecord'] },
+            page: { type: 'string', enum: [...COPILOT_SAFE_PAGES] },
+            query: { type: 'string' },
+            field: {
+              type: 'string',
+              description: 'leads: status, pipelineState, industry. contacts: q, tag, city, state, verifiedOnly, ownerBot, replied, campaignId.',
+            },
+            value: { description: 'Filter value: string, boolean, or null.' },
+            recordType: { type: 'string', enum: ['contact'] },
+            id: { type: 'string', description: 'Exact UUID of the contact.' },
+          },
+          required: ['type'],
+        },
+      },
+    },
+    required: ['actions'],
+  },
+};
 
 export const CHAT_TOOLS: LLMTool[] = [
   {
@@ -177,6 +260,10 @@ export const CHAT_TOOLS: LLMTool[] = [
     },
   },
 ];
+
+const COPILOT_READ_ONLY_CHAT_TOOLS = CHAT_TOOLS.filter((tool) =>
+  (COPILOT_READ_ONLY_CHAT_TOOL_NAMES as readonly string[]).includes(tool.name),
+);
 
 export async function buildLiveSnapshot(): Promise<string> {
   const [approvalRows, escalationRows, activeGoalRows, agentRows] = await Promise.all([
@@ -437,16 +524,115 @@ export async function executeTool(
   }
 }
 
+function copilotAuditEntity(action: CopilotAction): { entityType: string; entityId: string | null } {
+  switch (action.type) {
+    case 'navigate':
+      return { entityType: 'dashboard_page', entityId: action.page };
+    case 'search':
+    case 'setFilter':
+      return { entityType: 'dashboard_page', entityId: action.page };
+    case 'openRecord':
+      return { entityType: action.recordType, entityId: action.id };
+  }
+}
+
+async function writeCopilotAudit(
+  sessionId: string,
+  action: CopilotAction,
+  status: 'queued' | 'executed' | 'failed' | 'stopped',
+  reason?: string,
+): Promise<void> {
+  const entity = copilotAuditEntity(action);
+  await db.insert(auditEvents).values({
+    organizationId: 'apex',
+    actorType: 'agent',
+    actorId: 'copilot',
+    action: `copilot.ui.${action.type}`,
+    entityType: entity.entityType,
+    entityId: entity.entityId,
+    metadata: {
+      actor: 'copilot',
+      onBehalfOf: 'Matthew',
+      sessionId,
+      status,
+      action,
+      undoAvailable: false,
+      ...(reason ? { reason } : {}),
+    },
+  });
+}
+
 export function createChatRouter(ceo: ApexCEO) {
   const router = Router();
   const llm = createLLMClient(getDefaultLLMConfig('CEO'));
+
+  router.get('/copilot/status', async (req, res) => {
+    if (!isCopilotFeatureEnabled()) return res.json({ enabled: false });
+    if (!(await requireCopilotOperatorSession(req, res))) return;
+    return res.json({ enabled: true });
+  });
+
+  router.post('/copilot/audit', async (req, res) => {
+    if (!isCopilotFeatureEnabled()) {
+      return res.status(404).json({ error: 'Apex Copilot is disabled.' });
+    }
+    if (!(await requireCopilotOperatorSession(req, res))) return;
+    const parsed = copilotAuditRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+    const validated = validateCopilotAction(parsed.data.action);
+    if (!validated.ok) {
+      return res.status(403).json({ error: validated.reason, code: validated.code });
+    }
+    try {
+      await writeCopilotAudit(parsed.data.sessionId, validated.action, parsed.data.status, parsed.data.reason);
+      return res.json({ logged: true });
+    } catch (err) {
+      console.error('[copilot] audit write failed:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Could not write Apex Copilot audit event.' });
+    }
+  });
+
+  router.post('/copilot/session-audit', async (req, res) => {
+    if (!isCopilotFeatureEnabled()) {
+      return res.status(404).json({ error: 'Apex Copilot is disabled.' });
+    }
+    if (!(await requireCopilotOperatorSession(req, res))) return;
+    const parsed = copilotSessionAuditRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.flatten() });
+    }
+    try {
+      await db.insert(auditEvents).values({
+        organizationId: 'apex',
+        actorType: 'agent',
+        actorId: 'copilot',
+        action: `copilot.session.${parsed.data.event}`,
+        entityType: 'copilot_session',
+        entityId: parsed.data.sessionId,
+        metadata: {
+          actor: 'copilot',
+          onBehalfOf: 'Matthew',
+          reason: parsed.data.reason,
+        },
+      });
+      return res.json({ logged: true });
+    } catch (err) {
+      console.error('[copilot] session audit write failed:', err instanceof Error ? err.message : err);
+      return res.status(500).json({ error: 'Could not write Apex Copilot session audit event.' });
+    }
+  });
 
   router.post('/message', async (req, res) => {
     const parsed = chatRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.flatten() });
     }
-    const { message, history, page } = parsed.data;
+    const { message, history, page, copilot } = parsed.data;
+    const copilotRequested = copilot?.enabled === true;
+    const copilotEnabled = copilotRequested && isCopilotFeatureEnabled();
+    if (copilotEnabled && !(await requireCopilotOperatorSession(req, res))) return;
 
     try {
       const snapshot = await buildLiveSnapshot();
@@ -454,12 +640,13 @@ export function createChatRouter(ceo: ApexCEO) {
         ? `\n\nDon's current screen: the "${page}" page. When he says "this", "that", or "it", he usually means something on that screen.\n`
         : '';
       const llmHistory: LLMMessage[] = [
-        { role: 'system', content: `${CHAT_SYSTEM_PROMPT}${screenContext}\n\nCurrent live snapshot:\n${snapshot}` },
+        { role: 'system', content: `${CHAT_SYSTEM_PROMPT}${copilotEnabled ? COPILOT_SYSTEM_PROMPT : ''}${screenContext}\n\nCurrent live snapshot:\n${snapshot}` },
         ...history.map((h): LLMMessage => ({ role: h.role, content: h.content })),
         { role: 'user', content: message },
       ];
 
       let goalCreated: { id: string; title: string } | undefined;
+      const copilotActions: CopilotAction[] = [];
       const MAX_TURNS = 5;
       // Stable only for this HTTP conversation/tool loop. Gemini uses it to
       // preserve native Interactions state across local tool execution without
@@ -472,24 +659,62 @@ export function createChatRouter(ceo: ApexCEO) {
         // background agent from front-loading a day's budget. It still can't
         // spend past the hard daily caps or the per-minute provider rate
         // limit; see LLMExecutionContext.interactive.
-        const response = await llm.complete(llmHistory, CHAT_TOOLS, {
+        const response = await llm.complete(
+          llmHistory,
+          copilotEnabled ? [...COPILOT_READ_ONLY_CHAT_TOOLS, COPILOT_TOOL] : CHAT_TOOLS,
+          {
           role: 'CEO',
           interactive: true,
           conversationId,
-        });
+          },
+        );
         llmHistory.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
 
         if (response.toolCalls.length === 0) {
           return res.json({
             reply: response.content || "I don't have anything more to add on that.",
             goalCreated,
+            copilot: { enabled: copilotEnabled, actions: copilotActions },
           });
         }
 
         for (const call of response.toolCalls) {
           let result: Record<string, unknown>;
           try {
-            result = await executeTool(call, ceo);
+            if (copilotEnabled && !isCopilotChatToolAllowed(call.name)) {
+              result = { error: `"${call.name}" is unavailable while Apex Copilot is active.` };
+            } else if (call.name === 'control_dashboard') {
+              if (!copilotEnabled || !copilot) {
+                result = { error: 'Apex Copilot is disabled.' };
+              } else {
+                const validated = validateCopilotActions(call.args.actions);
+                const auditedActions: CopilotAction[] = [];
+                const auditRejected: Array<{ code: string; reason: string }> = [];
+                for (const action of validated.actions) {
+                  try {
+                    await writeCopilotAudit(copilot.sessionId, action, 'queued');
+                    auditedActions.push(action);
+                  } catch (err) {
+                    console.warn('[copilot] queued audit failed:', err instanceof Error ? err.message : err);
+                    auditRejected.push({
+                      code: 'audit_failed',
+                      reason: `Could not queue ${action.type} because its audit event was not recorded.`,
+                    });
+                  }
+                }
+                copilotActions.push(...auditedActions);
+                result = {
+                  queued: auditedActions,
+                  rejected: [
+                    ...validated.rejected.map((item) => ({ code: item.code, reason: item.reason })),
+                    ...auditRejected,
+                  ],
+                  note: 'Queued actions still run through the browser registry. Do not claim completion until the UI reports it.',
+                };
+              }
+            } else {
+              result = await executeTool(call, ceo);
+            }
           } catch (err) {
             result = { error: err instanceof Error ? err.message : String(err) };
           }
@@ -508,6 +733,7 @@ export function createChatRouter(ceo: ApexCEO) {
       return res.json({
         reply: 'That took a few lookups — deploying it as a goal so the swarm can dig in properly.',
         goalCreated,
+        copilot: { enabled: copilotEnabled, actions: copilotActions },
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

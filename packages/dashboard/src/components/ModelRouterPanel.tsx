@@ -24,9 +24,12 @@ import {
   type OpenRouterModelPolicy,
 } from '../lib/settingsApi.js';
 
+// Must stay in step with DEFAULT_OPENROUTER_MODEL_CHAIN in
+// packages/core/src/model-routing.ts — four entries, one per free provider rung.
+// The two `nex-agi/nex-n2.5-*:free` slugs are gone: OpenRouter withdrew their
+// free tier and every attempt on them 404'd while still reserving a slot of the
+// daily allowance.
 const ZERO_COST_DEFAULT_CHAIN = [
-  'nex-agi/nex-n2.5-mini:free',
-  'nex-agi/nex-n2.5-pro:free',
   'nvidia/nemotron-3-super-120b-a12b:free',
   'nvidia/nemotron-3.5-lightning:free',
   'openrouter/free',
@@ -251,7 +254,7 @@ export function ModelRouterPanel() {
 
   const toggleModel = (modelId: string) => {
     if (!isProductionEligible(modelId)) {
-      setSavedMessage('Arbitrary paid OpenRouter models are comparison-only and cannot be saved into the operator roster. Paid continuity (deepseek/deepseek-v4-flash-0731 on OpenRouter and Nous Portal) is a dedicated runtime exception managed outside the saved free roster.');
+      setSavedMessage('Arbitrary paid OpenRouter models are comparison-only and cannot be saved into the operator roster. Paid continuity (deepseek/deepseek-v4-flash-0731 on OpenRouter; the Nous Portal provider is removed) is a dedicated runtime exception managed outside the saved free roster.');
       return;
     }
     setPolicy((previous) => {
@@ -311,7 +314,7 @@ export function ModelRouterPanel() {
             <ModelBadge>FREE-FIRST + GLM CONTINUITY</ModelBadge>
           </div>
           <p style={{ fontSize: 12, color: 'var(--color-apex-muted)', margin: '6px 0 0', lineHeight: 1.45, maxWidth: 820 }}>
-            Nex N2.5 Mini Free remains the primary model and saved operator rosters stay free-only. When free/BYOK capacity is unavailable and paid continuity is enabled, APEX continues through deepseek/deepseek-v4-flash-0731, alternating each request between OpenRouter and Nous Portal so neither carries the whole load. The paid routes are not subject to APEX spend, request, token, emergency-cap, or model-specific pacing limits; provider-side limits and reliability backoff still apply.
+            Nex N2.5 Mini Free remains the primary model and saved operator rosters stay free-only. When free/BYOK capacity is unavailable and paid continuity is enabled, APEX continues through deepseek/deepseek-v4-flash-0731 on OpenRouter. The Nous Portal provider is removed — Apex no longer calls Nous. The paid route is not subject to APEX spend, request, token, emergency-cap, or model-specific pacing limits; provider-side limits and reliability backoff still apply.
           </p>
         </div>
         <button

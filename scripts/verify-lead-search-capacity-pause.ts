@@ -9,11 +9,16 @@
  * attempt in 13 minutes. Later that night "Newspapers & Radio Stations"
  * searches burned all three attempts the same way.
  *
- * This guard replays those production messages and checks that an outage
- * hands the attempt back, pauses with a doubling backoff, tests with one
- * search, and resumes when a source answers. It also drives the real webSearch
- * and searchBusinessDirectory tools against a stubbed fetch, so a change to
- * their diagnostic wording cannot silently break the classifier.
+ * On 2026-10-05 the operator took Tavily out of the stack (c7a61fc), proxy
+ * included, so those messages can no longer occur. The replays below keep the
+ * incident's shape with Serper, the keyed web source production uses now: the
+ * only keyed source rate limited, no other source answering.
+ *
+ * This guard checks that an outage hands the attempt back, pauses with a
+ * doubling backoff, tests with one search, and resumes when a source answers.
+ * It also drives the real webSearch and searchBusinessDirectory tools against
+ * a stubbed fetch, so a change to their diagnostic wording cannot silently
+ * break the classifier.
  *
  * No network, no database, no model.
  */
@@ -34,9 +39,11 @@ function check(label: string, ok: boolean, detail?: unknown): void {
   if (detail !== undefined) console.error(`     ${JSON.stringify(detail, null, 2).slice(0, 1200)}`);
 }
 
-// Verbatim from production (Railway logs, deployment c967764a, 2026-10-03).
-const PROXY_432 =
-  'buildmybot-tavily: HTTP 502 {"error":"Tavily search failed with HTTP 432","detail":"{\\"detail\\":{\\"error\\":\\"This request exceeds your plan\'s set usage limit. Please upgrade your plan or contact support@tavily.com\\"}}"}';
+/** Serper rate limited: the one keyed web source down, as in the incident. */
+const SERPER_429_BODY = '{"message":"Too many requests","statusCode":429}';
+const SERPER_429 = `serper: HTTP 429 ${SERPER_429_BODY}`;
+/** No other keyed web source configured, as in production. */
+const OTHER_WEB_UNSET = ['brave: BRAVE_SEARCH_API_KEY not set', 'brightdata: BRIGHT_DATA_API_KEY not set'];
 const SUGGESTION =
   'Every search provider failed or is unconfigured — this is NOT a query problem. Rewording will not help. Report this and use another tool.';
 const NO_KEYS = [
@@ -62,20 +69,19 @@ async function main(): Promise<void> {
 
   // ── The two production failures ─────────────────────────────────────────
   const usNews = msg('us news Birmingham, AL', [
-    'tavily: TAVILY_API_KEY not set',
-    PROXY_432,
-    'brave: BRAVE_SEARCH_API_KEY not set',
+    SERPER_429,
+    ...OTHER_WEB_UNSET,
     SUGGESTION,
     ...NO_KEYS,
     'OSM: no known category tag for "us news Birmingham, AL"',
   ]);
   const usNewsClass = capacity.classifyLeadDiscoveryFailure(usNews);
-  check('20:34 "US News": the proxy at its Tavily plan limit is a provider outage', usNewsClass.providerOutage, usNewsClass);
+  check('"US News" with the only keyed web source rate limited is a provider outage', usNewsClass.providerOutage, usNewsClass);
   check(
-    'the unavailable source is named with Tavily\'s own reason, not the proxy\'s 502',
+    'the unavailable source is named with its reason',
     usNewsClass.unavailable.length === 1 &&
-      usNewsClass.unavailable[0].source === 'buildmybot-tavily' &&
-      usNewsClass.unavailable[0].reason === 'plan usage limit reached (HTTP 432)',
+      usNewsClass.unavailable[0].source === 'serper' &&
+      usNewsClass.unavailable[0].reason === 'rate limited (HTTP 429)',
     usNewsClass.unavailable,
   );
   check(
@@ -90,9 +96,8 @@ async function main(): Promise<void> {
   );
 
   const radio = msg('best newspapers & radio stations company Cedar Rapids, IA', [
-    'tavily: TAVILY_API_KEY not set',
-    PROXY_432,
-    'brave: BRAVE_SEARCH_API_KEY not set',
+    SERPER_429,
+    ...OTHER_WEB_UNSET,
     SUGGESTION,
     ...NO_KEYS,
     'OSM: overpass-api.de fetch failed',
@@ -101,15 +106,14 @@ async function main(): Promise<void> {
   ]);
   const radioDecision = runner.decideSegmentFailure({ message: radio, attempts: 3, maxAttempts: 3 });
   check(
-    '22:59 "Newspapers & Radio Stations" on attempt 3 of 3 is not closed; it waits with attempt 2 of 3',
+    '"Newspapers & Radio Stations" on attempt 3 of 3 is not closed; it waits with attempt 2 of 3',
     radioDecision.kind === 'capacity_pause' && radioDecision.attempts === 2,
     radioDecision,
   );
 
   const davenport = msg('newspapers & radio stations company Davenport, IA', [
-    'tavily: TAVILY_API_KEY not set',
-    PROXY_432,
-    'brave: BRAVE_SEARCH_API_KEY not set',
+    SERPER_429,
+    ...OTHER_WEB_UNSET,
     SUGGESTION,
     ...NO_KEYS,
     'OSM: overpass-api.de fetch failed',
@@ -122,8 +126,8 @@ async function main(): Promise<void> {
 
   // ── What must stay as it was ────────────────────────────────────────────
   const noSourceAtAll = msg('us news Birmingham, AL', [
-    'tavily: TAVILY_API_KEY not set',
-    'brave: BRAVE_SEARCH_API_KEY not set',
+    'serper: SERPER_API_KEY not set',
+    ...OTHER_WEB_UNSET,
     ...NO_KEYS,
     'OSM: no known category tag for "us news Birmingham, AL"',
   ]);
@@ -134,21 +138,20 @@ async function main(): Promise<void> {
     noSourceDecision,
   );
 
-  const proxyAnsweredEmpty = msg('us news Birmingham, AL', [
-    'tavily: TAVILY_API_KEY not set',
-    'buildmybot-tavily: 200 but zero results',
-    'brave: BRAVE_SEARCH_API_KEY not set',
+  const serperAnsweredEmpty = msg('us news Birmingham, AL', [
+    'serper: 200 but zero results',
+    ...OTHER_WEB_UNSET,
     ...NO_KEYS,
     'OSM: no known category tag for "us news Birmingham, AL"',
   ]);
   check(
-    'when the proxy answered with nothing, that empty is honest: closed once, no pause, no repeat Tavily spend',
-    !capacity.classifyLeadDiscoveryFailure(proxyAnsweredEmpty).providerOutage &&
-      runner.decideSegmentFailure({ message: proxyAnsweredEmpty, attempts: 1, maxAttempts: 3 }).kind === 'closed',
+    'when Serper answered with nothing, that empty is honest: closed once, no pause, no repeat search spend',
+    !capacity.classifyLeadDiscoveryFailure(serperAnsweredEmpty).providerOutage &&
+      runner.decideSegmentFailure({ message: serperAnsweredEmpty, attempts: 1, maxAttempts: 3 }).kind === 'closed',
   );
 
   const oneDownOneAnswered = msg('roofing Dallas, TX', [
-    'tavily: 200 but zero results',
+    'serper: 200 but zero results',
     'brave: HTTP 429 {"type":"ErrorResponse"}',
     ...NO_KEYS,
   ]);
@@ -160,8 +163,8 @@ async function main(): Promise<void> {
   );
 
   const osmOnlyFlaky = msg('roofing Dallas, TX', [
-    'tavily: TAVILY_API_KEY not set',
-    'brave: BRAVE_SEARCH_API_KEY not set',
+    'serper: SERPER_API_KEY not set',
+    ...OTHER_WEB_UNSET,
     ...NO_KEYS,
     'OSM: overpass-api.de fetch failed',
     'OSM: overpass.kumi.systems The operation was aborted due to timeout',
@@ -172,16 +175,16 @@ async function main(): Promise<void> {
       runner.decideSegmentFailure({ message: osmOnlyFlaky, attempts: 1, maxAttempts: 3 }).kind === 'retry',
   );
 
-  const badRequest = msg('roofing Dallas, TX', ['tavily: HTTP 400 {"detail":"query too long"}', ...NO_KEYS]);
+  const badRequest = msg('roofing Dallas, TX', ['serper: HTTP 400 {"message":"Query too long","statusCode":400}', ...NO_KEYS]);
   check('a 400 is about the request, not capacity', !capacity.classifyLeadDiscoveryFailure(badRequest).providerOutage);
 
-  const rejectedKey = msg('roofing Dallas, TX', ['tavily: HTTP 401 {"detail":"invalid key"}', ...NO_KEYS]);
+  const rejectedKey = msg('roofing Dallas, TX', ['serper: HTTP 401 {"message":"Unauthorized.","statusCode":401}', ...NO_KEYS]);
   check(
     'a rejected key pauses instead of closing every search until someone fixes it',
     capacity.classifyLeadDiscoveryFailure(rejectedKey).providerOutage,
   );
 
-  const breaker = msg('roofing Dallas, TX', ['buildmybot-tavily: temporarily skipped by provider circuit breaker', ...NO_KEYS]);
+  const breaker = msg('roofing Dallas, TX', ['serper: temporarily skipped by provider circuit breaker', ...NO_KEYS]);
   check('an open circuit breaker counts as unavailable', capacity.classifyLeadDiscoveryFailure(breaker).providerOutage);
 
   check(
@@ -197,12 +200,12 @@ async function main(): Promise<void> {
   const minute = 60_000;
   const pause = new capacity.LeadSearchCapacityPause(2 * minute, 60 * minute);
   const t0 = Date.UTC(2026, 9, 3, 20, 34);
-  const quota = [{ source: 'buildmybot-tavily', reason: 'plan usage limit reached (HTTP 432)' }];
+  const quota = [{ source: 'serper', reason: 'rate limited (HTTP 429)' }];
   check('before any outage the runner claims its normal batch', pause.claimLimit(6, t0) === 6);
 
   const first = pause.recordOutage(quota, t0);
   check('the first outage pauses for 2 minutes and is announced', first.started && first.waitMs === 2 * minute, first);
-  const sibling = pause.recordOutage([{ source: 'buildmybot-tavily', reason: 'paused after an earlier failure' }], t0 + 1_000);
+  const sibling = pause.recordOutage([{ source: 'serper', reason: 'paused after an earlier failure' }], t0 + 1_000);
   check(
     'a segment that was in flight with it neither extends the wait nor announces again',
     !sibling.started && sibling.resumeAt === first.resumeAt,
@@ -210,7 +213,7 @@ async function main(): Promise<void> {
   );
   check(
     'the circuit-breaker note does not overwrite the real reason',
-    pause.snapshot(t0 + 1_000)?.summary === 'buildmybot-tavily: plan usage limit reached (HTTP 432)',
+    pause.snapshot(t0 + 1_000)?.summary === 'serper: rate limited (HTTP 429)',
     pause.snapshot(t0 + 1_000),
   );
   check('nothing is claimed while paused', pause.claimLimit(6, t0 + minute) === 0);
@@ -248,7 +251,7 @@ async function main(): Promise<void> {
   const waiting = runner.computeCampaignProgress(campaign, [], t0, 0, outagePause.snapshot(t0));
   check(
     'a running campaign with no progress during an outage reads "waiting_for_search", not "stalled"',
-    waiting.displayStatus === 'waiting_for_search' && waiting.searchPause?.summary.includes('HTTP 432') === true,
+    waiting.displayStatus === 'waiting_for_search' && waiting.searchPause?.summary.includes('HTTP 429') === true,
     waiting,
   );
   check(
@@ -261,20 +264,25 @@ async function main(): Promise<void> {
   );
 
   // ── webSearch circuit breaker ───────────────────────────────────────────
-  check('Tavily 432 (plan limit) opens the breaker for 30 minutes', registry.webSearchCooldownMs(432) === 30 * minute);
-  check('Tavily 433 (pay-as-you-go limit) opens it for 30 minutes', registry.webSearchCooldownMs(433) === 30 * minute);
+  check('an out-of-credits 402 opens the breaker for 30 minutes', registry.webSearchCooldownMs(402) === 30 * minute);
+  check('a plan-limit 432 or 433 opens it for 30 minutes', registry.webSearchCooldownMs(432) === 30 * minute && registry.webSearchCooldownMs(433) === 30 * minute);
   check('429 still opens it for 60 seconds', registry.webSearchCooldownMs(429) === minute);
   check('a 400 does not open it', registry.webSearchCooldownMs(400) === 0);
-  check(
-    "the proxy's 502 is timed by Tavily's 432 inside it",
-    registry.proxiedUpstreamStatus(502, PROXY_432.slice('buildmybot-tavily: HTTP 502 '.length)) === 432,
+  // A gateway can answer 502 and name the upstream's status in its body. The
+  // classifier reads the upstream status, which says what happened.
+  const gateway = capacity.classifyLeadDiscoveryFailure(
+    msg('roofing Dallas, TX', ['brightdata: HTTP 502 {"error":"upstream search failed with HTTP 429"}', ...NO_KEYS]),
   );
-  check('a bare 502 from the proxy stays a 502', registry.proxiedUpstreamStatus(502, 'Bad Gateway') === 502);
+  check(
+    "a 502 that names the upstream's 429 is classified by the 429",
+    gateway.providerOutage && gateway.unavailable[0]?.reason === 'rate limited (HTTP 429)',
+    gateway,
+  );
 
   // ── The real tools, fetch stubbed ───────────────────────────────────────
   const fetched: string[] = [];
   const routes: Array<[string, () => Response]> = [
-    ['https://proxy.example.test/', () => new Response(PROXY_432.slice('buildmybot-tavily: HTTP 502 '.length), { status: 502 })],
+    ['https://google.serper.dev/', () => new Response(SERPER_429_BODY, { status: 429 })],
     ['https://lite.duckduckgo.com/', () => new Response('<html></html>', { status: 200 })],
     ['https://api.duckduckgo.com/', () => new Response('{}', { status: 200 })],
     ['https://api.yelp.com/', () => new Response('{"error":{"code":"TOO_MANY_REQUESTS_PER_SECOND"}}', { status: 429 })],
@@ -287,11 +295,12 @@ async function main(): Promise<void> {
     return route ? route[1]() : new Response('', { status: 404 });
   }) as typeof fetch;
 
-  for (const key of ['TAVILY_API_KEY', 'BRAVE_SEARCH_API_KEY', 'TOMTOM_API_KEY']) delete process.env[key];
-  process.env.BUILDMYBOT_TAVILY_PROXY_URL = 'https://proxy.example.test/search';
-  process.env.BUILDMYBOT_TAVILY_PROXY_SECRET = 'guard-only-not-a-secret';
-  process.env.YELP_API_KEY = 'guard-only-not-a-key';
-  process.env.GOOGLE_PLACES_API_KEY = 'guard-only-not-a-key';
+  for (const key of ['BRAVE_SEARCH_API_KEY', 'BRIGHT_DATA_API_KEY', 'BRIGHT_DATA_ZONE', 'TOMTOM_API_KEY']) delete process.env[key];
+  process.env.SERPER_API_KEY = 'guard-only-not-a-key';
+  // Directory keys must look real now (lead-provider-keys.ts gates malformed
+  // ones before any request), so the fixtures use correctly shaped fakes.
+  process.env.YELP_API_KEY = 'g'.repeat(128);
+  process.env.GOOGLE_PLACES_API_KEY = `AIza${'g'.repeat(35)}`;
 
   const tools = registry.createBuiltinTools(root);
   const webSearch = tools.find((tool) => tool.name === 'webSearch');
@@ -305,17 +314,17 @@ async function main(): Promise<void> {
   type WebOut = { diagnostics?: string[]; suggestion?: string };
   type DirOut = { attempts?: string[]; error?: string };
 
-  const proxyCalls = () => fetched.filter((url) => url.startsWith('https://proxy.example.test/')).length;
+  const serperCalls = () => fetched.filter((url) => url.startsWith('https://google.serper.dev/')).length;
   const web1 = (await webSearch.execute({ query: 'us news Birmingham, AL official business website', maxResults: 10, fast: true }, ctx)) as WebOut;
   check(
-    'webSearch reports the proxy failure with its status and body',
-    proxyCalls() === 1 && (web1.diagnostics ?? []).some((d) => d.startsWith('buildmybot-tavily: HTTP 502') && d.includes('HTTP 432')),
+    'webSearch reports the Serper failure with its status and body',
+    serperCalls() === 1 && (web1.diagnostics ?? []).some((d) => d.startsWith('serper: HTTP 429') && d.includes('Too many requests')),
     web1,
   );
   const web2 = (await webSearch.execute({ query: 'us news Birmingham, AL official business website', maxResults: 10, fast: true }, ctx)) as WebOut;
   check(
-    'the next search skips the proxy instead of spending another request on a used-up plan',
-    proxyCalls() === 1 && (web2.diagnostics ?? []).includes('buildmybot-tavily: temporarily skipped by provider circuit breaker'),
+    'the next search skips Serper instead of spending another request while it is rate limited',
+    serperCalls() === 1 && (web2.diagnostics ?? []).includes('serper: temporarily skipped by provider circuit breaker'),
     web2,
   );
   check(
@@ -346,7 +355,7 @@ async function main(): Promise<void> {
   check(
     "the real tools' diagnostics classify as an outage naming all three sources",
     liveClass.providerOutage &&
-      ['buildmybot-tavily', 'yelp', 'google'].every((source) => liveClass.unavailable.some((item) => item.source === source)),
+      ['serper', 'yelp', 'google'].every((source) => liveClass.unavailable.some((item) => item.source === source)),
     liveClass,
   );
   check(

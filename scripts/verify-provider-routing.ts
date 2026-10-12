@@ -33,8 +33,6 @@ const accountExclusionSource = fs.readFileSync(
 );
 
 const openRouterProviders = [
-  'openrouter-nex-n2-5-mini-free',
-  'openrouter-nex-n2-5-pro-free',
   'openrouter-nemotron-super',
   'openrouter-nemotron-3-5-lightning-free',
   'openrouter-free-router',
@@ -44,43 +42,55 @@ const byokProviders = [
   'groq-gpt-oss-120b-byok',
   'gemini-3-8-flash-byok',
 ] as const;
-// 2026-10-05 operator decision: Qwen is out of the chain (its plan is
-// exhausted). Free capacity first, then the paid DeepSeek V4 Flash 0731 split
-// between OpenRouter and Nous Portal.
-const automaticProviders = [...openRouterProviders, ...byokProviders];
-const paidProviders = ['openrouter-deepseek-v4-flash-paid', 'nous-deepseek-v4-flash-paid'] as const;
+// Free capacity first, metered QwenCloud last (operator decision 2026-10-10):
+// four OpenRouter free, then Groq/Gemini BYOK, then the metered QwenCloud
+// fallback, then the paid DeepSeek V4 Flash 0731 on OpenRouter alone (Apex no
+// longer calls the Nous Portal provider — that access is cut off).
+const automaticProviders = [...openRouterProviders, ...byokProviders, 'qwen-dashscope-byok'];
+const paidProviders = ['openrouter-deepseek-v4-flash-paid'] as const;
 const explicitPaidProviders = [...automaticProviders, ...paidProviders];
 
 const catalog = getProviderCatalog();
 const openRouterCatalog = catalog.slice(0, openRouterProviders.length);
-const byokCatalog = catalog.slice(openRouterProviders.length);
+const byokCatalog = catalog.slice(openRouterProviders.length, openRouterProviders.length + byokProviders.length);
+const qwenCatalog = catalog.slice(openRouterProviders.length + byokProviders.length);
 
 console.log('── Multi-pool automatic provider order ──');
-check('eight automatic routes exist: six OpenRouter free + two BYOK', catalog.length === 8, catalog);
+check('seven automatic routes exist: four OpenRouter free + two BYOK + metered Qwen (last)', catalog.length === 7, catalog);
 check(
   'automatic provider order is exact',
   JSON.stringify(catalog.map((provider) => provider.name)) === JSON.stringify(automaticProviders),
   catalog.map((provider) => provider.name),
 );
 check(
-  'Qwen is not in the automatic chain',
-  catalog.every((provider) => provider.name !== 'qwen-dashscope-byok'),
-  catalog.map((provider) => provider.name),
+  'Qwen is the LAST automatic route — the metered fallback after every free pool (qwen3.8-flash)',
+  qwenCatalog[0]?.name === 'qwen-dashscope-byok' && qwenCatalog[0]?.model === 'qwen3.8-flash',
+  qwenCatalog[0],
 );
 check(
-  'the next six models remain the reviewed OpenRouter free chain',
+  'the next four models remain the reviewed OpenRouter free chain',
   JSON.stringify(openRouterCatalog.map((provider) => provider.model)) ===
     JSON.stringify([...DEFAULT_OPENROUTER_MODEL_CHAIN]),
   openRouterCatalog.map((provider) => provider.model),
 );
 check(
-  'Nex N2.5 Mini Free remains the production primary of the free chain',
-  openRouterCatalog[0]?.name === 'openrouter-nex-n2-5-mini-free' &&
-    openRouterCatalog[0]?.model === 'nex-agi/nex-n2.5-mini:free',
+  'the free chain head is Nemotron 3 Super, whose :free slug is live',
+  openRouterCatalog[0]?.name === 'openrouter-nemotron-super' &&
+    openRouterCatalog[0]?.model === 'nvidia/nemotron-3-super-120b-a12b:free',
   openRouterCatalog[0],
 );
+// A rung pinned to a withdrawn `:free` slug is worse than no rung: a request is
+// reserved before every dispatch, so a guaranteed-404 rung silently spends the
+// daily allowance. OpenRouter moved both Nex slugs to paid-only on 2026-10-11
+// and they were removed. Do not re-add one without a live 200 first.
 check(
-  'all six OpenRouter automatic routes remain zero-cost and use the free credential roster',
+  'no provider route is pinned to the withdrawn nex-agi/nex-n2.5-*:free slugs',
+  catalog.every((provider) => !provider.model.includes('nex-agi/')) &&
+    DEFAULT_OPENROUTER_MODEL_CHAIN.every((model) => !model.includes('nex-agi/')),
+  catalog.map((provider) => provider.model),
+);
+check(
+  'all four OpenRouter automatic routes remain zero-cost and use the free credential roster',
   openRouterCatalog.every((provider) =>
     provider.paid !== true &&
     provider.usesFreeCredentials === true &&
@@ -124,10 +134,21 @@ check(
   catalog.every((provider) => !provider.model.includes('minimax')),
 );
 check(
-  // 2026-10-05 operator change: DeepSeek V4 Flash 0731 on two providers.
-  'paid credentials stay isolated: OpenRouter on the funded OPENROUTER_API_KEY_4, Nous on NOUS_API_KEY',
-  /OPENROUTER_PAID_KEY_ENVS = \['OPENROUTER_API_KEY_4'\]/.test(clientSource) &&
-    /NOUS_PAID_KEY_ENVS = \['NOUS_API_KEY'\]/.test(clientSource),
+  // 2026-10-09 operator change: DeepSeek V4 Flash 0731 paid continuity moved
+  // to OpenRouter only; the Nous Portal provider was removed entirely.
+  // 2026-10-09 operator change: DeepSeek V4 Flash 0731 paid continuity moved
+  // to OpenRouter only; the Nous Portal provider was removed entirely. The
+  // funded set is now an operator-configurable list over the configured
+  // OpenRouter keys (default: three env names, overridable with
+  // APEX_PAID_KEY_ENVS), and the caller filters out credentials it cannot use
+  // before dispatch. The isolation this guard protects is therefore "paid
+  // routing only ever draws on configured, usable OpenRouter credentials", not
+  // a single hardcoded env name — which is what the old assertion checked and
+  // why it went stale.
+  'paid credentials draw only on the configured OpenRouter roster',
+  /OPENROUTER_PAID_KEY_ENVS: readonly string\[\] = \([\s\S]{0,200}APEX_PAID_KEY_ENVS/.test(clientSource) &&
+    /apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS/.test(clientSource) &&
+    /const usableCredentials = configuredCredentials\(provider\)\.filter\(/.test(clientSource),
 );
 check(
   // Each OpenRouter account keeps its own :free allowance, so the funded
@@ -168,18 +189,12 @@ check(
     /const emergencyAttemptWindow = independentPlanRoute\(provider\)[\s\S]{0,80}\? null[\s\S]{0,80}: emergencyRequestCapacityWindow/.test(clientSource),
 );
 check(
-  'both paid routes are marked unrestricted from APEX token/request/spend governors',
-  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource) &&
-    /name: 'nous-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource),
+  'the paid route is marked unrestricted from APEX token/request/spend governors',
+  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,260}unrestricted: true/.test(clientSource),
 );
 check(
-  'the OpenRouter paid route is an OpenRouter route sorted by latency; the Nous route is not',
-  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,200}baseURL: 'https:\/\/openrouter\.ai\/api\/v1'[\s\S]{0,200}requestPool: 'openrouter'[\s\S]{0,700}providerRouting: \{ sort: 'latency' \}/.test(clientSource) &&
-    (() => {
-      const start = clientSource.indexOf("name: 'nous-deepseek-v4-flash-paid'");
-      const body = clientSource.slice(start, clientSource.indexOf('\n  },', start));
-      return start > -1 && !/^\s*requestPool:/m.test(body) && !/^\s*providerRouting:/m.test(body);
-    })(),
+  'the paid OpenRouter route sorts by latency',
+  /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,200}baseURL: 'https:\/\/openrouter\.ai\/api\/v1'[\s\S]{0,200}requestPool: 'openrouter'[\s\S]{0,700}providerRouting: \{ sort: 'latency' \}/.test(clientSource),
 );
 check(
   'unrestricted FlashX receives full history rather than the free-route trim',
@@ -189,7 +204,6 @@ check(
 check(
   'FlashX can use its native 131072-token completion envelope while smaller routes stay clamped',
   /name: 'openrouter-deepseek-v4-flash-paid'[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
-    /name: 'nous-deepseek-v4-flash-paid'[\s\S]{0,500}maxOutputTokens: 131_072/.test(clientSource) &&
     /maxOutputTokens: 16_384/.test(clientSource) &&
     /Math\.min\(131_072, Math\.max/.test(clientSource),
 );
@@ -253,7 +267,7 @@ check(
   getProviderOrderForRole('CEO'),
 );
 check(
-  'paid continuity model is DeepSeek V4 Flash 0731, on OpenRouter and Nous Portal',
+  'paid continuity model is DeepSeek V4 Flash 0731 on OpenRouter',
   PAID_FALLBACK_MODEL === 'deepseek/deepseek-v4-flash-0731' &&
     JSON.stringify(PAID_FALLBACK_PROVIDER_NAMES) === JSON.stringify(paidProviders) &&
     PAID_FALLBACK_PROVIDER_NAME === paidProviders[0],
@@ -283,28 +297,27 @@ check(
 );
 process.env.APEX_PAID_FALLBACK_ENABLED = 'true';
 check(
-  'APEX_PAID_FALLBACK_ENABLED=true appends both paid routes, still last',
+  'APEX_PAID_FALLBACK_ENABLED=true appends the single paid OpenRouter route, still last',
   JSON.stringify(getProviderOrderForRole('CEO')) === JSON.stringify(explicitPaidProviders),
   getProviderOrderForRole('CEO'),
 );
 {
-  // The split: each request swaps which paid provider goes first, and the
-  // other is its immediate fallback. Free/BYOK order never moves.
+  // A single OpenRouter paid route always sits last. The Nous/OpenRouter
+  // 90/10 rotation is gone with the Nous Portal provider, so the paid tail is
+  // stable on every request and the free/BYOK order never moves.
   const firstPaid: string[] = [];
   let freeOrderStable = true;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     const order = requestProviderOrder('CEO');
     freeOrderStable &&= JSON.stringify(order.slice(0, automaticProviders.length)) === JSON.stringify(automaticProviders);
     const tail = order.slice(automaticProviders.length);
-    freeOrderStable &&= tail.length === 2 && new Set(tail).size === 2 && tail.every((name) => (paidProviders as readonly string[]).includes(name));
+    freeOrderStable &&= tail.length === 1 && tail[0] === paidProviders[0];
     firstPaid.push(tail[0] ?? '');
   }
-  check('per-request order keeps every free/BYOK route first and both paid routes last', freeOrderStable);
+  check('per-request order keeps every free/BYOK route first and the paid route last', freeOrderStable);
   check(
-    'paid traffic alternates evenly: OpenRouter first on half the requests, Nous on the other half',
-    firstPaid.filter((name) => name === paidProviders[0]).length === 5 &&
-      firstPaid.filter((name) => name === paidProviders[1]).length === 5 &&
-      firstPaid.every((name, i) => i === 0 || name !== firstPaid[i - 1]),
+    'the paid route is OpenRouter on every request (no Nous rotation remains)',
+    firstPaid.every((name) => name === 'openrouter-deepseek-v4-flash-paid'),
     firstPaid,
   );
   check(
@@ -319,7 +332,7 @@ console.log('\n── Custom OpenRouter policy + BYOK continuity ──');
 const previousPolicy = process.env[OPENROUTER_MODEL_POLICY_ENV];
 process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   version: 1,
-  selectedModelIds: ['nex-agi/nex-n2.5-mini:free', 'openrouter/free'],
+  selectedModelIds: ['nvidia/nemotron-3-super-120b-a12b:free', 'openrouter/free'],
   rolePrimary: {},
   routingMode: 'manual',
   optimizationObjective: 'balanced',
@@ -327,23 +340,22 @@ process.env[OPENROUTER_MODEL_POLICY_ENV] = JSON.stringify({
   explorationRate: 0,
 });
 check(
-  'a custom FREE OpenRouter policy tries the selected policy first, then unselected default free fallbacks, then BYOK continuity',
+  'a custom FREE OpenRouter policy keeps the selected gateway and free fallbacks first, BYOK next, then metered Qwen last',
   JSON.stringify(getProviderOrderForRole('CEO')) ===
     JSON.stringify([
       FREE_POLICY_GATEWAY_NAME,
-      'openrouter-nex-n2-5-pro-free',
-      'openrouter-nemotron-super',
       'openrouter-nemotron-3-5-lightning-free',
       'openrouter-nemotron-ultra',
       ...byokProviders,
+      'qwen-dashscope-byok',
     ]),
   getProviderOrderForRole('CEO'),
 );
 check('the free-policy gateway still uses OpenRouter free credentials', providerUsesFreeCredentials(FREE_POLICY_GATEWAY_NAME));
 check(
-  'under a custom policy the default config advertises the gateway and the role\'s first selected model',
+  'under a custom policy the default config advertises the route actually attempted first (the free-policy gateway)',
   getDefaultLLMConfig('CEO').provider === FREE_POLICY_GATEWAY_NAME &&
-    getDefaultLLMConfig('CEO').model === 'nex-agi/nex-n2.5-mini:free',
+    getDefaultLLMConfig('CEO').model === 'nvidia/nemotron-3-super-120b-a12b:free',
   getDefaultLLMConfig('CEO'),
 );
 if (previousPolicy === undefined) delete process.env[OPENROUTER_MODEL_POLICY_ENV];
@@ -363,9 +375,9 @@ for (const role of [
   );
   const config = getDefaultLLMConfig(role);
   check(
-    `${role} defaults to Nex N2.5 Mini Free, the head of the free chain`,
-    config.provider === 'openrouter-nex-n2-5-mini-free' &&
-      config.model === 'nex-agi/nex-n2.5-mini:free',
+    `${role} defaults to the free chain head (nemotron-3-super:free), not metered Qwen`,
+    config.provider === 'openrouter-nemotron-super' &&
+      config.model === 'nvidia/nemotron-3-super-120b-a12b:free',
     config,
   );
 }

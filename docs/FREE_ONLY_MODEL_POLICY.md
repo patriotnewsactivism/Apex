@@ -1,19 +1,23 @@
 # APEX free-roster policy with paid continuity
 
-The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception, appended after the free/BYOK routes only when `APEX_PAID_FALLBACK_ENABLED=true`: `deepseek/deepseek-v4-flash-0731`, alternating per request between OpenRouter (`OPENROUTER_API_KEY_4`) and Nous Portal (`NOUS_API_KEY`).
+The operator-selected OpenRouter roster remains free-only. Runtime continuity has one explicit paid exception, appended after the free/BYOK routes only when `APEX_PAID_FALLBACK_ENABLED=true`: `deepseek/deepseek-v4-flash-0731` on OpenRouter (`OPENROUTER_API_KEY_4`). Apex no longer calls the Nous Portal provider.
 
-**Current note (2026-10-05, ADR-020):** Qwen is no longer routed, so this free roster is again the first thing APEX tries. GLM 5.3 FlashX is replaced by the DeepSeek split. Below, "FlashX" and "GLM continuity" mean the current paid continuity route; ADR-017's Qwen notes are historical.
+**Current note (2026-10-10):** the free roster is the first thing APEX tries — free OpenRouter, then Groq and Gemini BYOK. Metered Qwen (QwenCloud) is the LAST automatic route, used only after every free pool is spent (supersedes ADR-017's Qwen-first order). GLM 5.3 FlashX is replaced by the DeepSeek paid continuity route on OpenRouter alone (Nous Portal removed). Below, "FlashX" and "GLM continuity" mean the current paid continuity route; ADR-017's Qwen notes are historical.
 
 ## Production model order
 
 Automatic routing must use only OpenRouter model IDs ending in `:free`, in this order:
 
-1. `nex-agi/nex-n2.5-mini:free` — primary agentic/coding model.
-2. `nex-agi/nex-n2.5-pro:free` — harder reasoning/coding fallback.
-3. `nvidia/nemotron-3-super-120b-a12b:free` — multi-agent/tool fallback.
-4. `nvidia/nemotron-3.5-lightning:free` — high-throughput fallback.
-5. `openrouter/free` — emergency free-model router, only with tool requirements preserved.
-6. `nvidia/nemotron-3-ultra-550b-a55b:free` — last-resort deep/long-context fallback while its availability is degraded.
+1. `nvidia/nemotron-3-super-120b-a12b:free` — primary agentic/coding model.
+2. `nvidia/nemotron-3.5-lightning:free` — high-throughput fallback.
+3. `openrouter/free` — emergency free-model router, only with tool requirements preserved.
+4. `nvidia/nemotron-3-ultra-550b-a55b:free` — last-resort deep/long-context fallback while its availability is degraded.
+
+`nex-agi/nex-n2.5-mini:free` and `nex-agi/nex-n2.5-pro:free` were removed from
+the roster on 2026-10-11 after OpenRouter moved both to paid-only: the free
+slugs 404, and because a request is reserved before every dispatch those two
+rungs at the head of the chain spent roughly half the daily OpenRouter allowance
+without ever serving a call.
 
 MiniMax M3 Free is not in the production chain until its current free endpoint/tool behavior is directly re-verified. DeepSeek V4 Flash 0731 is retired. Arbitrary paid models cannot be persisted into the operator roster; `z-ai/glm-5.3-flashx` is the sole automatic paid runtime continuity exception.
 
@@ -45,8 +49,8 @@ Credentials are tried least-used-account first, using OpenRouter's resolved acco
 - APEX does not apply daily-dollar, free-request, token, emergency-request, model-specific dispatch-delay, forced-reasoning, or free-route history-trimming limits to FlashX.
 - Provider/account limits, billing, retry-after behavior, circuit breakers, cooldowns, request timeouts, authentication, tool authorization, approval gates, and irreversible-action governance remain authoritative.
 - Free-account rotation and free/BYOK capacity are attempted before FlashX.
-- Frontend labels, backend defaults, agent metadata, tests, environment examples, and operator documentation must report the same free-roster + GLM continuity chain, understood as sitting behind the separately governed Qwen primary route (ADR-017).
+- Frontend labels, backend defaults, agent metadata, tests, environment examples, and operator documentation must report the same free-roster + GLM continuity chain, understood as running ahead of the separately governed metered Qwen route, which is last (supersedes ADR-017).
 
 ## Verification gate
 
-Before merge/deploy, CI must prove that the selectable persisted provider catalog remains free-only, Nex N2.5 Mini Free remains first *within the free chain* (Qwen precedes the whole free chain per ADR-017), GLM FlashX is the sole paid *continuity* (unrestricted, last-resort) exception and is last, APEX capacity governors do not veto FlashX, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot persist an arbitrary paid model.
+Before merge/deploy, CI must prove that the selectable persisted provider catalog remains free-only, Nex N2.5 Mini Free remains first *within the free chain* (the free chain precedes metered Qwen, which is last, per the 2026-10-10 decision), GLM FlashX is the sole paid *continuity* (unrestricted, last-resort) exception and is last, APEX capacity governors do not veto FlashX, all configured free credentials participate in least-used-account rotation, and model-policy UI/API cannot persist an arbitrary paid model.

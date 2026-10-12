@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
   authorizeCalWebhook,
@@ -47,25 +47,43 @@ export function createCalendarPublicRouter(): Router {
     }
   });
 
-  router.get('/google/callback', async (req, res) => {
-    const secret = process.env.APEX_ADMIN_TOKEN?.trim();
-    const code = typeof req.query.code === 'string' ? req.query.code : '';
-    const state = typeof req.query.state === 'string' ? req.query.state : '';
-    if (!secret || !verifyOauthState(state, secret)) return res.status(401).type('text').send('Invalid OAuth state');
-    if (!code) return res.status(400).type('text').send('Missing authorization code');
-    try {
-      const saved = await saveGoogleCalendarConnection(code);
-      const who = saved.email ? ` as ${saved.email}` : '';
-      return res.type('html').send(
-        `<!doctype html><title>Google Calendar connected</title><p>Google Calendar is connected to APEX${who}. Return to Settings.</p>`,
-      );
-    } catch (err) {
-      console.error('[calendar] Google OAuth callback failed:', err instanceof Error ? err.message : err);
-      return res.status(502).type('text').send('Google authorization failed');
-    }
-  });
+  router.get('/google/callback', handleGoogleCalendarOauthCallback);
 
   return router;
+}
+
+/**
+ * Google OAuth browser redirect handler.
+ *
+ * Google matches the redirect URI against the client registration EXACTLY, and
+ * the Google client for this deployment is registered with
+ * `https://apexwork.org/auth/callback` (no `/api/calendar` prefix). The root
+ * path is therefore served by index.ts, mounted ahead of the dashboard static
+ * fallback that would otherwise answer a browser navigation with index.html.
+ * Both routes call this one implementation so they cannot drift apart.
+ */
+export async function handleGoogleCalendarOauthCallback(req: Request, res: Response): Promise<void> {
+  const secret = process.env.APEX_ADMIN_TOKEN?.trim();
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  if (!secret || !verifyOauthState(state, secret)) {
+    res.status(401).type('text').send('Invalid OAuth state');
+    return;
+  }
+  if (!code) {
+    res.status(400).type('text').send('Missing authorization code');
+    return;
+  }
+  try {
+    const saved = await saveGoogleCalendarConnection(code);
+    const who = saved.email ? ` as ${saved.email}` : '';
+    res.type('html').send(
+      `<!doctype html><title>Google Calendar connected</title><p>Google Calendar is connected to APEX${who}. Return to Settings.</p>`,
+    );
+  } catch (err) {
+    console.error('[calendar] Google OAuth callback failed:', err instanceof Error ? err.message : err);
+    res.status(502).type('text').send('Google authorization failed');
+  }
 }
 
 const settingsSchema = z.object({

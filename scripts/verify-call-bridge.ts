@@ -54,6 +54,17 @@ async function main(): Promise<void> {
   check('POST /ai-first exists', /router\.post\('\/ai-first', async/.test(route));
   check('POST /:id/join exists', /router\.post\('\/:id\/join', async/.test(route));
   check(
+    'POST /:id/dtmf exists and only forwards keypad digits to the far end',
+    /router\.post\('\/:id\/dtmf', async/.test(route) &&
+      /\/\^\[0-9A-Da-d\*#,\]/.test(route) &&
+      /telnyxCommand\(targetCallControlId, 'send_dtmf'/.test(route),
+  );
+  check(
+    'POST /:id/operator-mute exists and mutes the OPERATOR leg, not the AI leg',
+    /router\.post\('\/:id\/operator-mute', async/.test(route) &&
+      /session\.operatorCallControlId,\s*body\.muted \? 'mute' : 'unmute'/.test(route),
+  );
+  check(
     'a supervisor leg cannot end the conference',
     /end_conference_on_exit: params\.supervisorRole \? false : params\.endConferenceOnExit/.test(route),
   );
@@ -98,25 +109,106 @@ async function main(): Promise<void> {
   const startBody = route.slice(startIdx, startEndIdx);
   check(
     "the operator's leg sets end_conference_on_exit: true",
-    /dialBridgeLeg\(\{ to: operatorNumber, role: 'operator', sessionId: id, endConferenceOnExit: true \}\)/.test(startBody),
+    /dialBridgeLeg\(\{\s*to: operatorNumber,\s*role: 'operator',\s*sessionId: id,\s*endConferenceOnExit: true,?/.test(startBody),
   );
 
   const webhookAnsweredSection = webhookBody + route.slice(webhookIdx + 400, route.indexOf("call.hangup'", webhookIdx) + 2000);
   check(
     "the customer's leg (dialed from the webhook once the operator answers) also sets end_conference_on_exit: true",
-    /dialBridgeLeg\(\{\s*to: session\.customerNumber,\s*role: 'customer',\s*sessionId: session\.id,\s*endConferenceOnExit: true,?\s*\}\)/.test(webhookAnsweredSection),
+    // Tolerate the fields that follow it (operatorInitiated). The earlier
+    // version of this guard demanded `}\)` immediately after
+    // end_conference_on_exit and had been failing since that dial grew a
+    // field — a red guard that guards nothing is worse than no guard.
+    /dialBridgeLeg\(\{\s*to: session\.customerNumber,\s*role: 'customer',\s*sessionId: session\.id,\s*endConferenceOnExit: true,/.test(webhookAnsweredSection),
   );
 
   const bringInAiIdx = route.indexOf("router.post('/:id/bring-in-ai'");
   const bringInAiEndIdx = route.indexOf("router.post('/:id/end'");
   const bringInAiBody = route.slice(bringInAiIdx, bringInAiEndIdx);
+  const aiLegIdx = route.indexOf('async function dialAiLegMuted');
+  const aiLegBody = route.slice(aiLegIdx, route.indexOf('const assistantIdByLine', aiLegIdx));
   check(
     "the AI's leg sets end_conference_on_exit: false — the AI must NEVER be able to end a live customer call by leaving",
-    /dialBridgeLeg\(\{ to: frontDeskNumber, role: 'ai', sessionId: session\.id, endConferenceOnExit: false \}\)/.test(bringInAiBody),
+    /role: 'ai',\s*sessionId: session\.id,\s*endConferenceOnExit: false,/.test(aiLegBody),
   );
   check(
     'bringing the AI in is only allowed once the call is active (operator + customer already connected)',
     /if \(session\.status !== 'active'\) \{\s*res\.status\(409\)/.test(bringInAiBody),
+  );
+
+  // ── The takeover is a conference mute, not a third-party attach ─────────────
+  // The property: the AI reaches the bridge as its OWN conference leg, muted,
+  // and is handed the call by unmuting it. The rejected alternative —
+  // ai_assistant_start on the customer's already-conferenced leg — returns 200
+  // and then ends its own conversation about a second later (production session
+  // 89b6c4c7: conversation created 16:16:19.17, call.conversation.ended
+  // 16:16:20.19, zero messages on GET /v2/ai/conversations/{id}/messages), so
+  // the operator hears the customer and no AI at all.
+  check('POST /:id/takeover exists (hand the AI the call)', /router\.post\('\/:id\/takeover', async/.test(route));
+  check('POST /:id/hand-back exists (take the call back)', /router\.post\('\/:id\/hand-back', async/.test(route));
+  check(
+    "the AI's leg joins the conference MUTED unless the operator is taking over in the same breath",
+    /mute: !unmuteNow,/.test(aiLegBody),
+  );
+  check(
+    'dialBridgeLeg forwards mute into conference_config',
+    /\.\.\.\(params\.mute \? \{ mute: true \} : \{\}\)/.test(route),
+  );
+  check(
+    "the AI's leg never starts a conference of its own",
+    /params\.role === 'ai' \? \{ start_conference_on_enter: false \}/.test(route),
+  );
+  check(
+    'takeover unmutes through the conference API, addressing one participant by call_control_id',
+    /conferences\/\$\{encodeURIComponent\(conferenceName\)\}\/actions\/\$\{action\}/.test(route) &&
+      /call_control_ids: \[callControlId\]/.test(route) &&
+      /const action = muted \? 'mute' : 'unmute'/.test(route),
+  );
+  check(
+    'the conference-leg transport is the production default (the legacy attach path is rollback-only)',
+    /export function aiLegTransport\(\): 'leg' \| 'attach' \{\s*return process\.env\.APEX_BRIDGE_AI_TRANSPORT === 'attach' \? 'attach' : 'leg';/.test(route),
+  );
+  check(
+    'a dial the API accepted never claims the AI joined — the leg waits for the conference event',
+    aiLegBody.indexOf('status: \'ai_dialing\'') !== -1 && !/'ai_joined'/.test(aiLegBody),
+  );
+  check(
+    'the AI-join signal comes from conference.participant.joined, not call.answered',
+    /conference\.participant\.joined/.test(route) &&
+      /eventType\.startsWith\('conference\.participant\.'\)/.test(route) &&
+      /if \(aiLegTransport\(\) === 'attach'\) \{\s*\n\s*await db\.update\(callBridgeSessions\)\.set\(\{ status: 'ai_joined'/.test(route),
+  );
+
+  // ── The operator dictates the call, the line, and the agent ────────────────
+  check(
+    'POST /start accepts the caller ID, the AI line, the assistant and the call topic',
+    /fromNumber\?: string;/.test(startBody) &&
+      /assistantLine\?: string;/.test(startBody) &&
+      /assistantId\?: string;/.test(startBody) &&
+      /topic\?: string;/.test(startBody),
+  );
+  check(
+    'an operator-chosen caller ID is refused unless APEX already approved it',
+    /!approvedCallerIdNumbers\(\)\.includes\(requestedFrom\)/.test(startBody),
+  );
+  check(
+    'an operator-chosen AI line is refused unless APEX already approved it',
+    /!approvedAssistantLines\(\)\.includes\(requestedLine\)/.test(startBody),
+  );
+  check(
+    'GET /dial-settings answers with the approved AI lines, so the panel offers a choice instead of a typo trap',
+    /res\.json\(await readDialSettingsView\(\)\)/.test(route) &&
+      /approvedAiLines: approvedAssistantLines\(\)/.test(route),
+  );
+  check(
+    'the listening AI leg is dialed from the operator-answered handler, once the conference exists',
+    !/dialAiLegMuted\(/.test(startBody) &&
+      /state\.role === 'operator'[\s\S]{0,2500}aiAutoJoin && aiLegTransport\(\) === 'leg' && !session\.aiCallControlId/.test(route),
+  );
+  check(
+    'a per-session caller ID reaches every leg it should (operator and AI)',
+    /fromNumber: requestedFrom,[\s\S]{0,200}operatorInitiated: true,/.test(startBody) &&
+      /fromNumber: session\.fromNumber \?\? null,/.test(aiLegBody),
   );
 
   // ── The customer is dialed only after the operator answers, not eagerly ────
@@ -159,10 +251,48 @@ async function main(): Promise<void> {
   );
   check('client.ts bootstrap DDL adds assistant_greeting for upgraded databases', /ADD COLUMN IF NOT EXISTS assistant_greeting text/.test(client));
   check('client.ts bootstrap DDL adds assistant_instructions for upgraded databases', /ADD COLUMN IF NOT EXISTS assistant_instructions text/.test(client));
+  // The mute state and the operator's per-call choices must survive a
+  // redeploy on an existing database, or the dashboard shows a listening AI as
+  // one that is talking (and vice versa) after every deploy.
+  for (const [column, pattern] of [
+    ['ai_muted', /ADD COLUMN IF NOT EXISTS ai_muted boolean NOT NULL DEFAULT true/],
+    ['ai_auto_join', /ADD COLUMN IF NOT EXISTS ai_auto_join boolean NOT NULL DEFAULT false/],
+    ['assistant_id', /ADD COLUMN IF NOT EXISTS assistant_id text/],
+    ['assistant_line', /ADD COLUMN IF NOT EXISTS assistant_line text/],
+    ['assistant_topic', /ADD COLUMN IF NOT EXISTS assistant_topic text/],
+    ['from_number', /ADD COLUMN IF NOT EXISTS from_number text/],
+    ['ai_takeover_at', /ADD COLUMN IF NOT EXISTS ai_takeover_at timestamptz/],
+  ] as const) {
+    check(`client.ts bootstrap DDL adds call_bridge_sessions.${column}`, pattern.test(client));
+    check(`schema.ts declares call_bridge_sessions.${column}`, new RegExp(`${column.replace(/_(.)/g, (_, c) => c.toUpperCase())}`).test(schema));
+  }
+  check('the AI is muted by default in the schema', /aiMuted: boolean\('ai_muted'\)\.notNull\(\)\.default\(true\)/.test(schema));
 
   // ── Frontend + env docs ─────────────────────────────────────────────────────
   const apiClient = read('packages/dashboard/src/lib/api.ts');
-  check('lib/api.ts exposes callBridge.start/status/bringInAi/end', /callBridge: \{/.test(apiClient) && /bringInAi: \(id: string\)/.test(apiClient));
+  check(
+    'lib/api.ts exposes callBridge.start/status/bringInAi/takeover/handBack/end',
+    /callBridge: \{/.test(apiClient) &&
+      /bringInAi: \(id: string, unmute = false\)/.test(apiClient) &&
+      /takeover: \(id: string\)/.test(apiClient) &&
+      /handBack: \(id: string\)/.test(apiClient),
+  );
+  const panel = read('packages/dashboard/src/components/CallBridgePanel.tsx');
+  check(
+    'the panel exposes the takeover button, the take-back button and the silent pre-join choice',
+    /Take over — let the AI talk/.test(panel) &&
+      /Take back — mute the AI/.test(panel) &&
+      /autoJoinAi/.test(panel) &&
+      /What this call is about/.test(panel),
+  );
+  check(
+    'the panel renders the approved AI lines as a pick list wired to the AI-line field',
+    /approvedAiLines\.map\(\(line\)/.test(panel) && /setAssistantLine\(e\.target\.value\)/.test(panel),
+  );
+  check(
+    'lib/api.ts types the approved AI lines on DialSettings',
+    /approvedAiLines: string\[\];/.test(apiClient),
+  );
   const salesOpsPanel = read('packages/dashboard/src/components/SalesOperationsPanel.tsx');
   check(
     'CallBridgePanel is imported and rendered on the Calls sub-tab',
@@ -176,10 +306,20 @@ async function main(): Promise<void> {
     '.env.example documents the approved APEX outbound caller ID',
     /APEX_FRONT_DESK_NUMBER=\+18329757665/.test(env),
   );
+  check(
+    '.env.example documents the AI takeover transport, the extra caller IDs and the extra AI lines',
+    /APEX_BRIDGE_AI_TRANSPORT=/.test(env) &&
+      /APEX_BRIDGE_CALLER_ID_NUMBERS=/.test(env) &&
+      /APEX_BRIDGE_AI_LINES=/.test(env) &&
+      /APEX_BRIDGE_AI_ASSISTANT_ID=/.test(env),
+  );
 
   // ── Approved caller ID guard ───────────────────────────────────────────────
   check('call-bridge exports the approved APEX outbound number', /APPROVED_APEX_OUTBOUND_NUMBER = '\+18329757665'/.test(route));
-  check('dialBridgeLeg uses configuredApexOutboundNumber for the from number', /const from = configuredApexOutboundNumber\(\)/.test(route));
+  check(
+    'dialBridgeLeg falls back to configuredApexOutboundNumber when the operator picked no caller ID',
+    /const from = params\.fromNumber \?\? configuredApexOutboundNumber\(\)/.test(route),
+  );
   check(
     'dialBridgeLeg config error names the exact required APEX_FRONT_DESK_NUMBER',
     /APEX_FRONT_DESK_NUMBER=\$\{APPROVED_APEX_OUTBOUND_NUMBER\}/.test(route),
@@ -204,7 +344,87 @@ async function main(): Promise<void> {
   const mod = (await import(
     pathToFileURL(path.join(root, 'packages/api-server/src/routes/call-bridge.ts')).href
   )) as typeof import('../packages/api-server/src/routes/call-bridge.js');
-  const { encodeClientState, decodeClientState, verifyCallBridgeKey, dialBridgeLeg, configuredApexOutboundNumber } = mod;
+  const {
+    encodeClientState,
+    decodeClientState,
+    verifyCallBridgeKey,
+    dialBridgeLeg,
+    configuredApexOutboundNumber,
+    bridgeTakeoverBriefing,
+    assistantArmVariablesForBridge,
+    aiLegTransport,
+    approvedAssistantLines,
+    APPROVED_APEX_OUTBOUND_NUMBER,
+    NEWSROOM_BRIDGE_NUMBER,
+  } = mod;
+
+  // ── The AI line list: the operator picks a line, the API refuses the rest ──
+  const savedAiLines = process.env.APEX_BRIDGE_AI_LINES;
+  const savedAiFrontDesk = process.env.APEX_FRONT_DESK_NUMBER;
+  try {
+    delete process.env.APEX_BRIDGE_AI_LINES;
+    delete process.env.APEX_FRONT_DESK_NUMBER;
+    check(
+      'with nothing configured, the APEX outbound (Don Voice / sales) line is already an approved AI line',
+      approvedAssistantLines().includes(APPROVED_APEX_OUTBOUND_NUMBER),
+    );
+    process.env.APEX_BRIDGE_AI_LINES = ' +1 (555) 010-9999 , ';
+    check(
+      'a configured extra AI line is normalized in, and only the built-ins plus the extras are approved',
+      approvedAssistantLines().includes('+15550109999') && approvedAssistantLines().length === 2,
+    );
+    check(
+      'the newsroom bridge line is not silently approved as an AI line',
+      !approvedAssistantLines().includes(NEWSROOM_BRIDGE_NUMBER),
+    );
+  } finally {
+    if (savedAiLines === undefined) delete process.env.APEX_BRIDGE_AI_LINES;
+    else process.env.APEX_BRIDGE_AI_LINES = savedAiLines;
+    if (savedAiFrontDesk === undefined) delete process.env.APEX_FRONT_DESK_NUMBER;
+    else process.env.APEX_FRONT_DESK_NUMBER = savedAiFrontDesk;
+  }
+
+  // Executed, not pattern-matched: the transport default is the whole point.
+  const priorTransport = process.env.APEX_BRIDGE_AI_TRANSPORT;
+  try {
+    delete process.env.APEX_BRIDGE_AI_TRANSPORT;
+    check('with nothing configured, the AI takeover uses the conference leg', aiLegTransport() === 'leg');
+    process.env.APEX_BRIDGE_AI_TRANSPORT = 'attach';
+    check('APEX_BRIDGE_AI_TRANSPORT=attach still selects the legacy path (rollback stays available)', aiLegTransport() === 'attach');
+  } finally {
+    if (priorTransport === undefined) delete process.env.APEX_BRIDGE_AI_TRANSPORT;
+    else process.env.APEX_BRIDGE_AI_TRANSPORT = priorTransport;
+  }
+
+  // ── The AI's brief and the arming map: run them, don't pattern-match ───────
+  const bridgeState = {
+    id: 'sess-brief',
+    customerNumber: '+183****4970',
+    assistantTopic: 'Ask who authorised the June road closure.',
+  } as unknown as Parameters<typeof assistantArmVariablesForBridge>[0];
+  const brief = bridgeTakeoverBriefing(bridgeState.assistantTopic);
+  check(
+    'the brief tells the inbound assistant this is not a tip call',
+    /NOT an inbound tip call/.test(brief) && /do not open with "How can I help you\?"/.test(brief),
+  );
+  check("the brief forbids the assistant from hanging up the operator's call", /do not use the Hangup tool/.test(brief));
+  check("the brief carries the operator's topic verbatim", brief.includes('Ask who authorised the June road closure.'));
+  check(
+    'a topic-free call still gets a usable brief (no empty instruction)',
+    /Follow what has actually been said on the line\./.test(bridgeTakeoverBriefing('   ')),
+  );
+  const armed = assistantArmVariablesForBridge(bridgeState, {
+    dynamicVariables: { office: 'Harris County Records', question_list: 'Q1; Q2' },
+  });
+  check(
+    'arming writes the briefing and the campaign office onto the assistant',
+    armed['caller_context'] === brief && armed['office'] === 'Harris County Records',
+  );
+  check("the operator's topic wins over the campaign fact and is never dropped", armed['fact'] === bridgeState.assistantTopic);
+  check(
+    'arming replaces the whole map, so no stale script key survives unset',
+    Object.keys(armed).length === 7 && armed['question_list'] === 'Q1; Q2',
+  );
 
   const state = { sessionId: 'sess-123', role: 'operator' as const };
   const encoded = encodeClientState(state);
