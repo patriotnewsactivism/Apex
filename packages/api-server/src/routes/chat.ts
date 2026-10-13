@@ -562,6 +562,30 @@ async function writeCopilotAudit(
   });
 }
 
+/**
+ * One line per chat turn, so "the chat is slow" becomes a number to act on.
+ * Reports the snapshot cost and each LLM round trip separately, because those
+ * three causes need different fixes: a slow snapshot is a query problem, a slow
+ * first round trip is route selection, and extra round trips are tool use.
+ */
+function logChatTurn(input: {
+  turnStartedAt: number;
+  snapshotMs: number;
+  llmTurns: Array<{ ms: number; provider?: string; tools: number }>;
+  replyChars?: number;
+  outcome?: string;
+}): void {
+  const totalMs = Date.now() - input.turnStartedAt;
+  const llmMs = input.llmTurns.reduce((sum, t) => sum + t.ms, 0);
+  const providers = [...new Set(input.llmTurns.map((t) => t.provider).filter(Boolean))].join(',') || 'n/a';
+  console.log(
+    `[chat-turn] total=${totalMs}ms snapshot=${input.snapshotMs}ms llm=${llmMs}ms ` +
+      `roundTrips=${input.llmTurns.length} providers=${providers} ` +
+      `perCall=[${input.llmTurns.map((t) => `${t.ms}ms/${t.tools}tool`).join(' ')}] ` +
+      `replyChars=${input.replyChars ?? 0}${input.outcome ? ` outcome=${input.outcome}` : ''}`,
+  );
+}
+
 export function createChatRouter(ceo: ApexCEO) {
   const router = Router();
   const llm = createLLMClient(getDefaultLLMConfig('CEO'));
@@ -634,8 +658,17 @@ export function createChatRouter(ceo: ApexCEO) {
     const copilotEnabled = copilotRequested && isCopilotFeatureEnabled();
     if (copilotEnabled && !(await requireCopilotOperatorSession(req, res))) return;
 
+    // Declared outside the try so the failure path can report where the time
+    // went too — a turn that threw after 12 seconds is exactly the case worth
+    // seeing.
+    const turnStartedAt = Date.now();
+    let snapshotMs = 0;
+    const llmTurns: Array<{ ms: number; provider?: string; tools: number }> = [];
+
     try {
+      const snapshotStartedAt = Date.now();
       const snapshot = await buildLiveSnapshot();
+      snapshotMs = Date.now() - snapshotStartedAt;
       const screenContext = page
         ? `\n\nDon's current screen: the "${page}" page. When he says "this", "that", or "it", he usually means something on that screen.\n`
         : '';
@@ -659,6 +692,7 @@ export function createChatRouter(ceo: ApexCEO) {
         // background agent from front-loading a day's budget. It still can't
         // spend past the hard daily caps or the per-minute provider rate
         // limit; see LLMExecutionContext.interactive.
+        const llmStartedAt = Date.now();
         const response = await llm.complete(
           llmHistory,
           copilotEnabled ? [...COPILOT_READ_ONLY_CHAT_TOOLS, COPILOT_TOOL] : CHAT_TOOLS,
@@ -668,9 +702,15 @@ export function createChatRouter(ceo: ApexCEO) {
           conversationId,
           },
         );
+        llmTurns.push({
+          ms: Date.now() - llmStartedAt,
+          provider: (response as { provider?: string }).provider,
+          tools: response.toolCalls.length,
+        });
         llmHistory.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
 
         if (response.toolCalls.length === 0) {
+          logChatTurn({ turnStartedAt, snapshotMs, llmTurns, replyChars: (response.content ?? '').length });
           return res.json({
             reply: response.content || "I don't have anything more to add on that.",
             goalCreated,
@@ -730,6 +770,7 @@ export function createChatRouter(ceo: ApexCEO) {
         }
       }
 
+      logChatTurn({ turnStartedAt, snapshotMs, llmTurns, outcome: 'tool-loop-exhausted' });
       return res.json({
         reply: 'That took a few lookups — deploying it as a goal so the swarm can dig in properly.',
         goalCreated,
@@ -737,6 +778,7 @@ export function createChatRouter(ceo: ApexCEO) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logChatTurn({ turnStartedAt, snapshotMs, llmTurns, outcome: 'threw' });
       // A genuine capacity pause here means the interactive bypass above still
       // wasn't enough — the HARD daily cap (not just pacing) is actually
       // reached, or every provider is otherwise unavailable. That is a normal,
