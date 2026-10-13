@@ -242,6 +242,10 @@ function desiredTools(toolSecret: string) {
 /**
  * The name this agent speaks as. One name per agent; the protocol is shared.
  *
+ * Daniel is the Cartesia outbound agent's name until further notice (the
+ * operator calls him Dan). A switch to another voice — Vapi, say — is a name
+ * change here or in the environment, not a new constitution.
+ *
  * Read per call rather than at module load so a process that sets the variable
  * after import (tests, the reconciler CLI) still gets the right name.
  */
@@ -249,7 +253,7 @@ function salesAgentSpokenName(): string {
   return (
     process.env.CARTESIA_SALES_SPOKEN_NAME?.trim() ||
     process.env.SALES_AGENT_NAME?.trim() ||
-    'Dan'
+    'Daniel'
   );
 }
 
