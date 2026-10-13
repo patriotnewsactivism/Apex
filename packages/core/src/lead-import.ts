@@ -2,6 +2,14 @@
 // module only parses, maps, and decides new vs update vs skip.
 
 export interface ImportedLead {
+  /**
+   * The researched-lead id this row came from, present when the file was
+   * produced by our own CSV export. Matching on it makes an
+   * export -> enrich -> import round trip exact. Without it the planner can
+   * only guess identity from email/website, and the website heuristic cannot
+   * tell two leads that share a domain apart — it silently collapses them.
+   */
+  leadId?: string | null;
   companyName: string;
   website: string | null;
   industry: string | null;
@@ -51,6 +59,9 @@ export interface ImportPlan {
 }
 
 const FIELD_ALIASES: Record<keyof Omit<ImportedLead, 'enrichment' | 'fitReason' | 'source'>, string[]> = {
+  // Deliberately NOT a bare 'id': a third-party file's own id column must not
+  // be mistaken for one of ours. Only an alias that names this system matches.
+  leadId: ['lead id', 'apex lead id', 'apex id'],
   companyName: ['company', 'company name', 'organization', 'account name', 'business', 'business name', 'account'],
   website: ['website', 'domain', 'company domain', 'url', 'company website'],
   industry: ['industry', 'vertical'],
@@ -182,6 +193,7 @@ export function mapImportRows(
     const contactEmail = normalizeImportEmail(take(FIELD_ALIASES.contactEmail));
     const contactPhone = normalizeImportPhone(take(FIELD_ALIASES.contactPhone));
     const lead: ImportedLead = {
+      leadId: take(FIELD_ALIASES.leadId) || null,
       companyName,
       website: normalizeWebsite(take(FIELD_ALIASES.website)),
       industry: take(FIELD_ALIASES.industry) || null,
@@ -235,17 +247,21 @@ export function planLeadImport(input: {
   overwrite: boolean;
   parseSkips?: Array<{ reason: string; lead: ImportedLead | null }>;
 }): ImportPlan {
+  const byId = new Map<string, ExistingLeadSnapshot>();
   const byEmail = new Map<string, ExistingLeadSnapshot>();
   const bySite = new Map<string, ExistingLeadSnapshot>();
   for (const row of input.existing) {
     const email = normalizeImportEmail(row.contactEmail);
     const site = normalizeWebsite(row.website);
+    if (row.id) byId.set(row.id, row);
     if (email && !byEmail.has(email)) byEmail.set(email, row);
     if (site && !bySite.has(site)) bySite.set(site, row);
   }
 
+  const seenId = new Set<string>();
   const seenEmail = new Set<string>();
   const seenSite = new Set<string>();
+  const claimedIds = new Set<string>();
   const rows: ImportPlanRow[] = [];
 
   for (const skip of input.parseSkips ?? []) {
@@ -256,18 +272,60 @@ export function planLeadImport(input: {
   for (const lead of input.leads) {
     const email = lead.contactEmail;
     const site = lead.website;
-    if ((email && seenEmail.has(email)) || (site && !email && seenSite.has(site))) {
-      rows.push({ action: 'skip', reason: 'duplicate inside the file', lead });
-      continue;
-    }
-    if (email) seenEmail.add(email);
-    if (site) seenSite.add(site);
 
-    const existing = (email && byEmail.get(email)) || (site && bySite.get(site)) || undefined;
+    // Identity, strongest key first. An id from our own export is exact; email
+    // and website are heuristics, and the website one cannot tell two leads on
+    // the same domain apart — which is exactly what the id is for.
+    const existing =
+      (lead.leadId && byId.get(lead.leadId)) ||
+      (email && byEmail.get(email)) ||
+      (site && bySite.get(site)) ||
+      undefined;
+
+    // The within-batch guard belongs ONLY on rows that would create a lead. Its
+    // job is to stop one file inserting two rows for the same business. A row
+    // that matches a lead already on file is an update request, and dropping it
+    // here silently loses the very enrichment the caller exported it to obtain:
+    // a phone-only book shares domains heavily, so this used to discard ~4.5%
+    // of a real round trip (measured 2026-10-12: 9 of 200 rows).
     if (!existing) {
+      if ((email && seenEmail.has(email)) || (site && !email && seenSite.has(site))) {
+        rows.push({ action: 'skip', reason: 'duplicate inside the file', lead });
+        continue;
+      }
+      if (email) seenEmail.add(email);
+      if (site) seenSite.add(site);
       rows.push({ action: 'new', reason: 'no matching email or website', lead });
       continue;
     }
+
+    // A repeated id inside one file is a genuine duplicate — ids are unique at
+    // the source, so this can only fire on a real repeat, never on two distinct
+    // leads that happen to share a domain.
+    if (lead.leadId && seenId.has(lead.leadId)) {
+      rows.push({ action: 'skip', reason: 'duplicate inside the file', existingId: existing.id, lead });
+      continue;
+    }
+    if (lead.leadId) seenId.add(lead.leadId);
+    if (email) seenEmail.add(email);
+    if (site) seenSite.add(site);
+
+    // Two rows that resolve to the SAME lead on file cannot both be applied —
+    // the second would overwrite the first (last write wins) and the lead the
+    // caller actually meant to enrich would never be touched. With a Lead ID
+    // this can never fire, because ids are unique. Without one, the website
+    // heuristic funnels a whole shared domain onto a single lead, so report the
+    // remainder rather than quietly discarding them.
+    if (claimedIds.has(existing.id)) {
+      rows.push({
+        action: 'skip',
+        reason: 'matches a lead already claimed earlier in this file',
+        existingId: existing.id,
+        lead,
+      });
+      continue;
+    }
+    claimedIds.add(existing.id);
 
     const merged: ImportedLead = {
       ...lead,
