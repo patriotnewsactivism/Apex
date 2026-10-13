@@ -1129,11 +1129,35 @@ export const api = {
       return apiFetch<{ leads: ResearchedLead[] }>(`/leads${query ? `?${query}` : ''}`).then((r) => r.leads);
     },
     stats: () => apiFetch<LeadStats>('/leads/stats'),
-    exportCsv: () => {
+    // Full-list export. The server caps one response at 10,000 rows
+    // (EXPORT_MAX_LIMIT is generous, but a single unbounded response would
+    // blow the Node heap), so page through with offset until every row is
+    // fetched and stitch one CSV. Only the repeated header line of pages
+    // after the first is stripped, so quoted cells with embedded newlines
+    // survive intact.
+    exportCsv: async () => {
       const token = localStorage.getItem('apex_token');
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      return fetch(`${API}/leads/export`, { headers }).then((r) => r.blob());
+      const PAGE = 10_000;
+      const chunks: string[] = [];
+      let offset = 0;
+      let total = 0;
+      for (;;) {
+        const res = await fetch(`${API}/leads/export?limit=${PAGE}&offset=${offset}`, { headers });
+        if (!res.ok) throw new Error(`Lead export failed (HTTP ${res.status})`);
+        const text = await res.text();
+        if (!text) break;
+        const eol = text.includes('\r\n') ? '\r\n' : '\n';
+        const headerEnd = text.indexOf(eol);
+        chunks.push(offset === 0 ? text : (headerEnd >= 0 ? text.slice(headerEnd + eol.length) : ''));
+        const rows = Number(res.headers.get('X-Export-Rows') ?? '0');
+        total = Number(res.headers.get('X-Total-Count') ?? String(total)) || total;
+        offset += rows || PAGE;
+        if (rows < PAGE || (total > 0 && offset >= total)) break;
+      }
+      const csv = chunks.filter(Boolean).join('\r\n') + '\r\n';
+      return new Blob([csv], { type: 'text/csv' });
     },
     updateStatus: (id: string, status: string) =>
       apiFetch(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
