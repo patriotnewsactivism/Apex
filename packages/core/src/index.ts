@@ -68,6 +68,7 @@ export { getTurnEconomySnapshot } from './turn-economy.js';
 
 export * from './specialists/index.js';
 export * from './crm/index.js';
+export * from './decision-maker.js';
 export {
   getCalendarBookingService,
   calendarBookingConfigured,
