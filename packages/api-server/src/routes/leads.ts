@@ -286,11 +286,17 @@ export function createLeadsRouter(): Router {
     };
 
     const headers = [
+      // Lead ID first: it is what makes the return trip exact. Without it the
+      // importer can only guess identity from email/website, and every lead
+      // that shares a domain with another (the norm in a phone-only book) is
+      // silently collapsed on re-import.
+      'Lead ID',
       'Company Name', 'Website', 'Industry', 'City', 'Decision Maker', 'Email', 'Phone', 'Contact Source', 'Contact Research Status', 'Status',
       'Fit Reason', 'Outreach Angle', 'Enrichment Data', 'Researched By', 'Created At',
     ];
 
     const rows = leads.map((l) => [
+      escapeCsv(l.id),
       escapeCsv(l.companyName),
       escapeCsv(l.website),
       escapeCsv(l.industry),
