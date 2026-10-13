@@ -177,9 +177,23 @@ describe('public /health', () => {
   it('wires the production public probe and the authenticated detail route', () => {
     const index = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
     const healthRoute = readFileSync(new URL('../routes/health.ts', import.meta.url), 'utf8');
-    expect(index).toMatch(
-      /app\.get\('\/health', \(_req, res\) => \{\s*sendPublicHealth\(res, \{ broken: isTaskQueueBroken\(\), build: getBuildInfo\(\) \}\);\s*\}\);/,
+    // The handler answers "not ready" before the runtime is up, then falls through
+    // to the production probe. Both answers are minimal: the not-ready body is
+    // exactly { status, build }, and nothing else in the handler writes a body.
+    const handler = /app\.get\('\/health', \(_req, res\) => \{([\s\S]*?)\n\s*\}\);/.exec(index)?.[1] ?? '';
+    expect(handler, 'the /health handler must exist').not.toBe('');
+    expect(handler).toMatch(
+      /sendPublicHealth\(res, \{ broken: isTaskQueueBroken\(\), build: getBuildInfo\(\) \}\);/,
     );
+    expect(handler).toMatch(
+      /if \(!runtimeReady\) \{\s*res\.status\(200\)\.json\(\{ status: runtimeState, build: getBuildInfo\(\) \}\);\s*return;\s*\}/,
+    );
+    const bodies = [...handler.matchAll(/\.json\((\{[^}]*\})\)/g)].map((m) => m[1]);
+    expect(bodies.length, 'the not-ready branch writes exactly one body').toBe(1);
+    expect(
+      bodies.every((body) => /^\{ status: runtimeState, build: getBuildInfo\(\) \}$/.test(body!.trim())),
+      'no body other than { status, build } may be written from the public probe',
+    ).toBe(true);
     const authAt = index.indexOf("app.use('/api', requireAdminAuth)");
     const mountAt = index.indexOf('createHealthRouter(healthMonitor, alertManager, () => buildRuntimeHealthDetail())');
     expect(authAt).toBeGreaterThan(0);
