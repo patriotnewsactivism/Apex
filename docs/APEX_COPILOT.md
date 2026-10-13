@@ -52,6 +52,35 @@ Medium-risk actions are intentionally absent from the v1 registry. A future
 implementation must render a human-only **Do it?** control; the AI must never
 activate that control itself.
 
+## When the toggle is missing on one device but present on another
+
+The toggle is gated on two independent things, and the dashboard used to
+conflate them:
+
+- `VITE_FEATURE_COPILOT` — build-time, identical on every device;
+- an **operator dashboard session** — per device, minted only by a password
+  login, good for 12 hours.
+
+The dashboard's auth gate checks only the long-lived bearer token. So a browser
+can be fully signed in — every panel loading real data — while holding **no
+operator session at all**, and then `/chat/copilot/status` answers 403. That is
+the normal state of a phone whose stored login predates operator sessions: its
+token still validates, so it is never asked to sign in again.
+
+Because the client previously read any non-`enabled` answer as "feature off", it
+rendered no Copilot control and said nothing. Copilot was simply absent on that
+device with no way to discover why.
+
+The client now distinguishes the 403 and shows **Apex Copilot · Sign in**, which
+routes back through the password login and mints a fresh session. If you see it,
+signing in again is the fix; nothing is misconfigured. `resolveCopilotAvailability`
+in `packages/dashboard/src/copilot/availability.ts` is the single place that
+decides, and it is unit-tested from `copilot-actions.test.ts`.
+
+Do not "fix" this by minting an operator session from the bearer token. That
+credential exists so a bot holding only `APEX_ADMIN_TOKEN` cannot authorize an
+outbound send; a bearer-only mint endpoint would remove that boundary entirely.
+
 ## Deliberately deferred
 
 - short-lived, server-bound Copilot session tokens;

@@ -497,6 +497,10 @@ export interface ChatPanelProps {
   onHeaderPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onVoiceStatus?: (status: import('../hooks/useLiveVoiceCall.js').LiveVoiceStatus) => void;
   copilot: CopilotUiController;
+  /** Copilot is enabled for this deployment but this browser holds no operator session. */
+  copilotNeedsSignIn?: boolean;
+  /** Send the operator back through the password login, which mints the operator session. */
+  onCopilotSignIn?: () => void;
 }
 
 export function ChatPanel({
@@ -506,6 +510,8 @@ export function ChatPanel({
   onHeaderPointerDown,
   onVoiceStatus,
   copilot,
+  copilotNeedsSignIn = false,
+  onCopilotSignIn,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -897,6 +903,30 @@ export function ChatPanel({
                 </div>
               </div>
               <div data-copilot-control style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                {copilotNeedsSignIn && !copilot.available && (
+                  // Copilot is on for this deployment but this browser has no
+                  // operator session, so the server refuses the status call.
+                  // Hiding the control made that indistinguishable from "the
+                  // feature is off" and left the operator with no way to find
+                  // out why Copilot was missing on this device. Offer the one
+                  // action that fixes it: sign in again, which mints the session.
+                  <button
+                    type="button"
+                    aria-label="Sign in again to enable Apex Copilot"
+                    title="Apex Copilot needs a fresh dashboard sign-in on this device. Signing in again enables it."
+                    onClick={() => onCopilotSignIn?.()}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5, padding: '5px 9px',
+                      borderRadius: 999,
+                      border: '1px solid rgba(215,182,106,0.5)',
+                      background: 'rgba(215,182,106,0.12)',
+                      color: '#d7b66a',
+                      fontSize: 10, fontFamily: 'var(--font-mono)', cursor: 'pointer',
+                    }}
+                  >
+                    <MousePointer2 size={11} /> Apex Copilot · Sign in
+                  </button>
+                )}
                 {copilot.available && (
                   <button
                     type="button"

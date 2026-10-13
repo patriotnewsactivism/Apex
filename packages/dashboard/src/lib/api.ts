@@ -41,6 +41,29 @@ type ApiErrorBody = {
   };
 };
 
+/**
+ * An API failure that keeps the HTTP status code.
+ *
+ * The plain `Error` thrown below is all most callers need — they render the
+ * message and move on. But some failures are *decisions* the caller has to act
+ * on rather than report, and the status is the only thing that separates them:
+ * `/chat/copilot/status` answers 403 when the Copilot feature is enabled but
+ * this device holds no valid operator dashboard session, which is a "sign in
+ * again" the operator can fix, not a broken feature they should be told about.
+ * Without the code the dashboard could only treat it as "unavailable" and hide
+ * the control — which is exactly how Apex Copilot disappeared on a phone whose
+ * stored login predated operator sessions.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 function formatApiErrorDetails(details: ApiErrorBody['details']): string {
   if (!details) return '';
   const messages = [...(details.formErrors ?? [])];
@@ -80,7 +103,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     const err = await res.json().catch(() => ({ error: res.statusText })) as ApiErrorBody;
     const summary = err.error ?? err.message ?? `HTTP ${res.status}`;
     const details = formatApiErrorDetails(err.details);
-    throw new Error(details ? `${summary}: ${details}` : summary);
+    throw new ApiError(details ? `${summary}: ${details}` : summary, res.status);
   }
   return res.json() as Promise<T>;
 }

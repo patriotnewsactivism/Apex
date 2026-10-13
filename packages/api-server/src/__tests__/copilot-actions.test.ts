@@ -7,6 +7,10 @@ import {
   validateCopilotAction,
 } from '../copilot-actions.js';
 import { isCopilotClientFeatureEnabled } from '../../../dashboard/src/copilot/feature-flag.js';
+import {
+  COPILOT_OPERATOR_SESSION_REQUIRED,
+  resolveCopilotAvailability,
+} from '../../../dashboard/src/copilot/availability.js';
 
 describe('Apex Copilot feature flag', () => {
   it('is off by default and accepts only an explicit true value', () => {
@@ -32,6 +36,38 @@ describe('Apex Copilot feature flag', () => {
     expect(
       chatSource.match(/requireCopilotOperatorSession\(req, res\)/g)?.length ?? 0,
     ).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('Apex Copilot dashboard availability', () => {
+  // The regression this guards: a phone whose stored login predates operator
+  // sessions is fully "logged in" (its long-lived bearer still validates) but
+  // holds no operator session, so /chat/copilot/status answers 403. The client
+  // treated that as "feature unavailable" and rendered no control at all, so
+  // Copilot was silently missing on that device with nothing to act on.
+  const base = { clientFlagEnabled: true, status: undefined, errorStatus: null };
+
+  it('is off when the build-time flag is off, whatever the server says', () => {
+    expect(resolveCopilotAvailability({ ...base, clientFlagEnabled: false })).toBe('off');
+    expect(
+      resolveCopilotAvailability({ ...base, clientFlagEnabled: false, status: { enabled: true } }),
+    ).toBe('off');
+  });
+
+  it('is ready only on an explicit enabled status', () => {
+    expect(resolveCopilotAvailability({ ...base, status: { enabled: true } })).toBe('ready');
+    expect(resolveCopilotAvailability({ ...base, status: { enabled: false } })).toBe('off');
+    expect(resolveCopilotAvailability({ ...base, status: {} })).toBe('off');
+  });
+
+  it('asks for a sign-in on the operator-session 403, and only that status', () => {
+    expect(
+      resolveCopilotAvailability({ ...base, errorStatus: COPILOT_OPERATOR_SESSION_REQUIRED }),
+    ).toBe('needs-sign-in');
+    // A transient fault must not send the operator to a login form.
+    for (const errorStatus of [null, 401, 404, 500, 502, 503]) {
+      expect(resolveCopilotAvailability({ ...base, errorStatus })).toBe('off');
+    }
   });
 });
 
