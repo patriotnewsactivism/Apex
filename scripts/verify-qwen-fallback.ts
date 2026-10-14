@@ -17,7 +17,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = process.env.GITHUB_WORKSPACE ?? path.resolve(here, '..');
@@ -96,8 +96,8 @@ async function main(): Promise<void> {
   }) as typeof fetch;
 
   console.log('Verifying Qwen paid inference is a fully operational fallback...\n');
-  const llm = (await import(path.join(root, 'packages/core/src/llm-client.ts'))) as typeof import('../packages/core/src/llm-client.js');
-  const ledger = (await import(path.join(root, 'packages/core/src/spend-ledger.ts'))) as typeof import('../packages/core/src/spend-ledger.js');
+  const llm = (await import(pathToFileURL(path.join(root, 'packages/core/src/llm-client.ts')).href)) as typeof import('../packages/core/src/llm-client.js');
+  const ledger = (await import(pathToFileURL(path.join(root, 'packages/core/src/spend-ledger.ts')).href)) as typeof import('../packages/core/src/spend-ledger.js');
   const tools = [{ name: 'noop', description: 'guard tool', parameters: { type: 'object', properties: {} } }];
   const ask = () => llm.createLLMClient(llm.getDefaultLLMConfig('CEO')).complete([{ role: 'user', content: 'ping' }], tools as never);
 
