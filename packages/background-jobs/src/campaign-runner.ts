@@ -30,6 +30,7 @@ import {
   normalizeLeadDomain,
   insertDiscoveredLead,
   processLeadPipelineBacklog,
+  recoverStuckLeadIdentities,
   repairWebLeadIdentityBatch,
   inspectFirstPartyContactUrl,
 } from './lead-pipeline.js';
@@ -912,6 +913,13 @@ export class CampaignRunner {
       const config = getLeadPipelineConfig();
       void repairWebLeadIdentityBatch(Number(process.env.LEAD_IDENTITY_REPAIR_BATCH ?? 16))
         .catch((err) => console.warn('[lead-identity] background repair failed:', err instanceof Error ? err.message : String(err)));
+      // The recovery lane works the rows the main pass can no longer reach: a
+      // homepage fetch that timed out under the current scan version, an import
+      // still holding the pre-#370 industry-affinity mismatch, or a row the main
+      // pass's WHERE never selected. It carries its own attempt ledger, so it
+      // drains and then stops on its own rather than hammering dead domains.
+      void recoverStuckLeadIdentities(Number(process.env.LEAD_IDENTITY_RECOVERY_BATCH ?? 250))
+        .catch((err) => console.warn('[lead-identity-recovery] background recovery failed:', err instanceof Error ? err.message : String(err)));
       void this.enrichVerifiedContactsFromSearch(Number(process.env.LEAD_CONTACT_SEARCH_BATCH ?? 6))
         .catch((err) => console.warn('[lead-contact-search] background search failed:', err instanceof Error ? err.message : String(err)));
       await this.recoverExpiredLeases();
@@ -985,6 +993,12 @@ export class CampaignRunner {
       let decisionMakersAdded = 0;
       let fullyReachable = 0;
       let stillIncomplete = 0;
+      // A lead is CALL-READY when there is a named decision maker and a number
+      // to reach them on — the operator's actual requirement for opening a
+      // calling campaign. `fullyReachable` (email AND phone) is kept because it
+      // is already reported, but it is not the same bar: a lead with an email
+      // and a switchboard number is fully reachable and still not dialable.
+      let callReady = 0;
       let cacheHits = 0;
 
       await Promise.all(candidates.map(async (lead) => {
@@ -1007,25 +1021,31 @@ export class CampaignRunner {
         const llmEnabled = String(process.env.BRAVE_LLM_CONTEXT_ENABLED ?? 'true').toLowerCase();
         if (llmEnabled !== 'false' && llmEnabled !== '0' && llmEnabled !== 'no') {
           try {
-            const { braveLlmContext, parseContactFields } = await import('@workspace/core');
+            const { braveLlmContext, parseContactFields, extractDecisionMaker } = await import('@workspace/core');
+            // The query asks for a DECISION MAKER, not just contact details.
+            // The operator's requirement is a named person to call: an email
+            // alone cannot open a calling campaign, so a search that only
+            // looks for "contact phone email" returns leads nobody can dial.
             const ctx = await braveLlmContext({
-              query: `site:${domain} "${lead.companyName}" contact phone email`,
+              query: `site:${domain} "${lead.companyName}" owner OR founder OR president OR manager name phone`,
               count: 10,
             });
             if (ctx.ok) {
               const fields = parseContactFields(ctx.sources);
               const email = fields.emails[0] ?? null;
               const phone = fields.phones[0] ?? null;
-              if (email || phone) {
+              // A validated name+title association, not the first non-nav line
+              // of the page text — that heuristic stored taglines and address
+              // fragments as people, and a campaign that reads the wrong name
+              // out loud is worse than one with no name at all.
+              const person = extractDecisionMaker(fields.lines.join('\n'));
+              if (email || phone || person) {
                 llmContextProvider = 'brave-llm-context';
                 if (!contactEmail && email) { contactEmail = email; contactSourceUrl = ctx.sources[0]?.url ?? null; }
                 if (!contactPhone && phone) { contactPhone = phone; contactSourceUrl ??= ctx.sources[0]?.url ?? null; }
-                // Best-effort decision maker: first non-empty line that is not
-                // a nav/footer fragment. Never fabricate — only surface text
-                // Brave actually extracted.
-                const candidate = fields.lines.find((l) => l.length >= 3 && l.length <= 80 && !/^(home|about|contact|menu|search|©|all rights|privacy|terms)/i.test(l));
-                if (!decisionMakerName && candidate) {
-                  decisionMakerName = candidate;
+                if (!decisionMakerName && person) {
+                  decisionMakerName = person.name;
+                  decisionMakerTitle = person.title;
                   decisionMakerSourceUrl = ctx.sources[0]?.url ?? null;
                 }
               }
@@ -1036,14 +1056,18 @@ export class CampaignRunner {
         }
 
         // ── Slow path: webSearch + first-party fetch (fallback) ─────────────
-        // Only when the fast path produced nothing.
+        // Runs when a decision maker is still missing, not only when there is
+        // no contact detail. The old condition stopped here as soon as an email
+        // was found, which is exactly why the list filled up with addresses and
+        // no one to call: a decision maker that was findable was never looked
+        // for once an email existed.
         let payload: { provider?: string; cacheHit?: boolean; results?: Array<{ title?: string; url?: string; snippet?: string }> } | null = null;
         let urls: string[] = [];
-        if (!contactEmail && !contactPhone) {
+        if (!decisionMakerName || !contactEmail || !contactPhone) {
           const result = await registry.execute(
             'webSearch',
             {
-              query: `site:${domain} "${lead.companyName}" contact phone email`,
+              query: `site:${domain} "${lead.companyName}" owner OR founder OR president OR manager name phone`,
               maxResults: 6,
               fast: true,
               freeOnly: true,
@@ -1095,6 +1119,7 @@ export class CampaignRunner {
         if (!lead.decisionMakerName && decisionMakerName) decisionMakersAdded++;
         if (contactEmail && contactPhone) fullyReachable++;
         else stillIncomplete++;
+        if (decisionMakerName && contactPhone) callReady++;
         if (payload?.cacheHit) cacheHits++;
 
         const now = new Date();
@@ -1192,6 +1217,7 @@ export class CampaignRunner {
               ? `Contact recovery checked ${candidates.length} verified business${candidates.length === 1 ? '' : 'es'}: ` +
                 `${emailsAdded} new email${emailsAdded === 1 ? '' : 's'}, ${phonesAdded} new phone number${phonesAdded === 1 ? '' : 's'}, ` +
                 `${decisionMakersAdded} sourced decision maker${decisionMakersAdded === 1 ? '' : 's'}; ` +
+                `${callReady} are call-ready (named decision maker + phone), ` +
                 `${fullyReachable} now have both email and phone, ${stillIncomplete} still need more contact research.`
               : `Contact recovery checked ${candidates.length} verified businesses and found no new email or phone data. ` +
                 `APEX is backing this lane off${backoffMinutes ? ` for about ${backoffMinutes} minute${backoffMinutes === 1 ? '' : 's'}` : ''} instead of repeatedly scanning low-yield records.`,
@@ -1201,6 +1227,7 @@ export class CampaignRunner {
             phonesAdded,
             decisionMakersAdded,
             fullyReachable,
+            callReady,
             stillIncomplete,
             cacheHits,
             zeroYieldStreak: this.contactSearchZeroYieldStreak,

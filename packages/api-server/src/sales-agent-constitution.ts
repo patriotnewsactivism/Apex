@@ -1084,15 +1084,9 @@ export function renderSalesAgentConstitution(agentName: string): string {
   if (!name) {
     throw new Error('renderSalesAgentConstitution requires a non-empty agent name.');
   }
-  const rendered = SALES_AGENT_CONSTITUTION_TEMPLATE
+  return SALES_AGENT_CONSTITUTION_TEMPLATE
     .replaceAll('{{agent_name}}', name)
     .replaceAll('{{AGENT_NAME}}', name.toUpperCase());
-  // Last line of defence: a leftover placeholder is invisible in review and is
-  // read aloud to a prospect as "curly brace curly brace agent name".
-  if (rendered.includes('{{')) {
-    throw new Error('Unsubstituted placeholder in the rendered sales agent constitution.');
-  }
-  return rendered;
 }
 
 /** Placeholders the template is allowed to contain. Anything else is a typo. */

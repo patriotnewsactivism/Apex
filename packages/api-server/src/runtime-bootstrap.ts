@@ -41,6 +41,25 @@ import { JobScheduler, CampaignRunner, RevenueWorkforceRunner, createCampaignToo
 import { startExecutorDispatchLoop, executorDispatchConfig } from '@workspace/executor';
 import { loadSettingsIntoEnv } from './settingsLoader.js';
 import { seedDefaultJobs, recoverStaleLeasedTasks } from './bootstrap-jobs.js';
+import { runStepWithTimeout, stepTimeoutMs } from './startup-step.js';
+
+/**
+ * Runs one bootstrap step with entry/exit logging and a bounded wait. A hung
+ * step logs a timeout warning and resolves undefined so bootstrap continues;
+ * a throwing step is treated the same way (and logged) rather than aborting.
+ * Callers must treat an undefined result as "step did not complete".
+ */
+async function bootStep<T>(name: string, fn: () => Promise<T>): Promise<T | undefined> {
+  const startedAt = Date.now();
+  console.log(`[boot] step ${name} start`);
+  const outcome = await runStepWithTimeout(name, stepTimeoutMs(), fn);
+  if (outcome.status === 'ok') {
+    console.log(`[boot] step ${name} done in ${Date.now() - startedAt}ms`);
+    return outcome.value;
+  }
+  console.warn(`[boot] step ${name} ${outcome.status === 'timeout' ? 'timed out' : 'failed'} after ${Date.now() - startedAt}ms`);
+  return undefined;
+}
 
 export interface RuntimeBootstrapOptions {
   /** 'http' — the control-plane process (may also run agent loops).
@@ -81,10 +100,10 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // workforce (and its LLM clients) are created, so a key saved via the
   // dashboard's Settings panel is live from the very first LLM call — in
   // EVERY runtime, not only the one that happens to serve the dashboard.
-  await loadSettingsIntoEnv();
+  await bootStep('loadSettingsIntoEnv', () => loadSettingsIntoEnv());
   logProviderRoster();
 
-  const durableTokenLedger = await initializeTokenLedgerPersistence();
+  const durableTokenLedger = await bootStep('initializeTokenLedgerPersistence', () => initializeTokenLedgerPersistence());
   log(
     durableTokenLedger
       ? '✅ Daily token ledger hydrated from Postgres'
@@ -99,7 +118,7 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // Hydrate exclusions before probing balances. A fresh positive management
   // balance must be able to clear a persisted paid-only exclusion from the
   // previous process; loading that stale row after the probe would reapply it.
-  const durableProviderExclusions = await initializeProviderAccountExclusions();
+  const durableProviderExclusions = await bootStep('initializeProviderAccountExclusions', () => initializeProviderAccountExclusions());
   log(
     durableProviderExclusions
       ? '✅ OpenRouter account exclusions hydrated from Postgres'
@@ -108,12 +127,12 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
 
   // Low-balance pauses survive restarts: re-apply them before the first probe
   // so a container replacement cannot readmit paid routing on a drained account.
-  const balanceMonitorHydrated = await initializeOpenRouterBalanceMonitor();
+  const balanceMonitorHydrated = await bootStep('initializeOpenRouterBalanceMonitor', () => initializeOpenRouterBalanceMonitor());
   if (!balanceMonitorHydrated) {
     warn('⚠️  OpenRouter balance monitor state is memory-only; a restart forgets low-balance pauses until the next probe');
   }
 
-  const credits = await initializeProviderCredits();
+  const credits = await bootStep('initializeProviderCredits', () => initializeProviderCredits());
   // Recurring balance check: 60 s while paid routing is enabled, 5 min
   // otherwise. Each round re-probes balances and runs the monitor.
   startOpenRouterBalanceMonitor({
@@ -131,14 +150,14 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // Money, and therefore the budget that most needs to survive a restart:
   // Cloud Run replaces the container on every deploy, so a memory-only spend
   // ledger would authorize a fresh full daily budget after each one.
-  const durableSpendLedger = await initializeSpendLedgerPersistence();
+  const durableSpendLedger = await bootStep('initializeSpendLedgerPersistence', () => initializeSpendLedgerPersistence());
   log(
     durableSpendLedger
       ? '✅ Daily spend ledger hydrated from Postgres'
       : "⚠️  Daily spend ledger is memory-only; a restart will reset today's paid spend",
   );
 
-  const durableRequestLedger = await initializeRequestLedgerPersistence();
+  const durableRequestLedger = await bootStep('initializeRequestLedgerPersistence', () => initializeRequestLedgerPersistence());
   log(
     durableRequestLedger
       ? '✅ Daily request ledger hydrated from Postgres'
@@ -149,7 +168,7 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // a deploy hands the workforce straight back to providers that are still
   // resting — the agents then re-discover the outage by failing (deferral
   // storm, 2026-10-10: three deploys, zero completions).
-  const durableCooldowns = await initializeProviderCooldowns();
+  const durableCooldowns = await bootStep('initializeProviderCooldowns', () => initializeProviderCooldowns());
   log(
     durableCooldowns
       ? '✅ Provider/credential cooldowns hydrated from Postgres'
@@ -162,7 +181,7 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   // prior instance of itself abandoned. Recurring, not just at boot — a task
   // wedged mid-run has no path back to 'pending' otherwise short of a full
   // process restart of THIS runtime specifically.
-  await recoverStaleLeasedTasks();
+  await bootStep('recoverStaleLeasedTasks', () => recoverStaleLeasedTasks());
   const leaseRecoveryInterval = setInterval(() => {
     recoverStaleLeasedTasks().catch((err) => warn(`⚠️  Periodic lease recovery failed: ${err instanceof Error ? err.message : String(err)}`));
   }, 5 * 60 * 1000);
@@ -177,15 +196,20 @@ export async function bootstrapApexRuntime(options: RuntimeBootstrapOptions): Pr
   }
 
   const workforce = createWorkforce({ approvalRequired: options.approvalRequired });
-  try {
+  // bootStep already logs failures/timeouts; the workforce object itself exists
+  // regardless, only its DB state sync is skipped.
+  const workforceSynced = await bootStep('initializeWorkforce', async () => {
     await initializeWorkforce(workforce);
+    return true;
+  });
+  if (workforceSynced) {
     log(`✅ Workforce initialized (${workforce.size} agents)`);
-  } catch (err) {
-    warn(`⚠️  Workforce DB state sync skipped: ${err instanceof Error ? err.message : String(err)}`);
+  } else {
+    warn('⚠️  Workforce DB state sync skipped');
   }
 
   if (!options.skipJobSeeding) {
-    await seedDefaultJobs();
+    await bootStep('seedDefaultJobs', () => seedDefaultJobs());
   }
 
   const scheduler = new JobScheduler();

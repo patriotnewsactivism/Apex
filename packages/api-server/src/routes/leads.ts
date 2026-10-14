@@ -215,19 +215,68 @@ export function createLeadsRouter(): Router {
   });
 
   // ─── GET /api/leads/export — CSV download ────────────────────────────────
-  router.get('/export', async (_req, res) => {
+  // Exports the researched-lead table as the SAME column set
+  // POST /api/leads/import-enrichment reads back, so a round trip is
+  // export → enrich elsewhere → import and the headers line up by construction.
+  //
+  // Two things used to make that impossible and both are now opt-out:
+  //   1. `.limit(10000)` was hardcoded, so the book silently truncated at
+  //      10,000 rows with no signal that it had.
+  //   2. The reachable+verified filter was unconditional. You cannot export
+  //      leads in order to enrich them if the export only returns leads that
+  //      are already enriched — the one workflow this endpoint exists for was
+  //      the one it refused.
+  // Defaults are unchanged (reachable + verified, 10,000 rows) so nothing that
+  // already calls this changes shape; pass reachable=false / verified=false and
+  // raise limit (or page with offset) to get the whole table.
+  router.get('/export', async (req, res) => {
     const { db, researchedLeads } = await import('@workspace/db');
+
+    const conditions = [];
+    const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    if (status) conditions.push(eq(researchedLeads.status, status));
+    else conditions.push(sql`${researchedLeads.status} <> 'rejected'`);
+
+    if (typeof req.query.pipelineState === 'string' && req.query.pipelineState.trim()) {
+      conditions.push(eq(researchedLeads.pipelineState, req.query.pipelineState.trim()));
+    }
+    if (typeof req.query.industry === 'string' && req.query.industry.trim()) {
+      conditions.push(ilike(researchedLeads.industry, `%${req.query.industry.trim()}%`));
+    }
+    if (typeof req.query.city === 'string' && req.query.city.trim()) {
+      conditions.push(ilike(researchedLeads.city, `%${req.query.city.trim()}%`));
+    }
+    if (typeof req.query.campaignId === 'string' && req.query.campaignId.trim()) {
+      conditions.push(eq(researchedLeads.campaignId, req.query.campaignId.trim()));
+    }
+    if (req.query.reachable !== 'false') {
+      conditions.push(sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`);
+    }
+    if (req.query.verified !== 'false') {
+      conditions.push(sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`);
+    }
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Cap is generous but still finite: an unbounded SELECT here would stream a
+    // 250k-row table into one response and one Node heap. Page with offset.
+    const EXPORT_MAX_LIMIT = 250_000;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10000, 1), EXPORT_MAX_LIMIT);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+    const [countRow] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(researchedLeads)
+      .where(where);
+    const total = Number(countRow?.n ?? 0);
 
     const leads = await db
       .select()
       .from(researchedLeads)
-      .where(and(
-        sql`${researchedLeads.status} <> 'rejected'`,
-        sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-        sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
-      ))
+      .where(where)
       .orderBy(desc(researchedLeads.createdAt))
-      .limit(10000);
+      .limit(limit)
+      .offset(offset);
 
     const escapeCsv = (val: string | null | undefined): string => {
       if (val == null) return '';
@@ -237,11 +286,17 @@ export function createLeadsRouter(): Router {
     };
 
     const headers = [
+      // Lead ID first: it is what makes the return trip exact. Without it the
+      // importer can only guess identity from email/website, and every lead
+      // that shares a domain with another (the norm in a phone-only book) is
+      // silently collapsed on re-import.
+      'Lead ID',
       'Company Name', 'Website', 'Industry', 'City', 'Decision Maker', 'Email', 'Phone', 'Contact Source', 'Contact Research Status', 'Status',
       'Fit Reason', 'Outreach Angle', 'Enrichment Data', 'Researched By', 'Created At',
     ];
 
     const rows = leads.map((l) => [
+      escapeCsv(l.id),
       escapeCsv(l.companyName),
       escapeCsv(l.website),
       escapeCsv(l.industry),
@@ -261,6 +316,12 @@ export function createLeadsRouter(): Router {
 
     const csv = [headers.join(','), ...rows].join('\r\n');
 
+    // Tell the caller whether it got everything. The old version gave no hint
+    // that it had stopped at 10,000, which is how a truncated export reads as
+    // a complete one.
+    res.setHeader('X-Total-Count', String(total));
+    res.setHeader('X-Export-Rows', String(rows.length));
+    res.setHeader('X-Export-Offset', String(offset));
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="apex-leads.csv"');
     res.send(csv);
@@ -600,7 +661,13 @@ function leadInsert(lead: ImportedLead, provider: string) {
     campaignReadyAt: new Date(),
     campaignDraft: {
       firstTouch: lead.outreachAngle,
-      nextBestAction: lead.contactEmail ? 'email' : lead.contactPhone ? 'call' : 'research_contact',
+      // A call is the action that actually produces a decision maker, and the
+      // operator's campaigns are calling campaigns — so a dialable lead is
+      // ranked above an emailable one. This used to read the other way round
+      // (`contactEmail ? 'email' : ...`), which put every lead that happened to
+      // have an address into the email lane and left the ones worth calling
+      // queued behind them.
+      nextBestAction: lead.contactPhone ? 'call' : lead.contactEmail ? 'email' : 'research_contact',
     },
     source: provider,
     enrichment: lead.enrichment,

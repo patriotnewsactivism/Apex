@@ -7,6 +7,7 @@ import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMInte
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 import { operatorDashboardSessionValid } from '../operator-session.js';
+import { startOperatorSelfRehearsal } from './sales-floor.js';
 import {
   COPILOT_SAFE_PAGES,
   COPILOT_READ_ONLY_CHAT_TOOL_NAMES,
@@ -109,7 +110,11 @@ You are a capable agent in your own right, not a dispatcher. Handle things yours
 - Be honest about uncertainty. If you don't actually know something, say so and offer to look it up rather than
   inventing a plausible-sounding answer.
 - Keep replies conversational length — a few sentences to a few short paragraphs, not a wall of bullet points,
-  unless he's asked for a list.`;
+  unless he's asked for a list.
+- Rehearsal: when Don asks you to practise, rehearse, "pitch me", or "sell to me", call rehearse_with_me right
+  away (do not create a goal). It emails and calls ONLY his saved rehearsal email and phone and works even while
+  the outbound kill switch is on. Never use it, or anything else, to reach a prospect or another number. Report
+  exactly what the tool returned; if it says nothing was sent, say so.`;
 
 const COPILOT_SYSTEM_PROMPT = `
 
@@ -258,6 +263,11 @@ export const CHAT_TOOLS: LLMTool[] = [
       },
       required: ['id'],
     },
+  },  {
+    name: 'rehearse_with_me',
+    description:
+      "Start Don's own sales rehearsal (\"practice pitch me\", \"rehearse with me\", \"sell to me\"): APEX emails and calls ONLY Don's saved rehearsal email and phone from Sales Operations, playing the BuildMyBot sales rep. Works while the outbound kill switch is on (allowlisted, daily-capped, audited). Takes no destination — it can never reach a prospect or any other number. Use it only when Don asks to be pitched or to practise.",
+    parameters: { type: 'object', properties: {} },
   },
 ];
 
@@ -296,11 +306,31 @@ export async function buildLiveSnapshot(): Promise<string> {
   return lines.join('\n');
 }
 
+export interface ChatToolOptions {
+  /** True only when this request carried a valid operator dashboard session
+   *  (x-apex-operator-session). Voice and other callers leave it false. */
+  operatorSession?: boolean;
+}
+
 export async function executeTool(
   call: { name: string; args: Record<string, unknown> },
   ceo: ApexCEO,
+  options: ChatToolOptions = {},
 ): Promise<Record<string, unknown>> {
   switch (call.name) {
+    case 'rehearse_with_me': {
+      if (options.operatorSession !== true) {
+        return {
+          sent: false,
+          error: 'Practice calls from chat need a signed-in operator dashboard session. Sign in again, or use "Sell to me" on Sales Floor.',
+        };
+      }
+      // Destination is never taken from the model: the helper reads the saved
+      // rehearsal email/phone, and the send safeguard re-checks allowlist,
+      // daily cap, and writes the rehearsal_bypass audit row per send.
+      const outcome = await startOperatorSelfRehearsal({ operatorSession: true });
+      return { httpStatus: outcome.status, ...(outcome.body as Record<string, unknown>) };
+    }
     case 'create_goal': {
       const title = String(call.args.title ?? '').slice(0, 200);
       const description = String(call.args.description ?? '');
@@ -562,6 +592,30 @@ async function writeCopilotAudit(
   });
 }
 
+/**
+ * One line per chat turn, so "the chat is slow" becomes a number to act on.
+ * Reports the snapshot cost and each LLM round trip separately, because those
+ * three causes need different fixes: a slow snapshot is a query problem, a slow
+ * first round trip is route selection, and extra round trips are tool use.
+ */
+function logChatTurn(input: {
+  turnStartedAt: number;
+  snapshotMs: number;
+  llmTurns: Array<{ ms: number; provider?: string; tools: number }>;
+  replyChars?: number;
+  outcome?: string;
+}): void {
+  const totalMs = Date.now() - input.turnStartedAt;
+  const llmMs = input.llmTurns.reduce((sum, t) => sum + t.ms, 0);
+  const providers = [...new Set(input.llmTurns.map((t) => t.provider).filter(Boolean))].join(',') || 'n/a';
+  console.log(
+    `[chat-turn] total=${totalMs}ms snapshot=${input.snapshotMs}ms llm=${llmMs}ms ` +
+      `roundTrips=${input.llmTurns.length} providers=${providers} ` +
+      `perCall=[${input.llmTurns.map((t) => `${t.ms}ms/${t.tools}tool`).join(' ')}] ` +
+      `replyChars=${input.replyChars ?? 0}${input.outcome ? ` outcome=${input.outcome}` : ''}`,
+  );
+}
+
 export function createChatRouter(ceo: ApexCEO) {
   const router = Router();
   const llm = createLLMClient(getDefaultLLMConfig('CEO'));
@@ -633,9 +687,25 @@ export function createChatRouter(ceo: ApexCEO) {
     const copilotRequested = copilot?.enabled === true;
     const copilotEnabled = copilotRequested && isCopilotFeatureEnabled();
     if (copilotEnabled && !(await requireCopilotOperatorSession(req, res))) return;
+    let operatorSession = false;
+    try {
+      const header = req.header('x-apex-operator-session');
+      operatorSession = await operatorDashboardSessionValid(typeof header === 'string' ? header : null);
+    } catch {
+      operatorSession = false;
+    }
+
+    // Declared outside the try so the failure path can report where the time
+    // went too — a turn that threw after 12 seconds is exactly the case worth
+    // seeing.
+    const turnStartedAt = Date.now();
+    let snapshotMs = 0;
+    const llmTurns: Array<{ ms: number; provider?: string; tools: number }> = [];
 
     try {
+      const snapshotStartedAt = Date.now();
       const snapshot = await buildLiveSnapshot();
+      snapshotMs = Date.now() - snapshotStartedAt;
       const screenContext = page
         ? `\n\nDon's current screen: the "${page}" page. When he says "this", "that", or "it", he usually means something on that screen.\n`
         : '';
@@ -659,6 +729,7 @@ export function createChatRouter(ceo: ApexCEO) {
         // background agent from front-loading a day's budget. It still can't
         // spend past the hard daily caps or the per-minute provider rate
         // limit; see LLMExecutionContext.interactive.
+        const llmStartedAt = Date.now();
         const response = await llm.complete(
           llmHistory,
           copilotEnabled ? [...COPILOT_READ_ONLY_CHAT_TOOLS, COPILOT_TOOL] : CHAT_TOOLS,
@@ -668,9 +739,15 @@ export function createChatRouter(ceo: ApexCEO) {
           conversationId,
           },
         );
+        llmTurns.push({
+          ms: Date.now() - llmStartedAt,
+          provider: (response as { provider?: string }).provider,
+          tools: response.toolCalls.length,
+        });
         llmHistory.push({ role: 'assistant', content: response.content, toolCalls: response.toolCalls });
 
         if (response.toolCalls.length === 0) {
+          logChatTurn({ turnStartedAt, snapshotMs, llmTurns, replyChars: (response.content ?? '').length });
           return res.json({
             reply: response.content || "I don't have anything more to add on that.",
             goalCreated,
@@ -713,7 +790,7 @@ export function createChatRouter(ceo: ApexCEO) {
                 };
               }
             } else {
-              result = await executeTool(call, ceo);
+              result = await executeTool(call, ceo, { operatorSession });
             }
           } catch (err) {
             result = { error: err instanceof Error ? err.message : String(err) };
@@ -730,6 +807,7 @@ export function createChatRouter(ceo: ApexCEO) {
         }
       }
 
+      logChatTurn({ turnStartedAt, snapshotMs, llmTurns, outcome: 'tool-loop-exhausted' });
       return res.json({
         reply: 'That took a few lookups — deploying it as a goal so the swarm can dig in properly.',
         goalCreated,
@@ -737,6 +815,7 @@ export function createChatRouter(ceo: ApexCEO) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logChatTurn({ turnStartedAt, snapshotMs, llmTurns, outcome: 'threw' });
       // A genuine capacity pause here means the interactive bypass above still
       // wasn't enough — the HARD daily cap (not just pacing) is actually
       // reached, or every provider is otherwise unavailable. That is a normal,

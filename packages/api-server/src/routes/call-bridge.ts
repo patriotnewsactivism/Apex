@@ -331,6 +331,62 @@ async function patchAssistantDynamicVariables(
   }
 }
 
+/** Conference-wide recording: ONE continuous dual-channel file per bridge
+ *  session, started when the conference is live and stopped on session end.
+ *
+ *  Before this, only the individual call legs were auto-recorded: the customer
+ *  leg captured ~5 seconds and the AI leg kept re-anchoring into ~6s fragments,
+ *  so the 10/12 Boozman voicemail lost the exact seconds where Hank spoke.
+ *  A conference recording covers the whole bridge with no gaps, and lands in
+ *  the /v2/recordings store with conference_id = conferenceName, which is how
+ *  the hank-live monitor resolves it per session. record_start on an already
+ *  recording conference 422s and record_stop on a non-recording one 422s;
+ *  both are expected and swallowed — the log line says which happened. */
+export async function startConferenceRecording(conferenceName: string): Promise<void> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return;
+  try {
+    const res = await fetch(
+      `https://api.telnyx.com/v2/conferences/${encodeURIComponent(conferenceName)}/actions/record_start`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: 'mp3', channels: 'dual' }),
+      },
+    );
+    const body = (await res.json().catch(() => null)) as { errors?: Array<{ detail?: string }> } | null;
+    const detail = body?.errors?.[0]?.detail ?? '';
+    if (res.ok) {
+      console.info('[Call Bridge] Conference recording started', { conferenceName });
+    } else if (detail.toLowerCase().includes('already')) {
+      console.info('[Call Bridge] Conference already recording', { conferenceName });
+    } else {
+      console.warn('[Call Bridge] Conference record_start failed', { conferenceName, status: res.status, detail });
+    }
+  } catch (err) {
+    console.warn('[Call Bridge] Conference record_start error', { conferenceName, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+export async function stopConferenceRecording(conferenceName: string): Promise<void> {
+  const apiKey = process.env.TELNYX_API_KEY;
+  if (!apiKey) return;
+  try {
+    const res = await fetch(
+      `https://api.telnyx.com/v2/conferences/${encodeURIComponent(conferenceName)}/actions/record_stop`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    if (res.ok) console.info('[Call Bridge] Conference recording stopped', { conferenceName });
+  } catch {
+    /* conference gone / never recorded — nothing to finalize */
+  }
+}
+
+/** Originate one outbound call leg and join it into the session's conference.
 /** Originate one outbound call leg and join it into the session's conference.
  *  Exported for direct guard testing of its request-shape logic; the network
  *  call itself is not exercised in CI (no live Telnyx account). */
@@ -578,6 +634,42 @@ export async function startAiFirstSession(input: {
   return { id };
 }
 
+export async function joinBridgeSession(sessionId: string, role: string): Promise<{ ok: true; role: string } | { error: string; status: number }> {
+  try {
+    if (role !== 'monitor' && role !== 'whisper' && role !== 'barge') {
+      return { error: 'role must be monitor, whisper, or barge.', status: 400 };
+    }
+    const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, sessionId)).limit(1);
+    if (!session) return { error: 'Call bridge session not found.', status: 404 };
+    if (session.status === 'ended' || session.status === 'failed') {
+      return { error: `This call is already ${session.status}.`, status: 409 };
+    }
+    if (session.operatorNumber === session.customerNumber) {
+      return { error: 'You are already the buyer on this call. A second join would ring the same phone.', status: 409 };
+    }
+    if (role === 'whisper' && !session.aiCallControlId) {
+      return { error: 'Whisper needs a separate AI leg. Use Listen or Talk on this call.', status: 409 };
+    }
+    const result = await dialBridgeLeg({
+      to: session.operatorNumber,
+      role,
+      sessionId: session.id,
+      endConferenceOnExit: false,
+      supervisorRole: role,
+      whisperCallControlIds: session.aiCallControlId ? [session.aiCallControlId] : undefined,
+      operatorInitiated: true,
+    });
+    if ('error' in result) return { error: result.error, status: 502 };
+    await db.update(callBridgeSessions).set({
+      operatorCallControlId: result.callControlId,
+      operatorJoinRole: role,
+      updatedAt: new Date(),
+    }).where(eq(callBridgeSessions.id, session.id));
+    return { ok: true, role };
+  } catch (err) {
+    return { error: errorMessage(err), status: 500 };
+  }
+}
 // Only the customer leg reaches the contact, so it alone writes the CRM
 // timeline row, and only once Telnyx accepted the dial: a leg still held in
 // Pending sends never gets here. The release hook uses this too, and there the
@@ -1320,6 +1412,7 @@ export function createCallBridgeRouter(): Router {
       );
       await Promise.all(legs.map((id) => hangupBridgeLeg(id)));
       await db.update(callBridgeSessions).set({ status: 'ended', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+      void stopConferenceRecording(session.conferenceName);
       res.status(200).json({ ok: true, status: 'ended' });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
@@ -1455,51 +1548,10 @@ export function createCallBridgeRouter(): Router {
 
   // ── POST /:id/join — dial the operator in as monitor, whisper, or barge ────
   router.post('/:id/join', async (req, res) => {
-    try {
-      const role = (req.body ?? {}).role as string;
-      if (role !== 'monitor' && role !== 'whisper' && role !== 'barge') {
-        res.status(400).json({ error: 'role must be monitor, whisper, or barge.' });
-        return;
-      }
-      const [session] = await db.select().from(callBridgeSessions).where(eq(callBridgeSessions.id, req.params.id)).limit(1);
-      if (!session) {
-        res.status(404).json({ error: 'Call bridge session not found.' });
-        return;
-      }
-      if (session.status === 'ended' || session.status === 'failed') {
-        res.status(409).json({ error: `This call is already ${session.status}.` });
-        return;
-      }
-      if (session.operatorNumber === session.customerNumber) {
-        res.status(409).json({ error: 'You are already the buyer on this call. A second join would ring the same phone.' });
-        return;
-      }
-      if (role === 'whisper' && !session.aiCallControlId) {
-        res.status(409).json({ error: 'Whisper needs a separate AI leg. Use Listen or Talk on this call.' });
-        return;
-      }
-      const result = await dialBridgeLeg({
-        to: session.operatorNumber,
-        role,
-        sessionId: session.id,
-        endConferenceOnExit: false,
-        supervisorRole: role,
-        whisperCallControlIds: session.aiCallControlId ? [session.aiCallControlId] : undefined,
-        operatorInitiated: true,
-      });
-      if ('error' in result) {
-        res.status(502).json({ error: result.error });
-        return;
-      }
-      await db.update(callBridgeSessions).set({
-        operatorCallControlId: result.callControlId,
-        operatorJoinRole: role,
-        updatedAt: new Date(),
-      }).where(eq(callBridgeSessions.id, session.id));
-      res.status(200).json({ ok: true, role });
-    } catch (err) {
-      res.status(500).json({ error: errorMessage(err) });
-    }
+    const role = (req.body ?? {}).role as string;
+    const result = await joinBridgeSession(req.params.id, role);
+    if ('error' in result) { res.status(result.status).json({ error: result.error }); return; }
+    res.status(200).json({ ok: true, role: result.role });
   });
 
   // ── POST /:id/coach — store a note for the operator. Does not email anyone.
@@ -1578,6 +1630,7 @@ export function createCallBridgeWebhookRouter(): Router {
               .update(callBridgeSessions)
               .set({ status: 'ai_joined', lastError: null, updatedAt: new Date() })
               .where(eq(callBridgeSessions.id, session.id));
+            void startConferenceRecording(session.conferenceName);
             console.info('[Call Bridge] AI conference participant joined', { sessionId: session.id, callControlId: ccid });
           } else if (session.status === 'ai_joined') {
             await db
@@ -1634,6 +1687,7 @@ export function createCallBridgeWebhookRouter(): Router {
           if ((session.sessionMode ?? 'operator_first') === 'ai_first') {
             // ai_first exists so the AI is the one talking to the buyer from
             // pickup: it joins the bridge already handed the call.
+            void startConferenceRecording(session.conferenceName);
             await attachSalesAi(session.id, { phase: 'call_start', unmuteNow: true, operatorInitiated: true });
           }
         } else if (state.role === 'ai') {
@@ -1676,11 +1730,13 @@ export function createCallBridgeWebhookRouter(): Router {
             .update(callBridgeSessions)
             .set({ status: 'failed', lastError: `Customer did not answer: ${cause}`, customerCallControlId: null, updatedAt: new Date() })
             .where(eq(callBridgeSessions.id, session.id));
+          void stopConferenceRecording(session.conferenceName);
         } else {
           // Operator hung up (at any stage) or the customer hung up mid-call.
           // end_conference_on_exit on both their legs already told Telnyx to
           // hang up whichever other legs remain — this just reflects that.
           await db.update(callBridgeSessions).set({ status: 'ended', updatedAt: new Date() }).where(eq(callBridgeSessions.id, session.id));
+          void stopConferenceRecording(session.conferenceName);
           if ((session.sessionMode ?? 'operator_first') === 'ai_first') {
             await maybeSendRehearsalFollowUp(session.id);
           }

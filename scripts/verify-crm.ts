@@ -667,7 +667,10 @@ async function databaseChecks(): Promise<void> {
     actor: OPERATOR_ACTOR,
     contactId: made.contactId,
     title: `Ring back ${stamp2}`,
-    dueAt: new Date().toISOString(),
+    // Due a minute from now, clamped inside today (Chicago). A task is overdue
+    // once its due time has passed, so one created "due now" is already overdue
+    // by the time it is listed and this assertion could never hold.
+    dueAt: new Date(Math.min(Date.now() + 60_000, phase1.chicagoDayBounds().end.getTime() - 1000)).toISOString(),
     priority: 'high',
   });
   const [afterTask] = await db.select().from(contacts).where(eq(contacts.id, made.contactId));
@@ -731,7 +734,9 @@ async function databaseChecks(): Promise<void> {
   // One recorded opt-out, lifted on purpose.
   const optOutPhone = '+15125550202';
   const optOutContactId = await findOrCreateContact(db, optOutPhone, { name: 'Verify Opt Out' });
-  await applyDoNotContact(db, { contactId: optOutContactId, reason: 'spoken dnc on the call', setBy: 'verify-crm' });
+  // The destination is what real callers (an SMS STOP, a spoken opt-out) pass; without it the
+  // record is keyed to the contact only and the destination-level check cannot see it.
+  await applyDoNotContact(db, { contactId: optOutContactId, destination: optOutPhone, reason: 'spoken dnc on the call', setBy: 'verify-crm' });
   const optOuts = await phase1.listContactSuppressions({ contactId: optOutContactId });
   assert.ok(optOuts.length >= 1, 'the recorded opt-out is listed on the contact');
   const optOut = optOuts.find((row) => row.channel === 'all') ?? optOuts[0]!;

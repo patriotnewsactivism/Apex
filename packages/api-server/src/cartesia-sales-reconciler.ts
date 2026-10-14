@@ -240,6 +240,24 @@ function desiredTools(toolSecret: string) {
   ];
 }
 
+/**
+ * The name this agent speaks as. One name per agent; the protocol is shared.
+ *
+ * Daniel is the Cartesia outbound agent's name until further notice (the
+ * operator calls him Dan). A switch to another voice — Vapi, say — is a name
+ * change here or in the environment, not a new constitution.
+ *
+ * Read per call rather than at module load so a process that sets the variable
+ * after import (tests, the reconciler CLI) still gets the right name.
+ */
+function salesAgentSpokenName(): string {
+  return (
+    process.env.CARTESIA_SALES_SPOKEN_NAME?.trim() ||
+    process.env.SALES_AGENT_NAME?.trim() ||
+    'Daniel'
+  );
+}
+
 function agentConfig(toolIds: string[], voiceId: string) {
   const toolNames = cartesiaSalesToolNames();
   // The spoken name is CONFIGURATION, read here rather than at module load so a
@@ -249,7 +267,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
   const spokenName = cartesiaSalesSpokenName();
   return {
     instructions: [
-      renderSalesAgentConstitution(spokenName),
+      renderSalesAgentConstitution(salesAgentSpokenName()),
       '=== OPERATIONAL RULES (APEX/Cartesia) — MUST FOLLOW ALONGSIDE THE CONSTITUTION ===',
       'You make outbound business sales calls. Sound warm and conversational. Answer as soon as the other person finishes.',
       'ANSWER THE WHOLE TURN: respond to every distinct point they just made — a yes plus a detail, a correction, a second question, and a short reply all count. Do not drop one of them, and do not replace what they said with the next scripted line. Then ask at most one next question.',

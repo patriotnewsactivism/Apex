@@ -25,30 +25,66 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Resolve a Telnyx recording for a call id, trying the ids we might have stored. */
+/**
+ * Resolve a Telnyx recording for a call id.
+ *
+ * The recordings list API has NO conversation_id filter: Telnyx silently
+ * ignores it and returns the newest account-wide recording, which made every
+ * call-log entry play the same audio. Only call_leg_id and call_session_id are
+ * real filters. AI (TeXML) conversations store their leg/session ids in
+ * conversation metadata, so resolve those first; when a leg has both a
+ * dual-channel and a single-channel recording, prefer the dual-channel one.
+ */
 async function findTelnyxRecordingUrl(callId: string): Promise<{ url: string; type: string } | null> {
   const apiKey = process.env.TELNYX_API_KEY;
   if (!apiKey) return null;
   const bare = callId.replace(/^telnyx-ai:/, '');
-  const filters = [
-    `filter[call_leg_id]=${encodeURIComponent(bare)}`,
-    `filter[call_session_id]=${encodeURIComponent(bare)}`,
-    `filter[conversation_id]=${encodeURIComponent(bare)}`,
-  ];
-  for (const filter of filters) {
-    const response = await fetch(`https://api.telnyx.com/v2/recordings?${filter}&page[size]=1`, {
-      headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'apex-phone-lines' },
-    });
-    if (!response.ok) continue;
-    const body = (await response.json()) as {
-      data?: Array<{ download_urls?: Record<string, string> }>;
-    };
-    const urls = body.data?.[0]?.download_urls;
-    if (urls) {
-      const type = urls.mp3 ? 'mp3' : urls.wav ? 'wav' : Object.keys(urls)[0];
-      if (type && urls[type]) return { url: urls[type], type };
+
+  let candidateIds: string[] = [bare];
+  if (callId.startsWith('telnyx-ai:')) {
+    try {
+      const res = await fetch(`https://api.telnyx.com/v2/ai/conversations/${encodeURIComponent(bare)}`, {
+        headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'apex-phone-lines' },
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as {
+        data?: { recording_url?: string | null; metadata?: Record<string, unknown> | null };
+      };
+      const md = body.data?.metadata ?? {};
+      const legId = typeof md.call_leg_id === 'string' ? md.call_leg_id : '';
+      const sessionId = typeof md.call_session_id === 'string' ? md.call_session_id : '';
+      candidateIds = [legId, sessionId].filter(Boolean);
+      if (!candidateIds.length) return null;
+    } catch {
+      return null;
     }
   }
+
+  const found: Array<{ channels?: string | null; urls: Record<string, string> }> = [];
+  for (const id of candidateIds) {
+    for (const filterKey of ['call_leg_id', 'call_session_id']) {
+      try {
+        const qs = `filter[${filterKey}]=${encodeURIComponent(id)}&page[size]=5`;
+        const response = await fetch(`https://api.telnyx.com/v2/recordings?${qs}`, {
+          headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'apex-phone-lines' },
+        });
+        if (!response.ok) continue;
+        const body = (await response.json()) as {
+          data?: Array<{ channels?: string | null; download_urls?: Record<string, string> }>;
+        };
+        for (const rec of body.data ?? []) {
+          if (rec.download_urls) found.push({ channels: rec.channels ?? null, urls: rec.download_urls });
+        }
+      } catch {
+        /* try the next filter */
+      }
+    }
+  }
+  if (!found.length) return null;
+  found.sort((a, b) => (b.channels === 'dual' ? 1 : 0) - (a.channels === 'dual' ? 1 : 0));
+  const urls = found[0].urls;
+  const type = urls.mp3 ? 'mp3' : urls.wav ? 'wav' : Object.keys(urls)[0];
+  if (type && urls[type]) return { url: urls[type], type };
   return null;
 }
 

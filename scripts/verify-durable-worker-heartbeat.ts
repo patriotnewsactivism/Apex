@@ -79,8 +79,12 @@ console.log('\n── authenticated /api/health/detail exposes durable worker he
 const indexSource = fs.readFileSync(path.join(root, 'packages/api-server/src/index.ts'), 'utf8');
 check('health detail reads the durable heartbeat summary', indexSource.includes('getWorkerHeartbeatSummary()'));
 check('health detail publishes it under its own field, not merged into `workforce`', indexSource.includes('workerHeartbeats: {'));
+// Inspect the real handler body (it may check readiness before answering), and
+// assert the claim in the check name: nothing in it reads or publishes heartbeats.
+const publicHealthHandler = /app\.get\('\/health', \(_req, res\) => \{([\s\S]*?)\n\s*\}\);/.exec(indexSource)?.[1] ?? '';
 check('public /health does not publish worker heartbeats',
-  /app\.get\('\/health', \(_req, res\) => \{\s*sendPublicHealth\(/.test(indexSource));
+  /sendPublicHealth\(/.test(publicHealthHandler) &&
+    !/workerHeartbeats|getWorkerHeartbeatSummary|worker_heartbeats/.test(publicHealthHandler));
 check('health detail documents that a healthy web server must not imply healthy autonomous workers',
   (() => {
     const normalized = indexSource.replace(/\/\//g, ' ').replace(/\s+/g, ' ');

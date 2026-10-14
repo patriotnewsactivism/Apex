@@ -385,6 +385,14 @@ export interface BusinessWebsiteIdentity {
   decisionMakerName: string | null;
   decisionMakerTitle: string | null;
   decisionMakerSourceUrl: string | null;
+  /** How many homepage attempts this row has had, written by the recovery lane
+   *  so a transport accident can be retried a bounded number of times. Absent
+   *  on rows the main pass wrote (it has no attempt ledger). */
+  identityAttempts?: number;
+  /** Which recovery rule judged this row. A row whose value differs from the
+   *  current rule is eligible for re-judgment — that is how a rule change
+   *  re-opens a backlog without re-fetching rows that already have a verdict. */
+  identityRule?: string;
 }
 
 export async function verifyBusinessWebsiteIdentity(input: {
@@ -1200,6 +1208,40 @@ export function makeShortOutreachAngle(companyName: string, industry?: string | 
   return `Show ${companyName} how to capture and follow up with ${industry ?? 'service'} leads in ${city ?? 'their market'} before competitors respond.`;
 }
 
+/**
+ * Does this business's own homepage confirm the company the lead names?
+ *
+ * The test for an operator import: a distinctive token of the company name has
+ * to appear in the site's domain or in the canonical name the homepage
+ * publishes (title / JSON-LD / og:site_name). "Zpl Energy" on zplenergy.com
+ * passes; "Los Angeles Rams Quarterback" on espn.com does not. This is what
+ * stands in for industry affinity on imported rows, where the operator's own
+ * directory labels cannot match anyway.
+ */
+export function homepageConfirmsCompanyName(
+  companyName: string | null | undefined,
+  website: string | null | undefined,
+  canonicalName: string | null | undefined,
+): boolean {
+  const generic = new Set([
+    'the', 'and', 'llc', 'inc', 'corp', 'company', 'group', 'services', 'service', 'texas',
+    'houston', 'north', 'south', 'east', 'west', 'central', 'national', 'american', 'united',
+  ]);
+  const tokens = (value: string | null | undefined): string[] =>
+    (value ?? '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 3 && !generic.has(t));
+  const nameTokens = tokens(companyName);
+  if (nameTokens.length === 0) return false;
+  const domainRoot = (() => {
+    const raw = (website ?? '').toLowerCase().replace(/^[a-z]+:\/\//, '').split('/')[0].split(':')[0];
+    return raw.replace(/^www\./, '').split('.')[0] ?? '';
+  })();
+  const canonical = (canonicalName ?? '').toLowerCase();
+  return nameTokens.some((t) => (domainRoot && (domainRoot.includes(t) || t.includes(domainRoot))) || canonical.includes(t));
+}
+
 function scoreLead(lead: typeof researchedLeads.$inferSelect): number {
   const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
     | { status?: string }
@@ -1259,14 +1301,13 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
               sql`${researchedLeads.contactEmail} IS NULL`,
               sql`${researchedLeads.contactPhone} IS NULL`,
             ),
-            // Operator bulk imports are deliberately NOT selected here for the
-            // moment. Their industry labels come from the operator's own
-            // directory data ("Local Business", "Education & Childcare"), which
-            // industryAffinity() cannot match, so the pass classified every
-            // imported lead as `mismatch` and REJECTED it — real businesses
-            // destroyed at ~2,900/hour. Import verification returns once the
-            // criterion for a bulk import is identity-based (name/canonical-name
-            // match) rather than industry-affinity-based.
+            // Operator bulk imports are verified on IDENTITY, not industry
+            // affinity (see operatorImportMatches below). The operator's own
+            // directory labels ("Local Business", "Education & Childcare") match
+            // no industry keywords, so an affinity-based rule classified every
+            // imported lead as `mismatch` — and mismatch rejects the lead, which
+            // destroyed thousands of real businesses before this was caught.
+            eq(researchedLeads.researchedByAgentId, 'operator-import'),
           ),
           sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'contactScanVersion', '') <> '2026-09-28-v2'`,
         ),
@@ -1302,6 +1343,18 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
         city: lead.city,
         currentName: lead.companyName,
       });
+      const operatorImport = lead.researchedByAgentId === 'operator-import';
+      // A bulk import is verified when its own homepage confirms the BUSINESS,
+      // which is what identity.canonicalName gives us. Industry affinity is a
+      // stricter test the operator's directory labels cannot satisfy, so for
+      // imports a name match stands in — labelled distinctly in `reason` so the
+      // two standards stay auditable. Imports are never rejected on a mismatch:
+      // the platform does not silently delete a list the operator loaded.
+      const importNameMatch = operatorImport && identity.status !== 'verified'
+        && homepageConfirmsCompanyName(lead.companyName, lead.website, identity.canonicalName);
+      const verifiedIdentity = importNameMatch
+        ? { ...identity, status: 'verified' as const, reason: 'homepage_identity_verified_industry_unchecked' }
+        : identity;
       const oldName = lead.companyName;
       const decisionMakerName = lead.decisionMakerName ?? identity.decisionMakerName;
       const contactEmail = lead.contactEmail ?? identity.contactEmail;
@@ -1309,11 +1362,11 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
       const contactSourceUrl = lead.contactSourceUrl ?? identity.contactSourceUrl ?? identity.decisionMakerSourceUrl;
       if ((!lead.contactEmail && contactEmail) || (!lead.contactPhone && contactPhone)) contactsAdded++;
       const candidate = identity.canonicalName?.trim();
-      const newName = candidate && (identity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
+      const newName = candidate && (verifiedIdentity.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
         ? candidate
         : oldName;
       if (newName !== oldName) renamed++;
-      if (identity.status === 'mismatch') mismatched++;
+      if (identity.status === 'mismatch' && !importNameMatch) mismatched++;
 
       const existingDraft = (lead.campaignDraft ?? {}) as Record<string, unknown>;
       const campaignDraft = Object.keys(existingDraft).length > 0
@@ -1336,14 +1389,14 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
         contactResearchedAt: contactEmail || contactPhone ? new Date() : lead.contactResearchedAt,
         enrichment: {
           ...(lead.enrichment ?? {}),
-          businessVerification: identity,
+          businessVerification: verifiedIdentity,
           normalizedDomain: normalizeLeadDomain(identity.homepage ?? lead.website),
           summary: `${newName} is a ${lead.industry ?? 'local'} business in ${lead.city ?? 'its market'}.`,
         },
         fitReason: replaceCompanyNameText(lead.fitReason, oldName, newName) ?? lead.fitReason,
         outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
         campaignDraft,
-        ...(identity.status === 'mismatch' ? { status: 'rejected', qualificationScore: 0 } : {}),
+        ...(identity.status === 'mismatch' && !operatorImport ? { status: 'rejected', qualificationScore: 0 } : {}),
       }).where(eq(researchedLeads.id, lead.id));
 
       if (lead.researchCacheKey) {
@@ -1385,6 +1438,256 @@ export async function repairWebLeadIdentityBatch(limit = 16): Promise<{
     return { checked: rows.length, renamed, mismatched, contactsAdded, budgetExceeded };
   } finally {
     webIdentityRepairRunning = false;
+  }
+}
+
+// ─── Lead identity recovery: retry what was never actually answered ─────────
+//
+// repairWebLeadIdentityBatch stamps `contactScanVersion` on EVERY row it
+// touches, including rows whose homepage fetch never produced a verdict. A
+// timeout, a dropped connection, a 5xx or a WAF 403 is recorded with the
+// current scan version, so the pass treats a transport accident as a final
+// answer and never looks at the row again.
+//
+// Measured against production on 2026-10-12, the rows stuck in that state —
+// excluded from the Prospects view, the contact-ready counter and campaign
+// eligibility, with no code path able to reach them:
+//
+//   74,954  `unverified` on a transport accident under the CURRENT scan
+//           version ("The operation was aborted due to timeout" is 63,638 of
+//           them; "fetch failed" 10,846; the rest 5xx/429/403)
+//    8,081  operator imports holding the pre-#370 industry-affinity mismatch,
+//           judged by a rule their own directory labels cannot satisfy
+//    3,710  carrying a website and a contact that matched NEITHER branch of
+//           the main pass's WHERE — not `web:%`, not `operator-import`, and
+//           not contactless — so nothing could select them at all
+//
+// ~86,700 real businesses. None of them need a search: they need the homepage
+// fetch they never actually got.
+//
+// The lane is bounded on purpose. Every attempt is counted in
+// `identityAttempts`, a transport accident is retried at most
+// LEAD_IDENTITY_REPAIR_MAX_ATTEMPTS times (default 3), and a settled answer —
+// a 404, a name the homepage does not confirm — is never retried. A rule change
+// re-opens a backlog through `identityRule`, not by bumping the scan version,
+// so re-judging the backlog never means re-fetching rows that already have an
+// answer. Imports are never rejected here, for the same reason as the main
+// pass: the platform flags a row, it does not delete a list the operator
+// loaded.
+export const IDENTITY_RECOVERY_RULE = 'identity-recovery-v1';
+
+/** Reasons that are an ANSWER about the business rather than a transport
+ *  accident. Anything else — including a raw error message such as "The
+ *  operation was aborted due to timeout" — means the homepage was never
+ *  actually read, so the row is worth another bounded attempt.
+ *
+ *  This list is the single source of truth for both the SQL selector and
+ *  isRetryableIdentityFailure, so the two can never drift apart. */
+export const IDENTITY_SETTLED_REASONS = [
+  'homepage_and_industry_verified',
+  'homepage_identity_verified_industry_unchecked',
+  'homepage_does_not_match_target_industry',
+  'missing_or_invalid_website',
+  'http_404',
+  'http_410',
+] as const;
+
+export function isRetryableIdentityFailure(reason: string | null | undefined): boolean {
+  const value = (reason ?? '').trim();
+  if (!value) return true; // never judged at all
+  return !(IDENTITY_SETTLED_REASONS as readonly string[]).includes(value);
+}
+
+export function identityRecoveryMaxAttempts(env: NodeJS.ProcessEnv = process.env): number {
+  return Math.max(1, Math.min(10, Number(env.LEAD_IDENTITY_REPAIR_MAX_ATTEMPTS ?? 3) || 3));
+}
+
+/** A mismatch rejects only a lane that derived its own company name. An
+ *  operator import is recorded and left standing — the platform flags a row, it
+ *  does not delete a list the operator loaded. Exported so the guard suite can
+ *  hold that rule still instead of trusting an inline condition. */
+export function shouldRejectOnIdentityMismatch(input: {
+  status: BusinessWebsiteIdentity['status'];
+  isOperatorImport: boolean;
+  importNameMatch: boolean;
+}): boolean {
+  if (input.status !== 'mismatch') return false;
+  if (input.isOperatorImport) return false;
+  return !input.importNameMatch;
+}
+
+let stuckIdentityRecoveryRunning = false;
+
+export async function recoverStuckLeadIdentities(limit = 16): Promise<{
+  checked: number;
+  verified: number;
+  contactsAdded: number;
+  retried: number;
+  exhausted: number;
+  rejected: number;
+  /** Why nothing was checked, when nothing was. */
+  reason?: 'already_running' | 'no_matching_leads';
+  /** True when the batch hit its time budget before finishing every row. */
+  budgetExceeded?: boolean;
+}> {
+  if (stuckIdentityRecoveryRunning) {
+    return { checked: 0, verified: 0, contactsAdded: 0, retried: 0, exhausted: 0, rejected: 0, reason: 'already_running' };
+  }
+  stuckIdentityRecoveryRunning = true;
+  try {
+    const batchSize = Math.max(1, Math.min(2000, Math.trunc(limit)));
+    const maxAttempts = identityRecoveryMaxAttempts();
+    const settledSql = sql.join(IDENTITY_SETTLED_REASONS.map((value) => sql`${value}`), sql`, `);
+    const attemptsSql = sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'identityAttempts', '0')`;
+    const rows = await db
+      .select()
+      .from(researchedLeads)
+      .where(
+        and(
+          sql`${researchedLeads.status} <> 'rejected'`,
+          sql`${researchedLeads.website} IS NOT NULL`,
+          sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'status', '') <> 'verified'`,
+          // Leave brand-new rows to the main pass for one interval so the two
+          // lanes cannot both fetch the same homepage on the same tick.
+          sql`${researchedLeads.createdAt} < NOW() - INTERVAL '15 minutes'`,
+          or(
+            // (a) never judged under this rule (or judged under an older one),
+            //     which is what re-opens a backlog after a rule change;
+            sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'identityRule', '') <> ${IDENTITY_RECOVERY_RULE}`,
+            // (b) a transport accident with attempts left, so a fetch that was
+            //     never answered gets another go — and only a bounded one.
+            and(
+              sql`${attemptsSql} ~ '^[0-9]+$'`,
+              sql`${attemptsSql}::int < ${maxAttempts}`,
+              sql`COALESCE(${researchedLeads.enrichment}->'businessVerification'->>'reason', '') NOT IN (${settledSql})`,
+            ),
+          ),
+        ),
+      )
+      // Operator imports first, matching the main pass: an operator watching
+      // Prospects should see their own list move before older web leads.
+      .orderBy(
+        sql`(${researchedLeads.researchedByAgentId} = 'operator-import') DESC`,
+        asc(researchedLeads.createdAt),
+      )
+      .limit(batchSize);
+
+    if (rows.length === 0) {
+      return { checked: 0, verified: 0, contactsAdded: 0, retried: 0, exhausted: 0, rejected: 0, reason: 'no_matching_leads' };
+    }
+
+    let verified = 0;
+    let contactsAdded = 0;
+    let retried = 0;
+    let exhausted = 0;
+    let rejected = 0;
+    // Same physical constraint as the main pass — one homepage fetch per lead —
+    // so the throughput knobs are shared with it.
+    const concurrency = Math.max(1, Math.min(64, Number(process.env.LEAD_IDENTITY_REPAIR_CONCURRENCY ?? 8) || 8));
+    const budgetMs = Math.max(15_000, Number(process.env.LEAD_IDENTITY_REPAIR_BUDGET_MS ?? 120_000) || 120_000);
+    let budgetExceeded = false;
+    await Promise.race([
+      runPool(rows, Math.min(concurrency, batchSize), async (lead) => {
+        const previous = ((lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] ?? {}) as Partial<BusinessWebsiteIdentity>;
+        const attempts = Math.max(0, Number(previous.identityAttempts ?? 0) || 0) + 1;
+        if (attempts > 1) retried++;
+        if (attempts >= maxAttempts) exhausted++;
+
+        const identity = await verifyBusinessWebsiteIdentity({
+          website: lead.website,
+          industry: lead.industry,
+          city: lead.city,
+          currentName: lead.companyName,
+        });
+        const operatorImport = lead.researchedByAgentId === 'operator-import';
+        // Same standard as the main pass: a bulk import is answered by whether
+        // its own homepage confirms the BUSINESS, never by industry affinity
+        // (the operator's directory labels cannot match industry keywords).
+        const importNameMatch = operatorImport && identity.status !== 'verified'
+          && homepageConfirmsCompanyName(lead.companyName, lead.website, identity.canonicalName);
+        const settled = {
+          ...identity,
+          ...(importNameMatch
+            ? { status: 'verified' as const, reason: 'homepage_identity_verified_industry_unchecked' }
+            : {}),
+          identityAttempts: attempts,
+          identityRule: IDENTITY_RECOVERY_RULE,
+        };
+        if (settled.status === 'verified') verified++;
+
+        const oldName = lead.companyName;
+        const decisionMakerName = lead.decisionMakerName ?? identity.decisionMakerName;
+        const contactEmail = lead.contactEmail ?? identity.contactEmail;
+        const contactPhone = lead.contactPhone ?? identity.contactPhone;
+        const contactSourceUrl = lead.contactSourceUrl ?? identity.contactSourceUrl ?? identity.decisionMakerSourceUrl;
+        if ((!lead.contactEmail && contactEmail) || (!lead.contactPhone && contactPhone)) contactsAdded++;
+        // Only rename on a VERIFIED identity, or when the stored name is an SEO
+        // artifact — never let a re-attempt rewrite a name off a failed fetch.
+        const candidate = identity.canonicalName?.trim();
+        const newName = candidate && (settled.status === 'verified' || isSeoLikeCompanyName(oldName, lead.city))
+          ? candidate
+          : oldName;
+        // A mismatch rejects only a lane that derived its own name. An operator
+        // import is recorded and left standing.
+        const shouldReject = shouldRejectOnIdentityMismatch({
+          status: identity.status,
+          isOperatorImport: operatorImport,
+          importNameMatch,
+        });
+        if (shouldReject) rejected++;
+
+        const existingDraft = (lead.campaignDraft ?? {}) as Record<string, unknown>;
+        const campaignDraft = Object.keys(existingDraft).length > 0
+          ? {
+              ...existingDraft,
+              ...(typeof existingDraft.firstTouch === 'string' ? { firstTouch: replaceCompanyNameText(existingDraft.firstTouch, oldName, newName) } : {}),
+              ...(typeof existingDraft.emailSubject === 'string' ? { emailSubject: replaceCompanyNameText(existingDraft.emailSubject, oldName, newName) } : {}),
+              ...(typeof existingDraft.callOpener === 'string' ? { callOpener: replaceCompanyNameText(existingDraft.callOpener, oldName, newName) } : {}),
+            }
+          : lead.campaignDraft;
+
+        await db.update(researchedLeads).set({
+          companyName: newName,
+          website: identity.homepage ?? lead.website,
+          decisionMakerName,
+          contactEmail,
+          contactPhone,
+          contactSourceUrl,
+          contactResearchStatus: contactEmail && contactPhone ? 'complete' : contactEmail || contactPhone ? 'partial' : lead.contactResearchStatus,
+          contactResearchedAt: contactEmail || contactPhone ? new Date() : lead.contactResearchedAt,
+          enrichment: {
+            ...(lead.enrichment ?? {}),
+            businessVerification: settled,
+            normalizedDomain: normalizeLeadDomain(identity.homepage ?? lead.website),
+            summary: `${newName} is a ${lead.industry ?? 'local'} business in ${lead.city ?? 'its market'}.`,
+          },
+          fitReason: replaceCompanyNameText(lead.fitReason, oldName, newName) ?? lead.fitReason,
+          outreachAngle: replaceCompanyNameText(lead.outreachAngle, oldName, newName) ?? lead.outreachAngle,
+          campaignDraft,
+          ...(shouldReject ? { status: 'rejected', qualificationScore: 0 } : {}),
+        }).where(eq(researchedLeads.id, lead.id));
+
+        if (lead.researchCacheKey) {
+          await db.update(leadResearchCache).set({
+            companyName: newName,
+            website: identity.homepage ?? lead.website,
+            basicEnrichment: {
+              ...((lead.enrichment as Record<string, unknown> | null) ?? {}),
+              businessVerification: settled,
+            },
+            updatedAt: new Date(),
+          }).where(eq(leadResearchCache.cacheKey, lead.researchCacheKey));
+        }
+      }),
+      sleep(budgetMs).then(() => {
+        budgetExceeded = true;
+      }),
+    ]);
+
+    console.log(`[lead-identity-recovery] checked=${rows.length} verified=${verified} contactsAdded=${contactsAdded} retried=${retried} exhausted=${exhausted} rejected=${rejected} budgetExceeded=${budgetExceeded}`);
+    return { checked: rows.length, verified, contactsAdded, retried, exhausted, rejected, budgetExceeded };
+  } finally {
+    stuckIdentityRecoveryRunning = false;
   }
 }
 
