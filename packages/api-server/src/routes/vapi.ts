@@ -116,11 +116,91 @@ export function zonedTimeToUtc(
  *  ever called (voicemail, hang-up, no-answer never give the AI the chance).
  *  Conservative on purpose: 'no_decision' rather than guessing interest from
  *  endedReason strings that vary by provider and change without notice. */
-export function fallbackDispositionFromEndedReason(endedReason: string): 'voicemail' | 'no_answer' | 'no_decision' {
+export function fallbackDispositionFromEndedReason(
+  endedReason: string,
+  opts: { unanswered?: boolean } = {},
+): 'voicemail' | 'no_answer' | 'no_decision' {
+  // Rang out with zero customer audio (isUnansweredNoAudio): a no-answer.
+  if (opts.unanswered) return 'no_answer';
   const reason = endedReason.toLowerCase();
   if (reason.includes('voicemail')) return 'voicemail';
   if (reason.includes('no-answer') || reason.includes('customer-did-not-answer')) return 'no_answer';
   return 'no_decision';
+}
+
+/** Queue (never place) a retry for an unanswered call. The retry is a
+ *  pending task for the sales agent with nextRetryAt set; when it runs, the
+ *  agent's make_outbound_call goes through the normal outbound gate (kill
+ *  switch, outbound mode, rehearsal allowlist, daily caps, DNC/suppression,
+ *  calling window). Limits: planNoAnswerRetry in @workspace/core. */
+export async function scheduleNoAnswerRetry(input: {
+  callId: string;
+  customerNumber: string;
+  customerName?: string | null;
+  leadId?: string | null;
+  now?: Date;
+}): Promise<string> {
+  const now = input.now ?? new Date();
+  const { db, tasks, callOutcomes } = await import('@workspace/db');
+  const { and, eq, gte, sql } = await import('drizzle-orm');
+  const { loadOutboundPolicy, planNoAnswerRetry, NO_ANSWER_RETRY_TASK_KIND } = await import('@workspace/core');
+  const policy = await loadOutboundPolicy(now);
+  const since = new Date(now.getTime() - 36 * 60 * 60 * 1000);
+  const leadKey = input.leadId || input.customerNumber;
+
+  const prior = await db
+    .select({ createdAt: tasks.createdAt, nextRetryAt: tasks.nextRetryAt, context: tasks.context })
+    .from(tasks)
+    .where(and(
+      gte(tasks.createdAt, since),
+      sql`${tasks.context}->>'kind' = ${NO_ANSWER_RETRY_TASK_KIND}`,
+      sql`${tasks.context}->>'leadKey' = ${leadKey}`,
+    ));
+  if (prior.some((t) => (t.context as Record<string, unknown> | null)?.sourceCallId === input.callId)) {
+    return 'retry already scheduled for this call';
+  }
+  const attempts = await db
+    .select({ createdAt: callOutcomes.createdAt })
+    .from(callOutcomes)
+    .where(and(eq(callOutcomes.customerNumber, input.customerNumber), gte(callOutcomes.createdAt, since)));
+
+  const plan = planNoAnswerRetry({
+    now,
+    policy,
+    retriesScheduled: prior.map((t) => t.nextRetryAt ?? t.createdAt),
+    attempts: attempts.map((a) => a.createdAt),
+  });
+  if (!plan.schedule) return `no retry: ${plan.reason}`;
+
+  const masked = `***${input.customerNumber.replace(/\D/g, '').slice(-4)}`;
+  await db.insert(tasks).values({
+    id: crypto.randomUUID(),
+    title: `No-answer retry ${plan.retryNumber} for ${input.customerName || masked}`,
+    description:
+      `The previous call (${input.callId}) rang but was never answered (no customer audio). ` +
+      `Retry the call with make_outbound_call to ${input.customerNumber}` +
+      (input.leadId ? ` (leadId ${input.leadId})` : '') +
+      '. This is a normal outbound call: it must pass the outbound gate. If the gate denies it ' +
+      '(kill switch, outbound mode, caps, DNC, calling window), do not retry again; record it and stop.',
+    status: 'pending',
+    priority: 5,
+    assignedAgentId: 'apex-sales-001',
+    createdByAgentId: 'apex-sales-001',
+    nextRetryAt: plan.notBefore,
+    maxRetries: 0,
+    context: {
+      kind: NO_ANSWER_RETRY_TASK_KIND,
+      leadKey,
+      leadId: input.leadId ?? null,
+      customerNumber: input.customerNumber,
+      sourceCallId: input.callId,
+      retryNumber: plan.retryNumber,
+      notBefore: plan.notBefore.toISOString(),
+    },
+    createdAt: now,
+    updatedAt: now,
+  });
+  return `retry ${plan.retryNumber} queued for ${plan.notBefore.toISOString()}`;
 }
 
 async function createStripeCheckoutSession(plan: string, email: string): Promise<{ checkoutUrl?: string; error?: string }> {
@@ -381,6 +461,17 @@ export function createVapiWebhookRouter(): Router {
           // hang-up before the AI could call it), this INSERTs the only
           // record that call will ever get, with a conservative disposition
           // derived from endedReason -- never left silently unrecorded.
+          // A ringing, never-answered call ends with
+          // "...assistant-did-not-receive-customer-audio" and zero customer
+          // speech. That is a no-answer, not a failure (Telnyx showed 0s
+          // connected). See packages/core/src/no-answer-retry.ts.
+          const { isUnansweredNoAudio } = await import('@workspace/core');
+          const unanswered = isUnansweredNoAudio({
+            endedReason,
+            transcript,
+            messages: artifact.messages ?? message.messages ?? call.messages,
+          });
+
           if (callId) {
             const customerNumber = call.customer?.number ?? '';
             const customerName = call.customer?.name ?? '';
@@ -391,7 +482,7 @@ export function createVapiWebhookRouter(): Router {
                 callId,
                 customerNumber,
                 customerName: customerName || null,
-                disposition: fallbackDispositionFromEndedReason(String(endedReason)),
+                disposition: fallbackDispositionFromEndedReason(String(endedReason), { unanswered }),
                 summary: typeof analysis.summary === 'string' ? analysis.summary : null,
                 transcript: transcript || null,
                 endedReason: String(endedReason),
@@ -410,6 +501,19 @@ export function createVapiWebhookRouter(): Router {
                   updatedAt: new Date(),
                 },
               });
+            if (unanswered && customerNumber) {
+              try {
+                const outcome = await scheduleNoAnswerRetry({
+                  callId,
+                  customerNumber,
+                  customerName,
+                  leadId: typeof call.metadata?.leadId === 'string' ? call.metadata.leadId : null,
+                });
+                console.info(`[Vapi] no-answer ${callId}: ${outcome}`);
+              } catch (error) {
+                console.warn('[Vapi] no-answer retry scheduling failed', error instanceof Error ? error.message : String(error));
+              }
+            }
           } else {
             console.warn('[Vapi] end-of-call-report with no call id -- cannot persist call_outcomes row');
           }
