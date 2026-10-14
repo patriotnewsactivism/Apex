@@ -328,42 +328,16 @@ export function createLeadsRouter(): Router {
   });
 
   // ─── GET /api/leads/stats — summary counts ───────────────────────────────
+  // Counted in Postgres. This handler used to load EVERY row of researched_leads
+  // — jsonb enrichment included — into Node and count in JavaScript, which cost
+  // ~2 minutes on the live table and made the stats panel time out. The
+  // definition of a contact-ready lead now lives in lead-stats.ts, next to the
+  // note explaining why each predicate is written the way it is;
+  // lead-stats.test.ts pins those numbers against the original JavaScript.
   router.get('/stats', async (_req, res) => {
-    const { db, researchedLeads } = await import('@workspace/db');
-
-    const all = await db.select().from(researchedLeads);
-    const byStatus = {
-      new: all.filter((l) => l.status === 'new').length,
-      contacted: all.filter((l) => l.status === 'contacted').length,
-      qualified: all.filter((l) => l.status === 'qualified').length,
-      rejected: all.filter((l) => l.status === 'rejected').length,
-    };
-    const visible = all.filter((lead) => {
-      if (lead.status === 'rejected') return false;
-      if (!lead.contactEmail && !lead.contactPhone) return false;
-      const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
-        | { status?: string }
-        | undefined;
-      return verification?.status === 'verified';
-    });
-    const byPipelineState: Record<string, number> = {};
-    const byIndustry: Record<string, number> = {};
-    for (const l of visible) {
-      const key = l.industry || 'Unknown';
-      byIndustry[key] = (byIndustry[key] ?? 0) + 1;
-      byPipelineState[l.pipelineState ?? 'DISCOVERED'] = (byPipelineState[l.pipelineState ?? 'DISCOVERED'] ?? 0) + 1;
-    }
-
-    res.json({
-      total: visible.length,
-      contactReady: visible.length,
-      rawCandidates: all.length,
-      pendingOrUnverified: Math.max(0, all.length - visible.length - byStatus.rejected),
-      rejected: byStatus.rejected,
-      byStatus,
-      byPipelineState,
-      byIndustry,
-    });
+    const { db } = await import('@workspace/db');
+    const { computeLeadStats } = await import('../lead-stats.js');
+    res.json(await computeLeadStats(db));
   });
 
   // ─── POST /api/leads/verify-batch — run the website-identity repair now ───
