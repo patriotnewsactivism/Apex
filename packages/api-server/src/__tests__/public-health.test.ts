@@ -185,15 +185,14 @@ describe('public /health', () => {
     expect(handler).toMatch(
       /sendPublicHealth\(res, \{ broken: isTaskQueueBroken\(\), build: getBuildInfo\(\) \}\);/,
     );
-    expect(handler).toMatch(
-      /if \(!runtimeReady\) \{\s*res\.status\(200\)\.json\(\{ status: runtimeState, build: getBuildInfo\(\) \}\);\s*return;\s*\}/,
-    );
-    const bodies = [...handler.matchAll(/\.json\((\{[^}]*\})\)/g)].map((m) => m[1]);
-    expect(bodies.length, 'the not-ready branch writes exactly one body').toBe(1);
-    expect(
-      bodies.every((body) => /^\{ status: runtimeState, build: getBuildInfo\(\) \}$/.test(body!.trim())),
-      'no body other than { status, build } may be written from the public probe',
-    ).toBe(true);
+    // This used to assert that the handler itself contained the not-ready branch
+    // and wrote exactly that one body inline. The body moved into
+    // public-health.ts, so the handler must now delegate and write NOTHING
+    // itself: a second .json() here would be a second, unreviewed public shape.
+    // The minimal shape of THE body is pinned against the real module above
+    // ("returns only status and build identity" / "answers 200 when ready and
+    // 503 when the queue is broken").
+    expect(handler, 'the public probe must not build its own body').not.toMatch(/\.json\(/);
     const authAt = index.indexOf("app.use('/api', requireAdminAuth)");
     const mountAt = index.indexOf('createHealthRouter(healthMonitor, alertManager, () => buildRuntimeHealthDetail())');
     expect(authAt).toBeGreaterThan(0);
