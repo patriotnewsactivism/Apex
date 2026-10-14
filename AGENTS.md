@@ -20,11 +20,11 @@ If stale documentation is discovered while doing real work, fix it in the same w
 
 ## Current production runtime
 
-APEX itself runs on **Railway** — project `APEX`, service `apex-backend` — behind:
+APEX itself runs on a **Contabo VPS** behind:
 
 `https://apex.donmatthews.live`
 
-The cutover from Google Cloud Run happened on 2026-09-14/15 and is described in `docs/HOSTING_MIGRATION.md`. Railway builds the repository `Dockerfile` per `railway.toml`, health-checks `/health`, and deploys itself from `main`; there is no deployment workflow in front of it.
+Hosting was previously migrated from Google Cloud Run (2026-09-14/15) to Railway (`apex-backend`), and is now hosted on Contabo VPS. The container exposes `/health` and serves the production control plane.
 
 Google Cloud Run is a **retired** production host. Billing is disabled on project `apex-503709`, so it serves nothing and cannot even accept an image push. The old GitHub deploy workflow has been removed; `packages/cicd-automation/src/cloud-run-deployer.ts` and `cloudbuild.apex.yaml` remain only as a deliberately gated migration-back implementation behind `APEX_DEPLOY_ENABLED`, and must not be enabled while billing is off. The former AWS Lightsail/CodeBuild deployment path is retired and must not be restored. Vercel, Render, and other platforms may still appear as deployment targets for client projects APEX manages, and the React dashboard has a Vercel project of its own (`don-matthews/apex`); none of them is the APEX control-plane host. That Vercel project posts the GitHub commit status named `Vercel`. `vercel.json` must build `@workspace/dashboard` only — never root `pnpm run build` / `typecheck:production`. Railway does not currently gate on CI (see the Wait for CI note below), and the Vercel status is never a gate.
 
@@ -108,22 +108,39 @@ Before any production database or Supabase management action:
 
 Do not reuse credentials from another application or project. Do not infer that similarly named projects are interchangeable.
 
-## LLM intelligence policy — OpenRouter production
+## LLM intelligence policy — Multi-pool production routing
 
-`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit uses this centralized routing client. The normal order is OpenRouter free models **first**, then optional direct Groq/Gemini BYOK capacity, then the paid continuity model `deepseek/deepseek-v4-flash-0731` last, served by two providers: OpenRouter (`openrouter-deepseek-v4-flash-paid`, funded `OPENROUTER_API_KEY_4`, `provider.sort: latency`) and Nous Portal (`nous-deepseek-v4-flash-paid`, `NOUS_API_KEY`). This is a 2026-10-05 operator decision (ADR-020): the QwenCloud Token Plan is exhausted, so Qwen is removed from the automatic chain (the `qwen-dashscope-byok` spec stays defined and unused; reinstating it needs a new operator decision), and paid load is split so neither provider takes it all. `requestProviderOrder()` puts Nous first on 9 requests in 10 and OpenRouter first on the tenth (operator decision, same day: Nous is the cheaper host), so paid traffic splits about 90/10 and each is the other's immediate fallback; a route in cooldown or credit exclusion is skipped and the other carries the load. `getProviderOrderForRole()` stays deterministic for health and guards. Both paid routes are **unrestricted**: off unless `APEX_PAID_FALLBACK_ENABLED=true` and at least one of the two credentials is configured, and they bypass APEX spend, token, request, emergency-cap, and pacing governors. `APEX_PAID_FALLBACK_ENABLED` is the operator's single switch for both: unset or `false` removes both routes and leaves APEX free-only, parking the workforce at capacity exhaustion rather than spending further. Upstream OpenRouter/Nous billing/rate limits, error cooldowns, tool authorization, and approval policy remain authoritative. Do not add further paid providers or models without a new operator decision. ("FlashX" in older text and identifiers means this paid continuity route.)
+`packages/core/src/llm-client.ts` is the request-path source of truth. `packages/core/src/model-routing.ts` defines the operator policy contract, `packages/core/src/model-intelligence.ts` owns evidence-based ranking, and `packages/core/src/model-execution-context.ts` plus `packages/core/src/instrumented-base-agent.ts` provide concurrency-safe task attribution to normal LLM calls. Every production APEX unit uses this centralized routing client.
 
-With no valid operator policy, the reviewed production fallback is:
+The automatic routing chain consists of seven routes across three pools:
 
-1. `nvidia/nemotron-3-super-120b-a12b:free`
-2. `nvidia/nemotron-3.5-lightning:free`
-3. `openrouter/free` (tool requirements preserved)
-4. `nvidia/nemotron-3-ultra-550b-a55b:free`
+1. **OpenRouter free models** (first 4 routes):
+   - `nvidia/nemotron-3-super-120b-a12b:free` (`openrouter-nemotron-super`, head of the free chain)
+   - `nvidia/nemotron-3.5-lightning:free` (`openrouter-nemotron-3-5-lightning-free`)
+   - `openrouter/free` (`openrouter-free-router`, tool requirements preserved via `require_parameters`)
+   - `nvidia/nemotron-3-ultra-550b-a55b:free` (`openrouter-nemotron-ultra`)
+2. **Direct BYOK free capacity**:
+   - `groq-gpt-oss-120b-byok` (`openai/gpt-oss-120b` via `GROQ_API_KEY`/`GROQ_API_KEY_2`, gated by `APEX_GROQ_BYOK_ENABLED=true`)
+   - `gemini-3-8-flash-byok` (`gemini-3.8-flash` via `GEMINI_API_KEY`/`GEMINI_API_KEY_2`, gated by `APEX_GEMINI_BYOK_ENABLED=true`)
+3. **Metered QwenCloud fallback** (last automatic route):
+   - `qwen-dashscope-byok` (default model `qwen3.8-flash`, overridable with `QWEN_MODEL`; default PAYG host `https://maas.qwencloudapi.com/compatible-mode/v1` via `QWEN_API_KEY`/`QWEN_API_KEY_2`; gated by `APEX_QWEN_BYOK_ENABLED=true`). Used only after every free pool is spent.
 
-The two `nex-agi/nex-n2.5-*:free` rungs are gone (2026-10-11): OpenRouter
-withdrew their free tier, so every dispatch 404'd while the pre-dispatch
-reservation kept charging it to the daily OpenRouter allowance.
+The withdrawn `nex-agi/nex-n2.5-*:free` rungs were removed on 2026-10-11 when OpenRouter moved them to paid-only. MiniMax M3 Free is not in the chain.
 
-Nemotron 3 Super Free is the primary model for the entire workforce unless an explicitly supported role-level free-model policy says otherwise. MiniMax M3 Free is not in the chain. Paid model IDs cannot be persisted. The paid continuity routes (`deepseek/deepseek-v4-flash-0731` on OpenRouter and on Nous Portal) remain last after the free/BYOK chain and run only when `APEX_PAID_FALLBACK_ENABLED=true` and their credential is set. Free-pool, workspace-token, emergency-request, and legacy paid-spend exhaustion do not veto them; only the switch does, and turning it off removes both routes without removing any free or BYOK provider. The Nous route is not an OpenRouter route: it gets no OpenRouter `provider`, `usage`, headers, or account handling (Nous refuses the `provider` object with HTTP 400); the OpenRouter paid route keeps all of them. A free-route quota or rate-limit 429 on the funded OpenRouter account excludes only that account's free routing (scope `free`), never its paid route (`scripts/verify-paid-fallback-request.ts`). The paid routes receive the full normal conversation history instead of the smaller free-route history trim, and at least `PAID_MIN_OUTPUT_TOKENS` (16,384) output tokens whatever the role budget: DeepSeek's reasoning can otherwise fill a 4,096-token budget and return no content (`finish_reason: length`), failing the task after the reasoning was billed. Billing is per generated token, so the higher ceiling costs nothing when the answer is short; free routes keep the role budget. The paid routes also wait `PAID_REQUEST_TIMEOUT_MS` (120s) for an answer, where free routes keep `APEX_LLM_REQUEST_TIMEOUT_MS` (default 30s) for fast failover: at 30s, DeepSeek answers on 25-35K-token agent contexts timed out about once a minute, each timeout became a 5s capacity pause and a restart from the last checkpoint, and the aborted generation was likely still billed. Provider-side context/rate limits and reliability cooldowns still apply.
+### Paid continuity route (FlashX)
+
+Paid continuity is served solely by OpenRouter: `openrouter-deepseek-v4-flash-paid` using model `deepseek/deepseek-v4-flash-0731` (`OPENROUTER_PAID_KEY_ENVS`, `provider.sort: latency`). The Nous Portal route was cut off and retired on 2026-10-09 (#325); there is no Nous provider and no 90/10 split.
+
+Paid continuity rules:
+- Activated only when `APEX_PAID_FALLBACK_ENABLED=true` (or `1`, `on`, `enabled`). Absent or false removes the paid route completely, leaving APEX free/BYOK-only.
+- **Spend ceiling**: Governed by `APEX_DAILY_SPEND_USD` via the spend ledger (`calculateSpendCapacityWindow`, default 0 = spend nothing, fail closed). When the daily spend cap or pacing allowance is reached, it reports `daily_cap` or `paced` and pauses paid work until the budget releases (next UTC day or pacing ramp).
+- The paid route bypasses token-pool and emergency request governors, but upstream OpenRouter balance/rate limits and APEX daily dollar spend caps apply.
+- Receives full conversation history (bypasses free history trim) and a minimum output budget of `PAID_MIN_OUTPUT_TOKENS` (16,384) with timeout `PAID_REQUEST_TIMEOUT_MS` (120s).
+
+### Authentication and failure policy
+
+- A 401 or 403 (or model access denied) on a single route is treated as that route being unavailable: the failure is recorded in diagnostics and logs, and the credential enters a 10-minute cooldown, but it does **not** fail the task if other routes in the chain have capacity or are waiting on capacity resets. The task defers until capacity on those other routes resumes.
+- If **every** attempted route fails authentication/access (and no route has provider capacity to wait for), APEX fails loudly with `All LLM providers failed or were unavailable.` so the operator is alerted immediately to fix credentials.
 
 The authenticated Settings → OpenRouter Model Control panel may persist `APEX_OPENROUTER_MODEL_POLICY` with:
 
@@ -187,7 +204,7 @@ Credential environment variables:
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_API_KEY_2`
 - `OPENROUTER_API_KEY_4` — optional independent-account credential
-- `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so authenticated `GET /api/health/detail` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials. The OpenRouter half of the paid continuity split uses the funded `OPENROUTER_API_KEY_4` inference credential, never a management key; the Nous half uses `NOUS_API_KEY`. Both keys can be stored in Settings → Paid Continuity.
+- `OPENROUTER_MGMT_KEY`, `OPENROUTER_MGMT_KEY_2`, `OPENROUTER_MGMT_KEY_3`, `OPENROUTER_MGMT_KEY_4` — optional management keys, one per independent OpenRouter account. They cannot infer. They list that account's inference keys so authenticated `GET /api/health/detail` can prove a live key belongs to a distinct user. They never auto-create or rotate credentials. Paid continuity uses funded inference credentials (such as `OPENROUTER_API_KEY_4`), never a management key.
 
 All configured qualifying OpenRouter accounts are load-balanced by the account identity resolved from `creator_user_id`; a key fingerprint is only the fail-safe identity while that probe is unavailable. `OPENROUTER_API_KEY_3` is deliberately absent from the active roster because it duplicated the `OPENROUTER_FREE_API_KEY` account. Two API keys belonging to the same OpenRouter account do **not** create separate account balances or independent account-wide quota. Treat them as credential redundancy only. Available free-request capacity scales with the number of distinct qualifying accounts actually detected by authenticated `GET /api/health/detail`; credential count alone is not treated as account count. Failed requests consume quota, so retries are bounded. Account 429/402 exclusions apply to all sibling keys and OpenRouter routes, survive process restarts in `component_health`, and rotate to another qualifying account before abandoning the current free model. Exception: a quota or rate-limit 429 raised by a `:free` route is scoped `free` and blocks only free routing on that account, because OpenRouter's free-model limits do not apply to paid models; credit exhaustion (402/out of funds) stays account-wide. Daily free-quota exclusions expire at the next UTC midnight; a 402/credit exhaustion exclusion lasts six hours unless a longer `Retry-After` applies. Nonpositive management-key balance probes exclude that account from paid routing until a later positive probe, without suppressing its independent free allowance. Authenticated `GET /api/health/providers` exposes these exclusions. Only the explicitly confirmed continuity route may spend paid credit after free execution becomes unavailable.
 
@@ -195,7 +212,7 @@ OpenRouter requests retain provider pacing, retry-after handling, transient cool
 
 ### Routing behavior
 
-- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact six-route free chain (Nex N2.5 Mini Free first, Nemotron Ultra last).
+- If `APEX_OPENROUTER_MODEL_POLICY` is absent or invalid, fall back to the exact four-model free chain (Nemotron 3 Super Free first, Nemotron 3 Ultra Free last).
 - Persisted production policies may contain only `:free` model IDs or exactly `openrouter/free`. Paid model IDs are rejected.
 - `openrouter/free` must preserve APEX tool/function-call requirements (`require_parameters`).
 - Flag models without reliable tool calling in the operator UI. Selecting such a model does not disable malformed-tool-call/non-completion guards.

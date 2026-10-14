@@ -945,6 +945,18 @@ export function isCapacityFailure(
   );
 }
 
+export function isAuthFailure(status: number | undefined, message: string): boolean {
+  if (status === 401 || status === 403) return true;
+  if (
+    /\b(?:401|403)\b|invalid (?:api )?key|authentication failed|unauthori[sz]ed|forbidden|access to model denied/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function credentialCooldown(id: string): CredentialCooldown | null {
   const cooldown = credentialCooldowns.get(id);
   if (!cooldown) return null;
@@ -1853,6 +1865,7 @@ class MultiProviderClient {
         const skipReasons: string[] = [];
         const capacityBlocks: CapacityBlock[] = [...globalCapacityBlocks];
         let nonCapacityFailureSeen = false;
+        let authFailureCount = 0;
 
         for (const providerName of requestProviderOrder(this.config.role, pacingOverride)) {
           const provider = PROVIDER_BY_NAME.get(providerName);
@@ -2150,7 +2163,10 @@ class MultiProviderClient {
                 setProviderCooldown(provider, status, message, err.retryAfterMs);
                 const capacityFailure = isCapacityFailure(status, message);
                 const correctableRequestFailure = isRequestTooLargeError(status, message);
-                if (!capacityFailure && !correctableRequestFailure) {
+                const authFailure = isAuthFailure(status, message);
+                if (authFailure) {
+                  authFailureCount++;
+                } else if (!capacityFailure && !correctableRequestFailure) {
                   nonCapacityFailureSeen = true;
                 }
                 const newCooldown =
@@ -2278,7 +2294,14 @@ class MultiProviderClient {
         }
 
         const details = [...providerErrors, ...skipReasons];
-        if (capacityBlocks.length > 0 && !nonCapacityFailureSeen) {
+        const hasProviderCapacity = capacityBlocks.some(
+          (b) => b.source !== 'workspace' && b.source !== 'free-byok-providers',
+        );
+        const canPause =
+          capacityBlocks.length > 0 &&
+          !nonCapacityFailureSeen &&
+          (authFailureCount === 0 || hasProviderCapacity);
+        if (canPause) {
           throw capacityPauseError(capacityBlocks, details);
         }
         throw new Error(
