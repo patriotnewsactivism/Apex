@@ -7,6 +7,7 @@ import { createLLMClient, getDefaultLLMConfig, getLLMCapacityResumeAt, isLLMInte
 import type { LLMMessage, LLMTool, LLMToolCall } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
 import { operatorDashboardSessionValid } from '../operator-session.js';
+import { startOperatorSelfRehearsal } from './sales-floor.js';
 import {
   COPILOT_SAFE_PAGES,
   COPILOT_READ_ONLY_CHAT_TOOL_NAMES,
@@ -109,7 +110,11 @@ You are a capable agent in your own right, not a dispatcher. Handle things yours
 - Be honest about uncertainty. If you don't actually know something, say so and offer to look it up rather than
   inventing a plausible-sounding answer.
 - Keep replies conversational length — a few sentences to a few short paragraphs, not a wall of bullet points,
-  unless he's asked for a list.`;
+  unless he's asked for a list.
+- Rehearsal: when Don asks you to practise, rehearse, "pitch me", or "sell to me", call rehearse_with_me right
+  away (do not create a goal). It emails and calls ONLY his saved rehearsal email and phone and works even while
+  the outbound kill switch is on. Never use it, or anything else, to reach a prospect or another number. Report
+  exactly what the tool returned; if it says nothing was sent, say so.`;
 
 const COPILOT_SYSTEM_PROMPT = `
 
@@ -258,6 +263,11 @@ export const CHAT_TOOLS: LLMTool[] = [
       },
       required: ['id'],
     },
+  },  {
+    name: 'rehearse_with_me',
+    description:
+      "Start Don's own sales rehearsal (\"practice pitch me\", \"rehearse with me\", \"sell to me\"): APEX emails and calls ONLY Don's saved rehearsal email and phone from Sales Operations, playing the BuildMyBot sales rep. Works while the outbound kill switch is on (allowlisted, daily-capped, audited). Takes no destination — it can never reach a prospect or any other number. Use it only when Don asks to be pitched or to practise.",
+    parameters: { type: 'object', properties: {} },
   },
 ];
 
@@ -296,11 +306,31 @@ export async function buildLiveSnapshot(): Promise<string> {
   return lines.join('\n');
 }
 
+export interface ChatToolOptions {
+  /** True only when this request carried a valid operator dashboard session
+   *  (x-apex-operator-session). Voice and other callers leave it false. */
+  operatorSession?: boolean;
+}
+
 export async function executeTool(
   call: { name: string; args: Record<string, unknown> },
   ceo: ApexCEO,
+  options: ChatToolOptions = {},
 ): Promise<Record<string, unknown>> {
   switch (call.name) {
+    case 'rehearse_with_me': {
+      if (options.operatorSession !== true) {
+        return {
+          sent: false,
+          error: 'Practice calls from chat need a signed-in operator dashboard session. Sign in again, or use "Sell to me" on Sales Floor.',
+        };
+      }
+      // Destination is never taken from the model: the helper reads the saved
+      // rehearsal email/phone, and the send safeguard re-checks allowlist,
+      // daily cap, and writes the rehearsal_bypass audit row per send.
+      const outcome = await startOperatorSelfRehearsal({ operatorSession: true });
+      return { httpStatus: outcome.status, ...(outcome.body as Record<string, unknown>) };
+    }
     case 'create_goal': {
       const title = String(call.args.title ?? '').slice(0, 200);
       const description = String(call.args.description ?? '');
@@ -657,6 +687,13 @@ export function createChatRouter(ceo: ApexCEO) {
     const copilotRequested = copilot?.enabled === true;
     const copilotEnabled = copilotRequested && isCopilotFeatureEnabled();
     if (copilotEnabled && !(await requireCopilotOperatorSession(req, res))) return;
+    let operatorSession = false;
+    try {
+      const header = req.header('x-apex-operator-session');
+      operatorSession = await operatorDashboardSessionValid(typeof header === 'string' ? header : null);
+    } catch {
+      operatorSession = false;
+    }
 
     // Declared outside the try so the failure path can report where the time
     // went too — a turn that threw after 12 seconds is exactly the case worth
@@ -753,7 +790,7 @@ export function createChatRouter(ceo: ApexCEO) {
                 };
               }
             } else {
-              result = await executeTool(call, ceo);
+              result = await executeTool(call, ceo, { operatorSession });
             }
           } catch (err) {
             result = { error: err instanceof Error ? err.message : String(err) };
