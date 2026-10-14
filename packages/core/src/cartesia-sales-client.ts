@@ -5,6 +5,23 @@ export const CARTESIA_SALES_AGENT_NAME = 'APEX Sales — BuildMyBot';
 export const CARTESIA_SALES_VOICE_NAME = 'Don Matthews';
 export const APEX_CARTESIA_CALLER_NUMBER = '+18329757665';
 
+/** The voice used when no owned voice name resolves. Renaming is config, not source. */
+export const CARTESIA_SALES_DEFAULT_SPOKEN_NAME = 'Daniel';
+
+/**
+ * The name the sales agent speaks on a call.
+ *
+ * Config, not source: a rename is `CARTESIA_SALES_SPOKEN_NAME` and takes effect
+ * at the next reconcile. Read at call time rather than module load so a process
+ * that sets the variable after import still gets the right name. The name is
+ * injected into ONE agent-agnostic constitution (see
+ * `packages/api-server/src/cartesia-sales-constitution.ts`); never keep a second
+ * copy of the protocol per agent — the copies drift.
+ */
+export function cartesiaSalesSpokenName(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CARTESIA_SALES_SPOKEN_NAME?.trim() || CARTESIA_SALES_DEFAULT_SPOKEN_NAME;
+}
+
 const RESOLUTION_TTL_MS = 5 * 60_000;
 
 type CachedValue = { value: string; expiresAt: number } | null;
@@ -99,12 +116,28 @@ export function clearCartesiaSalesResolutionCache(): void {
 export async function resolveCartesiaSalesVoiceId(): Promise<string> {
   if (salesVoiceIdCache && salesVoiceIdCache.expiresAt > Date.now()) return salesVoiceIdCache.value;
 
+  // An explicit CARTESIA_SALES_VOICE_ID WINS over the owned-voice name search.
+  // The operator may point the line at any active voice, including one that is
+  // not one of his owned clones. Filtering the configured id back through the
+  // owned "Don Matthews" name search made the override a silent no-op: the
+  // resolve threw, the reconcile left the previous voice in place, and the line
+  // kept dialing on the old voice no matter what was configured.
   const configuredId = process.env.CARTESIA_SALES_VOICE_ID?.trim();
-  const page = configuredId
-    ? { data: [await managementRequest<CartesiaVoice>(`/voices/${encodeURIComponent(configuredId)}`)], has_more: false }
-    : await managementRequest<CartesiaVoicePage>(
-        `/voices?q=${encodeURIComponent(CARTESIA_SALES_VOICE_NAME)}&is_owner=true&limit=100`,
-      );
+  if (configuredId) {
+    const voice = await managementRequest<CartesiaVoice>(`/voices/${encodeURIComponent(configuredId)}`);
+    if (!voice.id) {
+      throw new Error(`Configured CARTESIA_SALES_VOICE_ID ${configuredId} was not found in Cartesia.`);
+    }
+    if (voice.status && voice.status !== 'active') {
+      throw new Error(`Configured CARTESIA_SALES_VOICE_ID ${configuredId} is not an active voice.`);
+    }
+    salesVoiceIdCache = { value: voice.id, expiresAt: Date.now() + RESOLUTION_TTL_MS };
+    return voice.id;
+  }
+
+  const page = await managementRequest<CartesiaVoicePage>(
+    `/voices?q=${encodeURIComponent(CARTESIA_SALES_VOICE_NAME)}&is_owner=true&limit=100`,
+  );
   if (page.has_more) throw new Error('Cartesia owned-voice search was truncated; refusing to guess.');
   const matches = (page.data ?? []).filter((voice) =>
     voice.id && voice.name?.trim().toLowerCase() === CARTESIA_SALES_VOICE_NAME.toLowerCase() &&
@@ -205,7 +238,10 @@ export async function resolveCartesiaSalesAgentId(): Promise<string> {
     resolveCartesiaSalesVoiceId(),
   ]);
   if (agent.config?.audio?.output?.voice_id !== voiceId) {
-    throw new Error(`Canonical Cartesia sales agent is not using the "${CARTESIA_SALES_VOICE_NAME}" voice; dialing is blocked.`);
+    // Name the RESOLVED voice here, not the owned-voice constant: with
+    // CARTESIA_SALES_VOICE_ID set the two are different by design, and the old
+    // message sent operators looking for a voice the line was never using.
+    throw new Error('Canonical Cartesia sales agent is not using the resolved sales voice; dialing is blocked.');
   }
   agentIdCache = { value, expiresAt: Date.now() + RESOLUTION_TTL_MS };
   return value;
