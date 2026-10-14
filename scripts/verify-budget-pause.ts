@@ -9,8 +9,10 @@ import {
   isLLMDailyBudgetPause,
   isLLMIntentionalPause,
   isLLMProviderChainFailure,
+  isRecoverableLLMProviderFailure,
   shouldSuppressImmediateLLMRetry,
 } from "../packages/core/src/provider-failure.js";
+import { isAuthFailure } from "../packages/core/src/llm-client.js";
 import {
   calculateTokenCapacityWindow,
   msUntilDailyReset,
@@ -111,6 +113,48 @@ check(
   getLLMCapacityResumeAt(paidRungAlsoPaused)?.toISOString() ===
     "2026-08-25T00:00:00.000Z",
   getLLMCapacityResumeAt(paidRungAlsoPaused),
+);
+
+// Auth failure checks (401/403 treated as route unavailable while waiting on other routes)
+check("HTTP 403 access denied is recognized as auth failure", isAuthFailure(403, "Access to model denied"));
+check("HTTP 401 unauthorized is recognized as auth failure", isAuthFailure(401, "Unauthorized"));
+check("text pattern access to model denied is recognized as auth failure", isAuthFailure(undefined, "Access to model denied. Please make sure you are eligible for using the model."));
+check("HTTP 429 rate limit is NOT auth failure", !isAuthFailure(429, "Rate limit exceeded"));
+check("HTTP 500 server error is NOT auth failure", !isAuthFailure(500, "Internal server error"));
+
+const capacityPauseWithRouteAuthFailure =
+  "APEX LLM capacity paused. resume-at=2026-08-25T00:00:00.000Z | " +
+  "openrouter: daily cap reached | qwen-dashscope-byok/qwen3.8-flash via QWEN_API_KEY: HTTP 403 Access to model denied";
+
+check(
+  "capacity pause with auth failure on one route is recognized as a capacity pause",
+  isLLMCapacityPause(capacityPauseWithRouteAuthFailure),
+);
+check(
+  "capacity pause with auth failure on one route suppresses immediate retries",
+  shouldSuppressImmediateLLMRetry(capacityPauseWithRouteAuthFailure),
+);
+check(
+  "capacity pause with auth failure on one route preserves resume time",
+  getLLMCapacityResumeAt(capacityPauseWithRouteAuthFailure)?.toISOString() ===
+    "2026-08-25T00:00:00.000Z",
+  getLLMCapacityResumeAt(capacityPauseWithRouteAuthFailure),
+);
+
+const allRoutesAuthFailure =
+  "All LLM providers failed or were unavailable. qwen-dashscope-byok/qwen3.8-flash via QWEN_API_KEY: HTTP 403 Access to model denied | groq-gpt-oss-120b-byok via GROQ_API_KEY: HTTP 401 Unauthorized";
+
+check(
+  "all routes failing auth is NOT a capacity pause",
+  !isLLMCapacityPause(allRoutesAuthFailure),
+);
+check(
+  "all routes failing auth is recognized as provider chain failure",
+  isLLMProviderChainFailure(allRoutesAuthFailure),
+);
+check(
+  "all routes failing auth is not autonomously recoverable (requires human intervention)",
+  !isRecoverableLLMProviderFailure(allRoutesAuthFailure),
 );
 
 const oneMinuteBeforeReset = Date.UTC(2026, 7, 22, 23, 59, 0, 0);
