@@ -627,7 +627,9 @@ export async function listDueTasks(input: { limit?: number } = {}): Promise<{ da
     and(
       eq(crmTasks.organizationId, CRM_ORGANIZATION_ID),
       eq(crmTasks.status, 'open'),
-      sql`${crmTasks.dueAt} IS NOT NULL AND ${crmTasks.dueAt} < ${bounds.end}`,
+      // An ISO string with a cast: the client runs with prepare:false (pooler), which
+      // cannot bind a raw Date inside a hand-written sql template.
+      sql`${crmTasks.dueAt} IS NOT NULL AND ${crmTasks.dueAt} < ${bounds.end.toISOString()}::timestamptz`,
     ),
     Math.min(Math.max(input.limit ?? 100, 1), 500),
   );

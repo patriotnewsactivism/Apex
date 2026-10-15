@@ -7,7 +7,18 @@ import { createModelSettingsRouter } from './model-settings.js';
 import { createOpenRouterBalanceRouter } from './openrouter-balance.js';
 
 type IntegrationCategory = 'ai' | 'search' | 'voice' | 'dev' | 'data' | 'business';
-type ProbeDefinition = { kind: 'openai-models'; baseUrl: string; extraHeaders?: Record<string, string> };
+type ProbeDefinition = {
+  kind: 'openai-models';
+  baseUrl: string;
+  /**
+   * Env vars that override `baseUrl` at probe time, first non-empty wins.
+   * Required for key-scoped providers: an Alibaba Model Studio workspace key is
+   * valid only on the host that issued it, so probing the compiled default
+   * reports `invalid_key` for a credential that routes fine in production.
+   */
+  envBaseUrls?: string[];
+  extraHeaders?: Record<string, string>;
+};
 type IntegrationFieldDefinition = {
   key: string;
   label: string;
@@ -74,29 +85,29 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
   },
   {
     id: 'qwen-byok',
-    name: 'QwenCloud Token Plan — Primary BYOK',
-    description: 'Operator-funded QwenCloud (qwencloud.com) Token Plan. Tried first on every call, on QWEN_API_KEY, so usage lands on that plan. Its model follows the QWEN_MODEL override (default qwen3.8-flash). An exhausted OpenRouter or workspace budget does not block it; its own daily cap, rate, and pacing still do.',
+    name: 'Alibaba Model Studio (Qwen) — Primary BYOK',
+    description: 'Operator-funded Alibaba Cloud Model Studio (Qwen) key. Tried first on every call, on QWEN_API_KEY, so usage lands on that account; pay-as-you-go is billed once any free quota is used. Model Studio credentials are WORKSPACE-scoped — a key is valid only on the workspace host that issued it — so QWEN_BASE_URL must hold that workspace compatible-mode endpoint and the key probes below follow it rather than a compiled default. Its model follows the QWEN_MODEL override (default qwen3.8-flash). An exhausted OpenRouter or workspace budget does not block it; its own daily cap, rate, and pacing still do.',
     category: 'ai',
-    docsUrl: 'https://docs.qwencloud.com',
+    docsUrl: 'https://www.alibabacloud.com/help/en/model-studio',
     envVars: [
       { key: 'APEX_QWEN_BYOK_ENABLED', label: 'Routing Enabled', placeholder: 'true or false' },
       { key: 'APEX_QWEN_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '50000' },
       { key: 'APEX_QWEN_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '60' },
-      { key: 'QWEN_BASE_URL', label: 'Base URL', placeholder: 'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1' },
+      { key: 'QWEN_BASE_URL', label: 'Base URL (workspace endpoint)', placeholder: 'https://ws-xxxxxxxx.<region>.maas.aliyuncs.com/compatible-mode/v1' },
       { key: 'QWEN_MODEL', label: 'Model Override', placeholder: 'qwen3.8-flash' },
       {
         key: 'QWEN_API_KEY',
-        label: 'QwenCloud Token Plan API Key 1',
-        placeholder: 'sk-sp-...',
+        label: 'Model Studio API Key 1',
+        placeholder: 'sk-ws-... (pay-as-you-go)',
         secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1' },
+        probe: { kind: 'openai-models', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', envBaseUrls: ['QWEN_BASE_URL', 'APEX_QWEN_BASE_URL'] },
       },
       {
         key: 'QWEN_API_KEY_2',
-        label: 'QwenCloud Token Plan API Key 2',
-        placeholder: 'sk-sp-...',
+        label: 'Model Studio API Key 2',
+        placeholder: 'sk-ws-... (pay-as-you-go)',
         secret: true,
-        probe: { kind: 'openai-models', baseUrl: 'https://token-plan.maas.qwencloudapi.com/compatible-mode/v1' },
+        probe: { kind: 'openai-models', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', envBaseUrls: ['QWEN_BASE_URL', 'APEX_QWEN_BASE_URL'] },
       },
     ],
   },
@@ -291,6 +302,42 @@ function findField(key: string): IntegrationFieldDefinition | undefined {
   return undefined;
 }
 
+/**
+ * Resolve the base URL a probe must actually hit. A configured env override
+ * beats the compiled default, because for a key-scoped provider the default
+ * host rejects a perfectly good credential and the operator sees `invalid_key`
+ * for a key that is routing fine in production.
+ */
+function resolveProbeBaseUrl(probe: ProbeDefinition): string {
+  for (const envKey of probe.envBaseUrls ?? []) {
+    const configured = process.env[envKey]?.trim();
+    if (configured) return configured;
+  }
+  return probe.baseUrl;
+}
+
+/**
+ * The `/models` URL a probe fetches. Accepts the same shapes the runtime
+ * accepts for a provider base URL — trailing slashes, and a value that already
+ * ends in `/chat/completions` — so a base URL that routes correctly also probes
+ * correctly instead of 404ing.
+ */
+function probeModelsUrl(probe: ProbeDefinition): string {
+  const trimmed = resolveProbeBaseUrl(probe).replace(/\/+$/, '');
+  const base = trimmed.endsWith('/chat/completions')
+    ? trimmed.slice(0, -'/chat/completions'.length)
+    : trimmed;
+  return `${base}/models`;
+}
+
+/** Exported for tests: where the probe for `key` would be sent, or null if that
+ * integration has no live probe. */
+export function probeTargetUrl(key: string): string | null {
+  const field = findField(key);
+  if (!field?.probe) return null;
+  return probeModelsUrl(field.probe);
+}
+
 async function probeConfiguredKey(key: string): Promise<{
   key: string;
   status: 'connected' | 'configured' | 'rate_limited' | 'billing_required' | 'invalid_key' | 'degraded';
@@ -306,8 +353,7 @@ async function probeConfiguredKey(key: string): Promise<{
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const baseUrl = field.probe.baseUrl.replace(/\/$/, '');
-    const response = await fetch(`${baseUrl}/models`, {
+    const response = await fetch(probeModelsUrl(field.probe), {
       method: 'GET',
       headers: { Authorization: `Bearer ${value}`, ...(field.probe.extraHeaders ?? {}) },
       signal: controller.signal,

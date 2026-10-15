@@ -13,7 +13,8 @@ function sameLowLatencyStack(assistant: JsonRecord): boolean {
     assistant?.transcriber?.provider === 'deepgram' &&
     assistant?.transcriber?.model === 'flux-general-en' &&
     assistant?.transcriber?.eotTimeoutMs === 2000 &&
-    assistant?.startSpeakingPlan?.waitSeconds === 0.1
+    assistant?.startSpeakingPlan?.waitSeconds === 0.1 &&
+    assistant?.silenceTimeoutSeconds === 30
   );
 }
 
@@ -102,6 +103,9 @@ export async function reconcileVapiInboundLatency(): Promise<void> {
     startSpeakingPlan: {
       waitSeconds: 0.1,
     },
+    // Ringing time counts against Vapi's silence timer; a shorter value ends
+    // unanswered-but-ringing calls as "did-not-receive-customer-audio".
+    silenceTimeoutSeconds: 30,
     stopSpeakingPlan: {
       numWords: 0,
       voiceSeconds: 0.15,

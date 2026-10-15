@@ -846,6 +846,31 @@ export async function migrate() {
     CREATE INDEX IF NOT EXISTS websocket_tickets_expires_at_idx
     ON websocket_tickets (expires_at)
   `;
+  // sales_opportunities.stage_id points here, and the CRM phase 2 migration
+  // seeds the default board into it. Until this was created here, only a
+  // database that had the hand-applied 20260918_revenue_ops_neon.sql had the
+  // table, so every fresh database (CI, local, a new environment) failed the
+  // phase 2 seed at boot. Identical to that file and to schema-revenue-ops.ts.
+  await client`
+    CREATE TABLE IF NOT EXISTS pipeline_stages (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      organization_id text NOT NULL,
+      name varchar(100) NOT NULL,
+      position integer NOT NULL,
+      type text,
+      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `;
+  await client`
+    CREATE INDEX IF NOT EXISTS pipeline_stages_organization_id_idx
+    ON pipeline_stages (organization_id)
+  `;
+  await client`
+    CREATE UNIQUE INDEX IF NOT EXISTS pipeline_stages_org_position_unique
+    ON pipeline_stages (organization_id, position)
+  `;
   await client`
     CREATE TABLE IF NOT EXISTS sales_opportunities (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

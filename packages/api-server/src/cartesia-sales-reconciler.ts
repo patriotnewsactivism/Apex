@@ -240,6 +240,24 @@ function desiredTools(toolSecret: string) {
   ];
 }
 
+/**
+ * The name this agent speaks as. One name per agent; the protocol is shared.
+ *
+ * Daniel is the Cartesia outbound agent's name until further notice (the
+ * operator calls him Dan). A switch to another voice — Vapi, say — is a name
+ * change here or in the environment, not a new constitution.
+ *
+ * Read per call rather than at module load so a process that sets the variable
+ * after import (tests, the reconciler CLI) still gets the right name.
+ */
+function salesAgentSpokenName(): string {
+  return (
+    process.env.CARTESIA_SALES_SPOKEN_NAME?.trim() ||
+    process.env.SALES_AGENT_NAME?.trim() ||
+    'Daniel'
+  );
+}
+
 function agentConfig(toolIds: string[], voiceId: string) {
   const toolNames = cartesiaSalesToolNames();
   // The spoken name is CONFIGURATION, read here rather than at module load so a
@@ -249,7 +267,7 @@ function agentConfig(toolIds: string[], voiceId: string) {
   const spokenName = cartesiaSalesSpokenName();
   return {
     instructions: [
-      renderSalesAgentConstitution(spokenName),
+      renderSalesAgentConstitution(salesAgentSpokenName()),
       '=== OPERATIONAL RULES (APEX/Cartesia) — MUST FOLLOW ALONGSIDE THE CONSTITUTION ===',
       'You make outbound business sales calls. Sound warm and conversational. Answer as soon as the other person finishes.',
       'ANSWER THE WHOLE TURN: respond to every distinct point they just made — a yes plus a detail, a correction, a second question, and a short reply all count. Do not drop one of them, and do not replace what they said with the next scripted line. Then ask at most one next question.',
@@ -278,7 +296,14 @@ function agentConfig(toolIds: string[], voiceId: string) {
       'Only a clear request to stop future calls or messages is an opt-out. Never infer DNC from yes, no, silence, a short reply, or declining the offer. If unclear, ask one brief clarifying question.',
       `On an explicit opt-out, call ${toolNames[6]} with dnc and opt_out_quote containing the exact spoken words; acknowledge it and end. If CRM lookup reports do_not_contact, end politely without writing a new DNC.`,
       `Ask for explicit permission before using ${toolNames[4]}. Never claim a text was delivered if the tool says it failed.`,
-      `If the prospect asks for your email address, or how to reach the team, give exactly this address: sales@buildmybot.app. Never answer that you have no email to give, and do not invent a different address.`,
+      // The agent has its OWN mailbox: "AiEmployee" id vera-sales holds
+      // daniel@buildmybot.app (see supabase/migrations/
+      // 20261014190000_sales_agent_personal_mailbox.sql). Giving out the shared
+      // role inbox instead sent replies to a desk nobody owns, which is the
+      // reason the personal mailbox was created. sales@buildmybot.app stays a
+      // roster alias on that employee, so mail there still reaches the agent —
+      // but the address it SPEAKS must be its own.
+      `If the prospect asks for your email address, or how to reach the team, give exactly this address: daniel@buildmybot.app. Never answer that you have no email to give, and do not invent a different address.`,
       `If the prospect asks you to email them, confirm the email address aloud once, then call ${toolNames[5]} immediately. Do not route that request through ${toolNames[1]}, do not say you cannot send email before trying the tool, and do not treat the request as general marketing consent. Say it was sent only when the tool returns sent=true.`,
       `Offer only calendar slots returned by ${toolNames[2]}. Call ${toolNames[3]} only after the prospect agrees to one. A booking is confirmed only when booked is true.`,
       `CALENDAR FAILURE IS NOT A BOOKING: if ${toolNames[2]} errors, times out, or returns no slots, you may NOT say the appointment is set, held, saved, reserved, confirmed, or booked, and you may NOT say you have them "down for" a time. Never promise an invitation, a confirmation email, a text, or that someone will send times, and never say you will "get it sorted" or that they will "hear from you shortly" — none of that exists unless a tool in THIS call returned success for exactly that action. Say plainly that you cannot reach the calendar right now, take their preferred day, time, and best email or phone number, tell them a person will confirm the exact time, and then stop promising.`,

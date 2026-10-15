@@ -51,6 +51,7 @@ jobs:
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-diagnostics-tmp.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-agent-status-recovery.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-request-budget.ts"
+          pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-llm-credential-precedence.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-cooldown-persistence.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-mission-creation.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-embedding-diagnostics.ts"
@@ -86,6 +87,8 @@ jobs:
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-source-tools.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-campaign-runner-lead-payload.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-search-capacity-pause.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-lead-identity-recovery.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-exa-search.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-call-outcome-capture.ts"
           pnpm --filter @workspace/api-server exec tsx "$GITHUB_WORKSPACE/scripts/verify-cartesia-canonical-sales-routing.ts"
           pnpm --filter @workspace/api-server exec vitest run src/routes/cartesia-sales.test.ts
@@ -442,3 +445,11 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
         run: pnpm exec vitest run src/__tests__/lead-write-path.test.ts
+      - name: Lead stats integration suite
+        # GET /api/leads/stats counts in the database, not by loading every
+        # lead: identical to the original JavaScript over the whole table plus
+        # seeded edge cases, and the route may not select the table again.
+        working-directory: packages/api-server
+        env:
+          DATABASE_URL: postgres://postgres:local-test-only@127.0.0.1:5434/apex_test
+        run: pnpm exec vitest run src/__tests__/lead-stats.test.ts

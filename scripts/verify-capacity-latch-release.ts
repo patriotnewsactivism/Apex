@@ -16,7 +16,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // CI runs guards via `pnpm --filter <pkg> exec`, so cwd is a package dir.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   console.log('── Capacity latch release (behaviour) ──');
 
   const agentModule = (await import(
-    path.join(root, 'packages/core/src/base-agent.ts')
+    pathToFileURL(path.join(root, 'packages/core/src/base-agent.ts')).href
   )) as Partial<{
     capacityPauseRemainingMs: (now?: number) => number;
     __resetCapacityLatchForTest: () => void;
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
   );
 
   const llm = (await import(
-    path.join(root, 'packages/core/src/llm-client.ts')
+    pathToFileURL(path.join(root, 'packages/core/src/llm-client.ts')).href
   )) as { llmCapacityAvailableNow: (now?: number) => boolean };
   check(
     'the capacity probe is exported and answers without throwing',

@@ -360,6 +360,16 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
     onError: (err: unknown) => setActionError(err instanceof Error ? err.message : String(err)),
   });
 
+  // One-tap listen-in: ring the operator's saved number into this live call as
+  // a muted (monitor) supervisor leg. On AI-first autonomous sessions the
+  // operator leg is never dialed at start — this is how you tap into a call
+  // the AI is running on its own.
+  const listenLive = useMutation({
+    mutationFn: () => api.callBridge.join(id, 'monitor'),
+    onSuccess: afterAction,
+    onError: onActionError,
+  });
+
   // Mute my own leg so the AI can run the call while I listen in, then unmute
   // to take it back.
   const muteSelf = useMutation({
@@ -452,6 +462,21 @@ function LiveSession({ id, onEnded }: { id: string; onEnded: () => void }) {
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {!isDone && !session.operatorCallControlId && (
+          <button
+            className="btn-secondary"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
+            disabled={listenLive.isPending}
+            onClick={() => {
+              setActionError(null);
+              listenLive.mutate();
+            }}
+            title="Ring your saved number into this call, muted (listen-only)"
+          >
+            <Radio size={14} />
+            {listenLive.isPending ? 'Ringing you…' : 'Listen live'}
+          </button>
+        )}
         {!isDone && !aiOnCall && (
           <button
             className="btn-secondary"
@@ -576,6 +601,12 @@ function LiveCallMonitor({ onOpen }: { onOpen: (id: string) => void }) {
     queryFn: () => api.callBridge.sessions(),
     refetchInterval: 5000,
   });
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const listenJoin = useMutation({
+    mutationFn: (sid: string) => api.callBridge.join(sid, 'monitor'),
+    onSuccess: () => setJoinError(null),
+    onError: (err: unknown) => setJoinError(err instanceof Error ? err.message : String(err)),
+  });
   const rows = sessions.data?.sessions ?? [];
   const liveCount = rows.filter((s) => LIVE_STATUSES.includes(s.status)).length;
   return (
@@ -598,8 +629,8 @@ function LiveCallMonitor({ onOpen }: { onOpen: (id: string) => void }) {
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {rows.map((s) => (
+          <div key={s.id} style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
           <button
-            key={s.id}
             onClick={() => onOpen(s.id)}
             title="Open this call"
             style={{
@@ -634,8 +665,30 @@ function LiveCallMonitor({ onOpen }: { onOpen: (id: string) => void }) {
               {new Date(s.createdAt).toLocaleTimeString('en-US', { timeZone: 'America/Chicago' })}
             </span>
           </button>
+          {LIVE_STATUSES.includes(s.status) && (
+            <button
+              onClick={() => listenJoin.mutate(s.id)}
+              disabled={listenJoin.isPending}
+              title="Ring your saved number into this live call, muted (listen-only)"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+                padding: '8px 10px', borderRadius: 6,
+                background: 'rgba(90,158,174,0.15)',
+                border: '1px solid var(--color-apex-line)',
+                color: 'var(--color-apex-text)', fontSize: 11.5,
+                fontFamily: 'var(--font-mono)', cursor: 'pointer',
+              }}
+            >
+              <Radio size={13} />
+              {listenJoin.isPending && listenJoin.variables === s.id ? 'Ringing…' : 'Listen'}
+            </button>
+          )}
+          </div>
         ))}
       </div>
+      {joinError && (
+        <div style={{ marginTop: 8, fontSize: 11, color: '#c45c66' }}>{joinError}</div>
+      )}
     </div>
   );
 }

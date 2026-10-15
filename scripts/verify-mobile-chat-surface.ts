@@ -65,10 +65,13 @@ check(
   'the floating chat shell is capped inside the viewport',
   /min\(58vh,\s*500px\)/.test(floatingChat) && /min\(72vh,\s*640px\)/.test(floatingChat),
 );
+// Whitespace-tolerant on purpose. The mount is formatted across several lines
+// in App.tsx, and the original patterns required the one-line form, so this
+// check failed on correct code — it guards that FloatingChat is MOUNTED with
+// the active page and title, not how the JSX happens to be wrapped.
 check(
   'the floating shell is mounted outside the page swap (survives navigation)',
-  /<FloatingChat \{[^}]*\} pageId=\{activePage\} pageTitle=\{meta\.title\}[^>]*?\/>/.test(app) ||
-    /<FloatingChat pageId=\{activePage\} pageTitle=\{meta\.title\}[^>]*?\/>/.test(app),
+  /<FloatingChat\s+(?:\{[^}]*\}\s+)?pageId=\{activePage\}\s+pageTitle=\{meta\.title\}[\s\S]*?\/>/.test(app),
 );
 check(
   'the mobile Calendar/Scheduler shortcut is docked left so it cannot overlap the right-side Chat FAB',

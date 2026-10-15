@@ -52,6 +52,7 @@ export * from './approval-packet.js';
 export * from './ai-approval-gates.js';
 export { evaluateWithAiGates, sweepPendingApprovalsWithAiGates } from './ai-approval-runtime.js';
 export * from './outbound-compliance-guard.js';
+export * from './no-answer-retry.js';
 export * from './send-safeguard.js';
 export * from './calendar-invite.js';
 export * from './send-safeguard-execute.js';
@@ -68,6 +69,7 @@ export { getTurnEconomySnapshot } from './turn-economy.js';
 
 export * from './specialists/index.js';
 export * from './crm/index.js';
+export * from './decision-maker.js';
 export {
   getCalendarBookingService,
   calendarBookingConfigured,

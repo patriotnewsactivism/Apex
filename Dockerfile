@@ -57,6 +57,9 @@ COPY lib/ ./lib/
 COPY packages/ ./packages/
 
 # Build dashboard
+# Railway exposes service variables to Docker builds only when declared as
+# build arguments. Vite inlines this public feature gate into the dashboard.
+ARG VITE_FEATURE_COPILOT=false
 RUN pnpm --filter @workspace/dashboard run build
 
 # ─── Stage 2: Production Runtime ──────────────────────────────────────────────

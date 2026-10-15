@@ -29,6 +29,8 @@ import { createCrmTools } from './crm/tools.js';
 import { getSalesPlaybook } from './sales-playbooks.js';
 import { isFromDomainError } from './outbound-policy.js';
 import { reserveBrightDataRequest, recordBrightDataSuccess } from './brightdata-budget.js';
+import { searchExaWeb, ExaSearchError } from './exa-search.js';
+import { reserveExaSearch } from './exa-search-budget.js';
 import { disableDirectoryProvider, isDirectoryAuthFailure, redactProviderBody, resolveDirectoryProviderKey } from './lead-provider-keys.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { createCalendarTools } from './calendar/tools.js';
@@ -1337,7 +1339,46 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           }
         }
 
-        // ── Strategy 1c: Bright Data (Google via a Web Unlocker zone) ──
+        // ── Strategy 1c: Exa semantic web search (paid, capped fallback) ──
+        // Runs after free-tier providers and before Bright Data. The existing
+        // persistent web_fast cache avoids repeat lead-discovery charges.
+        const exaKey = process.env.EXA_API_KEY;
+        if (!exaKey) diagnostics.push('exa: EXA_API_KEY not set');
+        if (freeOnly && exaKey) diagnostics.push('exa: skipped by freeOnly mode');
+        if (!freeOnly && exaKey && !webSearchProviderReady('exa')) {
+          diagnostics.push('exa: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && exaKey && webSearchProviderReady('exa')) {
+          // reserveExaSearch never throws, but a budget failure must never
+          // reach the user — treat anything unexpected as "skip Exa".
+          const reserved = await reserveExaSearch().catch(
+            () => ({ allowed: false, detail: 'daily request cap check unavailable' }),
+          );
+          if (!reserved.allowed) {
+            diagnostics.push(`exa: ${reserved.detail ?? 'daily request cap reached'}`);
+          } else {
+            try {
+              const exa = await searchExaWeb(query, exaKey, { maxResults: n, fast });
+              if (exa.results.length > 0) return {
+                query,
+                provider: 'exa',
+                results: exa.results.slice(0, n),
+                ...(exa.costDollars !== undefined ? { costDollars: exa.costDollars } : {}),
+              };
+              diagnostics.push('exa: 200 but zero results');
+            } catch (error) {
+              if (error instanceof ExaSearchError) {
+                diagnostics.push(`exa: HTTP ${error.status}`);
+                tripWebSearchProvider('exa', error.status, '');
+              } else {
+                diagnostics.push(`exa: ${error instanceof Error ? error.name : 'network error'}`);
+              }
+              console.warn('[webSearch] Exa unavailable, continuing to next search provider');
+            }
+          }
+        }
+
+        // ── Strategy 1d: Bright Data (Google via a Web Unlocker zone) ──
         // POST /request with an unblocker zone and a Google URL carrying
         // brd_json=1: Bright Data returns Google's results as JSON
         // ({ organic: [{ title, link, description }] }). The earlier Bing +

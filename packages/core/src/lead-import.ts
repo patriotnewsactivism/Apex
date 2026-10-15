@@ -261,6 +261,7 @@ export function planLeadImport(input: {
   const seenId = new Set<string>();
   const seenEmail = new Set<string>();
   const seenSite = new Set<string>();
+  const claimedIds = new Set<string>();
   const rows: ImportPlanRow[] = [];
 
   for (const skip of input.parseSkips ?? []) {
@@ -308,6 +309,23 @@ export function planLeadImport(input: {
     if (lead.leadId) seenId.add(lead.leadId);
     if (email) seenEmail.add(email);
     if (site) seenSite.add(site);
+
+    // Two rows that resolve to the SAME lead on file cannot both be applied —
+    // the second would overwrite the first (last write wins) and the lead the
+    // caller actually meant to enrich would never be touched. With a Lead ID
+    // this can never fire, because ids are unique. Without one, the website
+    // heuristic funnels a whole shared domain onto a single lead, so report the
+    // remainder rather than quietly discarding them.
+    if (claimedIds.has(existing.id)) {
+      rows.push({
+        action: 'skip',
+        reason: 'matches a lead already claimed earlier in this file',
+        existingId: existing.id,
+        lead,
+      });
+      continue;
+    }
+    claimedIds.add(existing.id);
 
     const merged: ImportedLead = {
       ...lead,

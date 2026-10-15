@@ -20,7 +20,7 @@ const DISCOVERY_ZERO_PREFIX = 'All lead discovery sources returned zero';
  *  Their failures mean lost capacity. Keyless fallbacks (OSM, DuckDuckGo) are
  *  best-effort and often fail for one query only, so they never pause search:
  *  one slow city must not stall the whole territory. */
-const KEYED_SOURCES = new Set(['brave', 'yelp', 'google', 'tomtom', 'serper', 'brightdata']);
+const KEYED_SOURCES = new Set(['brave', 'yelp', 'google', 'tomtom', 'serper', 'brightdata', 'exa']);
 
 const BREAKER_REASON = 'paused after an earlier failure';
 
