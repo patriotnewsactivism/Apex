@@ -1349,7 +1349,11 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           diagnostics.push('exa: temporarily skipped by provider circuit breaker');
         }
         if (!freeOnly && exaKey && webSearchProviderReady('exa')) {
-          const reserved = await reserveExaSearch();
+          // reserveExaSearch never throws, but a budget failure must never
+          // reach the user — treat anything unexpected as "skip Exa".
+          const reserved = await reserveExaSearch().catch(
+            () => ({ allowed: false, detail: 'daily request cap check unavailable' }),
+          );
           if (!reserved.allowed) {
             diagnostics.push(`exa: ${reserved.detail ?? 'daily request cap reached'}`);
           } else {
