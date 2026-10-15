@@ -847,10 +847,28 @@ export const LLM_REQUEST_TIMEOUT_MS = Number.isFinite(configuredRequestTimeoutMs
   ? Math.min(180_000, Math.max(10_000, Math.floor(configuredRequestTimeoutMs)))
   : 30_000;
 
-/** The request timeout for one route: the default, or the route's own longer
- *  timeout, never above the 180s ceiling. */
-function providerRequestTimeoutMs(provider: ProviderSpec): number {
-  return Math.min(180_000, Math.max(LLM_REQUEST_TIMEOUT_MS, provider.requestTimeoutMs ?? 0));
+/**
+ * The request timeout for one route: the default, or the route's own longer
+ * timeout, never above the 180s ceiling.
+ *
+ * An interactive turn has a human watching the screen, so a route that has not
+ * answered within INTERACTIVE_REQUEST_TIMEOUT_MS is abandoned and the next one
+ * tried. The default 30s budget is sized for an unattended background agent;
+ * spending it in front of the operator is the difference between "slow" and
+ * "broken". Tunable, because the right number depends on the routes in use.
+ */
+const INTERACTIVE_REQUEST_TIMEOUT_MS = envPositiveInt(
+  'APEX_LLM_INTERACTIVE_TIMEOUT_MS',
+  15_000,
+);
+
+function providerRequestTimeoutMs(
+  provider: ProviderSpec,
+  execution?: LLMExecutionContext,
+): number {
+  const base = Math.min(180_000, Math.max(LLM_REQUEST_TIMEOUT_MS, provider.requestTimeoutMs ?? 0));
+  if (execution?.interactive) return Math.min(base, INTERACTIVE_REQUEST_TIMEOUT_MS);
+  return base;
 }
 
 export function getProviderRequestTimeoutMs(providerName: ApexProviderName): number {
@@ -1506,7 +1524,7 @@ async function callCompatibleProvider(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), providerRequestTimeoutMs(provider));
+  const timeout = setTimeout(() => controller.abort(), providerRequestTimeoutMs(provider, execution));
   const startedAt = Date.now();
   let routedModels = [providerModel(provider)];
 
@@ -1712,7 +1730,7 @@ async function callProvider(
       tools,
       config: providerConfig,
       execution,
-      timeoutMs: providerRequestTimeoutMs(provider),
+      timeoutMs: providerRequestTimeoutMs(provider, execution),
     });
   }
   return callCompatibleProvider(provider, key, messages, tools, providerConfig, execution);

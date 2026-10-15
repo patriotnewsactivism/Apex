@@ -215,19 +215,68 @@ export function createLeadsRouter(): Router {
   });
 
   // ─── GET /api/leads/export — CSV download ────────────────────────────────
-  router.get('/export', async (_req, res) => {
+  // Exports the researched-lead table as the SAME column set
+  // POST /api/leads/import-enrichment reads back, so a round trip is
+  // export → enrich elsewhere → import and the headers line up by construction.
+  //
+  // Two things used to make that impossible and both are now opt-out:
+  //   1. `.limit(10000)` was hardcoded, so the book silently truncated at
+  //      10,000 rows with no signal that it had.
+  //   2. The reachable+verified filter was unconditional. You cannot export
+  //      leads in order to enrich them if the export only returns leads that
+  //      are already enriched — the one workflow this endpoint exists for was
+  //      the one it refused.
+  // Defaults are unchanged (reachable + verified, 10,000 rows) so nothing that
+  // already calls this changes shape; pass reachable=false / verified=false and
+  // raise limit (or page with offset) to get the whole table.
+  router.get('/export', async (req, res) => {
     const { db, researchedLeads } = await import('@workspace/db');
+
+    const conditions = [];
+    const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+    if (status) conditions.push(eq(researchedLeads.status, status));
+    else conditions.push(sql`${researchedLeads.status} <> 'rejected'`);
+
+    if (typeof req.query.pipelineState === 'string' && req.query.pipelineState.trim()) {
+      conditions.push(eq(researchedLeads.pipelineState, req.query.pipelineState.trim()));
+    }
+    if (typeof req.query.industry === 'string' && req.query.industry.trim()) {
+      conditions.push(ilike(researchedLeads.industry, `%${req.query.industry.trim()}%`));
+    }
+    if (typeof req.query.city === 'string' && req.query.city.trim()) {
+      conditions.push(ilike(researchedLeads.city, `%${req.query.city.trim()}%`));
+    }
+    if (typeof req.query.campaignId === 'string' && req.query.campaignId.trim()) {
+      conditions.push(eq(researchedLeads.campaignId, req.query.campaignId.trim()));
+    }
+    if (req.query.reachable !== 'false') {
+      conditions.push(sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`);
+    }
+    if (req.query.verified !== 'false') {
+      conditions.push(sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`);
+    }
+
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Cap is generous but still finite: an unbounded SELECT here would stream a
+    // 250k-row table into one response and one Node heap. Page with offset.
+    const EXPORT_MAX_LIMIT = 250_000;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10000, 1), EXPORT_MAX_LIMIT);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+    const [countRow] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(researchedLeads)
+      .where(where);
+    const total = Number(countRow?.n ?? 0);
 
     const leads = await db
       .select()
       .from(researchedLeads)
-      .where(and(
-        sql`${researchedLeads.status} <> 'rejected'`,
-        sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-        sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
-      ))
+      .where(where)
       .orderBy(desc(researchedLeads.createdAt))
-      .limit(10000);
+      .limit(limit)
+      .offset(offset);
 
     const escapeCsv = (val: string | null | undefined): string => {
       if (val == null) return '';
@@ -261,6 +310,12 @@ export function createLeadsRouter(): Router {
 
     const csv = [headers.join(','), ...rows].join('\r\n');
 
+    // Tell the caller whether it got everything. The old version gave no hint
+    // that it had stopped at 10,000, which is how a truncated export reads as
+    // a complete one.
+    res.setHeader('X-Total-Count', String(total));
+    res.setHeader('X-Export-Rows', String(rows.length));
+    res.setHeader('X-Export-Offset', String(offset));
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="apex-leads.csv"');
     res.send(csv);
