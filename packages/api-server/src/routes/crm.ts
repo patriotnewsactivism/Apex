@@ -53,6 +53,28 @@ import {
   updateDeal,
 } from '@workspace/core';
 import { CRM_DISPLAY_TIMEZONE, formatChicago } from '@workspace/core';
+import { db } from '@workspace/db';
+import {
+  CrmIntegrationError,
+  MARKETING_CONNECTORS,
+  type MarketingProvider,
+  activityReport,
+  contactGrowthReport,
+  deleteMarketingConnection,
+  findContactIdsByDestination,
+  isMarketingProvider,
+  listMarketingConnections,
+  listMarketingSyncs,
+  normalizeWebhookEvent,
+  pipelineFunnelReport,
+  reportingOverview,
+  revenueForecastReport,
+  saveMarketingConnection,
+  sourceAttributionReport,
+  syncAudience,
+  testMarketingConnection,
+  winLossReport,
+} from '@workspace/core';
 
 // Scripts and agents hold the admin bearer token too, so it alone cannot clear
 // do-not-contact or merge contacts as Matthew. Those need the session minted at
@@ -769,6 +791,231 @@ export function createCrmRouter(): Router {
       return;
     }
     res.json({ url });
+  });
+
+  // ─── Phase 3: reporting ───────────────────────────────────────────────────
+  //
+  // The analytics half of the CRM. Everything here is derived from tables that
+  // already exist and nothing is written, so the whole block is read-only and
+  // safe for an agent to call. Every endpoint accepts an optional `from`/`to`
+  // window (ISO strings); with neither, the report covers all time.
+
+  function reportingRange(req: Request): { from: string | null; to: string | null } {
+    return {
+      from: typeof req.query.from === 'string' ? req.query.from : null,
+      to: typeof req.query.to === 'string' ? req.query.to : null,
+    };
+  }
+
+  /** One round trip for the whole reporting page. Each section is independent. */
+  router.get('/reporting/overview', async (req, res) => {
+    try {
+      const overview = await reportingOverview(reportingRange(req));
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, ...overview });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/reporting/funnel', async (req, res) => {
+    try {
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, ...(await pipelineFunnelReport(reportingRange(req))) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/reporting/win-loss', async (req, res) => {
+    try {
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, ...(await winLossReport(reportingRange(req))) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/reporting/forecast', async (req, res) => {
+    try {
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, ...(await revenueForecastReport(reportingRange(req))) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/reporting/sources', async (req, res) => {
+    try {
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, sources: await sourceAttributionReport(reportingRange(req)) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/reporting/activity', async (req, res) => {
+    try {
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, ...(await activityReport(reportingRange(req))) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/reporting/contacts', async (req, res) => {
+    try {
+      res.json({ timezone: CRM_DISPLAY_TIMEZONE, ...(await contactGrowthReport(reportingRange(req))) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ─── Phase 3: marketing integrations ──────────────────────────────────────
+  //
+  // A connector carries a CRM audience out to the marketing tool a client
+  // actually uses. Reading the registry and a connection's *masked* fields is
+  // open; storing a credential, deleting one, pushing an audience and applying
+  // a provider webhook all need the operator dashboard session, because scripts
+  // and agents hold the admin bearer token.
+
+  function integrationFailure(res: Response, error: unknown): void {
+    if (error instanceof CrmIntegrationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    writeFailure(res, error);
+  }
+
+  function requireMarketingProvider(req: Request, res: Response): MarketingProvider | null {
+    const provider = req.params.provider;
+    if (!isMarketingProvider(provider)) {
+      res.status(400).json({ error: `Unknown marketing provider "${provider}".` });
+      return null;
+    }
+    return provider;
+  }
+
+  router.get('/integrations', async (_req, res) => {
+    try {
+      const [connections, syncs] = await Promise.all([
+        listMarketingConnections(),
+        listMarketingSyncs(undefined, 20),
+      ]);
+      res.json({ connectors: MARKETING_CONNECTORS, connections, syncs });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/integrations/syncs', async (req, res) => {
+    try {
+      const provider = typeof req.query.provider === 'string' && isMarketingProvider(req.query.provider)
+        ? req.query.provider
+        : undefined;
+      const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+      res.json({ syncs: await listMarketingSyncs(provider, limit) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/integrations/:provider', async (req, res) => {
+    const provider = requireMarketingProvider(req, res);
+    if (!provider) return;
+    if (!(await requireOperatorSession(req, res))) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const result = await saveMarketingConnection({
+        provider,
+        name: typeof body.name === 'string' ? body.name : undefined,
+        credentials: (body.credentials ?? {}) as Record<string, unknown>,
+        audience: typeof body.audience === 'string' ? body.audience : null,
+        externalAccountId: typeof body.externalAccountId === 'string' ? body.externalAccountId : null,
+      });
+      res.status(201).json({ ok: true, ...result });
+    } catch (error) {
+      integrationFailure(res, error);
+    }
+  });
+
+  router.delete('/integrations/:provider', async (req, res) => {
+    const provider = requireMarketingProvider(req, res);
+    if (!provider) return;
+    if (!(await requireOperatorSession(req, res))) return;
+    try {
+      res.json({ ok: true, ...(await deleteMarketingConnection(provider)) });
+    } catch (error) {
+      integrationFailure(res, error);
+    }
+  });
+
+  router.post('/integrations/:provider/test', async (req, res) => {
+    const provider = requireMarketingProvider(req, res);
+    if (!provider) return;
+    try {
+      res.json(await testMarketingConnection(provider));
+    } catch (error) {
+      integrationFailure(res, error);
+    }
+  });
+
+  router.post('/integrations/:provider/sync', async (req, res) => {
+    const provider = requireMarketingProvider(req, res);
+    if (!provider) return;
+    if (!(await requireOperatorSession(req, res))) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const limit = Math.min(Math.max(Number(body.limit) || 500, 1), 2000);
+      // Never push an opted-out contact to a marketing tool: `doNotContact: false`
+      // keeps the send safeguard's promise intact on the outbound side too.
+      const rows = await searchContacts({
+        tag: typeof body.tag === 'string' ? body.tag : null,
+        lifecycleStage: isContactLifecycleStage(body.lifecycleStage) ? body.lifecycleStage : null,
+        doNotContact: false,
+        limit,
+      });
+      const result = await syncAudience({
+        provider,
+        actor: OPERATOR_ACTOR,
+        limit,
+        contacts: rows.map((row) => ({
+          email: row.email,
+          firstName: row.firstName,
+          lastName: row.lastName,
+          organizationName: row.organizationName,
+          phoneE164: row.phoneE164,
+          tags: row.tags,
+        })),
+      });
+      res.json({ ok: true, considered: rows.length, ...result });
+    } catch (error) {
+      integrationFailure(res, error);
+    }
+  });
+
+  // A provider unsubscribe/bounce lands as a CRM opt-out. Normalisation is pure;
+  // the write only happens for the two actionable kinds and only with an email.
+  router.post('/integrations/:provider/webhook', async (req, res) => {
+    const provider = requireMarketingProvider(req, res);
+    if (!provider) return;
+    if (!(await requireOperatorSession(req, res))) return;
+    const event = normalizeWebhookEvent(provider, req.body);
+    if (!event) {
+      res.status(400).json({ error: 'Unrecognised webhook payload.' });
+      return;
+    }
+    try {
+      let appliedContactIds: string[] = [];
+      if ((event.kind === 'unsubscribe' || event.kind === 'bounce') && event.email) {
+        appliedContactIds = await findContactIdsByDestination(db, event.email);
+        for (const contactId of appliedContactIds) {
+          await setDoNotContact({
+            contactId,
+            value: true,
+            actor: OPERATOR_ACTOR,
+            reason: `${provider} ${event.kind}`,
+          });
+        }
+      }
+      res.json({ ok: true, event, appliedContactIds });
+    } catch (error) {
+      integrationFailure(res, error);
+    }
   });
 
   return router;

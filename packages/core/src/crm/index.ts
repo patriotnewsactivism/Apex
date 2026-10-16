@@ -6,4 +6,6 @@ export * from './pipeline.js';
 export * from './inbound.js';
 export * from './gmail.js';
 export * from './backfill.js';
+export * from './reporting.js';
+export * from './integrations.js';
 export { createCrmTools } from './tools.js';

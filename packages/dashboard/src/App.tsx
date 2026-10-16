@@ -21,6 +21,8 @@ import { MultiAppPanel } from './components/MultiAppPanel.js';
 import { LeadsPanel } from './components/LeadsPanel.js';
 import { ContactsPanel } from './components/ContactsPanel.js';
 import { CompaniesPanel, DealsPipelinePanel } from './components/CrmPipelinePanels.js';
+import { CrmReportingPanel } from './components/CrmReportingPanel.js';
+import { CrmIntegrationsPanel } from './components/CrmIntegrationsPanel.js';
 import { SalesOperationsPanel } from './components/SalesOperationsPanel.js';
 import { TerritoryAvailabilityPanel } from './components/TerritoryAvailabilityPanel.js';
 import { ControlRoom } from './components/ControlRoom.js';
@@ -64,6 +66,8 @@ import {
   Scale,
   BookUser,
   Send,
+  BarChart3,
+  Plug,
 } from 'lucide-react';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import {
@@ -323,6 +327,8 @@ function Sidebar({
         { id: 'companies', label: 'Companies', icon: <Building2 size={16} /> },
         { id: 'territories', label: 'Territories', icon: <MapPinned size={16} /> },
         { id: 'webinars', label: 'Webinar Director', icon: <Presentation size={16} /> },
+        { id: 'reporting', label: 'Reporting', icon: <BarChart3 size={16} /> },
+        { id: 'integrations', label: 'Integrations', icon: <Plug size={16} /> },
       ],
     },
     {
@@ -894,6 +900,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     companies: <CompaniesPanel />,
     territories: <TerritoryAvailabilityPanel />,
     webinars: <WebinarDirector />,
+    reporting: <CrmReportingPanel />,
+    integrations: <CrmIntegrationsPanel />,
     control: <ControlRoom />,
     artifacts: <ArtifactsPanel />,
     scheduled: <ScheduledJobsPanel />,
@@ -934,6 +942,8 @@ function AppContent({ onLogout }: { onLogout: () => void }) {
     companies: { title: 'Companies', kicker: 'Revenue' },
     territories: { title: 'Territory Availability', kicker: 'Revenue' },
     webinars: { title: 'Webinar Director', kicker: 'Revenue' },
+    reporting: { title: 'Reporting', kicker: 'Revenue' },
+    integrations: { title: 'Marketing Integrations', kicker: 'Revenue' },
     control: { title: 'Control Room', kicker: 'Systems' },
     artifacts: { title: 'Artifacts', kicker: 'Systems' },
     scheduled: { title: 'Calendar / Scheduler', kicker: 'Systems' },
