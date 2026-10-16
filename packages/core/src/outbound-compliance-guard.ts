@@ -87,7 +87,11 @@ async function resolveComplianceIdentity(input: {
 // contact-linkage, outreach-gate, or consent checks — but the DNC/suppression
 // check above them always wins, so an explicit opt-out still blocks sends.
 // Comma-separated E.164 list; defaults to the operator's cell.
-const OWNER_NUMBERS = (process.env.APEX_OWNER_NUMBERS ?? '+18328804970')
+const OWNER_NUMBERS = (
+  process.env.APEX_OWNER_NUMBERS ??
+  process.env.TELNYX_OWNER_NUMBER ??
+  '+18328804970'
+)
   .split(',')
   .map((entry) => entry.trim())
   .filter(Boolean);
