@@ -80,6 +80,28 @@ async function resolveComplianceIdentity(input: {
     : {};
 }
 
+// ─── Owner-line allowlist ───────────────────────────────────────────────────────
+// The operator's own numbers are the REQUIRED target of owner-line tests and
+// internal transfers (Constitution 24.2/24.4; see call-bridge
+// OWNER/APEX_DEFAULT_OPERATOR_NUMBER precedent). They are not subject to
+// contact-linkage, outreach-gate, or consent checks — but the DNC/suppression
+// check above them always wins, so an explicit opt-out still blocks sends.
+// Comma-separated E.164 list; defaults to the operator's cell.
+const OWNER_NUMBERS = (process.env.APEX_OWNER_NUMBERS ?? '+18328804970')
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter(Boolean);
+
+function isOwnerDestination(channel: OutboundChannel, destination: string): boolean {
+  if (channel !== 'phone' && channel !== 'sms') return false;
+  const digits = destination.replace(/\D/g, '');
+  if (digits.length < 10) return false;
+  return OWNER_NUMBERS.some((owner) => {
+    const ownerDigits = owner.replace(/\D/g, '');
+    return ownerDigits.length >= 10 && ownerDigits.slice(-10) === digits.slice(-10);
+  });
+}
+
 async function isRehearsalDestination(channel: OutboundChannel, destination: string): Promise<boolean> {
   try {
     const { loadOutboundPolicy } = await import('./outbound-policy-store.js');
@@ -87,7 +109,9 @@ async function isRehearsalDestination(channel: OutboundChannel, destination: str
     const policy = await loadOutboundPolicy();
     if (!policy) return false;
     if (channel === 'email') return sameEmail(destination, policy.rehearsalEmail);
-    if (channel === 'phone') return samePhone(destination, policy.rehearsalPhone);
+    if (channel === 'phone' || channel === 'sms') {
+      return samePhone(destination, policy.rehearsalPhone);
+    }
     return false;
   } catch {
     return false;
@@ -159,6 +183,10 @@ export async function assertOutboundAllowed(input: {
     if (rows.length) {
       throw new Error(`Compliance denied email to ${normalizedEmail}: suppression/opt-out record`);
     }
+  }
+
+  if (isOwnerDestination(input.channel, destination)) {
+    return { skipped: true, reason: 'owner destination (owner-line test)' };
   }
 
   if (await isRehearsalDestination(input.channel, destination)) {
