@@ -66,6 +66,8 @@ const DRAWER = [
   { id: 'sales-ops', label: 'Revenue Operations' },
   { id: 'territories', label: 'Territories' },
   { id: 'webinars', label: 'Webinar Director' },
+  { id: 'reporting', label: 'Reporting' },
+  { id: 'integrations', label: 'Integrations' },
   { id: 'mission', label: 'Mission Control' },
   { id: 'tasks', label: 'Work Queue' },
   { id: 'logs', label: 'Activity Log' },
@@ -96,7 +98,7 @@ const DRAWER = [
 const NAV_ID_TO_LABEL = {
   command: 'Command Center', chat: 'Talk to APEX', mission: 'Mission Control', approvals: 'Approvals', 'pending-sends': 'Pending sends',
   agents: 'Agent Network', tasks: 'Work Queue', logs: 'Activity Log',
-  'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', deals: 'Pipeline', companies: 'Companies', territories: 'Territories', webinars: 'Webinar Director', suggestions: 'Suggestions',
+  'sales-ops': 'Revenue Operations', leads: 'Prospects', contacts: 'Contacts', deals: 'Pipeline', companies: 'Companies', territories: 'Territories', webinars: 'Webinar Director', reporting: 'Reporting', integrations: 'Integrations', suggestions: 'Suggestions',
   multiapp: 'Portfolio', control: 'Control Room', 'verify-scale': 'Verify & Scale', artifacts: 'Artifacts',
   scheduled: 'Calendar / Scheduler', health: 'Health', learning: 'Intelligence',
   pipeline: 'CI/CD', spend: 'Spend / Burn', settings: 'Settings',
