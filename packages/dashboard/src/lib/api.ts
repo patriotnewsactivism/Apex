@@ -604,6 +604,214 @@ export interface CrmCompanyPage {
   lastActivityChicago: string | null;
 }
 
+// ─── Phase 3: reporting ──────────────────────────────────────────────────────
+// Shapes returned by /api/crm/reporting/*. Each report carries the display
+// timezone the server rendered it in, plus an `asOf` stamp for the forecast.
+
+export interface CrmReportingRange {
+  from?: string | null;
+  to?: string | null;
+}
+
+export interface CrmFunnelStage {
+  stageId: string | null;
+  name: string;
+  position: number;
+  dealCount: number;
+  totalUsd: number;
+  weightedUsd: number;
+  reachedCount: number;
+  conversionFromPrevious: number | null;
+}
+
+export interface CrmPipelineFunnelReport {
+  timezone: string;
+  stages: CrmFunnelStage[];
+  unassigned: { dealCount: number; totalUsd: number };
+  totals: { openCount: number; openUsd: number; weightedUsd: number };
+  asOf: string;
+}
+
+export interface CrmWinLossReport {
+  timezone: string;
+  won: number;
+  lost: number;
+  open: number;
+  wonUsd: number;
+  lostUsd: number;
+  winRate: number | null;
+  avgWonUsd: number;
+  avgLostUsd: number;
+  avgSalesCycleDays: number | null;
+  wonReasons: Array<{ reason: string; count: number }>;
+  lostReasons: Array<{ reason: string; count: number }>;
+}
+
+export interface CrmForecastMonth {
+  month: string;
+  dealCount: number;
+  totalUsd: number;
+  weightedUsd: number;
+}
+
+export interface CrmRevenueForecastReport {
+  timezone: string;
+  openUsd: number;
+  weightedUsd: number;
+  committedUsd: number;
+  likelyUsd: number;
+  wonToDateUsd: number;
+  byMonth: CrmForecastMonth[];
+  asOf: string;
+}
+
+export interface CrmSourceRow {
+  source: string;
+  dealCount: number;
+  totalUsd: number;
+  wonCount: number;
+  wonUsd: number;
+  winRate: number | null;
+}
+
+export interface CrmEmailActivity {
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  bounced: number;
+  complained: number;
+  openRate: number | null;
+  clickRate: number | null;
+  bounceRate: number | null;
+}
+
+export interface CrmActivityReport {
+  timezone: string;
+  emails: CrmEmailActivity;
+  calls: { total: number; connected: number; appointmentsBooked: number; byDisposition: Array<{ disposition: string; count: number }> };
+  tasks: { open: number; completed: number; cancelled: number; overdue: number; completionRate: number | null };
+  timeline: { total: number; outbound: number; inbound: number; internal: number };
+}
+
+export interface CrmContactGrowthReport {
+  timezone: string;
+  total: number;
+  newInRange: number;
+  doNotContact: number;
+  byLifecycle: Array<{ stage: string; count: number }>;
+  byStatus: Array<{ status: string; count: number }>;
+  byMonth: Array<{ month: string; count: number }>;
+}
+
+export interface CrmReportingOverview {
+  timezone: string;
+  range: { from: string | null; to: string | null };
+  funnel: CrmPipelineFunnelReport;
+  winLoss: CrmWinLossReport;
+  forecast: CrmRevenueForecastReport;
+  sources: CrmSourceRow[];
+  activity: CrmActivityReport;
+  contacts: CrmContactGrowthReport;
+  asOf: string;
+}
+
+/** Shared `?from=&to=` builder for the reporting endpoints. */
+export function crmRangeQuery(range?: CrmReportingRange): string {
+  const qs = new URLSearchParams();
+  if (range?.from) qs.set('from', range.from);
+  if (range?.to) qs.set('to', range.to);
+  const query = qs.toString();
+  return query ? `?${query}` : '';
+}
+
+// ─── Phase 3: marketing integrations ─────────────────────────────────────────
+
+export interface CrmConnectorField {
+  key: string;
+  label: string;
+  secret: boolean;
+  required: boolean;
+  placeholder?: string;
+}
+
+export interface CrmMarketingConnector {
+  id: string;
+  name: string;
+  description: string;
+  docsUrl: string;
+  category: string;
+  capabilities: string[];
+  audienceField: string;
+  fields: CrmConnectorField[];
+}
+
+/** A credential field as it leaves the API: never the value, only whether set. */
+export interface CrmMaskedField {
+  key: string;
+  label: string;
+  secret: boolean;
+  set: boolean;
+}
+
+export interface CrmMarketingConnection {
+  provider: string;
+  name: string;
+  status: string;
+  externalAccountId: string | null;
+  audience: string | null;
+  fields: CrmMaskedField[];
+  capabilities: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmMarketingSyncRow {
+  id: string;
+  provider: string;
+  status: string;
+  audience: string | null;
+  pushed: number;
+  skipped: number;
+  failed: number;
+  error: string | null;
+  createdBy: string;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CrmIntegrationsResponse {
+  connectors: CrmMarketingConnector[];
+  connections: CrmMarketingConnection[];
+  syncs: CrmMarketingSyncRow[];
+}
+
+export interface CrmConnectionTestResult {
+  provider: string;
+  status: 'connected' | 'invalid_key' | 'degraded' | 'not_configured';
+  detail: string;
+  httpStatus: number | null;
+}
+
+export interface CrmMarketingSyncResult {
+  ok: boolean;
+  provider: string;
+  status: 'ok' | 'partial' | 'error';
+  pushed: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+  syncId: string;
+  considered: number;
+}
+
+export interface CrmNormalizedWebhookEvent {
+  provider: string;
+  kind: 'subscribe' | 'unsubscribe' | 'bounce' | 'other';
+  email: string | null;
+  eventType: string;
+}
+
 /** One query builder for the contact list, the export, and the copilot. */
 export function crmFilterQuery(params?: CrmContactFilters): string {
   const qs = new URLSearchParams();
@@ -1335,6 +1543,52 @@ export const api = {
         return apiFetch<{ timezone: string; companies: CrmCompanyRow[] }>(`/crm/companies${query ? `?${query}` : ''}`);
       },
       get: (id: string) => apiFetch<CrmCompanyPage>(`/crm/companies/${encodeURIComponent(id)}`),
+    },
+
+    // ─── Phase 3: reporting (read-only) ─────────────────────────────────────
+    reporting: {
+      overview: (range?: CrmReportingRange) => apiFetch<CrmReportingOverview>(`/crm/reporting/overview${crmRangeQuery(range)}`),
+      funnel: (range?: CrmReportingRange) => apiFetch<CrmPipelineFunnelReport>(`/crm/reporting/funnel${crmRangeQuery(range)}`),
+      winLoss: (range?: CrmReportingRange) => apiFetch<CrmWinLossReport>(`/crm/reporting/win-loss${crmRangeQuery(range)}`),
+      forecast: (range?: CrmReportingRange) => apiFetch<CrmRevenueForecastReport>(`/crm/reporting/forecast${crmRangeQuery(range)}`),
+      sources: (range?: CrmReportingRange) =>
+        apiFetch<{ timezone: string; sources: CrmSourceRow[] }>(`/crm/reporting/sources${crmRangeQuery(range)}`),
+      activity: (range?: CrmReportingRange) => apiFetch<CrmActivityReport>(`/crm/reporting/activity${crmRangeQuery(range)}`),
+      contacts: (range?: CrmReportingRange) => apiFetch<CrmContactGrowthReport>(`/crm/reporting/contacts${crmRangeQuery(range)}`),
+    },
+
+    // ─── Phase 3: marketing integrations ────────────────────────────────────
+    integrations: {
+      list: () => apiFetch<CrmIntegrationsResponse>('/crm/integrations'),
+      syncs: (params?: { provider?: string; limit?: number }) => {
+        const qs = new URLSearchParams();
+        if (params?.provider) qs.set('provider', params.provider);
+        if (params?.limit) qs.set('limit', String(params.limit));
+        const query = qs.toString();
+        return apiFetch<{ syncs: CrmMarketingSyncRow[] }>(`/crm/integrations/syncs${query ? `?${query}` : ''}`);
+      },
+      save: (
+        provider: string,
+        body: { name?: string; credentials: Record<string, string>; audience?: string; externalAccountId?: string },
+      ) =>
+        apiFetch<{ ok: boolean; provider: string; id: string }>(`/crm/integrations/${encodeURIComponent(provider)}`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        }),
+      remove: (provider: string) =>
+        apiFetch<{ ok: boolean; removed: boolean }>(`/crm/integrations/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
+      test: (provider: string) =>
+        apiFetch<CrmConnectionTestResult>(`/crm/integrations/${encodeURIComponent(provider)}/test`, { method: 'POST' }),
+      sync: (provider: string, body?: { tag?: string; lifecycleStage?: string; limit?: number }) =>
+        apiFetch<CrmMarketingSyncResult>(`/crm/integrations/${encodeURIComponent(provider)}/sync`, {
+          method: 'POST',
+          body: JSON.stringify(body ?? {}),
+        }),
+      webhook: (provider: string, body: unknown) =>
+        apiFetch<{ ok: boolean; event: CrmNormalizedWebhookEvent; appliedContactIds: string[] }>(
+          `/crm/integrations/${encodeURIComponent(provider)}/webhook`,
+          { method: 'POST', body: JSON.stringify(body) },
+        ),
     },
   },
 

@@ -638,6 +638,34 @@ export const crmMigrationMarkers = pgTable('crm_migration_markers', {
   appliedAt: timestamp('applied_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * One run of a marketing-tool integration: an audience push to Mailchimp,
+ * Klaviyo, Active Campaign or HubSpot, a pull, or a webhook we accepted. The
+ * credentials themselves live encrypted in provider_connections; this table is
+ * the honest history of what was sent, so the settings screen can show "last
+ * sync: 42 pushed, 3 skipped" instead of a bare "connected".
+ */
+export const crmMarketingSyncs = pgTable('crm_marketing_syncs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  organizationId: text('organization_id').notNull(),
+  provider: text('provider').notNull(), // mailchimp | klaviyo | activecampaign | hubspot
+  connectionId: uuid('connection_id'), // provider_connections.id
+  direction: text('direction').notNull().default('push'), // push | pull | webhook
+  status: text('status').notNull().default('ok'), // ok | partial | error
+  audience: text('audience'),
+  pushed: integer('pushed').notNull().default(0),
+  skipped: integer('skipped').notNull().default(0),
+  failed: integer('failed').notNull().default(0),
+  error: text('error'),
+  createdBy: text('created_by').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+}, (table) => ({
+  orgProviderIdx: index('crm_marketing_syncs_org_provider_idx').on(table.organizationId, table.provider, table.startedAt),
+  statusIdx: index('crm_marketing_syncs_status_idx').on(table.status),
+}));
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CALLS (full call tracking - extends callBridgeSessions pattern)
 // ═══════════════════════════════════════════════════════════════════════════════
