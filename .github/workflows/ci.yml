@@ -13,6 +13,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cli-optimizations:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Verify local CLI optimizations
+        run: python -m unittest discover -s tests -p test_apex_optimizations.py -v
+
   production-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 20

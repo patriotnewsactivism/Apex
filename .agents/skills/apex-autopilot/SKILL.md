@@ -450,7 +450,7 @@ Use these when present in the skill bundle:
 - `references/autonomy-matrix.md` — action-by-action default autonomy classification.
 - `references/decision-protocol.md` — prioritization, incident classification, and approval packet rules.
 - `scripts/apex-preflight.sh` — read-only Linux/macOS/Codex health and authenticated diagnostics.
-- `scripts/apex-preflight.ps1` — read-only PowerShell equivalent.
+- `scripts/apex-preflight.ps1` — local zero-token checklist gate (0 ready, 10 no work, 20 locked, 1 error). Use `-Diagnostics` for the read-only health checks equivalent to the shell script. See `docs/APEX_CLI_OPTIMIZATIONS.md` for scheduler usage and CLI guard scope.
 - `examples/tasks.md` — examples of how to interpret common APEX commands.
 
 Always prefer current `AGENTS.md` and live evidence over bundled dated references.
