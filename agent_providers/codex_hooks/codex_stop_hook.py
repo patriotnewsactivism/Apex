@@ -50,6 +50,18 @@ def main() -> None:
         hook_input = json.load(sys.stdin)
     except ValueError:
         hook_input = {}
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from agent_providers.stagnation_guard import evaluate_cycle_guard
+
+        guard_reason = evaluate_cycle_guard(hook_input)
+    except Exception as exc:
+        print(f"[APEX stagnation guard] {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(json.dumps({"continue": False, "stopReason": "Stagnation guard failed; inspect stderr."}))
+        sys.exit(0)
+    if guard_reason:
+        print(f"[APEX stagnation guard] {guard_reason}", file=sys.stderr)
+        _allow(f"stagnation guard: {guard_reason}")
     _log(f"stop: last_msg={str(hook_input.get('last_assistant_message', ''))[:80]!r}")
 
     try:

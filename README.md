@@ -26,6 +26,7 @@ See:
 - `docs/deploy-provenance.md` — exact source-to-image-to-runtime provenance contract.
 - `docs/ARCHITECTURE_DECISIONS.md` — durable architecture decisions that must not silently drift.
 - `SECURITY.md` — secrets, authentication, change-control, and vulnerability rules.
+- `docs/APEX_CLI_OPTIMIZATIONS.md` — local preflight exit codes, Python CLI stagnation guards, and output compression.
 - `docs/CARTESIA_SALES_TOOLS.md` — optional Cartesia sales-agent tools, APEX call-event ingestion, calendar/SMS configuration, and phone transfer setup.
 
 ## Intelligence stack

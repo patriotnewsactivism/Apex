@@ -1,4 +1,14 @@
 {
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.patch)",
+      "Read(./**/*.lock)",
+      "Read(./.ninja-git.lock)",
+      "Read(./avatars/**)"
+    ]
+  },
   "enabledPlugins": {
     "convex@claude-plugins-official": true
   }

@@ -1,4 +1,5 @@
 # Runtime state files (not tracked)
+.apex/
 .orchestrator.lock
 .cycle_count
 .browser_server.pid

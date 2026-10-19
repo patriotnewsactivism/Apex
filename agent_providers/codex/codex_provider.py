@@ -188,7 +188,7 @@ timeout = 60
 
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = 'python3 {length_hook}'
+command = 'python3 {length_hook} --hook'
 timeout = 30
 """
         CODEX_CONFIG_FILE.write_text(config, encoding="utf-8")

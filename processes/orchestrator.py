@@ -1010,7 +1010,7 @@ def run_agent(
 
     if codex_harness_enabled:
         logger.info(f"Selected model is a codex harness model, using Codex agent.")
-        subprocess_env = {**os.environ}
+        subprocess_env = {**os.environ, "APEX_AGENT_ROLE": agent["name"]}
         if cycle:
             # Arms the Stop hook, which otherwise no-ops. Clearing both
             # files restarts the depth count and the issue permit.
@@ -1095,7 +1095,11 @@ def run_claude_agent(
         task_id, feature_title or title, conversation_id
     )
 
-    env = {"ANTHROPIC_CUSTOM_HEADERS": custom_headers}
+    env = {
+        "ANTHROPIC_CUSTOM_HEADERS": custom_headers,
+        "NINJA_TASK_ID": task_id,
+        "APEX_AGENT_ROLE": agent["name"],
+    }
     if cycle:
         env["NINJA_CYCLE_RUN"] = "1"
         CYCLE_STATE_FILE.unlink(missing_ok=True)

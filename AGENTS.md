@@ -309,6 +309,13 @@ See `SECURITY.md` for the repository-wide security contract.
 - Repeated current failures are engineering defects until evidence shows they are transient/recovered.
 - Never manufacture metrics, status, deploy evidence, test results, or external side effects.
 
+The Python CLI orchestrator checks persistent task-local stagnation at both
+Claude and Codex Stop-hook continuation boundaries. Its state lives under
+ignored `.apex/tasks/`; Scout/Phantom and other read-only roles do not need file
+changes. The PowerShell preflight defaults to a local Markdown-task gate; use
+`-Diagnostics` for health checks. These local CLI controls are separate from the
+TypeScript production task queue. See `docs/APEX_CLI_OPTIMIZATIONS.md`.
+
 ## Durable work, sandbox executor, and cron governance (ADR-013)
 
 - **Durable artifacts**: the container filesystem is ephemeral. Finished deliverables belong in the store named by `APEX_ARTIFACT_BUCKET` (GCS) or `APEX_ARTIFACT_DIR` (Railway volume / local directory). Tools fail closed when both are unset.
@@ -352,6 +359,8 @@ A successful build or merge is not a successful deployment. Production is releas
 `.github/workflows/ci.yml` is the ordinary production gate. Keep it deterministic and secret-free where possible.
 
 Production CI currently includes:
+
+- local CLI optimization tests on Windows and Linux (PowerShell preflight, output bounds, persistent state and OS-lock concurrency);
 
 - frozen pnpm install;
 - production TypeScript checks;

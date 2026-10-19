@@ -1,5 +1,9 @@
+"""Bound tool output, or run the monitor PostToolUse hook with --hook."""
+
+import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +22,43 @@ STATE_FILE_PATH = Path("/workspace/ninja/stop_hook_length_state.json")
 SESSIONS_DIR = (
     Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
 )
+
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+DEFAULT_MAX_OUTPUT_CHARS = 4000
+
+
+def compress_tool_output(raw_output: str, max_chars: int = DEFAULT_MAX_OUTPUT_CHARS) -> str:
+    """Strip ANSI escapes, collapse adjacent duplicate lines, then bound length."""
+    if not raw_output or max_chars <= 0:
+        return ""
+    deduped = []
+    previous = None
+    repeats = 0
+    for line in ANSI_ESCAPE_RE.sub("", raw_output).splitlines():
+        line = line.rstrip()
+        if line == previous:
+            repeats += 1
+            continue
+        if repeats:
+            deduped.append(f"  ... [line repeated {repeats} more times] ...")
+            repeats = 0
+        deduped.append(line)
+        previous = line
+    if repeats:
+        deduped.append(f"  ... [line repeated {repeats} more times] ...")
+    compact = "\n".join(deduped).strip()
+    if len(compact) <= max_chars:
+        return compact
+
+    banner = "\n\n... [APEX LENGTH HOOK: OMITTED {omitted} CHARS] ...\n\n"
+    # Reserve the largest possible digit count, so the formatted banner also
+    # fits for very large inputs. Tiny limits use a prefix without a banner.
+    usable = max_chars - len(banner.format(omitted=len(compact)))
+    if usable < 60:
+        return compact[:max_chars]
+    head = max(1, int(usable * 0.3))
+    tail = usable - head
+    return compact[:head] + banner.format(omitted=len(compact) - usable) + compact[-tail:]
 
 
 def _log(msg: str) -> None:
@@ -158,7 +199,7 @@ def build_hook_output(*, hook_input: dict) -> dict:
     }
 
 
-def main() -> None:
+def hook_main() -> int:
     try:
         hook_input = json.load(sys.stdin)
     except ValueError:
@@ -172,8 +213,30 @@ def main() -> None:
 
     if output:
         print(json.dumps(output))
-    sys.exit(0)
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Compress tool output or run the monitor hook.")
+    parser.add_argument("--hook", action="store_true", help="Use the Codex PostToolUse JSON protocol.")
+    parser.add_argument("--max-chars", type=int, default=None)
+    parser.add_argument("--file", type=Path)
+    args = parser.parse_args()
+    if args.hook:
+        return hook_main()
+    limit = args.max_chars
+    if limit is None:
+        try:
+            limit = int(os.getenv("APEX_MAX_TOOL_OUTPUT_CHARS", str(DEFAULT_MAX_OUTPUT_CHARS)))
+        except ValueError:
+            parser.error("APEX_MAX_TOOL_OUTPUT_CHARS must be an integer")
+    if args.file:
+        data = args.file.read_text(encoding="utf-8", errors="replace")
+    else:
+        data = sys.stdin.read()
+    sys.stdout.write(compress_tool_output(data, limit))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
