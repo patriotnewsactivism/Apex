@@ -69,7 +69,7 @@ if (-not $Diagnostics) {
         $MetricsLog = Join-Path $ApexStateDir 'wakeup_metrics.log'
         $LockFile = Join-Path $RepoRoot '.ninja-git.lock'
         if (Test-Path -LiteralPath $LockFile) {
-            $Lock = Get-Item -LiteralPath $LockFile
+            $Lock = Get-Item -LiteralPath $LockFile -Force
             $LockAgeMinutes = ((Get-Date).ToUniversalTime() - $Lock.LastWriteTimeUtc).TotalMinutes
             $RunningGit = Get-Process -Name git -ErrorAction SilentlyContinue
             if ($RunningGit -or $LockAgeMinutes -lt $StaleLockMinutes) {
