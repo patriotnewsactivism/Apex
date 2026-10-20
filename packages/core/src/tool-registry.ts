@@ -34,7 +34,7 @@ import { reserveExaSearch } from './exa-search-budget.js';
 import { disableDirectoryProvider, isDirectoryAuthFailure, redactProviderBody, resolveDirectoryProviderKey } from './lead-provider-keys.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { createCalendarTools } from './calendar/tools.js';
-import { reserveMonthlySearch, searchSearxng, searxngBreaker, webSearchCacheTtlDays, SearxngError } from './search-router.js';
+import { reserveMonthlySearch, releaseMonthlySearch, isAuthOrPaymentFailure, brightDataAuthFailureCooldownMs, searchSearxng, searxngBreaker, webSearchCacheTtlDays, SearxngError } from './search-router.js';
 
 const execAsync = promisify(exec);
 // Runtime-only dependencies owned by the API process. The tool registry lives
@@ -500,8 +500,8 @@ export function parseBrightDataGoogleBody(body: unknown): Array<{ title: string;
   return out;
 }
 
-function tripWebSearchProvider(provider: string, status: number, detail: string): void {
-  const cooldownMs = webSearchCooldownMs(status, detail);
+function tripWebSearchProvider(provider: string, status: number, detail: string, overrideMs?: number): void {
+  const cooldownMs = overrideMs ?? webSearchCooldownMs(status, detail);
   if (cooldownMs <= 0) return;
 
   const until = Date.now() + cooldownMs;
@@ -1432,12 +1432,30 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 const body = await bdRes.text().catch(() => '');
                 lastDetail = `brightdata: HTTP ${bdRes.status} ${body.slice(0, 200)}`.trim();
                 lastStatus = -1;
-                tripWebSearchProvider('brightdata', bdRes.status, body);
+                if (isAuthOrPaymentFailure(bdRes.status)) {
+                  // Refused before any billable work: refund the monthly slot
+                  // and stop retrying for a long time.
+                  await releaseMonthlySearch('brightdata');
+                  tripWebSearchProvider('brightdata', bdRes.status, body, brightDataAuthFailureCooldownMs());
+                } else {
+                  tripWebSearchProvider('brightdata', bdRes.status, body);
+                }
                 console.warn(`[webSearch] ${lastDetail} for "${query}"`);
                 break;
               }
               const bdData = await bdRes.json() as { status_code?: number; body?: unknown };
               const inner = Number(bdData.status_code ?? 0);
+              if (isAuthOrPaymentFailure(inner)) {
+                // e.g. 407 behind a Bright Data 200: zone/credentials refused.
+                // Not a usable request — refund the monthly slot and open the
+                // breaker for a long cooldown instead of retrying every query.
+                await releaseMonthlySearch('brightdata');
+                tripWebSearchProvider('brightdata', inner, '', brightDataAuthFailureCooldownMs());
+                lastStatus = -1;
+                lastDetail = `brightdata: HTTP ${inner} (auth/payment refusal behind Bright Data 200; breaker open)`;
+                console.warn(`[webSearch] ${lastDetail} for "${query}"`);
+                break;
+              }
               if (inner !== 200) {
                 lastStatus = inner || 502;
                 lastDetail = `brightdata: HTTP ${lastStatus} (upstream status behind Bright Data 200)`;

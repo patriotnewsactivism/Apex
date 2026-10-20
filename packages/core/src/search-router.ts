@@ -189,3 +189,30 @@ export async function searchSearxng(
   }
   return out;
 }
+
+/** Give back a reservation that was never billed (e.g. an auth/payment
+ *  refusal). Never throws. */
+export async function releaseMonthlySearch(
+  provider: CappedSearchProvider,
+  opts: { store?: MonthlySearchBudgetStore; now?: number } = {},
+): Promise<void> {
+  const store = opts.store ?? monthlyStore;
+  await store.decrement(monthKey(opts.now), monthlyAccount(provider)).catch((error) => {
+    console.warn(`[search-router] could not release ${provider} monthly reservation:`,
+      error instanceof Error ? error.message : String(error));
+  });
+}
+
+/** Auth / payment refusals: retrying cannot succeed until an operator fixes
+ *  the account, so they must not consume the cap and should open the breaker
+ *  for a long time. 407 = Bright Data proxy/zone authentication required. */
+export const AUTH_OR_PAYMENT_STATUSES: ReadonlySet<number> = new Set([401, 402, 403, 407]);
+export function isAuthOrPaymentFailure(status: number): boolean {
+  return AUTH_OR_PAYMENT_STATUSES.has(status);
+}
+
+/** BRIGHT_DATA_AUTH_FAILURE_COOLDOWN_MINUTES, default 360 (6 h). */
+export function brightDataAuthFailureCooldownMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number((env.BRIGHT_DATA_AUTH_FAILURE_COOLDOWN_MINUTES ?? '').trim() || NaN);
+  return (Number.isFinite(n) && n > 0 ? n : 360) * 60_000;
+}

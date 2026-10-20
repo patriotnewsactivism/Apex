@@ -17,6 +17,8 @@ import {
   type MonthlySearchBudgetStore,
 } from '../../../core/src/search-router.js';
 import { __setExaSearchBudgetStoreForTests } from '../../../core/src/exa-search-budget.js';
+import { __setBrightDataBudgetStoreForTests } from '../../../core/src/brightdata-budget.js';
+import { isAuthOrPaymentFailure, brightDataAuthFailureCooldownMs, releaseMonthlySearch } from '../../../core/src/search-router.js';
 import { getToolRegistry, leadSearchCacheSpec, __resetWebSearchCooldownsForTests } from '../../../core/src/tool-registry.js';
 
 function memStore(): MonthlySearchBudgetStore & { rows: Map<string, number> } {
@@ -157,5 +159,82 @@ describe('webSearch provider order', () => {
     const r = await run();
     delete process.env.EXA_SEARCH_MONTHLY_REQUEST_CAP;
     expect(r.provider).toBe('brave');
+  });
+});
+
+describe('Bright Data auth/payment refusals', () => {
+  const KEYS = ['SEARXNG_URL', 'BRAVE_SEARCH_API_KEY', 'SERPER_API_KEY', 'EXA_API_KEY', 'BRIGHT_DATA_API_KEY', 'BRIGHT_DATA_ZONE'];
+  const saved: Record<string, string | undefined> = {};
+  let store: ReturnType<typeof memStore>;
+  beforeEach(() => {
+    for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+    Object.assign(process.env, { BRIGHT_DATA_API_KEY: 'k', BRIGHT_DATA_ZONE: 'z' });
+    store = memStore();
+    __setMonthlySearchBudgetStoreForTests(store);
+    let d = 0;
+    __setBrightDataBudgetStoreForTests({
+      async increment() { return ++d; }, async decrement() { d--; }, async succeed() {}, async read() { return d; },
+    });
+    __resetWebSearchCooldownsForTests();
+  });
+  afterEach(() => {
+    for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    __setMonthlySearchBudgetStoreForTests();
+    __setBrightDataBudgetStoreForTests(null);
+    vi.unstubAllGlobals();
+  });
+  const bdMonthly = () => [...store.rows.entries()].find(([k]) => k.endsWith('search:brightdata:monthly'))?.[1] ?? 0;
+  function stubBd(mode: { inner?: number; outer?: number }): string[] {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input); calls.push(url);
+      if (url.includes('api.brightdata.com')) {
+        if (mode.outer) return new Response('{"error":"auth"}', { status: mode.outer });
+        return new Response(JSON.stringify({ status_code: mode.inner, body: '' }), { status: 200 });
+      }
+      if (url.includes('api.duckduckgo.com')) return new Response('{}', { status: 200 });
+      return new Response('<html></html>', { status: 200 });
+    }));
+    return calls;
+  }
+  const run = () => getToolRegistry().get('webSearch')!.execute({ query: 'roofing Dallas', maxResults: 5 }) as Promise<{ provider: string; diagnostics?: string[] }>;
+  const bdCalls = (c: string[]) => c.filter((u) => u.includes('api.brightdata.com')).length;
+
+  it('classifies 401/402/403/407 as auth/payment failures', () => {
+    for (const s of [401, 402, 403, 407]) expect(isAuthOrPaymentFailure(s)).toBe(true);
+    for (const s of [200, 429, 500, 502]) expect(isAuthOrPaymentFailure(s)).toBe(false);
+    expect(brightDataAuthFailureCooldownMs({})).toBe(360 * 60_000);
+    expect(brightDataAuthFailureCooldownMs({ BRIGHT_DATA_AUTH_FAILURE_COOLDOWN_MINUTES: '60' })).toBe(3_600_000);
+  });
+
+  for (const inner of [401, 402, 403, 407]) {
+    it(`inner ${inner}: refunds the monthly slot, no retry, breaker stays open`, async () => {
+      const calls = stubBd({ inner });
+      const r = await run();
+      expect(bdCalls(calls)).toBe(1);
+      expect(bdMonthly()).toBe(0);
+      expect(r.diagnostics?.some((d) => d.includes(`HTTP ${inner}`) && d.includes('breaker open'))).toBe(true);
+      await run();
+      expect(bdCalls(calls)).toBe(1); // breaker skipped Bright Data
+      expect(bdMonthly()).toBe(0);
+    });
+  }
+
+  it('outer 407 from api.brightdata.com also refunds and opens the breaker', async () => {
+    const calls = stubBd({ outer: 407 });
+    await run(); await run();
+    expect(bdCalls(calls)).toBe(1);
+    expect(bdMonthly()).toBe(0);
+  });
+
+  it('a transient inner 502 still counts toward the cap', async () => {
+    stubBd({ inner: 502 });
+    await run();
+    expect(bdMonthly()).toBeGreaterThan(0);
+  });
+
+  it('releaseMonthlySearch never throws', async () => {
+    __setMonthlySearchBudgetStoreForTests({ async increment() { return 1; }, async decrement() { throw new Error('down'); } });
+    await expect(releaseMonthlySearch('brightdata')).resolves.toBeUndefined();
   });
 });
