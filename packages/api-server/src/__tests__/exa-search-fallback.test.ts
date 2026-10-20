@@ -13,6 +13,7 @@ import {
   reserveExaSearch,
   type ExaSearchBudgetStore,
 } from '../../../core/src/exa-search-budget.js';
+import { __setMonthlySearchBudgetStoreForTests } from '../../../core/src/search-router.js';
 
 type Call = { url: string };
 const KEYS = ['BRAVE_SEARCH_API_KEY', 'SERPER_API_KEY', 'EXA_API_KEY', 'BRIGHT_DATA_API_KEY', 'BRIGHT_DATA_ZONE', 'EXA_SEARCH_DAILY_REQUEST_CAP'] as const;
@@ -59,6 +60,8 @@ const exaCalls = (calls: Call[]) => calls.filter((c) => c.url.includes('api.exa.
 
 describe('Exa web-search fallback degrades gracefully', () => {
   beforeEach(() => {
+    // Monthly caps are persisted in Postgres; use an in-memory ledger here.
+    { let m = 0; __setMonthlySearchBudgetStoreForTests({ async increment() { return ++m; }, async decrement() { m--; } }); }
     for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
     process.env.BRAVE_SEARCH_API_KEY = 'test-brave';
     __resetWebSearchCooldownsForTests();

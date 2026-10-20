@@ -1,0 +1,46 @@
+# SearXNG for APEX (internal only: http://searxng:8080, no published port, not in Caddy).
+# secret_key comes from SEARXNG_SECRET in searxng.env (generated at deploy time).
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - brave
+      - duckduckgo
+      - mojeek
+      - qwant
+      - startpage
+      - wikipedia
+      - wikidata
+      - google
+      - yahoo
+      - presearch
+      - github
+      - stackoverflow
+general:
+  instance_name: "apex-searxng"
+  enable_metrics: false
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en-US"
+  formats:
+    - html
+    - json
+server:
+  base_url: "http://searxng:8080/"
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "overridden-by-SEARXNG_SECRET"
+  limiter: true
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+valkey:
+  url: "valkey://searxng-valkey:6379/0"
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 8.0
+  pool_connections: 100
+  pool_maxsize: 20
+ui:
+  static_use_hash: true
