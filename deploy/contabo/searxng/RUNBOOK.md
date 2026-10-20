@@ -3,6 +3,8 @@
 Do not run any of this until Matthew approves. VPS: `ssh -i ~/.ssh/contabo_apex root@144.126.142.194`. SSH is rate-limited, so run each phase in one session.
 `D=/home/hermes/.hermes/railway-exit/deploy`. Never build from `/home/hermes/apex`, because that checkout is dirty.
 
+Images are pinned: `searxng/searxng:2026.10.19-81371861f` and `valkey/valkey:8.1.10-alpine`. Valkey needs the CHOWN capability because its entrypoint chowns `/data` and fails without it. All of this is in compose.diff and was deployed on 2026-10-20.
+
 ## 0. On the box: package a clean tree of the PR commit
 ```bash
 SHA=<PR head sha>; S=${SHA:0:7}

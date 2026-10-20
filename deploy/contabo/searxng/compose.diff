@@ -16,13 +16,13 @@
  
 +  # ── Self-hosted SearXNG for APEX. No published ports, not in Caddy. ──
 +  searxng-valkey:
-+    image: docker.io/valkey/valkey:8-alpine
++    image: docker.io/valkey/valkey:8.1.10-alpine
 +    restart: unless-stopped
 +    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
 +    read_only: true
 +    tmpfs: ["/data"]
 +    cap_drop: [ALL]
-+    cap_add: [SETGID, SETUID]
++    cap_add: [CHOWN, SETGID, SETUID]
 +    security_opt: ["no-new-privileges:true"]
 +    mem_limit: 128m
 +    healthcheck:
@@ -33,7 +33,7 @@
 +    networks: [searxnet]
 +
 +  searxng:
-+    image: docker.io/searxng/searxng:latest
++    image: docker.io/searxng/searxng:2026.10.19-81371861f
 +    restart: unless-stopped
 +    depends_on:
 +      searxng-valkey:
