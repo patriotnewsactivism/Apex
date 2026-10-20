@@ -1,0 +1,15 @@
+# SearXNG bot detection / limiter. Valkey-backed (settings.yml valkey.url).
+[botdetection]
+ipv4_prefix = 32
+ipv6_prefix = 48
+# Only the internal docker network talks to SearXNG; trust its source IPs.
+trusted_proxies = ["127.0.0.0/8", "::1", "172.16.0.0/12", "10.0.0.0/8", "192.168.0.0/16"]
+
+[botdetection.ip_limit]
+link_token = false
+
+[botdetection.ip_lists]
+# APEX and other internal containers are never rate-limited; anything else is.
+pass_ip = ["127.0.0.0/8", "::1", "172.16.0.0/12", "10.0.0.0/8", "192.168.0.0/16"]
+block_ip = []
+pass_searxng_org = false

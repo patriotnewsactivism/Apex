@@ -1,0 +1,70 @@
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -36,6 +36,9 @@
+     command: ["./node_modules/.bin/tsx", "--import", "./src/instrument.ts", "src/index.ts"]
+     environment:
+       WORKSPACE_ROOT: /workspace
++      # Self-hosted search (internal only). Router: cache -> SearXNG -> Exa -> Brave -> Bright Data.
++      SEARXNG_URL: http://searxng:8080
++      WEB_SEARCH_CACHE_TTL_DAYS: "14"
+     tmpfs:
+       - /tmp:size=1g
+       - /root/.config
+@@ -69,6 +72,47 @@
+     expose: ["8080"]
+     networks: [apexnet]
+ 
++  # ── Self-hosted SearXNG for APEX. No published ports, not in Caddy. ──
++  searxng-valkey:
++    image: docker.io/valkey/valkey:8-alpine
++    restart: unless-stopped
++    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
++    read_only: true
++    tmpfs: ["/data"]
++    cap_drop: [ALL]
++    cap_add: [SETGID, SETUID]
++    security_opt: ["no-new-privileges:true"]
++    mem_limit: 128m
++    healthcheck:
++      test: ["CMD", "valkey-cli", "ping"]
++      interval: 10s
++      timeout: 3s
++      retries: 5
++    networks: [searxnet]
++
++  searxng:
++    image: docker.io/searxng/searxng:latest
++    restart: unless-stopped
++    depends_on:
++      searxng-valkey:
++        condition: service_healthy
++    env_file: ./searxng.env  # SEARXNG_SECRET, generated at deploy (chmod 600)
++    environment:
++      SEARXNG_BASE_URL: http://searxng:8080/
++      SEARXNG_LIMITER: "true"
++    volumes:
++      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
++      - ./searxng/limiter.toml:/etc/searxng/limiter.toml:ro
++      - searxng-cache:/var/cache/searxng
++    cap_drop: [ALL]
++    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
++    security_opt: ["no-new-privileges:true"]
++    mem_limit: 768m
++    expose: ["8080"]
++    # apexnet: reachable by apex + internet egress for upstream engines.
++    # searxnet: internal-only link to valkey.
++    networks: [apexnet, searxnet]
++
+   caddy:
+     image: caddy:2-alpine
+     restart: unless-stopped
+@@ -88,6 +132,9 @@
+   apex-model-cache:
+   caddy-data:
+   caddy-config:
++  searxng-cache:
+ 
+ networks:
+   apexnet:
++  searxnet:
++    internal: true

@@ -34,6 +34,7 @@ import { reserveExaSearch } from './exa-search-budget.js';
 import { disableDirectoryProvider, isDirectoryAuthFailure, redactProviderBody, resolveDirectoryProviderKey } from './lead-provider-keys.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { createCalendarTools } from './calendar/tools.js';
+import { reserveMonthlySearch, searchSearxng, searxngBreaker, webSearchCacheTtlDays, SearxngError } from './search-router.js';
 
 const execAsync = promisify(exec);
 // Runtime-only dependencies owned by the API process. The tool registry lives
@@ -75,7 +76,7 @@ function createAgentHealthMonitor(): HealthMonitor {
 // lookups (domain search, email finder, email verify).
 // Ordinary/general webSearch remains uncached so current research never
 // silently receives old news.
-export type LeadSearchCacheKind = 'directory' | 'web_fast' | 'hunter_domain' | 'hunter_email' | 'hunter_verify';
+export type LeadSearchCacheKind = 'directory' | 'web' | 'web_fast' | 'hunter_domain' | 'hunter_email' | 'hunter_verify';
 
 export type LeadSearchCacheSpec = {
   cacheKey: string;
@@ -203,21 +204,29 @@ export function leadSearchCacheSpec(name: string, args: Record<string, unknown>)
     };
   }
 
-  if (name === 'webSearch' && args.fast === true) {
-    const cacheKind = 'web_fast';
+  if (name === 'webSearch') {
+    const fast = args.fast === true;
+    const cacheKind = fast ? 'web_fast' : 'web';
     const freeOnly = args.freeOnly === true;
     const requestedResults = typeof args.maxResults === 'number' && args.maxResults > 0 ? Math.trunc(args.maxResults) : 10;
-    const keyFingerprint = { version: LEAD_WEB_CACHE_VERSION, fast: true, freeOnly };
-    const ttlMs = positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14) * 86_400_000;
+    const keyFingerprint = { version: LEAD_WEB_CACHE_VERSION, fast, freeOnly };
+    // WEB_SEARCH_CACHE_TTL_DAYS (default 14, clamped 7–30) applies to every
+    // webSearch; the older LEAD_WEB_SEARCH_CACHE_DAYS still overrides fast mode.
+    const ttlDays = fast && process.env.LEAD_WEB_SEARCH_CACHE_DAYS
+      ? positiveDaysFromEnv('LEAD_WEB_SEARCH_CACHE_DAYS', 14)
+      : webSearchCacheTtlDays();
+    const ttlMs = ttlDays * 86_400_000;
     // v1 hashed {version, fast, freeOnly, maxResults} in exactly this order.
-    const legacyCacheKeys = [...new Set([requestedResults, 25, 20, 12, 10, 6])].map((maxResults) =>
-      hashLeadSearchKey(cacheKind, normalizedQuery, {
-        version: LEAD_SEARCH_CACHE_VERSION,
-        fast: true,
-        freeOnly,
-        maxResults,
-      }),
-    );
+    const legacyCacheKeys = fast
+      ? [...new Set([requestedResults, 25, 20, 12, 10, 6])].map((maxResults) =>
+        hashLeadSearchKey(cacheKind, normalizedQuery, {
+          version: LEAD_SEARCH_CACHE_VERSION,
+          fast: true,
+          freeOnly,
+          maxResults,
+        }),
+      )
+      : [];
     return {
       cacheKey: hashLeadSearchKey(cacheKind, normalizedQuery, keyFingerprint),
       cacheKind,
@@ -1251,7 +1260,63 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         // and the agent burned its capacity rewording the query instead.
         const diagnostics: string[] = [];
 
-        // ── Strategy 1: Brave Search API (free tier: 2000 queries/month) ──
+        // ── Strategy 0: self-hosted SearXNG (free; runs in freeOnly too) ──
+        if (!process.env.SEARXNG_URL) diagnostics.push('searxng: SEARXNG_URL not set');
+        else if (!searxngBreaker.canRequest()) diagnostics.push('searxng: temporarily skipped by circuit breaker');
+        else {
+          try {
+            const sx = await searchSearxng(query, { maxResults: n });
+            searxngBreaker.success();
+            if (sx.length > 0) return { query, provider: 'searxng', results: sx.slice(0, n) };
+            diagnostics.push('searxng: 200 but zero results');
+          } catch (e) {
+            searxngBreaker.failure();
+            diagnostics.push(e instanceof SearxngError ? e.message : `searxng: ${e instanceof Error ? e.message : String(e)}`);
+            console.warn(`[webSearch] SearXNG failed for "${query}": ${e}`);
+          }
+        }
+
+        // ── Strategy 1c: Exa semantic web search (paid, capped fallback) ──
+        // Runs after free-tier providers and before Bright Data. The existing
+        // persistent web_fast cache avoids repeat lead-discovery charges.
+        const exaKey = process.env.EXA_API_KEY;
+        if (!exaKey) diagnostics.push('exa: EXA_API_KEY not set');
+        if (freeOnly && exaKey) diagnostics.push('exa: skipped by freeOnly mode');
+        if (!freeOnly && exaKey && !webSearchProviderReady('exa')) {
+          diagnostics.push('exa: temporarily skipped by provider circuit breaker');
+        }
+        if (!freeOnly && exaKey && webSearchProviderReady('exa')) {
+          // reserveExaSearch never throws, but a budget failure must never
+          // reach the user — treat anything unexpected as "skip Exa".
+          const monthly = await reserveMonthlySearch('exa');
+          const reserved = !monthly.allowed ? { allowed: false, detail: monthly.detail } : await reserveExaSearch().catch(
+            () => ({ allowed: false, detail: 'daily request cap check unavailable' }),
+          );
+          if (!reserved.allowed) {
+            diagnostics.push(`exa: ${reserved.detail ?? 'daily request cap reached'}`);
+          } else {
+            try {
+              const exa = await searchExaWeb(query, exaKey, { maxResults: n, fast });
+              if (exa.results.length > 0) return {
+                query,
+                provider: 'exa',
+                results: exa.results.slice(0, n),
+                ...(exa.costDollars !== undefined ? { costDollars: exa.costDollars } : {}),
+              };
+              diagnostics.push('exa: 200 but zero results');
+            } catch (error) {
+              if (error instanceof ExaSearchError) {
+                diagnostics.push(`exa: HTTP ${error.status}`);
+                tripWebSearchProvider('exa', error.status, '');
+              } else {
+                diagnostics.push(`exa: ${error instanceof Error ? error.name : 'network error'}`);
+              }
+              console.warn('[webSearch] Exa unavailable, continuing to next search provider');
+            }
+          }
+        }
+
+        // ── Strategy 1: Brave Search API ($5 free credit/month; monthly-capped) ──
         const braveKey = process.env.BRAVE_SEARCH_API_KEY;
         if (!braveKey) diagnostics.push('brave: BRAVE_SEARCH_API_KEY not set');
         if (freeOnly && braveKey) diagnostics.push('brave: skipped by freeOnly mode');
@@ -1268,6 +1333,8 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             // units of `count`); each page is a separately billed query.
             const plan = braveSearchPlan(n);
             for (let page = 0; page < plan.pages && results.length < n; page++) {
+              const monthlyBrave = await reserveMonthlySearch('brave');
+              if (!monthlyBrave.allowed) { diagnostics.push(`brave: ${monthlyBrave.detail}`); break; }
               const braveUrl = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${plan.count}${page > 0 ? `&offset=${page}` : ''}`;
               const braveRes = await fetch(braveUrl, {
                 headers: { 'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': braveKey },
@@ -1296,85 +1363,6 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
             console.warn(`[webSearch] Brave failed for "${query}": ${e}`);
             // A later page failing must not throw away the pages already paid for.
             if (results.length > 0) return { query, provider: 'brave', results: results.slice(0, n), diagnostics };
-          }
-        }
-
-        // ── Strategy 1b: Serper.dev (Google results, free 2,500 queries/mo) ──
-        const serperKey = process.env.SERPER_API_KEY;
-        if (!serperKey) diagnostics.push('serper: SERPER_API_KEY not set');
-        // Serper is a free-tier keyed provider (2,500 queries/mo, no card) —
-        // freeOnly is a cost-avoidance flag, not a keyless-only flag, so it
-        // must NOT skip serper. Only the circuit breaker can pause it.
-        if (serperKey && !webSearchProviderReady('serper')) {
-          diagnostics.push('serper: temporarily skipped by provider circuit breaker');
-        }
-        if (serperKey && webSearchProviderReady('serper')) {
-          try {
-            const serperRes = await fetch('https://google.serper.dev/search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-API-KEY': serperKey },
-              body: JSON.stringify({ q: query, num: n }),
-              signal: AbortSignal.timeout(20_000),
-            });
-            if (!serperRes.ok) {
-              const body = await serperRes.text().catch(() => '');
-              const detail = `serper: HTTP ${serperRes.status} ${body.slice(0, 200)}`.trim();
-              diagnostics.push(detail);
-              tripWebSearchProvider('serper', serperRes.status, body);
-              console.warn(`[webSearch] ${detail} for "${query}"`);
-            }
-            if (serperRes.ok) {
-              const serperData = await serperRes.json() as {
-                organic?: Array<{ title: string; link: string; snippet?: string }>;
-              };
-              for (const r of serperData.organic ?? []) {
-                results.push({ title: r.title, url: r.link, snippet: r.snippet ?? '' });
-              }
-              if (results.length > 0) return { query, provider: 'serper', results: results.slice(0, n) };
-              diagnostics.push('serper: 200 but zero results');
-            }
-          } catch (e) {
-            diagnostics.push(`serper: ${e instanceof Error ? e.message : String(e)}`);
-            console.warn(`[webSearch] Serper failed for "${query}": ${e}`);
-          }
-        }
-
-        // ── Strategy 1c: Exa semantic web search (paid, capped fallback) ──
-        // Runs after free-tier providers and before Bright Data. The existing
-        // persistent web_fast cache avoids repeat lead-discovery charges.
-        const exaKey = process.env.EXA_API_KEY;
-        if (!exaKey) diagnostics.push('exa: EXA_API_KEY not set');
-        if (freeOnly && exaKey) diagnostics.push('exa: skipped by freeOnly mode');
-        if (!freeOnly && exaKey && !webSearchProviderReady('exa')) {
-          diagnostics.push('exa: temporarily skipped by provider circuit breaker');
-        }
-        if (!freeOnly && exaKey && webSearchProviderReady('exa')) {
-          // reserveExaSearch never throws, but a budget failure must never
-          // reach the user — treat anything unexpected as "skip Exa".
-          const reserved = await reserveExaSearch().catch(
-            () => ({ allowed: false, detail: 'daily request cap check unavailable' }),
-          );
-          if (!reserved.allowed) {
-            diagnostics.push(`exa: ${reserved.detail ?? 'daily request cap reached'}`);
-          } else {
-            try {
-              const exa = await searchExaWeb(query, exaKey, { maxResults: n, fast });
-              if (exa.results.length > 0) return {
-                query,
-                provider: 'exa',
-                results: exa.results.slice(0, n),
-                ...(exa.costDollars !== undefined ? { costDollars: exa.costDollars } : {}),
-              };
-              diagnostics.push('exa: 200 but zero results');
-            } catch (error) {
-              if (error instanceof ExaSearchError) {
-                diagnostics.push(`exa: HTTP ${error.status}`);
-                tripWebSearchProvider('exa', error.status, '');
-              } else {
-                diagnostics.push(`exa: ${error instanceof Error ? error.name : 'network error'}`);
-              }
-              console.warn('[webSearch] Exa unavailable, continuing to next search provider');
-            }
           }
         }
 
@@ -1410,6 +1398,12 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
           let capped = false;
           let answeredEmpty = false;
           for (let attempt = 1; attempt <= BRIGHT_DATA_MAX_ATTEMPTS; attempt++) {
+            const monthlyBd = await reserveMonthlySearch('brightdata');
+            if (!monthlyBd.allowed) {
+              diagnostics.push(`brightdata: ${monthlyBd.detail}`);
+              capped = true;
+              break;
+            }
             const budget = await reserveBrightDataRequest();
             if (!budget.allowed) {
               // Logged once per day by the budget module; no per-call error.
@@ -1478,6 +1472,46 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                 tripWebSearchProvider('brightdata', lastStatus || 502, '');
               }
             }
+          }
+        }
+
+        // ── Strategy 1b: Serper.dev (Google results, free 2,500 queries/mo) ──
+        const serperKey = process.env.SERPER_API_KEY;
+        if (!serperKey) diagnostics.push('serper: SERPER_API_KEY not set');
+        // Serper is a free-tier keyed provider (2,500 queries/mo, no card) —
+        // freeOnly is a cost-avoidance flag, not a keyless-only flag, so it
+        // must NOT skip serper. Only the circuit breaker can pause it.
+        if (serperKey && !webSearchProviderReady('serper')) {
+          diagnostics.push('serper: temporarily skipped by provider circuit breaker');
+        }
+        if (serperKey && webSearchProviderReady('serper')) {
+          try {
+            const serperRes = await fetch('https://google.serper.dev/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-API-KEY': serperKey },
+              body: JSON.stringify({ q: query, num: n }),
+              signal: AbortSignal.timeout(20_000),
+            });
+            if (!serperRes.ok) {
+              const body = await serperRes.text().catch(() => '');
+              const detail = `serper: HTTP ${serperRes.status} ${body.slice(0, 200)}`.trim();
+              diagnostics.push(detail);
+              tripWebSearchProvider('serper', serperRes.status, body);
+              console.warn(`[webSearch] ${detail} for "${query}"`);
+            }
+            if (serperRes.ok) {
+              const serperData = await serperRes.json() as {
+                organic?: Array<{ title: string; link: string; snippet?: string }>;
+              };
+              for (const r of serperData.organic ?? []) {
+                results.push({ title: r.title, url: r.link, snippet: r.snippet ?? '' });
+              }
+              if (results.length > 0) return { query, provider: 'serper', results: results.slice(0, n) };
+              diagnostics.push('serper: 200 but zero results');
+            }
+          } catch (e) {
+            diagnostics.push(`serper: ${e instanceof Error ? e.message : String(e)}`);
+            console.warn(`[webSearch] Serper failed for "${query}": ${e}`);
           }
         }
 
