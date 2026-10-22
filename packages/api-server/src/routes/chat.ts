@@ -737,6 +737,9 @@ export function createChatRouter(ceo: ApexCEO) {
           role: 'CEO',
           interactive: true,
           conversationId,
+          // Reserved operator lane: Command chat is exempt from the workspace
+          // capacity pause and never queues behind background agents.
+          operatorLane: true,
           },
         );
         llmTurns.push({

@@ -42,7 +42,8 @@ import {
   getOpenRouterAccountExclusion,
   getOpenRouterAccountExclusionReport as buildOpenRouterAccountExclusionReport,
 } from './provider-account-exclusions.js';
-import { recordSpend, recordCachedTokens } from './spend-ledger.js';
+import { recordSpend, recordCachedTokens, paidSpendAvailable } from './spend-ledger.js';
+import { tryEnterOperatorLane, operatorLaneProviderOrder } from './operator-lane.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
   getActiveOpenRouterModelPolicy,
@@ -1823,7 +1824,11 @@ class MultiProviderClient {
     tools?: LLMTool[],
     execution?: LLMExecutionContext,
   ): Promise<LLMResponse> {
-    await acquireLLMConcurrencySlot();
+    // Operator/Command chat gets its own reserved lane (own slots + small daily
+    // budget) so a workspace capacity pause or a full background queue never
+    // parks the human. Falls back to the governed path when the lane is spent.
+    const operatorLane = execution?.operatorLane ? tryEnterOperatorLane() : null;
+    if (!operatorLane) await acquireLLMConcurrencySlot();
 
     try {
       // Workspace governors still protect free/BYOK traffic. The operator-
@@ -1854,7 +1859,11 @@ class MultiProviderClient {
           reason: `emergency request cap reached (${emergencyWindow.usedRequests}/${emergencyWindow.cap})`,
         });
       }
-      if (!totalReservation.allowed) {
+      // The operator lane is exempt from the workspace token pacing/reservation
+      // (what produces the workspace capacity pause). The all-provider
+      // emergency hard cap above and every per-provider limit still apply; the
+      // paid route stays reachable within APEX_DAILY_SPEND_USD.
+      if (!operatorLane && !totalReservation.allowed) {
         globalCapacityBlocks.push(
           capacityBlockFromReservation('workspace', totalReservation),
         );
@@ -1867,7 +1876,14 @@ class MultiProviderClient {
         let nonCapacityFailureSeen = false;
         let authFailureCount = 0;
 
-        for (const providerName of requestProviderOrder(this.config.role, pacingOverride)) {
+        const providerOrder = operatorLane
+          ? operatorLaneProviderOrder(
+              requestProviderOrder(this.config.role, pacingOverride),
+              PAID_FALLBACK_PROVIDER_NAMES,
+              paidSpendAvailable(),
+            )
+          : requestProviderOrder(this.config.role, pacingOverride);
+        for (const providerName of providerOrder) {
           const provider = PROVIDER_BY_NAME.get(providerName);
           if (!provider) continue;
 
@@ -2315,7 +2331,8 @@ class MultiProviderClient {
         totalReservation.release();
       }
     } finally {
-      releaseLLMConcurrencySlot();
+      if (operatorLane) operatorLane.release();
+      else releaseLLMConcurrencySlot();
     }
   }
 }

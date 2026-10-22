@@ -322,7 +322,9 @@ check(
   );
   check(
     'complete() dispatches in the per-request order',
-    /for \(const providerName of requestProviderOrder\(this\.config\.role, pacingOverride\)\)/.test(clientSource),
+    // Operator-lane calls (Command chat) extend the same order with the paid
+    // route only when the spend ledger has headroom; background calls use it as-is.
+    /:\s*requestProviderOrder\(this\.config\.role, pacingOverride\);\s*for \(const providerName of providerOrder\)/.test(clientSource),
   );
 }
 if (previousPaidFlag === undefined) delete process.env.APEX_PAID_FALLBACK_ENABLED;
