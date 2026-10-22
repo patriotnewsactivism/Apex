@@ -90,3 +90,4 @@ export {
   DoNotContactError,
   SlotUnavailableError,
 } from './calendar/index.js';
+export * from './operator-lane.js';

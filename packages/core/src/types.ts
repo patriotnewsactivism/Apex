@@ -88,6 +88,10 @@ export interface LLMExecutionContext {
   /** Optional stable key for stateful provider conversations that are not tied
    * to a durable task (for example the human chat route). */
   conversationId?: string;
+  /** Operator/Command chat: use the reserved operator lane (own concurrency
+   *  slots and small daily budget, exempt from the workspace capacity pause,
+   *  paid route only within APEX_DAILY_SPEND_USD). See operator-lane.ts. */
+  operatorLane?: boolean;
 }
 
 export interface LLMClientConfig {

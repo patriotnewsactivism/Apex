@@ -33,7 +33,8 @@ export type ExecutionOutcomeReason =
   | 'rate_limit'
   | 'circuit_breaker'
   | 'task_ownership_loss'
-  | 'capacity_pause';
+  | 'capacity_pause'
+  | 'capacity_defer_limit';
 
 /** Mirrors task-queue.ts's own hard-timeout marker convention (kept
  *  duplicated on purpose — see isHardTaskTimeout there — rather than

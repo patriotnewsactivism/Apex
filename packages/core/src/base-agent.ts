@@ -9,7 +9,7 @@ import { getWorkspaceRoot } from './workspace-root.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
-import { TaskQueue } from './task-queue.js';
+import { TaskQueue, setTaskClaimPauseProbe } from './task-queue.js';
 import { drainTaskArtifacts, peekTaskArtifacts } from './durable-work-tools.js';
 import {
   recordAgentLoopStart,
@@ -195,6 +195,10 @@ export function capacityPauseRemainingMs(now: number = Date.now()): number {
   releaseCapacityLatchIfRecovered(now);
   return Math.max(0, sharedCapacityResumeAtMs - now);
 }
+
+// Every claim path (TaskQueue.dequeue/claimById) consults this latch, so while
+// a capacity pause is active no agent claims a task only to defer it again.
+setTaskClaimPauseProbe(capacityPauseRemainingMs);
 
 /** Test seam: drop the latch and the probe throttle. */
 export function __resetCapacityLatchForTest(): void {

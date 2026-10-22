@@ -83,6 +83,60 @@ function isLiveOwnership(task: Pick<Task, 'status' | 'errorMessage'>): boolean {
   return true;
 }
 
+
+
+/**
+ * Capacity-defer cap (2026-10-22). A capacity pause re-queues a task as
+ * pending with no retry-count increment, which is correct for a short pause
+ * but let some tasks bounce through claim -> context rebuild -> defer forever
+ * (hundreds of cycles each). Count defers in context.capacityDeferCount and
+ * park the task as `blocked` with an explicit reason after the limit.
+ */
+export const CAPACITY_DEFER_LIMIT_DEFAULT = 20;
+export const CAPACITY_DEFER_BLOCK_PREFIX = 'Blocked after repeated capacity defers:';
+
+export function capacityDeferLimit(): number {
+  const raw = process.env.APEX_CAPACITY_DEFER_LIMIT;
+  const n = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : CAPACITY_DEFER_LIMIT_DEFAULT;
+}
+
+export function nextCapacityDeferState(
+  context: unknown,
+  error: string,
+  limit: number = capacityDeferLimit(),
+): { context: Record<string, unknown>; count: number; exhausted: boolean; reason: string | null } {
+  const base =
+    context && typeof context === 'object' && !Array.isArray(context)
+      ? { ...(context as Record<string, unknown>) }
+      : {};
+  const prev = Number(base.capacityDeferCount);
+  const count = (Number.isFinite(prev) && prev > 0 ? Math.floor(prev) : 0) + 1;
+  base.capacityDeferCount = count;
+  const exhausted = count >= limit;
+  const reason = exhausted
+    ? `${CAPACITY_DEFER_BLOCK_PREFIX} deferred ${count} times for LLM capacity (limit ${limit}); operator unblock required. Last: ${error.slice(0, 300)}`
+    : null;
+  return { context: base, count, exhausted, reason };
+}
+
+/**
+ * Claim gate: BaseAgent registers its workspace capacity-pause probe here so
+ * every claim path (dequeue and claimById) skips while a capacity pause is
+ * active, instead of claiming work only to defer it again.
+ */
+let claimPauseProbe: (() => number) | null = null;
+export function setTaskClaimPauseProbe(probe: (() => number) | null): void {
+  claimPauseProbe = probe;
+}
+export function taskClaimPausedMs(): number {
+  try {
+    return claimPauseProbe ? Math.max(0, claimPauseProbe()) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export class TaskQueue {
   private agentId: string;
   private memoryQueue: Task[] = [];
@@ -187,6 +241,7 @@ export class TaskQueue {
    * be pending with its retry window elapsed; anything else returns null.
    */
   async claimById(taskId: string): Promise<Task | null> {
+    if (taskClaimPausedMs() > 0) return null;
     try {
       const now = new Date();
       const nowIso = now.toISOString();
@@ -241,6 +296,7 @@ export class TaskQueue {
    * (Phase 4) and are never claimed by in-process worker loops.
    */
   async dequeue(): Promise<Task | null> {
+    if (taskClaimPausedMs() > 0) return null;
     recordDequeueAttempt();
     try {
       const now = new Date();
@@ -423,11 +479,35 @@ export class TaskQueue {
         if (TERMINAL_TASK_STATUSES.has(task.status)) return;
 
         if (capacityRetryAt) {
+          const defer = nextCapacityDeferState(task.context, error);
+          if (defer.exhausted) {
+            await db
+              .update(tasks)
+              .set({
+                status: 'blocked',
+                errorMessage: defer.reason,
+                context: defer.context,
+                nextRetryAt: null,
+                leasedAt: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(tasks.id, taskId));
+            logTaskOutcome({
+              taskId,
+              agentId: task.assignedAgentId ?? 'unknown',
+              goalId: task.goalId,
+              reason: 'capacity_defer_limit',
+              elapsedMs: task.startedAt ? Date.now() - task.startedAt.getTime() : 0,
+              detail: defer.reason ?? undefined,
+            });
+            return;
+          }
           await db
             .update(tasks)
             .set({
               status: 'pending',
               errorMessage: error,
+              context: defer.context,
               nextRetryAt: capacityRetryAt,
               leasedAt: null,
               updatedAt: new Date(),
@@ -480,10 +560,18 @@ export class TaskQueue {
       }
       if (isTimeoutQuarantine(memTask) || TERMINAL_TASK_STATUSES.has(memTask.status)) return;
       if (capacityRetryAt) {
+        const defer = nextCapacityDeferState(memTask.context, error);
+        memTask.context = defer.context;
+        memTask.leasedAt = null;
+        if (defer.exhausted) {
+          memTask.status = 'blocked';
+          memTask.errorMessage = defer.reason;
+          memTask.nextRetryAt = null;
+          return;
+        }
         memTask.status = 'pending';
         memTask.errorMessage = error;
         memTask.nextRetryAt = capacityRetryAt;
-        memTask.leasedAt = null;
         return;
       }
       memTask.status = 'failed';

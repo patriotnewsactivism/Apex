@@ -167,10 +167,22 @@ async function main(): Promise<void> {
     /name === 'searchBusinessDirectory'/.test(src) &&
       /cacheKind = 'directory'/.test(src),
   );
+  // Policy changed deliberately in #399 (1173053, search provider router):
+  // every webSearch is now cached in lead_search_cache for
+  // WEB_SEARCH_CACHE_TTL_DAYS (default 14, clamped 7-30) to protect the hard
+  // monthly Exa/Brave/Bright Data caps. Fast lead-discovery and ordinary
+  // research use separate cache kinds so their keys never collide, and the
+  // legacy LEAD_WEB_SEARCH_CACHE_DAYS override still applies to fast mode only.
   check(
-    'only fast lead-discovery web searches are cached; ordinary web research stays fresh',
-    /name === 'webSearch' && args\.fast === true/.test(src) &&
-      /Ordinary\/general webSearch remains uncached/.test(src),
+    'webSearch is cached per #399, with fast lead-discovery and ordinary research in separate cache kinds',
+    /if \(name === 'webSearch'\) \{/.test(src) &&
+      /const cacheKind = fast \? 'web_fast' : 'web';/.test(src) &&
+      /\| 'web' \| 'web_fast' \|/.test(src),
+  );
+  check(
+    'ordinary webSearch TTL comes from the clamped WEB_SEARCH_CACHE_TTL_DAYS; the legacy override is fast-only',
+    /fast && process\.env\.LEAD_WEB_SEARCH_CACHE_DAYS/.test(src) &&
+      /: webSearchCacheTtlDays\(\);/.test(src),
   );
   check(
     'directory and web lead searches have multi-day default cache TTLs',
