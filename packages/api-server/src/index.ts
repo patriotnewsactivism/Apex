@@ -52,6 +52,7 @@ import { createCalendarPublicRouter, createCalendarRouter, handleGoogleCalendarO
 import { createCallBridgeRouter, createCallBridgeWebhookRouter } from './routes/call-bridge.js';
 import { createHankLiveRouter } from './routes/hank-live.js';
 import { createResendWebhookRouter } from './routes/resend-webhook.js';
+import { mountEmailAuditAdmin, mountEmailAuditPublic } from './email-audit/mount.js';
 import { createCicdRouter } from './routes/cicd.js';
 import { createMultiappRouter } from './routes/multiapp.js';
 import { createPredictiveRouter } from './routes/predictive.js';
@@ -591,6 +592,10 @@ async function main() {
   // instead of a Bearer token). Must be mounted BEFORE requireAdminAuth.
   app.use('/api/resend', createResendWebhookRouter());
 
+  // Email audit gateway webhooks (Resend/Brevo/SES -> email_events). Off unless
+  // EMAIL_AUDIT_WEBHOOKS_ENABLED=true; signature-verified; pre-auth like Resend.
+  await mountEmailAuditPublic(app);
+
   // Apex Front Desk — Telnyx AI Assistant tool-calling surface (dynamic
   // variables, take-message, send-confirmation, inbound SMS). Server-to-server
   // from Telnyx, verified by a query-string key instead of a Bearer token.
@@ -631,6 +636,9 @@ async function main() {
 
   // Everything else under /api is locked down behind a bearer token.
   app.use('/api', requireAdminAuth);
+
+  // Read-only email audit dashboard API (EMAIL_AUDIT_DASHBOARD_ENABLED, default off).
+  await mountEmailAuditAdmin(app);
 
   // API Routes
   app.use('/api/goals', createGoalsRouter(ceo));

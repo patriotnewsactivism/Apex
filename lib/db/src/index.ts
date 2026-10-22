@@ -7,3 +7,4 @@ export * from './schema-revenue-ops.js';
 // migration runtime can evolve independently of the static schema definitions.
 export { migrate } from './migrate.js';
 export { encrypt, decrypt, generateEncryptionKey } from './crypto.js';
+export { createAuditSql, type AuditSql } from './audit-client.js';
