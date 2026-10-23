@@ -33,7 +33,7 @@ The mission payload includes:
 - qualificationRules: rules for qualifying contacts (must have phone, email, budget minimum)
 - allowedChannels: which communication channels the mission may use
 - policy: mission policy (budget cap, approval gates, opt-in rules)
-- budgetCents: total mission budget in cents
+- budgetCents: optional; omit to run on existing resources (0 added spend)
 - spentCents: starting at 0
 - deadlineAt: when the mission must complete by
 - approveBeforePivot: whether channel pivots require human approval
@@ -44,7 +44,7 @@ The mission payload includes:
     qualificationRules: z.record(z.unknown()).describe('Rules for qualifying contacts (e.g., { mustHavePhone: true, mustHaveEmail: true, budgetMinimumCents: 50000 }).'),
     allowedChannels: z.array(z.enum(['call', 'email', 'sms'])).min(1).describe('Which communication channels the mission may use.'),
     policy: z.object({
-      budgetCents: z.number().int().positive().describe('Total mission budget in cents (e.g., 40000 for $400).'),
+      budgetCents: z.number().int().nonnegative().optional().default(0).describe('Optional added mission spend in cents. Omit (0) to run on existing resources only; global hard caps always apply.'),
       approveBeforePivot: z.boolean().describe('Whether channel pivots require human approval.'),
       firstTouchOptIn: z.enum(['manual', 'auto_with_warn']).describe('How to handle first-touch opt-in.'),
       requireApprovalForNewCampaigns: z.boolean().optional().describe('Whether creating new campaigns requires approval.'),

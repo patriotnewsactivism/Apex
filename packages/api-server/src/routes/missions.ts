@@ -19,12 +19,17 @@ export const CreateMissionSchema = z.object({
   qualificationRules: z.record(z.unknown()),
   allowedChannels: z.array(z.enum(['call', 'email', 'sms'])).min(1),
   policy: z.object({
-    budgetCents: z.number().int().positive(),
-    approveBeforePivot: z.boolean(),
-    firstTouchOptIn: z.enum(['manual', 'auto_with_warn']),
+    // Optional. Missions run on existing resources by default ("Superman mode"
+    // is always on, not a toggle): 0 = no added mission spend. The mission
+    // budget gate (core/revenue-ops/budget.ts) then refuses any action with an
+    // estimated cost > 0, and the global hard caps (APEX_DAILY_SPEND_USD,
+    // per-key limits) still apply on top.
+    budgetCents: z.number().int().nonnegative().optional().default(0),
+    approveBeforePivot: z.boolean().optional().default(true),
+    firstTouchOptIn: z.enum(['manual', 'auto_with_warn']).optional().default('manual'),
     requireApprovalForNewCampaigns: z.boolean().optional(),
     requireApprovalForOfferChange: z.boolean().optional(),
-  }),
+  }).optional().default({}),
   deadlineAt: MissionDeadlineSchema.optional(),
   title: z.string().min(5).max(200).optional(),
   projectId: z.string().optional(),
