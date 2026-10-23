@@ -89,7 +89,7 @@ export interface CreateMissionRequest {
   qualificationRules: Record<string, unknown>;
   allowedChannels: string[];
   policy: {
-    budgetCents: number;
+    budgetCents?: number;
     approveBeforePivot: boolean;
     firstTouchOptIn: 'manual' | 'auto_with_warn';
     requireApprovalForNewCampaigns?: boolean;

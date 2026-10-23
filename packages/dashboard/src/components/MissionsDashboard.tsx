@@ -384,7 +384,6 @@ export function deadlineDateToIso(deadlineDate: string): string | undefined {
 function CreateMissionDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [objective, setObjective] = useState('');
   const [title, setTitle] = useState('');
-  const [budgetCents, setBudgetCents] = useState(40000);
   const [deadlineAt, setDeadlineAt] = useState('');
   const [firstTouchOptIn, setFirstTouchOptIn] = useState<'manual' | 'auto_with_warn'>('manual');
   const [approvedBeforePivot, setApprovedBeforePivot] = useState(true);
@@ -402,8 +401,9 @@ function CreateMissionDialog({ onClose, onCreated }: { onClose: () => void; onCr
           targetDefinition: { industries: [], cities: [], employeeRange: [10, 100] },
           qualificationRules: { mustHavePhone: true, mustHaveEmail: true },
           allowedChannels: channels,
+          // No spend field: missions run on existing resources (0 added
+          // spend). Global hard caps are enforced server-side.
           policy: {
-            budgetCents,
             approveBeforePivot: approvedBeforePivot,
             firstTouchOptIn,
             requireApprovalForNewCampaigns: true,
@@ -487,16 +487,8 @@ function CreateMissionDialog({ onClose, onCreated }: { onClose: () => void; onCr
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 11, color: 'var(--color-apex-muted)', fontWeight: 500, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Budget (USD)</label>
-              <input
-                type="number"
-                value={budgetCents / 100}
-                onChange={e => setBudgetCents(Math.round(parseInt(e.target.value) * 100 || 0))}
-                min={100}
-                step={100}
-                style={{ width: '100%', padding: '8px 12px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--color-apex-line)', borderRadius: 6, color: 'var(--color-apex-text)', fontSize: 13, fontFamily: 'var(--font-sans)', outline: 'none' }}
-              />
+            <div style={{ fontSize: 11, color: 'var(--color-apex-muted)', alignSelf: 'end', paddingBottom: 8 }}>
+              Runs on existing resources — no added spend. Daily hard caps always apply.
             </div>
             <div>
               <label style={{ display: 'block', fontSize: 11, color: 'var(--color-apex-muted)', fontWeight: 500, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Deadline (ISO date)</label>
