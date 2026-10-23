@@ -395,10 +395,19 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
     : US_STATES.length * CITIES_PER_STATE;
   const segments = industryCount * cityCount;
   const targetReady = mode === 'cities' ? cityCount > 0 : mode === 'states' ? selectedStates.length > 0 : true;
+  const targetNum = Number(target);
+  // Mirror the server's limits so the form explains a problem before submit
+  // instead of bouncing off a 400.
+  const limitProblem =
+    mode === 'cities' && cityCount > 50 ? `Up to 50 cities per campaign (you have ${cityCount}). Use "Select states" for wider coverage.`
+    : industryCount > 20 ? `Up to 20 industries per campaign (you have ${industryCount}).`
+    : target.trim() !== '' && (!Number.isInteger(targetNum) || targetNum < 1 || targetNum > 5000) ? 'Target leads must be a whole number from 1 to 5,000.'
+    : null;
   const ready =
     name.trim().length >= 3 &&
     industryCount > 0 &&
     targetReady &&
+    !limitProblem &&
     segments <= MAX_CAMPAIGN_SEGMENTS;
 
   return (
@@ -483,6 +492,8 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
         <input
           className="apex-input"
           type="number"
+          min={1}
+          max={5000}
           placeholder="Target leads"
           value={target}
           onChange={(e) => setTarget(e.target.value)}
@@ -502,6 +513,7 @@ function NewCampaignForm({ onDone }: { onDone: () => void }) {
                 : ''}
           </div>
         )}
+        {limitProblem && <div style={{ fontSize: 11, color: '#c45c66' }}>{limitProblem}</div>}
         {error && <div style={{ fontSize: 11, color: '#c45c66' }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn-primary" onClick={() => { setError(null); create.mutate(); }} disabled={!ready || create.isPending}>

@@ -4,32 +4,11 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, campaignSegments, leadCampaigns, researchedLeads } from '@workspace/db';
 import { computeCampaignProgress, countUsableCampaignLeads, createCampaign, extendCampaign, getLeadSearchPauseSnapshot } from '@workspace/background-jobs';
 import { broadcast } from '../websocket.js';
+import { createCampaignSchema as createSchema, campaignValidationErrorBody } from './campaign-schemas.js';
 
 // Progress is always computed from campaign + segment rows at read time, never
 // stored. A cached percentage goes stale the moment a segment lands, and a
 // stored ETA is a number that looks authoritative while being wrong.
-
-const createSchema = z
-  .object({
-    name: z.string().min(3).max(120),
-    industries: z.array(z.string().min(1)).min(1).max(20),
-    // Explicit cities remain supported and combine with states/national
-    // below rather than being replaced by them.
-    cities: z.array(z.string().min(1)).max(50).optional().default([]),
-    // Two-letter USPS codes — each expands to that state's principal cities.
-    states: z.array(z.string().min(2).max(2)).max(51).optional(),
-    // Shorthand for every state at once.
-    national: z.boolean().optional().default(false),
-    targetLeads: z.number().int().min(1).max(5000).optional().default(100),
-    goalId: z.string().optional(),
-    projectId: z.string().optional(),
-    pushToBuildmybot: z.boolean().optional().default(false),
-    notes: z.string().max(2000).optional(),
-  })
-  .refine(
-    (v) => v.cities.length > 0 || (v.states?.length ?? 0) > 0 || v.national,
-    { message: 'Provide at least one city, one state, or national=true.', path: ['cities'] },
-  );
 
 const extendSchema = z.object({
   // Same ceiling as creation.
@@ -147,7 +126,10 @@ export function createCampaignsRouter() {
   router.post('/', async (req, res) => {
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.flatten() });
+      // Must be { error: string, details } — the dashboard's apiFetch reads
+      // `error` as a string. Returning the flatten() object there rendered
+      // as "[object Object]" in the New Campaign form.
+      res.status(400).json(campaignValidationErrorBody(parsed.error));
       return;
     }
     try {
@@ -175,7 +157,7 @@ export function createCampaignsRouter() {
   router.post('/:id/extend', async (req, res) => {
     const parsed = extendSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.flatten() });
+      res.status(400).json(campaignValidationErrorBody(parsed.error));
       return;
     }
     try {
