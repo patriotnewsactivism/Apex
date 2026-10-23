@@ -47,3 +47,12 @@ export function decideMissionStart(input: MissionStartInput): MissionStartDecisi
 export function executeMissionTaskTitle(goalTitle: string): string {
   return `Execute mission: ${goalTitle}`;
 }
+
+/** Agent queues only claim tasks assigned to them, so an unassigned task would
+ *  never run. Default to the COO — the same agent the work-generation job
+ *  hands goal execution to. */
+export const DEFAULT_MISSION_EXECUTION_AGENT = 'apex-coo-001';
+
+export function missionExecutionAgent(assignedAgentId: string | null | undefined): string {
+  return assignedAgentId && assignedAgentId.trim() ? assignedAgentId : DEFAULT_MISSION_EXECUTION_AGENT;
+}

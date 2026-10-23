@@ -7,7 +7,7 @@ import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import type { Request, Response } from 'express';
-import { decideMissionStart, executeMissionTaskTitle } from './mission-start.js';
+import { decideMissionStart, executeMissionTaskTitle, missionExecutionAgent } from './mission-start.js';
 
 export const MissionDeadlineSchema = z.union([
   z.string().date().transform((date) => `${date}T23:59:59.999Z`),
@@ -652,7 +652,7 @@ export function createMissionsRouter(): Router {
           reason ? `Operator note: ${reason}` : '',
         ].filter(Boolean).join('\n'),
         status: 'pending',
-        assignedAgentId: mission.assignedAgentId,
+        assignedAgentId: missionExecutionAgent(mission.assignedAgentId),
         createdByAgentId: 'system',
         context: { goalId: missionId, missionId },
       });

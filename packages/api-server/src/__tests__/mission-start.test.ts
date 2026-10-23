@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decideMissionStart, executeMissionTaskTitle } from '../routes/mission-start.js';
+import { decideMissionStart, executeMissionTaskTitle, missionExecutionAgent } from '../routes/mission-start.js';
 
 const ok = { goalStatus: 'active', missionStatus: 'validating', validationApprovalStatuses: ['approved'] };
 
@@ -37,5 +37,11 @@ describe('POST /api/missions/:missionId/start gating', () => {
 
   it('names the execution task after the mission', () => {
     expect(executeMissionTaskTitle('Revenue Ops Mission: Find 5000 Leads')).toBe('Execute mission: Revenue Ops Mission: Find 5000 Leads');
+  });
+
+  it('assigns the task to an agent queue so it can actually be claimed', () => {
+    expect(missionExecutionAgent(null)).toBe('apex-coo-001');
+    expect(missionExecutionAgent('')).toBe('apex-coo-001');
+    expect(missionExecutionAgent('apex-sales-001')).toBe('apex-sales-001');
   });
 });
