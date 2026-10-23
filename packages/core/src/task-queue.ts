@@ -129,6 +129,38 @@ let claimPauseProbe: (() => number) | null = null;
 export function setTaskClaimPauseProbe(probe: (() => number) | null): void {
   claimPauseProbe = probe;
 }
+let nonMissionPauseProbe: (() => number) | null = null;
+export function setTaskClaimNonMissionPauseProbe(probe: (() => number) | null): void {
+  nonMissionPauseProbe = probe;
+}
+export function taskClaimNonMissionPausedMs(): number {
+  try {
+    return nonMissionPauseProbe ? Math.max(0, nonMissionPauseProbe()) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** SQL predicate for mission/campaign-linked tasks; mirrors classifyWorkClass's
+ *  strong mission signals (work-class-budget.ts). */
+export const MISSION_TASK_SQL = `(
+  coalesce(context->>'missionId','') <> '' OR coalesce(context->>'campaignId','') <> ''
+  OR coalesce(context->>'leadCampaignId','') <> '' OR coalesce(context->>'emailCampaignId','') <> ''
+  OR context->>'missionType' = 'revenue_ops' OR context->>'workClass' = 'mission'
+  OR title ILIKE 'execute mission:%' OR title ILIKE 'execute mission (%'
+  OR description LIKE 'EXECUTE MISSION (%'
+)`;
+
+export function isMissionLinkedTask(task: { title?: string | null; description?: string | null; context?: unknown }): boolean {
+  const ctx = (task.context && typeof task.context === 'object' ? task.context : {}) as Record<string, unknown>;
+  for (const k of ['missionId', 'campaignId', 'leadCampaignId', 'emailCampaignId']) {
+    if (typeof ctx[k] === 'string' && (ctx[k] as string) !== '') return true;
+  }
+  if (ctx.missionType === 'revenue_ops' || ctx.workClass === 'mission') return true;
+  const t = (task.title ?? '').toLowerCase();
+  return t.startsWith('execute mission:') || t.startsWith('execute mission (') || (task.description ?? '').startsWith('EXECUTE MISSION (');
+}
+
 export function taskClaimPausedMs(): number {
   try {
     return claimPauseProbe ? Math.max(0, claimPauseProbe()) : 0;
@@ -242,6 +274,8 @@ export class TaskQueue {
    */
   async claimById(taskId: string): Promise<Task | null> {
     if (taskClaimPausedMs() > 0) return null;
+    const missionOnly = taskClaimNonMissionPausedMs() > 0;
+    const missionFilter = missionOnly ? sql.raw(MISSION_TASK_SQL) : sql`TRUE`;
     try {
       const now = new Date();
       const nowIso = now.toISOString();
@@ -258,6 +292,7 @@ export class TaskQueue {
               WHERE id = ${taskId}
                 AND status = 'pending'
                 AND (next_retry_at IS NULL OR next_retry_at <= ${nowIso})
+                AND ${missionFilter}
               LIMIT 1
             )`,
           ),
@@ -272,6 +307,7 @@ export class TaskQueue {
       (task) =>
         task.id === taskId &&
         task.status === 'pending' &&
+        (!missionOnly || isMissionLinkedTask(task)) &&
         (!task.nextRetryAt || task.nextRetryAt.getTime() <= Date.now()),
     );
     if (memTask) {
@@ -297,6 +333,10 @@ export class TaskQueue {
    */
   async dequeue(): Promise<Task | null> {
     if (taskClaimPausedMs() > 0) return null;
+    // Internal/background work hit a provider pause: only mission/campaign
+    // tasks may be claimed until it clears.
+    const missionOnly = taskClaimNonMissionPausedMs() > 0;
+    const missionFilter = missionOnly ? sql.raw(MISSION_TASK_SQL) : sql`TRUE`;
     recordDequeueAttempt();
     try {
       const now = new Date();
@@ -316,6 +356,7 @@ export class TaskQueue {
                 AND status = 'pending'
                 AND (next_retry_at IS NULL OR next_retry_at <= ${nowIso})
                 AND context->>'runtime' IS DISTINCT FROM 'job'
+                AND ${missionFilter}
               ORDER BY priority ASC, created_at ASC
               LIMIT 1
             )`,
@@ -358,6 +399,7 @@ export class TaskQueue {
       (task) =>
         task.status === 'pending' &&
         (task.context?.runtime as string | undefined) !== 'job' &&
+        (!missionOnly || isMissionLinkedTask(task)) &&
         (!task.nextRetryAt || task.nextRetryAt.getTime() <= nowMs),
     );
     if (nextMemIdx !== -1) {
