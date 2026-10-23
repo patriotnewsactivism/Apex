@@ -171,16 +171,16 @@ async function main(): Promise<void> {
 
   // ── Routing and capacity probing ─────────────────────────────────────────
   const capacityProbe = client.slice(
-    client.indexOf('export function llmCapacityAvailableNow('),
+    client.indexOf('export function getProviderCapacityReport('),
     client.indexOf('/**\n * Cost of one call', client.indexOf('export function llmCapacityAvailableNow(')),
   );
   check(
     'claim admission honors the emergency all-provider ceiling',
-    /emergencyRequestCapacityWindow\(now\)\.allowed/.test(capacityProbe),
+    /const emergency = emergencyRequestCapacityWindow\(now\)/.test(capacityProbe) && /!emergency.allowed/.test(capacityProbe),
   );
   check(
     'claim admission checks each provider pool independently',
-    /requestWindowForProvider\(provider, now\)\.allowed/.test(capacityProbe),
+    /const window = requestWindowForProvider\(provider, now\)/.test(capacityProbe) && /!window.allowed/.test(capacityProbe),
   );
   check(
     'provider execution also checks its own pool before credentials are tried',
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
   );
   check(
     'paid continuity bypasses the free request pool and uses an uncapped APEX request window',
-    /if \(provider\.paid\) return paidProviderCapacityWindow\(\);/.test(client) &&
+    /if \(provider\.paid\) return paidProviderCapacityWindow\(at, pacingEnabled, priority\);/.test(client) &&
       /function isPaidAccount\(account: string\)/.test(ledger) &&
       /!isDirectAccount\(account\) && !isPaidAccount\(account\)/.test(ledger),
   );

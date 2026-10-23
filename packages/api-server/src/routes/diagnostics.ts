@@ -1,3 +1,4 @@
+import { getProviderCapacityReport } from '@workspace/core';
 import { Router } from 'express';
 import {
   getCapacityDeferralStats,
@@ -83,6 +84,19 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
       });
     }
 
+    // Report a genuine capacity outage even before the first claim establishes
+    // BaseAgent's pause latch. Configured credentials are not usable capacity.
+    const capacity = getProviderCapacityReport(now).filter((provider) => provider.enabled);
+    if (!capacity.some((provider) => provider.available)) {
+      findings.push({
+        severity: 'critical',
+        code: 'capacity_exhausted',
+        title: 'No enabled LLM route currently passes admission',
+        detail: capacity.map((provider) => `${provider.name}: ${provider.state} (${provider.reason})${provider.resumeAt ? ` until ${provider.resumeAt}` : ''}`).join('; '),
+        action: 'Read llmCapacity.providers on GET /api/health/detail. Honor quota resets and budget limits; repair denied entitlements without enabling billing or resetting usage ledgers.',
+      });
+    }
+
     // ── Capacity spin ──────────────────────────────────────────────────────
     // A claim that ends in a deferral still paid for a task claim, a history
     // rebuild and a learning-context assembly. Sustained deferrals mean the
@@ -122,7 +136,7 @@ export function createDiagnosticsRouter(workforce: Map<string, BaseAgent>) {
           ? `Every agent is waiting until the UTC daily reset (${resumeAt}). Free and BYOK capacity is exhausted. Idle agent counts look the same, but no provider can take a call before then.`
           : `Every agent is waiting ${Math.round(deferrals.parkedForMs / 60_000)} more minutes, until ${resumeAt}. No configured provider can take a call. This is indistinguishable from idle in agentStatusCounts.`,
         action: dailyReset
-          ? 'Wait for 00:00 UTC, or turn paid continuity back on (APEX_PAID_FALLBACK_ENABLED must not be false, and the funded OpenRouter key must be set). Restarting the process will not clear a daily budget. POST /api/tokens/reset only if this spend was wasted.'
+          ? 'Wait for the provider reset, or repair an already authorized route within its existing allowance. Do not reset local usage ledgers to bypass an exhausted upstream quota or raise the dollar cap without approval.'
           : 'Read llmCapacity on GET /api/health/detail. pausedProviders names who is resting. A park this long means every route is blocked, not one paced provider: llmCapacityAvailableNow() would have released the latch otherwise.',
       });
     }

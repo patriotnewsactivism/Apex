@@ -40,9 +40,15 @@ import {
   classifyToolCallForCheckpoint,
   detectRepetition,
   toolCallArgsKey,
+  toolResultKey,
   buildRepetitionInterventionMessage,
+  armRepetitionStop,
+  shouldBlockRepeatedRead,
+  buildRepeatedReadBlockMessage,
+  RepeatedReadBlockedError,
   shouldPromptForConcreteAction,
   buildConcreteActionPrompt,
+  type RepetitionStopState,
   type ToolCallRecord,
 } from './execution-budget.js';
 import { classifyWorkload, buildHeavyWorkAdvisory, buildHeavyWorkExecutionNudge } from './work-classifier.js';
@@ -57,6 +63,7 @@ import type {
   TaskInput,
   TaskResult,
   ToolContext,
+  ToolResult,
 } from './types.js';
 
 // ─── Global Event Bus ─────────────────────────────────────────────────────────
@@ -651,6 +658,22 @@ export abstract class BaseAgent {
 
   // ── Core Reasoning ─────────────────────────────────────────────────────────
 
+  /** Registry execution seam. The repetition stop runs before this is called. */
+  protected executeRegisteredTool(
+    name: string,
+    args: Record<string, unknown>,
+    context: ToolContext,
+  ): Promise<ToolResult> {
+    return getToolRegistry().execute(name, args, context);
+  }
+
+  /** Called after a refused read is paired into history, before the task fails. */
+  protected onNoProgressReadBlocked(_event: {
+    toolName: string;
+    argsKey: string;
+    history: LLMMessage[];
+  }): void {}
+
   protected async executeTask(
     taskId: string,
     title: string,
@@ -687,6 +710,7 @@ export abstract class BaseAgent {
     const toolCallLog: ToolCallRecord[] = [];
     let decisionToolCallCount = 0;
     let repetitionIntervened = false;
+    let repetitionStop: RepetitionStopState | null = null;
     let budgetPrompted = false;
     let bundleCoveragePrompted = false;
 
@@ -1138,7 +1162,43 @@ export abstract class BaseAgent {
         this.setStatus('acting');
         const toolResults: LLMMessage[] = [];
 
-        for (const tc of response.toolCalls) {
+        for (let toolIndex = 0; toolIndex < response.toolCalls.length; toolIndex++) {
+          const tc = response.toolCalls[toolIndex];
+          const argsKey = toolCallArgsKey(tc.args);
+          // After the one-shot warning, the same non-polling read is a stuck
+          // loop. Refuse it before execution. The historical log that triggered
+          // the warning is not itself another attempt.
+          if (shouldBlockRepeatedRead(repetitionStop, { name: tc.name, argsKey })) {
+            const blocked = repetitionStop;
+            if (blocked) {
+              const message = buildRepeatedReadBlockMessage(blocked);
+              history.push(...toolResults);
+              history.push({
+                role: 'tool',
+                toolCallId: tc.id,
+                name: tc.name,
+                content: JSON.stringify({ success: false, blocked: true, error: message }),
+              });
+              for (const skipped of response.toolCalls.slice(toolIndex + 1)) {
+                history.push({
+                  role: 'tool',
+                  toolCallId: skipped.id,
+                  name: skipped.name,
+                  content: JSON.stringify({
+                    success: false,
+                    blocked: true,
+                    error: 'Not executed: task stopped on a repeated no-progress read before this call.',
+                  }),
+                });
+              }
+              this.onNoProgressReadBlocked({
+                toolName: blocked.toolName,
+                argsKey: blocked.argsKey,
+                history,
+              });
+              throw new RepeatedReadBlockedError(blocked);
+            }
+          }
           toolExecutions++;
           if (tc.name === 'sendMessage' || tc.name === 'dispatchSwarm') {
             delegatedWork = true;
@@ -1151,8 +1211,9 @@ export abstract class BaseAgent {
           // feeds both the repetition guard below and, if this task later
           // hits its soft deadline, the checkpoint it yields with.
           const argsSummary = JSON.stringify(tc.args).slice(0, 100);
+          const recorded: ToolCallRecord = { name: tc.name, argsKey };
           completedStepsLog.push(`${tc.name}(${argsSummary})`);
-          toolCallLog.push({ name: tc.name, argsKey: toolCallArgsKey(tc.args) });
+          toolCallLog.push(recorded);
           switch (classifyToolCallForCheckpoint(tc.name)) {
             case 'finding':
               findingsLog.push(`${tc.name}(${argsSummary})`);
@@ -1210,7 +1271,8 @@ export abstract class BaseAgent {
           };
 
           const toolCallStartedAt = Date.now();
-          const result = await registry.execute(tc.name, tc.args, toolContext);
+          const result = await this.executeRegisteredTool(tc.name, tc.args, toolContext);
+          recorded.resultKey = toolResultKey(result);
           recordTurnEconomy(result.success ? 'successfulTools' : 'failedTools');
           // Reaching here means the call did not yield (ApprovalYieldSignal
           // throws out of registry.execute() before this line — that path
@@ -1248,14 +1310,15 @@ export abstract class BaseAgent {
         // budget drift the same way malformed-tool-calls.ts and
         // non-completion.ts catch other process failures, by inspecting what
         // actually happened rather than asking a model to judge itself.
-        // Each intervention fires at most once per task so a model that
-        // still repeats after being told is left to the existing
-        // max-iterations/non-completion guards rather than an escalating
-        // nag loop.
+        // Each nudge fires at most once per task. A later attempt of that same
+        // non-polling read is refused before execution. Other loops still fall
+        // through to the existing max-iterations/non-completion guards rather
+        // than an escalating nag loop.
         if (!repetitionIntervened) {
           const finding = detectRepetition(toolCallLog);
           if (finding) {
             repetitionIntervened = true;
+            repetitionStop = armRepetitionStop(finding, toolCallLog);
             history.push({ role: 'user', content: buildRepetitionInterventionMessage(finding) });
             await this.logger.warn(
               `Repetition detected: ${finding.toolName} called ${finding.count}x with identical arguments`,

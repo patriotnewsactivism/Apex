@@ -77,22 +77,23 @@ function main(): void {
       /const aggregatePaused = !anyLLMCapacityAvailable;/.test(source),
   );
 
-  const probeStart = client.indexOf('export function llmCapacityAvailableNow(');
+  const probeStart = client.indexOf('export function getProviderCapacityReport(');
   const probeEnd = client.indexOf('\n}\n', probeStart);
   const probe = client.slice(probeStart, probeEnd + 3);
   check(
     'capacity probe applies emergency caps to restricted routes without vetoing unrestricted continuity',
-    /!independentPlanRoute\(provider\)[\s\S]{0,220}!emergencyAllowed/.test(probe),
+    /!independentPlanRoute\(provider\)[\s\S]{0,220}!emergency.allowed/.test(probe),
     probe,
   );
   check(
     'capacity probe applies token pacing to restricted routes without vetoing unrestricted continuity',
-    /!independentPlanRoute\(provider\)[\s\S]{0,260}!totalTokenPacingAllowed/.test(probe),
+    /!independentPlanRoute\(provider\)[\s\S]{0,450}!ledger.pacing.total.allowed/.test(probe),
     probe,
   );
   check(
     'capacity probe checks each configured provider request pool independently',
-    /if \(!requestWindowForProvider\(provider, now\)\.allowed\) continue;/.test(probe),
+    /const window = requestWindowForProvider\(provider, now\)/.test(probe) &&
+      /return getProviderCapacityReport\(now\).some\(\(provider\) => provider.available\)/.test(client),
     probe,
   );
 

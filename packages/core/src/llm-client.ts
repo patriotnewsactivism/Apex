@@ -42,7 +42,7 @@ import {
   getOpenRouterAccountExclusion,
   getOpenRouterAccountExclusionReport as buildOpenRouterAccountExclusionReport,
 } from './provider-account-exclusions.js';
-import { recordSpend, recordCachedTokens, paidSpendAvailable } from './spend-ledger.js';
+import { recordSpend, recordCachedTokens, paidSpendAvailable, tryReservePaidSpend, type SpendPriority } from './spend-ledger.js';
 import { tryEnterOperatorLane, operatorLaneProviderOrder } from './operator-lane.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
@@ -907,7 +907,21 @@ export function parseRetryAfterMs(value: string | null, now: number = Date.now()
   return undefined;
 }
 
+function isDailyProviderQuotaFailure(status: number | undefined, message: string): boolean {
+  return status === 429 && /perday|per_day|per day|daily.{0,30}(?:quota|limit)|(?:quota|limit).{0,30}daily/i.test(message);
+}
+
 function cooldownMs(status: number | undefined, message: string): number {
+  if (isDailyProviderQuotaFailure(status, message)) {
+    const reset = new Date();
+    reset.setUTCHours(24, 0, 0, 0);
+    return reset.getTime() - Date.now();
+  }
+  // An unpurchased model is an entitlement defect, not transient congestion.
+  // Keep the persisted exclusion long enough to avoid a fleet-wide retry loop.
+  if (status === 403 && /AccessDenied\.Unpurchased|access to model denied/i.test(message)) {
+    return 6 * 60 * 60 * 1000;
+  }
   const accountFailure = classifyOpenRouterAccountFailure(status, message);
   if (accountFailure?.until !== null && accountFailure?.until !== undefined) {
     return Math.max(0, accountFailure.until - Date.now());
@@ -936,6 +950,7 @@ export function isCapacityFailure(
 ): boolean {
   return (
     isAccountQuotaFailure(status, message) ||
+    isDailyProviderQuotaFailure(status, message) ||
     status === 502 ||
     status === 503 ||
     status === 504 ||
@@ -1115,6 +1130,7 @@ function requestWindowForProvider(
   provider: ProviderSpec,
   at: number,
   pacingEnabled?: boolean,
+  priority: SpendPriority = 'background',
 ) {
   // Direct BYOK pools — including a paid-but-governed one like Qwen — always
   // use their own independent capacity window, checked before the `paid`
@@ -1132,7 +1148,7 @@ function requestWindowForProvider(
   // budget and pacing policy. Do not make it wait on the free OpenRouter
   // request ramp: that would leave the workforce parked even while /health
   // correctly reports paid fallback as enabled and affordable.
-  if (provider.paid) return paidProviderCapacityWindow();
+  if (provider.paid) return paidProviderCapacityWindow(at, pacingEnabled, priority);
   return requestCapacityWindow(at, pacingEnabled);
 }
 
@@ -1204,62 +1220,86 @@ function markProviderAttemptSucceeded(
   }
 }
 
-export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
-  const totalDailyCapReached = isTotalDailyCapReached();
-  const emergencyAllowed = emergencyRequestCapacityWindow(now).allowed;
-  const ledger = getTokenLedgerSnapshot();
-  const totalTokenPacingAllowed = ledger.pacing.total.allowed;
+export type ProviderCapacityState =
+  | 'available' | 'disabled' | 'unconfigured' | 'access_denied'
+  | 'upstream_quota' | 'cooldown' | 'daily_cap' | 'paced' | 'budget_blocked';
 
-  const pacingByProvider = new Map(
-    ledger.providers.map((entry) => [entry.provider, entry]),
-  );
+export interface ProviderCapacityStatus {
+  name: ApexProviderName;
+  model: string;
+  configured: boolean;
+  enabled: boolean;
+  paid: boolean;
+  available: boolean;
+  state: ProviderCapacityState;
+  reason: string;
+  resumeAt: string | null;
+  /** Observed in this process; a configured key is not proof of entitlement. */
+  lastSuccessAt: string | null;
+}
 
+const providerLastSuccessAt = new Map<ApexProviderName, string>();
+
+/** Read-only admission evidence, using the same local gates as dispatch.
+ * Availability means worth attempting, NOT a promise of upstream entitlement.
+ * Reports both inactive and active routes so a configured key is never silently
+ * presented as usable capacity. No network probes and no reservations. */
+export function getProviderCapacityReport(now: number = Date.now()): ProviderCapacityStatus[] {
   const activeOrder = activeProviderOrder();
-  for (const providerName of activeOrder) {
-    const provider = PROVIDER_BY_NAME.get(providerName);
-    if (!provider) continue;
-    if (!providerConfigured(provider)) continue;
-    if (providerActivationIssue(provider)) continue;
-    if (!providerBaseURL(provider)) continue;
-
-    // Workspace token and emergency request governors apply to free/BYOK
-    // capacity. They do not veto FlashX, and they do not veto QwenCloud —
-    // that plan has its own quota and the calls have to land there.
-    if (
-      !independentPlanRoute(provider) &&
-      (totalDailyCapReached || !emergencyAllowed || !totalTokenPacingAllowed)
-    ) {
-      continue;
-    }
-
-    // Each provider family owns its own request pool. An exhausted OpenRouter
-    // allowance must not park Groq/Gemini, and vice versa.
-    if (!requestWindowForProvider(provider, now).allowed) continue;
-
-    const usableCredentials = configuredCredentials(provider).filter((credential) => {
-      const credentialId = `${provider.name}:${credential.env}`;
-      if (credentialCooldown(credentialId)) return false;
-      if (!isOpenRouterProvider(provider)) return true;
-      if (getOpenRouterAccountExclusion(credential.key, { paid: provider.paid })) {
-        return false;
-      }
-      return provider.paid === true || accountCapacityWindow(credential.key).allowed;
+  const active = new Set(activeOrder);
+  const ledger = getTokenLedgerSnapshot();
+  const providers = new Map(ledger.providers.map((entry) => [entry.provider, entry]));
+  return [...new Set([...activeOrder, ...PROVIDER_ORDER, ...PAID_FALLBACK_PROVIDER_NAMES])].map((name) => {
+    const provider = PROVIDER_BY_NAME.get(name)!;
+    const configured = providerConfigured(provider);
+    const enabledRoute = active.has(name) && !providerActivationIssue(provider);
+    const result = (state: ProviderCapacityState, reason: string, resumeAt: string | null = null): ProviderCapacityStatus => ({
+      name, model: providerModel(provider), configured, enabled: enabledRoute,
+      paid: provider.paid === true, available: state === 'available', state, reason, resumeAt,
+      lastSuccessAt: providerLastSuccessAt.get(name) ?? null,
     });
-    if (usableCredentials.length === 0) continue;
+    if (!enabledRoute) return result('disabled', providerActivationIssue(provider) ?? 'Excluded by routing policy');
+    if (!configured || !providerBaseURL(provider)) return result('unconfigured', providerRequirements(provider).join('; ') || 'Missing endpoint');
 
-    const readyAt = providerCooldowns.get(provider.name) ?? 0;
-    if (readyAt > now) continue;
+    const credentials = configuredCredentials(provider);
+    const candidates = credentials.map((credential) => {
+      const cooldown = credentialCooldown(`${provider.name}:${credential.env}`);
+      if (cooldown) return {
+        state: (/access to model denied|AccessDenied\.Unpurchased|invalid (?:api )?key|unauthori[sz]ed|forbidden/i.test(cooldown.reason)
+          ? 'access_denied' : cooldown.capacityPause ? 'upstream_quota' : 'cooldown') as ProviderCapacityState,
+        reason: cooldown.reason, resumeAt: new Date(cooldown.until).toISOString(),
+      };
+      if (isOpenRouterProvider(provider)) {
+        const exclusion = getOpenRouterAccountExclusion(credential.key, { paid: provider.paid });
+        if (exclusion) return { state: 'upstream_quota' as const, reason: exclusion.reason, resumeAt: exclusion.resumeAt };
+        if (!provider.paid) {
+          const window = accountCapacityWindow(credential.key, now);
+          if (!window.allowed) return { state: window.reason === 'daily_cap' ? 'daily_cap' as const : 'paced' as const, reason: `Account request ${window.reason}`, resumeAt: window.resumeAt };
+        }
+      }
+      return null;
+    });
+    if (!candidates.some((candidate) => candidate === null)) {
+      const blocked = candidates.filter((candidate) => candidate !== null).sort((a, b) => Date.parse(a.resumeAt ?? '') - Date.parse(b.resumeAt ?? ''))[0];
+      return blocked ? result(blocked.state, blocked.reason, blocked.resumeAt) : result('unconfigured', 'No usable credential');
+    }
+    if (!independentPlanRoute(provider)) {
+      const emergency = emergencyRequestCapacityWindow(now);
+      if (!emergency.allowed) return result('daily_cap', 'Workspace emergency request cap reached', emergency.resumeAt);
+      if (ledger.totalCapReached || !ledger.pacing.total.allowed) return result(ledger.totalCapReached ? 'daily_cap' : 'paced', 'Workspace token allowance unavailable', ledger.pacing.total.resumeAt);
+    }
+    const window = requestWindowForProvider(provider, now);
+    if (!window.allowed) return result(provider.paid && provider.requestPool === 'openrouter' ? 'budget_blocked' : window.reason === 'daily_cap' ? 'daily_cap' : 'paced', `${provider.requestPool ?? provider.name} admission ${window.reason}`, window.resumeAt);
+    const until = providerCooldowns.get(provider.name) ?? 0;
+    if (until > now) return result('cooldown', 'Provider upstream cooldown', new Date(until).toISOString());
+    const tokens = providers.get(provider.name);
+    if (!provider.unrestricted && tokens && (tokens.capReached || !tokens.pacing.allowed)) return result(tokens.capReached ? 'daily_cap' : 'paced', 'Provider token allowance unavailable', tokens.pacing.resumeAt);
+    return result('available', 'Local admission gates allow a probe; upstream entitlement is not guaranteed');
+  });
+}
 
-    const entry = pacingByProvider.get(provider.name);
-    if (
-      !provider.unrestricted &&
-      entry &&
-      (entry.capReached || !entry.pacing.allowed)
-    ) continue;
-
-    return true;
-  }
-  return false;
+export function llmCapacityAvailableNow(now: number = Date.now()): boolean {
+  return getProviderCapacityReport(now).some((provider) => provider.available);
 }
 
 /**
@@ -1283,6 +1323,25 @@ function estimatedCostUsd(
   const cachedRate = provider.usdPerMillionCachedPrompt ?? inRate;
   const outRate = provider.usdPerMillionCompletion ?? 0;
   return ((prompt - cached) * inRate + cached * cachedRate + completion * outRate) / 1_000_000;
+}
+
+function estimatedPaidCallReserveUsd(
+  provider: ProviderSpec,
+  messages: LLMMessage[],
+  tools: LLMTool[] | undefined,
+  maxOutputTokens: number,
+): number {
+  const prepared = prepareProviderRequest(provider.name, messages, tools, maxOutputTokens);
+  // Reserve the whole allowed completion, including reasoning. A char/4 prompt
+  // estimate is good for routing but too optimistic for a dollar ceiling: use
+  // UTF-8 bytes plus per-message framing instead. Cached pricing only reduces
+  // the eventual settlement; it must not lower this pre-dispatch hold.
+  const promptUpperBound = Buffer.byteLength(JSON.stringify({ messages: prepared.messages, tools: tools ?? [] }), 'utf8')
+    + 256 * (prepared.messages.length + (tools?.length ?? 0) + 1);
+  return estimatedCostUsd(provider, {
+    promptTokens: promptUpperBound,
+    completionTokens: prepared.maxOutputTokens,
+  });
 }
 
 function providerBaseURL(provider: ProviderSpec): string | undefined {
@@ -1835,6 +1894,7 @@ class MultiProviderClient {
       // approved FlashX continuity route is allowed to remain available after
       // those budgets are exhausted.
       const pacingOverride = execution?.interactive ? false : undefined;
+      const spendPriority: SpendPriority = operatorLane ? 'operator' : 'background';
       const emergencyWindow = emergencyRequestCapacityWindow(Date.now());
 
       const trimmed = trimMessageHistory(messages);
@@ -1879,8 +1939,8 @@ class MultiProviderClient {
         const providerOrder = operatorLane
           ? operatorLaneProviderOrder(
               requestProviderOrder(this.config.role, pacingOverride),
-              PAID_FALLBACK_PROVIDER_NAMES,
-              paidSpendAvailable(),
+              paidLLMFallbackEnabled() ? PAID_FALLBACK_PROVIDER_NAMES : [],
+              paidLLMFallbackEnabled() && paidSpendAvailable(Date.now(), false, 'operator'),
             )
           : requestProviderOrder(this.config.role, pacingOverride);
         for (const providerName of providerOrder) {
@@ -1898,6 +1958,7 @@ class MultiProviderClient {
             provider,
             Date.now(),
             pacingOverride,
+            spendPriority,
           );
           // FlashX can use its full upstream context window. Free/BYOK routes
           // retain APEX history trimming to protect their smaller envelopes and
@@ -2045,6 +2106,7 @@ class MultiProviderClient {
                 provider,
                 Date.now(),
                 pacingOverride,
+                spendPriority,
               );
               if (!freshProviderWindow.allowed) {
                 capacityBlocks.push({
@@ -2070,6 +2132,21 @@ class MultiProviderClient {
                 continue;
               }
 
+              // Atomic admission and hold: no await between this decision and
+              // dispatch, so concurrent background calls cannot all claim the
+              // last dollars or consume the operator's protected share.
+              const paidReservation = provider.paid && isOpenRouterProvider(provider)
+                ? tryReservePaidSpend(estimatedPaidCallReserveUsd(provider, providerMessages, tools, this.config.maxTokens ?? 4096), {
+                    priority: spendPriority,
+                    pacingEnabled: pacingOverride,
+                    provider: provider.name,
+                  })
+                : null;
+              if (paidReservation && !paidReservation.allowed) {
+                capacityBlocks.push({ source: provider.name, resumeAt: paidReservation.resumeAt, reason: `paid spend ${paidReservation.reason}; generation reserve exceeds available ${spendPriority} budget` });
+                break;
+              }
+              let paidSpendSettled = false;
               reserveProviderAttempt(provider, credential.key);
               providerAttempted = true;
 
@@ -2083,6 +2160,7 @@ class MultiProviderClient {
                   execution,
                 );
                 markProviderAttemptSucceeded(provider, credential.key);
+                providerLastSuccessAt.set(provider.name, new Date().toISOString());
                 if (provider.paid) {
                   // Charge the settled cost. OpenRouter returns it because the
                   // request sets `usage: { include: true }`; when it is absent
@@ -2092,6 +2170,7 @@ class MultiProviderClient {
                     provider.name,
                     result.costUsd ?? estimatedCostUsd(provider, result.usage, result.cachedTokens ?? 0),
                   );
+                  paidSpendSettled = true;
                   recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                 }
                 clearCredentialCooldown(credentialId);
@@ -2116,6 +2195,14 @@ class MultiProviderClient {
                 // allowance while the pool still had live capacity.
                 const err = error as ProviderRequestError;
                 const status = err.status;
+                if (paidReservation?.held && !paidSpendSettled && (status === undefined || status >= 500)) {
+                  // A timeout/transport failure or malformed served generation
+                  // may still be billed upstream. Keep its conservative maximum
+                  // in the ledger instead of refunding unknown cost and retrying
+                  // indefinitely against the same dollars.
+                  recordSpend(provider.name, paidReservation.heldMicros / 1_000_000);
+                  paidSpendSettled = true;
+                }
                 if (isRoutingDefectStatus(status)) {
                   releaseProviderAttempt(provider, credential.key);
                 }
@@ -2232,11 +2319,14 @@ class MultiProviderClient {
                     const allWindow = independentPlanRoute(provider)
                       ? null
                       : emergencyRequestCapacityWindow(Date.now());
-                    const poolWindow = requestWindowForProvider(
-                      provider,
-                      Date.now(),
-                      pacingOverride,
-                    );
+                    const poolWindow = paidReservation?.held
+                      ? { allowed: true } // This refused (413) request already owns a sufficient dollar hold.
+                      : requestWindowForProvider(
+                          provider,
+                          Date.now(),
+                          pacingOverride,
+                          spendPriority,
+                        );
                     const retryAccountWindow =
                       isOpenRouterProvider(provider) && !provider.paid
                         ? accountCapacityWindow(credential.key)
@@ -2268,6 +2358,7 @@ class MultiProviderClient {
                         provider.name,
                         result.costUsd ?? estimatedCostUsd(provider, result.usage, result.cachedTokens ?? 0),
                       );
+                      paidSpendSettled = true;
                       recordCachedTokens(provider.name, result.cachedTokens ?? 0);
                     }
                     clearCredentialCooldown(credentialId);
@@ -2288,11 +2379,17 @@ class MultiProviderClient {
                     // failure stays correctly counted. A routing DEFECT is
                     // refunded here too, matching the first dispatch above.
                     const retryStatus = (retryError as ProviderRequestError).status;
+                    if (paidReservation?.held && !paidSpendSettled && (retryStatus === undefined || retryStatus >= 500)) {
+                      recordSpend(provider.name, paidReservation.heldMicros / 1_000_000);
+                      paidSpendSettled = true;
+                    }
                     if (isRoutingDefectStatus(retryStatus)) {
                       releaseProviderAttempt(provider, credential.key);
                     }
                   }
                 }
+              } finally {
+                paidReservation?.release();
               }
             }
 
@@ -2643,11 +2740,13 @@ export function getProviderRoster(): {
     };
   });
 
+  // Compatibility counters name free capacity, so never count metered Qwen.
+  const freeProviders = providers.filter((provider) => !provider.paid);
   return {
     providers,
-    freeSlots: providers.length,
-    freeSlotsConfigured: providers.filter((provider) => provider.configured).length,
-    emptyFreeSlots: providers
+    freeSlots: freeProviders.length,
+    freeSlotsConfigured: freeProviders.filter((provider) => provider.configured).length,
+    emptyFreeSlots: freeProviders
       .filter((provider) => !provider.configured)
       .map((provider) => provider.envVar),
   };

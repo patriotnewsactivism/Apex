@@ -1,14 +1,16 @@
 /**
- * Daily USD spend ledger — observability for paid inference.
+ * Daily USD spend ledger for paid inference.
  *
- * GLM 5.3 FlashX is an operator-approved unrestricted continuity route.
- * This ledger records actual paid usage for dashboards, projections, and
- * auditability, but its historical budget/pacing helpers no longer gate
- * FlashX routing. OpenRouter/Z.ai billing and upstream limits are authoritative.
+ * APEX_DAILY_SPEND_USD is a process-local hard cap on aggregate metered
+ * spend: every provider recordSpend has booked, including historic Qwen.
+ * Dropping that history would silently raise available continuity dollars.
+ * Default 0 spends nothing. In-flight reservations are deducted until
+ * release. This is not a distributed lock, and tryReservePaidSpend does not
+ * admit Qwen direct calls — the caller routes that plan separately.
  *
- * The helper functions remain for backward-compatible telemetry surfaces and
- * historical diagnostics. Do not use them to disable or pace FlashX without
- * a new operator decision.
+ * Background admission may use the cap minus APEX_SPEND_PRIORITY_RESERVE_PCT
+ * (default 25). Operator-priority calls may use the full hard cap. Pacing
+ * is unchanged.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
@@ -71,6 +73,16 @@ function load(): LedgerState {
 let state: LedgerState = load();
 let databasePersistenceReady = false;
 
+/** Process-local in-flight holds. Not persisted and not cleared on day rollover:
+ *  an in-flight call must keep reducing admission after UTC midnight, and
+ *  release() must not refund booked spend or credit the new day twice. */
+interface InFlightHold {
+  id: number;
+  micros: number;
+}
+let inFlightHolds: InFlightHold[] = [];
+let nextHoldId = 1;
+
 function persist(): void {
   try {
     mkdirSync(dirname(LEDGER_PATH), { recursive: true });
@@ -85,10 +97,12 @@ function rolloverIfNeeded(at: number = Date.now()): void {
   if (state.day !== today) {
     state = emptyState(today);
     persist();
+    // Holds stay. Clearing them here would replenish the new day's budget
+    // while yesterday's calls are still in flight.
   }
 }
 
-/** Legacy monitoring budget in micro-dollars. It does not gate FlashX. */
+/** Aggregate daily cap in micro-dollars. 0 spends nothing (fail closed). */
 export function dailySpendCapMicros(): number {
   const raw = process.env.APEX_DAILY_SPEND_USD;
   if (raw === undefined || raw.trim() === '') {
@@ -326,18 +340,31 @@ export function recordCachedTokens(provider: string, tokens: number): void {
 
 export function spentMicrosToday(): number {
   rolloverIfNeeded();
+  return bookedMicros();
+}
+
+function bookedMicros(): number {
   let sum = 0;
-  for (const micros of Object.values(state.providers)) sum += micros;
+  for (const micros of Object.values(state.providers)) {
+    if (typeof micros === 'number' && Number.isFinite(micros)) sum += micros;
+  }
   return sum;
 }
 
+function heldMicrosTotal(): number {
+  let sum = 0;
+  for (const hold of inFlightHolds) sum += hold.micros;
+  return sum;
+}
+
+/** Booked aggregate spend plus in-flight holds. Holds are not a second copy of spend. */
+function committedMicros(): number {
+  return bookedMicros() + heldMicrosTotal();
+}
+
 /**
- * Can a paid request be issued right now?
- *
- * `requestedUsd` is the caller's estimate of what the call will cost. Charging
- * an estimate up front and the real figure afterwards is deliberate: the true
- * cost is only known once the response returns, and a budget that only counts
- * settled requests would let an unbounded number start concurrently.
+ * Probe whether a paid request fits the aggregate hard cap right now.
+ * Outstanding reservations are included. This does not itself hold.
  */
 export function spendCapacityWindow(
   requestedUsd = 0,
@@ -345,9 +372,22 @@ export function spendCapacityWindow(
   pacingEnabled?: boolean,
 ): SpendCapacityWindow {
   rolloverIfNeeded(at);
+  const capMicros = dailySpendCapMicros();
+  const spentMicros = committedMicros();
+  if (!Number.isFinite(requestedUsd) || requestedUsd < 0) {
+    return {
+      capMicros,
+      spentMicros,
+      releasedMicros: 0,
+      availableMicros: 0,
+      allowed: false,
+      reason: capMicros === 0 ? 'disabled' : 'daily_cap',
+      resumeAt: null,
+    };
+  }
   return calculateSpendCapacityWindow({
-    capMicros: dailySpendCapMicros(),
-    spentMicros: spentMicrosToday(),
+    capMicros,
+    spentMicros,
     requestedMicros: Math.max(0, Math.round(requestedUsd * MICROS_PER_USD)),
     at,
     pacingEnabled,
@@ -375,33 +415,110 @@ function callReserveUsd(): number {
   return Number.isFinite(usd) && usd >= 0 ? usd : DEFAULT_CALL_RESERVE_USD;
 }
 
-/** The same window paidSpendAvailable() checks, but with resumeAt/reason
- *  intact for a caller that needs to explain — not just gate on — a paid
- *  route currently being unaffordable (e.g. a workspace-wide capacity pause
- *  when the free tier is also exhausted at the same moment). `pacingEnabled:
- *  false` skips the smoothing ramp and checks only the hard daily $ cap —
- *  for an interactive human request, which cannot cause the runaway burn the
- *  ramp exists to prevent. */
+export type SpendPriority = 'background' | 'operator';
+
+/** Percent of the hard cap held back from background dispatch. Invalid values stay at 25. */
+export function priorityReservePct(): number {
+  const raw = process.env.APEX_SPEND_PRIORITY_RESERVE_PCT;
+  if (raw === undefined || raw.trim() === '') return 25;
+  const pct = Number(raw);
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) return 25;
+  return pct;
+}
+
+function resolvePriority(priority: SpendPriority | undefined, fallback: SpendPriority): SpendPriority {
+  return priority === 'operator' || priority === 'background' ? priority : fallback;
+}
+
+function backgroundCapMicros(capMicros: number): number {
+  const reserve = Math.ceil((capMicros * priorityReservePct()) / 100);
+  return Math.max(0, capMicros - reserve);
+}
+
+function applyBackgroundCeiling(
+  window: SpendCapacityWindow,
+  priority: SpendPriority,
+  at: number,
+  requestedMicros: number,
+): SpendCapacityWindow {
+  if (priority !== 'background' || window.capMicros <= 0 || window.reason === 'disabled') return window;
+  const ceiling = backgroundCapMicros(window.capMicros);
+  const committed = window.spentMicros;
+  const availableMicros = Math.max(0, Math.min(window.availableMicros, ceiling - committed));
+  if (!window.allowed && window.reason === 'paced') {
+    return { ...window, availableMicros };
+  }
+  if (committed >= ceiling || committed + requestedMicros > ceiling) {
+    const date = new Date(at);
+    const dayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    return {
+      ...window,
+      availableMicros,
+      allowed: false,
+      reason: 'daily_cap',
+      resumeAt: new Date(dayStart + UTC_DAY_MS).toISOString(),
+    };
+  }
+  return { ...window, availableMicros };
+}
+
+function isQwenDirectProvider(provider: string | undefined): boolean {
+  return typeof provider === 'string' && /qwen/i.test(provider);
+}
+
+/**
+ * Same gate as paidSpendAvailable(), with resumeAt/reason.
+ *
+ * Existing 1- and 2-argument calls keep the full hard cap so operator-lane
+ * and request-ledger probes do not lose the protected reserve. Pass
+ * `'background'` to apply it. The optional fourth argument is an exact
+ * lookahead; omit it to keep the $0.01 call reserve. In-flight holds are
+ * always deducted. Pacing math is unchanged.
+ */
 export function paidSpendCapacityWindow(
   at: number = Date.now(),
   pacingEnabled?: boolean,
+  priority?: SpendPriority,
+  requestedUsd?: number,
 ): SpendCapacityWindow {
-  return spendCapacityWindow(callReserveUsd(), at, pacingEnabled);
+  const estimate = requestedUsd === undefined ? callReserveUsd() : requestedUsd;
+  const resolved = resolvePriority(priority, 'operator');
+  const window = spendCapacityWindow(estimate, at, pacingEnabled);
+  const requestedMicros = Number.isFinite(estimate) && estimate >= 0
+    ? Math.max(0, Math.round(estimate * MICROS_PER_USD))
+    : 0;
+  return applyBackgroundCeiling(window, resolved, at, requestedMicros);
 }
 
-/** Legacy budget-status helper retained for dashboards/tests.
- * FlashX routing does not consult this value. */
-export function paidSpendAvailable(at: number = Date.now(), pacingEnabled?: boolean): boolean {
-  return paidSpendCapacityWindow(at, pacingEnabled).allowed;
+/** Full hard cap unless priority is `'background'`. */
+export function paidSpendAvailable(
+  at: number = Date.now(),
+  pacingEnabled?: boolean,
+  priority?: SpendPriority,
+): boolean {
+  return paidSpendCapacityWindow(at, pacingEnabled, priority).allowed;
 }
 
 export interface SpendLedgerSnapshot {
   day: string;
-  /** False for the unrestricted FlashX route: this ledger is observability only. */
-  enforced: false;
+  /** True: this snapshot's allowed/reason gates paid continuity. Not observational. */
+  enforced: boolean;
+  /** Aggregate recorded dollars. Historic Qwen stays inside the cap. */
+  capScope: 'aggregate-metered-spend';
+  qwenCountedInCap: true;
+  /** This reserve API does not admit Qwen direct. The caller handles that route. */
+  qwenDirectAdmitted: false;
+  /** Reservations are process-local. There is no cluster-wide lock. */
+  distributedHardCap: false;
+  processLocalReservations: true;
   persistence: 'postgres+memory' | 'memory-only';
   spentUsd: number;
+  reservedUsd: number;
+  availableUsd: number;
+  backgroundAvailableUsd: number;
   capUsd: number;
+  priorityReservePct: number;
+  priorityReserveUsd: number;
   releasedUsd: number;
   remainingUsd: number;
   pacingEnabled: boolean;
@@ -413,6 +530,12 @@ export interface SpendLedgerSnapshot {
   providers: Array<{ provider: string; spentUsd: number }>;
   /** Prompt tokens served from provider-side prefix cache today, by provider. */
   cachedTokens: Array<{ provider: string; tokens: number }>;
+  dispatch: {
+    processLocal: true;
+    distributedHardCap: false;
+    background: { allowed: boolean; reason: SpendCapacityReason; availableUsd: number; resumeAt: string | null };
+    operator: { allowed: boolean; reason: SpendCapacityReason; availableUsd: number; resumeAt: string | null };
+  };
 }
 
 function usd(micros: number): number {
@@ -421,22 +544,43 @@ function usd(micros: number): number {
 
 export function getSpendLedgerSnapshot(at: number = Date.now()): SpendLedgerSnapshot {
   rolloverIfNeeded(at);
-  const window = spendCapacityWindow(0, at);
+  const full = spendCapacityWindow(0, at);
+  const background = paidSpendCapacityWindow(at, undefined, 'background');
+  const operator = paidSpendCapacityWindow(at, undefined, 'operator');
   const date = new Date(at);
   const dayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
   const elapsed = Math.max(0, at - dayStart);
-  const spent = spentMicrosToday();
+  const spent = bookedMicros();
+  const held = heldMicrosTotal();
+  const reservePct = priorityReservePct();
+  const reserveMicros = Math.ceil((full.capMicros * reservePct) / 100);
+  const gate = (window: SpendCapacityWindow) => ({
+    allowed: window.allowed,
+    reason: window.reason,
+    availableUsd: usd(window.availableMicros),
+    resumeAt: window.resumeAt,
+  });
   return {
     day: state.day,
-    enforced: false,
+    enforced: true,
+    capScope: 'aggregate-metered-spend',
+    qwenCountedInCap: true,
+    qwenDirectAdmitted: false,
+    distributedHardCap: false,
+    processLocalReservations: true,
     persistence: databasePersistenceReady ? 'postgres+memory' : 'memory-only',
     spentUsd: usd(spent),
-    capUsd: usd(window.capMicros),
-    releasedUsd: usd(window.releasedMicros),
-    remainingUsd: usd(Math.max(0, window.capMicros - spent)),
+    reservedUsd: usd(held),
+    availableUsd: usd(operator.availableMicros),
+    backgroundAvailableUsd: usd(background.availableMicros),
+    capUsd: usd(full.capMicros),
+    priorityReservePct: reservePct,
+    priorityReserveUsd: usd(reserveMicros),
+    releasedUsd: usd(full.releasedMicros),
+    remainingUsd: usd(Math.max(0, full.capMicros - spent)),
     pacingEnabled: spendPacingEnabled(),
-    state: window.reason,
-    resumeAt: window.resumeAt,
+    state: background.reason,
+    resumeAt: background.resumeAt,
     projectedUsd:
       elapsed >= 15 * 60 * 1000 ? usd(Math.round((spent * UTC_DAY_MS) / elapsed)) : null,
     providers: Object.entries(state.providers)
@@ -445,6 +589,12 @@ export function getSpendLedgerSnapshot(at: number = Date.now()): SpendLedgerSnap
     cachedTokens: Object.entries(state.cachedTokens)
       .map(([provider, tokens]) => ({ provider, tokens }))
       .sort((a, b) => b.tokens - a.tokens),
+    dispatch: {
+      processLocal: true,
+      distributedHardCap: false,
+      background: gate(background),
+      operator: gate(operator),
+    },
   };
 }
 
@@ -461,4 +611,106 @@ export async function resetSpendLedger(): Promise<void> {
   } catch {
     databasePersistenceReady = false;
   }
+}
+
+export interface PaidSpendReservation extends SpendCapacityWindow {
+  held: boolean;
+  heldMicros: number;
+  heldUsd: number;
+  priority: SpendPriority;
+  processLocal: true;
+  distributedHardCap: false;
+  /** Idempotent. Drops the in-flight hold only. Does not book or refund spend. */
+  release: () => void;
+}
+
+function deniedReservation(
+  window: SpendCapacityWindow,
+  priority: SpendPriority,
+): PaidSpendReservation {
+  return {
+    ...window,
+    allowed: false,
+    held: false,
+    heldMicros: 0,
+    heldUsd: 0,
+    priority,
+    processLocal: true,
+    distributedHardCap: false,
+    release() {},
+  };
+}
+
+/**
+ * Synchronously reserve paid-continuity headroom before fetch.
+ *
+ * Process-local only — not a distributed hard cap. The check and the hold
+ * happen before this function returns; it never awaits.
+ *
+ * Does not admit Qwen direct. Do not call it for that route. Recorded Qwen
+ * dollars already in the ledger still count toward the aggregate cap.
+ *
+ * Default priority is background (cap minus the operator reserve). Pass
+ * `{ priority: 'operator' }` to use the full hard cap. Pacing is unchanged.
+ *
+ * Caller books the actual cost with recordSpend exactly once, then release()
+ * in finally. Success order: recordSpend(actual), then release(). release()
+ * is idempotent and must not be treated as a booking.
+ */
+export function tryReservePaidSpend(
+  requestedUsd: number,
+  options?: {
+    priority?: SpendPriority;
+    at?: number;
+    pacingEnabled?: boolean;
+    provider?: string;
+  },
+): PaidSpendReservation {
+  const at = options?.at ?? Date.now();
+  const priority = resolvePriority(options?.priority, 'background');
+  const pacingEnabled = options?.pacingEnabled;
+  if (isQwenDirectProvider(options?.provider)) {
+    const window = spendCapacityWindow(0, at, pacingEnabled);
+    return deniedReservation({ ...window, reason: 'disabled', allowed: false, resumeAt: null }, priority);
+  }
+  if (!Number.isFinite(requestedUsd) || requestedUsd < 0) {
+    return deniedReservation(spendCapacityWindow(requestedUsd, at, pacingEnabled), priority);
+  }
+  const estimate = Math.max(requestedUsd, callReserveUsd());
+  const window = paidSpendCapacityWindow(at, pacingEnabled, priority, estimate);
+  if (!window.allowed || window.capMicros <= 0) {
+    return deniedReservation(window, priority);
+  }
+  const micros = Math.max(0, Math.round(estimate * MICROS_PER_USD));
+  if (micros <= 0) {
+    return {
+      ...window,
+      held: false,
+      heldMicros: 0,
+      heldUsd: 0,
+      priority,
+      processLocal: true,
+      distributedHardCap: false,
+      release() {},
+    };
+  }
+  const id = nextHoldId++;
+  inFlightHolds.push({ id, micros });
+  let released = false;
+  return {
+    ...window,
+    allowed: true,
+    held: true,
+    heldMicros: micros,
+    heldUsd: usd(micros),
+    priority,
+    processLocal: true,
+    distributedHardCap: false,
+    release() {
+      if (released) return;
+      released = true;
+      const index = inFlightHolds.findIndex((hold) => hold.id === id);
+      if (index >= 0) inFlightHolds.splice(index, 1);
+    },
+  };
 }
