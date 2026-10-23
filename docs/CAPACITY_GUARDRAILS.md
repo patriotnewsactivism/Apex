@@ -100,3 +100,24 @@ A scheduled 72-hour observation is pending evidence until its actual samples
 exist. Do not claim the full operating-cycle acceptance criteria passed at
 deployment time. Model access denial or insufficient funded capacity remains
 an explicit blocker rather than a reason to increase spending automatically.
+
+## Mission-first work-class split
+
+`packages/core/src/work-class-budget.ts` splits the existing daily caps
+(emergency request cap, `APEX_TOKEN_CAP_TOTAL`, `APEX_DAILY_SPEND_USD`) by work
+class. It never raises a cap and only refuses lower-priority work earlier.
+
+| Class | Detected by | Limit |
+|---|---|---|
+| operator | operator lane (Command chat) | none here (own lane) |
+| mission | task context `missionId`/`campaignId`, "Execute mission:", `EXECUTE MISSION (` | existing caps only |
+| internal | VERIFY / Delegation verdict / review / closeout / JUDGE / BLOCKER / Re-attempt … | `APEX_INTERNAL_LOOP_MAX_PCT` (25) of each cap, plus repeat backoff |
+| background | other agent tasks | shares the non-mission pool |
+
+internal + background together use at most `100 − APEX_MISSION_RESERVE_PCT`
+(default 40%) of each cap. The same normalized internal task runs at most
+`APEX_INTERNAL_LOOP_REPEAT_MAX` (2) times per `APEX_INTERNAL_LOOP_WINDOW_MINUTES`
+(360). LLM calls with no task context (direct pipelines/API routes) are not
+throttled. A share denial defers only that task (normal capacity requeue and
+defer count). It never sets the workspace-wide capacity latch. Unused mission
+reserve stays unused for that UTC day, by design.

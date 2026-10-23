@@ -42,7 +42,16 @@ import {
   getOpenRouterAccountExclusion,
   getOpenRouterAccountExclusionReport as buildOpenRouterAccountExclusionReport,
 } from './provider-account-exclusions.js';
-import { recordSpend, recordCachedTokens, paidSpendAvailable, tryReservePaidSpend, type SpendPriority } from './spend-ledger.js';
+import { recordSpend, recordCachedTokens, paidSpendAvailable, tryReservePaidSpend, dailySpendCapMicros, type SpendPriority } from './spend-ledger.js';
+import {
+  checkInternalLoopRepeat,
+  checkWorkClassShare,
+  formatWorkClassDeferral,
+  recordWorkClassUsage,
+  type WorkClass,
+} from './work-class-budget.js';
+import { emergencyTotalRequestCap } from './request-ledger.js';
+import { totalTokenCap } from './token-ledger.js';
 import { tryEnterOperatorLane, operatorLaneProviderOrder } from './operator-lane.js';
 import {
   DEFAULT_OPENROUTER_MODEL_CHAIN,
@@ -1887,6 +1896,35 @@ class MultiProviderClient {
     // budget) so a workspace capacity pause or a full background queue never
     // parks the human. Falls back to the governed path when the lane is spent.
     const operatorLane = execution?.operatorLane ? tryEnterOperatorLane() : null;
+    // Mission-first budget split (work-class-budget.ts). Operator chat and
+    // mission/campaign work are never restricted here; internal loops and
+    // background work are held to their share of the existing daily caps and
+    // deferred per task (never a workspace-wide pause).
+    const workClass: WorkClass = operatorLane || execution?.operatorLane
+      ? 'operator'
+      // Untagged calls come from direct callers outside the agent task loop
+      // (campaign/lead pipelines, API routes). They are never throttled here
+      // — only tasks the agent loop classified as internal/background are.
+      : execution?.workClass ?? 'mission';
+    if (workClass === 'internal' || workClass === 'background') {
+      if (workClass === 'internal') {
+        const repeat = checkInternalLoopRepeat(execution?.taskId, execution?.workTitle);
+        if (!repeat.allowed) throw new Error(formatWorkClassDeferral(repeat));
+      }
+      const estimate = estimateLLMRequestTokens(
+        trimMessageHistory(messages).messages,
+        tools,
+        Math.min(this.config.maxTokens ?? 2048, 16_384),
+      );
+      const requestShare = checkWorkClassShare('requests', workClass, emergencyTotalRequestCap(), 1);
+      if (!requestShare.allowed) throw new Error(formatWorkClassDeferral(requestShare));
+      const tokenShare = checkWorkClassShare('tokens', workClass, totalTokenCap(), estimate);
+      if (!tokenShare.allowed) throw new Error(formatWorkClassDeferral(tokenShare));
+      recordWorkClassUsage('requests', workClass, 1);
+      recordWorkClassUsage('tokens', workClass, estimate);
+    } else {
+      recordWorkClassUsage('requests', workClass, 1);
+    }
     if (!operatorLane) await acquireLLMConcurrencySlot();
 
     try {
@@ -2135,6 +2173,25 @@ class MultiProviderClient {
               // Atomic admission and hold: no await between this decision and
               // dispatch, so concurrent background calls cannot all claim the
               // last dollars or consume the operator's protected share.
+              const paidEstimateUsd = provider.paid && isOpenRouterProvider(provider)
+                ? estimatedPaidCallReserveUsd(provider, providerMessages, tools, this.config.maxTokens ?? 4096)
+                : 0;
+              if (paidEstimateUsd > 0) {
+                const spendShare = checkWorkClassShare(
+                  'spend_micros',
+                  workClass,
+                  dailySpendCapMicros(),
+                  Math.ceil(paidEstimateUsd * 1_000_000),
+                );
+                if (!spendShare.allowed) {
+                  capacityBlocks.push({
+                    source: provider.name,
+                    resumeAt: spendShare.resumeAt ?? new Date(Date.now() + 60_000).toISOString(),
+                    reason: `work-class share (${workClass}): ${spendShare.reason}`,
+                  });
+                  break;
+                }
+              }
               const paidReservation = provider.paid && isOpenRouterProvider(provider)
                 ? tryReservePaidSpend(estimatedPaidCallReserveUsd(provider, providerMessages, tools, this.config.maxTokens ?? 4096), {
                     priority: spendPriority,
@@ -2145,6 +2202,9 @@ class MultiProviderClient {
               if (paidReservation && !paidReservation.allowed) {
                 capacityBlocks.push({ source: provider.name, resumeAt: paidReservation.resumeAt, reason: `paid spend ${paidReservation.reason}; generation reserve exceeds available ${spendPriority} budget` });
                 break;
+              }
+              if (paidReservation) {
+                recordWorkClassUsage('spend_micros', workClass, Math.ceil(paidEstimateUsd * 1_000_000));
               }
               let paidSpendSettled = false;
               reserveProviderAttempt(provider, credential.key);

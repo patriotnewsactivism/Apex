@@ -1,4 +1,5 @@
 import { readWorkBundle, recordTurnEconomy, missingBundleItems, resolveDeterministicRead } from './turn-economy.js';
+import { isWorkClassDeferral } from './work-class-budget.js';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { db, agents, approvals, messages, tasks as tasksTable, taskCheckpoints, learningInsights, strategyRecommendations } from '@workspace/db';
@@ -1379,7 +1380,14 @@ export abstract class BaseAgent {
         // is workspace-wide, so continuing to claim tasks only re-discovers
         // the same gate. Daily-budget pauses carry no resume-at, so fall back
         // to a minute rather than spinning until the UTC rollover.
-        noteCapacityPause(resumeAtDate?.getTime() ?? Date.now() + 60_000);
+        //
+        // Exception: a work-class share deferral (internal loop / background
+        // over its share, or a repeated internal task) is scoped to THIS task.
+        // Latching it workspace-wide would park mission/campaign work behind
+        // the very loops the share exists to throttle.
+        if (!isWorkClassDeferral(msg)) {
+          noteCapacityPause(resumeAtDate?.getTime() ?? Date.now() + 60_000);
+        }
         await this.logger.warn(
           dailyBudgetPaused
             ? `Task deferred until UTC budget reset: ${title}`

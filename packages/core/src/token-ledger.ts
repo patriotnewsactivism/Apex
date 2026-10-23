@@ -98,6 +98,11 @@ function parseCaps(): Record<string, number> {
   return out;
 }
 
+/** Configured workspace daily token cap (0 = none). */
+export function totalTokenCap(): number {
+  return totalCap();
+}
+
 function totalCap(): number {
   const raw = process.env.APEX_TOKEN_CAP_TOTAL;
   if (raw === undefined || raw.trim() === '') return 0;
