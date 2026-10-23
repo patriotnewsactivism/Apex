@@ -3,6 +3,7 @@ import './capacity-claim-guard.js';
 
 export * from './types.js';
 export * from './llm-client.js';
+export * from './work-class-budget.js';
 export * from './line-activity.js';
 export * from './model-routing.js';
 export * from './model-intelligence.js';

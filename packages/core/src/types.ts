@@ -92,6 +92,11 @@ export interface LLMExecutionContext {
    *  slots and small daily budget, exempt from the workspace capacity pause,
    *  paid route only within APEX_DAILY_SPEND_USD). See operator-lane.ts. */
   operatorLane?: boolean;
+  /** Budget class for the mission-first daily split (work-class-budget.ts).
+   *  Unset calls are treated as 'background'. */
+  workClass?: 'operator' | 'mission' | 'internal' | 'background';
+  /** Task title, used to dedupe/back off repeated internal loops. */
+  workTitle?: string;
 }
 
 export interface LLMClientConfig {

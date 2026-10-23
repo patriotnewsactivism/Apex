@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { classifyWorkClass } from './work-class-budget.js';
 import { db, approvals, tasks as tasksTable } from '@workspace/db';
 import { and, desc, eq, inArray, lt, notInArray } from 'drizzle-orm';
 import { BaseAgent as CoreBaseAgent, emitApexEvent } from './base-agent.js';
@@ -439,6 +440,8 @@ export class BaseAgent extends CoreBaseAgent {
         agentId: this.id,
         role: this.role,
         complexityHint: estimatePreRunComplexity(`${title}\n${description}`, context),
+        workClass: classifyWorkClass({ title, description, context }),
+        workTitle: title,
       },
       async () => {
         const continuation = await this.consumeRecoveredContinuation(taskId);
