@@ -36,7 +36,7 @@
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
-import { paidSpendCapacityWindow } from './spend-ledger.js';
+import { paidSpendCapacityWindow, type SpendPriority } from './spend-ledger.js';
 
 /**
  * An account is identified by a fingerprint of its KEY, not by the env var
@@ -543,7 +543,10 @@ const DIRECT_POOL_DEFAULTS: Record<DirectRequestPool, { cap: number; ratePerMinu
   groq: { cap: 900, ratePerMinute: 8, burst: 25 },
   // Gemini's exact RPD is project/model/tier specific and must be read from AI
   // Studio. Start conservatively until APEX can ingest the live quota headers.
-  gemini: { cap: 500, ratePerMinute: 5, burst: 20 },
+  // Verified free-tier GenerateRequestsPerDayPerProjectPerModel allowance.
+  // Additional keys in the same project do not multiply it; deployments with
+  // a verified different entitlement may explicitly override the request cap.
+  gemini: { cap: 20, ratePerMinute: 5, burst: 5 },
   // QwenCloud Token Plan is the PRIMARY route (tried by all 13 agents on
   // every call), not an occasional fallback, so it needs more headroom than
   // Groq/Gemini's fallback-tier defaults -- but it is also a finite prepaid
@@ -822,8 +825,12 @@ export function requestCapacityWindow(
  * capacity latch parks paid work until the budget releases (next UTC day, or
  * the pacing ramp) instead of spending past the cap.
  */
-export function paidProviderCapacityWindow(at: number = Date.now()): RequestCapacityWindow {
-  const spend = paidSpendCapacityWindow(at);
+export function paidProviderCapacityWindow(
+  at: number = Date.now(),
+  pacingEnabled?: boolean,
+  priority: SpendPriority = 'background',
+): RequestCapacityWindow {
+  const spend = paidSpendCapacityWindow(at, pacingEnabled, priority);
   if (spend.allowed) {
     return {
       cap: 0,

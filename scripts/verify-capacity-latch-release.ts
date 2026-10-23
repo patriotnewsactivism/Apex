@@ -158,15 +158,13 @@ async function main(): Promise<void> {
   );
   check(
     'workspace caps still park capped providers without vetoing unrestricted continuity',
-    /const totalDailyCapReached = isTotalDailyCapReached\(\)/.test(clientSrc) &&
-      /!independentPlanRoute\(provider\)[\s\S]{0,220}totalDailyCapReached/.test(clientSrc) &&
+    /!independentPlanRoute\(provider\)[\s\S]{0,450}ledger.totalCapReached/.test(clientSrc) &&
       /function independentPlanRoute\(provider: ProviderSpec\)[\s\S]{0,180}provider\.unrestricted === true/.test(clientSrc),
   );
   check(
     'one paced or capped provider does not veto capacity when another route can take work',
-    clientSrc.includes('for (const providerName of activeOrder)') &&
-      /if \(!requestWindowForProvider\(provider, now\)\.allowed\) continue;/.test(clientSrc) &&
-      /return true;[\s\S]{0,80}\}\s*return false;/.test(clientSrc),
+    /const window = requestWindowForProvider\(provider, now\)/.test(clientSrc) &&
+      /return getProviderCapacityReport\(now\).some\(\(provider\) => provider.available\)/.test(clientSrc),
   );
   check(
     'authenticated health detail distinguishes a parked workforce from an idle one',

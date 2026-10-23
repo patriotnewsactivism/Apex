@@ -148,7 +148,8 @@ check(
   'paid credentials draw only on the configured OpenRouter roster',
   /OPENROUTER_PAID_KEY_ENVS: readonly string\[\] = \([\s\S]{0,200}APEX_PAID_KEY_ENVS/.test(clientSource) &&
     /apiKeyEnvs: OPENROUTER_PAID_KEY_ENVS/.test(clientSource) &&
-    /const usableCredentials = configuredCredentials\(provider\)\.filter\(/.test(clientSource),
+    /const credentials = configuredCredentials\(provider\)/.test(clientSource) &&
+    /getOpenRouterAccountExclusion\(credential.key, \{ paid: provider.paid \}\)/.test(clientSource),
 );
 check(
   // Each OpenRouter account keeps its own :free allowance, so the funded
@@ -179,13 +180,13 @@ check(
 );
 check(
   'provider admission checks each provider pool rather than one global OpenRouter window',
-  /requestWindowForProvider\(provider, now\)\.allowed/.test(clientSource) &&
+  /const window = requestWindowForProvider\(provider, now\)/.test(clientSource) &&
     /const providerRequestWindow = requestWindowForProvider/.test(clientSource),
 );
 check(
   'the emergency free/BYOK ceiling cannot veto unrestricted FlashX or the QwenCloud plan',
   /function independentPlanRoute\(provider: ProviderSpec\): boolean \{\s*return provider\.unrestricted === true \|\| provider\.requestPool === 'qwen';/.test(clientSource) &&
-    /!independentPlanRoute\(provider\)[\s\S]{0,180}!emergencyAllowed/.test(clientSource) &&
+    /!independentPlanRoute\(provider\)[\s\S]{0,220}!emergency.allowed/.test(clientSource) &&
     /const emergencyAttemptWindow = independentPlanRoute\(provider\)[\s\S]{0,80}\? null[\s\S]{0,80}: emergencyRequestCapacityWindow/.test(clientSource),
 );
 check(

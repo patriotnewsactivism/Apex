@@ -9,6 +9,7 @@ import { existsSync } from 'fs';
 
 config({ path: resolve(process.cwd(), '.env') });
 
+import { getProviderCapacityReport } from '@workspace/core';
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
@@ -318,14 +319,12 @@ async function main() {
     // APEX_DAILY_SPEND_USD. `available` must reflect the dollar budget, not
     // just a configured credential, or /health claims paid continuity while
     // the spend cap is refusing every paid call.
-    const paidSpendWindow = paidSpendCapacityWindow();
-    const paidContinuityAvailable =
-      paidLLMFallbackEnabled() &&
-      getConfiguredProviders().some(
-        (provider) =>
-          (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.configured,
-      ) &&
-      paidSpendWindow.allowed;
+    const paidSpendWindow = paidSpendCapacityWindow(Date.now(), undefined, 'background');
+    const operatorSpendWindow = paidSpendCapacityWindow(Date.now(), false, 'operator');
+    const providerCapacity = getProviderCapacityReport();
+    const paidContinuityAvailable = providerCapacity.some(
+      (provider) => (PAID_FALLBACK_PROVIDER_NAMES as readonly string[]).includes(provider.name) && provider.available,
+    );
     // OpenRouter, Groq and Gemini now have independent request pools. The only
     // request-count state that is truly workspace-wide is the emergency
     // all-provider ceiling; an exhausted 2,775 OpenRouter pool is NOT a hard
@@ -376,8 +375,9 @@ async function main() {
       tokenLedger.pacing.nextResumeAt,
       requestLedger.pacing.nextResumeAt,
       providerBackpressure.nextResumeAt,
-    ].filter((value): value is string => Boolean(value));
-    const nextResumeAt = resumeCandidates.length
+      ...providerCapacity.filter((provider) => provider.enabled).map((provider) => provider.resumeAt),
+    ].filter((value): value is string => Boolean(value) && Date.parse(value!) > Date.now());
+    const nextResumeAt = !anyLLMCapacityAvailable && resumeCandidates.length
       ? resumeCandidates.sort((a, b) => Date.parse(a) - Date.parse(b))[0]
       : null;
     // Durable, cross-process worker health (Phase 5). This process answering
@@ -411,6 +411,8 @@ async function main() {
       capacityDiagnostics: getLastCapacityDiagnostics(),
       llmCapacity: {
         state: capacityState,
+        providers: providerCapacity,
+        admissionEvidence: 'Local admission only; lastSuccessAt is observed per process. Provider quotas remain authoritative.',
         pacingEnabled: tokenLedger.pacing.enabled,
         pausedProviders,
         nextResumeAt,
@@ -440,6 +442,8 @@ async function main() {
           spendCapUsd: paidSpendWindow.capMicros / 1_000_000,
           spendAvailable: paidSpendWindow.allowed,
           spendReason: paidSpendWindow.reason,
+          operatorSpendAvailable: operatorSpendWindow.allowed,
+          operatorSpendReason: operatorSpendWindow.reason,
         },
       },
       // Provider account balance. The paid continuity route makes remaining
@@ -448,10 +452,9 @@ async function main() {
       // Low-balance guard: thresholds, per-account level, paid-pause state,
       // saved key limits (hash suffix only), and recent monitor events.
       openRouterBalanceMonitor: getOpenRouterBalanceMonitorStatus(),
-      // Paid LLM spend telemetry. For the unrestricted GLM 5.3 FlashX route,
-      // this ledger is observational only (`enforced: false`); APEX spend,
-      // request, emergency, and token governors do not remove FlashX from the
-      // route. OpenRouter/Z.ai billing and upstream limits remain authoritative.
+      // Metered spend telemetry. Admission reservations protect the existing
+      // daily cap for paid continuity in this single worker process. Qwen's
+      // direct-plan route retains its separate quota/activation controls.
       llmSpend: getSpendLedgerSnapshot(),
       // Request burn rate. Visible to authenticated operators at
       // GET /api/health/detail (and /api/spend), not on the public probe.
