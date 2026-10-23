@@ -125,3 +125,18 @@ internal + background together use at most `100 − APEX_MISSION_RESERVE_PCT`
 throttled. A share denial defers only that task (normal capacity requeue and
 defer count). It never sets the workspace-wide capacity latch. Unused mission
 reserve stays unused for that UTC day, by design.
+
+### Mission work through non-mission pauses (follow-up)
+
+- A provider capacity pause hit by an **internal/background** task sets a
+  *non-mission* latch: only mission/campaign-linked tasks (`missionId`,
+  `campaignId`, "Execute mission:", `EXECUTE MISSION (`) may be claimed until
+  it clears. A pause hit by a **mission** task still sets the workspace latch.
+  The operator lane never claims tasks and is unaffected.
+- OpenRouter free-tier requests are counted per work class **per key**
+  (`APEX_OPENROUTER_FREE_DAILY_REQUESTS`, default 1000; 0 disables). Internal
+  work stops at 25% and non-mission at 40% of each key's quota, so the free
+  quota is left for mission work.
+- Internal-loop titles now include "Delegation results:", "REWORK:",
+  "Autonomous branch/goal review", re-delegate/re-dispatch/re-open,
+  ESCALATION, FINAL attempt, Gate …, QA gate/evidence, persona/peer review.

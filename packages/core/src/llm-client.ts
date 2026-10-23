@@ -47,6 +47,7 @@ import {
   checkInternalLoopRepeat,
   checkWorkClassShare,
   formatWorkClassDeferral,
+  openRouterFreeDailyRequestsPerKey,
   recordWorkClassUsage,
   type WorkClass,
 } from './work-class-budget.js';
@@ -2121,6 +2122,31 @@ class MultiProviderClient {
                 continue;
               }
 
+              // Free-tier share: OpenRouter's free-models-per-day quota is per
+              // account and enforced remotely. Count it per work class so
+              // internal loops / background work stop at their share and the
+              // mission reserve stays available on that key.
+              const freeShareResource = isOpenRouterProvider(provider) && !provider.paid
+                ? (`openrouter_free:${credential.env}` as const)
+                : null;
+              if (freeShareResource) {
+                const freeShare = checkWorkClassShare(
+                  freeShareResource,
+                  workClass,
+                  openRouterFreeDailyRequestsPerKey(),
+                  1,
+                );
+                if (!freeShare.allowed) {
+                  skipReasons.push(`${credentialId}: work-class share (${workClass}) of free-tier quota used`);
+                  capacityBlocks.push({
+                    source: credentialId,
+                    resumeAt: freeShare.resumeAt ?? new Date(Date.now() + 60_000).toISOString(),
+                    reason: `work-class share (${workClass}): ${freeShare.reason}`,
+                  });
+                  continue;
+                }
+              }
+
               // Per-account request budget. Only applies to accounts given an
               // explicit cap in APEX_REQUEST_CAPS; uncapped accounts return
               // `uncapped`/allowed and fall straight through. This is what
@@ -2226,6 +2252,7 @@ class MultiProviderClient {
               }
               let paidSpendSettled = false;
               reserveProviderAttempt(provider, credential.key);
+              if (freeShareResource) recordWorkClassUsage(freeShareResource, workClass, 1);
               providerAttempted = true;
 
               try {
@@ -2422,6 +2449,7 @@ class MultiProviderClient {
                       EMERGENCY_HISTORY_CHAR_BUDGET,
                     );
                     reserveProviderAttempt(provider, credential.key);
+                    if (freeShareResource) recordWorkClassUsage(freeShareResource, workClass, 1);
                     const result = await callProvider(
                       provider,
                       credential.key,

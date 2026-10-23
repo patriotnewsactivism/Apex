@@ -29,9 +29,9 @@
  */
 
 export type WorkClass = 'operator' | 'mission' | 'internal' | 'background';
-export type BudgetResource = 'requests' | 'tokens' | 'spend_micros';
+export type BudgetResource = 'requests' | 'tokens' | 'spend_micros' | `openrouter_free:${string}`;
 
-const RESOURCES: BudgetResource[] = ['requests', 'tokens', 'spend_micros'];
+
 const UTC_DAY_MS = 86_400_000;
 
 function envPct(name: string, fallback: number): number {
@@ -68,6 +68,17 @@ export function internalLoopWindowMinutes(): number {
   return envInt('APEX_INTERNAL_LOOP_WINDOW_MINUTES', 360, 1, 1440);
 }
 
+/**
+ * OpenRouter's free-model daily request quota per account (env name). The
+ * provider enforces it remotely ("free-models-per-day"); APEX counts it locally
+ * per work class so internal loops cannot drain it before mission work runs.
+ * Default 1000 = OpenRouter's documented limit for accounts with credits.
+ * 0 disables the free-tier share.
+ */
+export function openRouterFreeDailyRequestsPerKey(): number {
+  return envInt('APEX_OPENROUTER_FREE_DAILY_REQUESTS', 1000, 0, 1_000_000);
+}
+
 // ─── Classification ──────────────────────────────────────────────────────────
 
 export interface WorkClassInput {
@@ -80,9 +91,15 @@ export interface WorkClassInput {
 const MISSION_CONTEXT_KEYS = ['missionId', 'campaignId', 'leadCampaignId', 'emailCampaignId'];
 const MISSION_TEXT = /^(execute mission:|execute mission \(|lead[- ]gen|lead search|lead research|find (\d+\s+)?leads|campaign segment|territory hunt)/i;
 const MISSION_DESCRIPTION = /^\s*EXECUTE MISSION \(/;
+/** Weaker mission signals, applied only after the internal-loop rules. */
+const MISSION_ANYWHERE = /(\blead (research|generation|gen|list|search)\b|^execute\b.*\bmission\b)/i;
 const INTERNAL_TEXT =
-  /^(\s*(urgent|priority|safety net|wave-\d+)?[:\s-]*)?(ceo|cto|coo|cfo|judge)?[\s:-]*(verify|verify-only|re-?verify|verification|delegation verdict|delegation status|review|re-?review|closeout|close-?out|consolidat|confirm|audit|blocker|re-?attempt|follow[- ]?up on|check (on|whether)|collect swarm|task [0-9a-f]{6,} failed)/i;
+  /^(\s*(urgent|priority|safety net|wave-\d+|final)?[:\s-]*)?(ceo|cto|coo|cfo|judge)?[\s:-]*(verify|verify-only|re-?verify|verification|delegation (verdict|status|results?)|delegation:|re-?delegat|review|re-?review|rework|closeout|close-?out|consolidat|confirm|audit|blocker|re-?attempt|retry:|follow[- ]?up( on)?|check (on|whether)|collect swarm|swarm results|autonomous (branch )?review|task [0-9a-f]{6,} failed)/i;
 const INTERNAL_ANYWHERE = /\b(get_delegation_status|collectSwarmResults|PATCH (fix|guard|verification)|claim-vs-artifact|delegating is not delivering)\b/i;
+/** Loop titles observed on production 2026-10-23 (re-delegation / gate / QA
+ *  churn around one PATCH fix and goal reviews). */
+const INTERNAL_PREFIX = /^(autonomous (branch|goal) review|investigate cancelled task|escalation\b|final attempt|gate [0-9a-f#]{4,}\b|qa (gate|evidence)|peer review request|re-?delegat|re-?dispatch|re-?open\b|resume both remediation|batching protocol|request consolidation|\[swarm:)/i;
+const INTERNAL_ANYWHERE_TITLE = /\b(persona review|prior verdict|unverified|evidence[- ]loop)\b/i;
 
 export function classifyWorkClass(input: WorkClassInput): WorkClass {
   if (input.operatorLane) return 'operator';
@@ -96,9 +113,16 @@ export function classifyWorkClass(input: WorkClassInput): WorkClass {
   const description = input.description ?? '';
   if (MISSION_TEXT.test(title) || MISSION_DESCRIPTION.test(description)) return 'mission';
   if (ctx.workClass === 'internal') return 'internal';
-  if (INTERNAL_TEXT.test(title) || INTERNAL_ANYWHERE.test(title) || INTERNAL_ANYWHERE.test(description.slice(0, 600))) {
+  if (
+    INTERNAL_TEXT.test(title) ||
+    INTERNAL_PREFIX.test(title) ||
+    INTERNAL_ANYWHERE_TITLE.test(title) ||
+    INTERNAL_ANYWHERE.test(title) ||
+    INTERNAL_ANYWHERE.test(description.slice(0, 600))
+  ) {
     return 'internal';
   }
+  if (MISSION_ANYWHERE.test(title)) return 'mission';
   return 'background';
 }
 
@@ -121,11 +145,12 @@ type Usage = Record<WorkClass, number>;
 const emptyUsage = (): Usage => ({ operator: 0, mission: 0, internal: 0, background: 0 });
 
 let dayKey = '';
-let usage: Record<BudgetResource, Usage> = {
-  requests: emptyUsage(),
-  tokens: emptyUsage(),
-  spend_micros: emptyUsage(),
-};
+let usage = new Map<BudgetResource, Usage>();
+function usageFor(resource: BudgetResource): Usage {
+  let u = usage.get(resource);
+  if (!u) { u = emptyUsage(); usage.set(resource, u); }
+  return u;
+}
 /** signature → run start times (ms) for internal-loop backoff. */
 const internalRuns = new Map<string, number[]>();
 /** taskIds already counted as a run for their signature. */
@@ -135,7 +160,7 @@ function rollover(at: number): void {
   const key = new Date(at).toISOString().slice(0, 10);
   if (key === dayKey) return;
   dayKey = key;
-  usage = { requests: emptyUsage(), tokens: emptyUsage(), spend_micros: emptyUsage() };
+  usage = new Map();
 }
 
 function nextUtcMidnightIso(at: number): string {
@@ -166,7 +191,7 @@ export function checkWorkClassShare(
   if (workClass === 'operator' || workClass === 'mission') return { allowed: true, workClass };
   if (!Number.isFinite(cap) || cap <= 0) return { allowed: true, workClass };
   const req = Math.max(0, requested);
-  const u = usage[resource];
+  const u = usageFor(resource);
   const nonMissionCeiling = (cap * (100 - missionReservePct())) / 100;
   const nonMissionUsed = u.internal + u.background;
   if (nonMissionUsed + req > nonMissionCeiling) {
@@ -202,7 +227,7 @@ export function recordWorkClassUsage(
 ): void {
   rollover(at);
   if (!Number.isFinite(units) || units <= 0) return;
-  usage[resource][workClass] += units;
+  usageFor(resource)[workClass] += units;
 }
 
 /**
@@ -261,7 +286,7 @@ export interface WorkClassUsageSnapshot {
   internalLoopMaxPct: number;
   internalLoopRepeatMax: number;
   internalLoopWindowMinutes: number;
-  usage: Record<BudgetResource, Usage>;
+  usage: Record<string, Usage>;
 }
 
 export function getWorkClassUsageSnapshot(at: number = Date.now()): WorkClassUsageSnapshot {
@@ -272,14 +297,17 @@ export function getWorkClassUsageSnapshot(at: number = Date.now()): WorkClassUsa
     internalLoopMaxPct: internalLoopMaxPct(),
     internalLoopRepeatMax: internalLoopRepeatMax(),
     internalLoopWindowMinutes: internalLoopWindowMinutes(),
-    usage: Object.fromEntries(RESOURCES.map((r) => [r, { ...usage[r] }])) as Record<BudgetResource, Usage>,
+    usage: Object.fromEntries(
+      (['requests', 'tokens', 'spend_micros', ...usage.keys()] as BudgetResource[])
+        .map((r) => [r, { ...usageFor(r) }]),
+    ),
   };
 }
 
 /** Test seam. */
 export function __resetWorkClassBudgetForTest(): void {
   dayKey = '';
-  usage = { requests: emptyUsage(), tokens: emptyUsage(), spend_micros: emptyUsage() };
+  usage = new Map();
   internalRuns.clear();
   countedTasks.clear();
 }

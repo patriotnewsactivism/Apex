@@ -1,5 +1,5 @@
 import { readWorkBundle, recordTurnEconomy, missingBundleItems, resolveDeterministicRead } from './turn-economy.js';
-import { isWorkClassDeferral } from './work-class-budget.js';
+import { isWorkClassDeferral, classifyWorkClass } from './work-class-budget.js';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { db, agents, approvals, messages, tasks as tasksTable, taskCheckpoints, learningInsights, strategyRecommendations } from '@workspace/db';
@@ -10,7 +10,7 @@ import { getWorkspaceRoot } from './workspace-root.js';
 import { MemoryManager, AgentLogger, type LogLevel } from './memory.js';
 import { detectMalformedToolCall, buildMalformedToolCallCorrection } from './malformed-tool-calls.js';
 import { detectNonCompletion, detectAnnouncedButNotTaken, buildNonCompletionFailure } from './non-completion.js';
-import { TaskQueue, setTaskClaimPauseProbe } from './task-queue.js';
+import { TaskQueue, setTaskClaimPauseProbe, setTaskClaimNonMissionPauseProbe } from './task-queue.js';
 import { drainTaskArtifacts, peekTaskArtifacts } from './durable-work-tools.js';
 import {
   recordAgentLoopStart,
@@ -207,6 +207,44 @@ export function capacityPauseRemainingMs(now: number = Date.now()): number {
 // Every claim path (TaskQueue.dequeue/claimById) consults this latch, so while
 // a capacity pause is active no agent claims a task only to defer it again.
 setTaskClaimPauseProbe(capacityPauseRemainingMs);
+
+/**
+ * Non-mission latch. A provider pause hit by an internal-loop or background
+ * task parks only non-mission claims: mission/campaign tasks (and the operator
+ * lane, which never claims tasks) keep being claimable so they can use the
+ * capacity the loops left (the free-tier/request shares guarantee some is
+ * left). If the mission task then hits the same pause, it sets the workspace
+ * latch above and everyone waits, exactly as before.
+ */
+let nonMissionCapacityResumeAtMs = 0;
+let lastNonMissionProbeAtMs = 0;
+
+function noteNonMissionCapacityPause(resumeAtMs: number): void {
+  const now = Date.now();
+  recordCapacityDeferral(now);
+  if (!Number.isFinite(resumeAtMs)) return;
+  const floored = Math.max(resumeAtMs, now + CAPACITY_PAUSE_FLOOR_MS);
+  if (floored > nonMissionCapacityResumeAtMs) nonMissionCapacityResumeAtMs = floored;
+}
+
+/** Milliseconds non-mission claims must still wait (workspace latch included). */
+export function nonMissionPauseRemainingMs(now: number = Date.now()): number {
+  if (nonMissionCapacityResumeAtMs > now && now - lastNonMissionProbeAtMs >= CAPACITY_REPROBE_INTERVAL_MS) {
+    lastNonMissionProbeAtMs = now;
+    if (nonMissionCapacityResumeAtMs - now > CAPACITY_PAUSE_FLOOR_MS && llmCapacityAvailableNow(now)) {
+      nonMissionCapacityResumeAtMs = 0;
+    }
+  }
+  return Math.max(0, nonMissionCapacityResumeAtMs - now);
+}
+setTaskClaimNonMissionPauseProbe(nonMissionPauseRemainingMs);
+
+/** Test seam. */
+export function __setNonMissionLatchForTest(resumeAtMs: number): void {
+  nonMissionCapacityResumeAtMs = 0;
+  lastNonMissionProbeAtMs = 0;
+  if (resumeAtMs > 0) noteNonMissionCapacityPause(resumeAtMs);
+}
 
 /** Test seam: drop the latch and the probe throttle. */
 export function __resetCapacityLatchForTest(): void {
@@ -1385,8 +1423,14 @@ export abstract class BaseAgent {
         // over its share, or a repeated internal task) is scoped to THIS task.
         // Latching it workspace-wide would park mission/campaign work behind
         // the very loops the share exists to throttle.
-        if (!isWorkClassDeferral(msg)) {
-          noteCapacityPause(resumeAtDate?.getTime() ?? Date.now() + 60_000);
+        const pauseAt = resumeAtDate?.getTime() ?? Date.now() + 60_000;
+        if (isWorkClassDeferral(msg)) {
+          // per-task only
+        } else if (classifyWorkClass({ title, description, context }) === 'mission') {
+          noteCapacityPause(pauseAt);
+        } else {
+          // Hit by internal/background work: park non-mission claims only.
+          noteNonMissionCapacityPause(pauseAt);
         }
         await this.logger.warn(
           dailyBudgetPaused

@@ -94,7 +94,7 @@ check('recognised as work-class deferral', isWorkClassDeferral(msg));
 check('ordinary capacity pause is NOT a work-class deferral',
   !isWorkClassDeferral('APEX LLM capacity paused. resume-at=2026-10-23T06:59:59Z | workspace: token budget'));
 const base = read('packages/core/src/base-agent.ts');
-check('base-agent skips noteCapacityPause for work-class deferrals', /if \(!isWorkClassDeferral\(msg\)\) \{\s*noteCapacityPause/.test(base));
+check('base-agent skips noteCapacityPause for work-class deferrals', /if \(isWorkClassDeferral\(msg\)\) \{\s*\/\/ per-task only\s*\} else if/.test(base));
 
 console.log('wiring');
 const llm = read('packages/core/src/llm-client.ts');
