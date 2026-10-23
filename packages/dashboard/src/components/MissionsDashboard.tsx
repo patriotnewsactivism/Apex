@@ -45,18 +45,20 @@ function formatDate(iso: string | undefined): string {
 
 // ─── Mission Card ────────────────────────────────────────────────────────────────
 
-function MissionCard({ mission, onView, onPause, onResume, onCancel, onSubmit }: {
+function MissionCard({ mission, onView, onPause, onResume, onCancel, onSubmit, onStart }: {
   mission: MissionSummary;
   onView: () => void;
   onPause: () => void;
   onResume: () => void;
   onCancel: () => void;
   onSubmit: () => void;
+  onStart?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const status = mission.effectiveStatus;
   const colors = STATUS_COLOR[status] || STATUS_COLOR.draft;
   const isDraft = status === 'draft';
+  const isValidating = status === 'validating';
   const isRunning = status === 'running';
   const isPaused = status === 'paused';
   const isCompleted = status === 'completed' || status === 'cancelled' || status === 'failed';
@@ -126,6 +128,11 @@ function MissionCard({ mission, onView, onPause, onResume, onCancel, onSubmit }:
                 {isDraft && (
                   <button onClick={() => { onSubmit(); setMenuOpen(false); }} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 10px', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--color-apex-text)', fontSize: 12, borderRadius: 4 }}>
                     <Send size={14} /> Submit for validation
+                  </button>
+                )}
+                {isValidating && onStart && (
+                  <button onClick={() => { onStart(); setMenuOpen(false); }} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 10px', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--color-apex-text)', fontSize: 12, borderRadius: 4 }}>
+                    <Play size={14} /> Start mission
                   </button>
                 )}
                 {isRunning && (
@@ -623,6 +630,11 @@ export function MissionsDashboard() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['missions'] }); refetch(); },
   });
 
+  const startMutation = useMutation({
+    mutationFn: (missionId: string) => api.missions.start(missionId, 'Started from dashboard'),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['missions'] }); refetch(); },
+  });
+
   const submitMutation = useMutation({
     mutationFn: (missionId: string) => api.missions.submit(missionId, 'Submitted from dashboard'),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['missions'] }); refetch(); },
@@ -691,6 +703,7 @@ export function MissionsDashboard() {
               onResume={() => resumeMutation.mutate(m.missionId)}
               onCancel={() => cancelMutation.mutate(m.missionId)}
               onSubmit={() => submitMutation.mutate(m.missionId)}
+              onStart={() => startMutation.mutate(m.missionId)}
             />
           ))}
         </AnimatePresence>
@@ -836,6 +849,7 @@ export function MissionsDashboard() {
               onResume={() => resumeMutation.mutate(m.missionId)}
               onCancel={() => cancelMutation.mutate(m.missionId)}
               onSubmit={() => submitMutation.mutate(m.missionId)}
+              onStart={() => startMutation.mutate(m.missionId)}
             />
           ))}
         </AnimatePresence>
