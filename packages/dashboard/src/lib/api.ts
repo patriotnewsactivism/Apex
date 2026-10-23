@@ -1771,6 +1771,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ spentCents }),
       }),
+    start: (missionId: string, reason?: string) =>
+      apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/start`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
     budgetIncrease: (missionId: string, newBudgetCents: number, approvedBy?: string) =>
       apiFetch<MissionActionResponse>(`/missions/${encodeURIComponent(missionId)}/budget-increase`, {
         method: 'POST',

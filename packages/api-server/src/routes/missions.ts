@@ -7,6 +7,7 @@ import { eq, and, desc, sql, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import type { Request, Response } from 'express';
+import { decideMissionStart, executeMissionTaskTitle } from './mission-start.js';
 
 export const MissionDeadlineSchema = z.union([
   z.string().date().transform((date) => `${date}T23:59:59.999Z`),
@@ -374,7 +375,6 @@ export function createMissionsRouter(): Router {
         channels: payload.channels,
         approveBeforePivot: payload.approveBeforePivot,
         firstTouchOptIn: payload.firstTouchOptIn,
-        projectId: mission.projectId,
         assignedAgentId: mission.assignedAgentId,
         createdAt: iso(mission.createdAt),
         updatedAt: payload.updatedAt ?? iso(mission.createdAt),
@@ -592,6 +592,82 @@ export function createMissionsRouter(): Router {
       });
     } catch (err) {
       console.error('POST /api/missions/:missionId/pause error:', err);
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
+  });
+
+  // POST /api/missions/:missionId/start — operator step: validating → running.
+  // Requires an active goal and an approved validation approval. Creates one
+  // pending "Execute mission" task on the goal. Budget is left untouched; the
+  // mission budget gate and global hard caps keep applying.
+  router.post('/:missionId/start', async (req: Request, res: Response) => {
+    try {
+      const missionId = routeParam(req.params.missionId);
+      if (!missionId) return res.status(400).json({ error: 'missionId is required' });
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
+
+      const [mission] = await db.select().from(goals).where(eq(goals.id, missionId)).limit(1);
+      if (!mission) return res.status(404).json({ error: 'Mission not found' });
+
+      const payload = parseMissionPayload(mission.result);
+      const approvalRows = await db
+        .select({ status: approvals.status })
+        .from(approvals)
+        .where(and(
+          eq(approvals.toolName, 'submit_mission_for_validation'),
+          sql`${approvals.toolArgs}->>'missionId' = ${missionId}`,
+        ));
+
+      const decision = decideMissionStart({
+        goalStatus: mission.status,
+        missionStatus: payload.missionStatus,
+        validationApprovalStatuses: approvalRows.map((r) => r.status),
+      });
+      if (!decision.ok) return res.status(decision.httpStatus).json({ error: decision.error });
+
+      const updatedPayload = withUpdatedAt({ ...payload, missionStatus: 'running' });
+      // Guarded on the stored result so a concurrent start cannot double-run.
+      const updated = await db.update(goals)
+        .set({ result: JSON.stringify(updatedPayload) })
+        .where(and(eq(goals.id, missionId), eq(goals.result, mission.result ?? '')))
+        .returning({ id: goals.id });
+      if (updated.length === 0) {
+        return res.status(409).json({ error: 'Mission changed while starting. Reload and try again.' });
+      }
+
+      const taskId = randomUUID();
+      const title = executeMissionTaskTitle(mission.title);
+      await db.insert(tasks).values({
+        id: taskId,
+        goalId: missionId,
+        title,
+        description: [
+          `EXECUTE MISSION (${missionId})`,
+          payload.objective || mission.description || '',
+          '',
+          `Mission budget: ${payload.budgetCents}¢ added spend. Run on existing resources; global hard caps apply.`,
+          reason ? `Operator note: ${reason}` : '',
+        ].filter(Boolean).join('\n'),
+        status: 'pending',
+        assignedAgentId: mission.assignedAgentId,
+        createdByAgentId: 'system',
+        context: { goalId: missionId, missionId },
+      });
+
+      return res.json({
+        missionId,
+        status: 'running',
+        taskId,
+        taskTitle: title,
+        budgetCents: payload.budgetCents,
+        startedAt: new Date().toISOString(),
+        message: 'Mission started.',
+      });
+    } catch (err) {
+      console.error('POST /api/missions/:missionId/start error:', err);
       return res.status(500).json({
         error: 'Internal server error',
         message: err instanceof Error ? err.message : 'Unknown error',
