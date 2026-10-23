@@ -12,6 +12,10 @@ No daily dollar limit is increased and no provider is added.
   available. `available` means a local admission probe is permitted, **not** a
   claim that upstream entitlement has been verified. `lastSuccessAt` is an
   observed success since this process started, not fabricated historical uptime.
+- Provider token reservations use `prepareProviderRequest(...).estimatedTotalTokens`,
+  the same bounded history/output envelope sent to that provider. Do not reserve
+  the untrimmed CEO allowance against Groq: that can falsely refuse a 3,536-token
+  request as a 10,192-token request even with 8,000 tokens of real headroom.
 - The same report drives the agent capacity latch. Disabled/unconfigured routes
   do not count as usable providers. Paid Qwen is not counted in `freeSlots`.
 - Gemini defaults to the observed 20 daily requests for this free-tier

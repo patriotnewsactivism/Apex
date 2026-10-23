@@ -57,6 +57,7 @@ jobs:
         run: |
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-provider-routing.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-capacity-admission.ts"
+          pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-provider-token-admission.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-spend-reservations.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-paid-spend-admission.ts"
           pnpm --filter @workspace/core exec tsx "$GITHUB_WORKSPACE/scripts/verify-repetition-stop.ts"

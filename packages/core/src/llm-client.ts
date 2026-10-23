@@ -2013,9 +2013,27 @@ class MultiProviderClient {
             continue;
           }
 
+          // Reserve what this provider can actually receive, after its own
+          // history trimming and output clamp. The original CEO/agent request
+          // can exceed Groq's entire 7,600-token envelope; charging that larger
+          // estimate falsely parks a perfectly admissible bounded request.
+          let providerRequestTokens = 0;
+          try {
+            if (!provider.unrestricted) providerRequestTokens = prepareProviderRequest(
+              provider.name, providerMessages, tools, this.config.maxTokens ?? 4096,
+            ).estimatedTotalTokens;
+          } catch (error) {
+            // Large tool schemas can exceed a small provider's envelope even
+            // after history trimming. No upstream call or token hold occurred;
+            // reject this route only, never abort the remaining fallback chain.
+            const message = error instanceof Error ? error.message : String(error);
+            providerErrors.push(`${provider.name}: request preparation failed (${message})`);
+            if (!isRequestTooLargeError(undefined, message)) nonCapacityFailureSeen = true;
+            continue;
+          }
           const providerReservation = provider.unrestricted
             ? null
-            : reserveProviderTokenCapacity(provider.name, estimatedTokens);
+            : reserveProviderTokenCapacity(provider.name, providerRequestTokens);
           if (providerReservation && !providerReservation.allowed) {
             capacityBlocks.push(
               capacityBlockFromReservation(provider.name, providerReservation),
