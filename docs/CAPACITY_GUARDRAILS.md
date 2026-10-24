@@ -140,3 +140,14 @@ reserve stays unused for that UTC day, by design.
 - Internal-loop titles now include "Delegation results:", "REWORK:",
   "Autonomous branch/goal review", re-delegate/re-dispatch/re-open,
   ESCALATION, FINAL attempt, Gate …, QA gate/evidence, persona/peer review.
+
+## Work-class shares apply to the paced (released) allowance
+
+Request pools and paid spend are released gradually across the UTC day
+(`pacingAllowance = burst + (cap - burst) * elapsed / day`). The work-class
+shares (`APEX_MISSION_RESERVE_PCT`, `APEX_INTERNAL_LOOP_MAX_PCT`) are measured
+against that **released** allowance, not the hard daily cap, so a herd of
+internal loops released at the UTC rollover cannot consume the whole burst
+before a mission task is claimed. Usage is booked on `paced:<provider>` and
+`paced-spend` resources. Operator-lane traffic is never throttled by this
+check. Counters are in-memory per UTC day and reset on process restart.
