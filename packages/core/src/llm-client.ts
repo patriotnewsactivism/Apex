@@ -156,6 +156,8 @@ export const OPENROUTER_FREE_KEY_ENVS = [
   'OPENROUTER_API_KEY_2',
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_4',
+  // Independent account slot; deliberately NOT in the default paid-key list.
+  'OPENROUTER_API_KEY_5',
 ] as const;
 
 /**
