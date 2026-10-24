@@ -61,6 +61,7 @@ export const OPENROUTER_CREDIT_KEY_ENVS = [
   'OPENROUTER_API_KEY_2',
   'OPENROUTER_API_KEY',
   'OPENROUTER_API_KEY_4',
+  'OPENROUTER_API_KEY_5',
 ] as const;
 
 /** One management key per independent OpenRouter account. Cannot infer. */
@@ -165,9 +166,15 @@ function configuredManagementCredentials(): Array<{ env: string; key: string }> 
   return out;
 }
 
-function publicAccountId(creatorUserId: string | null | undefined, keyFingerprint: string): string {
-  if (!creatorUserId || !creatorUserId.trim()) return `keyfp_${keyFingerprint}`;
-  const digest = createHash('sha256').update(creatorUserId.trim()).digest('hex').slice(0, 8);
+function publicAccountId(creatorUserId: string | null | undefined, keyFingerprint: string, organizationId?: string | null): string {
+  // Organization-scoped inference keys may have no creator_user_id. Scope
+  // identity to the organization (not the key) so sibling keys share quota.
+  // Keep legacy personal-user hashes unchanged to preserve their ledgers.
+  const identity = organizationId?.trim()
+    ? `organization:${organizationId.trim()}`
+    : creatorUserId?.trim();
+  if (!identity) return `keyfp_${keyFingerprint}`;
+  const digest = createHash('sha256').update(identity).digest('hex').slice(0, 8);
   return `oracct_${digest}`;
 }
 
@@ -231,6 +238,7 @@ async function fetchJson(
 
 interface OpenRouterKeyMetadata {
   creator_user_id?: string | null;
+  organization_id?: string | null;
   is_free_tier?: boolean;
   rate_limit?: { requests?: number; interval?: string };
   usage?: number;
@@ -268,14 +276,14 @@ async function probeInferenceKey(entry: UniqueCredential): Promise<ProviderAccou
   const dailyLimit = Number.isFinite(Number(meta?.rate_limit?.requests))
     ? Number(meta?.rate_limit?.requests)
     : null;
-  const account = publicAccountId(meta?.creator_user_id ?? null, entry.fingerprint);
+  const account = publicAccountId(meta?.creator_user_id ?? null, entry.fingerprint, meta?.organization_id);
   const identityKnown = account.startsWith('oracct_');
 
   const parts: string[] = [];
   if (!creditsRes.ok) parts.push(`credits HTTP ${creditsRes.status}`);
   if (!keyRes.ok) parts.push(`key HTTP ${keyRes.status}`);
   if (!identityKnown && keyRes.ok) {
-    parts.push('OpenRouter did not return creator_user_id; this row cannot prove a distinct account');
+    parts.push('OpenRouter did not return creator_user_id or organization_id; this row cannot prove a distinct account');
   }
   if (remaining !== null && remaining <= 0) {
     parts.push('paid credits exhausted — :free routing is unaffected');

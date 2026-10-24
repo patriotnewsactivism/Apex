@@ -171,7 +171,8 @@ async function fetchOpenRouterModels() {
       process.env.OPENROUTER_API_KEY ??
       process.env.OPENROUTER_API_KEY_2 ??
       process.env.OPENROUTER_API_KEY_3 ??
-      process.env.OPENROUTER_API_KEY_4;
+      process.env.OPENROUTER_API_KEY_4 ??
+      process.env.OPENROUTER_API_KEY_5;
     if (key) headers.Authorization = `Bearer ${key}`;
 
     const response = await fetch(OPENROUTER_MODELS_URL, { headers, signal: controller.signal });
