@@ -42,7 +42,7 @@ import {
   getOpenRouterAccountExclusion,
   getOpenRouterAccountExclusionReport as buildOpenRouterAccountExclusionReport,
 } from './provider-account-exclusions.js';
-import { recordSpend, recordCachedTokens, paidSpendAvailable, tryReservePaidSpend, dailySpendCapMicros, type SpendPriority } from './spend-ledger.js';
+import { recordSpend, recordCachedTokens, paidSpendAvailable, tryReservePaidSpend, dailySpendCapMicros, spendCapacityWindow, type SpendPriority } from './spend-ledger.js';
 import {
   checkInternalLoopRepeat,
   checkWorkClassShare,
@@ -1136,6 +1136,26 @@ function independentPlanRoute(provider: ProviderSpec): boolean {
   return provider.unrestricted === true || provider.requestPool === 'qwen';
 }
 
+/** How long an internal/background task waits after its paced-allowance share
+ *  is used before it is offered the ramp again. */
+const PACED_SHARE_RETRY_MS = 10 * 60_000;
+
+function pacedShareResource(provider: ProviderSpec): `paced:${string}` {
+  return `paced:${provider.requestPool ?? 'openrouter'}`;
+}
+
+/** Spend shares are measured against what the pacing ramp has released today
+ *  (falling back to the hard daily cap when pacing is off/unavailable). */
+function pacedSpendCapMicros(pacingEnabled?: boolean): number {
+  const cap = dailySpendCapMicros();
+  try {
+    const released = spendCapacityWindow(0, Date.now(), pacingEnabled).releasedMicros;
+    return Number.isFinite(released) && released > 0 ? Math.min(cap, released) : cap;
+  } catch {
+    return cap;
+  }
+}
+
 function requestWindowForProvider(
   provider: ProviderSpec,
   at: number,
@@ -2018,6 +2038,31 @@ class MultiProviderClient {
             continue;
           }
 
+          // Paced-allowance share. The binding limit is usually the pacing
+          // ramp (burst + straight-line release), not the hard daily cap, so
+          // shares measured against the cap let internal loops drain every
+          // released request before mission work is claimed (prod 2026-10-23
+          // 19:00-19:26 CT: 257/257 released requests gone 26 min after the
+          // UTC rollover). Hold the mission reserve out of what the ramp has
+          // actually released.
+          if (!provider.paid && providerRequestWindow.pacingAllowance > 0) {
+            const pacedShare = checkWorkClassShare(
+              pacedShareResource(provider),
+              workClass,
+              providerRequestWindow.pacingAllowance,
+              1,
+            );
+            if (!pacedShare.allowed) {
+              capacityBlocks.push({
+                source: provider.requestPool ?? 'openrouter',
+                resumeAt: new Date(Date.now() + PACED_SHARE_RETRY_MS).toISOString(),
+                reason: `work-class share (${workClass}) of released request allowance: ${pacedShare.reason}`,
+              });
+              skipReasons.push(`${provider.name}: work-class share (${workClass}) of paced allowance used`);
+              continue;
+            }
+          }
+
           const activationIssue = providerActivationIssue(provider);
           if (activationIssue) {
             skipReasons.push(`${provider.name}: ${activationIssue}`);
@@ -2224,7 +2269,7 @@ class MultiProviderClient {
                 const spendShare = checkWorkClassShare(
                   'spend_micros',
                   workClass,
-                  dailySpendCapMicros(),
+                  pacedSpendCapMicros(pacingOverride),
                   Math.ceil(paidEstimateUsd * 1_000_000),
                 );
                 if (!spendShare.allowed) {
@@ -2252,6 +2297,7 @@ class MultiProviderClient {
               }
               let paidSpendSettled = false;
               reserveProviderAttempt(provider, credential.key);
+              if (!provider.paid && providerRequestWindow.pacingAllowance > 0) recordWorkClassUsage(pacedShareResource(provider), workClass, 1);
               if (freeShareResource) recordWorkClassUsage(freeShareResource, workClass, 1);
               providerAttempted = true;
 
@@ -2449,6 +2495,7 @@ class MultiProviderClient {
                       EMERGENCY_HISTORY_CHAR_BUDGET,
                     );
                     reserveProviderAttempt(provider, credential.key);
+                    if (!provider.paid && providerRequestWindow.pacingAllowance > 0) recordWorkClassUsage(pacedShareResource(provider), workClass, 1);
                     if (freeShareResource) recordWorkClassUsage(freeShareResource, workClass, 1);
                     const result = await callProvider(
                       provider,
