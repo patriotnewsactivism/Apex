@@ -29,7 +29,7 @@
  */
 
 export type WorkClass = 'operator' | 'mission' | 'internal' | 'background';
-export type BudgetResource = 'requests' | 'tokens' | 'spend_micros' | `openrouter_free:${string}`;
+export type BudgetResource = 'requests' | 'tokens' | 'spend_micros' | `openrouter_free:${string}` | `paced:${string}`;
 
 
 const UTC_DAY_MS = 86_400_000;
