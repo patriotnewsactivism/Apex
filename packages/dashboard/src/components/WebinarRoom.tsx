@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, Send, Users, Volume2, VolumeX, Sparkles } from 'lucide-react';
 import { useIsMobile } from '../hooks/useIsMobile.js';
-import { TavusWebinarHost } from './TavusWebinarHost.js';
+import { WebinarVideoHost } from './AnamWebinarHost.js';
 
 type Segment = {
   id: string;
@@ -437,7 +437,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
               </button>
             </form>
             <div style={{ color: '#777b85', fontSize: 12, marginTop: 14 }}>
-              Each attendee gets a separate Tavus-powered conversation inside the webinar room. The browser controls your microphone and camera permissions.
+              Each attendee gets a separate AI video-host conversation inside the webinar room. The browser controls your microphone and camera permissions.
             </div>
           </div>
         </div>
@@ -497,7 +497,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
 
       <main className="webinar-room-main" style={{ maxWidth: 1180, width: '100%', margin: '0 auto', padding: isMobile ? '14px 12px 22px' : 'clamp(22px, 4vw, 52px) clamp(16px, 3vw, 30px)', display: 'grid', gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : 'minmax(0, 1.7fr) minmax(280px, 0.7fr)', gap: isMobile ? 12 : 24, minWidth: 0 }}>
         <div className="webinar-room-primary" style={{ display: 'grid', gap: isMobile ? 12 : 18, minWidth: 0 }}>
-          <TavusWebinarHost onStateChange={setTavusHostState} compact={isMobile} />
+          <WebinarVideoHost slug={slug} onStateChange={setTavusHostState} compact={isMobile} />
         <section className="webinar-room-stage" style={{ ...card, minHeight: isMobile ? 0 : 520, padding: isMobile ? '22px 16px 48px' : 'clamp(26px, 5vw, 58px)', position: 'relative', overflow: 'hidden', minWidth: 0 }}>
           <div style={{ position: 'absolute', inset: '0 auto auto 0', width: 180, height: 4, background: '#c9a66b' }} />
           <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#c9a66b' }}>{segment.kicker}</div>
@@ -561,7 +561,7 @@ export function WebinarRoom({ slug }: { slug: string }) {
               </strong>
             </div>
             <div style={{ marginTop: 10, color: '#8d9099', fontSize: 13, lineHeight: 1.5 }}>
-              Tavus runs a separate live conversation for this attendee while APEX keeps the webinar state, slides, Q&A, engagement and follow-up workflow synchronized.
+              The AI video host runs a separate live conversation for this attendee while APEX keeps the webinar state, slides, Q&A, engagement and follow-up workflow synchronized.
             </div>
           </div>
 
