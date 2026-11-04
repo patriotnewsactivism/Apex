@@ -126,7 +126,7 @@ export function WebinarDirector() {
         <div className="apex-eyebrow" style={{ marginBottom: 10 }}>Revenue · Live events</div>
         <h2 className="apex-display" style={{ margin: 0, fontSize: 28 }}>Build today’s autonomous webinar room</h2>
         <p style={{ color: 'var(--color-apex-muted)', lineHeight: 1.65, maxWidth: 620 }}>
-          This creates the public attendee room with a Tavus interactive video host,
+          This creates the public attendee room with an interactive AI video host (Anam by default),
           live Q&A, lead capture, engagement scoring, CTA tracking, and your operator takeover controls.
         </p>
         <button onClick={() => void createToday()} disabled={busy === 'create'} style={primaryButton}>
@@ -193,7 +193,7 @@ export function WebinarDirector() {
               <Bot size={17} color="var(--color-apex-green)" style={{ flexShrink: 0, marginTop: 1 }} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 750, color: 'var(--color-apex-text)' }}>
-                  Tavus interactive host is primary
+                  Interactive video host is primary
                 </div>
                 <div style={{ marginTop: 4, color: 'var(--color-apex-muted)', fontSize: 11, lineHeight: 1.5 }}>
                   Every attendee gets their own face-to-face conversation with the same webinar host. APEX still owns room state, slides, engagement, Q&A, follow-up and your takeover controls. The legacy audio narrator only runs if the video embed cannot load.

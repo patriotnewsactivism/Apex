@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import { createLLMClient, getDefaultLLMConfig, synthesizeCartesiaSalesSpeech } from '@workspace/core';
 import type { LLMMessage } from '@workspace/core';
 import type { ApexCEO } from '@workspace/agents';
+import { createAnamSessionToken, webinarAvatarProvider } from './anam-session.js';
 
 type WebinarSessionRow = {
   id: string;
@@ -612,6 +613,21 @@ export function createPublicWebinarRouter() {
     } catch (error) {
       console.warn('[webinar] host-message speech failed:', error instanceof Error ? error.message : String(error));
       return res.status(503).json({ error: 'AI host voice is temporarily unavailable' });
+    }
+  });
+
+  // Interactive video host: Anam by default; AVATAR_PROVIDER=tavus keeps the legacy Tavus embed.
+  router.get('/:slug/avatar-provider', (_req, res) => res.json({ provider: webinarAvatarProvider() }));
+  router.post('/:slug/avatar-session', async (req, res) => {
+    try {
+      const session = await getSessionBySlug(String(req.params.slug));
+      if (!session) return res.status(404).json({ error: 'Webinar not found' });
+      if (webinarAvatarProvider() !== 'anam') return res.status(409).json({ error: 'Anam host is not enabled' });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ sessionToken: await createAnamSessionToken() });
+    } catch (error) {
+      console.warn('[webinar] anam session failed:', error instanceof Error ? error.message : String(error));
+      return res.status(503).json({ error: 'Video host is temporarily unavailable' });
     }
   });
 
