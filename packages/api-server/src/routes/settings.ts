@@ -123,6 +123,8 @@ const BASE_INTEGRATION_CATALOG: IntegrationDefinition[] = [
     docsUrl: 'https://ai.google.dev/gemini-api/docs/api-key',
     envVars: [
       { key: 'APEX_GEMINI_BYOK_ENABLED', label: 'Routing Enabled', placeholder: 'true or false' },
+      { key: 'APEX_GEMINI_BYOK_FIRST', label: 'Try Gemini First', placeholder: 'true or false' },
+      { key: 'GEMINI_MODEL', label: 'Model Override', placeholder: 'gemini-3.5-flash-lite' },
       { key: 'APEX_GEMINI_REQUEST_CAP', label: 'Daily Request Cap', placeholder: '500' },
       { key: 'APEX_GEMINI_REQUEST_RATE_PER_MIN', label: 'Requests / Minute', placeholder: '5' },
       {

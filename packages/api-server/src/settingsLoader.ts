@@ -24,6 +24,8 @@ const PLATFORM_AUTHORITATIVE_KEYS = new Set([
   'APEX_QWEN_BYOK_ENABLED',
   'APEX_GROQ_BYOK_ENABLED',
   'APEX_GEMINI_BYOK_ENABLED',
+  'APEX_GEMINI_BYOK_FIRST',
+  'GEMINI_MODEL',
   // QwenCloud BYOK routing target: key, host and model must move together.
   'QWEN_API_KEY',
   'QWEN_API_KEY_2',

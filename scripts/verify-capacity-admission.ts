@@ -79,6 +79,34 @@ async function main() {
   await llm.createLLMClient(llm.getDefaultLLMConfig('CEO')).complete([{ role: 'user', content: 'OK' }], undefined, { interactive: true, operatorLane: true }).catch(() => undefined);
   assert.equal(sent, beforeOperator, 'operator lane cannot enable an explicitly disabled paid fallback');
   assert.equal(llm.getProviderCapacityReport().find(p => p.name === llm.PAID_FALLBACK_PROVIDER_NAME)?.state, 'disabled');
+
+  process.env.GEMINI_API_KEY_2 = 'guard-gemini-model';
+  process.env.APEX_GEMINI_BYOK_ENABLED = 'true';
+  const requestsSent: Array<{ model: string; previous_interaction_id?: string }> = [];
+  globalThis.fetch = (async (_url, options) => {
+    requestsSent.push(JSON.parse(String(options?.body)));
+    return Response.json({
+      id: 'guard-interaction',
+      steps: [{ type: 'function_call', id: 'guard-call', name: 'lookup', arguments: {} }],
+    });
+  }) as typeof fetch;
+  const client = llm.createLLMClient(llm.getDefaultLLMConfig('CEO'));
+  const messages = [{ role: 'user' as const, content: 'Use lookup.' }];
+  const tools = [{ name: 'lookup', description: 'Look up a test record', parameters: { type: 'object', properties: {} } }];
+  const execution = { conversationId: 'gemini-model-change' };
+  await client.complete(messages, tools, execution);
+  process.env.GEMINI_MODEL = 'gemini-3.5-flash-lite';
+  const response = await client.complete(messages, tools, execution);
+  assert.deepEqual(requestsSent.map(({ model }) => model), ['gemini-3.8-flash', 'gemini-3.5-flash-lite']);
+  assert.equal(requestsSent[1].previous_interaction_id, undefined, 'model changes must not reuse the previous model interaction');
+  assert.equal(response.servedModel, 'gemini-3.5-flash-lite');
+  assert.equal(llm.getProviderCapacityReport().find(p => p.name === 'gemini-3-8-flash-byok')?.model, response.servedModel);
+  assert.notEqual(llm.getDefaultLLMConfig('CEO').model, response.servedModel);
+  process.env.APEX_GEMINI_BYOK_FIRST = 'true';
+  assert.equal(llm.getDefaultLLMConfig('CEO').model, response.servedModel);
+  process.env.APEX_GEMINI_BYOK_ENABLED = 'false';
+  assert.notEqual(llm.getDefaultLLMConfig('CEO').model, response.servedModel);
+
   console.log('PASS capacity admission: truthful roster, entitlement exclusion, daily quota reset, and disabled paid-route safety');
 }
 main().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => rmSync(dir, { recursive: true, force: true }));
