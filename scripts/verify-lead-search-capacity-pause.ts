@@ -187,6 +187,16 @@ async function main(): Promise<void> {
   const breaker = msg('roofing Dallas, TX', ['serper: temporarily skipped by provider circuit breaker', ...NO_KEYS]);
   check('an open circuit breaker counts as unavailable', capacity.classifyLeadDiscoveryFailure(breaker).providerOutage);
 
+  for (const note of ['google: daily cap reached', 'google: monthly free cap reached', 'google: sweeps disabled', 'google: spend cap check unavailable, treated as not set']) {
+    const googleCap = msg('roofing Dallas, TX', [note, ...NO_KEYS]);
+    check(
+      `${note} is unconfigured, not a search outage`,
+      !capacity.classifyLeadDiscoveryFailure(googleCap).providerOutage &&
+        runner.decideSegmentFailure({ message: googleCap, attempts: 1, maxAttempts: 3 }).kind !== 'capacity_pause',
+    );
+  }
+
+
   check(
     'schema rejections stay non-retryable',
     runner.decideSegmentFailure({ message: 'Invalid args for saveResearchedLeadsBatch: [...]', attempts: 1, maxAttempts: 3 }).kind === 'closed',

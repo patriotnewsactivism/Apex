@@ -75,6 +75,11 @@ function classifyNote(detail: string): Pick<DiscoverySourceNote, 'state' | 'reas
   if (/\bnot set\b|configured but secret missing|skipped by freeOnly mode/i.test(detail)) {
     return { state: 'unconfigured', reason: null };
   }
+  // Google Places spend guards: a cap or a disabled sweep means "don't use
+  // Google", not "Google is down". Must not trip a capacity pause.
+  if (/^(daily cap reached|monthly free cap reached|sweeps disabled)\b/i.test(detail) || /spend cap check unavailable/i.test(detail)) {
+    return { state: 'unconfigured', reason: null };
+  }
   if (/circuit breaker/i.test(detail)) {
     return { state: 'unavailable', reason: BREAKER_REASON };
   }
