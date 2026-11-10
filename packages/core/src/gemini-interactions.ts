@@ -40,6 +40,7 @@ type ProviderRequestError = Error & {
 
 type GeminiSession = {
   interactionId: string;
+  model: string;
   updatedAt: number;
 };
 
@@ -210,7 +211,8 @@ export async function callGeminiInteractions(input: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
   const key = sessionKey(input.execution);
-  const previous = key ? sessions.get(key) : undefined;
+  const session = key ? sessions.get(key) : undefined;
+  const previous = session?.model === input.model ? session : undefined;
 
   try {
     const body: Record<string, unknown> = {
@@ -289,7 +291,7 @@ export async function callGeminiInteractions(input: {
     }
 
     if (key && parsed.id && toolCalls.length > 0) {
-      sessions.set(key, { interactionId: parsed.id, updatedAt: Date.now() });
+      sessions.set(key, { interactionId: parsed.id, model: input.model, updatedAt: Date.now() });
     } else if (key) {
       sessions.delete(key);
     }

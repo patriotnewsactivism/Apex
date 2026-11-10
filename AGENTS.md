@@ -121,7 +121,7 @@ The automatic routing chain consists of seven routes across three pools:
    - `nvidia/nemotron-3-ultra-550b-a55b:free` (`openrouter-nemotron-ultra`)
 2. **Direct BYOK free capacity**:
    - `groq-gpt-oss-120b-byok` (`openai/gpt-oss-120b` via `GROQ_API_KEY`/`GROQ_API_KEY_2`, gated by `APEX_GROQ_BYOK_ENABLED=true`)
-   - `gemini-3-8-flash-byok` (`gemini-3.8-flash` via `GEMINI_API_KEY`/`GEMINI_API_KEY_2`, gated by `APEX_GEMINI_BYOK_ENABLED=true`)
+   - `gemini-3-8-flash-byok` (`gemini-3.8-flash` by default, configurable via `GEMINI_MODEL`, using `GEMINI_API_KEY`/`GEMINI_API_KEY_2` and gated by `APEX_GEMINI_BYOK_ENABLED=true`). `APEX_GEMINI_BYOK_FIRST=true` moves the configured route to the front. For zero-cost inference, confirm every configured Gemini key belongs to an unbilled project and use only workloads eligible for Google's unpaid data terms. Set `APEX_GEMINI_REQUEST_CAP` and `APEX_GEMINI_REQUEST_RATE_PER_MIN` from the selected model's verified Free Tier quota. Request caps do not change billing on paid projects.
 3. **Metered QwenCloud fallback** (last automatic route):
    - `qwen-dashscope-byok` (default model `qwen3.8-flash`, overridable with `QWEN_MODEL`; default PAYG host `https://maas.qwencloudapi.com/compatible-mode/v1` via `QWEN_API_KEY`/`QWEN_API_KEY_2`; gated by `APEX_QWEN_BYOK_ENABLED=true`). Used only after every free pool is spent.
 

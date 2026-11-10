@@ -404,6 +404,7 @@ const PROVIDERS: readonly ProviderSpec[] = [
   {
     name: 'gemini-3-8-flash-byok',
     model: 'gemini-3.8-flash',
+    modelOverrideEnv: 'GEMINI_MODEL',
     baseURL: 'https://generativelanguage.googleapis.com/v1beta',
     // Two Settings slots. Google quota is commonly project-scoped, so the
     // direct Gemini pool remains aggregate unless the operator explicitly
@@ -502,6 +503,11 @@ function activeProviderOrder(role?: string, pacingEnabled?: boolean): readonly A
         ];
       })()
     : [...PROVIDER_ORDER];
+  const gemini = PROVIDER_BY_NAME.get('gemini-3-8-flash-byok')!;
+  if (enabled(process.env.APEX_GEMINI_BYOK_FIRST) && providerConfigured(gemini)) {
+    freeOrder.splice(freeOrder.indexOf(gemini.name), 1);
+    freeOrder.unshift(gemini.name);
+  }
   // Paid continuity comes last and only with APEX_PAID_FALLBACK_ENABLED=true.
   // APEX imposes no spend ceiling, request cap, or pacing gate on it; upstream
   // OpenRouter limits remain authoritative.
