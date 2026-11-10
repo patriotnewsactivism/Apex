@@ -63,7 +63,7 @@ export function LeadsPanel() {
     },
   });
 
-  const { data: leads = [], isLoading, refetch } = useQuery({
+  const { data: leadPage, isLoading, refetch } = useQuery({
     queryKey: ['leads', statusFilter, pipelineFilter, industryFilter],
     queryFn: () => api.leads.list({
       ...(statusFilter ? { status: statusFilter } : {}),
@@ -73,6 +73,8 @@ export function LeadsPanel() {
     }),
     refetchInterval: 5000,
   });
+  const leads = leadPage?.leads ?? [];
+  const listTotal = leadPage?.total;
 
   const { data: stats } = useQuery({
     queryKey: ['leadStats'],
@@ -177,11 +179,24 @@ export function LeadsPanel() {
       >
         <div>
           <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-apex-text)' }}>
-            {stats?.contactReady ?? stats?.total ?? leads.length} Contact-ready prospects
+            All researched leads (raw rows): {(stats?.rawCandidates ?? 0).toLocaleString()}
           </div>
           {stats && (
             <div style={{ marginTop: 3, fontSize: 10, color: 'var(--color-apex-muted)' }}>
-              {stats.rawCandidates.toLocaleString()} raw candidates · {stats.pendingOrUnverified.toLocaleString()} pending verification/contact · {stats.rejected.toLocaleString()} rejected
+              {stats.uniqueCompanies.toLocaleString()} unique companies · {stats.uniqueDomains.toLocaleString()} unique domains
+            </div>
+          )}
+          <div style={{ marginTop: 8, fontSize: 16, fontWeight: 700, color: 'var(--color-apex-text)' }}>
+            Contact-ready (verified, has email or phone): {(stats?.contactReady ?? stats?.total ?? leads.length).toLocaleString()}
+          </div>
+          {stats && (
+            <div style={{ marginTop: 3, fontSize: 10, color: 'var(--color-apex-muted)' }}>
+              {stats.pendingOrUnverified.toLocaleString()} pending/unverified · {stats.rejected.toLocaleString()} rejected · {stats.usableQualified.toLocaleString()} usable qualified
+            </div>
+          )}
+          {typeof listTotal === 'number' && (
+            <div style={{ marginTop: 3, fontSize: 10, color: 'var(--color-apex-muted)' }}>
+              Showing {leads.length.toLocaleString()} of {listTotal.toLocaleString()} matching this view
             </div>
           )}
         </div>

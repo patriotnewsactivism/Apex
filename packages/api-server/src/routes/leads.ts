@@ -204,14 +204,22 @@ export function createLeadsRouter(): Router {
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const limit = Math.min(Number(req.query.limit) || 500, 5000);
 
-    const leads = await db
-      .select()
-      .from(researchedLeads)
-      .where(where)
-      .orderBy(desc(researchedLeads.createdAt))
-      .limit(limit);
+    const [leads, countRows] = await Promise.all([
+      db
+        .select()
+        .from(researchedLeads)
+        .where(where)
+        .orderBy(desc(researchedLeads.createdAt))
+        .limit(limit),
+      db
+        .select({ total: sql<number>`count(*)::int` })
+        .from(researchedLeads)
+        .where(where),
+    ]);
 
-    res.json({ leads });
+    // `total` is the full count matching these filters, not the page size.
+    // The page itself stays capped (default 500, max 5000).
+    res.json({ leads, total: Number(countRows[0]?.total ?? 0) });
   });
 
   // ─── GET /api/leads/export — CSV download ────────────────────────────────

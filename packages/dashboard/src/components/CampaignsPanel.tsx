@@ -257,10 +257,10 @@ function CampaignCard({ campaign }: { campaign: CampaignProgress }) {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 4 }}>
             <span style={{ color: 'var(--color-apex-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
-              <Target size={12} /> Leads found
+              <Target size={12} /> Usable qualified
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-apex-text)', fontWeight: 600 }}>
-              {campaign.leadsSaved} / {campaign.targetLeads}
+              {campaign.usableQualified ?? campaign.leadsSaved} usable · {campaign.rawSaved ?? '—'} raw saved / {campaign.targetLeads}
             </span>
           </div>
           <Bar value={campaign.leadProgress} color={color} height={7} />
