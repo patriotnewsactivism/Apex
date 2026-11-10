@@ -109,7 +109,6 @@ async function main(): Promise<void> {
   warnings.length = 0;
   budget.__setGooglePlacesBudgetStoreForTests(store);
   budget.__setGooglePlacesWarningSinkForTests({ warn: (w) => { warnings.push(w); } });
-  store.rows.set(`${budget.googlePlacesDailyDayKey('2026-11-10')}|${budget.GOOGLE_PLACES_DAILY_ACCOUNT}`, 498);
   store.rows.set(`${budget.googlePlacesMonthlyDayKey('2026-11')}|${budget.GOOGLE_PLACES_MONTHLY_ACCOUNT}`, 498);
   const warnEnv = { GOOGLE_PLACES_DAILY_REQUEST_CAP: '100', GOOGLE_PLACES_MONTHLY_FREE_CAP: '1000', GOOGLE_PLACES_MONTHLY_WARN_AT: '500' };
   const before = await budget.reserveGooglePlacesRequest({ now: NOW, env: warnEnv });
@@ -123,7 +122,6 @@ async function main(): Promise<void> {
   store.rows.clear();
   budget.__setGooglePlacesBudgetStoreForTests(store);
   budget.__setGooglePlacesWarningSinkForTests({ warn: () => undefined });
-  store.rows.set(`${budget.googlePlacesDailyDayKey('2026-11-10')}|${budget.GOOGLE_PLACES_DAILY_ACCOUNT}`, 999);
   store.rows.set(`${budget.googlePlacesMonthlyDayKey('2026-11')}|${budget.GOOGLE_PLACES_MONTHLY_ACCOUNT}`, 999);
   const monthEnv = { GOOGLE_PLACES_DAILY_REQUEST_CAP: '100', GOOGLE_PLACES_MONTHLY_FREE_CAP: '1000' };
   const atCap = await budget.reserveGooglePlacesRequest({ now: NOW, env: monthEnv });

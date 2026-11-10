@@ -24,7 +24,6 @@ import {
   __setGooglePlacesWarningSinkForTests,
   atmosphereFieldsInMask,
   googlePlacesAllowOverFreeCap,
-  googlePlacesBudgetSnapshot,
   googlePlacesDailyDayKey,
   googlePlacesDailyRequestCap,
   googlePlacesMaxPages,
@@ -178,7 +177,6 @@ describe('UTC counting and caps', () => {
       GOOGLE_PLACES_MONTHLY_FREE_CAP: '1000',
       GOOGLE_PLACES_MONTHLY_WARN_AT: '500',
     });
-    store.rows.set(`${googlePlacesDailyDayKey('2026-11-10')}|${GOOGLE_PLACES_DAILY_ACCOUNT}`, 498);
     store.rows.set(`${googlePlacesMonthlyDayKey('2026-11')}|${GOOGLE_PLACES_MONTHLY_ACCOUNT}`, 498);
     const at499 = await reserveGooglePlacesRequest({ now: NOW, env: e });
     expect(at499.allowed && at499.monthCount === 499).toBe(true);
@@ -199,7 +197,6 @@ describe('UTC counting and caps', () => {
       GOOGLE_PLACES_DAILY_REQUEST_CAP: '100',
       GOOGLE_PLACES_MONTHLY_FREE_CAP: '1000',
     });
-    store.rows.set(`${googlePlacesDailyDayKey('2026-11-10')}|${GOOGLE_PLACES_DAILY_ACCOUNT}`, 999);
     store.rows.set(`${googlePlacesMonthlyDayKey('2026-11')}|${GOOGLE_PLACES_MONTHLY_ACCOUNT}`, 999);
     const atCap = await reserveGooglePlacesRequest({ now: NOW, env: e });
     expect(atCap.allowed && atCap.monthCount === 1000).toBe(true);
@@ -208,7 +205,7 @@ describe('UTC counting and caps', () => {
     expect(over.reason).toBe('monthly_free_cap');
     expect(over.note).toBe(GOOGLE_PLACES_MONTHLY_CAP_NOTE);
     expect(await store.read(googlePlacesMonthlyDayKey('2026-11'), GOOGLE_PLACES_MONTHLY_ACCOUNT)).toBe(1000);
-    expect(await store.read(googlePlacesDailyDayKey('2026-11-10'), GOOGLE_PLACES_DAILY_ACCOUNT)).toBe(1000);
+    expect(await store.read(googlePlacesDailyDayKey('2026-11-10'), GOOGLE_PLACES_DAILY_ACCOUNT)).toBe(1);
 
     const overEnv = env({
       GOOGLE_PLACES_DAILY_REQUEST_CAP: '100',
