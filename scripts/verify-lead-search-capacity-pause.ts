@@ -64,6 +64,9 @@ async function main(): Promise<void> {
   const registry = (await import(
     path.join(root, 'packages/core/src/tool-registry.ts')
   )) as typeof import('../packages/core/src/tool-registry.js');
+  const placesBudget = (await import(
+    path.join(root, 'packages/core/src/google-places-budget.ts')
+  )) as typeof import('../packages/core/src/google-places-budget.js');
 
   const msg = (query: string, notes: string[]) => capacity.discoveryZeroMessage(query, notes);
 
@@ -187,6 +190,16 @@ async function main(): Promise<void> {
   const breaker = msg('roofing Dallas, TX', ['serper: temporarily skipped by provider circuit breaker', ...NO_KEYS]);
   check('an open circuit breaker counts as unavailable', capacity.classifyLeadDiscoveryFailure(breaker).providerOutage);
 
+  for (const note of ['google: daily cap reached', 'google: monthly free cap reached', 'google: sweeps disabled', 'google: spend cap check unavailable, treated as not set']) {
+    const googleCap = msg('roofing Dallas, TX', [note, ...NO_KEYS]);
+    check(
+      `${note} is unconfigured, not a search outage`,
+      !capacity.classifyLeadDiscoveryFailure(googleCap).providerOutage &&
+        runner.decideSegmentFailure({ message: googleCap, attempts: 1, maxAttempts: 3 }).kind !== 'capacity_pause',
+    );
+  }
+
+
   check(
     'schema rejections stay non-retryable',
     runner.decideSegmentFailure({ message: 'Invalid args for saveResearchedLeadsBatch: [...]', attempts: 1, maxAttempts: 3 }).kind === 'closed',
@@ -301,6 +314,25 @@ async function main(): Promise<void> {
   // ones before any request), so the fixtures use correctly shaped fakes.
   process.env.YELP_API_KEY = 'g'.repeat(128);
   process.env.GOOGLE_PLACES_API_KEY = `AIza${'g'.repeat(35)}`;
+  // This guard has no database. Install an in-memory Places ledger so a
+  // Google 429 is still sent and reported, rather than skipped as a cap-check
+  // failure.
+  const placesRows = new Map<string, number>();
+  placesBudget.__setGooglePlacesBudgetStoreForTests({
+    async increment(day, account) {
+      const k = `${day}|${account}`;
+      const v = (placesRows.get(k) ?? 0) + 1;
+      placesRows.set(k, v);
+      return v;
+    },
+    async decrement(day, account) {
+      const k = `${day}|${account}`;
+      placesRows.set(k, Math.max(0, (placesRows.get(k) ?? 0) - 1));
+    },
+    async read(day, account) {
+      return placesRows.get(`${day}|${account}`) ?? 0;
+    },
+  });
 
   const tools = registry.createBuiltinTools(root);
   const webSearch = tools.find((tool) => tool.name === 'webSearch');
@@ -362,6 +394,8 @@ async function main(): Promise<void> {
     'and the runner would hand the attempt back',
     runner.decideSegmentFailure({ message: live, attempts: 1, maxAttempts: 3 }).kind === 'capacity_pause',
   );
+
+  placesBudget.__resetGooglePlacesBudgetForTests();
 
   console.log(
     failures === 0

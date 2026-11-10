@@ -32,6 +32,12 @@ import { reserveBrightDataRequest, recordBrightDataSuccess } from './brightdata-
 import { searchExaWeb, ExaSearchError } from './exa-search.js';
 import { reserveExaSearch } from './exa-search-budget.js';
 import { disableDirectoryProvider, isDirectoryAuthFailure, redactProviderBody, resolveDirectoryProviderKey } from './lead-provider-keys.js';
+import {
+  GOOGLE_PLACES_FIELD_MASK,
+  googlePlacesMaxPages,
+  reserveGooglePlacesRequest,
+  shouldSkipGooglePlacesCall,
+} from './google-places-budget.js';
 import { APEX_CARTESIA_CALLER_NUMBER, CARTESIA_SALES_AGENT_NAME, getCartesiaSalesCall, startCartesiaSalesCall } from './cartesia-sales-client.js';
 import { createCalendarTools } from './calendar/tools.js';
 import { reserveMonthlySearch, searchSearxng, searxngBreaker, webSearchCacheTtlDays, SearxngError } from './search-router.js';
@@ -2166,9 +2172,10 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
       schema: z.object({
         query: z.string().describe('Search query combining industry and location, e.g. "HVAC contractor Dallas Texas" or "personal injury lawyer Miami FL"'),
         refresh: z.boolean().optional().describe('Bypass the persistent lead-search cache and refresh this query from directory providers.'),
+        sweep: z.boolean().optional().describe('True when this call is a lead-search sweep or campaign run. Google Places is skipped unless GOOGLE_PLACES_SWEEPS_ENABLED=true.'),
       }),
       requiresApproval: false,
-      async execute({ query }) {
+      async execute({ query, sweep }, ctx) {
         // Keys are format-checked once per value; a missing, malformed or
         // rejected key comes back null with a "… treated as not set" note,
         // so the provider is skipped without a request and never counts as
@@ -2256,14 +2263,31 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
         // cannot be enabled any more. This uses the current searchText API,
         // which also returns the phone and website inline — the legacy flow
         // needed a Place Details request per result to get them.
-        if (googleKey) {
+        //
+        // Spend guards: each searchText page is reserved against the UTC
+        // daily and monthly caps before it is sent. A cap hit (or a disabled
+        // sweep) skips Google and is reported as not-configured, never as an
+        // outage. The field mask stays on the Enterprise SKU — no Atmosphere
+        // fields. Max pages come from GOOGLE_PLACES_MAX_PAGES (default 1).
+        const skipGoogleForSweep = await shouldSkipGooglePlacesCall({
+          sweep,
+          agentId: ctx?.agentId,
+          taskId: ctx?.taskId,
+        });
+        if (googleKey && skipGoogleForSweep) {
+          googleNote = 'google: sweeps disabled';
+        } else if (googleKey) {
           try {
             const collected: Array<Record<string, unknown>> = [];
             let pageToken: string | undefined;
+            const maxPages = googlePlacesMaxPages();
 
-            // searchText caps a page at 20; three pages covers the 50 this
-            // tool advertises without spending requests nobody asked for.
-            for (let page = 0; page < 3 && collected.length < 50; page++) {
+            for (let page = 0; page < maxPages && collected.length < 50; page++) {
+              const reserved = await reserveGooglePlacesRequest({ query });
+              if (!reserved.allowed) {
+                googleNote = reserved.note;
+                break;
+              }
               const res: Response = await fetch(
                 'https://places.googleapis.com/v1/places:searchText',
                 {
@@ -2272,17 +2296,8 @@ export function createBuiltinTools(_workspaceRoot?: string): ToolDefinition[] {
                     'Content-Type': 'application/json',
                     'X-Goog-Api-Key': googleKey,
                     // Billing is per requested field, so ask only for what a
-                    // lead actually needs.
-                    'X-Goog-FieldMask': [
-                      'places.displayName',
-                      'places.formattedAddress',
-                      'places.nationalPhoneNumber',
-                      'places.websiteUri',
-                      'places.primaryTypeDisplayName',
-                      'places.rating',
-                      'places.userRatingCount',
-                      'nextPageToken',
-                    ].join(','),
+                    // lead actually needs. Enterprise SKU, no Atmosphere fields.
+                    'X-Goog-FieldMask': GOOGLE_PLACES_FIELD_MASK.join(','),
                   },
                   body: JSON.stringify({
                     textQuery: query,

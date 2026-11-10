@@ -17,6 +17,7 @@ import {
   type ResearchedLeadInput,
   type ToolContext,
   directoryProviderUsable,
+  googlePlacesSweepsEnabled,
 } from '@workspace/core';
 import { citiesForStates, allStateCodes } from './us-geo.js';
 import {
@@ -1446,7 +1447,7 @@ export class CampaignRunner {
 
       const runDirectory = async (): Promise<DiscoveryCandidate> => {
         try {
-          const result = await registry.execute('searchBusinessDirectory', { query }, this.toolContext);
+          const result = await registry.execute('searchBusinessDirectory', { query, sweep: true }, this.toolContext);
           if (!result.success) {
             return {
               source: 'directory',
@@ -1545,7 +1546,11 @@ export class CampaignRunner {
       );
       // A configured-but-invalid or rejected Yelp/Google key is not a fast
       // structured source: treat it as absent so web search goes first.
-      const hasFastStructured = directoryProviderUsable('yelp') || directoryProviderUsable('google');
+      // Google is only a campaign source when sweeps are explicitly enabled
+      // (GOOGLE_PLACES_SWEEPS_ENABLED, default false). Until a lead pack
+      // passes QC, treat it as absent so the runner does not wait on it.
+      const hasFastStructured = directoryProviderUsable('yelp') || (directoryProviderUsable('google') && googlePlacesSweepsEnabled());
+
 
       let first: DiscoveryCandidate;
       let second: DiscoveryCandidate | null = null;
