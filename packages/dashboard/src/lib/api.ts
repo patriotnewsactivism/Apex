@@ -1334,7 +1334,7 @@ export const api = {
       if (params?.city) qs.set('city', params.city);
       if (params?.limit) qs.set('limit', String(params.limit));
       const query = qs.toString();
-      return apiFetch<{ leads: ResearchedLead[] }>(`/leads${query ? `?${query}` : ''}`).then((r) => r.leads);
+      return apiFetch<{ leads: ResearchedLead[]; total: number }>(`/leads${query ? `?${query}` : ''}`);
     },
     stats: () => apiFetch<LeadStats>('/leads/stats'),
     // Full-list export. The server caps one response at 10,000 rows
@@ -2253,6 +2253,10 @@ export interface CampaignProgress {
   searchPause?: CampaignSearchPause | null;
   targetLeads: number;
   leadsSaved: number;
+  /** Usable qualified leads (countUsableCampaignLeads). Prefer this over leadsSaved. */
+  usableQualified?: number;
+  /** Sum of segment.saved — raw rows stored for this campaign. */
+  rawSaved?: number;
   leadProgress: number;
   segmentsTotal: number;
   segmentsDone: number;
@@ -2694,11 +2698,15 @@ export interface ResearchedLead {
 }
 
 export interface LeadStats {
+  /** @deprecated Alias of contactReady. Prefer the explicit field names. */
   total: number;
   contactReady: number;
   rawCandidates: number;
+  uniqueCompanies: number;
+  uniqueDomains: number;
   pendingOrUnverified: number;
   rejected: number;
+  usableQualified: number;
   byStatus: { new: number; contacted: number; qualified: number; rejected: number };
   byPipelineState: Record<string, number>;
   byIndustry: Record<string, number>;

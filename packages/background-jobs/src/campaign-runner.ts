@@ -43,6 +43,7 @@ import {
   type LeadSearchCapacityPause,
   type LeadSearchPauseSnapshot,
 } from './lead-search-capacity.js';
+import { usableQualifiedLeadSql } from './usable-campaign-leads.js';
 
 // ─── Campaign Runner ──────────────────────────────────────────────────────────
 //
@@ -90,7 +91,15 @@ export interface CampaignProgress {
    *  unavailable. Only on running campaigns. */
   searchPause: LeadSearchPauseSnapshot | null;
   targetLeads: number;
+  /**
+   * Usable qualified leads when a usableLeadCount was supplied (the API and
+   * runner always do). Kept for existing consumers; prefer usableQualified.
+   */
   leadsSaved: number;
+  /** Same definition as countUsableCampaignLeads. */
+  usableQualified: number;
+  /** Sum of segment.saved — raw rows this campaign stored, qualified or not. */
+  rawSaved: number;
   /** 0-1, capped at 1 so an over-delivering campaign never renders past full. */
   leadProgress: number;
   segmentsTotal: number;
@@ -126,8 +135,9 @@ export function computeCampaignProgress(
 ): CampaignProgress {
   const done = segments.filter((s) => s.status === 'done' || s.status === 'exhausted');
   const failed = segments.filter((s) => s.status === 'failed');
-  const rawLeadsSaved = segments.reduce((n, s) => n + (s.saved ?? 0), 0);
-  const leadsSaved = usableLeadCount ?? rawLeadsSaved;
+  const rawSaved = segments.reduce((n, s) => n + (s.saved ?? 0), 0);
+  const usableQualified = usableLeadCount ?? rawSaved;
+  const leadsSaved = usableQualified;
   const duplicates = segments.reduce((n, s) => n + (s.duplicates ?? 0), 0);
   const remaining = segments.length - done.length - failed.length;
 
@@ -165,6 +175,8 @@ export function computeCampaignProgress(
     searchPause: waitingForSearch ? searchPause : null,
     targetLeads: campaign.targetLeads,
     leadsSaved,
+    usableQualified,
+    rawSaved,
     leadProgress: campaign.targetLeads > 0
       ? Math.min(1, leadsSaved / campaign.targetLeads)
       : 0,
@@ -188,15 +200,7 @@ export async function countUsableCampaignLeads(campaignId: string): Promise<numb
       count: sql<number>`count(*)::int`,
     })
     .from(researchedLeads)
-    .where(
-      and(
-        eq(researchedLeads.campaignId, campaignId),
-        eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
-        eq(researchedLeads.status, 'qualified'),
-        sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-        sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
-      ),
-    );
+    .where(and(eq(researchedLeads.campaignId, campaignId), usableQualifiedLeadSql));
   return Number(row?.count ?? 0);
 }
 

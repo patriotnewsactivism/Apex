@@ -63,6 +63,83 @@ describe('lead stats — route contract (no database)', () => {
   });
 });
 
+describe('lead stats — explicit field names and UI labels (no database)', () => {
+  const leadsPanel = readFileSync(resolve(HERE, '../../../../dashboard/src/components/LeadsPanel.tsx'), 'utf8');
+  const campaignsPanel = readFileSync(resolve(HERE, '../../../../dashboard/src/components/CampaignsPanel.tsx'), 'utf8');
+  const statsSource = readFileSync(resolve(HERE, '../../lead-stats.ts'), 'utf8');
+  const listStart = routeSource.indexOf("router.get('/',");
+  const listHandler = routeSource.slice(listStart, routeSource.indexOf('\n  });', listStart) + 6);
+
+  it('exposes explicit inventory fields and does not label any of them just "total"', async () => {
+    const { EXPLICIT_LEAD_STAT_FIELDS } = await import('../lead-stats.js');
+    expect([...EXPLICIT_LEAD_STAT_FIELDS]).toEqual([
+      'rawCandidates',
+      'uniqueCompanies',
+      'uniqueDomains',
+      'contactReady',
+      'pendingOrUnverified',
+      'rejected',
+      'usableQualified',
+    ]);
+    expect(EXPLICIT_LEAD_STAT_FIELDS).not.toContain('total');
+    expect(statsSource).toMatch(/@deprecated[\s\S]*total:/);
+    expect(statsSource).toMatch(/usableQualifiedLeadSql/);
+  });
+
+  it('GET /api/leads returns a filtered total alongside the capped page', () => {
+    expect(listStart).toBeGreaterThan(-1);
+    expect(listHandler).toMatch(/total:/);
+    expect(listHandler).toMatch(/count\(\*\)/);
+    expect(listHandler).not.toMatch(/from\(researchedLeads\)[\s\S]*res\.json\(\{ leads \}\)/);
+  });
+
+  it('Prospects UI uses the explicit inventory labels', () => {
+    expect(leadsPanel).toMatch(/All researched leads \(raw rows\)/);
+    expect(leadsPanel).toMatch(/Contact-ready \(verified, has email or phone\)/);
+    expect(leadsPanel).toMatch(/unique companies/);
+    expect(leadsPanel).toMatch(/unique domains/);
+    expect(leadsPanel).toMatch(/pending\/unverified/);
+    expect(leadsPanel).toMatch(/rejected/);
+    expect(leadsPanel).toMatch(/usable qualified/);
+    expect(leadsPanel).not.toMatch(/Contact-ready prospects/);
+  });
+
+  it('campaign cards say Usable qualified and show usable, raw saved, and target', () => {
+    expect(campaignsPanel).toMatch(/Usable qualified/);
+    expect(campaignsPanel).toMatch(/raw saved/);
+    expect(campaignsPanel).toMatch(/usableQualified \?\? campaign\.leadsSaved/);
+    expect(campaignsPanel).toMatch(/targetLeads/);
+    expect(campaignsPanel).not.toMatch(/> Leads found/);
+    // Historical result strings stored on the campaign row are rendered as-is.
+    expect(campaignsPanel).toMatch(/detail\?\.campaign\.result/);
+  });
+});
+
+describe('campaign progress counts (no database)', () => {
+  it('keeps usable qualified separate from raw saved', async () => {
+    const { computeCampaignProgress } = await import('@workspace/background-jobs');
+    const now = Date.now();
+    const campaign = {
+      id: 'c1',
+      name: 'Count test',
+      status: 'running',
+      targetLeads: 10,
+      lastProgressAt: new Date(now),
+      startedAt: new Date(now - 60_000),
+      completedAt: null,
+    };
+    const segments = [
+      { status: 'done', saved: 7, duplicates: 1, startedAt: new Date(now - 50_000), completedAt: new Date(now - 40_000) },
+      { status: 'done', saved: 3, duplicates: 0, startedAt: new Date(now - 30_000), completedAt: new Date(now - 20_000) },
+    ];
+    const progress = computeCampaignProgress(campaign as never, segments as never, now, 4);
+    expect(progress.rawSaved).toBe(10);
+    expect(progress.usableQualified).toBe(4);
+    expect(progress.leadsSaved).toBe(4);
+    expect(progress.targetLeads).toBe(10);
+  });
+});
+
 type LeadRow = {
   status: string;
   industry: string | null;
@@ -70,7 +147,22 @@ type LeadRow = {
   contactPhone: string | null;
   pipelineState: string | null;
   enrichment: unknown;
+  companyName?: string | null;
+  website?: string | null;
 };
+
+function normalizeCompanyForCount(name: string | null | undefined): string | null {
+  const value = (name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return value || null;
+}
+
+function normalizeDomainForCount(website: string | null | undefined): string | null {
+  const value = (website ?? '')
+    .replace(/^[a-zA-Z]+:\/\//, '')
+    .replace(/^www\.|[/?#:].*$/g, '')
+    .toLowerCase();
+  return value || null;
+}
 
 /** The route's original computation, verbatim, over already-loaded rows. */
 function referenceStats(all: LeadRow[]) {
@@ -95,12 +187,32 @@ function referenceStats(all: LeadRow[]) {
     byIndustry[key] = (byIndustry[key] ?? 0) + 1;
     byPipelineState[l.pipelineState ?? 'DISCOVERED'] = (byPipelineState[l.pipelineState ?? 'DISCOVERED'] ?? 0) + 1;
   }
+  const companies = new Set<string>();
+  const domains = new Set<string>();
+  for (const lead of all) {
+    const company = normalizeCompanyForCount(lead.companyName);
+    if (company) companies.add(company);
+    const domain = normalizeDomainForCount(lead.website);
+    if (domain) domains.add(domain);
+  }
+  const usableQualified = all.filter((lead) => {
+    if (lead.pipelineState !== 'CAMPAIGN_READY') return false;
+    if (lead.status !== 'qualified') return false;
+    if (lead.contactEmail == null && lead.contactPhone == null) return false;
+    const verification = (lead.enrichment as Record<string, unknown> | null)?.['businessVerification'] as
+      | { status?: string }
+      | undefined;
+    return verification?.status === 'verified';
+  }).length;
   return {
     total: visible.length,
     contactReady: visible.length,
     rawCandidates: all.length,
+    uniqueCompanies: companies.size,
+    uniqueDomains: domains.size,
     pendingOrUnverified: Math.max(0, all.length - visible.length - byStatus.rejected),
     rejected: byStatus.rejected,
+    usableQualified,
     byStatus,
     byPipelineState,
     byIndustry,
@@ -130,12 +242,13 @@ suite('lead stats (researched_leads aggregates)', () => {
   const loadAll = async (): Promise<LeadRow[]> => (await db.select().from(researchedLeads)) as unknown as LeadRow[];
 
   async function seed(rows: Array<Partial<LeadRow> & { industry?: string | null }>) {
-    const values = rows.map((row, i) => {
-      const id = `stats-${tag}-${i}`;
+    const values = rows.map((row) => {
+      const id = `stats-${tag}-${seededIds.length}`;
       seededIds.push(id);
       return {
         id,
-        companyName: `Stats Test ${tag} ${i}`,
+        companyName: row.companyName ?? `Stats Test ${tag} ${id}`,
+        website: row.website ?? null,
         fitReason: 'lead-stats test row',
         researchedByAgentId: 'lead-stats-test',
         status: row.status ?? 'new',
@@ -211,6 +324,76 @@ suite('lead stats (researched_leads aggregates)', () => {
       const response = await fetch(`http://127.0.0.1:${address.port}/api/leads/stats`);
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual(await computeLeadStats(db));
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  });
+
+
+  it('counts unique companies, unique domains, and usable qualified with the shared definition', async () => {
+    const before = await computeLeadStats(db);
+    await seed([
+      // Same normalized company ("acmeinc") under two punctuations.
+      { companyName: 'Acme Inc', website: 'https://www.acme-count.test/about', contactEmail: 'a@x.test', enrichment: verified },
+      { companyName: 'Acme, Inc.', website: 'acme-count.test', contactEmail: 'b@x.test', enrichment: verified },
+      // A distinct company, no website — must not count as a domain.
+      { companyName: 'Beta LLC', website: '', contactEmail: 'c@x.test', enrichment: verified },
+      // Usable qualified: campaign-runner predicates, including empty-string phone
+      // which IS NOT NULL still accepts.
+      {
+        companyName: 'Ready Co',
+        website: 'https://ready-count.test',
+        status: 'qualified',
+        pipelineState: 'CAMPAIGN_READY',
+        contactEmail: 'ready@x.test',
+        contactPhone: '',
+        enrichment: verified,
+      },
+      // Looks almost usable but is only contact-ready (wrong pipeline state).
+      {
+        companyName: 'Almost Ready Co',
+        website: 'https://almost-count.test',
+        status: 'qualified',
+        pipelineState: 'QUALIFIED',
+        contactEmail: 'almost@x.test',
+        enrichment: verified,
+      },
+    ]);
+
+    const after = await computeLeadStats(db);
+    const expected = referenceStats(await loadAll());
+    expect(after).toEqual(expected);
+    expect(after.uniqueCompanies - before.uniqueCompanies).toBe(4);
+    expect(after.uniqueDomains - before.uniqueDomains).toBe(3);
+    expect(after.usableQualified - before.usableQualified).toBe(1);
+    expect(after.contactReady - before.contactReady).toBe(5);
+    expect(after.total).toBe(after.contactReady);
+  });
+
+  it('GET /api/leads returns the full filtered total next to the capped page', async () => {
+    await seed([
+      { companyName: 'List Total Co', website: 'list-total.test', contactEmail: 'list@x.test', enrichment: verified },
+    ]);
+    const { createLeadsRouter } = await import('../routes/leads.js');
+    const app = express();
+    app.use('/api/leads', createLeadsRouter());
+    const server: Server = createServer(app);
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not bind a port');
+      const base = `http://127.0.0.1:${address.port}/api/leads`;
+      const full = await fetch(base);
+      expect(full.status).toBe(200);
+      const fullBody = (await full.json()) as { leads: unknown[]; total: number };
+      expect(typeof fullBody.total).toBe('number');
+      expect(fullBody.total).toBeGreaterThanOrEqual(fullBody.leads.length);
+
+      const capped = await fetch(`${base}?limit=1`);
+      expect(capped.status).toBe(200);
+      const cappedBody = (await capped.json()) as { leads: unknown[]; total: number };
+      expect(cappedBody.leads).toHaveLength(1);
+      expect(cappedBody.total).toBe(fullBody.total);
     } finally {
       await new Promise<void>((done) => server.close(() => done()));
     }

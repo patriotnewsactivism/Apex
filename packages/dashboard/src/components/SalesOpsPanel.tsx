@@ -561,7 +561,7 @@ export function AutomationLauncher({ overview }: { overview: SalesOpsOverview })
 
   const { data: leads } = useQuery({
     queryKey: ['salesops-leads'],
-    queryFn: () => api.leads.list({ limit: 100 }),
+    queryFn: () => api.leads.list({ limit: 100 }).then((page) => page.leads),
     enabled: targetType === 'lead',
   });
   const { data: campaigns } = useQuery({

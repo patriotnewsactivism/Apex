@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, campaignSegments, leadCampaigns, researchedLeads } from '@workspace/db';
 import { computeCampaignProgress, countUsableCampaignLeads, createCampaign, extendCampaign, getLeadSearchPauseSnapshot } from '@workspace/background-jobs';
+import { usableQualifiedLeadSql } from '@workspace/background-jobs/usable-campaign-leads';
 import { broadcast } from '../websocket.js';
 import { createCampaignSchema as createSchema, campaignValidationErrorBody } from './campaign-schemas.js';
 
@@ -53,10 +54,7 @@ export function createCampaignsRouter() {
       .where(
         and(
           inArray(researchedLeads.campaignId, campaigns.map((campaign) => campaign.id)),
-          eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
-          eq(researchedLeads.status, 'qualified'),
-          sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-          sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
+          usableQualifiedLeadSql,
         ),
       )
       .groupBy(researchedLeads.campaignId);
@@ -111,10 +109,7 @@ export function createCampaignsRouter() {
       .where(
         and(
           eq(researchedLeads.campaignId, req.params.id),
-          eq(researchedLeads.pipelineState, 'CAMPAIGN_READY'),
-          eq(researchedLeads.status, 'qualified'),
-          sql`(${researchedLeads.contactEmail} IS NOT NULL OR ${researchedLeads.contactPhone} IS NOT NULL)`,
-          sql`${researchedLeads.enrichment}->'businessVerification'->>'status' = 'verified'`,
+          usableQualifiedLeadSql,
         ),
       )
       .orderBy(desc(researchedLeads.createdAt))
